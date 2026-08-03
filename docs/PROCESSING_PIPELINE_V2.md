@@ -32,13 +32,49 @@ re-inference).
 | Simplify            | simplification model — de-jargon \| de-stiffen \| language-learning | EPUB | yes |
 | Translate           | user-chosen provider (Ollama, Claude, …) + source/target languages | EPUB | no  |
 
-- PDF variant selected → Tesseract available, then OCR correction, then the
-  rest. The foundry chain for a PDF implicitly ends in `foundry export`, which
-  PRODUCES the book EPUB (title page as its own section, cover embedded — see
-  the foundry-side work in phase 1).
+- PDF variant selected → **OCR correction** (ONE palette item, see below), then
+  the rest. The foundry chain for a PDF implicitly ends in `foundry export`,
+  which PRODUCES the book EPUB (title page as its own section, cover embedded —
+  see the foundry-side work in phase 1).
 - EPUB variant selected → simplify / translate / footnote removal only.
 - Passes are unlimited and reorderable: translate → OCR-correct → simplify →
   translate back is legal. Order of execution = order in the sidebar.
+
+### Tesseract + OCR correction are ONE thing in the palette
+
+The wizard offers a single item, **OCR correction**, and it puts ONE row in the
+sidebar. The pair was never a choice: repair has nothing to read without the
+scan, and a scan with no layout is not a book — a Tesseract-only run is a refusal
+in the planner precisely because it produces no EPUB. So the row is expanded to
+`[tesseract, ocr-correction]` when the run is planned AND when it is submitted
+(`expandedPasses` in the wizard), and the two KINDS, the two queue job types and
+the two provenance records are untouched: `queue.json` holds persisted jobs, and
+the pdf-picker's OCR button still submits the pair itself.
+
+Re-running `tesseract` over a run directory that already holds a finished scan of
+the same pages costs nothing — `startFoundryRun` skips a stage `run.json` reports
+as done — so the scan is ALWAYS included rather than conditionally. "Is there a
+usable scan?" is foundry's question and foundry already answers it; asking it a
+second time in the wizard would be a second answer, free to drift.
+
+**Is it optional?** That depends on the PDF, and the app measures rather than
+assumes. `pdf:measure-text-layer` (→ `pdf-analyzer.measureTextLayer`, off the
+main thread through the worker proxy) samples up to 12 pages spread evenly across
+the document, counts non-whitespace characters per page from mupdf's structured
+text, and calls the PDF born-digital when at least HALF the sampled pages carry
+≥ 200 characters. Evenly spread because the ends are what break a naive check —
+front matter is often blank or plate pages, and a scanned book frequently carries
+a born-digital title page. The whole count vector comes back with the verdict, so
+a wrong answer can be argued with.
+
+- text layer → the OCR unit is optional, and the wizard says so.
+- no text layer → the unit is added automatically and its remove button is
+  disabled, saying "This PDF is pictures of pages — it carries no text of its
+  own, so nothing can be narrated unless this pass reads it." The guard is in
+  `removePass` too, not only in the `[disabled]` binding.
+- the check FAILED → the error is shown and nothing is decided. "We could not
+  tell" and "it is optional" are different answers and only one is safe to act
+  on; there is no fallback to optional.
 
 ### Footnote removal is one pass with two readings of a book
 

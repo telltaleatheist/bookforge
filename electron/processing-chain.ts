@@ -232,8 +232,8 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
   if (lastFoundryAt >= 0 && firstEpubAt >= 0 && firstEpubAt < lastFoundryAt) {
     throw new Error(
       `${LABEL_OF[passes[lastFoundryAt].kind]} rebuilds the book from the scanned pages, which would `
-      + `throw away what ${LABEL_OF[passes[firstEpubAt].kind]} wrote before it. Move the scan-based `
-      + 'passes (Tesseract, OCR correction, Footnote removal) above the others.'
+      + `throw away what ${LABEL_OF[passes[firstEpubAt].kind]} wrote before it. Move the passes that `
+      + 'read the scanned pages above the others.'
     );
   }
 

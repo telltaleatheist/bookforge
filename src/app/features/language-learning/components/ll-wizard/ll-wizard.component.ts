@@ -62,6 +62,7 @@ import type {
   SimplifyPassParams,
   TranslatePassParams,
 } from '@shared/processing/pass-types';
+import type { TextLayerReport } from '@shared/pdf/text-layer';
 import type { SourceType } from '../../../../core/models/manifest.types';
 import {
   DesktopSelectComponent,
@@ -92,6 +93,8 @@ interface PassVariantCard {
   label: string;
   format: string;
   filename: string;
+  /** The file itself. Read to measure a PDF's text layer, never to build a path. */
+  absPath: string;
   /** Non-empty when this file cannot be processed — and says why, on the card. */
   disabledReason: string;
 }
@@ -266,6 +269,21 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                   }
                 </div>
 
+                <!-- What the chosen PDF is: a book with text in it, or pictures of
+                     pages. It decides whether the OCR unit is a choice. A check
+                     that failed says so — it never reads as "optional". -->
+                @if (selectedIsPdf()) {
+                  @if (measuringTextLayer()) {
+                    <span class="hint">Checking whether this PDF has any text of its own…</span>
+                  } @else if (textLayerError()) {
+                    <div class="pass-error">{{ textLayerError() }}</div>
+                  } @else if (ocrRequiredReason()) {
+                    <span class="hint">{{ ocrRequiredReason() }}</span>
+                  } @else if (textLayer()) {
+                    <span class="hint">This PDF already has text of its own, so the OCR pass is optional.</span>
+                  }
+                }
+
                 <div class="pass-builder">
                   <!-- Palette, filtered by what the chosen book can be read as -->
                   <div class="pass-palette">
@@ -416,10 +434,19 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                           <span class="pass-name">{{ passLabel(pass) }}</span>
                           <button type="button" class="pass-btn" title="Move up" [disabled]="i === 0" (click)="movePass(i, -1)">↑</button>
                           <button type="button" class="pass-btn" title="Move down" [disabled]="i === passes().length - 1" (click)="movePass(i, 1)">↓</button>
-                          <button type="button" class="pass-btn remove" title="Remove" (click)="removePass(i)">✕</button>
+                          <button
+                            type="button"
+                            class="pass-btn remove"
+                            [disabled]="passLocked(pass)"
+                            [title]="passLocked(pass) ? ocrRequiredReason() : 'Remove'"
+                            (click)="removePass(i)"
+                          >✕</button>
                         </div>
                         @if (passDetail(pass)) {
                           <span class="pass-detail">{{ passDetail(pass) }}</span>
+                        }
+                        @if (passLocked(pass)) {
+                          <span class="pass-detail">{{ ocrRequiredReason() }}</span>
                         }
                         @if (chainErrorAt() === i) {
                           <div class="pass-error">{{ chainError() }}</div>
@@ -3533,18 +3560,46 @@ export class LLWizardComponent implements OnInit {
   readonly selectedIsPdf = computed(() =>
     (this.selectedVariant()?.format ?? '').toLowerCase() === 'pdf');
 
+  /**
+   * Whether the selected PDF carries text of its own, measured in main.
+   *
+   * Keyed by the path it was measured for, because the variant cards change
+   * under this: an answer about the previous PDF must never be read as an answer
+   * about this one.
+   */
+  readonly textLayer = signal<{ path: string; report: TextLayerReport } | null>(null);
+  readonly textLayerError = signal<string | null>(null);
+  readonly measuringTextLayer = signal(false);
+
+  /**
+   * The OCR unit cannot be removed: this PDF has no text, so without it the run
+   * produces a book with no words in it.
+   *
+   * Null when it is optional, or when we do not KNOW yet — a check that has not
+   * finished, or one that failed, never reads as "optional". The failure is shown
+   * separately (textLayerError) rather than guessed at.
+   */
+  readonly ocrRequiredReason = computed<string | null>(() => {
+    if (!this.selectedIsPdf()) return null;
+    const measured = this.textLayer();
+    const variant = this.selectedVariant();
+    if (!measured || !variant || !this.samePath(measured.path, variant.absPath)) return null;
+    if (measured.report.hasTextLayer) return null;
+    return 'This PDF is pictures of pages — it carries no text of its own, so nothing can be '
+      + 'narrated unless this pass reads it.';
+  });
+
   readonly passPalette = computed<PalettteEntry[]>(() => {
     const pdf = this.selectedIsPdf();
     const noPdf = 'Reads the scanned pages — pick the PDF version of this book.';
     return [
       {
-        kind: 'tesseract', label: PASS_LABELS['tesseract'],
-        desc: 'Segment the pages and read them with Tesseract. The first look at a scan.',
-        enabled: pdf, why: noPdf,
-      },
-      {
+        // ONE item, two passes. Reading the pages and repairing what was read are
+        // not a choice a user makes — the second is useless without the first,
+        // and the first produces page text with no layout, which is not a book.
+        // The pair is expanded when the run is planned (see expandedPasses).
         kind: 'ocr-correction', label: PASS_LABELS['ocr-correction'],
-        desc: 'Repair what OCR misread, then label every block. Produces the book EPUB.',
+        desc: 'Read the pages with Tesseract, repair what it misread, and label every block. Produces the book EPUB.',
         enabled: pdf, why: noPdf,
       },
       {
@@ -5595,6 +5650,7 @@ export class LLWizardComponent implements OnInit {
   selectVariant(card: PassVariantCard): void {
     if (card.disabledReason) return;
     this.selectedVariantId.set(card.id);
+    void this.measureSelectedTextLayer(card);
     if (card.format.toLowerCase() !== 'pdf') {
       this.passes.update(list => list.filter(p => !SCAN_ONLY_PASS_KINDS.has(p.kind)));
     } else {
@@ -5602,6 +5658,63 @@ export class LLWizardComponent implements OnInit {
         p => (p.kind === 'footnotes' && p.footnotes ? { uid: p.uid, kind: p.kind } : p)));
     }
     this.palettePanel.set(null);
+  }
+
+  /**
+   * Ask main whether this PDF has any text of its own, and act on the answer.
+   *
+   * A PDF with no text CANNOT be narrated without the OCR unit, so the unit is
+   * added here and the row refuses to be removed. A failed check is shown, never
+   * absorbed: "we could not tell" and "it is optional" are different answers, and
+   * only one of them is safe to act on.
+   */
+  private async measureSelectedTextLayer(card: PassVariantCard): Promise<void> {
+    this.textLayerError.set(null);
+    if (card.format.toLowerCase() !== 'pdf') {
+      this.textLayer.set(null);
+      return;
+    }
+    // An answer about the previous PDF is not an answer about this one.
+    if (this.textLayer()?.path !== card.absPath) this.textLayer.set(null);
+
+    this.measuringTextLayer.set(true);
+    try {
+      const result = await this.electronService.measureTextLayer(card.absPath);
+      // The user moved on while mupdf was reading; this answer is about a run
+      // that is gone.
+      if (this.selectedVariant()?.absPath !== card.absPath) return;
+      if (!result.success || !result.data) {
+        this.textLayerError.set(
+          result.error
+            ? `Could not tell whether this PDF has any text of its own: ${result.error}`
+            : 'Could not tell whether this PDF has any text of its own, and no reason came back.'
+        );
+        return;
+      }
+      this.textLayer.set({ path: card.absPath, report: result.data });
+      if (!result.data.hasTextLayer) this.ensureOcrPass();
+    } catch (err) {
+      if (this.selectedVariant()?.absPath !== card.absPath) return;
+      this.textLayerError.set(
+        `Could not tell whether this PDF has any text of its own: ${(err as Error).message}`
+      );
+    } finally {
+      this.measuringTextLayer.set(false);
+    }
+  }
+
+  /** The OCR unit, added if the run has none. First in the order — it builds the book. */
+  private ensureOcrPass(): void {
+    if (this.passes().some(p => p.kind === 'ocr-correction')) return;
+    this.passes.update(list => [
+      { uid: this.nextPassUid(), kind: 'ocr-correction' as ProcessingPassKind },
+      ...list,
+    ]);
+  }
+
+  /** True when this row is the OCR unit and this PDF cannot be read without it. */
+  passLocked(pass: BuilderPass): boolean {
+    return pass.kind === 'ocr-correction' && this.ocrRequiredReason() !== null;
   }
 
   onPaletteClick(kind: ProcessingPassKind): void {
@@ -5682,6 +5795,11 @@ export class LLWizardComponent implements OnInit {
   }
 
   removePass(index: number): void {
+    // The button is disabled, but the guard is here too: this is the rule, and a
+    // rule that lives only in a `[disabled]` binding is one keyboard event away
+    // from a run that narrates an empty book.
+    const pass = this.passes()[index];
+    if (pass && this.passLocked(pass)) return;
     this.passes.update(list => list.filter((_, i) => i !== index));
   }
 
@@ -5690,6 +5808,9 @@ export class LLWizardComponent implements OnInit {
   }
 
   passDetail(pass: BuilderPass): string {
+    if (pass.kind === 'ocr-correction') {
+      return 'Tesseract, then the repair and layout models';
+    }
     if (pass.kind === 'footnotes') {
       if (this.selectedIsPdf()) return 'On the scanned pages';
       return pass.footnotes?.askEverything
@@ -5753,6 +5874,7 @@ export class LLWizardComponent implements OnInit {
           label: v.descriptor || v.metadata?.title || this.title() || 'Untitled edition',
           format,
           filename: this.getFilenameFromPath(v.absPath),
+          absPath: v.absPath,
           disabledReason: (format === 'pdf' || isBook)
             ? ''
             : 'The text passes rewrite the project\'s own book EPUB, not this edition.',
@@ -5764,6 +5886,7 @@ export class LLWizardComponent implements OnInit {
           label: 'Book EPUB',
           format: 'epub',
           filename: this.getFilenameFromPath(bookAbs),
+          absPath: bookAbs,
           disabledReason: '',
         });
       }
@@ -5777,6 +5900,12 @@ export class LLWizardComponent implements OnInit {
         const first = book ?? cards.find(c => !c.disabledReason);
         this.selectedVariantId.set(first ? first.id : '');
       }
+
+      // A PDF that arrives selected has to be measured too, not just one the user
+      // clicks: a project whose only file is a scan opens on that scan, and the
+      // OCR unit it cannot run without is added from the answer.
+      const selected = cards.find(c => c.id === this.selectedVariantId());
+      if (selected) void this.measureSelectedTextLayer(selected);
     } finally {
       this.loadingVariants.set(false);
     }
@@ -5792,6 +5921,31 @@ export class LLWizardComponent implements OnInit {
    * The run as the planner wants it. API keys and the Ollama URL are filled in
    * here, at the last moment, so no secret is ever held in the sidebar's state.
    */
+  /**
+   * The sidebar's rows as the PASSES they actually are.
+   *
+   * The palette's "OCR correction" is one row and two passes: `tesseract` reads
+   * the pages, `ocr-correction` repairs and lays out what it read. They are never
+   * separately useful — repair has nothing to read without the scan, and a scan
+   * with no layout is not a book — so the user composes one thing and this is
+   * where it becomes two. Both the plan and the submission go through here, so
+   * what was validated is what runs.
+   *
+   * Re-running `tesseract` over a run directory that already holds a finished
+   * scan of the same pages costs nothing: `startFoundryRun` skips a stage
+   * `run.json` reports as done, so the pass job returns immediately. That is why
+   * the scan is always included rather than conditionally — "is there a usable
+   * scan?" is foundry's question, already answered by foundry, and asking it a
+   * second time over here would be a second answer to drift.
+   */
+  private expandedPasses(list: BuilderPass[]): BuilderPass[] {
+    return list.flatMap(p => (
+      p.kind === 'ocr-correction'
+        ? [{ uid: `${p.uid}-scan`, kind: 'tesseract' as ProcessingPassKind }, p]
+        : [p]
+    ));
+  }
+
   private chainRequest(projectDir: string, variantId: string, list: BuilderPass[]): ProcessingChainRequest {
     const ai = this.settingsService.getAIConfig();
     const withCredentials = <T extends SimplifyPassParams | TranslatePassParams>(params: T): T => ({
@@ -5800,7 +5954,7 @@ export class LLWizardComponent implements OnInit {
       claudeApiKey: ai.claude?.apiKey,
       openaiApiKey: ai.openai?.apiKey,
     });
-    const passes: ChainPassRequest[] = list.map(p => ({
+    const passes: ChainPassRequest[] = this.expandedPasses(list).map(p => ({
       kind: p.kind,
       ...(p.footnotes ? { footnotes: p.footnotes } : {}),
       ...(p.simplify ? { simplify: withCredentials(p.simplify) } : {}),
