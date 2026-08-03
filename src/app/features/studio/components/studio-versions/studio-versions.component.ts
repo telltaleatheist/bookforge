@@ -12,6 +12,7 @@ import { AppliedPass, AppliedPassKind, ProjectVariant, ResolvedProjectVariant } 
 import { DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-target';
 import type { PassDiffEntry } from '@shared/processing/pass-types';
+import type { BookResetSummary } from '@shared/processing/reset-book';
 
 interface VersionRow {
   id: string; type: string; label: string; description: string;
@@ -128,11 +129,23 @@ const AUDIO_EXTS = new Set([
       <div class="versions">
         <!-- What has been done to the book EPUB, from its provenance record.
              One badge per pass KIND: a book run through OCR correction twice is
-             still "OCR-corrected", and the tooltip carries the detail. -->
-        @if (provenanceBadges().length > 0) {
+             still "OCR-corrected", and the tooltip carries the detail.
+
+             "Start over" lives HERE, next to the history it erases, and is shown
+             whenever the project could carry processing state at all — a run
+             that died before it recorded anything is exactly the case the user
+             needs it for, and hiding it until a badge appears would hide it then. -->
+        @if (projectDir()) {
           <div class="section-head">
             <span>What's been done</span>
+            <button class="start-over" (click)="startOver()"
+                    [disabled]="!canStartOver() || resetting()"
+                    [title]="startOverTitle()">
+              {{ resetting() ? 'Starting over…' : 'Start over' }}
+            </button>
           </div>
+        }
+        @if (provenanceBadges().length > 0) {
           <div class="provenance">
             @for (b of provenanceBadges(); track b.kind) {
               <span class="pbadge" [title]="b.tooltip">
@@ -585,6 +598,18 @@ const AUDIO_EXTS = new Set([
     }
     .section-head .add-version:hover:not(:disabled) { background: var(--bg-elevated); }
     .section-head .add-version:disabled { opacity: 0.5; cursor: default; }
+
+    .section-head .start-over {
+      margin-left: auto; text-transform: none; letter-spacing: 0;
+      font-size: 0.78rem; font-weight: 600;
+      border: 1px solid var(--border-default, rgba(255,255,255,0.12));
+      background: var(--bg-base); color: var(--text-primary);
+      padding: 4px 10px; border-radius: 6px; cursor: pointer;
+    }
+    .section-head .start-over:hover:not(:disabled) {
+      background: color-mix(in srgb, #ef4444 20%, var(--bg-base)); border-color: #ef4444;
+    }
+    .section-head .start-over:disabled { opacity: 0.5; cursor: default; }
 
     .vzone {
       border: 1px dashed transparent; border-radius: 10px; padding: 2px;
@@ -1556,6 +1581,10 @@ export class StudioVersionsComponent {
       this.editorMetaCache.set({});
       this.passDiffs.set([]);
       this.passDiffError.set(null);
+      // The reset plan names another book's files; a Start over enabled by it
+      // would offer to delete them under this book's name.
+      this.resetPlan.set(null);
+      this.resetPlanError.set(null);
       this.loadedForProjectDir.set(dir);
     }
 
@@ -1587,6 +1616,8 @@ export class StudioVersionsComponent {
     if (superseded()) return;
     await this.loadPassDiffs(dir, superseded);
     if (superseded()) return;
+    await this.loadResetPlan(dir, superseded);
+    if (superseded()) return;
     await this.loadVariants();
   }
 
@@ -1610,6 +1641,137 @@ export class StudioVersionsComponent {
     }
     this.passDiffError.set(null);
     this.passDiffs.set(res.diffs);
+  }
+
+  // ── Start over ─────────────────────────────────────────────────────────────
+
+  /** What a reset would remove for this project, from main — never guessed here. */
+  readonly resetPlan = signal<BookResetSummary | null>(null);
+  readonly resetPlanError = signal<string | null>(null);
+  readonly resetting = signal(false);
+
+  /**
+   * The run directory is machine-local and the stage directories are on disk, so
+   * only main can say whether this project has processing state. The preview is
+   * the SAME call the reset makes, so the button's enabled state and the dialog's
+   * list cannot disagree with what the reset then does.
+   */
+  private async loadResetPlan(dir: string, superseded: () => boolean): Promise<void> {
+    const res = await this.electron.resetBookProcessing(dir, true);
+    if (superseded()) return;
+    if (!res.success || !res.summary) {
+      this.resetPlan.set(null);
+      this.resetPlanError.set(res.error || 'no reason given');
+      return;
+    }
+    this.resetPlanError.set(null);
+    this.resetPlan.set(res.summary);
+  }
+
+  readonly canStartOver = computed(() => {
+    const plan = this.resetPlan();
+    return !!plan && !plan.empty;
+  });
+
+  readonly startOverTitle = computed(() => {
+    if (this.resetPlanError()) {
+      return `Whether this book has anything to reset could not be read: ${this.resetPlanError()}`;
+    }
+    const plan = this.resetPlan();
+    if (!plan) return 'Checking what this book has been through…';
+    if (plan.empty) {
+      return 'There is nothing to reset — this book has no scan, no passes and no book EPUB yet.';
+    }
+    return 'Delete every trace of processing (scan, OCR, footnote and simplify passes, the book '
+      + 'EPUB and your block deletions) and start this book over from its source document.';
+  });
+
+  /**
+   * The queue jobs that make a reset unsafe: anything queued or running against
+   * THIS project.
+   *
+   * The queue lives in the renderer, so this is the honest place to ask — the
+   * signal IS the queue, not a copy of it. (Main gates too, on the foundry run
+   * it owns, because a run outlives an ng-serve reload of this window.) A pass
+   * job's project is in its config; the older job families carry it as `bfpPath`
+   * or `projectDir`, the persisted key names.
+   */
+  private blockingQueueJobs(dir: string): Array<{ type: string; label: string }> {
+    const same = (p?: string) => !!p && p.replace(/[\\/]+$/, '') === dir.replace(/[\\/]+$/, '');
+    return this.queue.jobs()
+      .filter(j => j.status === 'pending' || j.status === 'processing')
+      .filter(j => same(j.bfpPath)
+        || same(j.projectDir)
+        || same((j.config as { projectDir?: string } | undefined)?.projectDir))
+      .map(j => ({ type: j.type, label: j.epubFilename || j.epubPath || j.id }));
+  }
+
+  /**
+   * Delete everything this book's processing produced and leave the source.
+   *
+   * The confirmation names the actual files main resolved — the run directory on
+   * this machine, each pass stage directory, the book EPUB by its recorded name
+   * — because "clears processing state" is not something a user can check
+   * against what they care about keeping.
+   */
+  async startOver(): Promise<void> {
+    const dir = this.projectDir();
+    if (!dir || !this.canStartOver() || this.resetting()) return;
+
+    const blocking = this.blockingQueueJobs(dir);
+    if (blocking.length > 0) {
+      const first = blocking[0];
+      await this.electron.showMessageDialog({
+        title: 'Not while this book is in the queue',
+        message: `A ${first.type} job for this book is queued or running (${first.label})`
+          + `${blocking.length > 1 ? ` — and ${blocking.length - 1} more` : ''}. `
+          + 'Let it finish or remove it from the Queue, then start over.',
+        type: 'warning',
+      });
+      return;
+    }
+
+    const plan = this.resetPlan()!;
+    const present = plan.items.filter(i => i.present);
+    const absent = plan.items.filter(i => !i.present);
+    const detail = [
+      'This deletes, for this book:',
+      ...present.map(i => `  • ${i.label}${i.path ? `\n      ${i.path}` : ''}`),
+      ...(absent.length > 0
+        ? ['', 'Not present, so nothing to remove:', ...absent.map(i => `  • ${i.label}`)]
+        : []),
+      '',
+      'Your block deletions in the PDF editor go with it — a re-scan mints new line ids, so keeping them would leave records that refuse every future export.',
+      '',
+      'KEPT: the source PDF/EPUB, the cover, all metadata, finished audiobooks, the TTS sentence cache, and the language-learning files.',
+      '',
+      'The next processing run rebuilds everything from the pages.',
+    ].join('\n');
+
+    const { confirmed } = await this.electron.showConfirmDialog({
+      title: 'Start this book over',
+      message: 'Delete everything processing has produced for this book?',
+      detail,
+      confirmLabel: 'Start over', cancelLabel: 'Cancel', type: 'warning',
+    });
+    if (!confirmed) return;
+
+    this.resetting.set(true);
+    try {
+      const res = await this.electron.resetBookProcessing(dir, false);
+      if (!res.success) {
+        await this.electron.showMessageDialog({
+          title: 'Could not start over',
+          message: res.error || 'The reset failed and gave no reason.',
+          type: 'error',
+        });
+        return;
+      }
+    } finally {
+      this.resetting.set(false);
+      await this.load();
+      this.changed.emit();
+    }
   }
 
   /** Read the durable TTS sentence cache for this project (if any) so the

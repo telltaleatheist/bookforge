@@ -8,6 +8,7 @@ import type {
   ProcessingChainPlan,
   ProcessingChainRequest,
 } from '@shared/processing/pass-types';
+import type { BookResetSummary } from '@shared/processing/reset-book';
 import type { PassDiffFile } from '../models/diff.types';
 
 /**
@@ -2954,6 +2955,23 @@ export class ElectronService {
   }> {
     if (this.isElectron) {
       return (window as any).electron.diff.loadPassFile(diffPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Start a book over — delete every trace of processing, keep the source.
+   *
+   * `preview: true` writes nothing and returns the same item list the real
+   * reset would act on, so the confirmation dialog and the disabled state are
+   * both answered by the code that does the work rather than by a second
+   * guess at what state a project is in.
+   */
+  async resetBookProcessing(projectDir: string, preview = false): Promise<{
+    success: boolean; summary?: BookResetSummary; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.processing.resetBook({ projectDir, preview });
     }
     return { success: false, error: 'Not running in Electron' };
   }

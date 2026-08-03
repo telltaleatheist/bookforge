@@ -229,6 +229,54 @@ readings of a book).
 nothing else done to it, so `registerEpubExport` replaces the record and the
 chain then appends the foundry passes that produced it, in order.
 
+## Starting a book over
+
+A run that went wrong leaves state everywhere, and re-running a pass writes on
+top of it rather than replacing it: `startFoundryRun` SKIPS a stage the run
+directory reports as done, and `appendAppliedPass` appends. So "do this book
+again properly" needs an explicit act, and it is one button in Studio's Versions
+tab — **Start over**, beside the pass history it erases.
+
+It returns the project to its fresh-import state. What that means, exactly:
+
+| Removed | Kept |
+|---|---|
+| the foundry run directory (`~/Documents/BookForge/foundry-runs/<key>/`) | `source/original.*`, the source PDF, the cover |
+| every `stages/NN-<pass kind>/` — working files, `diff.json`, `report.json` | `stages/01-cleanup`, `02-translate`, `03-tts`, `04-analysis` |
+| the book EPUB `outputs.epub` points at, and the record with its `appliedPasses` | `output/*.m4b`, `.vtt`, the TTS sentence cache, all metadata |
+| the run-scoped records under `manifest.source` (`deletedBlockLines`, legacy `deletedBlockIds`, any scan-stamped sibling) | `source.deletedPages`, `source.pageOrder` — facts about the DOCUMENT, which a re-scan does not invalidate |
+
+- **ONE IPC handler**: `processing:reset-book` with `{ projectDir, preview? }` →
+  `{ success, summary }`. `preview: true` runs the identical code and writes
+  nothing, so the confirmation dialog lists the real paths and the button's
+  disabled state ("there is nothing to reset") is answered by the code that does
+  the work. Main resolves the run key, the stage directories and the book itself;
+  the renderer sends a project directory and nothing else.
+- **A missing item is reported as `present: false`, never as a deletion.** The run
+  directory is machine-local — a book scanned on the desktop has none on the
+  laptop — and "not present" is a different sentence from "removed".
+- **Which stage dirs die is matched by SHAPE, `NN-<pass kind>`, with the LL/TTS
+  names reserved by exact name** (`shared/processing/reset-book.ts`, tested by
+  `tools/test-reset-book.js`). This matters because
+  `passStageRelDir(2, 'translate')` IS `stages/02-translate`, the same name the
+  LL pipeline gives its per-language books. The name wins.
+- **The `manifest.source` records are matched STRUCTURALLY** — any value carrying
+  a `scanId` (`manifestService.foundrySourceRecordKeys`). The app keeps growing
+  these line-keyed, scan-stamped records; a hard-coded list would leave the newest
+  one behind, and a record stamped with a scan that no longer exists refuses every
+  future export.
+- **It deletes the book EPUB, and that is not a violation of "nothing deletes a
+  book."** That rule governs automatic behaviour — migrations, sweeps, stray
+  adoption. Here the user pressed a button, read the file's recorded name in the
+  dialog and confirmed. The record is cleared BEFORE the file, so a failure
+  mid-reset leaves an unrecorded stray (invisible by contract) rather than a
+  record pointing at nothing.
+- **Two gates, both honest.** The renderer refuses while any queue job for this
+  project is pending or processing, naming it — the queue lives there, so that
+  signal IS the queue. Main refuses while a foundry run for one of the project's
+  documents is live, because a run is owned by main and outlives an ng-serve
+  reload of the window.
+
 ## The wizard (Studio → Process)
 
 **Gating fix (done)**: the Process tab opens whether or not the editor was ever
