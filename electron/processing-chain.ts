@@ -197,12 +197,15 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
   const kindsSoFar = new Set<AppliedPassKind>();
   for (const pass of passes) {
     const needs = FOUNDRY_NEEDS[pass.kind];
-    if (!needs) continue;
-    if (kindsSoFar.has(needs.pass) || doneOnDisk.has(needs.stage)) continue;
-    throw new Error(
-      `${LABEL_OF[pass.kind]} reads what ${LABEL_OF[needs.pass]} produced, and this book has not had `
-      + `it. Add ${LABEL_OF[needs.pass]} to the run, above it.`
-    );
+    if (needs && !kindsSoFar.has(needs.pass) && !doneOnDisk.has(needs.stage)) {
+      throw new Error(
+        `${LABEL_OF[pass.kind]} reads what ${LABEL_OF[needs.pass]} produced, and this book has not had `
+        + `it. Add ${LABEL_OF[needs.pass]} to the run, above it.`
+      );
+    }
+    // Recorded AFTER the check — a pass cannot be its own prerequisite — and on
+    // every iteration, which is what makes "earlier in the chain" mean anything.
+    kindsSoFar.add(pass.kind);
   }
 
   // The export at the end of the foundry group needs laid-out blocks. A scan on
