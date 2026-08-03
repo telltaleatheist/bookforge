@@ -210,6 +210,9 @@ export interface FoundryRunState {
 /** A foundry block in the picker's coordinate space, keeping foundry's own id. */
 export interface FoundryPickerBlock {
   id: string;
+  /** The block's scan lines, foundry's ids. The identity that survives a
+   *  blocks re-run, and what deletions are recorded as. */
+  line_ids: string[];
   page: number;
   x: number;
   y: number;
@@ -230,6 +233,8 @@ export interface FoundryPickerBlock {
 export interface FoundryRunResult {
   bookKey: string;
   runDir: string;
+  /** run.json's runId — the identity of the SCAN these line ids belong to. */
+  scanId: string;
   pages: number[];
   blocks: FoundryPickerBlock[];
   calibration?: {
@@ -257,7 +262,9 @@ export interface FoundryBlockOverride {
 
 export interface FoundryExportRequest {
   bookKey: string;
-  excludeBlockIds: string[];
+  /** Deleted SCAN LINE ids + the scan they belong to. Block ids are derived in
+   *  main — see shared/foundry/block-exclusions.ts. */
+  excludeLines: { scanId: string; lineIds: string[] };
   excludeCategories: string[];
   /** Text and category edits made in the picker. Absent means none. */
   overrides?: FoundryBlockOverride[];

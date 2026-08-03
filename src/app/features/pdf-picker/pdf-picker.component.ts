@@ -40,6 +40,7 @@ import { DetectPanelComponent, DetectRunState, DetectBackend } from './component
 import { encodeBook, parseAnswer, toRawPrompt, BLOCKS_STOP, BlocksVersion, blocksVersionFor } from './services/blocks-encoder';
 import { BLOCK_CATEGORIES, normalizeCategories, UNLABEL_CATEGORY, isFoundryCategory } from '@shared/ocr/block-categories';
 import { OCR_RENDER_SCALE } from '@shared/ocr/ocr-render';
+import { isFoundryBlockId, planFoundryExclusions } from '@shared/foundry/block-exclusions';
 import {
   CORPUS_PAGE_TYPE_NAMES, bookModalFontSize, planPageTypeLabels, type CorpusPageType,
 } from '@shared/ocr/page-types';
@@ -129,6 +130,12 @@ interface OpenDocument {
   foundryRunLoaded?: boolean;
   foundryArtifactText?: Map<string, string>;
   foundryArtifactPage?: Map<string, number>;
+  /** Block id → its scan lines, and the scan they belong to. What deletions are
+   *  recorded as, because block ids do not survive a blocks re-run. */
+  foundryArtifactLines?: Map<string, readonly string[]>;
+  foundryScanId?: string;
+  /** The persisted deletion record for this tab's project. */
+  foundryDeletedLines?: { scanId: string; lineIds: string[] } | null;
 }
 
 // Serializable custom category for project persistence
@@ -230,6 +237,17 @@ interface BookForgeProject {
    */
   exported_epub_path?: string;
   deleted_block_ids?: string[];
+  /**
+   * The foundry deletions in the identity that survives a blocks re-run: the
+   * SCAN LINE ids the deleted blocks held, and the scan they belong to.
+   *
+   * `deleted_block_ids` above is the editor's working set and is keyed to
+   * whatever block ids are painted at the time. Foundry re-mints those by
+   * position every time its blocks stage runs, so after an OCR-correction pass
+   * they name other blocks — which is why the exporter reads THIS instead. See
+   * `@shared/foundry/block-exclusions`.
+   */
+  deleted_block_lines?: { scanId: string; lineIds: string[] };
   /**
    * Foundry `title` units the one-title rule deleted by itself — see
    * applyFoundryTitleRule. A subset of deleted_block_ids until the user restores
@@ -11215,6 +11233,13 @@ export class PdfPickerComponent implements OnInit {
     if (project.deleted_block_ids && project.deleted_block_ids.length > 0) {
       this.editorState.deletedBlockIds.set(new Set(project.deleted_block_ids));
     }
+    // …and the identity those ids are only a snapshot of. If a run is already
+    // painted (it finished while the book was closed, and the attach effect got
+    // here first), the ids just restored are keyed to whatever blocks existed
+    // when they were saved — so re-attach them now, exactly as the paint does.
+    this.foundryDeletedLines = project.deleted_block_lines ?? null;
+    const reattached = this.reattachFoundryDeletions();
+    if (reattached) this.showAlert(reattached);
 
     // Which foundry title units have already been ruled on. Restored BEFORE the
     // rule can run again — a run that painted while this load was in flight is
@@ -11599,6 +11624,12 @@ export class PdfPickerComponent implements OnInit {
       file_hash: this.fileHash(),
       source_file_sha256: this.requireAnalyzedSourceSha256(),
       deleted_block_ids: [...this.deletedBlockIds()],
+      // The same deletions in the identity that outlives a blocks re-run.
+      // Derived from the painted run when there is one; carried through
+      // untouched when there is not, because a session that never painted the
+      // run has nothing to derive from and erasing the record would leave the
+      // exporter with block ids it cannot resolve.
+      deleted_block_lines: this.currentFoundryDeletedLines() ?? undefined,
       foundry_auto_discarded_ids: this.foundryAutoDiscarded().size > 0
         ? [...this.foundryAutoDiscarded()] : undefined,
       deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : [],
@@ -11914,6 +11945,9 @@ export class PdfPickerComponent implements OnInit {
         ? new Set<string>(project.foundry_auto_discarded_ids || [])
         : new Set<string>();
       this.foundryAutoDiscarded.set(foundryAutoDiscardedIds);
+      // Travels with the deletions too: it IS those deletions, said in the
+      // identity a blocks re-run cannot renumber.
+      this.foundryDeletedLines = applySavedEdits ? (project.deleted_block_lines ?? null) : null;
       // Not foundry-backed until this document's OWN run attaches. Opening a
       // project's export EPUB while its source PDF's run was painted in the tab
       // before is precisely the case this stops.
@@ -14358,25 +14392,184 @@ export class PdfPickerComponent implements OnInit {
   private readonly foundryArtifactPage = new Map<string, number>();
 
   /**
+   * Run block id → its SCAN LINE ids, from the same blocks.json read.
+   *
+   * The block ids above are re-minted by position every time foundry's blocks
+   * stage runs; these are minted once, by the scan, and every stage after it
+   * carries them unchanged. So this is the map that turns "the user deleted
+   * these boxes" into something that still means the same boxes after the next
+   * OCR-correction pass — see `@shared/foundry/block-exclusions`.
+   */
+  private readonly foundryArtifactLines = new Map<string, readonly string[]>();
+
+  /** The scan the line ids above belong to (`run.json` runId), '' with no run. */
+  private foundryScanId = '';
+
+  /**
+   * The deletions as they are PERSISTED — line ids and the scan they name.
+   *
+   * Held rather than derived so a session that never painted the run (the book
+   * opened without its foundry run, a tab switched away from) writes the record
+   * back untouched instead of erasing what the exporter reads. Refreshed from
+   * the painted blocks on every save that HAS a run.
+   */
+  private foundryDeletedLines: { scanId: string; lineIds: string[] } | null = null;
+
+  /**
    * Set the whole foundry-run binding at once — the flag and the ledger it is
    * only meaningful with.
    *
-   * ONE writer, so the three can never disagree. They were cleared in three
-   * places and set in a fourth, and the combination "loaded, but the ledger
-   * belongs to the previous document" is what routes a book's export through a
-   * run directory that never read it. Absent arguments mean EMPTY, never
-   * "leave what is there".
+   * ONE writer, so they can never disagree. They were cleared in three places
+   * and set in a fourth, and the combination "loaded, but the ledger belongs to
+   * the previous document" is what routes a book's export through a run
+   * directory that never read it. Absent arguments mean EMPTY, never "leave
+   * what is there".
    */
   private setFoundryRunState(
     loaded: boolean,
     text?: ReadonlyMap<string, string>,
     page?: ReadonlyMap<string, number>,
+    lines?: ReadonlyMap<string, readonly string[]>,
+    scanId?: string,
   ): void {
     this.foundryArtifactText.clear();
     this.foundryArtifactPage.clear();
+    this.foundryArtifactLines.clear();
     if (text) for (const [id, value] of text) this.foundryArtifactText.set(id, value);
     if (page) for (const [id, value] of page) this.foundryArtifactPage.set(id, value);
+    if (lines) for (const [id, value] of lines) this.foundryArtifactLines.set(id, value);
+    this.foundryScanId = scanId ?? '';
     this.foundryRunLoaded.set(loaded);
+  }
+
+  /**
+   * The line ids the given foundry blocks hold, for the persisted record.
+   *
+   * Block ids the painted run does not know contribute nothing and are not an
+   * error: `deletedBlockIds` is one set across every kind of block a project can
+   * carry, and a book that lived through the in-app OCR keeps deletions named
+   * `ocr_p0_…`/`merge_…` from a segmentation foundry never saw. Those are not
+   * foundry deletions and cannot become foundry line ids.
+   */
+  private foundryLineIdsOf(blockIds: Iterable<string>): string[] {
+    const out = new Set<string>();
+    for (const id of blockIds) {
+      for (const lineId of this.foundryArtifactLines.get(id) ?? []) out.add(lineId);
+    }
+    return [...out].sort();
+  }
+
+  /**
+   * The record to persist: derived from the painted run, or the one loaded with
+   * the project when this session has no run to derive from.
+   */
+  private currentFoundryDeletedLines(): { scanId: string; lineIds: string[] } | null {
+    if (!this.foundryRunLoaded()) return this.foundryDeletedLines;
+    this.foundryDeletedLines = {
+      scanId: this.foundryScanId,
+      lineIds: this.foundryLineIdsOf(this.deletedBlockIds()),
+    };
+    return this.foundryDeletedLines;
+  }
+
+  /**
+   * Re-attach the project's deletions to the blocks this run actually has.
+   *
+   * A deletion is a fact about CONTENT — "these lines are not in the book" — but
+   * `deletedBlockIds` says it in block ids, and foundry re-mints those by
+   * position every time its blocks stage runs. So the same list means different
+   * boxes before and after an OCR-correction pass. Two situations, and both are
+   * settled here rather than at export, because here is the one place a person
+   * is looking at the page:
+   *
+   *  - **The project carries the line record and it belongs to this scan.** The
+   *    lines are the truth; the block ids are re-derived from them. A deletion
+   *    the re-run cut in half cannot be re-derived, so it is RESTORED — the box
+   *    comes back on screen, visibly, and is reported below. Silently excluding
+   *    a straddled block would drop text nobody deleted.
+   *  - **There is no record, or it belongs to an earlier scan.** Nothing on disk
+   *    says which lines those ids meant. They are taken at face value against
+   *    the blocks painted now — the only reading available — and the user is
+   *    told, because that reading is a guess and the boxes on screen are the
+   *    only way to check it. The queue's export refuses this case outright; the
+   *    editor is where it gets fixed.
+   *
+   * Returns what to say about it, or null when there was nothing to re-attach.
+   */
+  private reattachFoundryDeletions(
+  ): { title: string; message: string; type: 'warning' | 'info' } | null {
+    if (!this.foundryRunLoaded()) return null;
+    // The painted run's own ledger rather than a blocks list handed in, so this
+    // can also run when the PROJECT arrives after the paint — the two orders are
+    // both real (a run that finished while the book was closed paints from an
+    // effect, and the project state loads on its own schedule).
+    const blocks = [...this.foundryArtifactLines].map(([id, lineIds]) => ({
+      id, page: this.foundryArtifactPage.get(id) ?? 0, lineIds,
+    }));
+    const deleted = new Set(this.deletedBlockIds());
+    const foundryShaped = [...deleted].filter(isFoundryBlockId);
+    const record = this.foundryDeletedLines;
+
+    if (!record || record.scanId !== this.foundryScanId) {
+      // No line record to resolve. The ids are read as naming the blocks painted
+      // now, and recorded by line from here on. Ids the run does not have name
+      // nothing at all and are dropped rather than carried as a permanent
+      // mismatch — a book that lived through the in-app OCR keeps deletions from
+      // a segmentation foundry never saw (`ocr_p0_…`, `merge_…`), and those are
+      // left alone: they are not foundry-shaped, so they are not in this list.
+      const known = foundryShaped.filter(id => this.foundryArtifactLines.has(id));
+      for (const id of foundryShaped) if (!this.foundryArtifactLines.has(id)) deleted.delete(id);
+      this.editorState.deletedBlockIds.set(deleted);
+      this.foundryDeletedLines = {
+        scanId: this.foundryScanId,
+        lineIds: this.foundryLineIdsOf(known),
+      };
+      if (foundryShaped.length === 0) return null;
+      const lost = foundryShaped.length - known.length;
+      const why = record
+        ? 'against an earlier scan of this book'
+        : 'before BookForge recorded which lines a deleted block held';
+      const restored = lost > 0
+        ? `, and ${lost} that this run has no block for were restored`
+        : '';
+      return {
+        title: 'Check the deleted boxes',
+        message:
+          `${foundryShaped.length} deletion(s) in this project were saved ${why}, so which boxes `
+          + `they meant cannot be proved. They have been applied to the boxes of the same name in `
+          + `this run${restored}. Check the deleted boxes before exporting — from now on they are `
+          + 'recorded by line and survive a re-run.',
+        type: 'warning',
+      };
+    }
+
+    const plan = planFoundryExclusions(blocks, record.lineIds);
+    for (const id of foundryShaped) deleted.delete(id);
+    for (const id of plan.excluded) deleted.add(id);
+    this.editorState.deletedBlockIds.set(deleted);
+    this.foundryDeletedLines = {
+      scanId: this.foundryScanId,
+      lineIds: this.foundryLineIdsOf(plan.excluded),
+    };
+
+    const unresolved = plan.straddled.length + plan.missing.length;
+    if (unresolved === 0) return null;
+    const pages = [...new Set(plan.straddled.map(b => b.page + 1))].sort((a, b) => a - b);
+    const where = pages.length > 0
+      ? ` (page${pages.length === 1 ? '' : 's'} ${pages.slice(0, 10).join(', ')}`
+        + `${pages.length > 10 ? ', …' : ''})`
+      : '';
+    const gone = plan.missing.length > 0
+      ? `, and ${plan.missing.length} deleted line(s) are not in this run at all`
+      : '';
+    return {
+      title: 'Some deletions could not be re-applied',
+      message:
+        `This run re-cut ${plan.straddled.length} block(s) that a deletion only partly `
+        + `covers${where}${gone}. Those boxes are back on the page rather than dropped on a `
+        + 'guess — delete them again if they should not be in the book.',
+      type: 'warning',
+    };
   }
 
   /**
@@ -14700,9 +14893,11 @@ export class PdfPickerComponent implements OnInit {
     // actually changed — see foundryArtifactText.
     const artifactText = new Map<string, string>();
     const artifactPage = new Map<string, number>();
+    const artifactLines = new Map<string, readonly string[]>();
     for (const block of result.blocks) {
       artifactText.set(block.id, block.text);
       artifactPage.set(block.id, block.page);
+      artifactLines.set(block.id, block.line_ids);
     }
 
     const painted = this.mergeFoundryMarkerBlocks(result.blocks as TextBlock[]);
@@ -14711,7 +14906,11 @@ export class PdfPickerComponent implements OnInit {
     this.editorState.replaceTextBlocksOnPages(pages, painted);
     this.selectedBlockIds.set([]);
     this.editorState.updateCategoryStats();
-    this.setFoundryRunState(true, artifactText, artifactPage);
+    this.setFoundryRunState(true, artifactText, artifactPage, artifactLines, result.scanId);
+    // Before the title rule and before anything can be saved: the deletions
+    // loaded from the project are keyed to whatever blocks were painted when
+    // they were made, and this run may have re-cut the page under them.
+    const reattached = this.reattachFoundryDeletions();
     // After the blocks are in state, because it deletes through the ordinary
     // deletion path and that path only knows blocks the document holds.
     this.applyFoundryTitleRule();
@@ -14738,6 +14937,12 @@ export class PdfPickerComponent implements OnInit {
         + '.');
     }
     if (result.markersRemoved) notes.push(`${result.markersRemoved} footnote markers removed.`);
+    if (reattached) {
+      // In front of the user, not in the console: a deletion that could not be
+      // proved against this run is exactly the thing they have to look at.
+      notes.push(reattached.message);
+      this.showAlert(reattached);
+    }
     if (result.calibration?.degraded) {
       notes.push(`Paragraphs: ${result.calibration.message}`);
     }
@@ -14789,14 +14994,13 @@ export class PdfPickerComponent implements OnInit {
     // is exactly the blocks on it.
     //
     // Scoped to the ids THIS run knows (foundryArtifactText is blocks.json,
-    // block by block). `deletedBlockIds` is persisted editor state and outlives
-    // segmentations: a book that lived through the old in-app OCR carries
-    // deletions named `ocr_p0_…`/`merge_…`/text-layer hex ids, and shipping
-    // those to `foundry export` is asking it to drop blocks from a different
-    // life of the book — which it refuses wholesale, taking the export down
-    // with it (Working Towards The Führer, Aug 2 2026). An id outside the run
-    // cannot name a block in this export, so filtering here loses nothing; the
-    // persisted deletions themselves are left alone.
+    // block by block). `deletedBlockIds` is one set across every kind of block a
+    // project can carry: a book that lived through the old in-app OCR keeps
+    // deletions named `ocr_p0_…`/`merge_…`/text-layer hex ids from a
+    // segmentation foundry never saw. Those cannot name a block in this export,
+    // so filtering here loses nothing; the persisted deletions are left alone.
+    // The foundry-shaped ids were re-attached to this run's blocks when it was
+    // painted (reattachFoundryDeletions), so they are current by construction.
     const deletedPages = this.deletedPages();
     const rawDeleted = this.deletedBlockIds();
     const excludeBlockIds = new Set(
@@ -14821,7 +15025,11 @@ export class PdfPickerComponent implements OnInit {
       // picker any more, but they are still in foundry's blocks.json, and the
       // merged marker's text override already contains their words — left in,
       // the book gets the heading once as the marker and again as fragments.
-      for (const id of block.merged_foundry_ids ?? []) excludeBlockIds.add(id);
+      // Scoped to this run for the same reason the deletions above are: a marker
+      // merged in an earlier session names blocks this run may not have.
+      for (const id of block.merged_foundry_ids ?? []) {
+        if (this.foundryArtifactText.has(id)) excludeBlockIds.add(id);
+      }
     }
 
     // A deleted MANUAL merge is a deletion of its sources. The merged block is
@@ -14840,7 +15048,9 @@ export class PdfPickerComponent implements OnInit {
       if (!gone) continue;
       for (const src of def.sourceBlocks) {
         if (this.foundryArtifactText.has(src.id)) excludeBlockIds.add(src.id);
-        for (const fid of src.merged_foundry_ids ?? []) excludeBlockIds.add(fid);
+        for (const fid of src.merged_foundry_ids ?? []) {
+          if (this.foundryArtifactText.has(fid)) excludeBlockIds.add(fid);
+        }
       }
     }
 
@@ -14901,9 +15111,17 @@ export class PdfPickerComponent implements OnInit {
     // book — foundry is simply not given the flag.
     const info = await this.electronService.projectsExportInfo(projectPath);
 
+    // Handed over as LINES, not blocks. Main derives the block ids from them
+    // against blocks.json as it stands at that moment, which is the same
+    // derivation the queue's export does — one answer, not two that can drift.
+    // (The ids here are current, since the run is painted; the point is that the
+    // record written into the run directory outlives the next blocks re-run.)
     const epubPath = await this.electronService.foundryExport({
       bookKey: this.foundryBookKey(),
-      excludeBlockIds: [...excludeBlockIds],
+      excludeLines: {
+        scanId: this.foundryScanId,
+        lineIds: this.foundryLineIdsOf(excludeBlockIds),
+      },
       excludeCategories: [],
       overrides: [...overrides.values()],
       outputPath: info.target.absPath,
@@ -15467,6 +15685,9 @@ export class PdfPickerComponent implements OnInit {
             foundryRunLoaded: this.foundryRunLoaded(),
             foundryArtifactText: new Map(this.foundryArtifactText),
             foundryArtifactPage: new Map(this.foundryArtifactPage),
+            foundryArtifactLines: new Map(this.foundryArtifactLines),
+            foundryScanId: this.foundryScanId,
+            foundryDeletedLines: this.foundryDeletedLines,
           };
         }
         return doc;
@@ -15531,7 +15752,9 @@ export class PdfPickerComponent implements OnInit {
     // So does whether a foundry run was painted onto it, and that run's ledger.
     // A tab with no run gets the empty defaults, never the previous tab's.
     this.setFoundryRunState(
-      doc.foundryRunLoaded === true, doc.foundryArtifactText, doc.foundryArtifactPage);
+      doc.foundryRunLoaded === true, doc.foundryArtifactText, doc.foundryArtifactPage,
+      doc.foundryArtifactLines, doc.foundryScanId);
+    this.foundryDeletedLines = doc.foundryDeletedLines ?? null;
 
     // Note: paragraphBreaks and categoryCorrections are now passed directly to
     // loadDocument() above, which applies corrections to blocks automatically.

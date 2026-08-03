@@ -755,12 +755,16 @@ export interface FoundryRunState {
 /**
  * A foundry block in the picker's coordinate space.
  *
- * `id` is foundry's OWN block id, kept verbatim all the way through — which is
- * what makes `deletedBlockIds` usable directly as the export's `--exclude-ids`
- * file, with no mapping table in the middle to drift out of step.
+ * `id` is foundry's OWN block id, kept verbatim all the way through, so a box on
+ * screen and a block in `blocks/blocks.json` are the same thing while the run is
+ * painted. It is not an identity that OUTLIVES the run — the blocks stage
+ * re-mints ids by position — so `line_ids` is what deletions are recorded as.
  */
 export interface FoundryPickerBlock {
   id: string;
+  /** The block's scan lines, foundry's ids. The identity that survives a
+   *  blocks re-run, and what deletions are recorded as. */
+  line_ids: string[];
   page: number;
   x: number;
   y: number;
@@ -781,6 +785,8 @@ export interface FoundryPickerBlock {
 export interface FoundryRunResult {
   bookKey: string;
   runDir: string;
+  /** run.json's runId — the identity of the SCAN these line ids belong to. */
+  scanId: string;
   pages: number[];
   blocks: FoundryPickerBlock[];
   /** The book's paragraph convention. `degraded` is reported, never hidden. */
@@ -808,7 +814,9 @@ export interface FoundryBlockOverride {
 
 export interface FoundryExportRequest {
   bookKey: string;
-  excludeBlockIds: string[];
+  /** Deleted SCAN LINE ids + the scan they belong to. Block ids are derived in
+   *  main — see shared/foundry/block-exclusions.ts. */
+  excludeLines: { scanId: string; lineIds: string[] };
   excludeCategories: string[];
   /** Text and category edits made in the picker. Absent means none. */
   overrides?: FoundryBlockOverride[];

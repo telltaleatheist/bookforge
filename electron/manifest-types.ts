@@ -141,6 +141,16 @@ export interface ManifestSource {
   url?: string;
   fetchedAt?: string;
   deletedBlockIds?: string[];
+  /**
+   * The same deletions, said in the identity that survives an ocr/blocks re-run.
+   *
+   * Foundry block ids are re-minted by position every time the blocks stage
+   * runs, so `deletedBlockIds` above is only usable while the run that painted
+   * it is the run on disk. This is what the exporter reads instead — see
+   * `shared/foundry/block-exclusions.ts`. Absent on a project that has never
+   * been through a foundry run, and on one whose deletions predate the record.
+   */
+  deletedBlockLines?: { scanId: string; lineIds: string[] };
   pageOrder?: number[];
   /** Written by the markup-preserving EPUB export — see ExportProvenance. */
   exportProvenance?: ExportProvenance;

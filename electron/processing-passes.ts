@@ -74,6 +74,10 @@ import {
   onFoundryRunProgress,
   type FoundryWorkStage,
 } from './foundry-run';
+import {
+  isFoundryBlockId,
+  type FoundryDeletedLines,
+} from '../shared/foundry/block-exclusions';
 import { writePassDiff, type DiffChange, type PassDiffUnit } from './diff-cache';
 import { loadEpubForComparison } from './epub-processor';
 import type {
@@ -415,34 +419,67 @@ function foundryPassParams(kind: AppliedPassKind, bookKey: string): Record<strin
 /**
  * `foundry export` into the project's canonical book path, recorded.
  *
- * The exclusion list is the editor's `deletedBlockIds` — foundry's own block ids,
- * verbatim, which is what makes the picker's deletions and the exporter's
- * `--exclude-ids` the same fact rather than two that have to be kept in step.
+ * The exclusion list is the editor's deletions read out of the manifest as SCAN
+ * LINE ids (`source.deletedBlockLines`), which is the only identity that
+ * survives this chain: the ocr and blocks stages have just re-run, and the
+ * blocks stage re-mints block ids by position, so the block ids the editor
+ * deleted under name other blocks now. `foundryExport` derives the current ones.
+ *
+ * A project whose deletions predate that record — block ids and nothing else —
+ * is REFUSED here rather than exported with them. They cannot be resolved
+ * (nothing on disk says which lines they were), and shipping them as-is is what
+ * dropped the wrong blocks / failed the Kershaw export on Aug 3 2026.
  *
  * A deleted PAGE is a deletion too: `source.deletedPages` holds source page
- * indices, and every run block on one of them is excluded. The run's blocks are
- * the id universe for this (readFoundryRun maps block pages back to source
- * indices), the same fact the picker's own export path reads — deletedBlockIds
- * alone would ship every block of a page the user removed whole.
+ * indices, and every line on one of them is excluded. The run's blocks are the
+ * universe for this (readFoundryRun maps block pages back to source indices) —
+ * the deletions alone would ship every block of a page the user removed whole.
  */
 async function exportBookFromRun(config: PassJobConfig, bookKey: string): Promise<string> {
   const target = await manifestService.exportEpubTarget(config.projectDir);
   const cover = await manifestService.resolveProjectCover(config.projectDir);
-  const manifest = JSON.parse(
-    await fs.promises.readFile(path.join(config.projectDir, 'manifest.json'), 'utf-8')
-  ) as { source?: { deletedBlockIds?: string[]; deletedPages?: number[] } };
+  const manifestPath = path.join(config.projectDir, 'manifest.json');
+  const manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf-8')) as {
+    source?: {
+      deletedBlockIds?: string[];
+      deletedBlockLines?: FoundryDeletedLines;
+      deletedPages?: number[];
+    };
+  };
 
-  const excludeBlockIds = new Set(manifest.source?.deletedBlockIds ?? []);
+  const record = manifest.source?.deletedBlockLines;
+  const unrecorded = (manifest.source?.deletedBlockIds ?? []).filter(isFoundryBlockId);
+  if (!record && unrecorded.length > 0) {
+    throw new Error(
+      `${unrecorded.length} block deletion(s) in ${manifestPath} were saved before BookForge `
+      + 'recorded which scan lines a deleted block held, and this run has re-segmented the book, '
+      + 'so those ids no longer name the blocks that were deleted. Open the book in the PDF '
+      + 'editor — the deletions re-attach to the boxes on screen and are re-recorded by line — '
+      + 'then run the pass again. Refusing to export: using them as they are would drop the '
+      + 'wrong blocks.'
+    );
+  }
+
+  const run = readFoundryRun(bookKey);
+  if (record && record.scanId !== run.scanId) {
+    throw new Error(
+      `The deletions in ${manifestPath} belong to scan ${record.scanId || '(unstamped)'}, but the `
+      + `run at ${run.runDir} is scan ${run.scanId} — the book has been re-scanned since they were `
+      + 'made. Open the book in the PDF editor, check the deletions, then run the pass again.'
+    );
+  }
+
+  const lineIds = new Set(record?.lineIds ?? []);
   const deletedPages = new Set(manifest.source?.deletedPages ?? []);
   if (deletedPages.size > 0) {
-    for (const block of readFoundryRun(bookKey).blocks) {
-      if (deletedPages.has(block.page)) excludeBlockIds.add(block.id);
+    for (const block of run.blocks) {
+      if (deletedPages.has(block.page)) for (const id of block.line_ids) lineIds.add(id);
     }
   }
 
   const result = await foundryExport({
     bookKey,
-    excludeBlockIds: [...excludeBlockIds],
+    excludeLines: { scanId: run.scanId, lineIds: [...lineIds] },
     excludeCategories: [],
     outputPath: target.absPath,
     ...(cover ? { coverPath: cover } : {}),

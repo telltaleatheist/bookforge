@@ -158,6 +158,14 @@ export interface ManifestSource {
 
   // For PDFs - editor-specific source data
   deletedBlockIds?: string[]; // Blocks deleted in editor
+  /**
+   * The same deletions as SCAN LINE ids, plus the scan they belong to.
+   *
+   * Foundry re-mints block ids by position on every blocks run, so the ids above
+   * stop naming the deleted blocks the moment the OCR-correction pass re-runs.
+   * This is what the exporter resolves — see shared/foundry/block-exclusions.ts.
+   */
+  deletedBlockLines?: { scanId: string; lineIds: string[] };
   pageOrder?: number[];       // Reordered pages
 
   // Written by the markup-preserving EPUB export — see ExportProvenance

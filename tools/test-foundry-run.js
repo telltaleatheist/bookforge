@@ -219,14 +219,22 @@ function reset(bookKey) {
       scan: { status: 'done' }, boxes: { status: 'done' }, ocr: { status: 'done' },
       footnotes: { status: 'pending' }, export: { status: 'pending' },
     };
-    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], stages: ['scan', 'ocr', 'blocks'] });
-    const state = await settle(key);
-    ok('the run stopped instead of resuming', state.status === 'error', JSON.stringify(state));
+    // The refusal comes out of `completedStages`, which runs before the run is
+    // registered — so it is a THROW to the caller, not a failed run state. Both
+    // are "the run stopped and said why"; the assertion is on the message.
+    let stopped = null;
+    try {
+      await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], stages: ['scan', 'ocr', 'blocks'] });
+      stopped = (await settle(key)).message;
+    } catch (err) {
+      stopped = err.message;
+    }
+    ok('the run stopped instead of resuming', typeof stopped === 'string' && stopped.length > 0);
     ok('nothing was spawned', calls.length === 0, JSON.stringify(calls));
     ok('and the message names the rename',
-      /predates the rename/.test(state.message || '')
-      && /`boxes`/.test(state.message || '') && /`blocks`/.test(state.message || ''),
-      state.message);
+      /predates the rename/.test(stopped || '')
+      && /`boxes`/.test(stopped || '') && /`blocks`/.test(stopped || ''),
+      stopped);
     stagesVerbatim = null;
   }
 
@@ -264,6 +272,9 @@ function reset(bookKey) {
       formatVersion: 1,
       lines: [
         { id: 'p0001l0000', page: 1, bbox: [200, 400, 600, 440], text: 'Miiller said', conf: 88 },
+        { id: 'p0001l0001', page: 1, bbox: [200, 460, 600, 500], text: 'second line', conf: 90 },
+        { id: 'p0001l0002', page: 1, bbox: [200, 520, 600, 560], text: 'third line', conf: 90 },
+        { id: 'p0001l0003', page: 1, bbox: [200, 580, 600, 620], text: 'fourth line', conf: 90 },
       ],
     }));
     fs.writeFileSync(path.join(dir, 'ocr', 'lines.json'), JSON.stringify({
@@ -271,10 +282,19 @@ function reset(bookKey) {
       lines: [{ id: 'p0001l0000', text: 'Müller said', edits: [{ a: 1 }], rejected: [] }],
     }));
     fs.writeFileSync(path.join(dir, 'blocks', 'blocks.json'), JSON.stringify({
-      formatVersion: 1,
+      formatVersion: 2,
+      formation: { paraSplit: 'para-split-v1' },
       calibration: { convention: 'block', degraded: false, message: 'ok' },
       blocks: [{
         id: 'p0001b000', page: 1, bbox: [200, 400, 600, 440], lineIds: ['p0001l0000'],
+        category: 'body',
+        geometry: { firstLineIndent: 0, gapAbove: null, prevLineShort: false, prevEndsWrapHyphen: false },
+      }, {
+        id: 'p0001b001', page: 1, bbox: [200, 460, 600, 560], lineIds: ['p0001l0001', 'p0001l0002'],
+        category: 'body',
+        geometry: { firstLineIndent: 0, gapAbove: null, prevLineShort: false, prevEndsWrapHyphen: false },
+      }, {
+        id: 'p0001b002', page: 1, bbox: [200, 580, 600, 620], lineIds: ['p0001l0003'],
         category: 'body',
         geometry: { firstLineIndent: 0, gapAbove: null, prevLineShort: false, prevEndsWrapHyphen: false },
       }],
@@ -293,7 +313,15 @@ function reset(bookKey) {
     ok('deskew is reported against the DOCUMENT page', result.deskewByPage[41] === 0.5,
       JSON.stringify(result.deskewByPage));
 
-    console.log('\n7. export: the exclusion file, and an atomic landing');
+    ok('every block carries its scan lines', JSON.stringify(block.line_ids) === '["p0001l0000"]',
+      JSON.stringify(block.line_ids));
+    ok('the run names the scan its line ids belong to', result.scanId === 'r', result.scanId);
+
+    console.log('\n7. export: deletions are LINES, and the block ids are derived from them');
+    // The bug this is here for: foundry re-mints block ids by position on every
+    // blocks run, so a deletion list written before an ocr/blocks re-run names
+    // other blocks after it (Kershaw, Aug 3 2026 — `foundry export` refused 28
+    // ids that no longer existed). Line ids are minted once, by the scan.
     const target = path.join(scratch, 'project', 'source', 'exported.epub');
     onStage = async (args) => {
       const outIndex = args.indexOf('-o');
@@ -302,7 +330,8 @@ function reset(bookKey) {
     calls = [];
     argvs = [];
     const exported = await run.foundryExport({
-      bookKey: key, excludeBlockIds: ['p0001b000', 'p0000b003', 'p0001b000'],
+      bookKey: key,
+      excludeLines: { scanId: 'r', lineIds: ['p0001l0003', 'p0001l0000', 'p0001l0000'] },
       excludeCategories: ['footnote'], outputPath: target,
     });
     ok('the EPUB landed where it was asked for',
@@ -312,8 +341,14 @@ function reset(bookKey) {
     const idsFile = path.join(dir, 'export', 'bookforge-exclude-ids.txt');
     const ids = fs.readFileSync(idsFile, 'utf-8').split('\n')
       .filter((l) => l.trim() && !l.startsWith('#'));
-    ok('duplicate ids are collapsed',
-      JSON.stringify(ids) === JSON.stringify(['p0000b003', 'p0001b000']), JSON.stringify(ids));
+    ok('the derived ids are the blocks those lines fill, deduplicated',
+      JSON.stringify(ids) === JSON.stringify(['p0001b000', 'p0001b002']), JSON.stringify(ids));
+    const record = JSON.parse(
+      fs.readFileSync(path.join(dir, 'export', 'bookforge-deleted-lines.json'), 'utf-8'));
+    ok('the run directory keeps the RECORD, not just the derived list',
+      record.scanId === 'r'
+      && JSON.stringify(record.lineIds) === JSON.stringify(['p0001l0000', 'p0001l0003']),
+      JSON.stringify(record));
     ok('export ran once and carried the category exclusion',
       calls.length === 1 && calls[0] === 'export');
     ok('with nothing edited, no overrides file and no --overrides flag',
@@ -329,7 +364,7 @@ function reset(bookKey) {
     argvs = [];
     const withOverrides = await run.foundryExport({
       bookKey: key,
-      excludeBlockIds: ['p0001b001'],
+      excludeLines: { scanId: 'r', lineIds: ['p0001l0001', 'p0001l0002'] },
       excludeCategories: [],
       overrides: [
         { id: 'p0001b000', text: 'The Lost Empire' },
@@ -363,7 +398,7 @@ function reset(bookKey) {
     let refused = null;
     try {
       await run.foundryExport({
-        bookKey: key, excludeBlockIds: [], excludeCategories: [],
+        bookKey: key, excludeLines: { scanId: 'r', lineIds: [] }, excludeCategories: [],
         overrides: [{ id: 'p0001b000', category: 'table' }], outputPath: target,
       });
     } catch (err) { refused = err.message; }
@@ -374,12 +409,51 @@ function reset(bookKey) {
     refused = null;
     try {
       await run.foundryExport({
-        bookKey: key, excludeBlockIds: [], excludeCategories: [],
+        bookKey: key, excludeLines: { scanId: 'r', lineIds: [] }, excludeCategories: [],
         overrides: [{ id: 'p0001b000' }], outputPath: target,
       });
     } catch (err) { refused = err.message; }
     ok('an override that asks for nothing is refused, not shipped',
       refused !== null && refused.includes('p0001b000'), refused);
+
+    console.log('\n10. export: a deletion that cannot be re-derived stops the book');
+    // Three ways the record can fail to name blocks, and none of them may pick
+    // a block anyway: the wrong block dropped is a book missing pages nobody
+    // deleted, and it looks exactly like a successful export.
+    calls = [];
+    refused = null;
+    try {
+      await run.foundryExport({
+        bookKey: key,
+        excludeLines: { scanId: 'r', lineIds: ['p0001l0001'] },
+        excludeCategories: [], outputPath: target,
+      });
+    } catch (err) { refused = err.message; }
+    ok('a block the re-run cut through is named, not guessed at',
+      refused !== null && refused.includes('p0001b001') && /page 42/.test(refused), refused);
+
+    refused = null;
+    try {
+      await run.foundryExport({
+        bookKey: key,
+        excludeLines: { scanId: 'r', lineIds: ['p0009l0009'] },
+        excludeCategories: [], outputPath: target,
+      });
+    } catch (err) { refused = err.message; }
+    ok('a line this run does not have is named',
+      refused !== null && refused.includes('p0009l0009'), refused);
+
+    refused = null;
+    try {
+      await run.foundryExport({
+        bookKey: key,
+        excludeLines: { scanId: 'an-older-scan', lineIds: ['p0001l0000'] },
+        excludeCategories: [], outputPath: target,
+      });
+    } catch (err) { refused = err.message; }
+    ok('deletions stamped with another scan are refused, naming both scans',
+      refused !== null && refused.includes('an-older-scan') && refused.includes('scan r'), refused);
+    ok('and foundry was never invoked for any of the three', calls.length === 0);
   }
 
   fs.rmSync(scratch, { recursive: true, force: true });

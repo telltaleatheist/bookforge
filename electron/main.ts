@@ -1705,6 +1705,11 @@ function setupIpcHandlers(): void {
         // Update manifest with editor state
         if (!manifest.source) manifest.source = {};
         manifest.source.deletedBlockIds = mergedData.deleted_block_ids || [];
+        // The deletions in the identity that outlives a blocks re-run. Written
+        // whenever the editor has a foundry run painted; carried through
+        // untouched when it has not, so opening a book without its run does not
+        // erase the record the exporter reads (shared/foundry/block-exclusions).
+        manifest.source.deletedBlockLines = mergedData.deleted_block_lines || undefined;
         manifest.source.deletedHighlightIds = mergedData.deleted_highlight_ids || [];
         manifest.source.pageOrder = mergedData.page_order || [];
         manifest.source.deletedPages = mergedData.deleted_pages || [];
@@ -2960,6 +2965,7 @@ function setupIpcHandlers(): void {
           library_path: sourcePath,
           file_hash: source.fileHash || '',
           deleted_block_ids: source.deletedBlockIds || [],
+          deleted_block_lines: source.deletedBlockLines || undefined,
           deleted_highlight_ids: source.deletedHighlightIds || [],
           page_order: source.pageOrder || [],
           deleted_pages: source.deletedPages || [],
@@ -6563,8 +6569,9 @@ function setupIpcHandlers(): void {
   });
 
   // The run directory, mapped into the picker's block model: foundry block ids
-  // kept verbatim (so `deletedBlockIds` IS the exclusion list), page indices
-  // translated back to document pages, pixels to points.
+  // kept verbatim, each block's scan line ids alongside them (the identity
+  // deletions are recorded as — block ids are re-minted by every blocks run),
+  // page indices translated back to document pages, pixels to points.
   ipcMain.handle('foundry:run-read', async (_event, bookKey: string) => {
     try {
       const { readFoundryRun } = await import('./foundry-run.js');
@@ -9919,7 +9926,7 @@ function setupIpcHandlers(): void {
         // never add per-field handling for them here.
         delete manifest.editor;
         if (manifest.source && typeof manifest.source === 'object') {
-          for (const k of ['deletedBlockIds', 'deletedHighlightIds', 'pageOrder', 'deletedPages', 'removeBackgrounds']) {
+          for (const k of ['deletedBlockIds', 'deletedBlockLines', 'deletedHighlightIds', 'pageOrder', 'deletedPages', 'removeBackgrounds']) {
             delete manifest.source[k];
           }
         }

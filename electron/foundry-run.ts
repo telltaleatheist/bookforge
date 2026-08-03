@@ -68,6 +68,10 @@ import {
   type FoundryScanPage,
 } from './foundry-bridge';
 import { blockCategoryDef, isFoundryCategory } from '../shared/ocr/block-categories';
+import {
+  resolveExcludedBlockIds,
+  type FoundryDeletedLines,
+} from '../shared/foundry/block-exclusions';
 import { boundedRunKey } from './path-utils';
 
 // `llama-bridge` and `pdf-worker-proxy` are required LAZILY, inside the two
@@ -705,14 +709,22 @@ export function foundryRunActive(): boolean {
 /**
  * A foundry block, in the shape pdf-picker paints and edits.
  *
- * The id is foundry's OWN block id, unchanged, and that is the load-bearing
- * decision in this whole integration: the picker's `deletedBlockIds` is then
- * literally the `--exclude-ids` file, with no mapping table in between to drift.
- * A user deleting a box in the viewer and `foundry export` dropping that block
- * are the same fact written twice, not two facts kept in sync.
+ * The id is foundry's OWN block id, unchanged, so a block on screen and a block
+ * in `blocks/blocks.json` are the same thing while the run is painted. It is NOT
+ * an identity that outlives the run: the blocks stage re-mints ids by position
+ * on every re-run, so what the user DELETED is persisted as `line_ids` — see
+ * `shared/foundry/block-exclusions.ts`.
  */
 export interface FoundryPickerBlock {
   id: string;
+  /**
+   * The scan lines this block is made of, foundry's ids, in reading order.
+   *
+   * The stable identity of the block's content: line ids are minted once by the
+   * scan stage and survive every ocr and blocks re-run. Deletions are recorded
+   * as these and resolved back to block ids at export.
+   */
+  line_ids: string[];
   /** DOCUMENT page number, translated back out of foundry's run index. */
   page: number;
   /** Page points, top-left origin — the picker's coordinate space. */
@@ -735,6 +747,13 @@ export interface FoundryPickerBlock {
 export interface FoundryRunResult {
   bookKey: string;
   runDir: string;
+  /**
+   * `run.json`'s `runId` — the identity of the SCAN the line ids below belong
+   * to. Stamped onto persisted deletions so a re-scan (a `redo` on the Tesseract
+   * pass, or a changed page set: both recreate the run directory) is caught
+   * rather than silently renumbering what the user deleted.
+   */
+  scanId: string;
   pages: number[];
   blocks: FoundryPickerBlock[];
   calibration?: FoundryCalibration;
@@ -819,6 +838,7 @@ export function readFoundryRun(bookKey: string): FoundryRunResult {
     const heights = blockLines.map((l) => l.bbox[3] - l.bbox[1]).sort((a, b) => a - b);
     return {
       id: block.id,
+      line_ids: [...block.lineIds],
       page: pageByIndex(block.page),
       x: pxToPt(block.bbox[0]),
       y: pxToPt(block.bbox[1]),
@@ -856,6 +876,7 @@ export function readFoundryRun(bookKey: string): FoundryRunResult {
   return {
     bookKey,
     runDir: saved.runDir,
+    scanId: dir.run.runId,
     pages: saved.pages,
     blocks,
     calibration: dir.calibration,
@@ -889,8 +910,16 @@ export interface FoundryBlockOverride {
 
 export interface FoundryExportRequest {
   bookKey: string;
-  /** Block ids the user deleted in the picker. Foundry's own ids, verbatim. */
-  excludeBlockIds: string[];
+  /**
+   * What the user deleted, as SCAN LINE ids plus the scan they belong to.
+   *
+   * Not block ids: those are re-minted by position every time the blocks stage
+   * runs, so a list of them written before an ocr/blocks re-run names different
+   * blocks afterwards. The block ids `foundry export` takes are derived from
+   * these here, against the blocks that are on disk at this moment
+   * (`shared/foundry/block-exclusions.ts`).
+   */
+  excludeLines: FoundryDeletedLines;
   /** Whole categories to drop, e.g. `footnote`. Composes with the ids above. */
   excludeCategories: string[];
   /**
@@ -909,6 +938,36 @@ export interface FoundryExportRequest {
 }
 
 const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
+
+/**
+ * Deleted lines → the block ids `foundry export` takes, against THIS run.
+ *
+ * The scan stamp is checked first and refuses rather than resolving: line ids
+ * are indices into one scan, so a record written against a different one would
+ * resolve to real blocks holding text nobody deleted. The two things that
+ * replace a scan — `redo` on the Tesseract pass, and a changed page set — both
+ * recreate the run directory, and with it `run.json`'s `runId`.
+ */
+export function resolveExportExclusions(
+  bookKey: string,
+  lines: FoundryDeletedLines,
+): string[] {
+  if (lines.lineIds.length === 0) return [];
+  const run = readFoundryRun(bookKey);
+  if (lines.scanId !== run.scanId) {
+    throw new Error(
+      `The ${lines.lineIds.length} deleted block(s) recorded for this book belong to scan `
+      + `${lines.scanId || '(unstamped)'}, but the run at ${run.runDir} is scan ${run.scanId}. `
+      + 'The book has been re-scanned since those deletions were made, so the lines they name '
+      + 'are not these lines. Open the book in the PDF editor, check the deletions and export '
+      + 'again — applying them as they are would drop different blocks.'
+    );
+  }
+  return resolveExcludedBlockIds(
+    run.blocks.map((b) => ({ id: b.id, page: b.page, lineIds: b.line_ids })),
+    lines.lineIds,
+  );
+}
 
 /**
  * Write the exclusion list, run `foundry export`, and land the EPUB atomically.
@@ -937,6 +996,15 @@ const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
  * everything needed to rebuild that exact book — foundry's artifacts, what was
  * dropped, and what a person retyped — with no model re-run and nothing living
  * only in a window that has since closed.
+ *
+ * ── Why the block ids are derived HERE ───────────────────────────────────────
+ *
+ * The request carries scan LINE ids (`excludeLines`), and the block ids the CLI
+ * takes are worked out from them against the blocks on disk at this moment. The
+ * blocks stage re-mints its ids by position on every run, so a caller that held
+ * block ids from before an ocr/blocks re-run would be naming other blocks —
+ * which is the bug that took the Kershaw export down (Aug 3 2026). One place
+ * does the derivation, so the picker's export and the queue's cannot drift.
  */
 export async function foundryExport(req: FoundryExportRequest): Promise<{ epubPath: string }> {
   const saved = readPersisted(req.bookKey);
@@ -945,18 +1013,41 @@ export async function foundryExport(req: FoundryExportRequest): Promise<{ epubPa
   }
   await ensureFoundryPath();
 
+  const ids = resolveExportExclusions(req.bookKey, req.excludeLines);
+
   const exportDir = path.join(saved.runDir, 'export');
   fs.mkdirSync(exportDir, { recursive: true });
   const idsFile = path.join(exportDir, 'bookforge-exclude-ids.txt');
-  const ids = [...new Set(req.excludeBlockIds)].sort();
   fs.writeFileSync(
     idsFile,
     [
       '# Block ids deleted in pdf-picker. Written by BookForge; read by `foundry export`.',
-      `# ${new Date().toISOString()} — ${ids.length} block(s)`,
+      '# DERIVED, not the record: the record is the scan line ids in',
+      '# bookforge-deleted-lines.json, which survive a blocks re-run. These ids do not.',
+      `# ${new Date().toISOString()} — ${ids.length} block(s) from `
+      + `${req.excludeLines.lineIds.length} deleted line(s)`,
       ...ids,
       '',
     ].join('\n')
+  );
+
+  // The RECORD, next to the list derived from it. A run directory that holds
+  // both can be re-exported after any number of ocr/blocks re-runs; one holding
+  // only block ids can be re-exported until the next re-run and no further.
+  fs.writeFileSync(
+    path.join(exportDir, 'bookforge-deleted-lines.json'),
+    `${JSON.stringify(
+      {
+        _comment:
+          'Scan lines deleted in pdf-picker, and the scan (run.json runId) they are numbered '
+          + 'against. The block ids in bookforge-exclude-ids.txt are derived from these.',
+        _written: new Date().toISOString(),
+        scanId: req.excludeLines.scanId,
+        lineIds: [...new Set(req.excludeLines.lineIds)].sort(),
+      },
+      null,
+      2
+    )}\n`
   );
 
   // The user's own edits: retyped chapter markers and relabelled blocks.
