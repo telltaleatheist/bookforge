@@ -2,7 +2,7 @@ import { Component, inject, signal, computed, HostListener, ViewChild, ElementRe
 import { CommonModule } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
-import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits, RubricRunState, CorpusBookInfo, CorpusFileChanged, CorpusOcrRunState } from '../../core/services/electron.service';
+import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits, BlocksRunState, CorpusBookInfo, CorpusFileChanged, CorpusOcrRunState } from '../../core/services/electron.service';
 import { PdfEditorStateService, HistoryAction, BlockEdit, SplitDefinition, MergeDefinition, CropRegion } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
 import { ExportService, DeletedHighlight, ExportResult as EpubExportResult } from './services/export.service';
@@ -37,7 +37,7 @@ import { BackgroundProgressComponent, BackgroundJob } from './components/backgro
 import { OcrJobService, OcrJob } from './services/ocr-job.service';
 import { TaskRailComponent } from './components/task-rail/task-rail.component';
 import { DetectPanelComponent, DetectRunState, DetectBackend } from './components/detect-panel/detect-panel.component';
-import { encodeBook, parseAnswer, toRawPrompt, RUBRIC_STOP, RubricVersion, rubricVersionFor } from './services/rubric-encoder';
+import { encodeBook, parseAnswer, toRawPrompt, BLOCKS_STOP, BlocksVersion, blocksVersionFor } from './services/blocks-encoder';
 import { BLOCK_CATEGORIES, normalizeCategories, UNLABEL_CATEGORY, isFoundryCategory } from '@shared/ocr/block-categories';
 import { OCR_RENDER_SCALE } from '@shared/ocr/ocr-render';
 import {
@@ -2685,7 +2685,7 @@ export class PdfPickerComponent implements OnInit {
    * The importer asked "detect page-layout categories?" and the user said yes.
    *
    * PDFs only — an EPUB carries its own structure, so there is nothing for the
-   * rubric model to recover and the importer never asks. The flag arrives on the
+   * blocks model to recover and the importer never asks. The flag arrives on the
    * route because this window is created by the import, so there is no earlier
    * moment at which to tell it. See `runImportDetection`.
    */
@@ -4246,13 +4246,20 @@ export class PdfPickerComponent implements OnInit {
   // not a thing to ask of someone who wants to make an audiobook. Ollama and
   // the remote GPU service remain for anyone already set up that way, and for
   // trying a checkpoint before it has been quantized.
+  //
+  // `bookforge-rubric-*` IS A PERSISTED KEY, not a description. The model family
+  // was renamed rubric -> blocks in Aug 2026 and these three keys were left
+  // alone: renaming them would silently reset a user's backend, endpoint and
+  // model choice on upgrade — a remote GPU-service URL they would have to retype
+  // for no benefit. Treat the name here as a contract. (The stored MODEL value
+  // does self-heal: refreshDetectModels drops a choice that is not installed.)
   readonly detectBackend = signal<DetectBackend>(
     (localStorage.getItem('bookforge-rubric-backend') as DetectBackend) || 'local');
   // Default to the model that actually exists. Ollama's model list is the
   // authority here, and a default naming something absent would fail on the
   // first click for no reason.
   /**
-   * No hardcoded model name as the fallback. There used to be one — 'rubric-v1'
+   * No hardcoded model name as the fallback. There used to be one — 'blocks-v1'
    * — and it aged into a trap: v1 answers with the retired front_matter/back_matter
    * taxonomy, so a fresh install silently defaulted to the WORST installed model
    * and to a class list the app no longer paints. Empty means "not chosen yet",
@@ -4296,8 +4303,39 @@ export class PdfPickerComponent implements OnInit {
    * share and answers with prose, so the picker separates the two rather than
    * letting a plausible-looking wrong choice hide among the rest.
    */
-  private static isRubricName(name: string): boolean {
-    return /^rubric/i.test(name);
+  private static isBlocksName(name: string): boolean {
+    // Three shapes, all real. `foundry-blocks-…` is what this app ships and what
+    // `foundry models list` reports. `blocks-…` and `rubric-…` are checkpoint
+    // names on somebody's own Ollama install or training box — the model family
+    // was called rubric until Aug 2026, and a run exported before then still has
+    // that name. Nothing here downloads or resolves those; this only decides
+    // which half of the picker they belong in.
+    return /^(foundry-blocks|blocks|rubric)/i.test(name);
+  }
+
+  /**
+   * Prompt version per model id, as DECLARED by the catalog (`blocks:models`).
+   *
+   * Only the built-in runtime can fill this: an Ollama or remote-service model is
+   * the user's own checkpoint and its name is all anyone has. See
+   * `resolvePromptVersion`.
+   */
+  private readonly detectPromptVersions = signal<Record<string, number>>({});
+
+  /**
+   * The prompt format to build for `name`.
+   *
+   * THE CATALOG ANSWERS FIRST. `foundry-blocks-v1-4b` names release 1 of a stage
+   * and was trained on the v5 prompt; reading `v1` out of the id would offer a
+   * twelve-class model the retired sixteen-class list, which does not fail — it
+   * just scores worse and reads like a bad model. Falls through to the name only
+   * for the legacy runtimes, where a name is genuinely all we have, and
+   * `blocksVersionFor` THROWS rather than guess at a foundry id it does not know.
+   */
+  private resolvePromptVersion(name: string): BlocksVersion {
+    const declared = this.detectPromptVersions()[name];
+    if (declared) return declared as BlocksVersion;
+    return blocksVersionFor(name);
   }
 
   /**
@@ -4312,22 +4350,28 @@ export class PdfPickerComponent implements OnInit {
    * the most recently exported model of the current taxonomy wins, which is
    * what someone who has just finished a training run expects to see selected.
    */
-  private static bestRubricModel(models: readonly string[]): string | undefined {
-    const trained = models.filter(m => PdfPickerComponent.isRubricName(m));
+  private bestBlocksModel(models: readonly string[]): string | undefined {
+    const trained = models.filter(m => PdfPickerComponent.isBlocksName(m));
     if (!trained.length) return undefined;
+    // A model whose prompt format cannot be established is not a candidate: it
+    // would be served a prompt nobody declared. Ranked last, never silently
+    // treated as v1.
+    const rank = (m: string): number => {
+      try { return this.resolvePromptVersion(m); } catch { return -1; }
+    };
     let best = trained[0];
-    let bestVersion = rubricVersionFor(best);
+    let bestVersion = rank(best);
     for (const m of trained.slice(1)) {
-      const v = rubricVersionFor(m);
+      const v = rank(m);
       if (v > bestVersion) { best = m; bestVersion = v; }
     }
-    return best;
+    return bestVersion < 0 ? undefined : best;
   }
 
   readonly detectModelOptions = computed(() => {
     const all = this.detectAvailableModels();
-    const trained = all.filter(n => PdfPickerComponent.isRubricName(n));
-    const other = all.filter(n => !PdfPickerComponent.isRubricName(n));
+    const trained = all.filter(n => PdfPickerComponent.isBlocksName(n));
+    const other = all.filter(n => !PdfPickerComponent.isBlocksName(n));
     const groups: Array<{ label: string; options: Array<{ value: string; label: string }> }> = [];
     if (trained.length) {
       groups.push({ label: 'Block-category models', options: trained.map(n => ({ value: n, label: n })) });
@@ -4340,7 +4384,7 @@ export class PdfPickerComponent implements OnInit {
 
   readonly detectModelIsTrained = computed(() => {
     const chosen = this.detectModel();
-    return !chosen || PdfPickerComponent.isRubricName(chosen);
+    return !chosen || PdfPickerComponent.isBlocksName(chosen);
   });
 
   readonly detectState = computed<DetectRunState>(() => ({
@@ -6643,12 +6687,14 @@ export class PdfPickerComponent implements OnInit {
   async refreshDetectModels(): Promise<void> {
     const backend = this.detectBackend();
     if (backend === 'service') { this.detectAvailableModels.set([]); return; }
-    const res = await this.electronService.rubricModels(this.detectEndpoint().trim(), backend);
+    const res = await this.electronService.blocksModels(this.detectEndpoint().trim(), backend);
     const models = res.success && res.models ? res.models : [];
     this.detectAvailableModels.set(models);
+    // Only the built-in runtime declares these; the others report names only.
+    this.detectPromptVersions.set(res.promptVersions ?? {});
 
-    // Ollama reports fully-tagged names ("rubric-v1:latest") while a stored
-    // or default choice is usually bare ("rubric-v1"). A dropdown matches its
+    // Ollama reports fully-tagged names ("blocks-v1:latest") while a stored
+    // or default choice is usually bare ("blocks-v1"). A dropdown matches its
     // value exactly, so without this the picker opens showing nothing selected
     // even though the model is right there.
     const chosen = this.detectModel();
@@ -6659,7 +6705,7 @@ export class PdfPickerComponent implements OnInit {
     // Nothing chosen yet, or the choice is gone: land on the BEST trained model
     // rather than whichever one Ollama happened to list first.
     if (!this.detectModel() || !models.includes(this.detectModel())) {
-      const trained = PdfPickerComponent.bestRubricModel(models);
+      const trained = this.bestBlocksModel(models);
       if (trained) this.setDetectModel(trained);
     }
   }
@@ -6673,7 +6719,7 @@ export class PdfPickerComponent implements OnInit {
    * Switching backend moves the endpoint to that backend's default, since a
    * GPU-service URL is never a valid Ollama one and vice versa.
    *
-   * The built-in runtime has no user-visible endpoint at all — rubric-server
+   * The built-in runtime has no user-visible endpoint at all — blocks-server
    * owns its port — so switching to it leaves the stored one alone rather than
    * overwriting a remote URL the user would have to retype on the way back.
    */
@@ -6683,7 +6729,7 @@ export class PdfPickerComponent implements OnInit {
     if (backend === 'ollama') this.setDetectEndpoint('http://localhost:11434');
     else if (backend === 'service') this.setDetectEndpoint('http://owens-pc:8770');
     // A model chosen for one runtime rarely names one in another: Ollama reports
-    // "rubric-v3-4b:latest", the catalog says "rubric-v3-4b". Cleared so
+    // "blocks-v3-4b:latest", the catalog says "blocks-v3-4b". Cleared so
     // refreshDetectModels lands on something that exists here.
     this.detectModel.set('');
     void this.refreshDetectModels();
@@ -6700,7 +6746,7 @@ export class PdfPickerComponent implements OnInit {
    * re-run resumes from there instead of re-asking.
    */
   async cancelDetection(): Promise<void> {
-    await this.electronService.rubricRunCancel(this.detectBookKey());
+    await this.electronService.blocksRunCancel(this.detectBookKey());
   }
 
   /**
@@ -6902,7 +6948,7 @@ export class PdfPickerComponent implements OnInit {
 
     const backend = this.detectBackend();
     const model = this.detectModel().trim();
-    const health = await this.electronService.rubricHealth(endpoint, backend, model);
+    const health = await this.electronService.blocksHealth(endpoint, backend, model);
     if (!health.success) {
       this.detectError.set(`Cannot reach the model service.\n${health.error ?? ''}`.trim());
       return;
@@ -6914,7 +6960,7 @@ export class PdfPickerComponent implements OnInit {
     const adapter = health.adapter ?? '';
     this.detectAdapter.set(adapter);
 
-    const encoded = this.encodeForDetection(adapter || model);
+    const encoded = this.encodeForDetection(adapter || model, health.promptVersion);
     if (!encoded) return;
     this.detectRunning.set(true);
     this.detectDone.set(0);
@@ -6927,10 +6973,10 @@ export class PdfPickerComponent implements OnInit {
     // Main owns the loop from here. This side hands over the prompts once and
     // then only listens — so an `ng serve` reload takes the listener with it and
     // leaves the run untouched, and the fresh renderer re-attaches in ngOnInit.
-    const res = await this.electronService.rubricRunStart({
+    const res = await this.electronService.blocksRunStart({
       bookKey: this.detectBookKey(),
       endpoint, backend, model, adapter,
-      stop: RUBRIC_STOP,
+      stop: BLOCKS_STOP,
       chunk: 8,
       // `raw` carries the exact chat template the model was trained under.
       // Ollama must not build the prompt itself — its stock Qwen3 template
@@ -6962,7 +7008,7 @@ export class PdfPickerComponent implements OnInit {
    *
    * Adoption is deferred to `finishRun`, the one place a run stops, because
    * `runDetection` returns as soon as MAIN has taken the work — the answers
-   * arrive later over `rubric:run-progress`.
+   * arrive later over `blocks:run-progress`.
    */
   private async runImportDetection(): Promise<void> {
     // Defence in depth. The importer never asks for an EPUB, but the flag rides
@@ -6989,13 +7035,13 @@ export class PdfPickerComponent implements OnInit {
       }
     }
 
-    // refreshDetectModels lands on the highest-version installed rubric model;
+    // refreshDetectModels lands on the highest-version installed blocks model;
     // it is silent on failure, so the emptiness afterwards is what we report.
     await this.refreshDetectModels();
     if (!this.detectModel()) {
       this.showAlert({
         title: 'No page-layout model installed',
-        message: 'The book is ready to classify, but no rubric model is installed.\n\n'
+        message: 'The book is ready to classify, but no blocks model is installed.\n\n'
           + 'Install one from Settings → Add-ons, then press Load categories in the '
           + 'Detect panel.',
         type: 'error',
@@ -7033,9 +7079,18 @@ export class PdfPickerComponent implements OnInit {
    * sending v2 features to the v1 checkpoint would produce confident nonsense
    * that looks like a bad model rather than a mismatched client.
    */
-  private encodeForDetection(adapterOrModel: string):
-    { pages: ReturnType<typeof encodeBook>; version: RubricVersion } | null {
-    const version: RubricVersion = rubricVersionFor(adapterOrModel);
+  private encodeForDetection(adapterOrModel: string, declaredVersion?: number):
+    { pages: ReturnType<typeof encodeBook>; version: BlocksVersion } | null {
+    let version: BlocksVersion;
+    try {
+      version = (declaredVersion as BlocksVersion | undefined)
+        ?? this.resolvePromptVersion(adapterOrModel);
+    } catch (err) {
+      // An undeclared prompt format is a hard stop, not a default: serving the
+      // wrong class list looks exactly like an undertrained model.
+      this.detectError.set(err instanceof Error ? err.message : String(err));
+      return null;
+    }
     const deleted = this.deletedBlockIds();
     const live = this.blocks().filter(b => !deleted.has(b.id));
     if (live.length === 0) {
@@ -7072,7 +7127,7 @@ export class PdfPickerComponent implements OnInit {
    */
   private detectRunAnswers: (string | null)[] = [];
   private detectRunPages: ReturnType<typeof encodeBook> = [];
-  private detectRunVersion: RubricVersion = 3;
+  private detectRunVersion: BlocksVersion = 3;
   private detectRunUnsubscribe: (() => void) | null = null;
 
   /**
@@ -7088,7 +7143,7 @@ export class PdfPickerComponent implements OnInit {
    * Used on attach (where the answers arrived while this renderer did not
    * exist) and on start (where a joined run may already have some).
    */
-  private absorbRunState(state: RubricRunState): void {
+  private absorbRunState(state: BlocksRunState): void {
     this.detectAdapter.set(state.adapter);
     this.detectTotal.set(state.total);
     this.detectDone.set(state.done);
@@ -7131,7 +7186,7 @@ export class PdfPickerComponent implements OnInit {
    * measurement, and a run that stopped early is the normal case on a long book.
    * Adapter recorded alongside, since a log spanning two models is unreadable.
    */
-  private finishRun(state: RubricRunState): void {
+  private finishRun(state: BlocksRunState): void {
     this.detectRunning.set(false);
     this.detectPredictionSnapshot.set(new Map(this.detectPredictions()));
     this.detectSnapshotAdapter.set(state.adapter || state.model);
@@ -7160,7 +7215,7 @@ export class PdfPickerComponent implements OnInit {
    */
   private watchDetectionRun(): void {
     if (this.detectRunUnsubscribe) return;
-    this.detectRunUnsubscribe = this.electronService.onRubricRunProgress((progress) => {
+    this.detectRunUnsubscribe = this.electronService.onBlocksRunProgress((progress) => {
       if (progress.bookKey !== this.detectBookKey()) return;
       for (const { index, answer } of progress.answered) {
         if (index < this.detectRunAnswers.length) this.detectRunAnswers[index] = answer;
@@ -7178,7 +7233,7 @@ export class PdfPickerComponent implements OnInit {
           + `block labels came back for the first ${progress.done} pages.\n\n`
           + `This prompt is written for the block-category fine-tune. A general `
           + `chat model will not produce "<id> <category>" lines.`);
-        void this.electronService.rubricRunCancel(this.detectBookKey());
+        void this.electronService.blocksRunCancel(this.detectBookKey());
         return;
       }
 
@@ -7213,7 +7268,7 @@ export class PdfPickerComponent implements OnInit {
    * over, because run-start matches the saved fingerprint.
    */
   private async reattachDetectionRun(): Promise<void> {
-    const res = await this.electronService.rubricRunAttach(this.detectBookKey());
+    const res = await this.electronService.blocksRunAttach(this.detectBookKey());
     const state = res.state;
     if (!state || state.total === 0) return;
 

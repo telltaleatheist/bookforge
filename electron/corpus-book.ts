@@ -472,7 +472,7 @@ async function readBookRecord(dir: string): Promise<TrainingBookRecord | null> {
  *
  * A DIRECTORY IS A BOOK ONLY IF it holds book.json, blocks.json or labels.json.
  * That test matters because the corpus root is also where the tooling keeps its
- * working directories — `sft/`, `dagger/`, `galley/`, `epub-derived/`, loose
+ * working directories — `sft/`, `dagger/` (the footnote corpus's on-disk name), `ocr/`, `epub-derived/`, loose
  * `eval-*.json` — and listing those as books would invite someone to open one.
  *
  * Counts are read from the files rather than cached in book.json. A cache would

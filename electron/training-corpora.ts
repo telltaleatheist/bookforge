@@ -5,12 +5,18 @@
  * work and its own store — and until now only one of them was visible anywhere
  * in the app:
  *
- *   rubric  page layout      a BOOK of labelled blocks   training/<slug>/
- *   dagger  footnote markers a BOOK of before/after pairs training/dagger/*.jsonl
- *   galley  OCR correction   a public corpus + scan pairs training/galley/
+ *   blocks     page layout      a BOOK of labelled blocks    training/<slug>/
+ *   footnotes  footnote markers a BOOK of before/after pairs training/dagger/*.jsonl
+ *   ocr        OCR correction   a public corpus + scan pairs training/galley/
  *
- * Only rubric books open in the editor: they are pages with rectangles on them.
- * Dagger examples are line-level text rewrites and galley's are OCR/ground-truth
+ * THE DIRECTORY NAMES ARE PERSISTED, THE STAGE NAMES ARE NOT. The models were
+ * called rubric / dagger / galley until Aug 2026 and are now blocks / footnotes /
+ * ocr, but the corpus master on disk still carries the old folder names and this
+ * file does not rename a user's corpus to tidy up a word. Every 'dagger' and
+ * 'galley' literal below is an ON-DISK name, not a stage name.
+ *
+ * Only blocks books open in the editor: they are pages with rectangles on them.
+ * Footnote examples are line-level text rewrites and ocr's are OCR/ground-truth
  * string pairs, so those two report inventory and nothing more. Saying that
  * plainly is the point — a tab that looks clickable and is not would be worse
  * than one that states what it is.
@@ -24,8 +30,8 @@ import * as path from 'path';
 import * as fsPromises from 'fs/promises';
 import { trainingRootDir } from './training-data';
 
-/** One book's worth of dagger training pairs, summed across its files. */
-export interface DaggerBookSummary {
+/** One book's worth of footnote-marker training pairs, summed across its files. */
+export interface FootnotesBookSummary {
   book: string;
   /** Lines with a marker to strip — the positive examples. */
   draft: number;
@@ -39,22 +45,22 @@ export interface DaggerBookSummary {
 }
 
 /** A public post-OCR corpus, as downloaded. */
-export interface GalleyCorpusSummary {
+export interface OCRCorpusSummary {
   name: string;
   files: number;
   bytes: number;
 }
 
 export interface TrainingCorpora {
-  dagger: {
-    books: DaggerBookSummary[];
+  footnotes: {
+    books: FootnotesBookSummary[];
     /** Totals across every book, so the tab can lead with the corpus size. */
     draft: number; negatives: number; ambiguous: number;
   };
-  galley: {
-    corpora: GalleyCorpusSummary[];
+  ocr: {
+    corpora: OCRCorpusSummary[];
     /**
-     * Rubric books that also carry a source EPUB — the scan+markup pairs galley
+     * Blocks books that also carry a source EPUB — the scan+markup pairs ocr
      * needs. Reported because the pairing is the scarce thing, not the scan.
      */
     pairs: Array<{ slug: string; pdf: string; epub: string }>;
@@ -92,16 +98,17 @@ async function countLines(file: string): Promise<number> {
  * `garble-inventory.json`, `build_corpus.py`) and are skipped rather than
  * guessed at.
  */
-const DAGGER_FILE = /^(.*?)\.(draft|negatives|ambiguous)(\.v\d+)?\.jsonl$/;
+const FOOTNOTES_FILE = /^(.*?)\.(draft|negatives|ambiguous)(\.v\d+)?\.jsonl$/;
 
-async function listDagger(root: string): Promise<TrainingCorpora['dagger']> {
+async function listFootnotes(root: string): Promise<TrainingCorpora['footnotes']> {
+  // 'dagger' is the corpus's ON-DISK name — see the header. Not a stage name.
   const dir = path.join(root, 'dagger');
   const empty = { books: [], draft: 0, negatives: 0, ambiguous: 0 };
   if (!await exists(dir)) return empty;
 
-  const byBook = new Map<string, DaggerBookSummary>();
+  const byBook = new Map<string, FootnotesBookSummary>();
   for (const name of (await fsPromises.readdir(dir)).sort()) {
-    const m = DAGGER_FILE.exec(name);
+    const m = FOOTNOTES_FILE.exec(name);
     if (!m) continue;
     const [, book, kind, version] = m;
     if (!byBook.has(book)) {
@@ -144,8 +151,11 @@ async function measureTree(dir: string): Promise<{ files: number; bytes: number 
   return { files, bytes };
 }
 
-async function listGalley(root: string): Promise<TrainingCorpora['galley']> {
-  const corpora: GalleyCorpusSummary[] = [];
+async function listOCR(root: string): Promise<TrainingCorpora['ocr']> {
+  const corpora: OCRCorpusSummary[] = [];
+  // 'galley' is the corpus's ON-DISK name — see the header. Not a stage name.
+  // (This read 'ocr' between the partial rename and Aug 3 2026, which made the
+  // public-corpora panel report nothing on a corpus that had them.)
   const publicDir = path.join(root, 'galley', 'public-corpora');
   if (await exists(publicDir)) {
     for (const name of (await fsPromises.readdir(publicDir)).sort()) {
@@ -157,7 +167,7 @@ async function listGalley(root: string): Promise<TrainingCorpora['galley']> {
   }
 
   // A pair is a book folder holding BOTH a PDF and an EPUB. That co-location is
-  // what makes it usable: galley learns from the same page read two ways, and a
+  // what makes it usable: ocr learns from the same page read two ways, and a
   // scan whose markup lives in another project is not a pair anyone can use.
   const pairs: Array<{ slug: string; pdf: string; epub: string }> = [];
   for (const name of (await fsPromises.readdir(root)).sort()) {
@@ -176,9 +186,9 @@ async function listGalley(root: string): Promise<TrainingCorpora['galley']> {
   return { corpora, pairs };
 }
 
-/** Inventory dagger and galley. Rubric books come from `listTrainingBooks`. */
+/** Inventory footnotes and ocr. Blocks books come from `listTrainingBooks`. */
 export async function listTrainingCorpora(): Promise<TrainingCorpora> {
   const root = trainingRootDir();
-  const [dagger, galley] = await Promise.all([listDagger(root), listGalley(root)]);
-  return { dagger, galley };
+  const [footnotes, ocr] = await Promise.all([listFootnotes(root), listOCR(root)]);
+  return { footnotes, ocr };
 }

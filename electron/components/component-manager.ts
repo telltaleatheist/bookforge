@@ -25,10 +25,8 @@ import { CUDA_RVC_ID, installCudaRvc, isCudaRvcInstalled, uninstallCudaRvc, cuda
 import { DEEPSPEED_XTTS_ID, installDeepspeedXtts, isDeepspeedXttsInstalled, uninstallDeepspeedXtts, deepspeedXttsMarkerPath } from './deepspeed-xtts';
 import { WHISPER_ENV_ID, installWhisperEnv, isWhisperEnvInstalled, uninstallWhisperEnv, whisperEnvMarkerPath } from './whisper-env';
 import { ensureRvcVoice, removeRvcVoice, isRvcVoiceInstalled, rvcVoiceModelDir } from '../rvc-models';
-import { downloadRubricModel, deleteRubricModel, isRubricModelPresent, rubricModelPath } from '../rubric-models';
-import { rubricModelIdFromComponentId } from './rubric-model-components';
-import { downloadDaggerModel, deleteDaggerModel, isDaggerModelPresent, daggerModelPath } from '../dagger-models';
-import { daggerModelIdFromComponentId } from './dagger-model-components';
+import { downloadBlocksModel, deleteBlocksModel, isBlocksModelPresent, blocksModelPath } from '../blocks-models';
+import { blocksModelIdFromComponentId } from './blocks-model-components';
 import { downloadWhisperModel, deleteWhisperModel, isWhisperModelPresent, whisperModelDir } from '../whisper-models';
 import { whisperModelIdFromComponentId } from './whisper-model-components';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
@@ -1157,27 +1155,27 @@ async function fetchWhisperModel(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Page-layout model (kind 'rubric-model') — download the GGUF into the shared
-// rubric-models dir, reusing downloadRubricModel (which dedups concurrent
+// Page-layout model (kind 'blocks-model') — download the GGUF into the shared
+// blocks-models dir, reusing downloadBlocksModel (which dedups concurrent
 // callers, e.g. a Detect run that found no model while Settings was fetching).
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function fetchRubricModel(
+async function fetchBlocksModel(
   component: OptionalComponent,
   emit: (p: InstallProgress) => void
 ): Promise<InstallResult> {
   const id = component.id;
-  const modelId = rubricModelIdFromComponentId(id);
+  const modelId = blocksModelIdFromComponentId(id);
   if (!modelId) {
     return { id, ok: false, error: `Not a page-layout model component: ${id}` };
   }
-  // downloadRubricModel owns cancellation via its own in-flight map; the entry
+  // downloadBlocksModel owns cancellation via its own in-flight map; the entry
   // here just keeps listStatus/cancel seeing a consistent picture.
   const controller = new AbortController();
   inFlight.set(id, { controller, tempDir: null });
   try {
     emit({ id, phase: 'download', pct: 0, message: `Downloading ${component.name}…` });
-    const result = await downloadRubricModel(modelId, (p) => {
+    const result = await downloadBlocksModel(modelId, (p) => {
       emit({
         id,
         phase: 'download',
@@ -1189,7 +1187,7 @@ async function fetchRubricModel(
     });
     if (!result.ok) throw new Error(result.error || 'Download failed');
 
-    const gguf = rubricModelPath(modelId);
+    const gguf = blocksModelPath(modelId);
     const record: InstalledRecord = {
       id,
       version: component.version,
@@ -1207,65 +1205,6 @@ async function fetchRubricModel(
     const message = err instanceof Error ? err.message : String(err);
     emit({ id, phase: 'error', pct: 0, message });
     cerror(`[COMPONENTS] ${id}: page-layout model install failed: ${message}`, {
-      id, message, stack: err instanceof Error ? err.stack : undefined,
-    });
-    return { id, ok: false, error: message };
-  } finally {
-    inFlight.delete(id);
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Footnote-marker model (kind 'dagger-model') — same shape as the page-layout
-// model above: one GGUF over plain HTTPS into its own shared dir, via
-// downloadDaggerModel (which dedups concurrent callers).
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function fetchDaggerModel(
-  component: OptionalComponent,
-  emit: (p: InstallProgress) => void
-): Promise<InstallResult> {
-  const id = component.id;
-  const modelId = daggerModelIdFromComponentId(id);
-  if (!modelId) {
-    return { id, ok: false, error: `Not a footnote-marker model component: ${id}` };
-  }
-  // downloadDaggerModel owns cancellation via its own in-flight map; the entry
-  // here just keeps listStatus/cancel seeing a consistent picture.
-  const controller = new AbortController();
-  inFlight.set(id, { controller, tempDir: null });
-  try {
-    emit({ id, phase: 'download', pct: 0, message: `Downloading ${component.name}…` });
-    const result = await downloadDaggerModel(modelId, (p) => {
-      emit({
-        id,
-        phase: 'download',
-        pct: p.pct,
-        receivedBytes: p.receivedBytes,
-        totalBytes: p.totalBytes,
-        message: `Downloading ${component.name}… ${p.pct}%`,
-      });
-    });
-    if (!result.ok) throw new Error(result.error || 'Download failed');
-
-    const gguf = daggerModelPath(modelId);
-    const record: InstalledRecord = {
-      id,
-      version: component.version,
-      source: 'managed',
-      path: gguf,
-      entryPath: gguf, // the GGUF itself; resolveEntry checks it exists
-      bytes: component.sizeBytes || undefined,
-      installedAt: new Date().toISOString(),
-    };
-    putRecord(record);
-    emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
-    clog(`[COMPONENTS] ${id}: footnote-marker model installed at ${gguf}`);
-    return { id, ok: true, record };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    emit({ id, phase: 'error', pct: 0, message });
-    cerror(`[COMPONENTS] ${id}: footnote-marker model install failed: ${message}`, {
       id, message, stack: err instanceof Error ? err.stack : undefined,
     });
     return { id, ok: false, error: message };
@@ -1324,13 +1263,8 @@ async function install(
 
   // The page-layout model is a single GGUF over plain HTTPS — no python, no
   // archive to extract. Same contract as the rest.
-  if (component.kind === 'rubric-model') {
-    return fetchRubricModel(component, emit);
-  }
-
-  // The footnote-marker model is likewise a single GGUF over plain HTTPS.
-  if (component.kind === 'dagger-model') {
-    return fetchDaggerModel(component, emit);
+  if (component.kind === 'blocks-model') {
+    return fetchBlocksModel(component, emit);
   }
 
   // CUDA TTS overlays a GPU PyTorch build into the runtime env (pip), not a
@@ -1648,42 +1582,23 @@ async function uninstall(id: string): Promise<void> {
     return;
   }
 
-  // The page-layout model is a single GGUF in the shared rubric-models dir.
+  // The page-layout model is a single GGUF in the shared blocks-models dir.
   // Stop the server FIRST: it holds the file open (a hard error on Windows, and
   // on posix the unlink would succeed while several GB stayed resident).
-  if (getComponent(id)?.kind === 'rubric-model') {
-    const modelId = rubricModelIdFromComponentId(id);
+  if (getComponent(id)?.kind === 'blocks-model') {
+    const modelId = blocksModelIdFromComponentId(id);
     if (modelId) {
       try {
-        const { stopRubricServer } = await import('../rubric-server.js');
-        await stopRubricServer();
+        const { stopBlocksServer } = await import('../blocks-server.js');
+        await stopBlocksServer();
       } catch (err) {
         cerror(`[COMPONENTS] ${id}: could not stop the page-layout server:`, err);
       }
-      const res = deleteRubricModel(modelId);
+      const res = deleteBlocksModel(modelId);
       if (!res.ok) cerror(`[COMPONENTS] ${id}: failed to remove page-layout model: ${res.error}`);
     }
     dropRecord(id);
     clog(`[COMPONENTS] ${id}: removed page-layout model`);
-    return;
-  }
-
-  // Same for the footnote-marker model — stop its server before unlinking, for
-  // the same reason (open handle on Windows; several GB still resident on posix).
-  if (getComponent(id)?.kind === 'dagger-model') {
-    const modelId = daggerModelIdFromComponentId(id);
-    if (modelId) {
-      try {
-        const { stopDaggerServer } = await import('../dagger-server.js');
-        await stopDaggerServer();
-      } catch (err) {
-        cerror(`[COMPONENTS] ${id}: could not stop the footnote-marker server:`, err);
-      }
-      const res = deleteDaggerModel(modelId);
-      if (!res.ok) cerror(`[COMPONENTS] ${id}: failed to remove footnote-marker model: ${res.error}`);
-    }
-    dropRecord(id);
-    clog(`[COMPONENTS] ${id}: removed footnote-marker model`);
     return;
   }
 
@@ -1921,11 +1836,11 @@ async function buildStatus(
 
   // Same self-healing for the page-layout model: a GGUF present at its full
   // expected size IS the install, whether or not a record survived. Size, not
-  // mere existence — see isRubricModelPresent.
-  if (!record && component.kind === 'rubric-model') {
-    const modelId = rubricModelIdFromComponentId(component.id);
-    if (modelId && isRubricModelPresent(modelId)) {
-      const gguf = rubricModelPath(modelId);
+  // mere existence — see isBlocksModelPresent.
+  if (!record && component.kind === 'blocks-model') {
+    const modelId = blocksModelIdFromComponentId(component.id);
+    if (modelId && isBlocksModelPresent(modelId)) {
+      const gguf = blocksModelPath(modelId);
       record = {
         id: component.id,
         version: component.version,
@@ -1940,24 +1855,6 @@ async function buildStatus(
     }
   }
 
-  // And for the footnote-marker model.
-  if (!record && component.kind === 'dagger-model') {
-    const modelId = daggerModelIdFromComponentId(component.id);
-    if (modelId && isDaggerModelPresent(modelId)) {
-      const gguf = daggerModelPath(modelId);
-      record = {
-        id: component.id,
-        version: component.version,
-        source: 'managed',
-        path: gguf,
-        entryPath: gguf,
-        bytes: component.sizeBytes || undefined,
-        installedAt: new Date().toISOString(),
-      };
-      putRecord(record);
-      clog(`[COMPONENTS] ${component.id}: detected footnote-marker model at ${gguf}`);
-    }
-  }
 
   // CUDA TTS: the marker lives in the runtime env, so it auto-clears if the env
   // is re-unpacked (app update) — detection always reflects the real env state.

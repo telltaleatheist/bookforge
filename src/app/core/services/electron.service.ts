@@ -12,15 +12,15 @@ import type { PassDiffFile } from '../models/diff.types';
 
 /**
  * A block-category run, as main reports it. Mirrors the interfaces in
- * electron/rubric-run.ts — declared again because the renderer build has no
+ * electron/blocks-run.ts — declared again because the renderer build has no
  * path into electron/, which is why every other IPC shape in this file is
  * declared here too.
  *
  * `answers` is TEXT, not predictions: main never parses the model's output, so
  * that the prompt format and its parser exist exactly once, in
- * features/pdf-picker/services/rubric-encoder.ts.
+ * features/pdf-picker/services/blocks-encoder.ts.
  */
-export interface RubricRunState {
+export interface BlocksRunState {
   bookKey: string;
   status: 'running' | 'done' | 'error' | 'cancelled';
   /**
@@ -42,7 +42,7 @@ export interface RubricRunState {
 
 /**
  * A training-corpus book, as main reports it. Mirrors electron/corpus-book.ts —
- * declared again for the same reason as RubricRunState above.
+ * declared again for the same reason as BlocksRunState above.
  *
  * `session.blocks` is the block snapshot the labels are keyed to and MUST be
  * what the editor shows: OCR block ids carry a per-run suffix, so blocks
@@ -139,8 +139,8 @@ export interface TrainingBookSummary {
   problem: string | null;
 }
 
-/** One book's worth of dagger (footnote-marker) training pairs. */
-export interface DaggerBookSummary {
+/** One book's worth of footnote-marker training pairs. */
+export interface FootnotesBookSummary {
   book: string;
   /** Lines with a marker to strip — the positive examples. */
   draft: number;
@@ -152,13 +152,13 @@ export interface DaggerBookSummary {
   total: number;
 }
 
-/** The dagger and galley corpora, inventoried. Mirrors electron/training-corpora.ts. */
+/** The footnotes and ocr corpora, inventoried. Mirrors electron/training-corpora.ts. */
 export interface TrainingCorpora {
-  dagger: {
-    books: DaggerBookSummary[];
+  footnotes: {
+    books: FootnotesBookSummary[];
     draft: number; negatives: number; ambiguous: number;
   };
-  galley: {
+  ocr: {
     corpora: Array<{ name: string; files: number; bytes: number }>;
     /** Book folders holding BOTH a PDF and an EPUB — the scan+markup pairs. */
     pairs: Array<{ slug: string; pdf: string; epub: string }>;
@@ -175,7 +175,7 @@ export interface CorpusSaveResult {
   fingerprint: CorpusFingerprint;
 }
 
-export interface RubricRunProgress {
+export interface BlocksRunProgress {
   bookKey: string;
   status: 'running' | 'done' | 'error' | 'cancelled';
   done: number;
@@ -315,8 +315,7 @@ export type ComponentKind =
   | 'rvc-model'
   | 'language-pack'
   | 'stt-model'
-  | 'rubric-model'
-  | 'dagger-model'
+  | 'blocks-model'
   | 'system';
 
 export type AcquisitionMode = 'external' | 'managed';
@@ -3306,27 +3305,27 @@ export class ElectronService {
 
   // ─── Block-category model ─────────────────────────────────────────────────
   // The fine-tuned classifier, held resident on the training box's GPU by
-  // tools/aligner/rubric-serve.py. Prompts are built by rubric-encoder.ts
+  // tools/aligner/blocks-serve.py. Prompts are built by blocks-encoder.ts
   // and travel as opaque strings — nothing between here and the model may
   // reformat them, because a fine-tune only performs on the format it saw.
 
-  async rubricHealth(endpoint: string, backend?: 'local' | 'ollama' | 'service', model?: string): Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }> {
-    if (this.isElectron) return (window as any).electron.rubric.health(endpoint, backend, model);
+  async blocksHealth(endpoint: string, backend?: 'local' | 'ollama' | 'service', model?: string): Promise<{ success: boolean; adapter?: string; loaded?: boolean; promptVersion?: number; error?: string }> {
+    if (this.isElectron) return (window as any).electron.blocks.health(endpoint, backend, model);
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async rubricModels(endpoint: string, backend?: 'local' | 'ollama' | 'service'): Promise<{ success: boolean; models?: string[]; error?: string }> {
-    if (this.isElectron) return (window as any).electron.rubric.models(endpoint, backend);
+  async blocksModels(endpoint: string, backend?: 'local' | 'ollama' | 'service'): Promise<{ success: boolean; models?: string[]; promptVersions?: Record<string, number>; error?: string }> {
+    if (this.isElectron) return (window as any).electron.blocks.models(endpoint, backend);
     return { success: false, error: 'Not running in Electron' };
   }
 
   /** Drop the resident model now (Ollama keeps it alive on its own timer). */
-  async rubricUnload(endpoint?: string, model?: string): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) return (window as any).electron.rubric.unload(endpoint, model);
+  async blocksUnload(endpoint?: string, model?: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) return (window as any).electron.blocks.unload(endpoint, model);
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async rubricClassify(payload: {
+  async blocksClassify(payload: {
     endpoint: string;
     pages: Array<{ system: string; user: string; raw?: string }>;
     batch?: number;
@@ -3334,7 +3333,7 @@ export class ElectronService {
     model?: string;
     stop?: string;
   }): Promise<{ success: boolean; answers?: string[]; error?: string }> {
-    if (this.isElectron) return (window as any).electron.rubric.classify(payload);
+    if (this.isElectron) return (window as any).electron.blocks.classify(payload);
     return { success: false, error: 'Not running in Electron' };
   }
 
@@ -3343,9 +3342,9 @@ export class ElectronService {
    *
    * The renderer is reloaded on every edit under src/ by `ng serve`, which used
    * to take the in-progress run with it. Main is not reloaded, so it owns the
-   * queue and this side only watches — see electron/rubric-run.ts.
+   * queue and this side only watches — see electron/blocks-run.ts.
    */
-  async rubricRunStart(payload: {
+  async blocksRunStart(payload: {
     bookKey: string;
     endpoint: string;
     backend: 'local' | 'ollama' | 'service';
@@ -3355,48 +3354,28 @@ export class ElectronService {
     numCtx?: number;
     chunk?: number;
     pages: Array<{ page: number; system: string; user: string; raw: string }>;
-  }): Promise<{ success: boolean; state?: RubricRunState; error?: string }> {
-    if (this.isElectron) return (window as any).electron.rubric.runStart(payload);
+  }): Promise<{ success: boolean; state?: BlocksRunState; error?: string }> {
+    if (this.isElectron) return (window as any).electron.blocks.runStart(payload);
     return { success: false, error: 'Not running in Electron' };
   }
 
   /** The run for this book, if main still has one — including a finished one. */
-  async rubricRunAttach(bookKey: string): Promise<{ success: boolean; state?: RubricRunState | null }> {
-    if (this.isElectron) return (window as any).electron.rubric.runAttach(bookKey);
+  async blocksRunAttach(bookKey: string): Promise<{ success: boolean; state?: BlocksRunState | null }> {
+    if (this.isElectron) return (window as any).electron.blocks.runAttach(bookKey);
     return { success: false, state: null };
   }
 
-  async rubricRunCancel(bookKey: string): Promise<{ cancelled: boolean }> {
-    if (this.isElectron) return (window as any).electron.rubric.runCancel(bookKey);
+  async blocksRunCancel(bookKey: string): Promise<{ cancelled: boolean }> {
+    if (this.isElectron) return (window as any).electron.blocks.runCancel(bookKey);
     return { cancelled: false };
   }
 
   /** Chunk-by-chunk progress for whichever run is working. Returns an unsubscribe. */
-  onRubricRunProgress(callback: (progress: RubricRunProgress) => void): () => void {
-    if (this.isElectron) return (window as any).electron.rubric.onRunProgress(callback);
+  onBlocksRunProgress(callback: (progress: BlocksRunProgress) => void): () => void {
+    if (this.isElectron) return (window as any).electron.blocks.onRunProgress(callback);
     return () => {};
   }
 
-  // ─── Footnote-marker model ────────────────────────────────────────────────
-  // Presence only. The model runs entirely in main; the renderer asks whether
-  // it is there so it can say so plainly — and offer `componentId` to the
-  // installer — instead of a cleanup pass quietly leaving the markers in.
-
-  async daggerHealth(modelId?: string): Promise<{
-    success: boolean; modelId?: string; name?: string; componentId?: string; error?: string;
-  }> {
-    if (this.isElectron) return (window as any).electron.dagger.health(modelId);
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async daggerModels(): Promise<{
-    success: boolean;
-    models?: Array<{ id: string; name: string; present: boolean; bytes: number; componentId: string }>;
-    error?: string;
-  }> {
-    if (this.isElectron) return (window as any).electron.dagger.models();
-    return { success: false, error: 'Not running in Electron' };
-  }
 
   async trainingPickEpub(defaultPath?: string): Promise<{ success: boolean; path?: string }> {
     if (this.isElectron) return (window as any).electron.training.pickEpub(defaultPath);
@@ -3540,7 +3519,7 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  /** The dagger and galley corpora, for the Training tab's other two tabs. */
+  /** The footnotes and ocr corpora, for the Training tab's other two tabs. */
   async trainingCorpora(): Promise<{ success: boolean; corpora?: TrainingCorpora; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.training.corpora();

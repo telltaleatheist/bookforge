@@ -1,4 +1,4 @@
-# OCR Lab — the band pipeline and the road to galley
+# OCR Lab — the band pipeline and the road to ocr
 
 **Goal** (owner's words, Jul 2026): *"make ours ultimately as good as pdfelement's… we can work
 with mangled/jumbled. we cannot work with missing."* Missing text is the fatal class; mangled
@@ -7,15 +7,15 @@ text is repairable downstream.
 **Status (Aug 2026): architecture settled and measured.** The band pipeline beats the shipping
 whole-page-Tesseract path on every axis, beats PDFelement on speed by 5–8×, and out-reads it on
 decorative type. What remains is productization (TypeScript port into the app) and the correction
-model (**galley**).
+model (**ocr**).
 
 ## The pipeline
 
 ```
 render 200dpi → border/edge masking → (XY-cut if columns) → projection-profile BANDS
              → per-line Tesseract --psm 7 (batched: ONE process per page, image list / TSV,
-               empty→ retry --psm 13) → [galley line correction — NOT BUILT YET]
-             → deterministic band→block grouping (pitch/indent/gap) → rubric
+               empty→ retry --psm 13) → [ocr line correction — NOT BUILT YET]
+             → deterministic band→block grouping (pitch/indent/gap) → blocks
 ```
 
 Core idea: **take layout away from Tesseract**. Its layout analysis silently drops whole lines
@@ -125,7 +125,7 @@ pages vs 532 printed] — NOT usable as print-page anchors);
 Trust gating is per-LINE, evidence-based, never by type: repetition self-validation for running
 heads, EPUB agreement promotes to gold, dictionary/symbol sanity for the tail. German vocabulary
 (Third Reich books) must never be "corrected" into English — soft priors only, edits gated on
-OCR evidence (the dagger applier lesson).
+OCR evidence (the footnote-marker applier lesson).
 
 **Teacher chain** for no-EPUB books: PDFelement → cogito:14b through `cli/ai-clean.js`
 **edit-list lane** (`--stages ocr`) — the guarded applier makes untargeted text structurally
@@ -140,22 +140,22 @@ are LuraDocument-recoded (JBIG2-style glyph substitution risk — treat as a deg
 
 ## Rules that must not regress
 
-- Training pairs' INPUT side comes from the NEW pipeline's own output (galley learns this
+- Training pairs' INPUT side comes from the NEW pipeline's own output (ocr learns this
   pipeline's error distribution, not old whole-page Tesseract's). Old journals are measurement-only.
-- Hold out books before any training (≥1 fiction + 1 nonfiction galley never sees).
+- Hold out books before any training (≥1 fiction + 1 nonfiction ocr never sees).
 - Eval only against tier-1 truth or hand-checked pages, never teacher-only.
 - Aligners must handle transposed footnotes (order-free rescue) or they fake ~1.1% missing (4.5×
   the true rate on michelle remembers). Never force a match; unmatched → no pair.
 - EPUB "page N" markers: exploit as anchors, exclude from pairs, don't pre-strip.
 - **Hyphenation is a JOIN, never a completion** (owner decision, Aug 1 2026). A line-level
   corrector must never invent the far half of a word it cannot see — that is the hallucinated-
-  completion failure the dagger applier already taught us (`after` must be a subsequence of
+  completion failure the footnote-marker applier already taught us (`after` must be a subsequence of
   `before`). So: line-level truth keeps the fragment as the page prints it (`per-` stays `per-`),
   and the join happens deterministically at band→block grouping, where BOTH halves are in hand
   and the result is knowledge rather than a guess. Where the partner half is off-page (hyphen on
   a page's last line), resolve it across the page boundary so the joiner still *knows* the whole
   word — never leave it dangling and never let the model fill it in. Reverses the sweep's
-  provisional convention (844 pairs on deathstalker book 1 asked galley to expand `per-` →
+  provisional convention (844 pairs on deathstalker book 1 asked ocr to expand `per-` →
   `performance."`); needs a `build_ocr` change in `align-epub.py` before the next pair mint.
 
 ## Open fixes / next steps (ordered)
@@ -175,11 +175,11 @@ are LuraDocument-recoded (JBIG2-style glyph substitution risk — treat as a deg
    11 scanned books / 6,201 pages swept → 227,423 pairs (192,778 at sim ≥0.75); truth-side fixes
    alone moved corpus CER 0.0468→0.0350, byte-exact 43.5%→61.0%; report in
    `<lab>/sweep-report.md`.
-4. **galley-v1** (0.6b-class line corrector; GPU offered but training ALWAYS needs an explicit
+4. **foundry-ocr-v1** (0.6b-class line corrector; GPU offered but training ALWAYS needs an explicit
    green light — shared GPU, faulty fan). v1.5 option: fine-tuned Tesseract `.traineddata`
    (tesstrain) from the same pairs — drop-in, no fork, test before building the v2 custom recognizer.
 5. Deferred: paragraph-detection model (deterministic rules first), glyph-clustering consistency
-   signal (fixes display-type class), CoreML/ONNX custom recognizer (v2, only if galley plateaus).
+   signal (fixes display-type class), CoreML/ONNX custom recognizer (v2, only if ocr plateaus).
 
 ## Measurement gotchas (each cost real time once)
 

@@ -650,8 +650,8 @@ export class AddOnsPanelComponent implements OnInit {
    *  their own panels. With onlyGpu, narrow further to the CUDA acceleration
    *  packs; with `only`, show exactly the requested ids.
    *
-   *  The page-layout model ('rubric-model') and the footnote-marker model
-   *  ('dagger-model') ARE listed here, unlike the other model kinds. Those are
+   *  The page-layout model ('blocks-model') and the footnote-marker model
+   *  ARE listed here, unlike the other model kinds. Those are
    *  per-voice or per-language sets that need a panel to choose among; these are
    *  single capabilities the export path depends on, with no picker of their
    *  own. Listing them here is also what puts them on the first-run setup page,

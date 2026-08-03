@@ -3573,7 +3573,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     if (!id) return '#9E9E9E';
     // The contract wins over `categories()`. That record is derived from what
     // this book measured, so a class nobody detected has no entry in it — which
-    // is exactly the case for a category set by hand or predicted by rubric.
+    // is exactly the case for a category set by hand or predicted by blocks.
     // This used to fall through to a flat '#FF9500', so every `chapter`,
     // `subheading`, `table` and `list` block painted orange while the palette
     // swatch beside it showed blue, purple, red-orange and olive.

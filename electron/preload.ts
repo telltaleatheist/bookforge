@@ -12,7 +12,7 @@ import type { OrpheusBatchConfig } from './orpheus-batch';
 import type { EpubPreservingEdits } from './epub-processor';
 import type { WhisperModelStatus, WhisperDownloadProgress } from './whisper-models';
 import type { CorrectSentencesSession, GenerateCandidatesResult } from './correct-sentences-bridge';
-import type { RubricRunState, RubricRunProgress } from './rubric-run';
+import type { BlocksRunState, BlocksRunProgress } from './blocks-run';
 // Types only — this module compiles to nothing at runtime, so the wire shapes are
 // imported rather than re-declared (see shared/processing/pass-types.ts).
 import type {
@@ -2279,25 +2279,15 @@ export interface ElectronAPI {
     /** Returns its own unsubscribe, like every other event bridge here. */
     onFileChanged: (callback: (change: CorpusFileChanged) => void) => () => void;
   };
-  rubric: {
+  blocks: {
     health: (endpoint: string, backend?: string, model?: string) => Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }>;
     models: (endpoint: string, backend?: string) => Promise<{ success: boolean; models?: string[]; error?: string }>;
     unload: (endpoint?: string, model?: string) => Promise<{ success: boolean; error?: string }>;
     classify: (payload: unknown) => Promise<{ success: boolean; answers?: string[]; error?: string }>;
-    runStart: (payload: unknown) => Promise<{ success: boolean; state?: RubricRunState; error?: string }>;
-    runAttach: (bookKey: string) => Promise<{ success: boolean; state?: RubricRunState | null }>;
+    runStart: (payload: unknown) => Promise<{ success: boolean; state?: BlocksRunState; error?: string }>;
+    runAttach: (bookKey: string) => Promise<{ success: boolean; state?: BlocksRunState | null }>;
     runCancel: (bookKey: string) => Promise<{ cancelled: boolean }>;
-    onRunProgress: (callback: (progress: RubricRunProgress) => void) => () => void;
-  };
-  dagger: {
-    health: (modelId?: string) => Promise<{
-      success: boolean; modelId?: string; name?: string; componentId?: string; error?: string;
-    }>;
-    models: () => Promise<{
-      success: boolean;
-      models?: Array<{ id: string; name: string; present: boolean; bytes: number; componentId: string }>;
-      error?: string;
-    }>;
+    onRunProgress: (callback: (progress: BlocksRunProgress) => void) => () => void;
   };
   analysis: {
     delete: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
@@ -4139,37 +4129,30 @@ const electronAPI: ElectronAPI = {
     },
   },
   // The fine-tuned block-category model. Prompts are built in the renderer by
-  // rubric-encoder.ts and travel as opaque strings; main only forwards them.
-  rubric: {
+  // blocks-encoder.ts and travel as opaque strings; main only forwards them.
+  blocks: {
     health: (endpoint: string, backend?: string, model?: string) =>
-      ipcRenderer.invoke('rubric:health', endpoint, backend, model),
+      ipcRenderer.invoke('blocks:health', endpoint, backend, model),
     models: (endpoint: string, backend?: string) =>
-      ipcRenderer.invoke('rubric:models', endpoint, backend),
+      ipcRenderer.invoke('blocks:models', endpoint, backend),
     unload: (endpoint?: string, model?: string) =>
-      ipcRenderer.invoke('rubric:unload', endpoint, model),
-    classify: (payload: unknown) => ipcRenderer.invoke('rubric:classify', payload),
+      ipcRenderer.invoke('blocks:unload', endpoint, model),
+    classify: (payload: unknown) => ipcRenderer.invoke('blocks:classify', payload),
     // A whole-book run owned by main, so it survives this renderer being
     // reloaded out from under it. `attach` is what a fresh renderer calls to
     // find the run it lost and pick the answers back up.
-    runStart: (payload: unknown) => ipcRenderer.invoke('rubric:run-start', payload),
-    runAttach: (bookKey: string) => ipcRenderer.invoke('rubric:run-attach', bookKey),
-    runCancel: (bookKey: string) => ipcRenderer.invoke('rubric:run-cancel', bookKey),
-    onRunProgress: (callback: (progress: RubricRunProgress) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, progress: RubricRunProgress) => {
+    runStart: (payload: unknown) => ipcRenderer.invoke('blocks:run-start', payload),
+    runAttach: (bookKey: string) => ipcRenderer.invoke('blocks:run-attach', bookKey),
+    runCancel: (bookKey: string) => ipcRenderer.invoke('blocks:run-cancel', bookKey),
+    onRunProgress: (callback: (progress: BlocksRunProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: BlocksRunProgress) => {
         callback(progress);
       };
-      ipcRenderer.on('rubric:run-progress', listener);
+      ipcRenderer.on('blocks:run-progress', listener);
       return () => {
-        ipcRenderer.removeListener('rubric:run-progress', listener);
+        ipcRenderer.removeListener('blocks:run-progress', listener);
       };
     },
-  },
-  // The fine-tuned footnote-marker model. Presence only — the model itself is
-  // driven from the main process, so the renderer only ever needs to know
-  // whether it is there and which component to offer if it is not.
-  dagger: {
-    health: (modelId?: string) => ipcRenderer.invoke('dagger:health', modelId),
-    models: () => ipcRenderer.invoke('dagger:models'),
   },
   analysis: {
     delete: (projectDir: string) =>

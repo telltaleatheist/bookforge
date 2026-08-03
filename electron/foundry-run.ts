@@ -2,7 +2,7 @@
  * foundry-run — the OCR pipeline, owned by MAIN so a reload cannot kill it.
  *
  * This is the third module in this codebase built to the same shape, for the
- * same reason (see `rubric-run.ts` and `corpus-ocr-run.ts`): the renderer is the
+ * same reason (see `blocks-run.ts` and `corpus-ocr-run.ts`): the renderer is the
  * part of the app that gets thrown away routinely — `ng serve` reloads it on
  * every edit under `src/`, a window closes, a tab changes — and a run that lives
  * in it dies with it. foundry's `ocr` stage costs roughly 0.8 seconds a line,
@@ -26,7 +26,7 @@
  * `ocr` runs BEFORE `footnotes`. foundry's footnotes stage judges the text that
  * will ship, and its export stage REFUSES a footnotes artifact derived from a
  * different text base (foundry commit 18fff9b). Run footnotes first and every
- * block dagger touched ships its RAW text minus markers — silently discarding
+ * block the footnotes stage touched ships its RAW text minus markers — silently discarding
  * that block's OCR corrections, "Miiller" back in the EPUB while ocr/lines.json
  * holds "Müller". The order below is the fix; do not reorder it for symmetry.
  *

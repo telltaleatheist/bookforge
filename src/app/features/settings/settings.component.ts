@@ -2337,16 +2337,16 @@ export class SettingsComponent implements OnInit {
   readonly voxtralAddOnIds = ['voxtral-env'];
   /**
    * The cross-cutting tools, plus every downloadable task model that has no
-   * picker panel of its own — the page-layout model and the footnote-marker
-   * model. Those are DERIVED, not hard-coded, because their component ids carry
-   * a version ('dagger-model-dagger-v1-0.6b'); a literal list would silently
-   * stop showing them the day the catalog gains a v2, and the user would have no
-   * way to install a model the pipeline then asks for.
+   * picker panel of its own — today that is the page-layout model. Those are
+   * DERIVED, not hard-coded, because their component ids carry a version
+   * ('blocks-model-foundry-blocks-v1-4b'); a literal list would silently stop
+   * showing them the day the catalog gains a v2, and the user would have no way
+   * to install a model the pipeline then asks for.
    */
   readonly generalAddOnIds = computed(() => [
     'calibre', 'tesseract', 'llama-cuda',
     ...this.componentService.components()
-      .filter((s) => s.component.kind === 'rubric-model' || s.component.kind === 'dagger-model')
+      .filter((s) => s.component.kind === 'blocks-model')
       .map((s) => s.component.id),
   ]);
 

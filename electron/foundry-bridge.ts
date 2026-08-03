@@ -23,13 +23,13 @@
  * The WEIGHTS are fully foundry's. Every model stage is spawned with
  * `--llama-server <ours>` and nothing else, so foundry resolves base and adapter
  * from its own catalog; the `--base-model` overrides this app used to pass for
- * `ocr` and `blocks` — pointing at the unpublished galley and rubric checkpoints
+ * `ocr` and `blocks` — pointing at the unpublished ocr and blocks checkpoints
  * — are gone, and so is the file that held them. A model this machine lacks is
  * foundry's error to raise, naming the model id and `foundry models pull`.
  *
  * The CODE cutover is not done. pdf-picker's OCR button goes to foundry and only
  * to foundry, but this app's own encoder and appliers are still in the tree —
- * `src/app/features/pdf-picker/services/rubric-encoder.ts` and the rubric/dagger
+ * `src/app/features/pdf-picker/services/blocks-encoder.ts` and the blocks
  * servers — because they still back two features foundry does not replace: the
  * picker's manual Detect panel and the Training tab's corpus building. The
  * extraction is not finished until those copies are *deleted*, because two

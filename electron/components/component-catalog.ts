@@ -16,8 +16,7 @@ import { voiceComponents } from './voice-components';
 import { rvcVoiceComponents } from './rvc-voice-components';
 import { languagePackComponents } from './language-pack-components';
 import { whisperModelComponents } from './whisper-model-components';
-import { rubricModelComponents } from './rubric-model-components';
-import { daggerModelComponents } from './dagger-model-components';
+import { blocksModelComponents } from './blocks-model-components';
 import { foundryCliComponent } from './foundry-cli-components';
 import { llamaCudaComponent } from './llama-cuda';
 import { cudaTtsComponent } from './cuda-tts';
@@ -274,8 +273,7 @@ export function getCatalog(): OptionalComponent[] {
     ...rvcVoiceComponents(),
     ...languagePackComponents(),
     ...whisperModelComponents(),
-    ...rubricModelComponents(),
-    ...daggerModelComponents(),
+    ...blocksModelComponents(),
     foundryCliComponent(),
   ];
 }

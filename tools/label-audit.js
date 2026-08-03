@@ -6,7 +6,7 @@
  *        [--pages 10] [--think] [--json out.json]
  *
  * WHY AUDIT RATHER THAN RELABEL. Asking a general model to classify every block
- * from scratch just builds a worse rubric — rubric is a 4B fine-tuned on 57k
+ * from scratch just builds a worse blocks — blocks is a 4B fine-tuned on 57k
  * hand-labelled blocks and beats any zero-shot prompt at this. What a general
  * model with reasoning IS good at is spotting a label that contradicts its own
  * context: a "body" block of nine characters sitting alone at the top of the
@@ -47,7 +47,7 @@ const DIR = path.join('/Volumes/Callisto/training/rubric/epub-derived', book);
 const rows = fs.readFileSync(path.join(DIR, 'dataset.jsonl'), 'utf-8')
   .split('\n').filter(Boolean).map(JSON.parse).slice(0, maxPages);
 
-// The taxonomy, stated the way a general model needs it — rubric's own prompt
+// The taxonomy, stated the way a general model needs it — blocks's own prompt
 // assumes a fine-tune that already knows these; a zero-shot model does not.
 const TAXONOMY = `body        running prose, the paragraphs a narrator would read aloud
 title       the book's own title, on a title page or half-title

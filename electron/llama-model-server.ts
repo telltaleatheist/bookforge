@@ -2,7 +2,7 @@
  * llama-model-server — one lifecycle for every fine-tune we serve ourselves.
  *
  * BookForge ships two small task-specific fine-tunes that are not chat models:
- * the page-layout model (rubric) and the footnote-marker remover (dagger). Both
+ * the page-layout model (blocks). It
  * want the same thing — the BUNDLED llama-server, held on a private loopback
  * port, spawned on first use, idle-shut-down, and sequenced against every other
  * GPU tenant through the arbiter. Only the numbers differ.
@@ -47,7 +47,7 @@ export interface ResolvedModel {
 }
 
 export interface LlamaModelServerConfig {
-  /** Log prefix, e.g. 'rubric' → `[rubric] …`. */
+  /** Log prefix, e.g. 'blocks' → `[blocks] …`. */
   logTag: string;
   /** How the model is named in errors the user reads, e.g. 'page-layout model'. */
   modelLabel: string;

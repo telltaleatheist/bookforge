@@ -50,7 +50,7 @@ components are the unit of accounting, and they are not all pairs:
                        a pair, truth joined left to right.
   n truth : 1 band, stacked
                        a MERGE: two printed lines in one band. Counted and
-                       reported, never emitted - galley corrects one line.
+                       reported, never emitted - ocr corrects one line.
   1 truth : m bands    a SPLIT. Counted, not emitted.
   n : m                tangled. Counted, not emitted.
   1 truth : 0 bands    MISSING: nothing in the OCR claims this text. The fatal

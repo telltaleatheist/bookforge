@@ -765,7 +765,7 @@ export class AddModalComponent {
   }
 
   /**
-   * Offer to label the book's page layout with the rubric model.
+   * Offer to label the book's page layout with the blocks model.
    *
    * PDFs ONLY, and the caller enforces that. An EPUB states its own structure in
    * its markup — headings, blockquotes, figures are already marked — so there is

@@ -1,7 +1,7 @@
 /**
  * corpus-ocr-run — an OCR pass over a training book that outlives the window.
  *
- * This is the same fix `rubric-run.ts` made for Detect, for the same reason.
+ * This is the same fix `blocks-run.ts` made for Detect, for the same reason.
  * OCR was a `for` loop in the renderer: the modal rendered each page, called
  * Tesseract, and held every result in memory until the last page, at which
  * point it handed the lot over to be written. That made the renderer the run's

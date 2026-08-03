@@ -34,7 +34,7 @@ fs.mkdirSync(outDir, { recursive: true });
 // An ALLOW-LIST, not a deny-list. It used to be the other way round, and that
 // stopped being safe the night the Training tab arrived: a corpus book is now
 // anything with a labels.json, and seven of those are labelled BY THE MODEL —
-// pre-labelled with rubric-v4 and not yet reviewed by anyone. Under the old
+// pre-labelled with blocks-v4 and not yet reviewed by anyone. Under the old
 // "gather everything except X" rule all seven would have been swept into
 // training as ground truth, silently, teaching v5 its predecessor's mistakes.
 //

@@ -14,10 +14,12 @@ translate) saves a diff so Review Changes can show exactly what it did.
 
 "AI cleanup" as a standalone concept is gone: foundry's trained stages replaced
 it — `foundry ocr` for OCR correction, `foundry footnotes` for footnote markers,
-`foundry blocks` for block labelling. (Those three grew out of the galley,
-dagger and rubric families respectively; the adapters were retrained and
-published under foundry's own names, and the old names survive only in the
-in-app Detect panel and the Training tab, which are separate features.)
+`foundry blocks` for block labelling. (Those three grew out of the models called
+*galley*, *dagger* and *rubric*; they were retrained and published under
+foundry's own names as `ocr`, `footnotes` and `blocks`, and the old names were
+scrubbed from the codebase in Aug 2026. Detect and the Training tab are separate
+features and are unaffected — Detect now serves foundry's own
+`foundry-blocks-v1-4b`, one copy on disk shared with foundry.)
 Simplification (de-jargon / de-stiffen / language-learning) and translation
 remain as passes.
 

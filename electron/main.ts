@@ -963,12 +963,16 @@ function setupIpcHandlers(): void {
   // window. BROADCAST, not `event.sender`: the renderer that started a run is
   // usually not the one still listening by the time it ends — that is the whole
   // reason the run lives in main.
-  void import('./rubric-run.js').then(({ rubricRunInit }) => {
-    rubricRunInit({
-      stateDir: path.join(app.getPath('userData'), 'rubric-runs'),
+  void import('./blocks-run.js').then(({ blocksRunInit }) => {
+    blocksRunInit({
+      // Renamed from 'rubric-runs' with the rest of the rubric -> blocks rename
+      // (Aug 3 2026). Deliberately NOT migrated: a run directory holds a Detect
+      // run in flight, keyed by file hash, and the cost of losing one is
+      // re-running Detect — not user data. The old directory is left on disk.
+      stateDir: path.join(app.getPath('userData'), 'blocks-runs'),
       emit: (progress) => {
         for (const win of BrowserWindow.getAllWindows()) {
-          if (!win.isDestroyed()) win.webContents.send('rubric:run-progress', progress);
+          if (!win.isDestroyed()) win.webContents.send('blocks:run-progress', progress);
         }
       },
     });
@@ -6698,101 +6702,56 @@ function setupIpcHandlers(): void {
   });
 
   // ── Block-category model ────────────────────────────────────────────────
-  // Thin pass-through to the resident adapter (tools/aligner/rubric-serve.py).
-  // The prompt format is owned entirely by rubric-encoder.ts in the renderer;
+  // Thin pass-through to the resident adapter (tools/aligner/blocks-serve.py).
+  // The prompt format is owned entirely by blocks-encoder.ts in the renderer;
   // reformatting anything here would degrade the fine-tune in a way that looks
   // like a bad model rather than a bad wire hop.
-  ipcMain.handle('rubric:health', async (_event, endpoint: string,
+  ipcMain.handle('blocks:health', async (_event, endpoint: string,
                                             backend?: 'ollama' | 'service', model?: string) => {
-    const { rubricHealth } = await import('./rubric-bridge.js');
-    return rubricHealth(endpoint, backend, model);
+    const { blocksHealth } = await import('./blocks-bridge.js');
+    return blocksHealth(endpoint, backend, model);
   });
 
-  ipcMain.handle('rubric:unload', async (_event, endpoint?: string, model?: string) => {
-    const { rubricUnload } = await import('./rubric-bridge.js');
-    return rubricUnload(endpoint, model);
+  ipcMain.handle('blocks:unload', async (_event, endpoint?: string, model?: string) => {
+    const { blocksUnload } = await import('./blocks-bridge.js');
+    return blocksUnload(endpoint, model);
   });
 
-  ipcMain.handle('rubric:models', async (_event, endpoint: string,
+  ipcMain.handle('blocks:models', async (_event, endpoint: string,
                                         backend?: 'local' | 'ollama' | 'service') => {
-    const { rubricModels } = await import('./rubric-bridge.js');
-    return rubricModels(endpoint, backend);
+    const { blocksModels } = await import('./blocks-bridge.js');
+    return blocksModels(endpoint, backend);
   });
 
-  ipcMain.handle('rubric:classify', async (_event, payload: {
+  ipcMain.handle('blocks:classify', async (_event, payload: {
     endpoint: string;
     pages: Array<{ system: string; user: string }>;
     batch?: number;
   }) => {
-    const { rubricClassify } = await import('./rubric-bridge.js');
-    return rubricClassify(payload);
+    const { blocksClassify } = await import('./blocks-bridge.js');
+    return blocksClassify(payload);
   });
 
   // A whole-book run, owned here rather than by the renderer's loop, so that
   // reloading the renderer — which `ng serve` does on every edit under src/ —
-  // does not throw away the work. See electron/rubric-run.ts.
-  ipcMain.handle('rubric:run-start', async (_event, payload: unknown) => {
-    const { rubricRunStart } = await import('./rubric-run.js');
+  // does not throw away the work. See electron/blocks-run.ts.
+  ipcMain.handle('blocks:run-start', async (_event, payload: unknown) => {
+    const { blocksRunStart } = await import('./blocks-run.js');
     try {
-      return { success: true, state: rubricRunStart(payload as any) };
+      return { success: true, state: blocksRunStart(payload as any) };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
-  ipcMain.handle('rubric:run-attach', async (_event, bookKey: string) => {
-    const { rubricRunAttach } = await import('./rubric-run.js');
-    return { success: true, state: rubricRunAttach(bookKey) };
+  ipcMain.handle('blocks:run-attach', async (_event, bookKey: string) => {
+    const { blocksRunAttach } = await import('./blocks-run.js');
+    return { success: true, state: blocksRunAttach(bookKey) };
   });
 
-  ipcMain.handle('rubric:run-cancel', async (_event, bookKey: string) => {
-    const { rubricRunCancel } = await import('./rubric-run.js');
-    return rubricRunCancel(bookKey);
-  });
-
-  // ── Footnote-marker model ───────────────────────────────────────────────
-  // Presence only. Answered from DISK, not from a running server: the question
-  // is "can this machine strip footnote markers?", and a downloaded model that
-  // has not been loaded yet answers yes. Requiring a live server would mean
-  // spending a model load just to populate a status line.
-  //
-  // `componentId` comes back on BOTH answers so a caller that finds nothing
-  // installed can hand it straight to the component installer instead of
-  // hard-coding an id — and so a missing model is a visible, actionable state
-  // rather than something the cleanup path silently works around.
-  ipcMain.handle('dagger:health', async (_event, modelId?: string) => {
-    const { getDaggerModelDef, isDaggerModelPresent, bestInstalledDaggerModel, DAGGER_MODELS } =
-      await import('./dagger-models.js');
-    const { daggerModelComponentId } = await import('./components/dagger-model-components.js');
-
-    const preferred = [...DAGGER_MODELS].sort((a, b) => b.rank - a.rank)[0];
-    const wanted = modelId || bestInstalledDaggerModel()?.id || preferred?.id || '';
-    if (!wanted) return { success: false, error: 'no footnote-marker model is published' };
-
-    const componentId = daggerModelComponentId(wanted);
-    const def = getDaggerModelDef(wanted);
-    if (!def) {
-      return { success: false, componentId, error: `unknown footnote-marker model "${wanted}"` };
-    }
-    if (!isDaggerModelPresent(wanted)) {
-      return { success: false, componentId, error: `"${def.name}" is not downloaded yet` };
-    }
-    return { success: true, modelId: wanted, name: def.name, componentId };
-  });
-
-  ipcMain.handle('dagger:models', async () => {
-    const { listDaggerModels } = await import('./dagger-models.js');
-    const { daggerModelComponentId } = await import('./components/dagger-model-components.js');
-    return {
-      success: true,
-      models: listDaggerModels().map((m) => ({
-        id: m.id,
-        name: m.name,
-        present: m.present,
-        bytes: m.bytes,
-        componentId: daggerModelComponentId(m.id),
-      })),
-    };
+  ipcMain.handle('blocks:run-cancel', async (_event, bookKey: string) => {
+    const { blocksRunCancel } = await import('./blocks-run.js');
+    return blocksRunCancel(bookKey);
   });
 
   ipcMain.handle('training:align', async (_event, payload: {
@@ -10415,10 +10374,8 @@ app.whenReady().then(async () => {
   // Reaped by recorded pid, never by port, so a llama-server the user started
   // themselves is untouched. See LlamaModelServer.reapOrphan.
   try {
-    const { rubricServer } = await import('./rubric-server.js');
-    const { daggerServer } = await import('./dagger-server.js');
-    rubricServer.reapOrphan();
-    daggerServer.reapOrphan();
+    const { blocksServer } = await import('./blocks-server.js');
+    blocksServer.reapOrphan();
   } catch (err) {
     logger.warn('Orphaned model-server sweep failed', { error: (err as Error).message });
   }
@@ -10908,30 +10865,22 @@ app.on('before-quit', async (event) => {
   // Stop the built-in page-layout server. Several GB of resident weights, and a
   // detached llama-server would outlive the app that spawned it.
   try {
-    const { stopRubricServer } = await import('./rubric-server.js');
-    await stopRubricServer();
+    const { stopBlocksServer } = await import('./blocks-server.js');
+    await stopBlocksServer();
   } catch (err) {
     console.warn('[MAIN] Could not stop the page-layout model server:', err);
   }
 
-  // Same for the footnote-marker server — smaller weights, same detached-process
-  // problem if it is left running.
-  try {
-    const { stopDaggerServer } = await import('./dagger-server.js');
-    await stopDaggerServer();
-  } catch (err) {
-    console.warn('[MAIN] Could not stop the footnote-marker model server:', err);
-  }
 
   // Stop any classification run BEFORE unloading, or the chunk in flight would
   // re-load the model straight after we released it. Waits for that chunk so its
   // answers reach disk — a resumed run then starts from there instead of
   // re-asking pages the GPU already paid for.
   try {
-    const { rubricRunCancelAll, rubricRunActive } = await import('./rubric-run.js');
-    if (rubricRunActive()) {
+    const { blocksRunCancelAll, blocksRunActive } = await import('./blocks-run.js');
+    if (blocksRunActive()) {
       console.log('[MAIN] Stopping the block-category run...');
-      await rubricRunCancelAll();
+      await blocksRunCancelAll();
     }
   } catch (err) {
     console.warn('[MAIN] Could not stop the block-category run:', err);
@@ -10956,10 +10905,10 @@ app.on('before-quit', async (event) => {
   //
   // This is the FAST path only. It cannot fire on a crash or a force-quit, so
   // correctness rests on the keep_alive TTL refreshed by every request — see
-  // `keepAliveSeconds` in rubric-bridge.ts.
+  // `keepAliveSeconds` in blocks-bridge.ts.
   try {
-    const { rubricUnload } = await import('./rubric-bridge.js');
-    const released = await rubricUnload();
+    const { blocksUnload } = await import('./blocks-bridge.js');
+    const released = await blocksUnload();
     if (released.success) console.log('[MAIN] Released the block-category model');
   } catch (err) {
     console.warn('[MAIN] Could not release the block-category model:', err);

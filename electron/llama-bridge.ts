@@ -161,7 +161,7 @@ function getActiveConfigPath(): string {
  * (packaged) → the repo's resources/bin (dev). Returns null when no binary is
  * available.
  *
- * Exported as `resolveLlamaServerBinary` for rubric-server.ts, which runs the
+ * Exported as `resolveLlamaServerBinary` for blocks-server.ts, which runs the
  * page-layout model on a second instance of the same binary. ONE resolver: the
  * CUDA-pack-wins rule and the packaged-vs-dev search order are exactly the same
  * question, and a second copy would drift (and did, in the Ollama-based version

@@ -446,7 +446,7 @@ export function furniture(blocks, results, segments) {
 
 // Thirteen since Jul 2026 — `front_matter`/`back_matter` were positional, not
 // categorical, and `footnote_ref` had 2 examples in 42,759. Keep in step with
-// CATEGORIES in build-sft-dataset.mjs and RUBRIC_CATEGORIES_V3 in
-// rubric-encoder.ts.
+// CATEGORIES in build-sft-dataset.mjs and BLOCKS_CATEGORIES_V3 in
+// blocks-encoder.ts.
 export const LABEL_SET = ['body','title','chapter','heading','subheading','quote','caption',
   'footnote','header','footer','image','table','list','discard'];

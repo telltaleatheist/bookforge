@@ -4,13 +4,13 @@
  * BookForge fine-tunes three models, and each has its own corpus, its own unit
  * of work and its own store, so this tab has one sub-tab per model:
  *
- *   rubric  page layout      a BOOK of labelled blocks    training/<slug>/
- *   dagger  footnote markers a BOOK of before/after pairs training/dagger/*.jsonl
- *   galley  OCR correction   public corpora + scan pairs  training/galley/
+ *   blocks  page layout      a BOOK of labelled blocks    training/<slug>/
+ *   footnotes  footnote markers a BOOK of before/after pairs training/dagger/*.jsonl
+ *   ocr  OCR correction   public corpora + scan pairs  training/galley/
  *
- * Only rubric books open in the editor: they are pages with rectangles on them,
- * which is a thing an editor can show. Dagger examples are line-level text
- * rewrites and galley's are OCR/ground-truth string pairs, so those two tabs
+ * Only blocks books open in the editor: they are pages with rectangles on them,
+ * which is a thing an editor can show. Footnote examples are line-level text
+ * rewrites and ocr's are OCR/ground-truth string pairs, so those two tabs
  * report inventory and nothing more, and say so — a row that looks clickable
  * and is not would be worse than one that states what it is.
  *
@@ -38,7 +38,7 @@ import {
 } from '../../core/services/electron.service';
 
 /** Which corpus is on screen. One model per tab; they share nothing but a root. */
-type CorpusTab = 'rubric' | 'dagger' | 'galley';
+type CorpusTab = 'blocks' | 'footnotes' | 'ocr';
 
 /** A book plus the derived bits the row needs, so the template stays flat. */
 interface TrainingRow {
@@ -69,29 +69,29 @@ interface TrainingRow {
       <button
         class="tab"
         role="tab"
-        [class.active]="activeTab() === 'rubric'"
-        [attr.aria-selected]="activeTab() === 'rubric'"
-        (click)="setTab('rubric')"
+        [class.active]="activeTab() === 'blocks'"
+        [attr.aria-selected]="activeTab() === 'blocks'"
+        (click)="setTab('blocks')"
       >
-        Rubric
+        Blocks
       </button>
       <button
         class="tab"
         role="tab"
-        [class.active]="activeTab() === 'dagger'"
-        [attr.aria-selected]="activeTab() === 'dagger'"
-        (click)="setTab('dagger')"
+        [class.active]="activeTab() === 'footnotes'"
+        [attr.aria-selected]="activeTab() === 'footnotes'"
+        (click)="setTab('footnotes')"
       >
-        Dagger
+        Footnotes
       </button>
       <button
         class="tab"
         role="tab"
-        [class.active]="activeTab() === 'galley'"
-        [attr.aria-selected]="activeTab() === 'galley'"
-        (click)="setTab('galley')"
+        [class.active]="activeTab() === 'ocr'"
+        [attr.aria-selected]="activeTab() === 'ocr'"
+        (click)="setTab('ocr')"
       >
-        Galley
+        OCR
       </button>
       <span class="tab-caption">{{ tabCaption() }}</span>
     </div>
@@ -99,9 +99,9 @@ interface TrainingRow {
     <div class="training-container">
       @switch (activeTab()) {
 
-        <!-- ═══ RUBRIC: page layout. The only corpus whose unit is a thing an
+        <!-- ═══ BLOCKS: page layout. The only corpus whose unit is a thing an
              editor can show, so the only one whose rows open. ═══ -->
-        @case ('rubric') {
+        @case ('blocks') {
           <!-- A failed list is NOT an empty corpus, and must never be drawn as one:
                the whole value of this tab is that it reports what is actually there. -->
           @if (listError(); as err) {
@@ -255,11 +255,11 @@ interface TrainingRow {
           }
         }
 
-        <!-- ═══ DAGGER: footnote-marker removal. Inventory only. ═══ -->
-        @case ('dagger') {
+        <!-- ═══ FOOTNOTES: footnote-marker removal. Inventory only. ═══ -->
+        @case ('footnotes') {
           @if (corporaError(); as err) {
             <div class="banner error" role="alert">
-              <span class="banner-title">The dagger corpus could not be read</span>
+              <span class="banner-title">The footnotes corpus could not be read</span>
               <span class="banner-detail">{{ err }}</span>
             </div>
           } @else if (corporaLoading()) {
@@ -268,16 +268,16 @@ interface TrainingRow {
             </div>
           } @else if (corpora(); as c) {
             <div class="summary">
-              <span><strong>{{ c.dagger.draft }}</strong> draft</span>
-              <span><strong>{{ c.dagger.negatives }}</strong> negatives</span>
-              <span><strong>{{ c.dagger.ambiguous }}</strong> ambiguous</span>
+              <span><strong>{{ c.footnotes.draft }}</strong> draft</span>
+              <span><strong>{{ c.footnotes.negatives }}</strong> negatives</span>
+              <span><strong>{{ c.footnotes.ambiguous }}</strong> ambiguous</span>
               <span class="summary-labelled">
-                {{ c.dagger.books.length }} book{{ c.dagger.books.length === 1 ? '' : 's' }}
+                {{ c.footnotes.books.length }} book{{ c.footnotes.books.length === 1 ? '' : 's' }}
               </span>
             </div>
 
             <p class="tab-note">
-              Dagger strips footnote markers from a line of body text, so its unit of work is a
+              The footnotes model strips footnote markers from a line of body text, so its unit of work is a
               line, not a page — which is why nothing here opens in the editor.
               <strong>Draft</strong> lines carry a marker to remove and are the positive examples;
               <strong>negatives</strong> must come back byte-for-byte UNCHANGED and are the whole
@@ -286,9 +286,9 @@ interface TrainingRow {
               design rather than guessed at.
             </p>
 
-            @if (c.dagger.books.length > 0) {
+            @if (c.footnotes.books.length > 0) {
               <div class="book-list">
-                @for (b of c.dagger.books; track b.book) {
+                @for (b of c.footnotes.books; track b.book) {
                   <div class="book static">
                     <div class="book-head">
                       <span class="book-title">{{ b.book }}</span>
@@ -310,9 +310,9 @@ interface TrainingRow {
             } @else {
               <div class="empty-state">
                 <div class="empty-icon">&#128220;</div>
-                <h2>No dagger corpus on disk</h2>
+                <h2>No footnotes corpus on disk</h2>
                 <p>
-                  Dagger pairs are built into <code>{{ corpusPath }}dagger/</code> as
+                  Footnote pairs are built into <code>{{ corpusPath }}dagger/</code> as
                   <code>&lt;Book&gt;.draft|negatives|ambiguous[.v2].jsonl</code> by the corpus
                   builder. Nothing in the app writes them — this tab only counts what is there.
                 </p>
@@ -321,22 +321,22 @@ interface TrainingRow {
           }
         }
 
-        <!-- ═══ GALLEY: OCR correction. Material gathered, model not built. ═══ -->
-        @case ('galley') {
+        <!-- ═══ OCR: OCR correction. Material gathered, model not built. ═══ -->
+        @case ('ocr') {
           @if (corporaError(); as err) {
             <div class="banner error" role="alert">
-              <span class="banner-title">The galley corpus could not be read</span>
+              <span class="banner-title">The ocr corpus could not be read</span>
               <span class="banner-detail">{{ err }}</span>
             </div>
           } @else if (corporaLoading()) {
             <div class="empty-state">
-              <p>Reading {{ corpusPath }}galley/…</p>
+              <p>Reading {{ corpusPath }}ocr/…</p>
             </div>
           } @else if (corpora(); as c) {
             <div class="banner info" role="note">
-              <span class="banner-title">Galley is not built yet</span>
+              <span class="banner-title">OCR is not built yet</span>
               <span class="banner-detail">
-                There is no galley model, no training run and no eval. What follows is the raw
+                There is no ocr model, no training run and no eval. What follows is the raw
                 material gathered for one: public post-OCR corpora, and scans that happen to
                 have a clean EPUB of the same book sitting beside them.
               </span>
@@ -344,18 +344,18 @@ interface TrainingRow {
 
             <div class="summary">
               <span>
-                {{ c.galley.corpora.length }}
-                public {{ c.galley.corpora.length === 1 ? 'corpus' : 'corpora' }}
+                {{ c.ocr.corpora.length }}
+                public {{ c.ocr.corpora.length === 1 ? 'corpus' : 'corpora' }}
               </span>
               <span class="summary-labelled">
-                {{ c.galley.pairs.length }} scan + EPUB pair{{ c.galley.pairs.length === 1 ? '' : 's' }}
+                {{ c.ocr.pairs.length }} scan + EPUB pair{{ c.ocr.pairs.length === 1 ? '' : 's' }}
               </span>
             </div>
 
             <h3 class="section-heading">Public post-OCR corpora</h3>
-            @if (c.galley.corpora.length > 0) {
+            @if (c.ocr.corpora.length > 0) {
               <div class="book-list">
-                @for (g of c.galley.corpora; track g.name) {
+                @for (g of c.ocr.corpora; track g.name) {
                   <div class="book static">
                     <div class="book-head">
                       <span class="book-title">{{ g.name }}</span>
@@ -369,7 +369,7 @@ interface TrainingRow {
               </div>
             } @else {
               <p class="tab-note">
-                Nothing downloaded into <code>{{ corpusPath }}galley/public-corpora/</code> yet.
+                Nothing downloaded into <code>{{ corpusPath }}ocr/public-corpora/</code> yet.
               </p>
             }
 
@@ -379,9 +379,9 @@ interface TrainingRow {
               the same pages read two ways, which is what turns a scan into supervised OCR
               correction. The pairing is the scarce thing here, not the scan.
             </p>
-            @if (c.galley.pairs.length > 0) {
+            @if (c.ocr.pairs.length > 0) {
               <div class="book-list">
-                @for (p of c.galley.pairs; track p.slug) {
+                @for (p of c.ocr.pairs; track p.slug) {
                   <div class="book static">
                     <div class="book-head">
                       <span class="book-title">{{ p.slug }}</span>
@@ -610,7 +610,7 @@ interface TrainingRow {
         outline-offset: 2px;
       }
 
-      // Dagger and galley rows: inventory, with nothing behind them to open. No
+      // Footnotes and ocr rows: inventory, with nothing behind them to open. No
       // pointer, no hover lift — the row has to look like the readout it is.
       &.static {
         cursor: default;
@@ -816,22 +816,22 @@ export default class TrainingComponent implements OnInit {
   /** Named in the empty state and the loading line — the one place the corpus lives. */
   readonly corpusPath = '/Volumes/Callisto/training/rubric/';
 
-  /** Rubric first: it is the only corpus with work to do in this app. */
-  readonly activeTab = signal<CorpusTab>('rubric');
+  /** Blocks first: it is the only corpus with work to do in this app. */
+  readonly activeTab = signal<CorpusTab>('blocks');
 
   readonly books = signal<TrainingBookSummary[]>([]);
   readonly loading = signal(true);
   readonly adding = signal(false);
 
   /**
-   * Dagger + galley inventory, or null until someone asks for it.
+   * Footnotes + ocr inventory, or null until someone asks for it.
    *
    * Deliberately NOT loaded in ngOnInit alongside the book list. Building it
-   * walks `galley/public-corpora/` file by file for a byte total (tens of
-   * thousands of files) and counts newlines through every dagger .jsonl (tens
+   * walks `ocr/public-corpora/` file by file for a byte total (tens of
+   * thousands of files) and counts newlines through every footnotes .jsonl (tens
    * of MB) — real disk work, on every visit to a tab that is opened daily to
-   * pick the next rubric book to label and never scrolled past the first
-   * screen. So it is paid the first time Dagger or Galley is actually opened,
+   * pick the next blocks book to label and never scrolled past the first
+   * screen. So it is paid the first time Footnotes or OCR is actually opened,
    * and after that only when Refresh is pressed on one of them.
    */
   readonly corpora = signal<TrainingCorpora | null>(null);
@@ -912,9 +912,9 @@ export default class TrainingComponent implements OnInit {
   /** What the tab in front of you is for. Three model names, no shared meaning. */
   readonly tabCaption = computed(() => {
     switch (this.activeTab()) {
-      case 'rubric': return 'Page layout — labelled blocks, one book per folder';
-      case 'dagger': return 'Footnote markers — before/after line pairs';
-      case 'galley': return 'OCR correction — material gathered, model not built';
+      case 'blocks': return 'Page layout — labelled blocks, one book per folder';
+      case 'footnotes': return 'Footnote markers — before/after line pairs';
+      case 'ocr': return 'OCR correction — material gathered, model not built';
     }
   });
 
@@ -922,11 +922,11 @@ export default class TrainingComponent implements OnInit {
     const tab = this.activeTab();
     const items: ToolbarItem[] = [];
 
-    // Add PDF… exists only on Rubric. Dagger's files are written by the corpus
-    // builder and galley's are downloaded; there is nothing on either tab that a
+    // Add PDF… exists only on Blocks. The footnotes corpus's files are written by the corpus
+    // builder and ocr's are downloaded; there is nothing on either tab that a
     // PDF could be added TO, and a button that would have to explain itself by
     // refusing is worse than a button that is not there.
-    if (tab === 'rubric') {
+    if (tab === 'blocks') {
       items.push({
         id: 'add',
         type: 'button',
@@ -942,10 +942,10 @@ export default class TrainingComponent implements OnInit {
       type: 'button',
       icon: '↻',
       label: 'Refresh',
-      tooltip: tab === 'rubric'
+      tooltip: tab === 'blocks'
         ? 'Re-read the training books from disk'
         : 'Re-count the corpus files on disk',
-      disabled: tab === 'rubric' ? this.loading() : this.corporaLoading()
+      disabled: tab === 'blocks' ? this.loading() : this.corporaLoading()
     });
     items.push({ id: 'spacer', type: 'spacer' });
     return items;
@@ -964,7 +964,7 @@ export default class TrainingComponent implements OnInit {
         // Refresh means "re-read what I am looking at". The two corpora are read
         // by different IPC calls with very different costs, and refreshing the
         // one that is off screen would just be a slow no-op.
-        if (this.activeTab() === 'rubric') void this.refresh();
+        if (this.activeTab() === 'blocks') void this.refresh();
         else void this.loadCorpora();
         break;
     }
@@ -976,13 +976,13 @@ export default class TrainingComponent implements OnInit {
     // read the signal. Refresh is how you ask for a fresh count. A load that
     // failed leaves the signal null, so coming back to the tab retries it —
     // which is what someone who just restarted the main process would expect.
-    if (tab !== 'rubric' && !this.corpora() && !this.corporaLoading()) {
+    if (tab !== 'blocks' && !this.corpora() && !this.corporaLoading()) {
       void this.loadCorpora();
     }
   }
 
   /**
-   * Read the dagger and galley inventory.
+   * Read the footnotes and ocr inventory.
    *
    * Same try/finally shape as `refresh()` and for the same reason: an
    * unregistered channel REJECTS, and without the finally the tab would sit on

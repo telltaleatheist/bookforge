@@ -11,7 +11,7 @@
  *  - the stage ORDER, and specifically that `ocr` runs before `footnotes`.
  *    foundry's export refuses a footnotes artifact derived from a different text
  *    base, so getting this backwards ships raw text where corrected text was
- *    promised — and it does it silently, on the blocks dagger touched.
+ *    promised — and it does it silently, on the blocks the footnotes stage touched.
  *  - `footnotes` runs only when the user ticked the box.
  *  - a resumed run does not re-do stages foundry already recorded as done.
  *  - a run directory belongs to ONE page set.

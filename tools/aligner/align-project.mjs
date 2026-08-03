@@ -49,17 +49,17 @@
  * evidence for the first three at all, and the heading levels come out of the
  * EPUB's h2/h3 nesting, which is a different decision from the print book's
  * typographic levels. Those are precisely the classes the corpus is starving for
- * (docs/RUBRIC_TRAINING.md §2), which makes them the ones a plausible-looking
+ * (docs/BLOCKS_TRAINING.md §2), which makes them the ones a plausible-looking
  * wrong pre-label would do the most damage to.
  *
  * TWO OUTPUTS, mirroring cli/ocr-pdf.js:
  *
  *   --project <dir>  paints the surviving categories into the manifest through
- *                    `electron/rubric-predictions.ts` — the same locked, atomic
+ *                    `electron/blocks-predictions.ts` — the same locked, atomic
  *                    write headless Detect uses, with the run snapshotted in
- *                    `editor.rubricPredictions` and hand labels left inviolable.
+ *                    `editor.blocksPredictions` and hand labels left inviolable.
  *                    The run records `model: "epub-align"` so it is impossible to
- *                    confuse with a rubric model's predictions in the error report.
+ *                    confuse with a blocks model's predictions in the error report.
  *   --out <dir>      writes labels.json (the label-mode session shape
  *                    `gather-corpus.mjs` reads) + book.json + align-report.json.
  *
@@ -1230,7 +1230,7 @@ const regionOf = new Map(BLOCK_CATEGORIES.map(c => [c.id, c.region ?? 'body']));
 // ── output A: the project paint ──────────────────────────────────────────────
 
 if (projectDir) {
-  const preds = require_(path.join(REPO_ROOT, 'dist', 'electron', 'rubric-predictions.js'));
+  const preds = require_(path.join(REPO_ROOT, 'dist', 'electron', 'blocks-predictions.js'));
   const ms = require_(path.join(REPO_ROOT, 'dist', 'electron', 'manifest-service.js'));
   const ref = preds.resolveProjectRef(projectDir);
   const { blocks: stored } = await preds.readProjectBlocks(ref);
@@ -1303,10 +1303,10 @@ if (projectDir) {
 
   const predictions = Object.fromEntries([...decisions].map(([id, d]) => [id, d.category]));
   const unpredicted = outBlocks.filter(b => !decisions.has(b.id)).map(b => b.id);
-  const written = await preds.persistRubricPredictions(ref, {
-    // The run's identity. `model` is what rubric-report and the picker surface,
+  const written = await preds.persistBlocksPredictions(ref, {
+    // The run's identity. `model` is what blocks-report and the picker surface,
     // so it carries the predictor name: these are alignment labels, and reading
-    // them as a rubric checkpoint's output would corrupt every measurement made
+    // them as a blocks checkpoint's output would corrupt every measurement made
     // against them.
     model: 'epub-align',
     predictor: 'epub-align',
