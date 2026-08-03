@@ -17,7 +17,7 @@
  * that misleads — it answers an unauthenticated one with **404, not 401**. So a
  * download attempt looks exactly like a missing asset.
  *
- * The URLs and hashes below are real: they are the v0.1.0 release assets and
+ * The URLs and hashes below are real: they are the v0.2.0 release assets and
  * their sha256s as published in that release's `checksums.txt`. If the owner
  * makes the repository public, the managed install starts working with no
  * change here. Until then the supported path is the EXTERNAL one — the user
@@ -39,7 +39,7 @@ export const FOUNDRY_CLI_COMPONENT_ID = 'foundry-cli';
 export const FOUNDRY_CLI_ENV_VAR = 'FOUNDRY_CLI_PATH';
 
 /** The release these artifacts come from. Bumping it means new URLs and hashes. */
-export const FOUNDRY_CLI_VERSION = '0.1.0';
+export const FOUNDRY_CLI_VERSION = '0.2.0';
 
 const RELEASE_BASE =
   `https://github.com/telltaleatheist/foundry/releases/download/v${FOUNDRY_CLI_VERSION}`;
@@ -65,29 +65,29 @@ const ASSETS: FoundryAsset[] = [
     platform: 'darwin',
     arch: 'arm64',
     file: 'foundry-darwin-arm64.tar.gz',
-    sha256: '661d5d48719632ad3644c0260f24267c6a0c4d433b7d8f604dfa08b388334292',
-    bytes: 23990730,
+    sha256: '4de160a474cbba3c867647d2dda00011909a49870a2f4a95ede6c30c1d33c4aa',
+    bytes: 24012880,
   },
   {
     platform: 'darwin',
     arch: 'x64',
     file: 'foundry-darwin-x64.tar.gz',
-    sha256: '3ca78599ba948e7576d4c9725512690c62f645de5819dd41ee38bf23b3acfb4c',
-    bytes: 26558923,
+    sha256: 'c325d2bac4403d448fc59c484f0e71584664773241a911cb4eab60b2dc0a01c3',
+    bytes: 26581452,
   },
   {
     platform: 'linux',
     arch: 'x64',
     file: 'foundry-linux-x64.tar.gz',
-    sha256: '101981ed57de734dbe3ef9f8701f7dfd4e1861c77f25b33f5538d1ba4fa5b5c3',
-    bytes: 36022825,
+    sha256: '3c8d60222a35f991016d536c933b1ccaaf721afcc91c8a25d54a8f28c44941cd',
+    bytes: 36044676,
   },
   {
     platform: 'win32',
     arch: 'x64',
     file: 'foundry-windows-x64.tar.gz',
-    sha256: '6d55c7c4d811688884f5c12dbe582216dc84dd611dcdcece9c51a70b8f4a4dbf',
-    bytes: 38409028,
+    sha256: '2af267dcb256befa86854d29c043e404d8df2c0d461db9fb8c08193d0ff65c48',
+    bytes: 38430956,
   },
 ];
 
