@@ -28,10 +28,17 @@ export type PassJobType =
   | 'simplify'
   | 'translate-pass';
 
+/**
+ * Who runs a text pass. 'local' is the bundled llama.cpp server — the app's own
+ * default AI, and the only one that works with nothing configured — so a pass
+ * that could not name it could not express what most runs actually use.
+ */
+export type PassAiProvider = 'ollama' | 'claude' | 'openai' | 'local';
+
 export interface SimplifyPassParams {
   /** de-jargon | de-stiffen | language-learner. Validated by ai-bridge. */
   mode: 'dejargon' | 'destiffen' | 'learner';
-  aiProvider: 'ollama' | 'claude' | 'openai';
+  aiProvider: PassAiProvider;
   aiModel: string;
   ollamaBaseUrl?: string;
   claudeApiKey?: string;
@@ -44,7 +51,7 @@ export interface SimplifyPassParams {
 export interface TranslatePassParams {
   sourceLang: string;
   targetLang: string;
-  aiProvider: 'ollama' | 'claude' | 'openai';
+  aiProvider: PassAiProvider;
   aiModel: string;
   ollamaBaseUrl?: string;
   claudeApiKey?: string;

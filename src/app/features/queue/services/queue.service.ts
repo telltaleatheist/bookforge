@@ -34,7 +34,7 @@ import {
   PASS_JOB_TYPES,
   RATE_WINDOW_MIN_SECONDS
 } from '../models/queue.types';
-import type { PassJobConfig, ProcessingChainPlan } from '@shared/processing/pass-types';
+import type { PassJobConfig, ProcessingChainPlan, ProcessingChainRequest } from '@shared/processing/pass-types';
 import { stagesFor } from '../models/job-stages';
 import { JobEtaService } from './job-eta.service';
 import { AIProvider } from '../../../core/models/ai-config.types';
@@ -42,6 +42,7 @@ import { collapseFilenameDots } from '../../../core/utils/filename-utils';
 import { StudioService } from '../../studio/services/studio.service';
 import { SettingsService } from '../../../core/services/settings.service';
 import { RuntimeService } from '../../../core/services/runtime.service';
+import { ElectronService } from '../../../core/services/electron.service';
 
 // AI Provider config for IPC
 interface AIProviderConfig {
@@ -290,6 +291,7 @@ export class QueueService {
   private readonly studioService = inject(StudioService);
   private readonly settingsService = inject(SettingsService);
   private readonly runtimeService = inject(RuntimeService);
+  private readonly electron = inject(ElectronService);
   // The one throughput/ETA engine, shared with the queue panel so a child's row and
   // the workflow total can never quote different numbers for the same work.
   private readonly jobEta = inject(JobEtaService);
@@ -1596,8 +1598,68 @@ export class QueueService {
       });
     }
 
-    console.log(`[QUEUE] Enqueued processing run for ${plan.title}: ${plan.jobs.map(j => j.jobType).join(' → ')}`);
+    // Narration and assembly ride in the SAME workflow, behind the passes, so the
+    // ordering rule in processNext holds them until the book they read has been
+    // written. They are staged by submitProcessingRun (see pendingChainFollowOn).
+    const followOn = this.takeChainFollowOn(plan.projectDir);
+    for (const request of followOn) {
+      await this.addJob({ ...request, parentJobId: master.id, workflowId });
+    }
+
+    const trailing = followOn.map(j => j.type);
+    console.log(`[QUEUE] Enqueued processing run for ${plan.title}: `
+      + [...plan.jobs.map(j => j.jobType), ...trailing].join(' → '));
     void this.saveQueueState();
+  }
+
+  /**
+   * Jobs to hang off the NEXT chain this service enqueues, and the project they
+   * belong to.
+   *
+   * A pass run is planned in MAIN and arrives here as a `queue:enqueue-chain`
+   * event, so the caller that submitted it never sees the plan and has nothing to
+   * attach a follow-on job to. Rather than give the wizard a second way to build a
+   * workflow, it stages the jobs here immediately before submitting and this
+   * consumes them when the chain lands.
+   */
+  private pendingChainFollowOn: { projectDir: string; jobs: CreateJobRequest[] } | null = null;
+
+  /**
+   * THE way to queue a pass run from the UI: main plans and validates it
+   * (`processing:submit-chain`), and `followOn` — TTS, enhancement, assembly —
+   * is queued behind it in the same workflow.
+   *
+   * The follow-on jobs must be fully built by the caller BEFORE this is called:
+   * anything that can fail while building them (a resume check, a missing voice)
+   * has to fail with nothing queued, not halfway through a workflow.
+   */
+  async submitProcessingRun(
+    request: ProcessingChainRequest,
+    followOn: CreateJobRequest[] = []
+  ): Promise<{ success: boolean; plan?: ProcessingChainPlan; error?: string }> {
+    const projectDir = request.projectDir;
+    if (!projectDir && followOn.length > 0) {
+      throw new Error('A processing run with follow-on jobs needs projectDir: it is what pairs them with the chain.');
+    }
+    this.pendingChainFollowOn = followOn.length > 0 ? { projectDir: projectDir!, jobs: followOn } : null;
+    const result = await this.electron.submitProcessingChain(request);
+    // A refused plan queues nothing, so the staged jobs have no chain to ride and
+    // must not be picked up by whatever chain is submitted next.
+    if (!result.success) this.pendingChainFollowOn = null;
+    return result;
+  }
+
+  /** Consume the staged follow-on jobs, if they belong to this chain's project. */
+  private takeChainFollowOn(projectDir: string): CreateJobRequest[] {
+    const staged = this.pendingChainFollowOn;
+    this.pendingChainFollowOn = null;
+    if (!staged) return [];
+    if (staged.projectDir !== projectDir) {
+      console.warn(`[QUEUE] Discarding follow-on jobs staged for ${staged.projectDir}: `
+        + `the chain that arrived is for ${projectDir}.`);
+      return [];
+    }
+    return staged.jobs;
   }
 
   /**

@@ -1,20 +1,23 @@
 /**
  * The unified processing pipeline wizard (formerly LLWizard).
  *
- * One 5-step wizard for ALL audiobook production:
- * 1. AI Cleanup - Clean OCR/formatting OR simplify for learners (skippable)
- * 2. Translation - mode switch: Whole book (single narration) vs
- *    Sentence-aligned (language learning, multiple target languages) (skippable)
- * 3. TTS - single voice (whole-book) or per-language rows (sentence-aligned) (skippable)
- * 4. Assembly - M4B+VTT reassembly (whole-book) or bilingual interleave (skippable)
- * 5. Review - Summary before submission (required)
+ * Four steps for ALL audiobook production:
+ * 1. Passes    - pick the book, then compose the run (skippable)
+ * 2. TTS       - single voice (standard) or per-language rows (sentence-aligned)
+ * 3. Assembly  - M4B+VTT reassembly (standard) or bilingual interleave
+ * 4. Review    - summary before submission
  *
- * The translate mode drives the pipeline shape ("mono" vs "bilingual"), and each
- * mode submits exactly the job types its predecessor wizard submitted — the merge
- * is a UI consolidation, not a backend change.
+ * Page 1 carries the RUN TYPE, and that is what decides the shape of everything
+ * behind it:
  *
- * Key principle: Each step has its own source picker with "Latest" as default.
- * Pipeline-aware source selection means each step uses output of previous step if available.
+ * - **Standard** composes a list of PASSES over one of the project's files —
+ *   Tesseract, OCR correction, footnote removal, simplify, translate — validated
+ *   and queued through `processing:submit-chain` (see docs/PROCESSING_PIPELINE_V2.md).
+ *   Narration and assembly are queued behind the passes in the same workflow.
+ * - **Language learning** is a different product: sentence-aligned translation
+ *   into one or more languages, per-language narration, interleaved assembly. It
+ *   is not expressible as passes over one book, so it keeps the cleanup +
+ *   translation configuration it always had — on page 1, under the switch.
  */
 
 import { Component, input, output, signal, computed, inject, OnInit, effect, untracked } from '@angular/core';
@@ -50,6 +53,14 @@ import {
 } from '../../models/language-learning.types';
 import { TTS_ENGINES, engineCaps, type TtsEngineCaps } from '../../models/tts-engine-registry';
 import { AIProvider } from '../../../../core/models/ai-config.types';
+import type {
+  ChainPassRequest,
+  ProcessingChainPlan,
+  ProcessingChainRequest,
+  ProcessingPassKind,
+  SimplifyPassParams,
+  TranslatePassParams,
+} from '@shared/processing/pass-types';
 import type { SourceType } from '../../../../core/models/manifest.types';
 import {
   DesktopSelectComponent,
@@ -70,6 +81,63 @@ interface SourceStage {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Pass builder types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A file the passes can be pointed at: a project version, or the book EPUB. */
+interface PassVariantCard {
+  /** The variant id sent to the planner. '' means "the project's book EPUB". */
+  id: string;
+  label: string;
+  format: string;
+  filename: string;
+  /** Non-empty when this file cannot be processed — and says why, on the card. */
+  disabledReason: string;
+}
+
+/**
+ * One pass in the sidebar. `uid` exists only so @for can track a row across
+ * reorders and duplicates; nothing downstream ever sees it.
+ */
+interface BuilderPass {
+  uid: string;
+  kind: ProcessingPassKind;
+  simplify?: SimplifyPassParams;
+  translate?: TranslatePassParams;
+}
+
+/** What the palette offers for the chosen book, and why an entry is closed. */
+interface PalettteEntry {
+  kind: ProcessingPassKind;
+  label: string;
+  desc: string;
+  enabled: boolean;
+  why: string;
+}
+
+/**
+ * The pass names the user sees. MIRRORS `LABEL_OF` in electron/processing-chain.ts:
+ * the planner's refusals are sentences that open with the label of the pass they
+ * are about, and `chainErrorAt` matches on that to put the message on the right
+ * row. Change one, change both.
+ */
+const PASS_LABELS: Record<ProcessingPassKind, string> = {
+  tesseract: 'Tesseract',
+  'ocr-correction': 'OCR correction',
+  footnotes: 'Footnote removal',
+  simplify: 'Simplify',
+  translate: 'Translate',
+};
+
+/** The foundry passes: they read a PDF's run directory, not the book. */
+const FOUNDRY_PASS_KINDS: ReadonlySet<ProcessingPassKind> = new Set<ProcessingPassKind>([
+  'tesseract', 'ocr-correction', 'footnotes',
+]);
+
+/** A queue submission as the wizard builds it, before the queue stamps its ids. */
+type QueueJobRequest = Parameters<QueueService['addJob']>[0];
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -81,32 +149,26 @@ interface SourceStage {
     <div class="wizard">
       <!-- Step Indicator -->
       <div class="step-indicator">
-        <div class="step" [class.active]="currentStep() === 'cleanup'" [class.completed]="isStepCompleted('cleanup')" [class.skipped]="isStepSkipped('cleanup')" [class.has-data]="hasStageData('cleanup')">
+        <div class="step" [class.active]="currentStep() === 'passes'" [class.completed]="isStepCompleted('passes')" [class.skipped]="isStepSkipped('passes')" [class.has-data]="hasStageData('cleanup')">
           <span class="step-num">1</span>
-          <span class="step-label">AI Cleanup</span>
+          <span class="step-label">{{ pipelineMode() === 'mono' ? 'Passes' : 'Text' }}</span>
           @if (hasStageData('cleanup')) { <span class="data-dot" title="Data exists"></span> }
         </div>
         <div class="step-connector"></div>
-        <div class="step" [class.active]="currentStep() === 'translate'" [class.completed]="isStepCompleted('translate')" [class.skipped]="isStepSkipped('translate')" [class.has-data]="hasStageData('translate')">
-          <span class="step-num">2</span>
-          <span class="step-label">Translate</span>
-          @if (hasStageData('translate')) { <span class="data-dot" title="Data exists"></span> }
-        </div>
-        <div class="step-connector"></div>
         <div class="step" [class.active]="currentStep() === 'tts'" [class.completed]="isStepCompleted('tts')" [class.skipped]="isStepSkipped('tts')" [class.has-data]="hasStageData('tts')">
-          <span class="step-num">3</span>
+          <span class="step-num">2</span>
           <span class="step-label">TTS</span>
           @if (hasStageData('tts')) { <span class="data-dot" title="Data exists"></span> }
         </div>
         <div class="step-connector"></div>
         <div class="step" [class.active]="currentStep() === 'assembly'" [class.completed]="isStepCompleted('assembly')" [class.skipped]="isStepSkipped('assembly')" [class.has-data]="hasStageData('assembly')">
-          <span class="step-num">4</span>
+          <span class="step-num">3</span>
           <span class="step-label">Enhance &amp; Assemble</span>
           @if (hasStageData('assembly')) { <span class="data-dot" title="Data exists"></span> }
         </div>
         <div class="step-connector"></div>
         <div class="step" [class.active]="currentStep() === 'review'" [class.completed]="isStepCompleted('review')">
-          <span class="step-num">5</span>
+          <span class="step-num">4</span>
           <span class="step-label">Review</span>
         </div>
       </div>
@@ -115,380 +177,539 @@ interface SourceStage {
       <div class="step-content">
         @switch (currentStep()) {
           <!-- ─────────────────────────────────────────────────────────────── -->
-          <!-- Step 1: AI Cleanup -->
+          <!-- Step 1: the pass builder (standard) / text prep (sentence-aligned) -->
           <!-- ─────────────────────────────────────────────────────────────── -->
-          @case ('cleanup') {
-            <div class="step-panel">
-              <h3>AI Cleanup</h3>
-              <p class="step-desc">Clean up OCR artifacts and formatting issues using AI.</p>
-
-              <!-- No AI configured → gray out behind a layover that links to the wizard -->
-              @if (ai.checkedOnce() && !ai.available()) {
-                <div class="ai-layover">
-                  <div class="ai-layover-card">
-                    <div class="ai-layover-icon">&#129302;</div>
-                    <h4>AI isn't set up yet</h4>
-                    <p>Use the AI Setup wizard to enable cleanup &amp; simplify — add a bundled local model, connect Ollama, or save a Claude/OpenAI key.</p>
-                    <button class="ai-layover-btn" (click)="openAiSetup()">Open AI Setup wizard</button>
-                  </div>
-                </div>
-              }
-
-              <!-- Existing cleanup notice -->
-              @if (hasExistingCleanup()) {
-                <div class="existing-cleanup-banner">
-                  <span>Previous cleanup found. Running again will resume where it left off.</span>
-                  <button class="start-over-btn" (click)="clearCleanupStage()">Start Over</button>
-                </div>
-              }
-
-              <!-- Source EPUB Selection -->
-              <div class="config-section">
-                <label class="field-label">Source EPUB</label>
-                <div class="source-stages">
-                  @for (stage of cleanupSourceStages(); track stage.id) {
-                    <button
-                      class="stage-btn"
-                      [class.selected]="isStageSelected('cleanup', stage)"
-                      [class.completed]="stage.completed"
-                      [disabled]="!stage.completed"
-                      (click)="selectStage('cleanup', stage)"
-                    >
-                      {{ stage.label }}
-                      @if (stage.completed) {
-                        <span class="stage-check">&#10003;</span>
-                      }
-                    </button>
-                  }
-                </div>
-              </div>
-
-              <!-- AI Model — unified selector: only configured sources, grouped by provider -->
-              <div class="config-section">
-                <label class="field-label">AI Model</label>
-                @if (aiSourceGroups().length > 0) {
-                  <desktop-select
-                    class="select-input"
-                    [options]="aiModelGroups()"
-                    [ngModel]="cleanupSelection()"
-                    (ngModelChange)="onCleanupModelChange($event)"
-                  />
-                } @else {
-                  <div class="no-models">
-                    @if (checkingConnection()) {
-                      Checking for available AI…
-                    } @else {
-                      <span class="error-text">No AI configured.</span> Set up a local model, Ollama, or an API key.
-                    }
-                  </div>
-                }
-                @if (!allAiConfigured()) {
-                  <button class="configure-ai-btn" (click)="openAiSetup()">⚙ Configure AI</button>
-                }
-              </div>
-
-              <!-- Start Fresh / Use Existing removed — source picker handles input selection,
-                   backend always overwrites output (startFresh defaults to true) -->
-
-              <!-- Processing Options -->
-              <div class="processing-options">
-                <label class="field-label">Processing Options</label>
-
-                <!-- AI Cleanup Option -->
-                <div class="toggle-section-inline">
-                  <button
-                    class="option-toggle"
-                    [class.active]="enableAiCleanup()"
-                    (click)="toggleAiCleanup()"
-                  >
-                    <span class="toggle-icon">🔧</span>
-                    <span class="toggle-label">AI Cleanup</span>
-                    <span class="toggle-sublabel">Fix OCR errors & formatting</span>
-                  </button>
-
-                  <!-- Simplify for Language Learning Option -->
-                  <button
-                    class="option-toggle"
-                    [class.active]="simplifyForLearning()"
-                    (click)="toggleSimplify()"
-                  >
-                    <span class="toggle-icon">📖</span>
-                    <span class="toggle-label">Simplify</span>
-                    <span class="toggle-sublabel">Rewrite into clearer English</span>
-                  </button>
-                </div>
-
-                <!-- The two cleanup passes are independent products, so they are picked
-                     explicitly rather than inferred. Defaulted from the project's ORIGINAL
-                     source (PDF → Both, anything born-digital → TTS only) and left to the
-                     user from there. -->
-                @if (enableAiCleanup() && simplifyForLearning()) {
-                  <div class="ocr-repair-note">
-                    Cleanup + Simplify runs as one rewrite pass, where the two stages can't be
-                    separated. Turn Simplify off to choose between them.
-                  </div>
-                }
-                @if (enableAiCleanup() && !simplifyForLearning()) {
-                  <div class="simplify-mode-selector">
-                    <label class="field-label">
-                      Cleanup stages
-                      <span class="stage-origin">{{ ocrRepairOriginHint() }}</span>
-                    </label>
-                    <div class="mode-options">
-                      @for (opt of cleanupStageOptions; track opt.value) {
-                        <button
-                          type="button"
-                          class="mode-option"
-                          [class.active]="cleanupStages() === opt.value"
-                          (click)="selectCleanupStages(opt.value)"
-                        >
-                          <span class="mode-label">{{ opt.label }}</span>
-                          <span class="mode-desc">{{ opt.desc }}</span>
-                        </button>
-                      }
-                    </div>
-
-                    <!-- TTS cleaning cannot run without the footnote-marker model, and
-                         there is no degraded mode to fall back to — so this blocks the
-                         step rather than warning and letting the job fail later. -->
-                    @if (daggerMissing()) {
-                      <div class="dagger-notice">
-                        <div class="dagger-body">
-                          <strong>TTS cleaning needs the {{ daggerName() }}.</strong>
-                          It finds the footnote reference markers OCR welds into the prose —
-                          the superscript that otherwise gets narrated as a number in the
-                          middle of a sentence. It isn't downloaded yet.
-                        </div>
-
-                        @if (daggerInstalling()) {
-                          @if (daggerProgress(); as prog) {
-                            <div class="dagger-progress">
-                              <div class="progress-bar" [class.indeterminate]="prog.phase !== 'download'">
-                                <div class="progress-fill" [style.width.%]="prog.phase === 'download' ? prog.pct : 100"></div>
-                              </div>
-                              <span class="progress-label">{{ phaseLabel(prog.phase) }}{{ prog.message ? ' — ' + prog.message : '' }}</span>
-                            </div>
-                          }
-                          <button type="button" class="dagger-btn ghost" (click)="cancelDaggerInstall()">Cancel</button>
-                        } @else {
-                          <button
-                            type="button"
-                            class="dagger-btn"
-                            [disabled]="!daggerComponentId()"
-                            (click)="installDagger()"
-                          >
-                            Download{{ daggerSizeLabel() ? ' (' + daggerSizeLabel() + ')' : '' }}
-                          </button>
-                          <span class="dagger-alt">Or pick “OCR repair only” to clean up without it.</span>
-                        }
-
-                        @if (componentService.error(); as err) {
-                          <div class="dagger-error">{{ err }}</div>
-                        }
-                      </div>
-                    }
-                  </div>
-                }
-
-                @if (simplifyForLearning()) {
-                  <div class="simplify-mode-selector">
-                    <label class="field-label">Simplify mode</label>
-                    <div class="mode-options">
-                      @for (opt of simplifyModeOptions; track opt.value) {
-                        <button
-                          type="button"
-                          class="mode-option"
-                          [class.active]="simplifyMode() === opt.value"
-                          (click)="simplifyMode.set(opt.value)"
-                        >
-                          <span class="mode-label">{{ opt.label }}</span>
-                          <span class="mode-desc">{{ opt.desc }}</span>
-                        </button>
-                      }
-                    </div>
-                  </div>
-                }
-
-                @if (!enableAiCleanup() && !simplifyForLearning()) {
-                  <div class="warning-banner">
-                    No processing selected. Enable at least one option or skip this step.
-                  </div>
-                }
-              </div>
-
-              <!-- Custom Instructions -->
-              <div class="config-section">
-                <label class="field-label">Custom Instructions</label>
-                <textarea
-                  class="custom-instructions"
-                  [value]="customInstructions()"
-                  (input)="customInstructions.set($any($event.target).value)"
-                  placeholder="Optional: Add specific instructions for the AI (e.g., 'Format numbered lists with periods at the end of each item')"
-                  rows="3"
-                ></textarea>
-                <span class="hint">Appended to the AI prompt for both cleanup and simplify</span>
-              </div>
-
-              <!-- Parallel Workers (cloud providers, whole-book pipeline) -->
-              @if (pipelineMode() === 'mono' && (cleanupProvider() === 'claude' || cleanupProvider() === 'openai') && itemType() === 'book') {
-                <div class="config-section">
-                  <label class="field-label">Parallel Workers</label>
-                  <div class="worker-options">
-                    @for (count of [1, 2, 4, 8]; track count) {
-                      <button class="worker-btn" [class.selected]="cleanupParallelWorkers() === count" (click)="cleanupParallelWorkers.set(count)">
-                        {{ count }}
-                      </button>
-                    }
-                  </div>
-                  <span class="hint">Concurrent API requests for Claude/OpenAI</span>
-                </div>
-              }
-
-              <!-- AI Prompt Editor -->
-              <div class="accordion" [class.open]="promptAccordionOpen()">
-                <button class="accordion-header" (click)="togglePromptAccordion()">
-                  <span class="accordion-title">AI Prompt</span>
-                  <span class="accordion-icon">{{ promptAccordionOpen() ? '▼' : '▶' }}</span>
-                </button>
-                @if (promptAccordionOpen()) {
-                  <div class="accordion-content">
-                    @if (loadingPrompt()) {
-                      <div class="hint">Loading prompt...</div>
-                    } @else {
-                      <textarea
-                        class="prompt-textarea"
-                        [value]="promptText()"
-                        (input)="onPromptChange($event)"
-                        placeholder="Enter the AI cleanup prompt..."
-                      ></textarea>
-                      @if (promptModified()) {
-                        <div class="prompt-footer">
-                          <button class="btn-save-prompt" [disabled]="savingPrompt()" (click)="savePrompt()">
-                            {{ savingPrompt() ? 'Saving...' : 'Save Prompt' }}
-                          </button>
-                        </div>
-                      }
-                    }
-                  </div>
-                }
-              </div>
-            </div>
-          }
-
-          <!-- ─────────────────────────────────────────────────────────────── -->
-          <!-- Step 2: Translation -->
-          <!-- ─────────────────────────────────────────────────────────────── -->
-          @case ('translate') {
+          @case ('passes') {
             <div class="step-panel scrollable">
-              <h3>Translation</h3>
-              <p class="step-desc">
-                @switch (translateMode()) {
-                  @case ('whole-book') {
-                    Translate the whole book into another language before narration.
-                  }
-                  @case ('sentence') {
-                    Select target languages for a bilingual audiobook. Multiple selections allowed.
-                  }
-                  @default {
-                    Pick a translation type to translate this book — or just hit Next to continue without translation.
-                  }
-                }
-              </p>
-
-              <!-- Translation Type — selecting one opts into translation and drives the pipeline shape -->
+              <!-- Run type. Standard composes a list of passes over ONE book.
+                   Language learning is a different product — two books read in
+                   sentence-aligned pairs — and is not expressible as passes over
+                   one, so it keeps its own configuration below. -->
               <div class="config-section">
-                <label class="field-label">Translation Type</label>
+                <label class="field-label">Run type</label>
                 <div class="provider-buttons">
                   <button
                     class="provider-btn"
-                    [class.selected]="translateMode() === 'whole-book'"
-                    (click)="selectTranslateMode('whole-book')"
+                    [class.selected]="pipelineMode() === 'mono'"
+                    (click)="selectRunType('standard')"
                   >
-                    <span class="provider-name">Whole Book</span>
-                    <span class="provider-status">Single narration</span>
+                    <span class="provider-name">Standard</span>
+                    <span class="provider-status">One book, one narration</span>
                   </button>
                   <button
                     class="provider-btn"
-                    [class.selected]="translateMode() === 'sentence'"
-                    (click)="selectTranslateMode('sentence')"
+                    [class.selected]="pipelineMode() === 'bilingual'"
+                    (click)="selectRunType('language-learning')"
                   >
-                    <span class="provider-name">Language Learning</span>
-                    <span class="provider-status">Sentence-aligned</span>
+                    <span class="provider-name">Language learning</span>
+                    <span class="provider-status">Sentence-aligned pair</span>
                   </button>
                 </div>
               </div>
 
-              @if (translateMode()) {
+              @if (pipelineMode() === 'mono') {
+                <h3>Processing passes</h3>
+                <p class="step-desc">Pick the book, then stack the passes to run over it. They run top to bottom.</p>
 
-              <!-- Source EPUB Selection -->
-              <div class="config-section">
-                <label class="field-label">Source EPUB</label>
-                <div class="source-stages">
-                  @for (stage of translateSourceStages(); track stage.id) {
-                    <button
-                      class="stage-btn"
-                      [class.selected]="isStageSelected('translate', stage)"
-                      [class.completed]="stage.completed"
-                      [disabled]="!stage.completed"
-                      (click)="selectStage('translate', stage)"
-                    >
-                      {{ stage.label }}
-                      @if (stage.completed) {
-                        <span class="stage-check">&#10003;</span>
-                      }
-                    </button>
-                  }
-                </div>
-              </div>
-
-              <!-- AI Model — unified selector: only configured sources, grouped by provider -->
-              <div class="config-section">
-                <label class="field-label">AI Model</label>
-                @if (aiSourceGroups().length > 0) {
-                  <desktop-select
-                    class="select-input"
-                    [options]="aiModelGroups()"
-                    [ngModel]="translateSelection()"
-                    (ngModelChange)="onTranslateModelChange($event)"
-                  />
-                } @else {
-                  <div class="no-models">
-                    @if (checkingConnection()) {
-                      Checking for available AI…
-                    } @else {
-                      <span class="error-text">No AI configured.</span> Set up a local model, Ollama, or an API key.
-                    }
+                <!-- Simplify and Translate need a model → same layover the cleanup step used -->
+                @if (ai.checkedOnce() && !ai.available()) {
+                  <div class="ai-layover">
+                    <div class="ai-layover-card">
+                      <div class="ai-layover-icon">&#129302;</div>
+                      <h4>AI isn't set up yet</h4>
+                      <p>Use the AI Setup wizard to enable the simplify &amp; translate passes — add a bundled local model, connect Ollama, or save a Claude/OpenAI key.</p>
+                      <button class="ai-layover-btn" (click)="openAiSetup()">Open AI Setup wizard</button>
+                    </div>
                   </div>
                 }
-                @if (!allAiConfigured()) {
-                  <button class="configure-ai-btn" (click)="openAiSetup()">⚙ Configure AI</button>
+
+                <!-- The book the passes apply to: this project's versions, as the
+                     metadata page lists them, plus its own book EPUB. -->
+                <div class="config-section">
+                  <label class="field-label">Which book</label>
+                  @if (variantCards().length === 0) {
+                    <div class="no-models">
+                      @if (loadingVariants()) {
+                        Looking for this project's files…
+                      } @else {
+                        <span class="error-text">This project has no PDF or EPUB to process.</span> Add one on the Versions tab.
+                      }
+                    </div>
+                  } @else {
+                    <div class="variant-cards">
+                      @for (card of variantCards(); track card.id) {
+                        <button
+                          type="button"
+                          class="variant-card"
+                          [class.selected]="selectedVariantId() === card.id"
+                          [disabled]="!!card.disabledReason"
+                          (click)="selectVariant(card)"
+                        >
+                          <span class="variant-format">{{ card.format.toUpperCase() }}</span>
+                          <span class="variant-title">{{ card.label }}</span>
+                          <span class="variant-file">{{ card.filename }}</span>
+                          @if (card.disabledReason) {
+                            <span class="variant-note">{{ card.disabledReason }}</span>
+                          }
+                        </button>
+                      }
+                    </div>
+                  }
+                </div>
+
+                <div class="pass-builder">
+                  <!-- Palette, filtered by what the chosen book can be read as -->
+                  <div class="pass-palette">
+                    <label class="field-label">Add a pass</label>
+                    @for (opt of passPalette(); track opt.kind) {
+                      <button
+                        type="button"
+                        class="palette-btn"
+                        [class.open]="palettePanel() === opt.kind"
+                        [disabled]="!opt.enabled"
+                        [title]="opt.enabled ? '' : opt.why"
+                        (click)="onPaletteClick(opt.kind)"
+                      >
+                        <span class="palette-name">{{ opt.label }}</span>
+                        <span class="palette-desc">{{ opt.enabled ? opt.desc : opt.why }}</span>
+                      </button>
+
+                      @if (palettePanel() === opt.kind && opt.kind === 'simplify') {
+                        <div class="palette-panel">
+                          <label class="field-label">AI model</label>
+                          @if (aiSourceGroups().length > 0) {
+                            <desktop-select
+                              class="select-input"
+                              [options]="aiModelGroups()"
+                              [ngModel]="cleanupSelection()"
+                              (ngModelChange)="onCleanupModelChange($event)"
+                            />
+                          } @else {
+                            <div class="no-models"><span class="error-text">No AI configured.</span></div>
+                          }
+                          <div class="mode-options">
+                            @for (m of simplifyModeOptions; track m.value) {
+                              <button
+                                type="button"
+                                class="mode-option"
+                                [disabled]="!cleanupModel()"
+                                (click)="addSimplifyPass(m.value)"
+                              >
+                                <span class="mode-label">{{ m.label }}</span>
+                                <span class="mode-desc">{{ m.desc }}</span>
+                              </button>
+                            }
+                          </div>
+                          <span class="hint">Pick a mode to add the pass. Add it twice for two modes.</span>
+                        </div>
+                      }
+
+                      @if (palettePanel() === opt.kind && opt.kind === 'translate') {
+                        <div class="palette-panel">
+                          <label class="field-label">AI model</label>
+                          @if (aiSourceGroups().length > 0) {
+                            <desktop-select
+                              class="select-input"
+                              [options]="aiModelGroups()"
+                              [ngModel]="translateSelection()"
+                              (ngModelChange)="onTranslateModelChange($event)"
+                            />
+                          } @else {
+                            <div class="no-models"><span class="error-text">No AI configured.</span></div>
+                          }
+                          <div class="lang-pair">
+                            <div class="lang-pair-field">
+                              <label class="field-label">From</label>
+                              <desktop-select
+                                class="select-input"
+                                [options]="languageOptions()"
+                                [ngModel]="passTranslateSource()"
+                                (ngModelChange)="passTranslateSource.set($event)"
+                              />
+                            </div>
+                            <div class="lang-pair-field">
+                              <label class="field-label">Into</label>
+                              <desktop-select
+                                class="select-input"
+                                [options]="languageOptions()"
+                                [ngModel]="passTranslateTarget()"
+                                (ngModelChange)="passTranslateTarget.set($event)"
+                              />
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            class="palette-add-btn"
+                            [disabled]="passTranslateSource() === passTranslateTarget() || !translateModel()"
+                            (click)="addTranslatePass()"
+                          >
+                            Add translate pass
+                          </button>
+                          <span class="hint">Translation leaves no diff — the whole text changes.</span>
+                        </div>
+                      }
+                    }
+
+                    <div class="config-section">
+                      <label class="field-label">Custom Instructions</label>
+                      <textarea
+                        class="custom-instructions"
+                        [value]="customInstructions()"
+                        (input)="customInstructions.set($any($event.target).value)"
+                        placeholder="Optional: Add specific instructions for the AI (e.g., 'Keep chapter epigraphs as they are')"
+                        rows="3"
+                      ></textarea>
+                      <span class="hint">Carried by every simplify/translate pass added after you type it.</span>
+                    </div>
+                  </div>
+
+                  <!-- The run itself, in execution order -->
+                  <div class="pass-sidebar">
+                    <label class="field-label">This run</label>
+
+                    @if (passes().length === 0) {
+                      <p class="hint">No passes yet. Add one, or go straight to narration with the book as it is.</p>
+                    }
+
+                    <!-- A refusal that names no pass (no PDF, no book EPUB) belongs to
+                         the run as a whole, not to a row. -->
+                    @if (chainError() && chainErrorAt() < 0) {
+                      <div class="pass-error">{{ chainError() }}</div>
+                    }
+
+                    @for (pass of passes(); track pass.uid; let i = $index) {
+                      <div class="pass-card" [class.invalid]="chainErrorAt() === i">
+                        <div class="pass-card-head">
+                          <span class="pass-index">{{ i + 1 }}</span>
+                          <span class="pass-name">{{ passLabel(pass) }}</span>
+                          <button type="button" class="pass-btn" title="Move up" [disabled]="i === 0" (click)="movePass(i, -1)">↑</button>
+                          <button type="button" class="pass-btn" title="Move down" [disabled]="i === passes().length - 1" (click)="movePass(i, 1)">↓</button>
+                          <button type="button" class="pass-btn remove" title="Remove" (click)="removePass(i)">✕</button>
+                        </div>
+                        @if (passDetail(pass)) {
+                          <span class="pass-detail">{{ passDetail(pass) }}</span>
+                        }
+                        @if (chainErrorAt() === i) {
+                          <div class="pass-error">{{ chainError() }}</div>
+                        }
+                      </div>
+                    }
+
+                    @if (passes().length > 0) {
+                      @if (planning()) {
+                        <span class="hint">Checking this order…</span>
+                      } @else if (!chainError() && chainPlan()) {
+                        <span class="hint">
+                          {{ chainPlan()!.producesEpub
+                            ? 'Rebuilds the book EPUB from the scanned pages.'
+                            : 'Rewrites the book EPUB in place, one pass at a time.' }}
+                        </span>
+                      }
+                    }
+                  </div>
+                </div>
+              } @else {
+                <h3>AI Cleanup</h3>
+                <p class="step-desc">Clean up OCR artifacts and formatting issues using AI.</p>
+
+                <!-- No AI configured → gray out behind a layover that links to the wizard -->
+                @if (ai.checkedOnce() && !ai.available()) {
+                  <div class="ai-layover">
+                    <div class="ai-layover-card">
+                      <div class="ai-layover-icon">&#129302;</div>
+                      <h4>AI isn't set up yet</h4>
+                      <p>Use the AI Setup wizard to enable cleanup &amp; simplify — add a bundled local model, connect Ollama, or save a Claude/OpenAI key.</p>
+                      <button class="ai-layover-btn" (click)="openAiSetup()">Open AI Setup wizard</button>
+                    </div>
+                  </div>
                 }
-              </div>
 
-              <!-- Custom Instructions -->
-              <div class="config-section">
-                <label class="field-label">Custom Instructions</label>
-                <textarea
-                  class="custom-instructions"
-                  [value]="translateCustomInstructions()"
-                  (input)="translateCustomInstructions.set($any($event.target).value)"
-                  placeholder="Optional: Add specific instructions for the AI (e.g., 'If you encounter English text, return it unchanged')"
-                  rows="3"
-                ></textarea>
-                <span class="hint">Appended to the translation prompt for each batch</span>
-              </div>
+                <!-- Existing cleanup notice -->
+                @if (hasExistingCleanup()) {
+                  <div class="existing-cleanup-banner">
+                    <span>Previous cleanup found. Running again will resume where it left off.</span>
+                    <button class="start-over-btn" (click)="clearCleanupStage()">Start Over</button>
+                  </div>
+                }
 
-              <!-- Source Language Display -->
-              <div class="source-lang-display">
-                <span class="label">Detected source language:</span>
-                <span class="value">{{ getLanguageName(detectedSourceLang()) }}</span>
-              </div>
+                <!-- Source EPUB Selection -->
+                <div class="config-section">
+                  <label class="field-label">Source EPUB</label>
+                  <div class="source-stages">
+                    @for (stage of cleanupSourceStages(); track stage.id) {
+                      <button
+                        class="stage-btn"
+                        [class.selected]="isStageSelected('cleanup', stage)"
+                        [class.completed]="stage.completed"
+                        [disabled]="!stage.completed"
+                        (click)="selectStage('cleanup', stage)"
+                      >
+                        {{ stage.label }}
+                        @if (stage.completed) {
+                          <span class="stage-check">&#10003;</span>
+                        }
+                      </button>
+                    }
+                  </div>
+                </div>
 
-              <!-- Translation here is the AI's job and needs no Stanza pack — the
-                   segmentation-pack gate lives on the TTS step (narration). -->
+                <!-- AI Model — unified selector: only configured sources, grouped by provider -->
+                <div class="config-section">
+                  <label class="field-label">AI Model</label>
+                  @if (aiSourceGroups().length > 0) {
+                    <desktop-select
+                      class="select-input"
+                      [options]="aiModelGroups()"
+                      [ngModel]="cleanupSelection()"
+                      (ngModelChange)="onCleanupModelChange($event)"
+                    />
+                  } @else {
+                    <div class="no-models">
+                      @if (checkingConnection()) {
+                        Checking for available AI…
+                      } @else {
+                        <span class="error-text">No AI configured.</span> Set up a local model, Ollama, or an API key.
+                      }
+                    </div>
+                  }
+                  @if (!allAiConfigured()) {
+                    <button class="configure-ai-btn" (click)="openAiSetup()">⚙ Configure AI</button>
+                  }
+                </div>
 
-              @if (translateMode() === 'sentence') {
-                <!-- Target Language Multi-Select Grid -->
+                <!-- Start Fresh / Use Existing removed — source picker handles input selection,
+                     backend always overwrites output (startFresh defaults to true) -->
+
+                <!-- Processing Options -->
+                <div class="processing-options">
+                  <label class="field-label">Processing Options</label>
+
+                  <!-- AI Cleanup Option -->
+                  <div class="toggle-section-inline">
+                    <button
+                      class="option-toggle"
+                      [class.active]="enableAiCleanup()"
+                      (click)="toggleAiCleanup()"
+                    >
+                      <span class="toggle-icon">🔧</span>
+                      <span class="toggle-label">AI Cleanup</span>
+                      <span class="toggle-sublabel">Fix OCR errors & formatting</span>
+                    </button>
+
+                    <!-- Simplify for Language Learning Option -->
+                    <button
+                      class="option-toggle"
+                      [class.active]="simplifyForLearning()"
+                      (click)="toggleSimplify()"
+                    >
+                      <span class="toggle-icon">📖</span>
+                      <span class="toggle-label">Simplify</span>
+                      <span class="toggle-sublabel">Rewrite into clearer English</span>
+                    </button>
+                  </div>
+
+                  <!-- The two cleanup passes are independent products, so they are picked
+                       explicitly rather than inferred. Defaulted from the project's ORIGINAL
+                       source (PDF → Both, anything born-digital → TTS only) and left to the
+                       user from there. -->
+                  @if (enableAiCleanup() && simplifyForLearning()) {
+                    <div class="ocr-repair-note">
+                      Cleanup + Simplify runs as one rewrite pass, where the two stages can't be
+                      separated. Turn Simplify off to choose between them.
+                    </div>
+                  }
+                  @if (enableAiCleanup() && !simplifyForLearning()) {
+                    <div class="simplify-mode-selector">
+                      <label class="field-label">
+                        Cleanup stages
+                        <span class="stage-origin">{{ ocrRepairOriginHint() }}</span>
+                      </label>
+                      <div class="mode-options">
+                        @for (opt of cleanupStageOptions; track opt.value) {
+                          <button
+                            type="button"
+                            class="mode-option"
+                            [class.active]="cleanupStages() === opt.value"
+                            (click)="selectCleanupStages(opt.value)"
+                          >
+                            <span class="mode-label">{{ opt.label }}</span>
+                            <span class="mode-desc">{{ opt.desc }}</span>
+                          </button>
+                        }
+                      </div>
+
+                      <!-- TTS cleaning cannot run without the footnote-marker model, and
+                           there is no degraded mode to fall back to — so this blocks the
+                           step rather than warning and letting the job fail later. -->
+                      @if (daggerMissing()) {
+                        <div class="dagger-notice">
+                          <div class="dagger-body">
+                            <strong>TTS cleaning needs the {{ daggerName() }}.</strong>
+                            It finds the footnote reference markers OCR welds into the prose —
+                            the superscript that otherwise gets narrated as a number in the
+                            middle of a sentence. It isn't downloaded yet.
+                          </div>
+
+                          @if (daggerInstalling()) {
+                            @if (daggerProgress(); as prog) {
+                              <div class="dagger-progress">
+                                <div class="progress-bar" [class.indeterminate]="prog.phase !== 'download'">
+                                  <div class="progress-fill" [style.width.%]="prog.phase === 'download' ? prog.pct : 100"></div>
+                                </div>
+                                <span class="progress-label">{{ phaseLabel(prog.phase) }}{{ prog.message ? ' — ' + prog.message : '' }}</span>
+                              </div>
+                            }
+                            <button type="button" class="dagger-btn ghost" (click)="cancelDaggerInstall()">Cancel</button>
+                          } @else {
+                            <button
+                              type="button"
+                              class="dagger-btn"
+                              [disabled]="!daggerComponentId()"
+                              (click)="installDagger()"
+                            >
+                              Download{{ daggerSizeLabel() ? ' (' + daggerSizeLabel() + ')' : '' }}
+                            </button>
+                            <span class="dagger-alt">Or pick “OCR repair only” to clean up without it.</span>
+                          }
+
+                          @if (componentService.error(); as err) {
+                            <div class="dagger-error">{{ err }}</div>
+                          }
+                        </div>
+                      }
+                    </div>
+                  }
+
+                  @if (simplifyForLearning()) {
+                    <div class="simplify-mode-selector">
+                      <label class="field-label">Simplify mode</label>
+                      <div class="mode-options">
+                        @for (opt of simplifyModeOptions; track opt.value) {
+                          <button
+                            type="button"
+                            class="mode-option"
+                            [class.active]="simplifyMode() === opt.value"
+                            (click)="simplifyMode.set(opt.value)"
+                          >
+                            <span class="mode-label">{{ opt.label }}</span>
+                            <span class="mode-desc">{{ opt.desc }}</span>
+                          </button>
+                        }
+                      </div>
+                    </div>
+                  }
+
+                  @if (!enableAiCleanup() && !simplifyForLearning()) {
+                    <div class="warning-banner">
+                      No processing selected. Enable at least one option or skip this step.
+                    </div>
+                  }
+                </div>
+
+                <!-- Custom Instructions -->
+                <div class="config-section">
+                  <label class="field-label">Custom Instructions</label>
+                  <textarea
+                    class="custom-instructions"
+                    [value]="customInstructions()"
+                    (input)="customInstructions.set($any($event.target).value)"
+                    placeholder="Optional: Add specific instructions for the AI (e.g., 'Format numbered lists with periods at the end of each item')"
+                    rows="3"
+                  ></textarea>
+                  <span class="hint">Appended to the AI prompt for both cleanup and simplify</span>
+                </div>
+
+                <!-- AI Prompt Editor -->
+                <div class="accordion" [class.open]="promptAccordionOpen()">
+                  <button class="accordion-header" (click)="togglePromptAccordion()">
+                    <span class="accordion-title">AI Prompt</span>
+                    <span class="accordion-icon">{{ promptAccordionOpen() ? '▼' : '▶' }}</span>
+                  </button>
+                  @if (promptAccordionOpen()) {
+                    <div class="accordion-content">
+                      @if (loadingPrompt()) {
+                        <div class="hint">Loading prompt...</div>
+                      } @else {
+                        <textarea
+                          class="prompt-textarea"
+                          [value]="promptText()"
+                          (input)="onPromptChange($event)"
+                          placeholder="Enter the AI cleanup prompt..."
+                        ></textarea>
+                        @if (promptModified()) {
+                          <div class="prompt-footer">
+                            <button class="btn-save-prompt" [disabled]="savingPrompt()" (click)="savePrompt()">
+                              {{ savingPrompt() ? 'Saving...' : 'Save Prompt' }}
+                            </button>
+                          </div>
+                        }
+                      }
+                    </div>
+                  }
+                </div>
+
+                <!-- Sentence-aligned translation: one EPUB per target language,
+                     which is what the interleaved assembly pairs up. -->
+                <h3>Translation</h3>
+                <p class="step-desc">Select target languages for a bilingual audiobook. Multiple selections allowed.</p>
+
+                <div class="config-section">
+                  <label class="field-label">Source EPUB</label>
+                  <div class="source-stages">
+                    @for (stage of translateSourceStages(); track stage.id) {
+                      <button
+                        class="stage-btn"
+                        [class.selected]="isStageSelected('translate', stage)"
+                        [class.completed]="stage.completed"
+                        [disabled]="!stage.completed"
+                        (click)="selectStage('translate', stage)"
+                      >
+                        {{ stage.label }}
+                        @if (stage.completed) {
+                          <span class="stage-check">&#10003;</span>
+                        }
+                      </button>
+                    }
+                  </div>
+                </div>
+
+                <div class="config-section">
+                  <label class="field-label">AI Model</label>
+                  @if (aiSourceGroups().length > 0) {
+                    <desktop-select
+                      class="select-input"
+                      [options]="aiModelGroups()"
+                      [ngModel]="translateSelection()"
+                      (ngModelChange)="onTranslateModelChange($event)"
+                    />
+                  } @else {
+                    <div class="no-models">
+                      @if (checkingConnection()) {
+                        Checking for available AI…
+                      } @else {
+                        <span class="error-text">No AI configured.</span> Set up a local model, Ollama, or an API key.
+                      }
+                    </div>
+                  }
+                </div>
+
+                <div class="config-section">
+                  <label class="field-label">Custom Instructions</label>
+                  <textarea
+                    class="custom-instructions"
+                    [value]="translateCustomInstructions()"
+                    (input)="translateCustomInstructions.set($any($event.target).value)"
+                    placeholder="Optional: Add specific instructions for the AI (e.g., 'If you encounter English text, return it unchanged')"
+                    rows="3"
+                  ></textarea>
+                  <span class="hint">Appended to the translation prompt for each batch</span>
+                </div>
+
+                <div class="source-lang-display">
+                  <span class="label">Detected source language:</span>
+                  <span class="value">{{ getLanguageName(detectedSourceLang()) }}</span>
+                </div>
+
                 <div class="config-section">
                   <label class="field-label">Target Languages (select multiple)</label>
                   <div class="language-grid">
@@ -511,57 +732,30 @@ interface SourceStage {
                   </div>
 
                   @if (targetLangs().size === 0) {
-                    <div class="hint">Select at least one target language, or skip this step to use existing translations.</div>
+                    <div class="hint">Select at least one target language, or leave empty to use existing translations.</div>
                   } @else {
                     <div class="selection-summary">
                       Selected: {{ Array.from(targetLangs()).map(getLanguageName.bind(this)).join(', ') }}
                     </div>
                   }
                 </div>
-              } @else {
-                <!-- Whole-book: single target language -->
-                <div class="config-section">
-                  <label class="field-label">Target Language</label>
-                  <div class="language-grid">
-                    @for (lang of supportedLanguages; track lang.code) {
-                      @if (lang.code !== detectedSourceLang()) {
-                        <button
-                          class="language-btn"
-                          [class.selected]="monoTargetLang() === lang.code"
-                          (click)="monoTargetLang.set(lang.code)"
-                        >
-                          <span class="lang-flag" [style.background]="getFlagCss(lang.code)"></span>
-                          <span class="lang-code">{{ lang.code.toUpperCase() }}</span>
-                          <span class="lang-name">{{ lang.name }}</span>
-                          @if (monoTargetLang() === lang.code) {
-                            <span class="lang-check">✓</span>
-                          }
-                        </button>
+
+                @if (existingTranslationEpubs().length > 0) {
+                  <div class="config-section">
+                    <label class="field-label">Existing Translations</label>
+                    <div class="existing-translations">
+                      @for (epub of existingTranslationEpubs(); track epub.path) {
+                        <div class="existing-translation-row">
+                          <span class="existing-translation-label">{{ epub.lang.toUpperCase() }} — {{ getLanguageName(epub.lang) }}</span>
+                          <button class="existing-translation-delete" (click)="deleteTranslationEpub(epub)">Delete</button>
+                        </div>
                       }
-                    }
+                      @if (existingTranslationEpubs().length > 1) {
+                        <button class="existing-translation-clear-all" (click)="deleteAllTranslationEpubs()">Clear All Translations</button>
+                      }
+                    </div>
                   </div>
-                  <div class="hint">The whole book is translated to {{ getLanguageName(monoTargetLang()) }} and the translation is narrated.</div>
-                </div>
-              }
-
-              <!-- Existing Translations (sentence-aligned outputs) -->
-              @if (translateMode() === 'sentence' && existingTranslationEpubs().length > 0) {
-                <div class="config-section">
-                  <label class="field-label">Existing Translations</label>
-                  <div class="existing-translations">
-                    @for (epub of existingTranslationEpubs(); track epub.path) {
-                      <div class="existing-translation-row">
-                        <span class="existing-translation-label">{{ epub.lang.toUpperCase() }} — {{ getLanguageName(epub.lang) }}</span>
-                        <button class="existing-translation-delete" (click)="deleteTranslationEpub(epub)">Delete</button>
-                      </div>
-                    }
-                    @if (existingTranslationEpubs().length > 1) {
-                      <button class="existing-translation-clear-all" (click)="deleteAllTranslationEpubs()">Clear All Translations</button>
-                    }
-                  </div>
-                </div>
-              }
-
+                }
               }
             </div>
           }
@@ -579,6 +773,14 @@ interface SourceStage {
                   Configure voice synthesis for each language. Each row becomes a separate TTS job.
                 }
               </p>
+
+              <!-- Narration reads an EPUB. If the project has none and this run
+                   produces none, there is nothing to narrate — say so once and stop,
+                   rather than collecting settings for a job that cannot be queued. -->
+              @if (ttsBlockedReason(); as why) {
+                <div class="step-blocked">{{ why }}</div>
+              }
+              @if (!ttsBlockedReason()) {
 
               <!-- Stanza segmentation packs for the NARRATION languages. Translation
                    itself is the AI's job (no stanza); sentence segmentation for TTS
@@ -797,26 +999,39 @@ interface SourceStage {
               }
 
               @if (pipelineMode() === 'mono') {
-                <!-- Source EPUB Selection -->
+                <!-- What gets narrated. Two answers only: the book as it is on disk,
+                     or the book this run's passes produce. A pass rewrites the book
+                     in place, so "as it is" is not on offer while passes are queued —
+                     it would name the same file and mean something else. -->
                 <div class="config-section">
-                  <label class="field-label">Source EPUB</label>
-                  <div class="source-stages">
-                    @for (stage of ttsSourceStages(); track stage.id) {
-                      <button
-                        class="stage-btn"
-                        [class.selected]="isStageSelected('tts', stage)"
-                        [class.completed]="stage.completed"
-                        [disabled]="!stage.completed && !isStageSelected('tts', stage)"
-                        (click)="selectStage('tts', stage)"
-                      >
-                        {{ stage.label }}
-                        @if (stage.completed) {
-                          <span class="stage-check">&#10003;</span>
-                        }
-                      </button>
-                    }
+                  <label class="field-label">Narrate</label>
+                  <div class="variant-cards">
+                    <button
+                      type="button"
+                      class="variant-card"
+                      [class.selected]="ttsInput() === 'book'"
+                      [disabled]="!bookEpubPath() || passes().length > 0"
+                      (click)="ttsInput.set('book')"
+                    >
+                      <span class="variant-format">EPUB</span>
+                      <span class="variant-title">The book as it is</span>
+                      <span class="variant-file">{{ bookEpubPath() ? getFilenameFromPath(bookEpubPath()!) : 'not exported yet' }}</span>
+                      @if (bookEpubPath() && passes().length > 0) {
+                        <span class="variant-note">The passes rewrite this file.</span>
+                      }
+                    </button>
+                    <button
+                      type="button"
+                      class="variant-card"
+                      [class.selected]="ttsInput() === 'run'"
+                      [disabled]="!runProducesEpub()"
+                      (click)="ttsInput.set('run')"
+                    >
+                      <span class="variant-format">EPUB</span>
+                      <span class="variant-title">What this run produces</span>
+                      <span class="variant-file">{{ runProducesEpub() ? getFilenameFromPath(chainPlan()!.bookEpubPath) : 'no passes configured' }}</span>
+                    </button>
                   </div>
-                  <span class="hint">"Latest" follows the pipeline: output of the last enabled step is narrated.</span>
                 </div>
 
                 <!-- Single Voice -->
@@ -931,15 +1146,19 @@ interface SourceStage {
               </div>
               }
               }
+              }
             </div>
           }
 
           <!-- ─────────────────────────────────────────────────────────────── -->
-          <!-- Step 4: Assembly -->
+          <!-- Step 3: Assembly -->
           <!-- ─────────────────────────────────────────────────────────────── -->
           @case ('assembly') {
             <div class="step-panel">
-              @if (pipelineMode() === 'mono') {
+              @if (assemblyBlockedReason(); as why) {
+                <h3>Enhance &amp; Assemble</h3>
+                <div class="step-blocked">{{ why }}</div>
+              } @else if (pipelineMode() === 'mono') {
                 <h3>Enhance &amp; Assemble</h3>
                 <p class="step-desc">Optionally re-render the narration through an RVC voice, then assemble the audio into a finished audiobook (M4B with chapters).</p>
 
@@ -1174,7 +1393,7 @@ interface SourceStage {
               }
 
               <!-- Output Format (shared by both pipelines) -->
-              @if (pipelineMode() === 'bilingual' || !isStepSkipped('tts') || cachedSession()) {
+              @if (!assemblyBlockedReason() && (pipelineMode() === 'bilingual' || !isStepSkipped('tts') || cachedSession())) {
               <div class="config-section">
                 <label class="field-label">Output Format</label>
                 <div class="provider-buttons">
@@ -1218,7 +1437,7 @@ interface SourceStage {
                 </div>
               }
 
-              @if (pipelineMode() === 'bilingual' && (!assemblySourceLang() || !assemblyTargetLang())) {
+              @if (!assemblyBlockedReason() && pipelineMode() === 'bilingual' && (!assemblySourceLang() || !assemblyTargetLang())) {
                 <div class="warning-banner">
                   Select both source and target languages for assembly, or skip this step.
                 </div>
@@ -1235,8 +1454,42 @@ interface SourceStage {
               <p class="step-desc">Review your pipeline configuration before adding to queue.</p>
 
               <div class="review-cards">
-                <!-- Cleanup Card -->
-                @if (!isStepSkipped('cleanup') && (enableAiCleanup() || simplifyForLearning())) {
+                <!-- Passes card (standard run). The sentence-aligned pipeline keeps
+                     its own cleanup/translation cards below. -->
+                @if (pipelineMode() === 'mono') {
+                  @if (passes().length > 0) {
+                    <div class="review-card">
+                      <div class="review-card-header">
+                        <span class="review-card-icon">🧩</span>
+                        <span class="review-card-title">Passes</span>
+                        <span class="job-count">{{ passes().length }} job{{ passes().length > 1 ? 's' : '' }}</span>
+                      </div>
+                      <div class="review-card-content">
+                        <div class="review-row">
+                          <span class="review-label">Book:</span>
+                          <span class="review-value">{{ selectedVariantLabel() }}</span>
+                        </div>
+                        @for (pass of passes(); track pass.uid; let i = $index) {
+                          <div class="review-row">
+                            <span class="review-label">{{ i + 1 }}.</span>
+                            <span class="review-value">{{ passLabel(pass) }}{{ passDetail(pass) ? ' — ' + passDetail(pass) : '' }}</span>
+                          </div>
+                        }
+                      </div>
+                    </div>
+                  } @else {
+                    <div class="review-card skipped">
+                      <div class="review-card-header">
+                        <span class="review-card-icon">🧩</span>
+                        <span class="review-card-title">Passes</span>
+                        <span class="skipped-badge">None</span>
+                      </div>
+                    </div>
+                  }
+                }
+
+                <!-- Cleanup Card (sentence-aligned only) -->
+                @if (pipelineMode() === 'bilingual' && !isStepSkipped('cleanup') && (enableAiCleanup() || simplifyForLearning())) {
                   <div class="review-card">
                     <div class="review-card-header">
                       <span class="review-card-icon">🔧</span>
@@ -1259,7 +1512,7 @@ interface SourceStage {
                       </div>
                     </div>
                   </div>
-                } @else {
+                } @else if (pipelineMode() === 'bilingual') {
                   <div class="review-card skipped">
                     <div class="review-card-header">
                       <span class="review-card-icon">🔧</span>
@@ -1269,39 +1522,30 @@ interface SourceStage {
                   </div>
                 }
 
-                <!-- Translation Card -->
-                @if (!isStepSkipped('translate') && (translateMode() === 'sentence' ? targetLangs().size > 0 : monoTranslationActive())) {
+                <!-- Translation Card (sentence-aligned only) -->
+                @if (pipelineMode() === 'bilingual' && !isStepSkipped('translate') && targetLangs().size > 0) {
                   <div class="review-card">
                     <div class="review-card-header">
                       <span class="review-card-icon">🌐</span>
                       <span class="review-card-title">Translation</span>
-                      @if (translateMode() === 'sentence') {
-                        <span class="job-count">{{ targetLangs().size }} job{{ targetLangs().size > 1 ? 's' : '' }}</span>
-                      }
+                      <span class="job-count">{{ targetLangs().size }} job{{ targetLangs().size > 1 ? 's' : '' }}</span>
                     </div>
                     <div class="review-card-content">
                       <div class="review-row">
                         <span class="review-label">Source:</span>
                         <span class="review-value">{{ translateSourceEpub() === 'latest' ? 'Latest' : getFilenameFromPath(translateSourceEpub()) }}</span>
                       </div>
-                      @if (translateMode() === 'sentence') {
-                        <div class="review-row">
-                          <span class="review-label">Languages:</span>
-                          <span class="review-value">{{ Array.from(targetLangs()).map(getLanguageName.bind(this)).join(', ') }}</span>
-                        </div>
-                      } @else {
-                        <div class="review-row">
-                          <span class="review-label">Whole book:</span>
-                          <span class="review-value">{{ getLanguageName(detectedSourceLang()) }} → {{ getLanguageName(monoTargetLang()) }}</span>
-                        </div>
-                      }
+                      <div class="review-row">
+                        <span class="review-label">Languages:</span>
+                        <span class="review-value">{{ Array.from(targetLangs()).map(getLanguageName.bind(this)).join(', ') }}</span>
+                      </div>
                       <div class="review-row">
                         <span class="review-label">Provider:</span>
                         <span class="review-value">{{ translateProvider() }} / {{ translateModel() }}</span>
                       </div>
                     </div>
                   </div>
-                } @else {
+                } @else if (pipelineMode() === 'bilingual') {
                   <div class="review-card skipped">
                     <div class="review-card-header">
                       <span class="review-card-icon">🌐</span>
@@ -1423,10 +1667,10 @@ interface SourceStage {
       <!-- Navigation -->
       <div class="wizard-nav">
         @if (continueMode() && currentStep() === 'tts') {
-          <!-- Continue mode is pinned to TTS→Assembly→Review; Cleanup/Translate are
+          <!-- Continue mode is pinned to TTS→Assembly→Review; the pass builder is
                disabled, so there's nowhere to go Back to from here. -->
           <span></span>
-        } @else if (currentStep() !== 'cleanup') {
+        } @else if (currentStep() !== 'passes') {
           <button class="btn-back" (click)="goBack()">
             ← Back
           </button>
@@ -2781,6 +3025,260 @@ interface SourceStage {
     .btn-back,
     .btn-skip,
     .btn-next,
+    /* ── Pass builder ──────────────────────────────────────────────────── */
+
+    .variant-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      gap: 8px;
+    }
+
+    .variant-card {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 3px;
+      padding: 10px 12px;
+      text-align: left;
+      background: var(--bg-elevated);
+      border: 2px solid var(--border-subtle);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+
+      .variant-format {
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        color: var(--text-muted);
+      }
+
+      .variant-title {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+
+      .variant-file {
+        font-size: 11px;
+        color: var(--text-muted);
+        word-break: break-all;
+      }
+
+      .variant-note {
+        font-size: 11px;
+        color: var(--text-muted);
+        font-style: italic;
+      }
+
+      &:hover:not(:disabled) {
+        background: var(--bg-hover);
+        border-color: var(--border-default);
+      }
+
+      &.selected {
+        border-color: #06b6d4;
+        background: rgba(6, 182, 212, 0.15);
+
+        .variant-title { color: #06b6d4; }
+      }
+
+      &:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+    }
+
+    .pass-builder {
+      display: grid;
+      grid-template-columns: minmax(260px, 1fr) minmax(240px, 320px);
+      gap: 16px;
+      align-items: start;
+      margin-top: 8px;
+    }
+
+    .pass-palette {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .palette-btn {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 2px;
+      padding: 10px 12px;
+      text-align: left;
+      background: var(--bg-elevated);
+      border: 2px solid var(--border-subtle);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+
+      .palette-name {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+
+      .palette-desc {
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+
+      &:hover:not(:disabled) {
+        background: var(--bg-hover);
+        border-color: var(--border-default);
+      }
+
+      &.open {
+        border-color: #06b6d4;
+      }
+
+      &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+    }
+
+    .palette-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 12px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+    }
+
+    .palette-add-btn {
+      align-self: flex-start;
+      padding: 8px 14px;
+      background: #06b6d4;
+      border: none;
+      border-radius: 6px;
+      color: white;
+      font-size: 12px;
+      cursor: pointer;
+
+      &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+    }
+
+    .lang-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .lang-pair-field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .pass-sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 12px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      position: sticky;
+      top: 0;
+    }
+
+    .pass-card {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 8px 10px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+
+      &.invalid {
+        border-color: #ef4444;
+      }
+    }
+
+    .pass-card-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .pass-index {
+      font-size: 11px;
+      color: var(--text-muted);
+      min-width: 14px;
+    }
+
+    .pass-name {
+      flex: 1;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .pass-detail {
+      font-size: 11px;
+      color: var(--text-muted);
+      padding-left: 20px;
+    }
+
+    .pass-btn {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+      color: var(--text-secondary);
+      font-size: 11px;
+      line-height: 1;
+      padding: 4px 6px;
+      cursor: pointer;
+
+      &:hover:not(:disabled) {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+      }
+
+      &.remove:hover:not(:disabled) {
+        color: #ef4444;
+        border-color: #ef4444;
+      }
+
+      &:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
+    }
+
+    .pass-error {
+      font-size: 11px;
+      line-height: 1.4;
+      color: #fca5a5;
+      background: rgba(239, 68, 68, 0.12);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      border-radius: 6px;
+      padding: 8px 10px;
+    }
+
+    /* A step with nothing to work on: one sentence, no controls. */
+    .step-blocked {
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-muted);
+      background: var(--bg-surface);
+      border: 1px dashed var(--border-subtle);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
     .btn-queue {
       padding: 10px 20px;
       border-radius: 6px;
@@ -2947,9 +3445,121 @@ export class LLWizardComponent implements OnInit {
   // Navigation State
   // ─────────────────────────────────────────────────────────────────────────
 
-  readonly currentStep = signal<LLWizardStep>('cleanup');
+  readonly currentStep = signal<LLWizardStep>('passes');
   private completedSteps = new Set<LLWizardStep>();
   private _skippedSteps = new Set<LLWizardStep>();
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Step 1 (standard run): the pass builder
+  //
+  // A run is an ordered list of passes over ONE of the project's files. Which
+  // orders are legal is MAIN's answer, not this component's: every edit re-plans
+  // through `processing:plan-chain`, which runs exactly the validation
+  // `processing:submit-chain` runs, so what the sidebar refuses and what the
+  // submission refuses can never drift apart.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  readonly variantCards = signal<PassVariantCard[]>([]);
+  readonly loadingVariants = signal(false);
+  /** '' is a real value: the project's book EPUB, which is not a variant. */
+  readonly selectedVariantId = signal<string>('');
+  readonly passes = signal<BuilderPass[]>([]);
+  /** Which palette entry has its configuration open, if any. */
+  readonly palettePanel = signal<ProcessingPassKind | null>(null);
+  readonly planning = signal(false);
+  readonly chainPlan = signal<ProcessingChainPlan | null>(null);
+  readonly chainError = signal<string | null>(null);
+  /** The languages the NEXT translate pass will carry (the palette's draft). */
+  readonly passTranslateSource = signal<string>('en');
+  readonly passTranslateTarget = signal<string>('en');
+  /** The project's book EPUB (manifest `outputs.epub`) when it is on disk. */
+  readonly bookEpubPath = signal<string | null>(null);
+  /** Which EPUB the standard TTS job reads. See ttsInputPath. */
+  readonly ttsInput = signal<'book' | 'run'>('book');
+  private passUid = 0;
+  private planTimer: ReturnType<typeof setTimeout> | null = null;
+
+  readonly selectedVariant = computed<PassVariantCard | null>(() =>
+    this.variantCards().find(c => c.id === this.selectedVariantId()) ?? null);
+
+  readonly selectedVariantLabel = computed(() => {
+    const card = this.selectedVariant();
+    return card ? `${card.label} (${card.format.toUpperCase()})` : 'the project book';
+  });
+
+  /** Foundry passes read a PDF; nothing else can stand in for one. */
+  readonly selectedIsPdf = computed(() =>
+    (this.selectedVariant()?.format ?? '').toLowerCase() === 'pdf');
+
+  readonly passPalette = computed<PalettteEntry[]>(() => {
+    const pdf = this.selectedIsPdf();
+    const noPdf = 'Reads the scanned pages — pick the PDF version of this book.';
+    return [
+      {
+        kind: 'tesseract', label: PASS_LABELS['tesseract'],
+        desc: 'Segment the pages and read them with Tesseract. The first look at a scan.',
+        enabled: pdf, why: noPdf,
+      },
+      {
+        kind: 'ocr-correction', label: PASS_LABELS['ocr-correction'],
+        desc: 'Repair what OCR misread, then label every block. Produces the book EPUB.',
+        enabled: pdf, why: noPdf,
+      },
+      {
+        kind: 'footnotes', label: PASS_LABELS['footnotes'],
+        desc: 'Remove the reference markers OCR welds into the prose.',
+        enabled: pdf, why: noPdf,
+      },
+      {
+        kind: 'simplify', label: PASS_LABELS['simplify'],
+        desc: 'Rewrite the prose: de-jargon, de-stiffen, or for language learners.',
+        enabled: true, why: '',
+      },
+      {
+        kind: 'translate', label: PASS_LABELS['translate'],
+        desc: 'Translate the whole book into another language.',
+        enabled: true, why: '',
+      },
+    ];
+  });
+
+  /** This run rebuilds or rewrites the book, so there will be an EPUB to narrate. */
+  readonly runProducesEpub = computed(() =>
+    this.passes().length > 0 && !!this.chainPlan() && !this.chainError());
+
+  /**
+   * The EPUB the standard TTS job reads: what the passes leave behind when there
+   * are any (they rewrite the book in place, so it is the same path either way),
+   * else the book as it stands.
+   */
+  readonly ttsInputPath = computed<string>(() => {
+    const plan = this.chainPlan();
+    if (this.passes().length > 0 && plan && !this.chainError()) return plan.bookEpubPath;
+    return this.bookEpubPath() ?? '';
+  });
+
+  /**
+   * Why narration cannot be configured, or null. Nothing to read is a fact about
+   * the project, not a setting — so the step says it once and collects nothing.
+   */
+  readonly ttsBlockedReason = computed<string | null>(() => {
+    // Sentence-aligned rows resolve their own per-language EPUBs at run time.
+    if (this.pipelineMode() === 'bilingual') return null;
+    if (this.runProducesEpub() || this.bookEpubPath()) return null;
+    return 'This book has no EPUB to narrate, and no pass in this run produces one. '
+      + 'Add an OCR-correction pass over the PDF on the first page, or export the book from the editor.';
+  });
+
+  /** Where the planner's refusal belongs: the row it names, or -1 for the run. */
+  readonly chainErrorAt = computed<number>(() => {
+    const message = this.chainError();
+    if (!message) return -1;
+    return this.passes().findIndex(p => message.startsWith(PASS_LABELS[p.kind]));
+  });
+
+  /** Every language, for the translate pass's from/into pickers. */
+  readonly languageOptions = computed<DesktopSelectItems>(() =>
+    this.supportedLanguages.map(l => ({ value: l.code, label: l.name })));
 
   // Continue mode: the user is resuming an interrupted TTS render. Cleanup + Translate
   // are disabled (nothing to re-run), the wizard is pinned to TTS→Assembly→Review, and
@@ -3045,7 +3655,6 @@ export class LLWizardComponent implements OnInit {
     { value: 'learner' as const, label: 'Learner', desc: 'Simpler words and grammar for B1-B2 English learners' },
   ];
   readonly customInstructions = signal('');
-  readonly cleanupParallelWorkers = signal(4);  // Parallel workers for Claude/OpenAI (mono ocr-cleanup)
 
   // AI prompt editor (edits the global cleanup prompt file)
   readonly promptAccordionOpen = signal(false);
@@ -3084,19 +3693,6 @@ export class LLWizardComponent implements OnInit {
     ];
   });
 
-  /** Stages relevant for mono TTS source: everything incl. whole-book translation output */
-  readonly ttsSourceStages = computed<SourceStage[]>(() => {
-    const epubs = this.availableEpubs();
-    const find = (name: string) => epubs.find(e => e.filename === name);
-    return [
-      { id: 'original', label: 'Original', completed: !!find('original.epub'), path: find('original.epub')?.path ?? '' },
-      { id: 'exported', label: 'Exported', completed: !!find('exported.epub'), path: find('exported.epub')?.path ?? '' },
-      { id: 'cleaned', label: 'AI Cleaned', completed: !!find('cleaned.epub'), path: find('cleaned.epub')?.path ?? '' },
-      { id: 'simplified', label: 'AI Simplified', completed: !!find('simplified.epub'), path: find('simplified.epub')?.path ?? '' },
-      { id: 'translated', label: 'Translated', completed: !!find('translated.epub'), path: find('translated.epub')?.path ?? '' },
-    ];
-  });
-
   /** Stage order tiebreak for mtime-based resolution (higher = preferred when mtimes are equal) */
   private static readonly STAGE_ORDER: Record<string, number> = {
     'original.epub': 0,
@@ -3131,24 +3727,15 @@ export class LLWizardComponent implements OnInit {
     return null;
   }
 
-  /** Resolve which stage ID "latest" maps to for a given pipeline step */
-  private resolveLatestStageId(step: 'cleanup' | 'translate' | 'tts'): string {
+  /**
+   * Resolve which stage ID "latest" maps to, for the sentence-aligned pipeline's
+   * cleanup and translation inputs. Narration no longer picks a stage: a standard
+   * run narrates the book (see ttsInputPath) and the bilingual rows resolve their
+   * own per-language EPUBs.
+   */
+  private resolveLatestStageId(step: 'cleanup' | 'translate'): string {
     const epubs = this.availableEpubs();
     const has = (name: string) => epubs.some(e => e.filename === name);
-    if (step === 'tts') {
-      // Mono TTS input: pipeline intent first (earlier steps will produce files), then on-disk latest
-      if (this.monoTranslationActive()) return 'translated';
-      const willProduce = this.cleanupWillProduce();
-      if (willProduce) return willProduce.replace('.epub', '');
-      const exclude = new Set<string>();
-      for (const e of epubs) { if (e.isTranslated) exclude.add(e.filename); } // per-language EPUBs are bilingual outputs
-      const best = this.getMostRecentEpub(epubs, exclude);
-      if (best) return best.filename.replace('.epub', '');
-      for (const name of ['translated', 'simplified', 'cleaned', 'exported', 'original']) {
-        if (has(`${name}.epub`)) return name;
-      }
-      return '';
-    }
     if (step === 'cleanup') {
       // Cleanup input: most recently modified source file (not cleaned/simplified — we produce those)
       const sourceOnly = new Set(['cleaned.epub', 'simplified.epub', 'translated.epub']);
@@ -3173,14 +3760,12 @@ export class LLWizardComponent implements OnInit {
     return '';
   }
 
-  private sourceSignalFor(step: 'cleanup' | 'translate' | 'tts') {
-    if (step === 'cleanup') return this.cleanupSourceEpub;
-    if (step === 'translate') return this.translateSourceEpub;
-    return this.ttsSourceEpub;
+  private sourceSignalFor(step: 'cleanup' | 'translate') {
+    return step === 'cleanup' ? this.cleanupSourceEpub : this.translateSourceEpub;
   }
 
   /** Check if a stage button should be highlighted as selected */
-  isStageSelected(step: 'cleanup' | 'translate' | 'tts', stage: SourceStage): boolean {
+  isStageSelected(step: 'cleanup' | 'translate', stage: SourceStage): boolean {
     const source = this.sourceSignalFor(step)();
     if (source === 'latest') {
       return stage.id === this.resolveLatestStageId(step);
@@ -3189,7 +3774,7 @@ export class LLWizardComponent implements OnInit {
   }
 
   /** Handle stage button click — clicking the auto-selected stage returns to 'latest' */
-  selectStage(step: 'cleanup' | 'translate' | 'tts', stage: SourceStage): void {
+  selectStage(step: 'cleanup' | 'translate', stage: SourceStage): void {
     const signal = this.sourceSignalFor(step);
     const current = signal();
 
@@ -3202,25 +3787,19 @@ export class LLWizardComponent implements OnInit {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Step 2: Translation
+  // Sentence-aligned (language-learning) translation
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * Translation mode — selecting one IS the opt-in to translation; null means
-   * "don't translate" (hit Next without picking). It also drives the pipeline shape:
-   * - 'whole-book': mono pipeline (full-book translation, single TTS voice,
-   *   M4B reassembly) — what the old process-wizard did.
+   * THE run-type switch, kept under its old name because it is what `pipelineMode`
+   * — and therefore every job builder below — reads.
+   * - null:       standard run. Translation, if any, is a PASS.
    * - 'sentence': bilingual / language-learning pipeline (sentence-aligned
    *   per-language translation, per-language TTS rows, interleaved assembly).
    */
-  readonly translateMode = signal<'whole-book' | 'sentence' | null>(null);
+  readonly translateMode = signal<'sentence' | null>(null);
   readonly pipelineMode = computed<'mono' | 'bilingual'>(() =>
     this.translateMode() === 'sentence' ? 'bilingual' : 'mono');
-
-  // Whole-book translation (mono pipeline)
-  readonly monoTargetLang = signal<string>('en');
-  readonly monoTranslationActive = computed(() =>
-    this.translateMode() === 'whole-book' && !!this.monoTargetLang());
 
   readonly translateSourceEpub = signal<string>('latest');
   readonly targetLangs = signal<Set<string>>(new Set());
@@ -3313,7 +3892,6 @@ export class LLWizardComponent implements OnInit {
   readonly continueTts = signal(false);
 
   // Mono pipeline: single-voice TTS settings
-  readonly ttsSourceEpub = signal<string>('latest');
   readonly monoTtsVoice = signal('ScarlettJohansson');
   readonly monoTtsSpeed = signal(1.0);
 
@@ -3396,9 +3974,14 @@ export class LLWizardComponent implements OnInit {
     return this.orpheusMemTiers.find((t) => t.id === id)?.name ?? id;
   });
 
-  /** Audio language follows the pipeline: translated target if translating, else the book's language */
-  readonly monoTtsLanguage = computed(() =>
-    this.monoTranslationActive() ? this.monoTargetLang() : this.detectedSourceLang());
+  /**
+   * The language the narration is in: what the LAST translate pass leaves the book
+   * in, or the book's own language when no pass translates it.
+   */
+  readonly monoTtsLanguage = computed(() => {
+    const lastTranslate = [...this.passes()].reverse().find(p => p.translate);
+    return lastTranslate?.translate?.targetLang ?? this.detectedSourceLang();
+  });
   readonly partialTtsSessions = signal<{ language: string; completedSentences: number; totalSentences: number; sessionDir: string; sentencesDir: string }[]>([]);
 
   // Voices selectable for audiobook generation, loaded from the main process
@@ -3794,6 +4377,56 @@ export class LLWizardComponent implements OnInit {
       const dir = this.effectiveProjectDir();
       this.refreshTrigger();  // re-scan stages when the host bumps this (after delete/reset)
       if (dir) this.scanProjectEpubs();
+    });
+
+    // The pass builder's book list, from the same place the metadata page reads it.
+    effect(() => {
+      const dir = this.effectiveProjectDir();
+      this.projectId();
+      this.refreshTrigger();
+      if (dir) void untracked(() => this.loadVariantCards());
+    });
+
+    // Re-plan on every edit to the run, debounced: the answer comes from main and
+    // a keystroke-rate round trip would show a refusal for an order the user is
+    // still in the middle of typing.
+    effect(() => {
+      const dir = this.effectiveProjectDir();
+      const variantId = this.selectedVariantId();
+      const list = this.passes();
+      const mono = this.pipelineMode() === 'mono';
+      if (this.planTimer) clearTimeout(this.planTimer);
+      if (!mono || !dir || list.length === 0) {
+        this.chainPlan.set(null);
+        this.chainError.set(null);
+        this.planning.set(false);
+        return;
+      }
+      this.planning.set(true);
+      this.planTimer = setTimeout(() => void this.replanChain(dir, variantId, list), 350);
+    });
+
+    // Keep the narration source honest: a queued pass rewrites the book, so once
+    // there are passes the only coherent input is what they produce.
+    effect(() => {
+      const producing = this.runProducesEpub();
+      const book = this.bookEpubPath();
+      const hasPasses = this.passes().length > 0;
+      untracked(() => {
+        if (hasPasses && producing) this.ttsInput.set('run');
+        else if (book) this.ttsInput.set('book');
+      });
+    });
+
+    // The translate pass's default direction: out of the book's own language.
+    effect(() => {
+      const detected = this.detectedSourceLang();
+      untracked(() => {
+        this.passTranslateSource.set(detected);
+        if (this.passTranslateTarget() === detected) {
+          this.passTranslateTarget.set(detected === 'en' ? 'de' : 'en');
+        }
+      });
     });
 
     // Default the cleanup stage picker from the project's import provenance. Keyed on
@@ -4379,16 +5012,6 @@ export class LLWizardComponent implements OnInit {
   // Translation
   // ─────────────────────────────────────────────────────────────────────────
 
-  /** Picking a mode opts into translation; re-clicking it deselects (= no translation) */
-  selectTranslateMode(mode: 'whole-book' | 'sentence'): void {
-    if (this.translateMode() === mode) {
-      this.translateMode.set(null);
-    } else {
-      this.translateMode.set(mode);
-      this._skippedSteps.delete('translate');
-    }
-  }
-
   isTargetLangSelected(code: string): boolean {
     return this.targetLangs().has(code);
   }
@@ -4753,6 +5376,8 @@ export class LLWizardComponent implements OnInit {
     await this.prefillFromPartials(partials);
     this.continueTts.set(true);
     this.continueMode.set(true);
+    this.passes.set([]);
+    this._skippedSteps.add('passes');
     this._skippedSteps.add('cleanup');
     this._skippedSteps.add('translate');
     this.currentStep.set('tts');
@@ -4765,6 +5390,8 @@ export class LLWizardComponent implements OnInit {
     await this.prefillFromPartials(this.partialTtsSessions());
     this.continueTts.set(true);
     this.continueMode.set(true);
+    this.passes.set([]);
+    this._skippedSteps.add('passes');
     this._skippedSteps.add('cleanup');
     this._skippedSteps.add('translate');
   }
@@ -4895,6 +5522,259 @@ export class LLWizardComponent implements OnInit {
     if (lang && this.assemblySourceLang()) {
       this._skippedSteps.delete('assembly');
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Pass builder
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Standard vs language learning. The switch is `translateMode`, which is what
+   * drives `pipelineMode` and therefore which jobs the submission builds — the
+   * two products submit different job sets and always have.
+   */
+  selectRunType(type: 'standard' | 'language-learning'): void {
+    if (type === 'language-learning') {
+      this.translateMode.set('sentence');
+      return;
+    }
+    this.translateMode.set(null);
+    // The sentence-aligned sub-stages are not part of a standard run, and the
+    // bilingual job builders read these flags directly.
+    this._skippedSteps.add('cleanup');
+    this._skippedSteps.add('translate');
+  }
+
+  /**
+   * Point the run at a different file.
+   *
+   * Switching away from a PDF DROPS the foundry passes rather than carrying them:
+   * they read a PDF's run directory, and the planner would otherwise be handed an
+   * EPUB as the document to scan — which it would accept, because it has no way to
+   * know the caller meant something else.
+   */
+  selectVariant(card: PassVariantCard): void {
+    if (card.disabledReason) return;
+    this.selectedVariantId.set(card.id);
+    if (card.format.toLowerCase() !== 'pdf') {
+      this.passes.update(list => list.filter(p => !FOUNDRY_PASS_KINDS.has(p.kind)));
+    }
+    this.palettePanel.set(null);
+  }
+
+  onPaletteClick(kind: ProcessingPassKind): void {
+    if (kind === 'simplify' || kind === 'translate') {
+      this.palettePanel.set(this.palettePanel() === kind ? null : kind);
+      return;
+    }
+    this.addPass({ uid: this.nextPassUid(), kind });
+  }
+
+  addSimplifyPass(mode: 'dejargon' | 'destiffen' | 'learner'): void {
+    // Snapshotted, not referenced: two Simplify passes in one run are legal and
+    // may want different models, so each carries the settings it was added with.
+    this.addPass({
+      uid: this.nextPassUid(),
+      kind: 'simplify',
+      simplify: {
+        mode,
+        aiProvider: this.cleanupProvider(),
+        aiModel: this.cleanupModel(),
+        customInstructions: this.customInstructions() || undefined,
+      },
+    });
+    this.palettePanel.set(null);
+  }
+
+  addTranslatePass(): void {
+    this.addPass({
+      uid: this.nextPassUid(),
+      kind: 'translate',
+      translate: {
+        sourceLang: this.passTranslateSource(),
+        targetLang: this.passTranslateTarget(),
+        aiProvider: this.translateProvider(),
+        aiModel: this.translateModel(),
+        customInstructions: this.translateCustomInstructions() || undefined,
+      },
+    });
+    this.palettePanel.set(null);
+  }
+
+  private addPass(pass: BuilderPass): void {
+    this.passes.update(list => [...list, pass]);
+  }
+
+  private nextPassUid(): string {
+    this.passUid += 1;
+    return `pass-${this.passUid}`;
+  }
+
+  movePass(index: number, delta: number): void {
+    this.passes.update(list => {
+      const to = index + delta;
+      if (to < 0 || to >= list.length) return list;
+      const next = [...list];
+      const [moved] = next.splice(index, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  }
+
+  removePass(index: number): void {
+    this.passes.update(list => list.filter((_, i) => i !== index));
+  }
+
+  passLabel(pass: BuilderPass): string {
+    return PASS_LABELS[pass.kind];
+  }
+
+  passDetail(pass: BuilderPass): string {
+    if (pass.simplify) {
+      const mode = this.simplifyModeOptions.find(m => m.value === pass.simplify!.mode);
+      return `${mode?.label ?? pass.simplify.mode} · ${pass.simplify.aiModel || 'no model'}`;
+    }
+    if (pass.translate) {
+      const t = pass.translate;
+      return `${this.getLanguageName(t.sourceLang)} → ${this.getLanguageName(t.targetLang)} · ${t.aiModel || 'no model'}`;
+    }
+    return '';
+  }
+
+  /**
+   * The project's files, as the metadata page lists them, plus its book EPUB.
+   *
+   * An ebook variant that is NOT the recorded book is listed but closed: the text
+   * passes rewrite `outputs.epub` in place, so offering another edition as their
+   * input would promise something the run does not do.
+   */
+  private async loadVariantCards(): Promise<void> {
+    const projectDir = this.effectiveProjectDir();
+    const projectId = this.projectId() || projectDir;
+    if (!projectId) {
+      this.variantCards.set([]);
+      this.bookEpubPath.set(null);
+      return;
+    }
+
+    this.loadingVariants.set(true);
+    try {
+      let bookAbs: string | null = null;
+      try {
+        const info = await this.electronService.projectsExportInfo(projectDir);
+        bookAbs = info.exported?.absPath ?? null;
+      } catch (err) {
+        console.warn('[LL-WIZARD] Could not resolve the project export:', (err as Error).message);
+      }
+      this.bookEpubPath.set(bookAbs);
+
+      const cards: PassVariantCard[] = [];
+      const result = await this.electronService.variantList(projectId);
+      for (const v of result.variants ?? []) {
+        if (v.kind !== 'ebook' || !v.exists) continue;
+        const format = (v.format || '').toLowerCase();
+        const isBook = !!bookAbs && this.samePath(v.absPath, bookAbs);
+        cards.push({
+          id: isBook ? '' : v.id,
+          label: v.descriptor || v.metadata?.title || this.title() || 'Untitled edition',
+          format,
+          filename: this.getFilenameFromPath(v.absPath),
+          disabledReason: (format === 'pdf' || isBook)
+            ? ''
+            : 'The text passes rewrite the project\'s own book EPUB, not this edition.',
+        });
+      }
+      if (bookAbs && !cards.some(c => c.id === '')) {
+        cards.push({
+          id: '',
+          label: 'Book EPUB',
+          format: 'epub',
+          filename: this.getFilenameFromPath(bookAbs),
+          disabledReason: '',
+        });
+      }
+      this.variantCards.set(cards);
+
+      // Keep the selection on something real. The book EPUB is the usual subject
+      // of a run; a project that has none is a scan waiting for its first pass.
+      const current = cards.find(c => c.id === this.selectedVariantId() && !c.disabledReason);
+      if (!current) {
+        const book = cards.find(c => c.id === '' && !c.disabledReason);
+        const first = book ?? cards.find(c => !c.disabledReason);
+        this.selectedVariantId.set(first ? first.id : '');
+      }
+    } finally {
+      this.loadingVariants.set(false);
+    }
+  }
+
+  /** Path equality for display/selection only — never to build a path. */
+  private samePath(a: string, b: string): boolean {
+    const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+    return norm(a) === norm(b);
+  }
+
+  /**
+   * The run as the planner wants it. API keys and the Ollama URL are filled in
+   * here, at the last moment, so no secret is ever held in the sidebar's state.
+   */
+  private chainRequest(projectDir: string, variantId: string, list: BuilderPass[]): ProcessingChainRequest {
+    const ai = this.settingsService.getAIConfig();
+    const withCredentials = <T extends SimplifyPassParams | TranslatePassParams>(params: T): T => ({
+      ...params,
+      ollamaBaseUrl: ai.ollama?.baseUrl,
+      claudeApiKey: ai.claude?.apiKey,
+      openaiApiKey: ai.openai?.apiKey,
+    });
+    const passes: ChainPassRequest[] = list.map(p => ({
+      kind: p.kind,
+      ...(p.simplify ? { simplify: withCredentials(p.simplify) } : {}),
+      ...(p.translate ? { translate: withCredentials(p.translate) } : {}),
+    }));
+    return {
+      projectDir,
+      ...(variantId ? { variantId } : {}),
+      passes,
+    };
+  }
+
+  /** Ask main what this order would do. The answer is the sidebar's feedback. */
+  private async replanChain(projectDir: string, variantId: string, list: BuilderPass[]): Promise<void> {
+    try {
+      const result = await this.electronService.planProcessingChain(
+        this.chainRequest(projectDir, variantId, list));
+      // A later edit already re-planned; this answer is about a run that is gone.
+      if (this.passes() !== list) return;
+      if (result.success && result.plan) {
+        this.chainPlan.set(result.plan);
+        this.chainError.set(null);
+      } else {
+        this.chainPlan.set(null);
+        this.chainError.set(result.error || 'This run could not be planned, and no reason came back.');
+      }
+    } catch (err) {
+      this.chainPlan.set(null);
+      this.chainError.set((err as Error).message);
+    } finally {
+      this.planning.set(false);
+    }
+  }
+
+  /** True when this run renders narration (as opposed to reusing a cached one). */
+  private ttsInThisRun(): boolean {
+    if (this._skippedSteps.has('tts')) return false;
+    if (this.pipelineMode() === 'bilingual') return this.ttsLanguageRows().length > 0;
+    return !this.ttsBlockedReason();
+  }
+
+  /**
+   * Why assembly cannot run, or null. Reads `_skippedSteps`, which is not a
+   * signal, so it stays a method — the template re-asks it every check.
+   */
+  assemblyBlockedReason(): string | null {
+    if (this.ttsInThisRun()) return null;
+    if (this.availableSessions().length > 0 || this.cachedSession()) return null;
+    return 'There is nothing to assemble: this book has no cached narration, and this run renders none.';
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -5068,25 +5948,25 @@ export class LLWizardComponent implements OnInit {
 
   canProceed(): boolean {
     const step = this.currentStep();
-    if (step === 'cleanup') {
-      if (!this.enableAiCleanup() && !this.simplifyForLearning()) {
-        return true; // Can skip
+    if (step === 'passes') {
+      if (this.pipelineMode() === 'mono') {
+        if (this.passes().length === 0) return true;  // narration-only run
+        // An order main has refused cannot be submitted, and saying so at the
+        // Next button (as well as on the row) is the whole point of pre-planning.
+        return !this.chainError() && !this.planning();
       }
-      // TTS cleaning without its model is not a degraded run, it is a failed one.
-      // Stop it here, where the fix (Download, or "OCR repair only") is on screen.
+      // Sentence-aligned: the cleanup and translation gates that used to guard two
+      // separate steps, now both on this page.
       if (this.daggerMissing()) return false;
-      const provider = this.cleanupProvider();
-      if (provider === 'ollama') return this.ollamaConnected() && !!this.cleanupModel();
-      return !!this.cleanupModel();
-    }
-    if (step === 'translate') {
-      const active = this.translateMode() === 'sentence'
-        ? this.targetLangs().size > 0
-        : this.translateMode() === 'whole-book';
-      if (!active) return true; // Can skip
-      const provider = this.translateProvider();
-      if (provider === 'ollama') return this.ollamaConnected() && !!this.translateModel();
-      return !!this.translateModel();
+      if (this.enableAiCleanup() || this.simplifyForLearning()) {
+        if (this.cleanupProvider() === 'ollama' && !this.ollamaConnected()) return false;
+        if (!this.cleanupModel()) return false;
+      }
+      if (this.targetLangs().size > 0) {
+        if (this.translateProvider() === 'ollama' && !this.ollamaConnected()) return false;
+        if (!this.translateModel()) return false;
+      }
+      return true;
     }
     if (step === 'tts') {
       if (this.pipelineMode() === 'mono') return true; // single voice always configured
@@ -5105,13 +5985,12 @@ export class LLWizardComponent implements OnInit {
    */
   private isStepConfigured(step: LLWizardStep): boolean {
     switch (step) {
-      case 'cleanup':
-        return this.enableAiCleanup() || this.simplifyForLearning();
-      case 'translate':
-        return this.translateMode() === 'sentence'
-          ? this.targetLangs().size > 0
-          : this.monoTranslationActive();
+      case 'passes':
+        return this.pipelineMode() === 'mono'
+          ? this.passes().length > 0
+          : (this.enableAiCleanup() || this.simplifyForLearning() || this.targetLangs().size > 0);
       case 'tts':
+        if (this.ttsBlockedReason()) return false;
         return this.pipelineMode() === 'mono' || this.ttsLanguageRows().length > 0;
       case 'assembly':
         return this.pipelineMode() === 'mono'
@@ -5128,6 +6007,10 @@ export class LLWizardComponent implements OnInit {
     // downstream reconciliation (e.g. entering Review) can't silently un-skip it.
     this._skippedSteps.add(step);
     this.completedSteps.delete(step);
+    if (step === 'passes') {
+      this._skippedSteps.add('cleanup');
+      this._skippedSteps.add('translate');
+    }
     void this.advanceFrom(step);
   }
 
@@ -5144,6 +6027,9 @@ export class LLWizardComponent implements OnInit {
       this._skippedSteps.add(step);
       this.completedSteps.delete(step);
     }
+    // The sentence-aligned pipeline submits a cleanup job and per-language
+    // translation jobs separately, so leaving page 1 settles each on its own.
+    if (step === 'passes') this.reconcileTextSubStages();
     await this.advanceFrom(step);
   }
 
@@ -5152,16 +6038,26 @@ export class LLWizardComponent implements OnInit {
    * skip state as they are entered. Shared by Skip and Next so navigation
    * behaves identically regardless of how the current step's state was resolved.
    */
+  /**
+   * Settle the sentence-aligned sub-stages from what page 1 currently says.
+   *
+   * 'cleanup' and 'translate' stopped being pages, but the bilingual job builder
+   * still asks, separately, whether each is part of the run — so the answer is
+   * derived here rather than left at whatever an earlier visit set.
+   */
+  private reconcileTextSubStages(): void {
+    const bilingual = this.pipelineMode() === 'bilingual';
+    const cleanupOn = bilingual && (this.enableAiCleanup() || this.simplifyForLearning());
+    const translateOn = bilingual && this.targetLangs().size > 0;
+    if (cleanupOn) this._skippedSteps.delete('cleanup'); else this._skippedSteps.add('cleanup');
+    if (translateOn) this._skippedSteps.delete('translate'); else this._skippedSteps.add('translate');
+  }
+
   private async advanceFrom(step: LLWizardStep): Promise<void> {
-    const stepOrder: LLWizardStep[] = ['cleanup', 'translate', 'tts', 'assembly', 'review'];
+    const stepOrder: LLWizardStep[] = ['passes', 'tts', 'assembly', 'review'];
     const currentIndex = stepOrder.indexOf(step);
     if (currentIndex < stepOrder.length - 1) {
       const nextStep = stepOrder[currentIndex + 1];
-
-      // Auto-skip translate if no languages selected
-      if (nextStep === 'translate' && this.targetLangs().size === 0 && !this.completedSteps.has('translate')) {
-        // Don't auto-skip, let user decide
-      }
 
       // Check if TTS is configured when entering the step
       if (nextStep === 'tts') {
@@ -5195,17 +6091,6 @@ export class LLWizardComponent implements OnInit {
       // Only un-skip if the user didn't explicitly skip the step (completedSteps tracks
       // steps the user passed through without skipping).
       if (nextStep === 'review') {
-        // Check cleanup — only un-skip if user visited the step (completed it)
-        if ((this.enableAiCleanup() || this.simplifyForLearning()) && this.completedSteps.has('cleanup')) {
-          this._skippedSteps.delete('cleanup');
-        }
-        // Check translation
-        const translationConfigured = this.translateMode() === 'sentence'
-          ? this.targetLangs().size > 0
-          : this.monoTranslationActive();
-        if (translationConfigured && this.completedSteps.has('translate')) {
-          this._skippedSteps.delete('translate');
-        }
         // Check TTS — don't un-skip if user explicitly skipped it
         if ((this.pipelineMode() === 'mono' || this.ttsLanguageRows().length > 0) && this.completedSteps.has('tts')) {
           this._skippedSteps.delete('tts');
@@ -5235,7 +6120,7 @@ export class LLWizardComponent implements OnInit {
   }
 
   goBack(): void {
-    const stepOrder: LLWizardStep[] = ['cleanup', 'translate', 'tts', 'assembly', 'review'];
+    const stepOrder: LLWizardStep[] = ['passes', 'tts', 'assembly', 'review'];
     let idx = stepOrder.indexOf(this.currentStep()) - 1;
     // In Continue mode, Cleanup + Translate are disabled (nothing to re-run) — walk
     // past them so Back never drops the user into a disabled step. From TTS this
@@ -5257,13 +6142,12 @@ export class LLWizardComponent implements OnInit {
 
   getTotalJobCount(): number {
     if (this.pipelineMode() === 'mono') {
-      let count = 0;
-      // Mono cleanup is a single job (handles cleanup and/or simplify internally)
-      if (!this._skippedSteps.has('cleanup') && (this.enableAiCleanup() || this.simplifyForLearning())) count += 1;
-      if (!this._skippedSteps.has('translate') && this.monoTranslationActive()) count += 1;
-      const hasTts = !this._skippedSteps.has('tts');
+      // One queue row per pass, plus narration and assembly. The workflow's own
+      // master row is not counted — it is the grouping, not a job.
+      let count = this.passes().length;
+      const hasTts = this.ttsInThisRun();
       if (hasTts) count += 1;
-      const hasAssembly = !this._skippedSteps.has('assembly') && (hasTts || !!this.cachedSession());
+      const hasAssembly = !this._skippedSteps.has('assembly') && !this.assemblyBlockedReason();
       if (hasAssembly) count += 1;
       if (hasAssembly && this.generateVideo()) count += 1;
       return count;
@@ -5301,19 +6185,18 @@ export class LLWizardComponent implements OnInit {
    * difference between a five-hour job finishing and dying on its last step.
    */
   daggerBlocksSubmit(): boolean {
+    // Only the sentence-aligned pipeline still runs the old cleanup job. A standard
+    // run's footnote removal is a foundry pass with its own model and its own gate.
+    if (this.pipelineMode() === 'mono') return false;
     return !this._skippedSteps.has('cleanup') && this.daggerMissing();
   }
 
   getReviewWarnings(): string[] {
     if (this.pipelineMode() === 'mono') {
       const warnings: string[] = [];
-      if (this.daggerBlocksSubmit()) {
-        warnings.push(`TTS cleaning needs the ${this.daggerName()}, which isn't downloaded. `
-          + 'Go back to AI Cleanup to download it, or choose "OCR repair only".');
-      }
-      if (!this._skippedSteps.has('assembly') && this._skippedSteps.has('tts') && !this.cachedSession()) {
-        warnings.push('Assembly enabled but there is no TTS job or cached session to assemble from');
-      }
+      if (this.chainError()) warnings.push(this.chainError()!);
+      const blocked = this.assemblyBlockedReason();
+      if (!this._skippedSteps.has('assembly') && blocked) warnings.push(blocked);
       return warnings;
     }
 
@@ -5357,7 +6240,7 @@ export class LLWizardComponent implements OnInit {
   }
 
   getFilenameFromPath(filePath: string): string {
-    return filePath.split('/').pop() || filePath;
+    return filePath.split(/[\\/]/).pop() || filePath;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -5961,11 +6844,16 @@ export class LLWizardComponent implements OnInit {
   }
 
   /**
-   * Mono (whole-book) pipeline submission — submits the same job set the old
-   * standalone process-wizard submitted: master 'audiobook' job, ocr-cleanup
-   * (books) / bilingual-cleanup (articles), whole-book bilingual-translation
-   * (monoTranslation flag), single tts-conversion, reassembly (chained or from
-   * cached session), and optional monolingual video-assembly.
+   * Standard (whole-book) submission.
+   *
+   * The passes go through ONE door — `processing:submit-chain`, which plans in
+   * main and hands the plan to the queue — and narration/assembly ride behind
+   * them in the same workflow. A run with no passes has no chain to ride, so it
+   * gets a master row of its own and the same downstream jobs under it.
+   *
+   * Everything that can fail while BUILDING the downstream jobs (a resume check,
+   * a missing project directory) is done before anything is queued: a workflow
+   * that is half in the queue cannot be retried without double-queueing it.
    */
   private async addMonoJobsToQueue(projectDir: string): Promise<void> {
     this.addingToQueue.set(true);
@@ -5974,409 +6862,47 @@ export class LLWizardComponent implements OnInit {
     // throws, the catch below names these and blocks a retry from re-adding
     // them (the Add button re-submits the WHOLE job set).
     const queuedJobTitles: string[] = [];
-    const addJobTracked = async (request: Parameters<QueueService['addJob']>[0]) => {
+    const addJobTracked = async (request: QueueJobRequest) => {
       const job = await this.queueService.addJob(request);
       queuedJobTitles.push(request.metadata?.title || request.type);
       return job;
     };
 
     try {
-      const workflowId = this.generateWorkflowId();
-      const aiConfig = this.settingsService.getAIConfig();
-      const isArticle = this.itemType() === 'article';
-      const jobProjectDir = this.projectDir() || projectDir;
-      const outputDir = this.libraryService.audiobooksPath() || '';
-      const cleanupSource = this.resolveLatestSource('cleanup');
+      const passes = this.passes();
+      const downstream = await this.buildDownstreamJobs(projectDir);
 
-      // Pre-flight: RVC opt-in must name a voice. Validated BEFORE any job is queued
-      // so it fails cleanly (no partial workflow) instead of silently dropping the
-      // pass (no-fallbacks rule). The engine-not-installed case is handled in the
-      // template (the toggle is replaced by a download prompt), so an enabled toggle
-      // with no voice is the only inconsistent state left to catch here.
-      if (!this._skippedSteps.has('assembly')
-          && this.rvcEnhanceEnabled()
-          && this.componentService.isInstalled('rvc-env')
-          && !this.rvcEnhanceVoiceId()) {
-        throw new Error('RVC enhancement is on but no enhancement voice is selected. Pick a voice or turn RVC off.');
+      if (passes.length === 0 && downstream.length === 0) {
+        throw new Error('There is nothing to queue: no passes, no narration and no assembly.');
       }
 
-      // Master job groups the pipeline in the queue UI
-      const masterJob = await addJobTracked({
-        type: 'audiobook',
-        epubPath: cleanupSource,
-        projectDir: isArticle ? projectDir : undefined,
-        metadata: { title: this.title(), author: this.author() },
-        config: { type: 'audiobook' },
-        workflowId,
-      });
-      const masterJobId = masterJob.id;
-
-      // 1. AI Cleanup (single job; handles cleanup and/or simplify internally)
-      if (!this._skippedSteps.has('cleanup') && (this.enableAiCleanup() || this.simplifyForLearning())) {
-        if (isArticle) {
-          await addJobTracked({
-            type: 'bilingual-cleanup',
-            epubPath: cleanupSource,
-            projectDir,
-            metadata: { title: 'AI Cleanup' },
-            config: {
-              type: 'bilingual-cleanup',
-              projectId: this.projectId(),
-              projectDir,
-              sourceLang: this.detectedSourceLang(),
-              aiProvider: this.cleanupProvider(),
-              aiModel: this.cleanupModel(),
-              ollamaBaseUrl: aiConfig.ollama?.baseUrl,
-              claudeApiKey: aiConfig.claude?.apiKey,
-              openaiApiKey: aiConfig.openai?.apiKey,
-              customInstructions: this.customInstructions() || undefined,
-              simplifyForLearning: this.simplifyForLearning(),
-              simplifyMode: this.simplifyMode(),
-            },
-            workflowId,
-            parentJobId: masterJobId,
-          });
-        } else {
-          const cleanupConfig: Partial<OcrCleanupConfig> = {
-            type: 'ocr-cleanup',
-            aiProvider: this.cleanupProvider(),
-            aiModel: this.cleanupModel(),
-            ollamaBaseUrl: aiConfig.ollama?.baseUrl,
-            claudeApiKey: aiConfig.claude?.apiKey,
-            openaiApiKey: aiConfig.openai?.apiKey,
-            enableAiCleanup: this.enableAiCleanup(),
-            cleanupStages: this.cleanupStages(),
-            simplifyForLearning: this.simplifyForLearning(),
-            simplifyMode: this.simplifyMode(),
-            cleanupPrompt: this.promptModified() ? this.promptText() : undefined,  // Only override when user customized
-            customInstructions: this.customInstructions() || undefined,
-            // Only cloud APIs parallelize; ollama + bundled local AI run one server.
-            useParallel: this.cleanupProvider() === 'claude' || this.cleanupProvider() === 'openai',
-            parallelWorkers: this.cleanupParallelWorkers(),
-          };
-
-          await addJobTracked({
-            type: 'ocr-cleanup',
-            epubPath: cleanupSource,
-            bfpPath: jobProjectDir,
-            metadata: { title: 'AI Cleanup' },
-            config: cleanupConfig,
-            workflowId,
-            parentJobId: masterJobId,
-          });
+      if (passes.length > 0) {
+        const result = await this.queueService.submitProcessingRun(
+          this.chainRequest(projectDir, this.selectedVariantId(), passes),
+          downstream,
+        );
+        if (!result.success) {
+          throw new Error(result.error || 'The processing run was refused, and no reason came back.');
         }
-      }
-
-      // 2. Whole-book translation
-      if (!this._skippedSteps.has('translate') && this.monoTranslationActive()) {
-        const willProduce = this.cleanupWillProduce();
-        const translateEpubPath = willProduce
-          ? `${projectDir}/stages/01-cleanup/${willProduce}`
-          : this.resolveLatestSource('translate');
-
-        await addJobTracked({
-          type: 'bilingual-translation',
-          epubPath: translateEpubPath,
-          bfpPath: isArticle ? undefined : jobProjectDir,
+        console.log('[PipelineWizard] Submitted processing run:',
+          result.plan?.jobs.map(j => j.jobType).join(' → '), '+', downstream.map(j => j.type).join(' → '));
+      } else {
+        const workflowId = this.generateWorkflowId();
+        const isArticle = this.itemType() === 'article';
+        const master = await addJobTracked({
+          type: 'audiobook',
+          epubPath: this.ttsInputPath() || undefined,
           projectDir: isArticle ? projectDir : undefined,
-          metadata: { title: 'Translation' },
-          config: {
-            type: 'bilingual-translation',
-            projectId: isArticle ? this.projectId() : undefined,
-            projectDir: isArticle ? projectDir : undefined,
-            sourceLang: this.detectedSourceLang(),
-            targetLang: this.monoTargetLang(),
-            aiProvider: this.translateProvider(),
-            aiModel: this.translateModel(),
-            ollamaBaseUrl: aiConfig.ollama?.baseUrl,
-            claudeApiKey: aiConfig.claude?.apiKey,
-            openaiApiKey: aiConfig.openai?.apiKey,
-            monoTranslation: true,  // Full-book translation (not bilingual interleave)
-            customInstructions: this.translateCustomInstructions() || undefined,
-          },
+          metadata: { title: this.title(), author: this.author() },
+          config: { type: 'audiobook' },
           workflowId,
-          parentJobId: masterJobId,
         });
-      }
-
-      // 3. TTS (single voice)
-      if (!this._skippedSteps.has('tts')) {
-        const skipAssembly = !this._skippedSteps.has('assembly'); // e2a produces sentences only; we reassemble ourselves
-        const partial = this.partialTtsSessions()[0];
-
-        if (this.continueTts() && partial) {
-          const electron = window.electron as any;
-          const resumeCheck = await electron.parallelTts.checkResumeFromDir(partial.sessionDir);
-          const resumeData = resumeCheck?.data;
-          if (!resumeData?.success) {
-            throw new Error(`Cannot resume the partial TTS session: ${resumeCheck?.data?.error || 'the cached session could not be read'}`);
-          }
-          if (!resumeData.sourceEpubPath) {
-            throw new Error('Cannot resume the partial TTS session: the cached session is missing its source EPUB path');
-          }
-
-          await addJobTracked({
-            type: 'tts-conversion',
-            epubPath: resumeData.sourceEpubPath,
-            bfpPath: jobProjectDir,
-            metadata: {
-              title: 'TTS (Continue)',
-              bookTitle: this.title(),
-              author: this.author(),
-              year: this.year() || undefined,
-              coverPath: this.coverPath() || undefined,
-              outputFilename: this.generateOutputFilename(),
-            },
-            config: {
-              type: 'tts-conversion',
-              language: this.monoTtsLanguage(),
-              // Engine/voice/sampling from the wizard's controls (pre-filled from the
-              // original run, plus any change the user made). Without these the queue
-              // would fall back to xtts/ScarlettJohansson. Voice defaults to the ORIGINAL
-              // persisted voice if the picker somehow wasn't populated — never a stock default.
-              ttsEngine: this.ttsEngine(),
-              fineTuned: this.monoTtsVoice() || resumeData.renderSettings?.fineTuned,
-              device: this.ttsDevice(),
-              temperature: this.ttsTemperature(),
-              topP: this.ttsTopP(),
-              topK: 50,
-              repetitionPenalty: this.ttsRepetitionPenalty(),
-              speed: this.monoTtsSpeed(),
-              enableTextSplitting: true,
-              useParallel: true,
-              parallelMode: 'sentences',
-              parallelWorkers: this.effectiveTtsWorkers(),
-              outputDir,
-              skipAssembly,
-              // Final-assembly denoise (only consumed when this job assembles inline)
-              finalDenoise: this.finalDenoise(),
-            },
-            resumeInfo: {
-              success: true,
-              sessionId: resumeData.sessionId,
-              sessionDir: resumeData.sessionDir,
-              processDir: resumeData.processDir || partial.sessionDir,
-              totalSentences: resumeData.totalSentences,
-              totalChapters: resumeData.totalChapters,
-              completedSentences: resumeData.completedSentences,
-              missingSentences: resumeData.missingSentences,
-              missingRanges: resumeData.missingRanges,
-              chapters: resumeData.chapters,
-            },
-            workflowId,
-            parentJobId: masterJobId,
-          });
-        } else {
-          const ttsConfig: Partial<TtsConversionConfig> = {
-            type: 'tts-conversion',
-            device: this.ttsDevice(),
-            language: this.monoTtsLanguage(),
-            ttsEngine: this.ttsEngine(),
-            fineTuned: this.monoTtsVoice(),
-            temperature: this.ttsTemperature(),
-            topP: this.ttsTopP(),
-            topK: 50,
-            repetitionPenalty: this.ttsRepetitionPenalty(),
-            speed: this.monoTtsSpeed(),
-            enableTextSplitting: true,
-            useParallel: true,
-            parallelMode: 'sentences',
-            parallelWorkers: this.effectiveTtsWorkers(),
-            outputDir,
-            skipAssembly,
-            // Final-assembly denoise (only consumed when this job assembles inline)
-            finalDenoise: this.finalDenoise(),
-            // The user saw the Continue/Start-fresh toggle (partial cached
-            // session exists) and chose Start fresh — the queue must not
-            // auto-resume the old cache, and clears it.
-            startFresh: this.partialTtsSessions().length > 0,
-          };
-
-          await addJobTracked({
-            type: 'tts-conversion',
-            epubPath: this.resolveLatestSource('tts'),
-            projectDir: isArticle ? projectDir : undefined,
-            bfpPath: isArticle ? undefined : jobProjectDir,
-            metadata: {
-              title: 'TTS',
-              bookTitle: this.title(),
-              author: this.author(),
-              year: this.year() || undefined,
-              coverPath: this.coverPath() || undefined,
-              outputFilename: this.generateOutputFilename(),
-            },
-            config: ttsConfig,
-            workflowId,
-            parentJobId: masterJobId,
-          });
+        for (const request of downstream) {
+          await addJobTracked({ ...request, workflowId, parentJobId: master.id });
         }
+        console.log('[PipelineWizard] Queued narration/assembly with no passes:',
+          downstream.map(j => j.type).join(' → '));
       }
-
-      // 4. Assembly (reassembly into M4B + VTT)
-      if (!this._skippedSteps.has('assembly')) {
-        const audiobookDir = `${projectDir.replace(/\\/g, '/')}/output`;
-
-        // RVC voice enhancement runs as its OWN queue step before reassembly (so it
-        // shows a distinct job with a per-sentence ETA). It writes an enhanced set
-        // to [library]/tmp which the reassembly job then assembles + deletes.
-        const rvcEnabled = this.rvcEnhanceEnabled()
-          && !!this.rvcEnhanceVoiceId()
-          && this.componentService.isInstalled('rvc-env');
-        const rvcParams = rvcEnabled ? {
-          voiceId: this.rvcEnhanceVoiceId(),
-          indexRate: this.rvcEnhanceIndexRate(),
-          protectRate: this.rvcEnhanceProtectRate(),
-          nSemitones: this.rvcEnhanceNSemitones(),
-          // Denoise rides on the RVC job so it runs BEFORE conversion (denoise →
-          // RVC → assembly); the reassembly job sees the pre-enhanced set and
-          // knows not to re-run it.
-          finalDenoise: this.finalDenoise(),
-        } : null;
-
-        if (!this._skippedSteps.has('tts')) {
-          // MODE A: TTS + Assembly chained — session data discovered at runtime by queue service
-          if (rvcParams) {
-            await addJobTracked({
-              type: 'rvc-enhancement',
-              bfpPath: jobProjectDir,
-              config: {
-                type: 'rvc-enhancement',
-                sessionId: '', sessionDir: '', processDir: '',  // filled at runtime via session discovery
-                ...rvcParams,
-              },
-              metadata: { title: this.title(), author: this.author(), year: this.year() || undefined },
-              workflowId,
-              parentJobId: masterJobId,
-            });
-          }
-          await addJobTracked({
-            type: 'reassembly',
-            bfpPath: jobProjectDir,
-            config: {
-              type: 'reassembly',
-              sessionId: '',   // filled at runtime via session discovery
-              sessionDir: '',
-              processDir: '',
-              outputDir: audiobookDir,
-              metadata: {
-                title: this.title() || '',
-                author: this.author() || '',
-                coverPath: this.coverPath() || undefined,
-                year: this.year() || undefined,
-                outputFilename: this.generateOutputFilename(),
-              },
-              excludedChapters: [],
-              // Three opt-in assembly passes — all default OFF (see the toggles above).
-              finalDenoise: this.finalDenoise(),
-              applyDeRing: this.applyDeRing(),
-            },
-            metadata: {
-              title: this.title(),
-              author: this.author(),
-              year: this.year() || undefined,
-            },
-            workflowId,
-            parentJobId: masterJobId,
-          });
-        } else if (this.cachedSession()) {
-          // MODE B: TTS skipped, standalone reassembly from cached session
-          const session = this.cachedSession();
-          const totalChapters = session.chapters?.filter((ch: any) => !ch.excluded)?.length || 0;
-
-          const reassemblyConfig: ReassemblyJobConfig = {
-            type: 'reassembly',
-            sessionId: session.sessionId,
-            sessionDir: session.sessionDir,
-            processDir: session.processDir,
-            outputDir: audiobookDir,
-            totalChapters,
-            metadata: {
-              title: this.title() || session.metadata?.title || '',
-              author: this.author() || session.metadata?.author || '',
-              year: this.year() || session.metadata?.year,
-              coverPath: this.coverPath() || session.metadata?.coverPath,
-              outputFilename: this.generateOutputFilename(),
-            },
-            excludedChapters: [],
-            // Three opt-in assembly passes — all default OFF (see the toggles above).
-            finalDenoise: this.finalDenoise(),
-            applyDeRing: this.applyDeRing(),
-          };
-
-          if (rvcParams) {
-            await addJobTracked({
-              type: 'rvc-enhancement',
-              epubPath: session.processDir,
-              bfpPath: jobProjectDir,
-              config: {
-                type: 'rvc-enhancement',
-                sessionId: session.sessionId,
-                sessionDir: session.sessionDir,
-                processDir: session.processDir,
-                ...rvcParams,
-              },
-              metadata: { title: reassemblyConfig.metadata.title, author: reassemblyConfig.metadata.author, year: reassemblyConfig.metadata.year },
-              workflowId,
-              parentJobId: masterJobId,
-            });
-          }
-          await addJobTracked({
-            type: 'reassembly',
-            epubPath: session.processDir,
-            bfpPath: jobProjectDir,
-            config: reassemblyConfig,
-            metadata: { title: reassemblyConfig.metadata.title, author: reassemblyConfig.metadata.author, year: reassemblyConfig.metadata.year },
-            workflowId,
-            parentJobId: masterJobId,
-          });
-        }
-      }
-
-      // 5. Video Assembly (optional, after audio assembly)
-      if (this.generateVideo() && !this._skippedSteps.has('assembly')) {
-        let videoOutputFilename = this.title() || 'audiobook';
-        const videoAuthor = this.author() || '';
-        if (videoAuthor && videoAuthor !== 'Unknown' && !videoOutputFilename.includes(videoAuthor)) {
-          videoOutputFilename += `. ${videoAuthor}`;
-        }
-
-        await addJobTracked({
-          type: 'video-assembly',
-          bfpPath: jobProjectDir,
-          metadata: { title: 'Video' },
-          config: {
-            type: 'video-assembly',
-            projectId: jobProjectDir,
-            bfpPath: jobProjectDir,
-            mode: 'monolingual',
-            // No m4bPath/vttPath. These were `<projectDir>/output/audiobook.m4b|.vtt`,
-            // which the monolingual assembler never writes — it names the file after
-            // the book's title — so the pair was a fiction the bridge had to work
-            // around every time. The bridge resolves both from <projectDir>/output when
-            // the job runs, by which point the assembly step has produced them.
-            title: this.title(),
-            sourceLang: this.monoTtsLanguage(),
-            resolution: this.videoResolution(),
-            outputFilename: videoOutputFilename,
-          },
-          workflowId,
-          parentJobId: masterJobId,
-        });
-      }
-
-      console.log('[PipelineWizard] Mono jobs added to queue:', {
-        workflowId,
-        masterJobId,
-        isArticle,
-        cleanup: !this._skippedSteps.has('cleanup') && (this.enableAiCleanup() || this.simplifyForLearning()),
-        translate: !this._skippedSteps.has('translate') && this.monoTranslationActive(),
-        tts: !this._skippedSteps.has('tts'),
-        assembly: !this._skippedSteps.has('assembly'),
-        video: this.generateVideo(),
-        assemblyMode: !this._skippedSteps.has('assembly')
-          ? (!this._skippedSteps.has('tts') ? 'chained' : (this.cachedSession() ? 'standalone' : 'none'))
-          : 'skipped',
-      });
 
       this.addedToQueue.set(true);
       this.queued.emit();
@@ -6404,6 +6930,300 @@ export class LLWizardComponent implements OnInit {
     } finally {
       this.addingToQueue.set(false);
     }
+  }
+
+  /**
+   * Narration, enhancement and assembly for a standard run — built, not queued.
+   *
+   * The caller decides where they land: behind a pass chain (same workflow, after
+   * the passes) or under a master row of their own. They carry no workflowId or
+   * parent: whoever queues them stamps that.
+   */
+  private async buildDownstreamJobs(projectDir: string): Promise<QueueJobRequest[]> {
+    const requests: QueueJobRequest[] = [];
+    const isArticle = this.itemType() === 'article';
+    const jobProjectDir = this.projectDir() || projectDir;
+    const outputDir = this.libraryService.audiobooksPath() || '';
+    const wantsTts = this.ttsInThisRun();
+    const wantsAssembly = !this._skippedSteps.has('assembly') && !this.assemblyBlockedReason();
+
+    // Pre-flight: RVC opt-in must name a voice. Validated BEFORE any job is built
+    // so it fails cleanly (no partial workflow) instead of silently dropping the
+    // pass (no-fallbacks rule). The engine-not-installed case is handled in the
+    // template (the toggle is replaced by a download prompt), so an enabled toggle
+    // with no voice is the only inconsistent state left to catch here.
+    if (wantsAssembly
+        && this.rvcEnhanceEnabled()
+        && this.componentService.isInstalled('rvc-env')
+        && !this.rvcEnhanceVoiceId()) {
+      throw new Error('RVC enhancement is on but no enhancement voice is selected. Pick a voice or turn RVC off.');
+    }
+
+    // The optional video job reads the assembly's output from under the PROJECT
+    // directory, so that directory has to be KNOWN. Checked here, before anything
+    // is queued: empty would queue a job pointed at "/output" that fails at run
+    // time, with a path nobody can place, long after this click.
+    if (this.generateVideo() && wantsAssembly && !this.projectDir()) {
+      throw new Error(
+        'Cannot queue the video job: this project has no project directory (projectDir), '
+        + 'so there is nowhere to read the assembled audiobook from.',
+      );
+    }
+
+    // 1. Narration
+    if (wantsTts) {
+      const skipAssembly = wantsAssembly;  // e2a produces sentences only; we reassemble ourselves
+      const partial = this.partialTtsSessions()[0];
+
+      if (this.continueTts() && partial) {
+        const electron = window.electron as any;
+        const resumeCheck = await electron.parallelTts.checkResumeFromDir(partial.sessionDir);
+        const resumeData = resumeCheck?.data;
+        if (!resumeData?.success) {
+          throw new Error(`Cannot resume the partial TTS session: ${resumeCheck?.data?.error || 'the cached session could not be read'}`);
+        }
+        if (!resumeData.sourceEpubPath) {
+          throw new Error('Cannot resume the partial TTS session: the cached session is missing its source EPUB path');
+        }
+
+        requests.push({
+          type: 'tts-conversion',
+          epubPath: resumeData.sourceEpubPath,
+          bfpPath: jobProjectDir,
+          metadata: {
+            title: 'TTS (Continue)',
+            bookTitle: this.title(),
+            author: this.author(),
+            year: this.year() || undefined,
+            coverPath: this.coverPath() || undefined,
+            outputFilename: this.generateOutputFilename(),
+          },
+          config: {
+            type: 'tts-conversion',
+            language: this.monoTtsLanguage(),
+            // Engine/voice/sampling from the wizard's controls (pre-filled from the
+            // original run, plus any change the user made). Without these the queue
+            // would fall back to xtts/ScarlettJohansson. Voice defaults to the ORIGINAL
+            // persisted voice if the picker somehow wasn't populated — never a stock default.
+            ttsEngine: this.ttsEngine(),
+            fineTuned: this.monoTtsVoice() || resumeData.renderSettings?.fineTuned,
+            device: this.ttsDevice(),
+            temperature: this.ttsTemperature(),
+            topP: this.ttsTopP(),
+            topK: 50,
+            repetitionPenalty: this.ttsRepetitionPenalty(),
+            speed: this.monoTtsSpeed(),
+            enableTextSplitting: true,
+            useParallel: true,
+            parallelMode: 'sentences',
+            parallelWorkers: this.effectiveTtsWorkers(),
+            outputDir,
+            skipAssembly,
+            // Final-assembly denoise (only consumed when this job assembles inline)
+            finalDenoise: this.finalDenoise(),
+          },
+          resumeInfo: {
+            success: true,
+            sessionId: resumeData.sessionId,
+            sessionDir: resumeData.sessionDir,
+            processDir: resumeData.processDir || partial.sessionDir,
+            totalSentences: resumeData.totalSentences,
+            totalChapters: resumeData.totalChapters,
+            completedSentences: resumeData.completedSentences,
+            missingSentences: resumeData.missingSentences,
+            missingRanges: resumeData.missingRanges,
+            chapters: resumeData.chapters,
+          },
+        });
+      } else {
+        const ttsConfig: Partial<TtsConversionConfig> = {
+          type: 'tts-conversion',
+          device: this.ttsDevice(),
+          language: this.monoTtsLanguage(),
+          ttsEngine: this.ttsEngine(),
+          fineTuned: this.monoTtsVoice(),
+          temperature: this.ttsTemperature(),
+          topP: this.ttsTopP(),
+          topK: 50,
+          repetitionPenalty: this.ttsRepetitionPenalty(),
+          speed: this.monoTtsSpeed(),
+          enableTextSplitting: true,
+          useParallel: true,
+          parallelMode: 'sentences',
+          parallelWorkers: this.effectiveTtsWorkers(),
+          outputDir,
+          skipAssembly,
+          // Final-assembly denoise (only consumed when this job assembles inline)
+          finalDenoise: this.finalDenoise(),
+          // The user saw the Continue/Start-fresh toggle (partial cached
+          // session exists) and chose Start fresh — the queue must not
+          // auto-resume the old cache, and clears it.
+          startFresh: this.partialTtsSessions().length > 0,
+        };
+
+        requests.push({
+          type: 'tts-conversion',
+          // The book this run leaves behind. When passes are queued ahead of it
+          // the file does not exist yet — the chain writes it before this runs.
+          epubPath: this.ttsInputPath(),
+          projectDir: isArticle ? projectDir : undefined,
+          bfpPath: isArticle ? undefined : jobProjectDir,
+          metadata: {
+            title: 'TTS',
+            bookTitle: this.title(),
+            author: this.author(),
+            year: this.year() || undefined,
+            coverPath: this.coverPath() || undefined,
+            outputFilename: this.generateOutputFilename(),
+          },
+          config: ttsConfig,
+        });
+      }
+    }
+
+    // 2. Enhancement + assembly (M4B + VTT)
+    if (wantsAssembly) {
+      const audiobookDir = `${projectDir.replace(/\\/g, '/')}/output`;
+
+      // RVC voice enhancement runs as its OWN queue step before reassembly (so it
+      // shows a distinct job with a per-sentence ETA). It writes an enhanced set
+      // to [library]/tmp which the reassembly job then assembles + deletes.
+      const rvcEnabled = this.rvcEnhanceEnabled()
+        && !!this.rvcEnhanceVoiceId()
+        && this.componentService.isInstalled('rvc-env');
+      const rvcParams = rvcEnabled ? {
+        voiceId: this.rvcEnhanceVoiceId(),
+        indexRate: this.rvcEnhanceIndexRate(),
+        protectRate: this.rvcEnhanceProtectRate(),
+        nSemitones: this.rvcEnhanceNSemitones(),
+        // Denoise rides on the RVC job so it runs BEFORE conversion (denoise →
+        // RVC → assembly); the reassembly job sees the pre-enhanced set and
+        // knows not to re-run it.
+        finalDenoise: this.finalDenoise(),
+      } : null;
+
+      if (wantsTts) {
+        // MODE A: TTS + Assembly chained — session data discovered at runtime by queue service
+        if (rvcParams) {
+          requests.push({
+            type: 'rvc-enhancement',
+            bfpPath: jobProjectDir,
+            config: {
+              type: 'rvc-enhancement',
+              sessionId: '', sessionDir: '', processDir: '',  // filled at runtime via session discovery
+              ...rvcParams,
+            },
+            metadata: { title: this.title(), author: this.author(), year: this.year() || undefined },
+          });
+        }
+        requests.push({
+          type: 'reassembly',
+          bfpPath: jobProjectDir,
+          config: {
+            type: 'reassembly',
+            sessionId: '',   // filled at runtime via session discovery
+            sessionDir: '',
+            processDir: '',
+            outputDir: audiobookDir,
+            metadata: {
+              title: this.title() || '',
+              author: this.author() || '',
+              coverPath: this.coverPath() || undefined,
+              year: this.year() || undefined,
+              outputFilename: this.generateOutputFilename(),
+            },
+            excludedChapters: [],
+            // Three opt-in assembly passes — all default OFF (see the toggles above).
+            finalDenoise: this.finalDenoise(),
+            applyDeRing: this.applyDeRing(),
+          },
+          metadata: {
+            title: this.title(),
+            author: this.author(),
+            year: this.year() || undefined,
+          },
+        });
+      } else if (this.cachedSession()) {
+        // MODE B: no narration in this run — reassemble the cached session
+        const session = this.cachedSession();
+        const totalChapters = session.chapters?.filter((ch: any) => !ch.excluded)?.length || 0;
+
+        const reassemblyConfig: ReassemblyJobConfig = {
+          type: 'reassembly',
+          sessionId: session.sessionId,
+          sessionDir: session.sessionDir,
+          processDir: session.processDir,
+          outputDir: audiobookDir,
+          totalChapters,
+          metadata: {
+            title: this.title() || session.metadata?.title || '',
+            author: this.author() || session.metadata?.author || '',
+            year: this.year() || session.metadata?.year,
+            coverPath: this.coverPath() || session.metadata?.coverPath,
+            outputFilename: this.generateOutputFilename(),
+          },
+          excludedChapters: [],
+          // Three opt-in assembly passes — all default OFF (see the toggles above).
+          finalDenoise: this.finalDenoise(),
+          applyDeRing: this.applyDeRing(),
+        };
+
+        if (rvcParams) {
+          requests.push({
+            type: 'rvc-enhancement',
+            epubPath: session.processDir,
+            bfpPath: jobProjectDir,
+            config: {
+              type: 'rvc-enhancement',
+              sessionId: session.sessionId,
+              sessionDir: session.sessionDir,
+              processDir: session.processDir,
+              ...rvcParams,
+            },
+            metadata: { title: reassemblyConfig.metadata.title, author: reassemblyConfig.metadata.author, year: reassemblyConfig.metadata.year },
+          });
+        }
+        requests.push({
+          type: 'reassembly',
+          epubPath: session.processDir,
+          bfpPath: jobProjectDir,
+          config: reassemblyConfig,
+          metadata: { title: reassemblyConfig.metadata.title, author: reassemblyConfig.metadata.author, year: reassemblyConfig.metadata.year },
+        });
+      }
+    }
+
+    // 3. Video (optional, after audio assembly)
+    if (this.generateVideo() && wantsAssembly) {
+      let videoOutputFilename = this.title() || 'audiobook';
+      const videoAuthor = this.author() || '';
+      if (videoAuthor && videoAuthor !== 'Unknown' && !videoOutputFilename.includes(videoAuthor)) {
+        videoOutputFilename += `. ${videoAuthor}`;
+      }
+
+      requests.push({
+        type: 'video-assembly',
+        bfpPath: jobProjectDir,
+        metadata: { title: 'Video' },
+        config: {
+          type: 'video-assembly',
+          projectId: jobProjectDir,
+          bfpPath: jobProjectDir,
+          mode: 'monolingual',
+          // No m4bPath/vttPath. These were `<projectDir>/output/audiobook.m4b|.vtt`,
+          // which the monolingual assembler never writes — it names the file after
+          // the book's title — so the pair was a fiction the bridge had to work
+          // around every time. The bridge resolves both from <projectDir>/output when
+          // the job runs, by which point the assembly step has produced them.
+          title: this.title(),
+          sourceLang: this.monoTtsLanguage(),
+          resolution: this.videoResolution(),
+          outputFilename: videoOutputFilename,
+        },
+      });
+    }
+
+    return requests;
   }
 
   /**
@@ -6437,7 +7257,7 @@ export class LLWizardComponent implements OnInit {
   /**
    * Resolve "latest" source EPUB based on pipeline stage
    */
-  private resolveLatestSource(stage: 'cleanup' | 'translate' | 'tts'): string {
+  private resolveLatestSource(stage: 'cleanup' | 'translate'): string {
     const source = this.sourceSignalFor(stage)();
 
     if (source !== 'latest') {
@@ -6446,27 +7266,6 @@ export class LLWizardComponent implements OnInit {
 
     const epubs = this.availableEpubs();
     const projectDir = this.effectiveProjectDir();
-
-    if (stage === 'tts') {
-      // Mono TTS input: pipeline intent first — earlier steps in this run will
-      // produce files that don't exist on disk yet
-      if (this.monoTranslationActive()) {
-        return `${projectDir}/stages/02-translate/translated.epub`;
-      }
-      const willProduce = this.cleanupWillProduce();
-      if (willProduce && !epubs.some(e => e.filename === willProduce)) {
-        return `${projectDir}/stages/01-cleanup/${willProduce}`;
-      }
-      const exclude = new Set<string>();
-      for (const e of epubs) { if (e.isTranslated) exclude.add(e.filename); }
-      const best = this.getMostRecentEpub(epubs, exclude);
-      if (best) return best.path;
-      for (const name of ['translated.epub', 'simplified.epub', 'cleaned.epub', 'exported.epub', 'original.epub']) {
-        const found = epubs.find(e => e.filename === name);
-        if (found) return found.path;
-      }
-      return `${projectDir}/source/original.epub`;
-    }
 
     if (stage === 'cleanup') {
       // Cleanup input: most recently modified source file

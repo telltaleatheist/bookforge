@@ -258,7 +258,16 @@ export interface SessionCacheInfo {
 // Wizard Step Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type LLWizardStep = 'cleanup' | 'translate' | 'tts' | 'assembly' | 'review';
+/**
+ * The wizard's pages are `passes → tts → assembly → review`.
+ *
+ * 'cleanup' and 'translate' are NOT pages any more — the pass builder replaced
+ * both. They survive here as the keys the sentence-aligned (language-learning)
+ * pipeline tracks its two sub-stages under, because that pipeline still submits a
+ * cleanup job and a per-language translation job and needs to say, separately,
+ * whether each is part of the run. Nothing sets `currentStep` to either.
+ */
+export type LLWizardStep = 'passes' | 'cleanup' | 'translate' | 'tts' | 'assembly' | 'review';
 
 export interface SourceDropdownOption {
   value: string;                // "latest" or actual path

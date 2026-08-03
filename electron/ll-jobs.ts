@@ -1485,7 +1485,9 @@ export interface MonoTranslationConfig {
   sourceLang: string;        // Source language of the book
   targetLang: string;        // Target language (usually 'en')
   title?: string;
-  aiProvider: 'ollama' | 'claude' | 'openai';
+  // 'local' included: callAI serves the bundled llama.cpp model, which is the
+  // app's default AI and what a translate pass uses with nothing configured.
+  aiProvider: 'ollama' | 'claude' | 'openai' | 'local';
   aiModel: string;
   ollamaBaseUrl?: string;
   claudeApiKey?: string;
