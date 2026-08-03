@@ -29,6 +29,8 @@ import type {
   ProjectVariant,
   VariantMetadata,
   NarrationFlags,
+  AppliedPass,
+  AppliedPassKind,
 } from './manifest-types.js';
 
 // Generate UUID v4 without external dependency
@@ -895,6 +897,93 @@ export async function registerEpubExport(projectDir: string, epubAbsPath: string
       console.log(`[ManifestService] Removed superseded export ${oldAbs} (now ${relPath})`);
     }
   }
+}
+
+/**
+ * Where a pass writes its working files and its diff.
+ *
+ * The number is the pass's position in the book's WHOLE provenance list, not its
+ * position in the run that is queueing it: two runs against one book would
+ * otherwise both start at `01` and the second would overwrite the first's diff
+ * with a diff of different text. It is still execution order — the list only
+ * grows, and only at the end.
+ *
+ * Allocation is deliberately separate from recording. A pass allocates its stage
+ * BEFORE it runs (it needs somewhere to work and to write its diff incrementally)
+ * and records itself only on success, so a failed pass re-run lands in the same
+ * directory and resumes rather than leaving a hole in the numbering.
+ */
+export interface PassStage {
+  /** 1-based position in appliedPasses this pass will occupy. */
+  index: number;
+  /** Project-relative, forward slashes: `stages/03-simplify`. */
+  relDir: string;
+  absDir: string;
+  /** Project-relative path of this pass's diff: `stages/03-simplify/diff.json`. */
+  relDiffPath: string;
+  absDiffPath: string;
+}
+
+export async function allocatePassStage(projectDir: string, kind: AppliedPassKind): Promise<PassStage> {
+  const manifest = await readManifestAt(projectDir);
+  const index = (manifest.outputs?.epub?.appliedPasses?.length ?? 0) + 1;
+  const relDir = `stages/${String(index).padStart(2, '0')}-${kind}`;
+  const absDir = toAbs(projectDir, relDir);
+  await fs.promises.mkdir(absDir, { recursive: true });
+  return {
+    index,
+    relDir,
+    absDir,
+    relDiffPath: `${relDir}/diff.json`,
+    absDiffPath: path.join(absDir, 'diff.json'),
+  };
+}
+
+/**
+ * Record a completed pass against the project's book EPUB.
+ *
+ * Refuses a project with no `outputs.epub`: a pass record describes what was done
+ * to a specific file, and there is no such file to describe. That is a caller bug
+ * (the pass ran against something it did not register), not a state to paper over.
+ */
+export async function appendAppliedPass(projectDir: string, pass: AppliedPass): Promise<void> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  const saved = await modifyManifest(projectId, (m) => {
+    const epub = m.outputs?.epub;
+    if (!epub) {
+      throw new Error(
+        `Cannot record the ${pass.kind} pass for ${projectDir}: the project has no outputs.epub, `
+        + 'so there is no book for the pass to have been applied to.'
+      );
+    }
+    epub.appliedPasses = [...(epub.appliedPasses ?? []), pass];
+    epub.modifiedAt = pass.at;
+  });
+  if (!saved.success) {
+    throw new Error(`The ${pass.kind} pass finished, but recording it in the manifest failed: ${saved.error}`);
+  }
+}
+
+/** Every pass that has a diff, in execution order, with the diff resolved. */
+export async function listPassDiffs(projectDir: string): Promise<Array<{
+  kind: AppliedPassKind;
+  at: string;
+  params?: Record<string, unknown>;
+  relPath: string;
+  absPath: string;
+}>> {
+  const manifest = await readManifestAt(projectDir);
+  return (manifest.outputs?.epub?.appliedPasses ?? [])
+    .filter((p) => !!p.diff)
+    .map((p) => ({
+      kind: p.kind,
+      at: p.at,
+      params: p.params,
+      relPath: p.diff!,
+      absPath: toAbs(projectDir, p.diff!),
+    }));
 }
 
 /**

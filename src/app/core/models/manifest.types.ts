@@ -349,6 +349,32 @@ export interface EpubOutput {
   // Project-relative, forward slashes, e.g. `source/The Waste Land.epub`.
   path: string;
   modifiedAt: string;
+  // Every pass applied to this file, oldest first. A pass rewrites the book in
+  // place, so this list is the only record of what was done to it — and what
+  // Studio reads instead of scanning for the stage copies it replaced.
+  appliedPasses?: AppliedPass[];
+}
+
+// The five things a processing run can do to a book. One queue job type each;
+// see docs/PROCESSING_PIPELINE_V2.md for the user-facing names.
+export type AppliedPassKind =
+  | 'tesseract'
+  | 'ocr-correction'
+  | 'footnotes'
+  | 'simplify'
+  | 'translate';
+
+// One completed pass. Appended when the pass finishes, never on failure.
+export interface AppliedPass {
+  kind: AppliedPassKind;
+  // ISO timestamp of completion.
+  at: string;
+  // What the pass was told to do — model, mode, languages. Free-form per kind.
+  params?: Record<string, unknown>;
+  // Project-relative path to this pass's diff, forward slashes. Absent for the
+  // passes with nothing to diff against (tesseract) or nothing meaningful
+  // to diff (translate).
+  diff?: string;
 }
 
 export interface BookmarkState {

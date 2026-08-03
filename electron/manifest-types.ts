@@ -283,6 +283,43 @@ export interface EpubOutput {
   /** Project-relative, forward slashes, e.g. `source/The Waste Land.epub`. */
   path: string;
   modifiedAt: string;
+  /**
+   * Every pass that has been applied to this file, oldest first.
+   *
+   * A pass rewrites the book IN PLACE, so the file itself carries no evidence of
+   * what was done to it — this list is the only record. It is also what Studio
+   * reads to answer "has this been OCR-corrected / simplified / translated?",
+   * which is why it is per-file rather than a pipeline stage status: the stage
+   * copies it replaced (`stages/01-cleanup/cleaned.epub`, `simplified.epub`) are
+   * gone for the mono pipeline.
+   */
+  appliedPasses?: AppliedPass[];
+}
+
+/**
+ * The five things a processing run can do to a book. Each maps to one queue job
+ * type; see docs/PROCESSING_PIPELINE_V2.md for the user-facing names.
+ */
+export type AppliedPassKind =
+  | 'tesseract'
+  | 'ocr-correction'
+  | 'footnotes'
+  | 'simplify'
+  | 'translate';
+
+/** One completed pass. Appended when the pass finishes, never on failure. */
+export interface AppliedPass {
+  kind: AppliedPassKind;
+  /** ISO timestamp of completion. */
+  at: string;
+  /** What the pass was told to do — model, mode, languages. Free-form per kind. */
+  params?: Record<string, unknown>;
+  /**
+   * Project-relative path to this pass's diff, forward slashes
+   * (`stages/02-footnotes/diff.json`). Absent for the passes that have nothing
+   * to diff against (tesseract) or nothing meaningful to diff (translate).
+   */
+  diff?: string;
 }
 
 export interface AudiobookOutput {
