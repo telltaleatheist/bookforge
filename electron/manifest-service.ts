@@ -881,12 +881,6 @@ export function passStageRelDir(index: number, kind: AppliedPassKind): string {
   return `stages/${String(index).padStart(2, '0')}-${kind}`;
 }
 
-/** Where the NEXT pass recorded against this book would sit. 1-based. */
-export async function nextPassIndex(projectDir: string): Promise<number> {
-  const manifest = await readManifestAt(projectDir);
-  return (manifest.outputs?.epub?.appliedPasses?.length ?? 0) + 1;
-}
-
 /**
  * Record a completed pass against the project's book EPUB.
  *
