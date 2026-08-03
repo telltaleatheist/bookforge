@@ -188,7 +188,11 @@ function broadcastInstallProgress(p: InstallProgress): void {
   }
 }
 
-async function downloadFoundry(listeners: Set<(p: InstallProgress) => void>): Promise<string> {
+async function downloadFoundry(
+  listeners: Set<(p: InstallProgress) => void>,
+  /** Set when a MANAGED install at this stale version is being replaced. */
+  upgradeFrom?: string
+): Promise<string> {
   // NOT wrapped in a try/catch, unlike the lookup in resolveFoundryPath: there,
   // "the component registry isn't loaded" legitimately means "no managed install
   // to find". Here it means the download that was asked for cannot happen, and
@@ -208,22 +212,31 @@ async function downloadFoundry(listeners: Set<(p: InstallProgress) => void>): Pr
       + 'nothing to download. This is a catalog bug in BookForge, not a missing install.'
     );
   }
-  const detected = resolveFoundryPath();
-  if (detected) return detected;
 
-  if (status.installed) {
-    // Recorded, its entry exists — and it still did not resolve, so it is not a
-    // runnable file. Downloading over it would overrule a path somebody chose;
-    // say which one and why instead.
-    throw new Error(
-      `The "${FOUNDRY_CLI_COMPONENT_ID}" component points at ${status.installed.entryPath} `
-      + `(recorded as an ${status.installed.source} install), but that is not a runnable file. `
-      + 'Point it somewhere else or remove it in Settings → Add-ons; BookForge will not download '
-      + 'over a location you chose.'
-    );
+  // On an upgrade both of these answer "one is already here" — about the very
+  // binary being replaced — so they only guard the from-nothing install.
+  if (!upgradeFrom) {
+    const detected = resolveFoundryPath();
+    if (detected) return detected;
+
+    if (status.installed) {
+      // Recorded, its entry exists — and it still did not resolve, so it is not a
+      // runnable file. Downloading over it would overrule a path somebody chose;
+      // say which one and why instead.
+      throw new Error(
+        `The "${FOUNDRY_CLI_COMPONENT_ID}" component points at ${status.installed.entryPath} `
+        + `(recorded as an ${status.installed.source} install), but that is not a runnable file. `
+        + 'Point it somewhere else or remove it in Settings → Add-ons; BookForge will not download '
+        + 'over a location you chose.'
+      );
+    }
   }
 
-  console.log(`[foundry] no foundry on this machine; downloading ${FOUNDRY_CLI_VERSION}…`);
+  console.log(
+    upgradeFrom
+      ? `[foundry] managed install is ${upgradeFrom}; upgrading to ${FOUNDRY_CLI_VERSION}…`
+      : `[foundry] no foundry on this machine; downloading ${FOUNDRY_CLI_VERSION}…`
+  );
   const result = await componentManager.install(FOUNDRY_CLI_COMPONENT_ID, (p) => {
     broadcastInstallProgress(p);
     for (const listener of listeners) {
@@ -273,13 +286,25 @@ async function downloadFoundry(listeners: Set<(p: InstallProgress) => void>): Pr
  * A configured foundry is NEVER downloaded over. `FOUNDRY_CLI_PATH` that is set
  * but does not name a runnable file is an error here, not an invitation to fetch
  * one: the user said where their foundry is, and the useful answer is that it
- * isn't there — not a silent second copy that makes their setting a lie.
+ * isn't there — not a silent second copy that makes their setting a lie. An
+ * EXTERNAL component record is the same choice made in Settings, honored at
+ * whatever version it is.
+ *
+ * A MANAGED install is different: BookForge put it there, so BookForge keeps it
+ * at the version the catalog names. When FOUNDRY_CLI_VERSION moves, the stale
+ * copy is replaced HERE, on the next pass that needs foundry — the record's
+ * `version` field exists precisely "to detect upgrades" (component-types.ts),
+ * and without this check a catalog bump reaches only fresh machines, while
+ * every machine that already installed keeps answering with the old binary
+ * forever (the documented uninstall-reinstall limitation in rvc-env.ts, which
+ * is livable for a 2 GiB env and wrong for a 38 MB CLI the app versions in
+ * lockstep with its own foundry-run contract).
  */
 export async function ensureFoundryPath(
   onProgress?: (p: InstallProgress) => void
 ): Promise<string> {
-  const already = resolveFoundryPath();
-  if (already) return already;
+  const fromEnv = usable(process.env[FOUNDRY_CLI_ENV_VAR]?.trim());
+  if (fromEnv) return fromEnv;
 
   const declared = process.env[FOUNDRY_CLI_ENV_VAR]?.trim();
   if (declared) {
@@ -290,6 +315,25 @@ export async function ensureFoundryPath(
     );
   }
 
+  // Loaded directly, not through resolveFoundryPath's try/catch: past this point
+  // every answer needs the component registry (to read the record's source and
+  // version), so a missing registry is a real error, not "nothing installed".
+  const { componentManager } =
+    require('./components/component-manager') as typeof import('./components/component-manager');
+  const entry = usable(componentManager.resolveEntry(FOUNDRY_CLI_COMPONENT_ID));
+  let staleManagedVersion: string | undefined;
+  if (entry) {
+    const status = await componentManager.getStatus(FOUNDRY_CLI_COMPONENT_ID);
+    const record = status?.installed;
+    if (record?.source !== 'managed' || record.version === FOUNDRY_CLI_VERSION) {
+      return entry;
+    }
+    // A stale managed install. Replacing it can fail if the old exe is mid-run
+    // (Windows locks a running binary) — that failure is loud and the retry is
+    // the next pass, which is the right shape for an event this rare.
+    staleManagedVersion = record.version;
+  }
+
   if (foundryInstall) {
     if (onProgress) foundryInstall.listeners.add(onProgress);
     return foundryInstall.promise;
@@ -297,7 +341,7 @@ export async function ensureFoundryPath(
 
   const listeners = new Set<(p: InstallProgress) => void>();
   if (onProgress) listeners.add(onProgress);
-  const promise = downloadFoundry(listeners).finally(() => {
+  const promise = downloadFoundry(listeners, staleManagedVersion).finally(() => {
     foundryInstall = null;
   });
   foundryInstall = { promise, listeners };
