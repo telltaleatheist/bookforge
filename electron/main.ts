@@ -2095,7 +2095,7 @@ function setupIpcHandlers(): void {
 
       return {
         success: false,
-        error: `${projectDir} is not a BookForge project directory. Legacy .bfp project files are no longer supported — open the project directory instead.`,
+        error: `${projectDir} is not a BookForge project directory (no manifest.json). Open the project's folder, not a file.`,
       };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -2999,11 +2999,11 @@ function setupIpcHandlers(): void {
         return { success: true, data, filePath };
       }
 
-      // Not a directory: the only thing this could have been is a legacy .bfp
-      // file, and reading one as a project would resurrect the format.
+      // Not a directory with a manifest: refuse rather than guess. A caller
+      // holding a document path must open it as a document, not a project.
       return {
         success: false,
-        error: `${filePath} is not a BookForge project directory. Legacy .bfp project files are no longer supported — open the project directory instead.`,
+        error: `${filePath} is not a BookForge project directory (no manifest.json). Open the project's folder, not a file.`,
       };
     } catch (err) {
       return { success: false, error: (err as Error).message };

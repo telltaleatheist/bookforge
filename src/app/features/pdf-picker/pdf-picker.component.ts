@@ -10621,7 +10621,15 @@ export class PdfPickerComponent implements OnInit {
 
       this.pipelineTransitioning = true;
       this.closePdf();
-      await this.loadProjectFromPath(dir);
+      // `projectDir()` is a project directory OR a bare document path (Studio
+      // opens a variant PDF that way) — the same fork ngOnInit's embedded-mode
+      // load makes. Handing a file to the project loader is an error by design.
+      const manifestExists = await this.electronService.fsExists(dir + '/manifest.json');
+      if (manifestExists) {
+        await this.loadProjectFromPath(dir);
+      } else {
+        await this.loadPdf(dir);
+      }
       this.enterStation(target);
       this.pipelineTransitioning = false;
     } catch (error) {

@@ -69,6 +69,7 @@ import {
   foundryLlamaServerArgs,
   foundryStagesDone,
   parseProgress,
+  readFoundryRun,
   startFoundryRun,
   onFoundryRunProgress,
   type FoundryWorkStage,
@@ -380,17 +381,31 @@ function foundryPassParams(kind: AppliedPassKind, bookKey: string): Record<strin
  * The exclusion list is the editor's `deletedBlockIds` — foundry's own block ids,
  * verbatim, which is what makes the picker's deletions and the exporter's
  * `--exclude-ids` the same fact rather than two that have to be kept in step.
+ *
+ * A deleted PAGE is a deletion too: `source.deletedPages` holds source page
+ * indices, and every run block on one of them is excluded. The run's blocks are
+ * the id universe for this (readFoundryRun maps block pages back to source
+ * indices), the same fact the picker's own export path reads — deletedBlockIds
+ * alone would ship every block of a page the user removed whole.
  */
 async function exportBookFromRun(config: PassJobConfig, bookKey: string): Promise<string> {
   const target = await manifestService.exportEpubTarget(config.projectDir);
   const cover = await manifestService.resolveProjectCover(config.projectDir);
   const manifest = JSON.parse(
     await fs.promises.readFile(path.join(config.projectDir, 'manifest.json'), 'utf-8')
-  ) as { source?: { deletedBlockIds?: string[] } };
+  ) as { source?: { deletedBlockIds?: string[]; deletedPages?: number[] } };
+
+  const excludeBlockIds = new Set(manifest.source?.deletedBlockIds ?? []);
+  const deletedPages = new Set(manifest.source?.deletedPages ?? []);
+  if (deletedPages.size > 0) {
+    for (const block of readFoundryRun(bookKey).blocks) {
+      if (deletedPages.has(block.page)) excludeBlockIds.add(block.id);
+    }
+  }
 
   const result = await foundryExport({
     bookKey,
-    excludeBlockIds: manifest.source?.deletedBlockIds ?? [],
+    excludeBlockIds: [...excludeBlockIds],
     excludeCategories: [],
     outputPath: target.absPath,
     ...(cover ? { coverPath: cover } : {}),
