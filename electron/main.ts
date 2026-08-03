@@ -1715,6 +1715,14 @@ function setupIpcHandlers(): void {
         manifest.editor.cropRegions = mergedData.crop_regions || undefined;
         manifest.editor.classificationThresholds = mergedData.classification_thresholds || undefined;
         manifest.editor.textCorrections = mergedData.text_corrections || undefined;
+        // The digest of the exact file the edit set was made against. This is
+        // the ONE signal the renderer's projectEditsMismatchReason gate has:
+        // dropped here, the gate reads "nothing on file can prove otherwise"
+        // and applies a PDF session's blocks and deletions to whatever document
+        // happens to be open (the review EPUB, Aug 2 2026). Lives in editor
+        // because it describes the edit set, and the wholesale editor reset
+        // must clear it with the edits it vouches for.
+        manifest.editor.sourceFileSha256 = mergedData.source_file_sha256 || undefined;
 
         // Chapters
         manifest.chapters = mergedData.chapters || [];
@@ -2937,6 +2945,7 @@ function setupIpcHandlers(): void {
           crop_regions: editor.cropRegions || undefined,
           classification_thresholds: editor.classificationThresholds || undefined,
           text_corrections: editor.textCorrections || undefined,
+          source_file_sha256: editor.sourceFileSha256 || undefined,
           chapters: manifest.chapters || [],
           chapters_source: manifest.chaptersSource || 'manual',
           metadata: {

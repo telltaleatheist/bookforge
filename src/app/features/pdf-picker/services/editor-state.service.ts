@@ -388,6 +388,7 @@ export class PdfEditorStateService {
     this.fileHash.set('');
     this.pdfLoaded.set(false);
     this.deletedBlockIds.set(new Set());
+    this.deletedPages.set(new Set());
     this.selectedBlockIds.set([]);
     this.pageOrder.set([]);
     this.removeBackgrounds.set(false);

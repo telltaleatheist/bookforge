@@ -11078,6 +11078,28 @@ export class PdfPickerComponent implements OnInit {
     this.projectPath.set(projectFilePath);
     this.projectCreatedAt = project.created_at || null;
 
+    // The project's own export is never the document its edits were made
+    // against — they describe the source that PRODUCED it. Applying them here
+    // paints the source session's deletions, page exclusions, chapters and OCR
+    // blocks over the built book (the review swap's auto-save used to land
+    // exactly here through autoCreateProject). Decided by the path, with no
+    // hash and no alert: a file at source/exported.* is the editor's output by
+    // construction, and opening it is ordinary — the session is simply bound
+    // read-only.
+    const docPath = this.effectivePath() ?? '';
+    if (/(^|[\\/])source[\\/]exported\.[^\\/]+$/i.test(docPath)) {
+      console.log('[restoreProjectState] Document is the project\'s own export — source edits not applied.');
+      this.projectStateNotApplied.set(true);
+      if (this.autoSaveTimeout) {
+        clearTimeout(this.autoSaveTimeout);
+        this.autoSaveTimeout = null;
+      }
+      if (this.chapters().length === 0 && docPath.toLowerCase().endsWith('.epub')) {
+        this.tryLoadOutline();
+      }
+      return;
+    }
+
     // Do this project's saved edits belong to the document that is loaded?
     //
     // Only content can answer that here. loadProjectFromPath resolves the source
@@ -11310,6 +11332,17 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
+    // The pipeline review shows a DERIVED artifact — the EPUB that was just
+    // exported — and the manifest describes the SOURCE. An auto-save here
+    // either writes the review session's state (reflowed blocks, no deletions,
+    // no merges) over the source's edit set, or, with the binding dropped by
+    // the document swap, reaches autoCreateProject, rebinds to the owning
+    // project and pulls the source's deletions, pages and OCR blocks onto the
+    // review document (Working Towards The Führer, Aug 2 2026 — both arms of
+    // this actually happened). Review edits reach disk through
+    // pipelineComplete, never through the project file.
+    if (this.pipelineStep() === 'epub-review') return;
+
     if (this.autoSaveTimeout) {
       clearTimeout(this.autoSaveTimeout);
     }
@@ -11323,6 +11356,10 @@ export class PdfPickerComponent implements OnInit {
   private async performAutoSave(): Promise<void> {
     if (!this.pdfLoaded()) return;
     if (this.corpusMode()) return;   // see scheduleAutoSave
+    // Checked again at fire time: a save scheduled at the editing station can
+    // reach this timer AFTER the export swapped the review EPUB in, and it
+    // would run against the wrong document — see scheduleAutoSave.
+    if (this.pipelineStep() === 'epub-review') return;
 
     const projectPath = this.projectPath();
     if (projectPath) {
@@ -11749,11 +11786,16 @@ export class PdfPickerComponent implements OnInit {
           'saved:', project.source_file_sha256, 'analyzed:', quickResult.sourceSha256, 'file:', pdfPathToLoad);
         // Bound but read-only from here on: the edits were not loaded, so this
         // session must not save over them either (see projectStateNotApplied).
-        this.showAlert({
-          title: 'Edits Not Applied',
-          message: this.PROJECT_STATE_NOT_APPLIED_MESSAGE,
-          type: 'warning'
-        });
+        // No alert for the project's own export: its hash NEVER matches the
+        // source's (that is what being a derived output means), so warning
+        // about it would fire on every deliberate open of exported.*.
+        if (!usingExportedEpub) {
+          this.showAlert({
+            title: 'Edits Not Applied',
+            message: this.PROJECT_STATE_NOT_APPLIED_MESSAGE,
+            type: 'warning'
+          });
+        }
       }
       // Deliberately NOT set for the !isLoadingOriginal case below. Opening a
       // derived version from the version picker is a choice the user made about a
