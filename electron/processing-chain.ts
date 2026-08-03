@@ -21,6 +21,19 @@
  * blocks → footnotes) and it is not the user's to change; the plan checks that
  * each pass's prerequisite is either earlier in the chain or already done on
  * disk from a previous run.
+ *
+ * ── FOOTNOTE REMOVAL IS TWO PASSES WEARING ONE NAME ──────────────────────────
+ *
+ * `foundry footnotes` takes two inputs, and which one it reads is decided by
+ * what the RUN reads, not by the pass:
+ *
+ *   PDF run  → `--run <dir>`: a stage of the scan chain, before the export.
+ *   EPUB run → `--epub <book>`: an EPUB pass, rewriting the book in place,
+ *              subject to the same ordering rules as simplify and translate.
+ *
+ * So `footnotes` counts as a foundry pass only when the source is a PDF, and
+ * the plan records the mode (`PassJobConfig.footnotesMode`) rather than leaving
+ * the executor to infer it from which fields are set.
  */
 
 import * as fs from 'fs';
@@ -62,7 +75,12 @@ const LABEL_OF: Record<AppliedPassKind, string> = {
   translate: 'Translate',
 };
 
-const FOUNDRY_KINDS = new Set<AppliedPassKind>(['tesseract', 'ocr-correction', 'footnotes']);
+/**
+ * The passes that can ONLY be foundry run stages: they read the scanned pages,
+ * and nothing else can stand in for them. `footnotes` is deliberately not here —
+ * it is a foundry stage on a PDF run and an EPUB pass otherwise.
+ */
+const SCAN_ONLY_KINDS = new Set<AppliedPassKind>(['tesseract', 'ocr-correction']);
 
 /** What a foundry pass needs to have happened first, in foundry's own terms. */
 const FOUNDRY_NEEDS: Partial<Record<AppliedPassKind, { stage: 'scan' | 'ocr'; pass: AppliedPassKind }>> = {
@@ -88,7 +106,7 @@ function resolveProjectDir(request: ProcessingChainRequest): string {
 /**
  * The document the passes read.
  *
- * A foundry chain needs a PDF and says so by name when the project has none —
+ * A scan chain needs a PDF and says so by name when the project has none —
  * "this book was imported as an EPUB, so there is nothing for Tesseract to
  * read" is a sentence a user can act on, unlike a missing-file error from three
  * layers down.
@@ -141,8 +159,9 @@ async function resolveSource(
   const found = candidates.find((c) => fs.existsSync(c));
   if (!found) {
     throw new Error(
-      'The Tesseract / OCR-correction / footnote passes read a PDF, and this project has none — '
-      + 'it was imported as an EPUB. Use the Simplify and Translate passes on it instead.'
+      'The Tesseract and OCR-correction passes read a PDF, and this project has none — '
+      + 'it was imported as an EPUB. Use the Footnote removal, Simplify and Translate passes '
+      + 'on it instead.'
     );
   }
   return found;
@@ -175,15 +194,41 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
     throw new Error('A processing run needs at least one pass.');
   }
 
-  const foundryPasses = passes.filter((p) => FOUNDRY_KINDS.has(p.kind));
-  const needsPdf = foundryPasses.length > 0;
+  // The scan passes decide whether this run reads a PDF; the source then decides
+  // what a `footnotes` pass IS (see the header). Resolving in that order is what
+  // keeps a footnotes-only run over the book EPUB from being told to find a PDF.
+  const needsPdf = passes.some((p) => SCAN_ONLY_KINDS.has(p.kind));
   const sourcePath = await resolveSource(request, projectDir, manifest, needsPdf);
+  const sourceIsPdf = path.extname(sourcePath).toLowerCase() === '.pdf';
+  if (needsPdf && !sourceIsPdf) {
+    throw new Error(
+      `The Tesseract and OCR-correction passes read a PDF, and this run was pointed at `
+      + `${path.basename(sourcePath)}. Pick the PDF version of this book, or drop those passes.`
+    );
+  }
+  const isFoundryPass = (kind: AppliedPassKind): boolean =>
+    SCAN_ONLY_KINDS.has(kind) || (kind === 'footnotes' && sourceIsPdf);
+
+  // The one option footnote removal has belongs to the EPUB reading of a book.
+  // A PDF run reads the scanned pages, where note bodies and index entries are
+  // not populations anything can name — so an option that could not be honoured
+  // is refused rather than accepted and ignored.
+  const askEverywhereOnPdf = passes.find(
+    (p) => p.kind === 'footnotes' && sourceIsPdf && p.footnotes?.askEverything
+  );
+  if (askEverywhereOnPdf) {
+    throw new Error(
+      `${LABEL_OF['footnotes']}'s "also check note bodies and index entries" option applies to a `
+      + 'book EPUB, and this run reads the scanned pages of a PDF. Turn it off, or run the pass '
+      + 'over the book EPUB instead.'
+    );
+  }
 
   // A foundry pass after an EPUB pass would rebuild the book from the scan and
   // discard everything the EPUB pass wrote. Refused, not reordered: reordering
   // would silently run something other than what the user composed.
-  const lastFoundryAt = passes.map((p) => FOUNDRY_KINDS.has(p.kind)).lastIndexOf(true);
-  const firstEpubAt = passes.findIndex((p) => !FOUNDRY_KINDS.has(p.kind));
+  const lastFoundryAt = passes.map((p) => isFoundryPass(p.kind)).lastIndexOf(true);
+  const firstEpubAt = passes.findIndex((p) => !isFoundryPass(p.kind));
   if (lastFoundryAt >= 0 && firstEpubAt >= 0 && firstEpubAt < lastFoundryAt) {
     throw new Error(
       `${LABEL_OF[passes[lastFoundryAt].kind]} rebuilds the book from the scanned pages, which would `
@@ -192,11 +237,14 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
     );
   }
 
-  const bookKey = needsPdf ? (request.bookKey || sourcePath) : undefined;
+  const anyFoundry = lastFoundryAt >= 0;
+  const bookKey = anyFoundry ? (request.bookKey || sourcePath) : undefined;
   const doneOnDisk = bookKey ? foundryStagesDone(bookKey) : new Set<string>();
   const kindsSoFar = new Set<AppliedPassKind>();
   for (const pass of passes) {
-    const needs = FOUNDRY_NEEDS[pass.kind];
+    // An EPUB-mode footnotes pass stands on the book, not on a scan: it has the
+    // prerequisites of an EPUB pass, which is none.
+    const needs = isFoundryPass(pass.kind) ? FOUNDRY_NEEDS[pass.kind] : undefined;
     if (needs && !kindsSoFar.has(needs.pass) && !doneOnDisk.has(needs.stage)) {
       throw new Error(
         `${LABEL_OF[pass.kind]} reads what ${LABEL_OF[needs.pass]} produced, and this book has not had `
@@ -220,7 +268,7 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
     );
   }
 
-  const pages = needsPdf ? await resolvePages(sourcePath, manifest) : undefined;
+  const pages = anyFoundry ? await resolvePages(sourcePath, manifest) : undefined;
 
   // Where the book will be. A foundry chain writes the canonical name (the book
   // may have been retitled since the last export); everything else rewrites the
@@ -238,7 +286,7 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
   const jobs: PlannedPassJob[] = passes.map((pass, i) => {
     const stage = manifestService.passStageRelDir(base + i + 1, pass.kind);
     const diff = `${stage}/diff.json`;
-    const isFoundry = FOUNDRY_KINDS.has(pass.kind);
+    const isFoundry = isFoundryPass(pass.kind);
     const isLastFoundry = isFoundry && i === lastFoundryAt;
     if (isFoundry) {
       // tesseract has nothing to diff against — it IS the first reading of the page.
@@ -250,6 +298,14 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
       projectDir,
       stageRelDir: stage,
       ...(isFoundry ? { pdfPath: sourcePath, pages, bookKey } : {}),
+      // Said outright, never inferred: the two footnote passes share a name, a
+      // job type and a queue row, and only the plan knows which one this is.
+      ...(pass.kind === 'footnotes'
+        ? {
+          footnotesMode: (isFoundry ? 'foundry-run' : 'epub') as 'foundry-run' | 'epub',
+          ...(pass.footnotes ? { footnotes: pass.footnotes } : {}),
+        }
+        : {}),
       ...(pass.redo ? { redo: true } : {}),
       ...(isLastFoundry && producesEpub
         ? { exportAfter: true, exportPasses: [...foundryStageDirs] }

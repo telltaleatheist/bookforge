@@ -48,6 +48,21 @@ export interface SimplifyPassParams {
   testModeChunks?: number;
 }
 
+/**
+ * Footnote removal's one option, and it belongs to EPUB mode only.
+ *
+ * `foundry footnotes --epub` skips two populations of prose by default — note
+ * BODIES (a unit opening with an intra-book back-link, whose leading number is
+ * the note's own label) and index entries (index-shaped units in a document
+ * dense enough to BE an index). Both have the shape the model deletes without
+ * carrying a marker, so asking about them is false-fire risk and nothing else.
+ * `--ask-everything` turns those two skips off; the navigation skip is
+ * structural and stays either way.
+ */
+export interface FootnotesPassParams {
+  askEverything?: boolean;
+}
+
 export interface TranslatePassParams {
   sourceLang: string;
   targetLang: string;
@@ -90,6 +105,21 @@ export interface PassJobConfig {
    * project has no book for a pass record to describe.
    */
   exportPasses?: Array<{ kind: ProcessingPassKind; diff?: string; params?: Record<string, unknown> }>;
+  /**
+   * Footnote removal only, and REQUIRED for it: which of its two modes this job
+   * is. The pass has one name and two implementations, and which one runs is a
+   * fact about the RUN (what the passes read), not about the job type — so the
+   * planner decides it and the executor is never left to infer it from which
+   * other fields happen to be set.
+   *
+   *  - `foundry-run` — a stage of the PDF chain. Reads the run directory the
+   *    scan built, writes `footnotes/deletions.json`, and the book comes out of
+   *    the export at the end of the chain.
+   *  - `epub` — `foundry footnotes --epub` over the project's book EPUB,
+   *    rewriting it in place like every other EPUB pass.
+   */
+  footnotesMode?: 'foundry-run' | 'epub';
+  footnotes?: FootnotesPassParams;
   simplify?: SimplifyPassParams;
   translate?: TranslatePassParams;
 }
@@ -98,6 +128,8 @@ export interface ChainPassRequest {
   kind: ProcessingPassKind;
   /** Tesseract only: start the scan over instead of resuming. */
   redo?: boolean;
+  /** Footnote removal over an EPUB. Refused on a PDF run, where it means nothing. */
+  footnotes?: FootnotesPassParams;
   simplify?: SimplifyPassParams;
   translate?: TranslatePassParams;
 }
