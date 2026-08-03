@@ -866,53 +866,25 @@ export async function registerEpubExport(projectDir: string, epubAbsPath: string
 }
 
 /**
- * Where a pass writes its working files and its diff.
+ * The name of a pass's stage directory, project-relative.
  *
  * The number is the pass's position in the book's WHOLE provenance list, not its
- * position in the run that is queueing it: two runs against one book would
- * otherwise both start at `01` and the second would overwrite the first's diff
- * with a diff of different text. It is still execution order — the list only
- * grows, and only at the end.
+ * position in the run that queues it: two runs against one book would otherwise
+ * both start at `01` and the second would overwrite the first's diff with a diff
+ * of different text. It is still execution order — the list only grows, and only
+ * at the end.
  *
- * Allocation is deliberately separate from recording. A pass allocates its stage
- * BEFORE it runs (it needs somewhere to work and to write its diff incrementally)
- * and records itself only on success, so a failed pass re-run lands in the same
- * directory and resumes rather than leaving a hole in the numbering.
+ * One function so the planner and the pass agree on the path down to the digit;
+ * a stage dir a pass works in but nothing can find is a diff nobody reads.
  */
-export interface PassStage {
-  /** 1-based position in appliedPasses this pass will occupy. */
-  index: number;
-  /** Project-relative, forward slashes: `stages/03-simplify`. */
-  relDir: string;
-  absDir: string;
-  /** Project-relative path of this pass's diff: `stages/03-simplify/diff.json`. */
-  relDiffPath: string;
-  absDiffPath: string;
+export function passStageRelDir(index: number, kind: AppliedPassKind): string {
+  return `stages/${String(index).padStart(2, '0')}-${kind}`;
 }
 
-export async function allocatePassStage(
-  projectDir: string,
-  kind: AppliedPassKind,
-  /**
-   * The position to use instead of the derived one. A CHAIN passes this: its
-   * foundry passes cannot record themselves until the export at the end of them
-   * has produced the book, so the provenance length is not yet moving and every
-   * one of them would derive the same number.
-   */
-  atIndex?: number
-): Promise<PassStage> {
+/** Where the NEXT pass recorded against this book would sit. 1-based. */
+export async function nextPassIndex(projectDir: string): Promise<number> {
   const manifest = await readManifestAt(projectDir);
-  const index = atIndex ?? (manifest.outputs?.epub?.appliedPasses?.length ?? 0) + 1;
-  const relDir = `stages/${String(index).padStart(2, '0')}-${kind}`;
-  const absDir = toAbs(projectDir, relDir);
-  await fs.promises.mkdir(absDir, { recursive: true });
-  return {
-    index,
-    relDir,
-    absDir,
-    relDiffPath: `${relDir}/diff.json`,
-    absDiffPath: path.join(absDir, 'diff.json'),
-  };
+  return (manifest.outputs?.epub?.appliedPasses?.length ?? 0) + 1;
 }
 
 /**

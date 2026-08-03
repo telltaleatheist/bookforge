@@ -233,7 +233,7 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
 
   const foundryStageDirs: Array<{ kind: AppliedPassKind; diff?: string }> = [];
   const jobs: PlannedPassJob[] = passes.map((pass, i) => {
-    const stage = `stages/${String(base + i + 1).padStart(2, '0')}-${pass.kind}`;
+    const stage = manifestService.passStageRelDir(base + i + 1, pass.kind);
     const diff = `${stage}/diff.json`;
     const isFoundry = FOUNDRY_KINDS.has(pass.kind);
     const isLastFoundry = isFoundry && i === lastFoundryAt;

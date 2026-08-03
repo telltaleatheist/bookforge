@@ -40,7 +40,7 @@ import * as path from 'path';
 import type { BrowserWindow } from 'electron';
 
 import * as manifestService from './manifest-service';
-import type { AppliedPass, AppliedPassKind } from './manifest-types';
+import type { AppliedPassKind } from './manifest-types';
 import { readRunDirectory, type FoundryBlock, type FoundryScanLine } from './foundry-bridge';
 import { requireFoundryModel } from './foundry-interim-config';
 import {
