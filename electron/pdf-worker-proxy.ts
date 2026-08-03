@@ -300,6 +300,11 @@ export async function callRenderPages(
   return merged;
 }
 
+/** A PDF's page count, off the main thread like every other mupdf call. */
+export async function callCountPages(pdfPath: string): Promise<number> {
+  return call('countPages', [pdfPath]);
+}
+
 /**
  * Render pages to grayscale PGM across the render pool, for a foundry run.
  *

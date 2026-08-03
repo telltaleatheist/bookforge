@@ -90,6 +90,25 @@ export const FOUNDRY_DPI = 200;
 export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'blocks' | 'footnotes';
 export type FoundryRunStatus = 'running' | 'done' | 'error' | 'cancelled';
 
+/** The stages a caller may ask for. `render` is not one: it is scan's input. */
+export type FoundryWorkStage = 'scan' | 'ocr' | 'blocks' | 'footnotes';
+
+/**
+ * What each stage needs to have happened first, either earlier in the same run
+ * or already on disk. `ocr` before `footnotes` is the contract in the header,
+ * not a preference — foundry's export refuses a footnotes artifact derived from
+ * a different text base.
+ */
+const STAGE_PREREQUISITE: Record<FoundryWorkStage, FoundryWorkStage | null> = {
+  scan: null,
+  ocr: 'scan',
+  blocks: 'scan',
+  footnotes: 'ocr',
+};
+
+/** Execution order. A caller's list is run in THIS order, never its own. */
+const STAGE_ORDER: FoundryWorkStage[] = ['scan', 'ocr', 'blocks', 'footnotes'];
+
 export interface FoundryRunStart {
   /**
    * Book identity — the picker's file hash. It must survive a renderer reload,
@@ -103,6 +122,17 @@ export interface FoundryRunStart {
   pages: number[];
   /** Run the footnote-marker remover. Off unless the user ticked it. */
   runFootnotes: boolean;
+  /**
+   * Only these stages, in the pipeline's order — the processing wizard's passes
+   * (Tesseract, OCR correction, Footnote removal) are separate queue jobs against
+   * ONE run directory, so each job asks for the stages it owns.
+   *
+   * Absent means the whole pipeline (`scan`, `ocr`, `blocks`, plus `footnotes`
+   * when runFootnotes is set), which is what the picker's OCR modal asks for.
+   * A stage whose prerequisite is neither listed here nor already done on disk is
+   * refused by name rather than run against artifacts that do not exist.
+   */
+  stages?: FoundryWorkStage[];
   /**
    * Start over: wipe the run directory first.
    *
@@ -396,13 +426,22 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
     return snapshot(existing);
   }
 
+  const wanted: FoundryWorkStage[] = opts.stages?.length
+    ? STAGE_ORDER.filter((s) => opts.stages!.includes(s))
+    : (['scan', 'ocr', 'blocks', ...(opts.runFootnotes ? ['footnotes' as const] : [])] as FoundryWorkStage[]);
+  if (wanted.length === 0) {
+    throw new Error('A foundry run was asked for no stages; there is nothing to do.');
+  }
+
   // Resolve the binary and the weights BEFORE anything is rendered. A run that
   // rasterizes 350 pages and then reports that a GGUF is missing has spent five
-  // minutes to deliver a message it could have delivered immediately.
+  // minutes to deliver a message it could have delivered immediately. Only the
+  // stages this run will actually execute are checked: a Tesseract-only pass must
+  // not be blocked by a model it never loads.
   requireFoundryPath();
-  requireFoundryModel('ocr');
-  requireFoundryModel('blocks');
-  if (opts.runFootnotes) requireFoundryModel('footnotes');
+  if (wanted.includes('ocr')) requireFoundryModel('ocr');
+  if (wanted.includes('blocks')) requireFoundryModel('blocks');
+  if (wanted.includes('footnotes')) requireFoundryModel('footnotes');
 
   const runDir = foundryRunDir(opts.bookKey);
   if (opts.redo) {
@@ -414,6 +453,15 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
     // it by input hash; this catches it first and says the useful thing.
     const previous = readPersisted(opts.bookKey);
     if (previous && !samePages(previous.pages, opts.pages)) {
+      if (!wanted.includes('scan')) {
+        // Wiping here would delete the scan this run was queued to build on —
+        // half an hour of OCR thrown away by a page list that arrived wrong.
+        throw new Error(
+          `The foundry run at ${runDir} covers ${previous.pages.length} pages, but this `
+          + `${wanted.join('+')} pass was given ${opts.pages.length}. Re-run the Tesseract pass to `
+          + 'scan the new page set; a later stage cannot re-cut the pages under it.'
+        );
+      }
       console.warn(
         `[foundry-run] ${opts.bookKey}: the page set changed `
         + `(${previous.pages.length} → ${opts.pages.length} pages); starting a fresh run directory.`
@@ -423,20 +471,33 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
   }
   fs.mkdirSync(pagesDir(runDir), { recursive: true });
 
-  const stageCount = opts.runFootnotes ? 5 : 4;
+  // A stage stands on the previous one's artifact. Refuse before spawning
+  // anything, naming the pass that has to run first — foundry's own failure for
+  // this is a missing file several minutes in.
+  const doneOnDisk = completedStages(runDir);
+  for (const stage of wanted) {
+    const needs = STAGE_PREREQUISITE[stage];
+    if (!needs || wanted.includes(needs) || doneOnDisk.has(needs)) continue;
+    throw new Error(
+      `foundry's ${stage} stage reads what ${needs} produced, and ${needs} has not run for this `
+      + `book (${runDir}). Run the ${needs === 'scan' ? 'Tesseract' : 'OCR correction'} pass first.`
+    );
+  }
+
+  const stageCount = wanted.length + (wanted.includes('scan') ? 1 : 0);
   const state: Omit<FoundryRunState, 'live'> = {
     bookKey: opts.bookKey,
     runDir,
     pdfPath: opts.pdfPath,
     pages: [...opts.pages],
     status: 'running',
-    stage: 'render',
+    stage: wanted.includes('scan') ? 'render' : wanted[0],
     stageIndex: 0,
     stageCount,
-    message: 'Rendering pages…',
+    message: wanted.includes('scan') ? 'Rendering pages…' : `${wanted[0]}: starting…`,
     done: 0,
     total: opts.pages.length,
-    runFootnotes: opts.runFootnotes,
+    runFootnotes: wanted.includes('footnotes'),
     startedAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -448,13 +509,17 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
   run.finished = (async () => {
     try {
       const alreadyDone = completedStages(runDir);
+      // Position within THIS run's stage list, so a two-stage pass reads "2/2"
+      // rather than "3/5" of a pipeline it is not running.
+      let stageIndex = 0;
+      const nextIndex = () => ++stageIndex;
 
       // ── render + scan ──────────────────────────────────────────────────────
       // The page renders exist only to be scanned, and a completed run DELETES
       // them (see cleanupPageRenders) — so render is gated on the scan being
       // pending, not on the files being present, or every resume of a finished
       // run would re-rasterize a book nothing is going to read.
-      if (!alreadyDone.has('scan')) {
+      if (wanted.includes('scan') && !alreadyDone.has('scan')) {
         // A partial pages dir is re-rendered whole rather than topped up: the
         // input hash foundry records covers the SET, and reasoning about which
         // of 350 files is stale is a worse bet than three minutes of mupdf.
@@ -480,8 +545,9 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
           console.log(`[foundry-run] ${opts.pages.length} page renders already present; skipping render`);
         }
         if (run.abort.signal.aborted) throw new CancelledError();
+        nextIndex();
 
-        await runStage(run, 'scan', 1, stageCount, [
+        await runStage(run, 'scan', nextIndex(), stageCount, [
           'scan', '--pages', pagesDir(runDir), '--run', runDir,
         ]);
       }
@@ -489,22 +555,22 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
       // ── ocr ───────────────────────────────────────────────────────────────
       // BEFORE footnotes. See the header: export refuses a footnotes artifact
       // derived from a different text base.
-      if (!alreadyDone.has('ocr')) {
-        await runStage(run, 'ocr', 2, stageCount, [
+      if (wanted.includes('ocr') && !alreadyDone.has('ocr')) {
+        await runStage(run, 'ocr', nextIndex(), stageCount, [
           'ocr', '--run', runDir, ...modelArgs('ocr'),
         ]);
       }
 
       // ── blocks ────────────────────────────────────────────────────────────
-      if (!alreadyDone.has('blocks')) {
-        await runStage(run, 'blocks', 3, stageCount, [
+      if (wanted.includes('blocks') && !alreadyDone.has('blocks')) {
+        await runStage(run, 'blocks', nextIndex(), stageCount, [
           'blocks', '--run', runDir, ...modelArgs('blocks'),
         ]);
       }
 
       // ── footnotes (optional) ──────────────────────────────────────────────
-      if (opts.runFootnotes && !alreadyDone.has('footnotes')) {
-        await runStage(run, 'footnotes', 4, stageCount, [
+      if (wanted.includes('footnotes') && !alreadyDone.has('footnotes')) {
+        await runStage(run, 'footnotes', nextIndex(), stageCount, [
           'footnotes', '--run', runDir, ...modelArgs('footnotes'),
         ]);
       }
@@ -575,6 +641,30 @@ export function attachFoundryRun(bookKey: string): FoundryRunState | null {
   const saved = readPersisted(bookKey);
   if (!saved) return null;
   return { ...saved, live: false, status: saved.status === 'running' ? 'cancelled' : saved.status };
+}
+
+/**
+ * Wait for the run this process started to stop, and hand back its final state.
+ *
+ * `startFoundryRun` returns as soon as the run is registered — right for the
+ * picker, which watches progress events, and wrong for a queue job, which IS the
+ * run and must not report success while foundry is still working. A run that
+ * ended in error throws here with foundry's own message; a cancelled one throws
+ * too, because a cancelled pass has not applied itself to the book.
+ */
+export async function awaitFoundryRun(bookKey: string): Promise<FoundryRunState> {
+  const run = runs.get(bookKey);
+  if (!run) throw new Error(`No foundry run is registered for ${bookKey}; nothing to wait for.`);
+  await run.finished;
+  const state = snapshot(run);
+  if (state.status === 'error') throw new Error(state.error || 'The foundry run failed without a message.');
+  if (state.status === 'cancelled') throw new Error('The foundry run was cancelled.');
+  return state;
+}
+
+/** Which foundry stages this book's run directory reports as done. */
+export function foundryStagesDone(bookKey: string): Set<string> {
+  return completedStages(foundryRunDir(bookKey));
 }
 
 export async function cancelFoundryRun(bookKey: string): Promise<void> {

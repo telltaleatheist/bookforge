@@ -116,6 +116,12 @@ const dispatch: Record<string, Dispatcher> = {
     return pdfAnalyzer.renderPages(pdfPath, pageNumbers, quality);
   },
 
+  /** Page count alone — what a whole-book foundry run needs and nothing more. */
+  async countPages(args) {
+    const [pdfPath] = args;
+    return pdfAnalyzer.countPages(pdfPath);
+  },
+
   /** Grayscale PGM at a pinned dpi — foundry's `scan` input. See pdf-analyzer. */
   async renderPagesToPgm(args) {
     const [pdfPath, pageNumbers, outDir, dpi] = args;

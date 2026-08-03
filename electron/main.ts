@@ -2880,8 +2880,9 @@ function setupIpcHandlers(): void {
         // (Working Towards The Führer, Aug 2 2026).
         //
         // The export is named after the book, so it is located by its manifest
-        // record — never by scanning source/ for a name. readExportEpub migrates
-        // a pre-rename source/exported.epub on the way past.
+        // record — never by scanning source/ for a name. No record means the
+        // project has no export; an unrecorded source/exported.epub from an
+        // older layout is a stray file and is not adopted.
         const sourceDir = path.join(filePath, 'source');
         let sourcePath = '';
         try {
@@ -10463,7 +10464,10 @@ function setupIpcHandlers(): void {
     } catch { /* no translate stage */ }
     await addEpub('simplified', path.join('stages', '01-cleanup', 'simplified.epub'));
     await addEpub('cleaned', path.join('stages', '01-cleanup', 'cleaned.epub'));
-    await addEpub('exported', path.join('source', 'exported.epub'));
+    // The book EPUB by its manifest record — it is named after the book, and an
+    // unrecorded source/exported.epub is a stray this must not offer as one.
+    const exportRecord = await manifestService.readExportEpub(projectPath);
+    if (exportRecord) await addEpub('exported', exportRecord.relPath);
     await addEpub('original', path.join('source', 'original.epub'));
 
     // Every M4B in output/, with its absolute path. Mono audiobooks are EMBED-ONLY:

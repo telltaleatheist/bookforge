@@ -2736,6 +2736,19 @@ export class PDFAnalyzer {
    * subsequent index by one, which lands text under the wrong labels — there is
    * no partial success worth having here.
    */
+  /**
+   * How many pages a PDF has, without analyzing it.
+   *
+   * A processing run that OCRs "the whole book" has to name every page it is
+   * handing to foundry, and the only alternative to this was `analyze()` —
+   * minutes of text extraction to learn one integer.
+   */
+  async countPages(pdfPath: string): Promise<number> {
+    const { doc } = await this.getOrOpenRenderDoc(pdfPath);
+    this.touchRenderDoc();
+    return this.withWasmLock(() => doc.countPages() as number);
+  }
+
   async renderPagesToPgm(
     pdfPath: string,
     pageNumbers: number[],

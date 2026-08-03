@@ -820,56 +820,31 @@ export async function exportEpubTarget(projectDir: string): Promise<ExportEpubLo
 /**
  * Where the project's export EPUB IS, or null when it has never been exported.
  *
- * Migrates a pre-rename `source/exported.epub` on the way past: renamed to the
- * canonical name (same directory, so the rename is atomic and Syncthing sees one
- * event) and recorded. It happens once, loudly, and the old name resolves
- * nowhere afterwards — there is no second arm reading it.
+ * THE RECORD IS THE ONLY ANSWER. No record means the project has no book EPUB,
+ * full stop — a `source/exported.epub` from before the rename is a stray file
+ * this does not see, does not adopt, and does not complain about. Nothing on
+ * disk is renamed, moved or deleted to reach an answer here.
+ *
+ * (An earlier build migrated the old name on the way past. It was removed
+ * deliberately: the library is being re-run through the new pipeline, which
+ * writes the record, and a migration that touches a user's files to save them a
+ * re-run is a trade nobody asked for.)
  */
 export async function readExportEpub(projectDir: string): Promise<ExportEpubLocation | null> {
   const manifest = await readManifestAt(projectDir);
 
   const recorded = manifest.outputs?.epub;
-  if (recorded?.path) {
-    return { relPath: recorded.path, absPath: toAbs(projectDir, recorded.path), modifiedAt: recorded.modifiedAt };
-  }
-
-  const legacyAbs = path.join(projectDir, 'source', 'exported.epub');
-  if (!fs.existsSync(legacyAbs)) return null;
-
-  const relPath = exportEpubRelPath(manifest);
-  const absPath = toAbs(projectDir, relPath);
-  if (path.resolve(absPath) !== path.resolve(legacyAbs) && fs.existsSync(absPath)) {
-    // Two candidate books, no record saying which is the project's. Guessing
-    // would bind the pipeline to the wrong one silently.
-    throw new Error(
-      `Cannot migrate this project's export: both ${legacyAbs} and ${absPath} exist, and the manifest `
-      + 'records neither. Delete or rename whichever is not the project\'s current export, then reopen it.'
-    );
-  }
-
-  const projectId = requireLibraryProjectId(projectDir, manifest);
-  if (path.resolve(absPath) !== path.resolve(legacyAbs)) {
-    await fs.promises.rename(legacyAbs, absPath);
-  }
-  const modifiedAt = new Date().toISOString();
-  const saved = await modifyManifest(projectId, (m) => {
-    if (!m.outputs) m.outputs = {};
-    m.outputs.epub = { path: relPath, modifiedAt };
-  });
-  if (!saved.success) {
-    throw new Error(`Migrated ${legacyAbs} to ${absPath}, but recording it in the manifest failed: ${saved.error}`);
-  }
-  console.log(`[ManifestService] Migrated legacy export ${legacyAbs} → ${absPath} and recorded it as ${relPath}`);
-
-  return { relPath, absPath, modifiedAt };
+  if (!recorded?.path) return null;
+  return { relPath: recorded.path, absPath: toAbs(projectDir, recorded.path), modifiedAt: recorded.modifiedAt };
 }
 
 /**
- * Record a written export as `outputs.epub`, and delete the one it supersedes.
+ * Record a written export as `outputs.epub`.
  *
- * The superseded file is a retitled book's old name: unreachable through the
- * record, and indistinguishable from a real source file to anything that lists
- * the folder. Leaving it is how `source/` grew a second book in the first place.
+ * Writes the record and NOTHING else. A file the record used to point at — the
+ * old-title EPUB after a retitle, a pre-rename `exported.epub` — stops being the
+ * project's book the moment this returns, and stays on disk until its owner
+ * deletes it. This code does not delete a user's books.
  */
 export async function registerEpubExport(projectDir: string, epubAbsPath: string): Promise<void> {
   const manifest = await readManifestAt(projectDir);
@@ -881,21 +856,12 @@ export async function registerEpubExport(projectDir: string, epubAbsPath: string
   }
   const relPath = rel.split(path.sep).join('/');
 
-  const superseded = manifest.outputs?.epub?.path;
   const saved = await modifyManifest(projectId, (m) => {
     if (!m.outputs) m.outputs = {};
     m.outputs.epub = { path: relPath, modifiedAt: new Date().toISOString() };
   });
   if (!saved.success) {
     throw new Error(`Exported to ${epubAbsPath}, but recording it in the manifest failed: ${saved.error}`);
-  }
-
-  if (superseded && superseded !== relPath) {
-    const oldAbs = toAbs(projectDir, superseded);
-    if (path.resolve(oldAbs) !== path.resolve(epubAbsPath) && fs.existsSync(oldAbs)) {
-      await fs.promises.unlink(oldAbs);
-      console.log(`[ManifestService] Removed superseded export ${oldAbs} (now ${relPath})`);
-    }
   }
 }
 
@@ -924,9 +890,19 @@ export interface PassStage {
   absDiffPath: string;
 }
 
-export async function allocatePassStage(projectDir: string, kind: AppliedPassKind): Promise<PassStage> {
+export async function allocatePassStage(
+  projectDir: string,
+  kind: AppliedPassKind,
+  /**
+   * The position to use instead of the derived one. A CHAIN passes this: its
+   * foundry passes cannot record themselves until the export at the end of them
+   * has produced the book, so the provenance length is not yet moving and every
+   * one of them would derive the same number.
+   */
+  atIndex?: number
+): Promise<PassStage> {
   const manifest = await readManifestAt(projectDir);
-  const index = (manifest.outputs?.epub?.appliedPasses?.length ?? 0) + 1;
+  const index = atIndex ?? (manifest.outputs?.epub?.appliedPasses?.length ?? 0) + 1;
   const relDir = `stages/${String(index).padStart(2, '0')}-${kind}`;
   const absDir = toAbs(projectDir, relDir);
   await fs.promises.mkdir(absDir, { recursive: true });
@@ -1144,28 +1120,6 @@ export async function listProjects(filter?: { type?: ProjectType }): Promise<Man
 
     // Sort by modification date (newest first)
     projects.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
-
-    // One library-wide sweep of the pre-rename `source/exported.epub`, so no
-    // reader anywhere needs a second arm for the old name. Costs one existsSync
-    // for a project that has never exported and nothing at all once recorded.
-    // A project that cannot be migrated (two candidate books, no record) is
-    // NAMED here and simply lists without an export — it is not guessed at.
-    await Promise.all(projects
-      .filter((manifest) => !manifest.outputs?.epub?.path)
-      .map(async (manifest) => {
-        const projectDir = getProjectPath(manifest.projectId);
-        // Cheap gate first: this runs on every Studio load, and a project that
-        // has never exported must not cost it a second manifest read.
-        if (!fs.existsSync(path.join(projectDir, 'source', 'exported.epub'))) return;
-        try {
-          const located = await readExportEpub(projectDir);
-          if (!located) return;
-          if (!manifest.outputs) manifest.outputs = {};
-          manifest.outputs.epub = { path: located.relPath, modifiedAt: located.modifiedAt ?? new Date().toISOString() };
-        } catch (err) {
-          console.error(`[ManifestService] ${manifest.projectId}: could not resolve its export EPUB —`, (err as Error).message);
-        }
-      }));
 
     // Derived here, alongside the manifests they describe, so the renderer never has to
     // re-derive variant semantics it can't see (and so this costs no extra disk reads).

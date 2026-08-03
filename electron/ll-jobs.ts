@@ -1492,6 +1492,16 @@ export interface MonoTranslationConfig {
   openaiApiKey?: string;
   translationPrompt?: string;
   customInstructions?: string;    // Additional instructions appended to the translation prompt
+  /**
+   * Where to write the translated EPUB, and the directory whose checkpoint and
+   * chapter cache make the run resumable.
+   *
+   * The translate PASS sets this to its own numbered stage dir and then moves the
+   * finished file onto the project's book EPUB, so the mono pipeline no longer
+   * leaves a `stages/02-translate/translated.epub` for anything to find. Absent
+   * keeps the legacy wizard's location.
+   */
+  outputEpubPath?: string;
 }
 
 /** Max paragraphs per AI batch - increased for better context */
@@ -1756,10 +1766,12 @@ export async function runMonoTranslation(
     projectDir = inputDir;
   }
 
-  // Output path: stages/02-translate/translated.epub
-  const translateDir = path.join(projectDir, 'stages', '02-translate');
+  // Where the translation lands, and the directory its resume state lives in.
+  // A caller that names the file owns both; otherwise it is the legacy wizard's
+  // stages/02-translate/translated.epub.
+  const outputEpubPath = config.outputEpubPath || path.join(projectDir, 'stages', '02-translate', 'translated.epub');
+  const translateDir = path.dirname(outputEpubPath);
   await fs.mkdir(translateDir, { recursive: true });
-  const outputEpubPath = path.join(translateDir, 'translated.epub');
 
   const tStartMs = Date.now();  // wall-clock start for the translation analytics record
 

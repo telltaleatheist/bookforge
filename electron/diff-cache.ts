@@ -87,6 +87,16 @@ export interface DiffCacheChapter {
   cleanedCharCount: number;
   changeCount: number;
   changes: DiffChange[];
+  /**
+   * The text the changes are positioned in — present only in a PASS diff.
+   *
+   * The cleanup cache omits it because its "after" text is a file that still
+   * exists (`cleaned.epub`) and can be read back at view time. A pass rewrites
+   * the book IN PLACE, so by the time anyone opens the diff of the third pass,
+   * the text the second pass ended at is gone. A pass diff therefore carries its
+   * own after-text and hydrates without touching the book.
+   */
+  text?: string;
 }
 
 export interface DiffCacheFile {
@@ -379,6 +389,86 @@ export async function loadDiffCacheFile(cleanedEpubPath: string): Promise<DiffCa
     // File doesn't exist or is invalid
     return null;
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pass diffs
+//
+// One file per pass, at `stages/NN-<kind>/diff.json`, in the same format the
+// Review Changes UI already reads — with the after-text embedded, because the
+// file it describes has since been overwritten by the next pass.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One diffable unit of a pass: a chapter, or a page for the foundry passes. */
+export interface PassDiffUnit {
+  id: string;
+  title: string;
+  before: string;
+  after: string;
+  /**
+   * Changes computed by the caller, when it knows them exactly. The footnote
+   * pass does: foundry hands it the marker deletions themselves, which is a
+   * better answer than re-deriving them from a word diff that cannot tell a
+   * removed marker from a straightened quote next to it.
+   */
+  changes?: DiffChange[];
+}
+
+/**
+ * Write a complete pass diff. Atomic, like every other write into the library.
+ *
+ * Written once at the end of the pass rather than per chapter: a pass either
+ * applied itself to the book or it did not, and a half-diff of a book that was
+ * never replaced describes nothing.
+ */
+export async function writePassDiff(
+  diffPath: string,
+  units: PassDiffUnit[],
+  originalPath?: string
+): Promise<void> {
+  const now = new Date().toISOString();
+  const chapters: DiffCacheChapter[] = units.map((u) => {
+    const computed = u.changes ?? computeCompactDiff(u.before, u.after).changes;
+    return {
+      id: u.id,
+      title: u.title,
+      originalCharCount: u.before.length,
+      cleanedCharCount: u.after.length,
+      changeCount: computed.length,
+      changes: computed,
+      text: u.after,
+    };
+  });
+
+  await fsPromises.mkdir(path.dirname(diffPath), { recursive: true });
+  await writeDiffCacheAtomic(diffPath, {
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    ignoreWhitespace: true,
+    completed: true,
+    originalPath,
+    chapters,
+  });
+  const changed = chapters.reduce((n, c) => n + c.changeCount, 0);
+  console.log(`[DIFF-CACHE] Wrote pass diff ${diffPath}: ${chapters.length} units, ${changed} changes`);
+}
+
+/**
+ * Read a diff file by its own path.
+ *
+ * `loadDiffCacheFile` derives the path from the EPUB it sits beside; a pass diff
+ * has no such sibling, so it is addressed directly. A malformed file is an error
+ * here rather than a null: the manifest said this diff exists, so its absence is
+ * a broken record, not a cache miss.
+ */
+export async function loadDiffFileAt(diffPath: string): Promise<DiffCacheFile> {
+  const data = await fsPromises.readFile(diffPath, 'utf-8');
+  const cache = JSON.parse(data) as DiffCacheFile;
+  if (cache.version !== 1 || !Array.isArray(cache.chapters)) {
+    throw new Error(`${diffPath} is not a version-1 diff file; nothing can read it.`);
+  }
+  return cache;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
