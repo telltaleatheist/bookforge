@@ -15,7 +15,6 @@ import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import {
   QueueJob,
-  OcrCleanupConfig,
   TtsConversionConfig,
   BilingualTranslationJobConfig,
   BilingualCleanupJobConfig,
@@ -53,35 +52,6 @@ import { QueueService } from '../../services/queue.service';
         @if (selectedJob.config) {
           <section class="info-section">
             <h4>Configuration</h4>
-
-            @if (isOcrConfig(selectedJob.config)) {
-              <div class="info-row">
-                <span class="info-label">Provider</span>
-                <span class="info-value">{{ formatProvider(selectedJob.config.aiProvider) }}</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">Model</span>
-                <span class="info-value" [title]="selectedJob.config.aiModel">{{ selectedJob.config.aiModel }}</span>
-              </div>
-              @if (selectedJob.config.simplifyForLearning) {
-                <div class="info-row">
-                  <span class="info-label">Mode</span>
-                  <span class="info-value">Simplify for Learners</span>
-                </div>
-              }
-              @if (selectedJob.config.useParallel && selectedJob.config.parallelWorkers) {
-                <div class="info-row">
-                  <span class="info-label">Workers</span>
-                  <span class="info-value">{{ selectedJob.config.parallelWorkers }}</span>
-                </div>
-              }
-              @if (selectedJob.config.testMode) {
-                <div class="info-row">
-                  <span class="info-label">Test Mode</span>
-                  <span class="info-value">{{ selectedJob.config.testModeChunks }} chunks</span>
-                </div>
-              }
-            }
 
             @if (isBilingualCleanupConfig(selectedJob.config)) {
               <div class="info-row">
@@ -163,12 +133,6 @@ import { QueueService } from '../../services/queue.service';
                 <div class="info-row">
                   <span class="info-label">Split</span>
                   <span class="info-value">{{ selectedJob.config.splitGranularity }}</span>
-                </div>
-              }
-              @if (selectedJob.config.monoTranslation) {
-                <div class="info-row">
-                  <span class="info-label">Mode</span>
-                  <span class="info-value">Mono (full book)</span>
                 </div>
               }
               @if (selectedJob.config.testMode) {
@@ -301,18 +265,6 @@ import { QueueService } from '../../services/queue.service';
           </section>
         }
 
-        <!-- Output actions -->
-        @if (selectedJob.type === 'ocr-cleanup' && selectedJob.outputPath) {
-          <div class="action-row">
-            <desktop-button variant="secondary" size="sm" (click)="onViewDiff(selectedJob)">
-              View Changes
-            </desktop-button>
-            <span class="action-hint">
-              @if (selectedJob.status === 'processing') { See changes so far }
-              @else { Compare original vs cleaned }
-            </span>
-          </div>
-        }
 
         @if (selectedJob.type === 'tts-conversion' && selectedJob.status === 'complete' && selectedJob.outputPath) {
           <div class="action-row">
@@ -455,12 +407,7 @@ export class JobDetailsComponent {
 
   readonly job = input<QueueJob | null>(null);
 
-  readonly viewDiff = output<{ originalPath: string; cleanedPath: string }>();
   readonly showInFolder = output<string>();
-
-  isOcrConfig(config: unknown): config is OcrCleanupConfig {
-    return (config as { type?: string })?.type === 'ocr-cleanup';
-  }
 
   isTtsConfig(config: unknown): config is TtsConversionConfig {
     return (config as { type?: string })?.type === 'tts-conversion';
@@ -527,12 +474,6 @@ export class JobDetailsComponent {
     const secs = seconds % 60;
     if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
     return `${minutes}m ${secs}s`;
-  }
-
-  onViewDiff(job: QueueJob): void {
-    if (job.outputPath && job.epubPath) {
-      this.viewDiff.emit({ originalPath: job.epubPath, cleanedPath: job.outputPath });
-    }
   }
 
   onShowInFolder(path: string): void {

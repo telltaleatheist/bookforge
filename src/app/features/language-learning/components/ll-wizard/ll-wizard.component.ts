@@ -35,7 +35,7 @@ import { LibraryService } from '../../../../core/services/library.service';
 import { collapseFilenameDots } from '../../../../core/utils/filename-utils';
 import { QueueService } from '../../../queue/services/queue.service';
 import { ComponentService } from '../../../../core/services/component.service';
-import { OcrCleanupConfig, TtsConversionConfig, ReassemblyJobConfig, CleanupStages } from '../../../queue/models/queue.types';
+import { TtsConversionConfig, ReassemblyJobConfig, CleanupStages } from '../../../queue/models/queue.types';
 import { AssembleAuditionPlayerComponent } from './assemble-audition-player.component';
 import type { CorrectSentencesSession } from '../../../correct-sentences/models/correct-sentences.types';
 import { EpubResolverService } from '../../services/epub-resolver.service';
@@ -4331,19 +4331,6 @@ export class LLWizardComponent implements OnInit {
 
     console.log('[LL-WIZARD] Available TTS languages:', languages);
     return languages;
-  });
-
-  /**
-   * Filtered EPUBs for TTS step - only show language-specific EPUBs (en.epub, de.epub, etc.)
-   */
-  readonly ttsAvailableEpubs = computed(() => {
-    const allEpubs = this.availableEpubs();
-    // Only show translated EPUBs (language files like en.epub, de.epub) and cleaned/simplified EPUBs
-    return allEpubs.filter(epub =>
-      epub.isTranslated ||
-      epub.filename === 'cleaned.epub' ||
-      epub.filename === 'simplified.epub'
-    );
   });
 
   // ─────────────────────────────────────────────────────────────────────────

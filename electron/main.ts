@@ -6660,7 +6660,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('audiobook:append-analytics', async (
     _event,
     projectDir: string,
-    jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation',
+    jobType: 'tts-conversion' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation',
     analytics: { jobId: string; [key: string]: unknown }
   ) => {
     const MAX_ANALYTICS_HISTORY = 10;
@@ -6668,7 +6668,6 @@ function setupIpcHandlers(): void {
     // Map job type to analytics array key
     const typeToKey: Record<string, string> = {
       'tts-conversion': 'ttsJobs',
-      'ocr-cleanup': 'cleanupJobs',
       'reassembly': 'reassemblyJobs',
       'video-assembly': 'videoAssemblyJobs',
       'rvc': 'rvcJobs',
@@ -6694,7 +6693,7 @@ function setupIpcHandlers(): void {
 
       if (isProjectDir) {
         const analyticsPath = path.join(projectDir, 'job-analytics.json');
-        let existing: Record<string, any> = { ttsJobs: [], cleanupJobs: [], reassemblyJobs: [], videoAssemblyJobs: [], rvcJobs: [], translationJobs: [] };
+        let existing: Record<string, any> = { ttsJobs: [], reassemblyJobs: [], videoAssemblyJobs: [], rvcJobs: [], translationJobs: [] };
         try {
           existing = JSON.parse(await fs.readFile(analyticsPath, 'utf-8'));
         } catch { /* first write */ }
@@ -7012,256 +7011,6 @@ function setupIpcHandlers(): void {
 
   // Track running jobs for cancellation
   const runningJobs = new Map<string, { cancel: () => void; model?: string }>();
-
-  ipcMain.handle('queue:run-ocr-cleanup', async (
-    _event,
-    jobId: string,
-    epubPath: string,
-    _model?: string, // Deprecated - use aiConfig instead
-    aiConfig?: {
-      provider: 'ollama' | 'claude' | 'openai';
-      ollama?: { baseUrl: string; model: string };
-      claude?: { apiKey: string; model: string };
-      openai?: { apiKey: string; model: string };
-      // Detailed cleanup mode options
-      useDetailedCleanup?: boolean;
-      deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
-      // Parallel processing options (Claude/OpenAI only)
-      useParallel?: boolean;
-      parallelWorkers?: number;
-      // Test mode: only process first N chunks
-      testMode?: boolean;
-      testModeChunks?: number;
-      // Enable standard AI cleanup (OCR fixes, formatting)
-      enableAiCleanup?: boolean;
-      // Which cleanup passes to run: 'ocr' (scanner-damage repair → repaired.epub),
-      // 'tts' (footnote/quote/number prep → cleaned.epub), or 'both'. Required by
-      // cleanupEpub for the edit-list path.
-      cleanupStages?: 'ocr' | 'tts' | 'both';
-      // Simplify for language learners (backwards compat: also accepts simplifyForChildren)
-      simplifyForLearning?: boolean;
-      simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
-      // Simplify mode: 'dejargon' | 'destiffen' | 'learner' (legacy 'learning'/'plain' still accepted downstream)
-      simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
-      // Custom cleanup prompt (overrides default)
-      cleanupPrompt?: string;
-      // Additional instructions appended to the AI prompt
-      customInstructions?: string;
-    }
-  ) => {
-    console.log('[IPC] queue:run-ocr-cleanup received:', {
-      jobId,
-      useDetailedCleanup: aiConfig?.useDetailedCleanup,
-      exampleCount: aiConfig?.deletedBlockExamples?.length || 0,
-      useParallel: aiConfig?.useParallel,
-      parallelWorkers: aiConfig?.parallelWorkers,
-      testMode: aiConfig?.testMode,
-      aiConfig: aiConfig ? {
-        provider: aiConfig.provider,
-        ollamaModel: aiConfig.ollama?.model,
-        claudeModel: aiConfig.claude?.model,
-        openaiModel: aiConfig.openai?.model
-      } : 'MISSING - THIS IS A BUG'
-    });
-
-    // aiConfig is required - no fallbacks
-    if (!aiConfig) {
-      const error = 'aiConfig is required for OCR cleanup';
-      console.error('[IPC] queue:run-ocr-cleanup ERROR:', error);
-      if (mainWindow) {
-        mainWindow.webContents.send('queue:job-complete', {
-          jobId,
-          success: false,
-          error
-        });
-      }
-      return { success: false, error };
-    }
-
-    // Get model from the correct provider config
-    let modelForCancellation: string | undefined;
-    if (aiConfig.provider === 'ollama') {
-      modelForCancellation = aiConfig.ollama?.model;
-    } else if (aiConfig.provider === 'claude') {
-      modelForCancellation = aiConfig.claude?.model;
-    } else if (aiConfig.provider === 'openai') {
-      modelForCancellation = aiConfig.openai?.model;
-    }
-
-    try {
-      const { aiBridge } = await import('./ai-bridge.js');
-
-      // Create cancellation token
-      let cancelled = false;
-      const cancelFn = () => { cancelled = true; };
-      runningJobs.set(jobId, { cancel: cancelFn, model: modelForCancellation });
-
-      // Run OCR cleanup with provider config - aiConfig is required, no model fallback
-      // Cast deletedBlockExamples - category strings are validated at export time
-      const cleanupOptions: {
-        useDetailedCleanup?: boolean;
-        deletedBlockExamples?: Array<{ text: string; category: 'header' | 'footer' | 'page_number' | 'custom' | 'block'; page?: number }>;
-        useParallel?: boolean;
-        parallelWorkers?: number;
-        testMode?: boolean;
-        testModeChunks?: number;
-        enableAiCleanup?: boolean;
-        cleanupStages?: 'ocr' | 'tts' | 'both';
-        simplifyForChildren?: boolean;
-        simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
-        cleanupPrompt?: string;
-        customInstructions?: string;
-        outputDir?: string;
-        structuralSourceEpub?: string;
-      } = {};
-
-      // For manifest-based projects, write output to stages/01-cleanup/ instead of alongside source
-      // Walk up the directory tree (max 5 levels) to find manifest.json — handles inputs
-      // from any stage depth (e.g., stages/02-translate/translated.epub is 3 levels deep)
-      let projectRoot: string | null = null;
-      let searchDir = path.dirname(epubPath);
-      for (let i = 0; i < 5 && searchDir !== path.dirname(searchDir); i++) {
-        try {
-          await fs.access(path.join(searchDir, 'manifest.json'));
-          projectRoot = searchDir;
-          break;
-        } catch {
-          searchDir = path.dirname(searchDir);
-        }
-      }
-      if (projectRoot) {
-        cleanupOptions.outputDir = path.join(projectRoot, 'stages', '01-cleanup');
-        console.log('[IPC] Manifest project detected, output dir:', cleanupOptions.outputDir);
-        // The pristine imported EPUB still has the publisher's <sup> footnote markup
-        // that exported.epub flattened into bare digits. Hand it to pass 2 as proof.
-        // Best-effort: a project with no EPUB archive (PDF imports) just runs the
-        // inferred pipeline, which is what it did before this existed.
-        try {
-          const mf = JSON.parse(await fs.readFile(path.join(projectRoot, 'manifest.json'), 'utf-8'));
-          const orig = (mf.archive || []).find(
-            (a: { role?: string; format?: string; path?: string }) =>
-              a.role === 'original' && String(a.format || '').toLowerCase() === 'epub' && a.path,
-          );
-          if (orig) {
-            const abs = path.join(projectRoot, orig.path);
-            await fs.access(abs);
-            cleanupOptions.structuralSourceEpub = abs;
-            console.log('[IPC] Structural footnote source (archived original):', abs);
-          }
-        } catch (e) {
-          console.log('[IPC] No usable archived original for structural footnotes:', (e as Error).message);
-        }
-      }
-
-      // Set test mode and test chunks
-      cleanupOptions.testMode = aiConfig.testMode || false;
-      if (aiConfig.testModeChunks) {
-        cleanupOptions.testModeChunks = aiConfig.testModeChunks;
-      }
-      console.log('[IPC] Test mode:', aiConfig.testMode, 'chunks:', aiConfig.testModeChunks);
-
-      // Pass through enableAiCleanup — if omitted, ai-bridge defaults to true
-      if (aiConfig.enableAiCleanup !== undefined) {
-        cleanupOptions.enableAiCleanup = aiConfig.enableAiCleanup;
-      }
-
-      // Which passes to run is the user's explicit choice (the wizard's stage picker,
-      // defaulted from the project's original source type). Forwarded verbatim —
-      // cleanupEpub throws if the edit-list path is taken without it, so a job queued
-      // before this field existed fails loudly rather than guessing.
-      cleanupOptions.cleanupStages = aiConfig.cleanupStages;
-      console.log('[IPC] cleanupStages:', aiConfig.cleanupStages);
-
-      // Set simplify mode (support both names for backwards compatibility)
-      cleanupOptions.simplifyForChildren = aiConfig.simplifyForLearning || aiConfig.simplifyForChildren || false;
-      // Pass the mode through unchanged — cleanupEpub validates it via
-      // resolveSimplifyMode (throws on unknown, maps legacy + undefined). No
-      // silent `|| 'learning'` default here.
-      cleanupOptions.simplifyMode = aiConfig.simplifyMode;
-      if (cleanupOptions.simplifyForChildren) {
-        console.log(`[IPC] Simplify mode: ENABLED (${cleanupOptions.simplifyMode})`);
-      }
-      console.log('[IPC] enableAiCleanup:', cleanupOptions.enableAiCleanup, 'simplifyForChildren:', cleanupOptions.simplifyForChildren, 'simplifyMode:', cleanupOptions.simplifyMode);
-
-      // Set custom prompt if provided
-      if (aiConfig.cleanupPrompt) {
-        cleanupOptions.cleanupPrompt = aiConfig.cleanupPrompt;
-        console.log('[IPC] Using custom cleanup prompt');
-      }
-
-      // Pass through custom instructions
-      if (aiConfig.customInstructions) {
-        cleanupOptions.customInstructions = aiConfig.customInstructions;
-        console.log('[IPC] Custom instructions provided');
-      }
-
-      if (aiConfig.useDetailedCleanup) {
-        cleanupOptions.useDetailedCleanup = true;
-        cleanupOptions.deletedBlockExamples = aiConfig.deletedBlockExamples?.map(ex => ({
-          text: ex.text,
-          category: ex.category as 'header' | 'footer' | 'page_number' | 'custom' | 'block',
-          page: ex.page
-        }));
-      }
-
-      // Parallel processing (only for Claude/OpenAI)
-      if (aiConfig.useParallel && aiConfig.provider !== 'ollama') {
-        cleanupOptions.useParallel = true;
-        cleanupOptions.parallelWorkers = aiConfig.parallelWorkers || 3;
-      }
-
-      const result = await aiBridge.cleanupEpub(
-        epubPath,
-        jobId,
-        mainWindow,
-        (progress) => {
-          if (cancelled) return;
-          // Progress is sent via mainWindow.webContents.send in cleanupEpub
-        },
-        aiConfig,
-        cleanupOptions
-      );
-
-      // Remove from running jobs
-      runningJobs.delete(jobId);
-
-      // Send completion event
-      if (mainWindow && !cancelled) {
-        mainWindow.webContents.send('queue:job-complete', {
-          jobId,
-          success: result.success,
-          outputPath: result.outputPath,
-          error: result.error,
-          copyrightIssuesDetected: result.copyrightIssuesDetected,
-          copyrightChunksAffected: result.copyrightChunksAffected,
-          contentSkipsDetected: result.contentSkipsDetected,
-          contentSkipsAffected: result.contentSkipsAffected,
-          skippedChunksPath: result.skippedChunksPath,
-          analytics: result.analytics  // Include cleanup analytics
-        });
-
-        // Notify file list so cleaned EPUB appears without manual refresh
-        if (cleanupOptions.outputDir) {
-          mainWindow.webContents.send('project:files-changed', projectRoot);
-        }
-      }
-
-      return { success: result.success, data: result };
-    } catch (err) {
-      runningJobs.delete(jobId);
-      const error = (err as Error).message;
-
-      if (mainWindow) {
-        mainWindow.webContents.send('queue:job-complete', {
-          jobId,
-          success: false,
-          error
-        });
-      }
-
-      return { success: false, error };
-    }
-  });
 
   // ─────────────────────────────────────────────────────────────────────────
   // Book Analysis handler
@@ -9511,8 +9260,10 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Job 2: Translation - reads from cleaned/simplified EPUB, writes translated EPUBs
-  // Also supports mono translation (full book translation to single language)
+  // Job 2: Translation — reads the cleaned/simplified EPUB, writes the per-language
+  // EPUBs of the sentence-aligned pipeline. Whole-book translation is the Translate
+  // PASS (processing-passes.ts), which calls runMonoTranslation directly; the
+  // `monoTranslation` flag that used to fork this handler had no submitter left.
   ipcMain.handle('bilingual-translation:run', async (_event, jobId: string, config: {
     projectId?: string;
     projectDir?: string;
@@ -9527,18 +9278,11 @@ function setupIpcHandlers(): void {
     openaiApiKey?: string;
     translationPrompt?: string;
     customInstructions?: string;
-    monoTranslation?: boolean;
     testMode?: boolean;
     testModeChunks?: number;
   }) => {
     try {
-      const { runLLTranslation, runMonoTranslation } = await import('./ll-jobs.js');
-
-      // For mono translation, use dedicated handler
-      if (config.monoTranslation) {
-        return await runMonoTranslation(jobId, config, mainWindow);
-      }
-
+      const { runLLTranslation } = await import('./ll-jobs.js');
       return await runLLTranslation(jobId, config, mainWindow);
     } catch (err) {
       return { success: false, error: (err as Error).message };

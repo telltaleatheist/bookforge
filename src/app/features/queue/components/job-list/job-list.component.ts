@@ -71,9 +71,6 @@ interface DragState {
             @if (job.metadata?.author) {
               <div class="job-meta">{{ job.metadata!.author }}</div>
             }
-            @if (job.type === 'ocr-cleanup' && getOcrModel(job)) {
-              <div class="job-meta model">&#129302; {{ getOcrModel(job) }}</div>
-            }
             @if (job.type === 'translation' && getTranslationInfo(job)) {
               <div class="job-meta model">&#127760; {{ getTranslationInfo(job) }}</div>
             }
@@ -365,11 +362,6 @@ interface DragState {
       border-radius: 3px;
       letter-spacing: 0.02em;
 
-      &.ocr-cleanup {
-        background: var(--accent-subtle);
-        color: var(--accent);
-      }
-
       &.translation {
         background: color-mix(in srgb, var(--info) 15%, transparent);
         color: var(--info);
@@ -589,8 +581,6 @@ export class JobListComponent {
 
   getJobTypeLabel(type: JobType): string {
     switch (type) {
-      case 'ocr-cleanup':
-        return 'OCR';
       case 'translation':
         return 'Translate';
       case 'tts-conversion':
@@ -610,12 +600,6 @@ export class JobListComponent {
       default:
         return type;
     }
-  }
-
-  getOcrModel(job: QueueJob): string | null {
-    if (job.type !== 'ocr-cleanup' || !job.config) return null;
-    const config = job.config as { aiModel?: string };
-    return config.aiModel || null;
   }
 
   getTranslationInfo(job: QueueJob): string | null {

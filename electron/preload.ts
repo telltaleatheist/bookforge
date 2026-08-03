@@ -644,7 +644,7 @@ export interface AudiobookProjectInfo {
 // Processing Queue Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type QueueJobType = 'ocr-cleanup' | 'tts-conversion';
+export type QueueJobType = 'tts-conversion';
 
 export interface QueueProgress {
   jobId: string;
@@ -1226,7 +1226,7 @@ export interface ElectronAPI {
       success: boolean;
       error?: string;
     }>;
-    appendAnalytics: (projectDir: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation', analytics: { jobId: string; [key: string]: unknown }) => Promise<{
+    appendAnalytics: (projectDir: string, jobType: 'tts-conversion' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation', analytics: { jobId: string; [key: string]: unknown }) => Promise<{
       success: boolean;
       error?: string;
     }>;
@@ -1502,21 +1502,6 @@ export interface ElectronAPI {
     onProgress: (callback: (progress: PluginProgress) => void) => () => void;
   };
   queue: {
-    runOcrCleanup: (jobId: string, epubPath: string, model?: string, aiConfig?: AIProviderConfig & {
-      useDetailedCleanup?: boolean;
-      deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
-      useParallel?: boolean;
-      parallelWorkers?: number;
-      testMode?: boolean;
-      testModeChunks?: number;
-      enableAiCleanup?: boolean;
-      cleanupStages?: 'ocr' | 'tts' | 'both';   // Which cleanup passes to run
-      simplifyForLearning?: boolean;
-      simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
-      simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
-      cleanupPrompt?: string;
-      customInstructions?: string;
-    }) => Promise<{ success: boolean; data?: any; error?: string }>;
     runTtsConversion: (jobId: string, epubPath: string, config: TtsJobConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
     runTranslation: (jobId: string, epubPath: string, translationConfig: {
       chunkSize?: number;
@@ -2122,7 +2107,6 @@ export interface ElectronAPI {
       claudeApiKey?: string;
       openaiApiKey?: string;
       translationPrompt?: string;
-      monoTranslation?: boolean;  // Full book translation (not bilingual interleave)
       testMode?: boolean;
       testModeChunks?: number;
     }) => Promise<{
@@ -2824,7 +2808,7 @@ const electronAPI: ElectronAPI = {
     // manifest. key='mono' → the main audiobook; else a bilingual language-pair key.
     deleteOutput: (projectId: string, key: string) =>
       ipcRenderer.invoke('audiobook:delete-output', projectId, key),
-    appendAnalytics: (projectDir: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation', analytics: { jobId: string; [key: string]: unknown }) =>
+    appendAnalytics: (projectDir: string, jobType: 'tts-conversion' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation', analytics: { jobId: string; [key: string]: unknown }) =>
       ipcRenderer.invoke('audiobook:append-analytics', projectDir, jobType, analytics),
     getAnalytics: (projectDir: string) =>
       ipcRenderer.invoke('audiobook:get-analytics', projectDir),
@@ -3168,22 +3152,6 @@ const electronAPI: ElectronAPI = {
     },
   },
   queue: {
-    runOcrCleanup: (jobId: string, epubPath: string, model?: string, aiConfig?: AIProviderConfig & {
-      useDetailedCleanup?: boolean;
-      deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
-      useParallel?: boolean;
-      parallelWorkers?: number;
-      testMode?: boolean;
-      testModeChunks?: number;
-      enableAiCleanup?: boolean;
-      cleanupStages?: 'ocr' | 'tts' | 'both';   // Which cleanup passes to run
-      simplifyForLearning?: boolean;
-      simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
-      simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
-      cleanupPrompt?: string;
-      customInstructions?: string;
-    }) =>
-      ipcRenderer.invoke('queue:run-ocr-cleanup', jobId, epubPath, model, aiConfig),
     runTtsConversion: (jobId: string, epubPath: string, config: TtsJobConfig) =>
       ipcRenderer.invoke('queue:run-tts-conversion', jobId, epubPath, config),
     runTranslation: (jobId: string, epubPath: string, translationConfig: {
@@ -3950,7 +3918,6 @@ const electronAPI: ElectronAPI = {
       openaiApiKey?: string;
       translationPrompt?: string;
       customInstructions?: string;
-      monoTranslation?: boolean;
       testMode?: boolean;
       testModeChunks?: number;
     }): Promise<{

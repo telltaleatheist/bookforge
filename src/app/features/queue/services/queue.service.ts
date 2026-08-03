@@ -14,7 +14,6 @@ import {
   QueueProgress,
   JobResult,
   CreateJobRequest,
-  OcrCleanupConfig,
   TtsConversionConfig,
   TranslationJobConfig,
   RvcEnhancementJobConfig,
@@ -91,17 +90,6 @@ declare global {
   interface Window {
     electron?: {
       queue?: {
-        runOcrCleanup: (jobId: string, epubPath: string, model?: string, aiConfig?: AIProviderConfig & {
-          useDetailedCleanup?: boolean;
-          deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
-          useParallel?: boolean;
-          parallelWorkers?: number;
-          testMode?: boolean;
-          testModeChunks?: number;
-          simplifyForLearning?: boolean;
-          cleanupPrompt?: string;
-          customInstructions?: string;
-        }) => Promise<{ success: boolean; data?: any; error?: string }>;
         runTtsConversion: (jobId: string, epubPath: string, config: any) => Promise<{ success: boolean; data?: any; error?: string }>;
         runTranslation: (jobId: string, epubPath: string, translationConfig: any, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
         runBookAnalysis: (jobId: string, source: BookAnalysisConfig['source'], aiConfig: AIProviderConfig & {
@@ -262,7 +250,6 @@ declare global {
           openaiApiKey?: string;
           translationPrompt?: string;
           customInstructions?: string;
-          monoTranslation?: boolean;  // Full book translation (not bilingual interleave)
           testMode?: boolean;
           testModeChunks?: number;
         }) => Promise<{
@@ -1228,30 +1215,6 @@ export class QueueService {
       }
     }
 
-    // Write pipeline.cleanup status to manifest after AI cleanup completes.
-    // Fire-and-forget: don't await, so this can't block queue advancement.
-    if (result.success && completedJob?.type === 'ocr-cleanup' && completedJob.bfpPath) {
-      const electron = (window as any).electron;
-      if (electron?.audiobook?.updatePipeline) {
-        const projectId = completedJob.bfpPath.replace(/\\/g, '/').split('/').pop();
-        if (projectId) {
-          const outputRelPath = result.outputPath
-            ? 'stages/01-cleanup/' + result.outputPath.replace(/\\/g, '/').split('/').pop()
-            : undefined;
-          console.log(`[QUEUE] Writing pipeline.cleanup to manifest for project: ${projectId}`);
-          electron.audiobook.updatePipeline(projectId, {
-            cleanup: {
-              status: 'complete',
-              outputPath: outputRelPath,
-              completedAt: new Date().toISOString(),
-            }
-          }).catch((err: Error) => {
-            console.error('[QUEUE] Failed to write pipeline.cleanup to manifest:', err);
-          });
-        }
-      }
-    }
-
     // Cache TTS session to project's stages/03-tts/sessions/{lang}/ directory
     // Both standard and LL pipelines use the same location for consistency
     if (result.success && result.sessionDir && completedJob?.type === 'tts-conversion') {
@@ -2184,7 +2147,6 @@ export class QueueService {
       case 'reassembly':        return 0.05;  // ~5% of TTS duration
       case 'rvc-enhancement':   return 0.40;  // RVC is per-sentence but faster than TTS
       case 'video-assembly':    return 0.10;  // ~10% of TTS duration
-      case 'ocr-cleanup':       return 0.50;  // Comparable to TTS (depends on model)
       case 'tts-conversion':    return 1.00;  // Baseline
       default:                  return 0.20;  // Conservative default
     }
@@ -2713,7 +2675,7 @@ export class QueueService {
   // with a GPU/local job instead of waiting behind it. ollama/local providers
   // stay in the exclusive lane — they DO share the GPU.
   private static readonly CLOUD_CAPABLE_JOB_TYPES: ReadonlySet<string> = new Set([
-    'ocr-cleanup', 'bilingual-cleanup', 'bilingual-translation', 'translation', 'book-analysis'
+    'bilingual-cleanup', 'bilingual-translation', 'translation', 'book-analysis', 'simplify', 'translate-pass'
   ]);
 
   /**
@@ -2904,94 +2866,7 @@ export class QueueService {
 
     // Start the appropriate job type
     try {
-      if (job.type === 'ocr-cleanup') {
-        const config = job.config as OcrCleanupConfig | undefined;
-        if (!config) {
-          throw new Error('OCR cleanup configuration required');
-        }
-        if (!job.epubPath) {
-          throw new Error('EPUB path is required for OCR cleanup');
-        }
-        // Build AI config from per-job settings
-        const aiConfig: AIProviderConfig & {
-          useDetailedCleanup?: boolean;
-          deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
-          useParallel?: boolean;
-          parallelWorkers?: number;
-          testMode?: boolean;
-          testModeChunks?: number;
-          enableAiCleanup?: boolean;
-          cleanupStages?: 'ocr' | 'tts' | 'both';
-          simplifyForLearning?: boolean;
-          simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
-          cleanupPrompt?: string;
-          customInstructions?: string;
-        } = {
-          provider: config.aiProvider,
-          ollama: config.aiProvider === 'ollama' ? {
-            baseUrl: config.ollamaBaseUrl || 'http://localhost:11434',
-            model: config.aiModel
-          } : undefined,
-          claude: config.aiProvider === 'claude' ? {
-            apiKey: config.claudeApiKey || '',
-            model: config.aiModel
-          } : undefined,
-          openai: config.aiProvider === 'openai' ? {
-            apiKey: config.openaiApiKey || '',
-            model: config.aiModel
-          } : undefined,
-          // Detailed cleanup options
-          useDetailedCleanup: config.useDetailedCleanup,
-          deletedBlockExamples: config.deletedBlockExamples,
-          // Parallel processing (Claude/OpenAI only)
-          useParallel: config.useParallel,
-          parallelWorkers: config.parallelWorkers,
-          // Test mode
-          testMode: config.testMode,
-          testModeChunks: config.testModeChunks,
-          // Processing options
-          enableAiCleanup: config.enableAiCleanup,
-          cleanupStages: config.cleanupStages,
-          simplifyForLearning: config.simplifyForLearning,
-          simplifyMode: config.simplifyMode,
-          cleanupPrompt: config.cleanupPrompt,
-          customInstructions: config.customInstructions
-        };
-        console.log('[QUEUE] Job config from storage:', { testMode: config.testMode, enableAiCleanup: config.enableAiCleanup, simplifyForLearning: config.simplifyForLearning, fullConfig: JSON.stringify(config) });
-        console.log('[QUEUE] Built aiConfig:', { testMode: aiConfig.testMode });
-        console.log('[QUEUE] Calling runOcrCleanup with:', {
-          jobId: job.id,
-          model: config.aiModel,
-          useDetailedCleanup: config.useDetailedCleanup,
-          exampleCount: config.deletedBlockExamples?.length || 0,
-          testMode: config.testMode,
-          aiConfig: {
-            provider: aiConfig.provider,
-            ollamaModel: aiConfig.ollama?.model,
-            claudeModel: aiConfig.claude?.model,
-            openaiModel: aiConfig.openai?.model
-          }
-        });
-        const ocrResult = await electron.queue.runOcrCleanup(job.id, job.epubPath, config.aiModel, aiConfig);
-
-        // Handle completion inline via handleJobComplete (don't rely solely on queue:job-complete IPC event).
-        // This ensures all OCR-specific logic runs (TOO_MANY_FALLBACKS skip, analytics, etc.)
-        // The IPC event may also arrive — handleJobComplete is idempotent for already-completed jobs.
-        const ocrData = ocrResult?.data || {};
-        await this.handleJobComplete({
-          jobId: job.id,
-          success: ocrData.success ?? ocrResult?.success ?? false,
-          outputPath: ocrData.outputPath,
-          error: ocrData.error || ocrResult?.error,
-          copyrightIssuesDetected: ocrData.copyrightIssuesDetected,
-          copyrightChunksAffected: ocrData.copyrightChunksAffected,
-          contentSkipsDetected: ocrData.contentSkipsDetected,
-          contentSkipsAffected: ocrData.contentSkipsAffected,
-          skippedChunksPath: ocrData.skippedChunksPath,
-          analytics: ocrData.analytics,
-        });
-
-      } else if (job.type === 'translation') {
+      if (job.type === 'translation') {
         const config = job.config as TranslationJobConfig | undefined;
         if (!config) {
           throw new Error('Translation configuration required');
@@ -3067,89 +2942,16 @@ export class QueueService {
           console.log(`[QUEUE] config.outputFilename:`, config.outputFilename);
           console.log(`[QUEUE] isResumeJob:`, job.isResumeJob);
 
-          // IMPORTANT: For Language Learning pipeline, trust the EPUB path that was resolved when the job was created
-          // The LL wizard uses EpubResolverService to find the correct language-specific EPUB (en.epub, de.epub, etc.)
-          // Do NOT override with hardcoded search logic that would find cleaned.epub instead
-          let epubPathForTts: string = job.epubPath || '';
-          const isBilingualTts = !!(job.metadata as any)?.bilingualWorkflow;
-
-          // Check if this is a Language Learning TTS job (has language config and sentencePerParagraph)
-          const isLanguageLearningTts = config.sentencePerParagraph === true;
-
-          if (job.outputPath) {
-            // Job has an explicit output path (e.g., from chained workflow)
-            epubPathForTts = job.outputPath;
-            console.log(`[QUEUE] Using job.outputPath for TTS: ${epubPathForTts}`);
-          } else if (isBilingualTts || isLanguageLearningTts) {
-            // Language Learning or Bilingual TTS jobs already have the correct epub path
-            // These use language-specific EPUBs (en.epub, de.epub) with sentence-per-paragraph format
-            // Don't override with cleaned.epub which would have wrong format and too many chunks
-            console.log(`[QUEUE] Language Learning TTS job, using resolved epubPath: ${epubPathForTts}`);
-          } else if (electron.fs?.exists && job.epubPath) {
-            // Standard audiobook workflow: pick the most recently modified processed EPUB
-            // This is for regular audiobooks, not Language Learning
-            const epubPathNorm = job.epubPath.replace(/\\/g, '/');
-            const epubDir = epubPathNorm.substring(0, epubPathNorm.lastIndexOf('/'));
-
-            // Derive project dir from epub path (epub is in source/, stages/01-cleanup/, or stages/02-translate/)
-            let projectDirForTts = '';
-            if (epubDir.includes('/stages/')) {
-              projectDirForTts = epubDir.substring(0, epubDir.indexOf('/stages/'));
-            } else if (epubDir.endsWith('/source')) {
-              projectDirForTts = epubDir.substring(0, epubDir.lastIndexOf('/source'));
-            }
-
-            const candidates = [
-              // Mono translation output in stages/02-translate/
-              ...(projectDirForTts ? [`${projectDirForTts}/stages/02-translate/translated.epub`] : []),
-              // AI-simplified or AI-cleaned in stages/01-cleanup/
-              ...(projectDirForTts ? [
-                `${projectDirForTts}/stages/01-cleanup/simplified.epub`,
-                `${projectDirForTts}/stages/01-cleanup/cleaned.epub`,
-              ] : [
-                `${epubDir}/simplified.epub`,
-                `${epubDir}/cleaned.epub`,
-              ]),
-            ];
-
-            // Use mtime-based resolution: pick the most recently modified candidate
-            let foundPath: string | null = null;
-            const fsAny = electron.fs as any;
-            if (fsAny.batchStat) {
-              try {
-                const statResults = await fsAny.batchStat(candidates);
-                let bestMtime = -1;
-                for (const c of candidates) {
-                  const stat = statResults[c];
-                  if (stat && stat.mtimeMs > bestMtime) {
-                    bestMtime = stat.mtimeMs;
-                    foundPath = c;
-                  }
-                }
-              } catch {
-                // Fall through to sequential exists check
-              }
-            }
-            // Fallback: sequential exists (first match wins, preserves old behavior)
-            if (!foundPath) {
-              for (const candidatePath of candidates) {
-                try {
-                  if (await electron.fs.exists(candidatePath)) {
-                    foundPath = candidatePath;
-                    break;
-                  }
-                } catch {
-                  // Continue checking
-                }
-              }
-            }
-            if (foundPath) {
-              epubPathForTts = foundPath;
-              console.log(`[QUEUE] Standard audiobook: Found processed epub, using: ${epubPathForTts}`);
-            } else {
-              console.log(`[QUEUE] Standard audiobook: No processed epub found, using original: ${epubPathForTts}`);
-            }
-          }
+          // The EPUB is the one the job was created with. There is no search.
+          //
+          // This used to walk a candidate list — stages/02-translate/translated.epub,
+          // then stages/01-cleanup/simplified.epub, then cleaned.epub — and take
+          // whichever was newest, silently narrating a file the user had not chosen.
+          // Those stage copies are retired: a pass rewrites the book EPUB in place,
+          // so the book the wizard picked IS the latest, and a leftover cleaned.epub
+          // from a legacy project is an OLD reading of the book, not a newer one.
+          // A chained job still carries its predecessor's output on job.outputPath.
+          const epubPathForTts: string = job.outputPath || job.epubPath || '';
 
           if (!epubPathForTts) {
             throw new Error('EPUB path is required for parallel TTS conversion');
@@ -3814,36 +3616,6 @@ export class QueueService {
           throw new Error('Bilingual Translation not available');
         }
 
-        // If this job was interrupted, check if the output file already exists before
-        // re-running. This prevents wasting API calls when the translation completed but
-        // the app was killed before the completion status was persisted to queue.json.
-        if (job.wasInterrupted && config.monoTranslation) {
-          const expectedOutput = job.outputPath
-            || (job.bfpPath ? `${job.bfpPath}/stages/02-translate/translated.epub` : null);
-          const fsAny = electron.fs as any;
-          if (expectedOutput && fsAny?.batchStat) {
-            try {
-              const statResult = await fsAny.batchStat([expectedOutput]);
-              if (statResult[expectedOutput]) {
-                console.log(`[QUEUE] Interrupted translation already has output: ${expectedOutput} — marking complete`);
-                this._jobs.update(jobs =>
-                  jobs.map(j => {
-                    if (j.id !== job.id) return j;
-                    return { ...j, status: 'complete' as JobStatus, progress: 100, outputPath: expectedOutput };
-                  })
-                );
-                if (job.parentJobId && job.workflowId) {
-                  this.updateMasterJobProgress(job.workflowId, job.parentJobId);
-                }
-                await this.finishJob(job.id);
-                return;
-              }
-            } catch {
-              // batchStat failed — proceed with re-running the job
-            }
-          }
-        }
-
         // If this workflow INCLUDED a cleanup step, translation must receive its
         // cleaned EPUB. A missing cleanedEpubPath here means cleanup silently didn't
         // produce output and we'd translate the RAW source — refuse loudly. Workflows
@@ -3870,7 +3642,6 @@ export class QueueService {
           openaiApiKey: config.openaiApiKey,
           translationPrompt: config.translationPrompt,
           customInstructions: config.customInstructions,
-          monoTranslation: config.monoTranslation,
           testMode: config.testMode,
           testModeChunks: config.testModeChunks
         });
@@ -3896,13 +3667,6 @@ export class QueueService {
         // Update master job progress
         if (job.parentJobId && job.workflowId) {
           this.updateMasterJobProgress(job.workflowId, job.parentJobId);
-        }
-
-        // For mono translation, skip the dual-EPUB workflow — just finish
-        if (config.monoTranslation) {
-          console.log('[QUEUE] Mono translation complete, skipping dual-EPUB workflow');
-          await this.finishJob(job.id);
-          return;
         }
 
         // Check if translation returned dual EPUB paths for dual-voice TTS
@@ -4439,7 +4203,7 @@ export class QueueService {
           throw new Error('Book Analysis not available');
         }
 
-        // Build AI config from per-job settings (same pattern as ocr-cleanup)
+        // Build AI config from per-job settings
         const aiConfig: AIProviderConfig & {
           categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
           testMode?: boolean;
@@ -4564,7 +4328,7 @@ export class QueueService {
     }
   }
 
-  private buildJobConfig(request: CreateJobRequest): ProcessingPassJobConfig | OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig | undefined {
+  private buildJobConfig(request: CreateJobRequest): ProcessingPassJobConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig | undefined {
     if (PASS_JOB_TYPES.has(request.type)) {
       // Passed through untouched: this config came from planProcessingChain,
       // which is the only thing allowed to decide what a pass does.
@@ -4578,36 +4342,7 @@ export class QueueService {
       return config;
     }
 
-    if (request.type === 'ocr-cleanup') {
-      const config = request.config as Partial<OcrCleanupConfig>;
-      if (!config?.aiProvider || !config?.aiModel) {
-        return undefined; // AI provider and model are required
-      }
-      return {
-        type: 'ocr-cleanup',
-        aiProvider: config.aiProvider,
-        aiModel: config.aiModel,
-        ollamaBaseUrl: config.ollamaBaseUrl,
-        claudeApiKey: config.claudeApiKey,
-        openaiApiKey: config.openaiApiKey,
-        // Detailed cleanup mode settings
-        useDetailedCleanup: config.useDetailedCleanup,
-        deletedBlockExamples: config.deletedBlockExamples,
-        // Parallel processing (Claude/OpenAI only)
-        useParallel: config.useParallel,
-        parallelWorkers: config.parallelWorkers,
-        // Test mode
-        testMode: config.testMode,
-        testModeChunks: config.testModeChunks,
-        // Processing options
-        enableAiCleanup: config.enableAiCleanup,
-        cleanupStages: config.cleanupStages,
-        simplifyForLearning: config.simplifyForLearning,
-        simplifyMode: config.simplifyMode,
-        cleanupPrompt: config.cleanupPrompt,
-        customInstructions: config.customInstructions
-      };
-    } else if (request.type === 'translation') {
+    if (request.type === 'translation') {
       const config = request.config as Partial<TranslationJobConfig>;
       if (!config?.aiProvider || !config?.aiModel) {
         return undefined; // AI provider and model are required
@@ -4751,7 +4486,6 @@ export class QueueService {
         openaiApiKey: config.openaiApiKey,
         translationPrompt: config.translationPrompt,
         customInstructions: config.customInstructions,
-        monoTranslation: config.monoTranslation,
         testMode: config.testMode,
         testModeChunks: config.testModeChunks
       };
@@ -5006,7 +4740,7 @@ export class QueueService {
     }
 
     // Validate job type
-    const validTypes = ['tts-conversion', 'ocr-cleanup', 'reassembly', 'video-assembly', 'rvc', 'translation'];
+    const validTypes = ['tts-conversion', 'reassembly', 'video-assembly', 'rvc', 'translation'];
     if (!validTypes.includes(jobType)) {
       console.log('[QUEUE] Unknown job type for analytics:', jobType);
       return;

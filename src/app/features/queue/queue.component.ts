@@ -152,7 +152,6 @@ import { QueueJob } from './models/queue.types';
                 (runNow)="runJobStandalone($event)"
                 (resume)="resumeStoppedJob($event)"
                 (toggleStep)="toggleStep($event)"
-                (viewDiff)="openDiffModal($event)"
                 (showInFolder)="showInFolder($event)"
               />
             }
@@ -200,19 +199,6 @@ import { QueueJob } from './models/queue.types';
       </desktop-split-pane>
     </div>
 
-    <!-- Diff View Modal -->
-    @if (diffModalPaths()) {
-      <div class="diff-modal-backdrop" (click)="closeDiffModal()">
-        <div class="diff-modal" (click)="$event.stopPropagation()">
-          <app-diff-view
-            [originalPath]="diffModalPaths()!.originalPath"
-            [cleanedPath]="diffModalPaths()!.cleanedPath"
-            (close)="closeDiffModal()"
-            (textEdited)="onDiffTextEdited($event)"
-          />
-        </div>
-      </div>
-    }
   `,
   styles: [`
     :host {
@@ -491,7 +477,6 @@ export class QueueComponent implements OnInit, OnDestroy {
   readonly collapsedStepIds = signal<Set<string>>(new Set());
 
   // Diff modal state
-  readonly diffModalPaths = signal<{ originalPath: string; cleanedPath: string } | null>(null);
   @ViewChild(DiffViewComponent) diffViewRef?: DiffViewComponent;
 
   // Computed: get the selected job object
@@ -734,36 +719,5 @@ export class QueueComponent implements OnInit, OnDestroy {
     this.collapsedStepIds.set(next);
   }
 
-  openDiffModal(paths: { originalPath: string; cleanedPath: string }): void {
-    this.diffModalPaths.set(paths);
-  }
-
-  closeDiffModal(): void {
-    this.diffModalPaths.set(null);
-  }
-
-  async onDiffTextEdited(event: { chapterId: string; oldText: string; newText: string }): Promise<void> {
-    const paths = this.diffModalPaths();
-    if (!paths?.cleanedPath) return;
-
-    const electron = window.electron;
-    if (!electron?.epub) return;
-
-    const result = await electron.epub.editText(
-      paths.cleanedPath,
-      event.chapterId,
-      event.oldText,
-      event.newText
-    );
-
-    if (result.success) {
-      console.log('[Queue] Text edit saved to EPUB, refreshing diff view');
-      if (this.diffViewRef) {
-        this.diffViewRef.refresh();
-      }
-    } else {
-      console.error('[Queue] Failed to save text edit:', result.error);
-    }
-  }
 
 }

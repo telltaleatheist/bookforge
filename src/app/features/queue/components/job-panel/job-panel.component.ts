@@ -23,7 +23,6 @@ import { JobDetailsComponent } from '../job-details/job-details.component';
 
 /** Emoji marker per job type — the same glyphs the queue has always used. */
 const TYPE_ICONS: Record<JobType, string> = {
-  'ocr-cleanup': '\u{1F4DD}',
   'translation': '\u{1F310}',
   'tts-conversion': '\u{1F3A7}',
   'rvc-enhancement': '\u{1F399}',
@@ -44,7 +43,6 @@ const TYPE_ICONS: Record<JobType, string> = {
 };
 
 const TYPE_LABELS: Record<JobType, string> = {
-  'ocr-cleanup': 'OCR Cleanup',
   'translation': 'Translation',
   'tts-conversion': 'TTS Conversion',
   'rvc-enhancement': 'Voice Enhancement',
@@ -168,7 +166,6 @@ const TYPE_LABELS: Record<JobType, string> = {
           <aside class="details-column">
             <app-job-details
               [job]="currentJob"
-              (viewDiff)="viewDiff.emit($event)"
               (showInFolder)="showInFolder.emit($event)"
             />
           </aside>
@@ -415,7 +412,6 @@ export class JobPanelComponent {
   readonly runNow = output<string>();
   readonly resume = output<string>();
   readonly toggleStep = output<string>();
-  readonly viewDiff = output<{ originalPath: string; cleanedPath: string }>();
   readonly showInFolder = output<string>();
 
   readonly typeIcon = computed(() => TYPE_ICONS[this.job().type]);

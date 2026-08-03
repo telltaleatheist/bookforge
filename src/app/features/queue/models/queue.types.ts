@@ -26,7 +26,7 @@ export const RATE_WINDOW_MIN_SECONDS = 45;
 export type CleanupStages = 'ocr' | 'tts' | 'both';
 
 // Job types supported by the queue
-export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'rvc-enhancement' | 'reassembly' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook' | 'book-analysis' | 'generate-sentences'
+export type JobType = 'tts-conversion' | 'translation' | 'rvc-enhancement' | 'reassembly' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook' | 'book-analysis' | 'generate-sentences'
   // Processing passes (docs/PROCESSING_PIPELINE_V2.md). One job per pass, chained
   // in the user's order against ONE project. Every one of them runs through the
   // same main-process handler; the pass kind is in the config.
@@ -123,7 +123,7 @@ export interface QueueJob {
   // secondary bar sitting under the chunk bar.
   activeBatch?: ActiveBatchProgress;
   error?: string;             // Error message if status is 'error'
-  outputPath?: string;        // Path to output file (e.g., cleaned.epub for OCR jobs)
+  outputPath?: string;        // Path to the file this job produced
   addedAt: Date;
   startedAt?: Date;
   completedAt?: Date;
@@ -167,7 +167,7 @@ export interface QueueJob {
    */
   chunksAtFirstStamp?: number;
   progressMessage?: string;       // Current progress message
-  // Cleanup pass-1 phase (mono ocr-cleanup path). 'analyzing' = pre-chunk planning
+  // Cleanup pass-1 phase (the simplify / bilingual-cleanup path). 'analyzing' = pre-chunk planning
   // (footnote/hyphen/pre-scan); the front end shows a phase-1 bar instead of the ETA.
   cleanupPhase?: 'loading' | 'analyzing' | 'processing' | 'saving' | 'complete' | 'error';
   // Parallel TTS worker progress
@@ -235,53 +235,13 @@ export type ProcessingPassJobConfig = PassJobConfig & {
 };
 
 // Job configuration union type
-export type JobConfig = ProcessingPassJobConfig | OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig;
+export type JobConfig = ProcessingPassJobConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
   text: string;
   category: 'header' | 'footer' | 'page_number' | 'custom' | 'block';
   page?: number;
-}
-
-// OCR Cleanup job configuration
-export interface OcrCleanupConfig {
-  type: 'ocr-cleanup';
-  // AI Provider settings (per-job)
-  aiProvider: AIProvider;
-  aiModel: string;
-  // Provider-specific settings (only the relevant one is used)
-  ollamaBaseUrl?: string;
-  claudeApiKey?: string;
-  openaiApiKey?: string;
-  // Detailed cleanup mode - uses deleted blocks as few-shot examples
-  deletedBlockExamples?: DeletedBlockExample[];
-  useDetailedCleanup?: boolean;
-  // Parallel processing (only for non-local APIs: Claude, OpenAI)
-  parallelWorkers?: number;  // 1-5, default 1 (sequential)
-  useParallel?: boolean;     // Enable parallel processing
-  // Test mode: only process first N chunks
-  testMode?: boolean;
-  testModeChunks?: number;  // Number of chunks to process in test mode
-  // Enable standard AI cleanup (OCR fixes, formatting)
-  enableAiCleanup?: boolean;
-  // Which cleanup passes to run. 'ocr' = the per-chunk model pass that fixes scanner
-  // damage (misread letters, merged words, hyphenation) → repaired.epub. 'tts' = the
-  // deterministic pass (footnote markers, quotes, number expansion) → cleaned.epub.
-  // 'both' = one after the other. Defaulted in the wizard from the project's ORIGINAL
-  // source type: 'both' for PDF scans, 'tts' for born-digital EPUBs.
-  cleanupStages?: CleanupStages;
-  // Simplify for language learners
-  simplifyForLearning?: boolean;
-  // Simplify mode: 'dejargon' (plain English for academic prose), 'destiffen' (natural
-  // English for machine-translated prose), or 'learner' (B1-B2 language learner).
-  // Legacy 'learning'/'plain' from older queued jobs are still accepted (mapped in the
-  // main process's resolveSimplifyMode).
-  simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
-  // Custom cleanup prompt (overrides default)
-  cleanupPrompt?: string;
-  // Additional instructions appended to the AI prompt
-  customInstructions?: string;
 }
 
 // TTS Conversion job configuration
@@ -456,7 +416,7 @@ export interface BilingualCleanupJobConfig {
   // Cleanup options
   enableCleanup?: boolean;         // Enable standard AI cleanup (OCR fixes)
   simplifyForLearning?: boolean;   // Simplify text for language learners
-  // Which simplify mode to use (see OcrCleanupConfig.simplifyMode). Legacy values accepted.
+  // Which simplify mode to use. Legacy values accepted (mapped in the main process).
   simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
   // Additional instructions appended to the AI prompt
   customInstructions?: string;
@@ -493,10 +453,6 @@ export interface BilingualTranslationJobConfig {
   // Test mode - limit sentences for faster testing
   testMode?: boolean;
   testModeChunks?: number;  // Number of chunks to process in test mode
-
-  // Mono translation - full book translation to single language (not bilingual interleave)
-  // When true, translates entire book and outputs _translated.epub
-  monoTranslation?: boolean;
 }
 
 // Bilingual Assembly job configuration - combines dual-voice TTS outputs
@@ -691,7 +647,10 @@ export interface QueueState {
 // Progress update from IPC
 export interface QueueProgress {
   jobId: string;
-  type: JobType;
+  // A LABEL only — the row is found by jobId. Producers that do not know which
+  // job type they are serving (ai-bridge's cleanupEpub runs for two of them)
+  // omit it rather than naming one of them at random.
+  type?: JobType;
   phase: string;
   progress: number;           // 0-100
   message?: string;
@@ -794,7 +753,7 @@ export interface AudiobookMetadata {
 export interface CreateJobRequest {
   type: JobType;
   epubPath?: string;  // Optional for bilingual-assembly and audiobook jobs
-  config?: Partial<ProcessingPassJobConfig> | Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig>;
+  config?: Partial<ProcessingPassJobConfig> | Partial<TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig>;
   metadata?: AudiobookMetadata;
   // Resume info for continuing interrupted TTS jobs
   resumeInfo?: ResumeCheckResult;

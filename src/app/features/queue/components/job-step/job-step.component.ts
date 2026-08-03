@@ -400,7 +400,7 @@ export class JobStepComponent {
       out.push({ label: 'Chunks', value: `${job.chunksCompletedInJob || 0}/${job.totalChunksInJob}` });
     } else if (job.currentChunk && job.totalChunks) {
       out.push({
-        label: job.type === 'ocr-cleanup' || job.type === 'bilingual-cleanup' ? 'Chunks' : 'Sentences',
+        label: job.type === 'bilingual-cleanup' || job.type === 'simplify' ? 'Chunks' : 'Sentences',
         value: `${job.currentChunk}/${job.totalChunks}`,
       });
     }
@@ -438,7 +438,6 @@ export class JobStepComponent {
     const tags: string[] = [];
 
     switch (job.type) {
-      case 'ocr-cleanup':
       case 'bilingual-cleanup':
         if (config['aiProvider'] && config['aiModel']) {
           tags.push(`${this.shortProvider(config['aiProvider'])} ${config['aiModel']}`);
@@ -455,7 +454,6 @@ export class JobStepComponent {
         if (config['sourceLang'] && config['targetLang']) {
           tags.push(`${config['sourceLang']} → ${config['targetLang']}`);
         }
-        if (config['monoTranslation']) tags.push('Mono');
         break;
 
       case 'tts-conversion':
@@ -512,7 +510,6 @@ export class JobStepComponent {
 
   private labelForType(type: JobType): string {
     switch (type) {
-      case 'ocr-cleanup': return 'AI Cleanup';
       case 'translation': return 'Translation';
       case 'tts-conversion': return 'TTS';
       case 'rvc-enhancement': return 'Voice Enhancement';

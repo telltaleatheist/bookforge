@@ -3235,7 +3235,9 @@ export async function cleanupEpub(
     if (mainWindow) {
       mainWindow.webContents.send('queue:progress', {
         jobId,
-        type: 'ocr-cleanup',
+        // No `type`: the row is found by jobId, and cleanupEpub runs for two job
+        // types (the simplify pass and bilingual-cleanup). Naming one of them
+        // here would be a label that is wrong half the time.
         phase: progress.phase,
         progress: progress.percentage,
         message: progress.message,
