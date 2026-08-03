@@ -654,8 +654,10 @@ async function runEpubFootnotesPass(
   config: PassJobConfig,
   mainWindow: BrowserWindow | null | undefined
 ): Promise<PassJobResult> {
-  await ensureFoundryForJob(jobId, 'footnotes', mainWindow);
+  // The book check first: a project with no book EPUB fails on the cheap stat,
+  // not after a 38 MB download it was never going to use.
   const bookPath = await requireBookEpub(config.projectDir);
+  await ensureFoundryForJob(jobId, 'footnotes', mainWindow);
   const stageDir = absStage(config);
   await fs.promises.mkdir(stageDir, { recursive: true });
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
