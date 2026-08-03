@@ -55,6 +55,7 @@ import { TTS_ENGINES, engineCaps, type TtsEngineCaps } from '../../models/tts-en
 import { AIProvider } from '../../../../core/models/ai-config.types';
 import type {
   ChainPassRequest,
+  FootnotesPassParams,
   ProcessingChainPlan,
   ProcessingChainRequest,
   ProcessingPassKind,
@@ -102,6 +103,8 @@ interface PassVariantCard {
 interface BuilderPass {
   uid: string;
   kind: ProcessingPassKind;
+  /** Footnote removal over an EPUB. Meaningless on a PDF run — see selectVariant. */
+  footnotes?: FootnotesPassParams;
   simplify?: SimplifyPassParams;
   translate?: TranslatePassParams;
 }
@@ -129,9 +132,15 @@ const PASS_LABELS: Record<ProcessingPassKind, string> = {
   translate: 'Translate',
 };
 
-/** The foundry passes: they read a PDF's run directory, not the book. */
-const FOUNDRY_PASS_KINDS: ReadonlySet<ProcessingPassKind> = new Set<ProcessingPassKind>([
-  'tesseract', 'ocr-correction', 'footnotes',
+/**
+ * The passes that read a PDF's scanned pages and nothing else.
+ *
+ * Footnote removal is deliberately NOT one of them: it runs as a foundry stage
+ * on a PDF run and over the book EPUB otherwise, so switching the run to an EPUB
+ * keeps it (mirroring `SCAN_ONLY_KINDS` in electron/processing-chain.ts).
+ */
+const SCAN_ONLY_PASS_KINDS: ReadonlySet<ProcessingPassKind> = new Set<ProcessingPassKind>([
+  'tesseract', 'ocr-correction',
 ]);
 
 /** A queue submission as the wizard builds it, before the queue stamps its ids. */
@@ -273,6 +282,29 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                         <span class="palette-name">{{ opt.label }}</span>
                         <span class="palette-desc">{{ opt.enabled ? opt.desc : opt.why }}</span>
                       </button>
+
+                      @if (palettePanel() === opt.kind && opt.kind === 'footnotes') {
+                        <div class="palette-panel">
+                          <label class="field-label">
+                            <input type="checkbox" [checked]="passFootnotesAskEverything()"
+                                   (change)="passFootnotesAskEverything.set($any($event.target).checked)" />
+                            Also check note bodies and index entries
+                          </label>
+                          <span class="hint">
+                            Normally skipped to protect them: a note's own number and an index entry's
+                            page numbers look exactly like reference markers, and removing them
+                            destroys the numbering. Turn this on only for a book whose markers are
+                            being missed.
+                          </span>
+                          <button
+                            type="button"
+                            class="palette-add-btn"
+                            (click)="addFootnotesPass()"
+                          >
+                            Add footnote-removal pass
+                          </button>
+                        </div>
+                      }
 
                       @if (palettePanel() === opt.kind && opt.kind === 'simplify') {
                         <div class="palette-panel">
@@ -3472,6 +3504,16 @@ export class LLWizardComponent implements OnInit {
   /** The languages the NEXT translate pass will carry (the palette's draft). */
   readonly passTranslateSource = signal<string>('en');
   readonly passTranslateTarget = signal<string>('en');
+  /**
+   * The NEXT footnote pass's one option (the palette's draft), OFF by default.
+   *
+   * foundry skips note bodies and index entries because in the measured books
+   * those units are pure false-fire risk — a note's leading number is its own
+   * label, an index entry's trailing numbers are page references, and neither is
+   * a marker anyone reads aloud. Turning the skips off is a judgement about a
+   * particular book, so it is a per-pass choice and never the default.
+   */
+  readonly passFootnotesAskEverything = signal(false);
   /** The project's book EPUB (manifest `outputs.epub`) when it is on disk. */
   readonly bookEpubPath = signal<string | null>(null);
   /** Which EPUB the standard TTS job reads. See ttsInputPath. */
@@ -3506,9 +3548,14 @@ export class LLWizardComponent implements OnInit {
         enabled: pdf, why: noPdf,
       },
       {
+        // The one pass with two readings of a book. On a PDF it is a stage of the
+        // scan chain; on an EPUB it edits the publisher's own markup, where the
+        // markers are <sup> links a narrator reads out as numbers.
         kind: 'footnotes', label: PASS_LABELS['footnotes'],
-        desc: 'Remove the reference markers OCR welds into the prose.',
-        enabled: pdf, why: noPdf,
+        desc: pdf
+          ? 'Remove the reference markers OCR welds into the prose.'
+          : 'Remove the reference markers from the book: the small numbers a narrator reads aloud.',
+        enabled: true, why: '',
       },
       {
         kind: 'simplify', label: PASS_LABELS['simplify'],
@@ -5535,16 +5582,24 @@ export class LLWizardComponent implements OnInit {
   /**
    * Point the run at a different file.
    *
-   * Switching away from a PDF DROPS the foundry passes rather than carrying them:
+   * Switching away from a PDF DROPS the scan passes rather than carrying them:
    * they read a PDF's run directory, and the planner would otherwise be handed an
    * EPUB as the document to scan — which it would accept, because it has no way to
    * know the caller meant something else.
+   *
+   * Switching TO a PDF keeps footnote removal — it is a stage of the scan chain
+   * there — but drops its options, which belong to the EPUB reading of a book.
+   * The planner refuses a run that still carries them; clearing them here means
+   * the user never has to be told.
    */
   selectVariant(card: PassVariantCard): void {
     if (card.disabledReason) return;
     this.selectedVariantId.set(card.id);
     if (card.format.toLowerCase() !== 'pdf') {
-      this.passes.update(list => list.filter(p => !FOUNDRY_PASS_KINDS.has(p.kind)));
+      this.passes.update(list => list.filter(p => !SCAN_ONLY_PASS_KINDS.has(p.kind)));
+    } else {
+      this.passes.update(list => list.map(
+        p => (p.kind === 'footnotes' && p.footnotes ? { uid: p.uid, kind: p.kind } : p)));
     }
     this.palettePanel.set(null);
   }
@@ -5554,7 +5609,25 @@ export class LLWizardComponent implements OnInit {
       this.palettePanel.set(this.palettePanel() === kind ? null : kind);
       return;
     }
+    // Footnote removal has one option, and it exists only when the pass reads the
+    // book EPUB. On a PDF the pass is a scan-chain stage with nothing to set, so
+    // it is added on the click like Tesseract is.
+    if (kind === 'footnotes' && !this.selectedIsPdf()) {
+      this.palettePanel.set(this.palettePanel() === kind ? null : kind);
+      return;
+    }
     this.addPass({ uid: this.nextPassUid(), kind });
+  }
+
+  addFootnotesPass(): void {
+    const askEverything = this.passFootnotesAskEverything();
+    this.addPass({
+      uid: this.nextPassUid(),
+      kind: 'footnotes',
+      ...(askEverything ? { footnotes: { askEverything: true } } : {}),
+    });
+    this.palettePanel.set(null);
+    this.passFootnotesAskEverything.set(false);
   }
 
   addSimplifyPass(mode: 'dejargon' | 'destiffen' | 'learner'): void {
@@ -5617,6 +5690,12 @@ export class LLWizardComponent implements OnInit {
   }
 
   passDetail(pass: BuilderPass): string {
+    if (pass.kind === 'footnotes') {
+      if (this.selectedIsPdf()) return 'On the scanned pages';
+      return pass.footnotes?.askEverything
+        ? 'Note bodies and index entries too'
+        : 'Note bodies and index entries left alone';
+    }
     if (pass.simplify) {
       const mode = this.simplifyModeOptions.find(m => m.value === pass.simplify!.mode);
       return `${mode?.label ?? pass.simplify.mode} · ${pass.simplify.aiModel || 'no model'}`;
@@ -5723,6 +5802,7 @@ export class LLWizardComponent implements OnInit {
     });
     const passes: ChainPassRequest[] = list.map(p => ({
       kind: p.kind,
+      ...(p.footnotes ? { footnotes: p.footnotes } : {}),
       ...(p.simplify ? { simplify: withCredentials(p.simplify) } : {}),
       ...(p.translate ? { translate: withCredentials(p.translate) } : {}),
     }));
