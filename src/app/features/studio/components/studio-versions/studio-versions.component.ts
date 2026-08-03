@@ -11,6 +11,7 @@ import { StudioItem } from '../../models/studio.types';
 import { AppliedPass, AppliedPassKind, ProjectVariant, ResolvedProjectVariant } from '../../../../core/models/manifest.types';
 import { DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-target';
+import type { PassDiffEntry } from '@shared/processing/pass-types';
 
 interface VersionRow {
   id: string; type: string; label: string; description: string;
@@ -34,6 +35,54 @@ interface SentenceCacheInfo {
   complete: boolean;
 }
 
+/** One recorded pass diff, as a row in the "What's been done" list. */
+interface PassDiffRow {
+  kind: AppliedPassKind;
+  label: string;
+  icon: string;
+  /** The stage number the diff lives under, e.g. "01". */
+  stage: string;
+  description: string;
+  when: string;
+  diffPath: string;
+  reportPath: string;
+  relPath: string;
+}
+
+/** `foundry footnotes --epub`'s own review report, written beside its diff. */
+interface FootnotesReport {
+  model?: string;
+  askEverything?: boolean;
+  totals?: {
+    documents: number;
+    documentsEdited: number;
+    unitsAsked: number;
+    unitsFired: number;
+    unitsNoteBody: number;
+    unitsIndex: number;
+    deletionsApplied: number;
+    deletionsRejected: number;
+  };
+}
+
+/** Pass display names. Shared by the badges and the diff rows so one pass is
+ *  never called two things in the same panel. */
+const PASS_LABELS: Record<AppliedPassKind, string> = {
+  tesseract: 'Tesseract',
+  'ocr-correction': 'OCR correction',
+  footnotes: 'Footnote removal',
+  simplify: 'Simplify',
+  translate: 'Translate',
+};
+
+const PASS_ICONS: Record<AppliedPassKind, string> = {
+  tesseract: '\u{1F50D}',
+  'ocr-correction': '\u{1F524}',
+  footnotes: '\u{1F5D1}\u{FE0F}',
+  simplify: '\u{2702}\u{FE0F}',
+  translate: '\u{1F310}',
+};
+
 const AUDIO_EXTS = new Set([
   'm4b', 'm4a', 'mp3', 'wav', 'flac', 'ogg', 'oga', 'aac', 'opus', 'wma', 'aiff', 'aif',
 ]);
@@ -55,7 +104,19 @@ const AUDIO_EXTS = new Set([
   imports: [CommonModule, FormsModule, DiffViewComponent, MetadataEditorComponent, DesktopSelectComponent],
   host: { '[class.comparing]': '!!comparing()' },
   template: `
-    @if (comparing(); as cmp) {
+    @if (comparePass(); as cmp) {
+      <div class="compare-wrap">
+        <div class="compare-bar">
+          <button class="back" (click)="closeCompare()">← Back to versions</button>
+          <span class="compare-title">{{ cmp.title }}</span>
+          <span class="compare-when">{{ cmp.when }}</span>
+        </div>
+        @if (passReport(); as rep) {
+          <div class="pass-report" [title]="rep.detail">{{ rep.summary }}</div>
+        }
+        <app-diff-view [passDiffPath]="cmp.diffPath" />
+      </div>
+    } @else if (comparePaths(); as cmp) {
       <div class="compare-wrap">
         <div class="compare-bar">
           <button class="back" (click)="closeCompare()">← Back to versions</button>
@@ -79,6 +140,26 @@ const AUDIO_EXTS = new Set([
               </span>
             }
           </div>
+        }
+
+        <!-- One row per pass that left a diff, in the order they ran. The badges
+             above collapse repeats by kind; these do not — each run left its own
+             record of what it changed, and each is openable. -->
+        @for (p of passDiffRows(); track p.relPath) {
+          <div class="row pass-row">
+            <span class="ricon">{{ p.icon }}</span>
+            <div class="rinfo">
+              <div class="rlabel"><span class="pstage">{{ p.stage }}</span> {{ p.label }}</div>
+              <div class="rdesc">{{ p.description }}</div>
+            </div>
+            <div class="ractions">
+              <button class="act" (click)="startPassCompare(p)"
+                      title="See exactly what this pass changed in the book">Review changes</button>
+            </div>
+          </div>
+        }
+        @if (passDiffError(); as e) {
+          <div class="pass-err">{{ e }}</div>
         }
 
         <!-- Book versions (variants) -->
@@ -480,6 +561,21 @@ const AUDIO_EXTS = new Set([
     }
     .pbadge .pcount { font-size: 0.62rem; color: var(--text-secondary); font-weight: 700; }
 
+    .row.pass-row { margin-top: 8px; }
+    .pstage {
+      font-family: var(--font-mono, ui-monospace, monospace);
+      font-size: 0.72rem; font-weight: 700; color: var(--text-secondary); margin-right: 6px;
+    }
+    .pass-err { margin: 6px 4px; font-size: 0.78rem; color: #ef4444; }
+    /* Footnote removal's own review report, above the diff it belongs to. */
+    .pass-report {
+      margin: 0 4px 10px; padding: 8px 12px; border-radius: 8px;
+      border: 1px solid var(--border-default, rgba(255,255,255,0.1));
+      background: var(--bg-elevated); color: var(--text-secondary);
+      font-size: 0.76rem; line-height: 1.45;
+    }
+    .compare-when { font-size: 0.76rem; color: var(--text-secondary); margin-left: auto; }
+
     .section-head .add-version {
       margin-left: auto; text-transform: none; letter-spacing: 0;
       font-size: 0.78rem; font-weight: 600;
@@ -681,7 +777,29 @@ export class StudioVersionsComponent {
   // The TTS voice that rendered this project's audio (from the durable session's
   // provenance), used as the narrator for TTS audiobooks that have no explicit one.
   readonly ttsVoice = signal<string | null>(null);
-  readonly comparing = signal<{ a: string; b: string; labelA: string; labelB: string } | null>(null);
+  /**
+   * What the tab is showing instead of the version list.
+   *
+   * Two shapes, because there are two genuinely different comparisons. `paths`
+   * compares two FILES that both exist (the original against a derived EPUB).
+   * `pass` opens ONE pass's recorded diff: the pass rewrote the book in place, so
+   * neither side of it exists as a file any more and the diff carries both texts.
+   * Read through comparePaths()/comparePass() so each branch of the template gets
+   * the narrowed shape rather than the union.
+   */
+  readonly comparing = signal<
+    | { mode: 'paths'; a: string; b: string; labelA: string; labelB: string }
+    | { mode: 'pass'; diffPath: string; reportPath: string; title: string; when: string }
+    | null
+  >(null);
+  readonly comparePaths = computed(() => {
+    const c = this.comparing();
+    return c && c.mode === 'paths' ? c : null;
+  });
+  readonly comparePass = computed(() => {
+    const c = this.comparing();
+    return c && c.mode === 'pass' ? c : null;
+  });
 
   // Book variants (editions/languages/formats). Rows arrive with their file path
   // ALREADY RESOLVED by main — this component never joins a project directory onto
@@ -757,13 +875,9 @@ export class StudioVersionsComponent {
   readonly provenanceBadges = computed(() => {
     const passes = this.item()?.appliedPasses ?? [];
     const order: AppliedPassKind[] = ['tesseract', 'ocr-correction', 'footnotes', 'simplify', 'translate'];
-    const labels: Record<AppliedPassKind, string> = {
-      tesseract: 'Tesseract',
-      'ocr-correction': 'OCR-corrected',
-      footnotes: 'Footnotes removed',
-      simplify: 'Simplified',
-      translate: 'Translated',
-    };
+    // The same names the pass-diff rows below use — one pass must not be called
+    // two different things in the same panel.
+    const labels = PASS_LABELS;
 
     return order.flatMap((kind) => {
       const of = passes.filter(p => p.kind === kind);
@@ -806,6 +920,92 @@ export class StudioVersionsComponent {
         return '';
       default:
         return '';
+    }
+  }
+
+  // ── Pass diffs (Review Changes for the processing passes) ──────────────────
+
+  /** The passes of this book that left a diff, newest last. From the manifest. */
+  readonly passDiffs = signal<PassDiffEntry[]>([]);
+  readonly passDiffError = signal<string | null>(null);
+  /** Footnote removal's own review report, when the open pass diff has one. */
+  readonly passReport = signal<{ summary: string; detail: string } | null>(null);
+
+  /**
+   * One row per recorded pass diff, in the order the passes ran.
+   *
+   * Deliberately NOT collapsed by kind the way the badges above are: two
+   * footnote passes changed two different books (the second read what the first
+   * wrote), so one of them cannot stand in for the other. The stage number is
+   * shown because it is the pass's real identity on disk — `stages/02-simplify/`
+   * — and because it is what makes two rows of the same kind tellable apart.
+   */
+  readonly passDiffRows = computed<PassDiffRow[]>(() =>
+    this.passDiffs().map((p) => {
+      const label = PASS_LABELS[p.kind] ?? p.kind;
+      const at = new Date(p.at);
+      const when = isNaN(+at) ? 'date unknown' : at.toLocaleString();
+      const detail = this.passParamSummary({ kind: p.kind, at: p.at, params: p.params } as AppliedPass);
+      const stageMatch = /(?:^|\/)stages\/(\d+)-/.exec(p.relPath);
+      return {
+        kind: p.kind,
+        label,
+        icon: PASS_ICONS[p.kind] ?? '\u{1F4C4}',
+        stage: stageMatch ? stageMatch[1] : '--',
+        description: [when, detail].filter(Boolean).join(' · '),
+        when,
+        diffPath: p.absPath,
+        // Footnote removal writes foundry's own review report beside its diff.
+        // Other passes have none, and a missing file simply shows no header.
+        reportPath: p.absPath.replace(/diff\.json$/, 'report.json'),
+        relPath: p.relPath,
+      };
+    })
+  );
+
+  /** Open one pass's recorded diff in the Review Changes viewer. */
+  startPassCompare(row: PassDiffRow): void {
+    this.passReport.set(null);
+    this.comparing.set({
+      mode: 'pass',
+      diffPath: row.diffPath,
+      reportPath: row.reportPath,
+      title: `${row.label} — what changed`,
+      when: row.when,
+    });
+    this.compareActive.emit(true);
+    if (row.kind === 'footnotes') void this.loadPassReport(row.reportPath);
+  }
+
+  /**
+   * The footnotes pass's `report.json`, summarised for the header above its diff.
+   *
+   * Optional by nature: only footnote removal writes one, and only in EPUB mode.
+   * A file that is not there means "no report", which is why this reads it
+   * directly and shows nothing when it comes back empty — the diff below is the
+   * real content, and a missing sidecar must not stand between the user and it.
+   * A file that IS there but is not readable JSON is a broken artifact, and says so.
+   */
+  private async loadPassReport(reportPath: string): Promise<void> {
+    const text = await this.electron.readTextFile(reportPath);
+    if (!text) return;
+    try {
+      const rep = JSON.parse(text) as FootnotesReport;
+      const t = rep.totals;
+      if (!t) return;
+      const summary = `${t.deletionsApplied} footnote marker${t.deletionsApplied === 1 ? '' : 's'} removed`
+        + ` across ${t.documentsEdited} of ${t.documents} document${t.documents === 1 ? '' : 's'}`
+        + (t.deletionsRejected ? ` · ${t.deletionsRejected} proposal(s) rejected` : '')
+        + (rep.model ? ` · ${rep.model}` : '');
+      const detail = `${t.unitsAsked} text unit(s) asked, ${t.unitsFired} changed`
+        + `; ${t.unitsNoteBody} note bodies and ${t.unitsIndex} index entries skipped`
+        + `${rep.askEverything ? ' (ask-everything was on)' : ''}`;
+      this.passReport.set({ summary, detail });
+    } catch (err) {
+      this.passReport.set({
+        summary: `The footnote report beside this diff could not be read: ${(err as Error).message}`,
+        detail: reportPath,
+      });
     }
   }
 
@@ -1354,6 +1554,8 @@ export class StudioVersionsComponent {
       this.descriptorDraft.set({});
       this.pendingCover.set({});
       this.editorMetaCache.set({});
+      this.passDiffs.set([]);
+      this.passDiffError.set(null);
       this.loadedForProjectDir.set(dir);
     }
 
@@ -1383,7 +1585,31 @@ export class StudioVersionsComponent {
     if (superseded()) return;
     await this.loadCache(dir, superseded);
     if (superseded()) return;
+    await this.loadPassDiffs(dir, superseded);
+    if (superseded()) return;
     await this.loadVariants();
+  }
+
+  /**
+   * Which passes over this book left a diff, from the manifest's own provenance.
+   *
+   * The list is the index — a pass whose job died halfway never recorded itself,
+   * so it is not offered next to one that finished. A failure to READ the list is
+   * reported: "no passes recorded" and "the record could not be read" are
+   * different facts and the user is told which one they have.
+   */
+  private async loadPassDiffs(dir: string, superseded: () => boolean): Promise<void> {
+    const res = await this.electron.listPassDiffs(dir);
+    if (superseded()) return;
+    if (!res.success || !res.diffs) {
+      this.passDiffs.set([]);
+      this.passDiffError.set(
+        `The record of what's been done to this book could not be read: ${res.error || 'no reason given'}`
+      );
+      return;
+    }
+    this.passDiffError.set(null);
+    this.passDiffs.set(res.diffs);
   }
 
   /** Read the durable TTS sentence cache for this project (if any) so the
@@ -1434,12 +1660,13 @@ export class StudioVersionsComponent {
   startCompare(v: VersionRow): void {
     const original = v.diffOriginalPath || this.sourceEpubPath();
     if (!original) return;
-    this.comparing.set({ a: original, b: v.path, labelA: 'Original', labelB: v.label });
+    this.comparing.set({ mode: 'paths', a: original, b: v.path, labelA: 'Original', labelB: v.label });
     this.compareActive.emit(true);
   }
 
   closeCompare(): void {
     this.comparing.set(null);
+    this.passReport.set(null);
     this.compareActive.emit(false);
   }
 

@@ -223,7 +223,16 @@ interface EditState {
 
         <!-- Footer -->
         <div class="diff-footer">
-          <span class="hint">Hover over highlighted text to see original. Double-click to edit.</span>
+          @if (isPassDiff()) {
+            <span class="hint">Hover over highlighted text to see what it was before this pass.
+              This is a record of a finished pass, so it can't be edited here.</span>
+          } @else {
+            <span class="hint">Hover over highlighted text to see original. Double-click to edit.</span>
+          }
+        </div>
+      } @else if (isPassDiff()) {
+        <div class="state-message">
+          <p>This pass ran and changed nothing in the book.</p>
         </div>
       } @else {
         <div class="state-message">
@@ -724,6 +733,18 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
   // Inputs
   readonly originalPath = input<string>('');
   readonly cleanedPath = input<string>('');
+  /**
+   * A PASS diff, opened by its own path (`stages/NN-<kind>/diff.json`).
+   *
+   * Set INSTEAD of the path pair. A pass rewrote the book in place, so there is
+   * no before-file and no after-file to compare — the diff carries both texts
+   * itself. Everything downstream of loading is the same view: same chapter
+   * list, same word diff, same tooltips.
+   */
+  readonly passDiffPath = input<string>('');
+
+  /** A pass diff is a record of something that already happened — read-only. */
+  readonly isPassDiff = computed(() => !!this.passDiffPath());
 
   // Source picker: when multiple processed EPUBs exist in the same directory
   readonly availableSources = signal<DiffSource[]>([]);
@@ -771,6 +792,7 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
 
   // Track previous paths to detect changes
   private previousPaths = { original: '', cleaned: '' };
+  private previousPassDiffPath = '';
 
   // Tooltip debounce
   private tooltipTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -780,8 +802,20 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
   private isDestroyed = false;
 
   constructor() {
+    // A pass diff is opened by its own path. There is nothing to "discover"
+    // beside it — the file is the whole comparison — so this path never reaches
+    // discoverAndLoad, whose whole job is finding the sibling EPUB to compare.
+    effect(() => {
+      const passDiff = this.passDiffPath();
+      if (!passDiff || passDiff === this.previousPassDiffPath) return;
+      this.previousPassDiffPath = passDiff;
+      this.availableSources.set([]);
+      setTimeout(() => void this.diffService.loadPassDiff(passDiff), 0);
+    });
+
     // Effect to watch for input path changes and discover available sources
     effect(() => {
+      if (this.passDiffPath()) return;
       const original = this.originalPath();
       const cleaned = this.cleanedPath();
 
@@ -948,9 +982,15 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
 
     // Fallback: also try loading after a short delay in case effect doesn't fire
     setTimeout(() => {
+      if (this.chaptersMeta().length > 0 || this.loading()) return;
+      const passDiff = this.passDiffPath();
+      if (passDiff) {
+        void this.diffService.loadPassDiff(passDiff);
+        return;
+      }
       const original = this.originalPath();
       const cleaned = this.cleanedPath();
-      if (original && cleaned && this.chaptersMeta().length === 0 && !this.loading()) {
+      if (original && cleaned) {
         this.discoverAndLoad(original, cleaned);
       }
     }, 100);
@@ -1063,6 +1103,14 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   private async loadComparison(): Promise<void> {
+    // Retry / refresh / a settings change all land here. In pass mode the
+    // comparison IS the file, so reload it rather than the (absent) path pair.
+    const passDiff = this.passDiffPath();
+    if (passDiff) {
+      await this.diffService.loadPassDiff(passDiff);
+      return;
+    }
+
     const original = this.originalPath();
     const cleaned = this.activeCleanedPath() || this.cleanedPath();
 
@@ -1255,6 +1303,9 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
   // ─────────────────────────────────────────────────────────────────────────────
 
   onContentDblClick(event: MouseEvent): void {
+    // A pass diff describes text the book has since moved on from — there is
+    // nothing an edit here could be written back to.
+    if (this.isPassDiff()) return;
     const target = event.target as HTMLElement;
     const segmentId = target.getAttribute('data-segment-id');
     if (!segmentId) return;

@@ -514,6 +514,95 @@ async function writeFootnoteDiff(bookKey: string, diffAbsPath: string): Promise<
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// The editor's export takes the same route
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The foundry passes a run has FINISHED, in execution order.
+ *
+ * Read from the run directory rather than from a plan, because the editor's
+ * export has no plan: the user ran OCR correction on Tuesday, footnote removal
+ * on Wednesday, and pressed Export on Thursday. The book that comes out is
+ * everything the run directory holds, so everything the run directory holds is
+ * what the export must record.
+ *
+ * `ocr-correction` needs BOTH its stages: it is one pass with two halves (repair
+ * the lines, then lay them out), and a run with only one of them has not had it.
+ */
+function completedFoundryPasses(bookKey: string): Array<'tesseract' | 'ocr-correction' | 'footnotes'> {
+  const done = foundryStagesDone(bookKey);
+  const passes: Array<'tesseract' | 'ocr-correction' | 'footnotes'> = [];
+  if (done.has('scan')) passes.push('tesseract');
+  if (done.has('ocr') && done.has('blocks')) passes.push('ocr-correction');
+  if (done.has('footnotes')) passes.push('footnotes');
+  return passes;
+}
+
+/**
+ * Give the EDITOR's export the same artifacts the queue's export leaves behind.
+ *
+ * The editor exports through `foundry:export` — the picker's Finalize button —
+ * which for a long time wrote the book and recorded `outputs.epub` and nothing
+ * else. So a book OCR-corrected and de-footnoted from the editor arrived in
+ * Studio with no "What's been done" badges and no Review Changes, while the
+ * identical run submitted from the wizard arrived with both. Same passes, same
+ * run directory, two different books as far as the app was concerned.
+ *
+ * ── Two phases, and why ──────────────────────────────────────────────────────
+ *
+ * `plan()` writes the DIFFS. They come out of the run directory, so they can be
+ * written before the book exists — and they MUST be, because a diff that cannot
+ * be written has to stop the export rather than produce a book whose changes are
+ * unreviewable. That is the failure this whole path exists to prevent.
+ *
+ * `commit()` writes the PROVENANCE, and cannot run earlier: `appendAppliedPass`
+ * refuses a project with no `outputs.epub`, correctly — a pass record describes
+ * a specific file, and until the export lands there is no file to describe. The
+ * export also RESETS provenance (a rebuilt book has had nothing else done to it),
+ * so these records are appended after it and number from 01.
+ *
+ * The diffs and the records are written by exactly the same functions the queue
+ * path uses; only the source of the pass LIST differs, because only the source
+ * of the pass list can differ.
+ */
+export async function prepareFoundryExportRecord(
+  projectDir: string,
+  bookKey: string
+): Promise<{ commit: () => Promise<void> }> {
+  const kinds = completedFoundryPasses(bookKey);
+  const planned = kinds.map((kind, i) => {
+    const stageRelDir = manifestService.passStageRelDir(i + 1, kind);
+    return {
+      kind,
+      stageRelDir,
+      diffRel: `${stageRelDir}/diff.json`,
+      diffAbs: path.join(projectDir, stageRelDir.split('/').join(path.sep), 'diff.json'),
+    };
+  });
+
+  for (const pass of planned) {
+    // Tesseract has nothing to diff against — it IS the first reading of the page.
+    if (pass.kind === 'ocr-correction') await writeOcrCorrectionDiff(bookKey, pass.diffAbs);
+    if (pass.kind === 'footnotes') await writeFootnoteDiff(bookKey, pass.diffAbs);
+  }
+
+  return {
+    commit: async () => {
+      const at = new Date().toISOString();
+      for (const pass of planned) {
+        const params = foundryPassParams(pass.kind, bookKey);
+        await manifestService.appendAppliedPass(projectDir, {
+          kind: pass.kind,
+          at,
+          ...(params ? { params } : {}),
+          ...(pass.kind === 'tesseract' ? {} : { diff: pass.diffRel }),
+        });
+      }
+    },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // EPUB passes
 // ─────────────────────────────────────────────────────────────────────────────
 
