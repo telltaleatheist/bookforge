@@ -13,7 +13,8 @@ provenance — which passes have run against it — and each pass (except
 translate) saves a diff so Review Changes can show exactly what it did.
 
 "AI cleanup" as a standalone concept is gone: the trained models (galley for
-OCR correction, dagger for footnotes, rubric for block labelling) replaced it.
+OCR correction, foundry-footnotes for footnotes, rubric for block labelling)
+replaced it.
 Simplification (de-jargon / de-stiffen / language-learning) and translation
 remain as passes.
 
@@ -71,6 +72,17 @@ are what `--ask-everything` turns off; it is the pass's one option, a checkbox i
 the palette, default OFF, and the planner REFUSES it on a PDF run rather than
 accepting an option it cannot honour. The navigation skip is structural and stays
 either way.
+
+**The weights are foundry's to resolve.** Both modes spawn the stage with
+`--llama-server <ours>` and NOTHING else: no `--base-model`, so foundry resolves
+`foundry-footnotes-v1-4b` on `foundry:4b` from its own published catalog and
+serves the adapter with `--lora-scaled` — how it was trained and how it was
+measured. The old dagger-0.6b override is gone from
+`electron/foundry-interim-config.ts` (blocks/rubric and ocr/galley stay there,
+genuinely unpublished), and so is the app-side pre-check for it: BookForge does
+not own that catalog, and foundry's own refusal names the model, the path and
+`foundry models pull`. Provenance therefore records what ANSWERED — `run.json`'s
+`models.footnotes` in run mode, the report's `model` line in EPUB mode.
 
 Its artifacts: `stages/NN-footnotes/diff.json` as usual, plus
 `stages/NN-footnotes/report.json` — foundry's own review report, kept verbatim:

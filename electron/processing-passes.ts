@@ -66,7 +66,7 @@ import {
   attachFoundryRun,
   awaitFoundryRun,
   foundryExport,
-  foundryModelArgs,
+  foundryLlamaServerArgs,
   foundryStagesDone,
   parseProgress,
   startFoundryRun,
@@ -323,7 +323,7 @@ async function runFoundryPass(
     // exported book has had nothing else done to it — so these are appended after.
     const at = new Date().toISOString();
     for (const pass of config.exportPasses ?? [{ kind }]) {
-      const params = pass.params ?? foundryPassParams(pass.kind);
+      const params = pass.params ?? foundryPassParams(pass.kind, bookKey);
       await manifestService.appendAppliedPass(config.projectDir, {
         kind: pass.kind,
         at,
@@ -345,8 +345,13 @@ async function runFoundryPass(
  * the answer changes when the model does, and a book cleaned by galley-v11 is a
  * different artifact from one cleaned by its successor. Read from the resolver
  * rather than remembered, so it cannot drift from what actually ran.
+ *
+ * The footnotes stage is asked a different way, because BookForge no longer
+ * chooses its weights: foundry resolves them from its catalog and RECORDS what
+ * it resolved in `run.json`. That record is the honest answer — this app cannot
+ * name the model without guessing at a catalog it does not own.
  */
-function foundryPassParams(kind: AppliedPassKind): Record<string, unknown> | undefined {
+function foundryPassParams(kind: AppliedPassKind, bookKey: string): Record<string, unknown> | undefined {
   if (kind === 'ocr-correction') {
     return {
       ocrModel: path.basename(requireFoundryModel('ocr')),
@@ -354,7 +359,16 @@ function foundryPassParams(kind: AppliedPassKind): Record<string, unknown> | und
     };
   }
   if (kind === 'footnotes') {
-    return { model: path.basename(requireFoundryModel('footnotes')) };
+    const state = attachFoundryRun(bookKey);
+    const models = state ? readRunDirectory(state.runDir).run.models : undefined;
+    if (!models?.footnotes) {
+      console.warn(
+        `[processing-passes] the run for ${bookKey} finished its footnotes stage without recording `
+        + 'which model answered (run.json models.footnotes), so the pass record cannot name one.'
+      );
+      return undefined;
+    }
+    return { model: models.footnotes, ...(models.base ? { base: models.base } : {}) };
   }
   // Tesseract has no model and no options: it is the segmenter, pinned at 200 dpi.
   return undefined;
@@ -517,7 +531,6 @@ async function runEpubFootnotesPass(
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
 
   const askEverything = config.footnotes?.askEverything === true;
-  const model = requireFoundryModel('footnotes');
   const run = crypto.randomUUID();
   const stagedEpub = path.join(STAGING_DIR, `footnotes-${run}.epub`);
   const stagedReport = path.join(STAGING_DIR, `footnotes-${run}.report.json`);
@@ -527,7 +540,11 @@ async function runEpubFootnotesPass(
     '--epub', bookPath,
     '-o', stagedEpub,
     '--report', stagedReport,
-    ...foundryModelArgs('footnotes'),
+    // No --base-model: foundry resolves `foundry-footnotes-v1-4b` on `foundry:4b`
+    // from its own catalog and serves the adapter with --lora-scaled, which is
+    // how it was trained and how it was measured. What answered comes back in
+    // the report, so the provenance record is foundry's own word for it.
+    ...foundryLlamaServerArgs(),
     // The two content skips (note bodies, index entries) are foundry's default.
     // The flag is only ever passed when the user asked for it.
     ...(askEverything ? ['--ask-everything'] : []),
@@ -594,7 +611,10 @@ async function runEpubFootnotesPass(
     kind: 'footnotes',
     at: new Date().toISOString(),
     params: {
-      model: path.basename(model),
+      // foundry's own description of what answered — "adapter
+      // foundry-footnotes-v1-4b on base foundry:4b" — rather than a path this
+      // app chose, because it no longer chooses one.
+      model: report.model,
       markersRemoved: report.totals.deletionsApplied,
       ...(askEverything ? { askEverything: true } : {}),
     },

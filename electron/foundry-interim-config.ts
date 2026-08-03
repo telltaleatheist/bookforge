@@ -1,19 +1,33 @@
 /**
- * foundry-interim-config — the ONE place that knows where foundry's weights and
- * (in development) its binary live on this machine.
+ * foundry-interim-config — the ONE place that knows where the weights foundry
+ * CANNOT yet resolve for itself live on this machine, and (in development) where
+ * its binary is.
  *
- * ── WHY THIS FILE EXISTS AND WHEN IT DIES ────────────────────────────────────
+ * ── WHY THIS FILE EXISTS AND HOW MUCH OF IT IS LEFT ──────────────────────────
  *
  * foundry resolves its own models from a catalog (`src/models/catalog.ts`) keyed
- * to published HuggingFace URLs. **That catalog is empty**: none of the three
- * fine-tunes has been published yet. foundry says so honestly — every model
- * stage stops at resolution with "the weights are not published" — and offers
- * `--base-model <file.gguf>` as an explicit OVERRIDE for someone holding local
- * weights.
+ * to published HuggingFace URLs, downloading them with `foundry models pull`.
+ * The catalog USED to be empty, and this file was the override for all three
+ * stages. It is no longer empty (published Aug 2 2026,
+ * huggingface.co/owenmorgan/foundry-models): `foundry:4b` and the
+ * `foundry-footnotes-v1-4b` adapter are live and verified.
  *
- * BookForge is that someone. This file is the override, gathered into one
- * module so that the day the weights publish, deleting it is a single deletion
- * rather than a hunt through three call sites for three hard-coded paths.
+ * So the footnotes stage is GONE from this file. BookForge passes it no
+ * `--base-model`, foundry resolves base + adapter from its own catalog, and the
+ * adapter is served the way it was trained and measured — `--lora-scaled` on the
+ * resident base, which an explicit merged `--base-model` could never express.
+ * A local footnotes GGUF is foundry's business now (`--base-model`/`--adapter`
+ * on its command line), not this app's.
+ *
+ * What is left is the two checkpoints that are genuinely NOT published:
+ *
+ *   blocks  the rubric family — shared with BookForge's own Detect path.
+ *   ocr     the galley family — still a training export, and the checkpoint
+ *           choice is not final.
+ *
+ * (foundry's catalog does carry a `foundry-ocr-v1-4b` adapter. Moving the ocr
+ * stage onto it is a measurement plus a download, not a rename, so it stays
+ * overridden until someone does that work.)
  *
  * Everything here is INTERIM and this is the marker. It is Mac-local by
  * construction (the paths are where the training runs put them on the owner's
@@ -26,7 +40,9 @@
  * variable that overrides it. It is never "run the stage without the model" and
  * never "quietly use a different one": a stage answering from the wrong weights
  * produces a book that is subtly worse, which is exactly the failure mode both
- * programs are built to refuse.
+ * programs are built to refuse. The footnotes stage keeps that property from the
+ * other side — foundry stops with "the footnotes model foundry-footnotes-v1-4b
+ * is catalogued but not on disk at <path>. Run `foundry models pull`."
  */
 
 import * as fs from 'fs';
@@ -35,8 +51,14 @@ import * as path from 'path';
 
 import { sharedSubdir } from './shared-paths';
 
-/** The model stages foundry runs. `scan` needs no weights (it is Tesseract). */
-export type FoundryModelStage = 'blocks' | 'ocr' | 'footnotes';
+/**
+ * The stages whose weights this app still has to point foundry at.
+ *
+ * `scan` needs none (it is Tesseract) and `footnotes` resolves from foundry's
+ * catalog — see the header. A stage listed here is a stage whose checkpoint is
+ * unpublished.
+ */
+export type FoundryModelStage = 'blocks' | 'ocr';
 
 interface ModelSlot {
   /** Environment variable that overrides the path outright. */
@@ -63,11 +85,6 @@ const SLOTS: Record<FoundryModelStage, ModelSlot> = {
     defaultPath: () => path.join(os.homedir(), 'rubric-export', 'galley-v11-ep5910-f16.gguf'),
     what: 'the OCR-repair (galley) model',
   },
-  footnotes: {
-    envVar: 'FOUNDRY_MODEL_FOOTNOTES',
-    defaultPath: () => path.join(sharedSubdir('dagger-models'), 'dagger-v1-0.6b-f16.gguf'),
-    what: 'the footnote-marker remover (dagger) model',
-  },
 };
 
 /** The path a stage WOULD use, whether or not it exists. */
@@ -92,8 +109,8 @@ export function requireFoundryModel(stage: FoundryModelStage): string {
       `foundry's ${stage} stage needs ${slot.what}, and it is not on this machine:\n`
       + `  ${file}\n`
       + `Set ${slot.envVar} to the GGUF, or put it at that path. `
-      + `foundry's own model catalog is still empty (the weights are unpublished), `
-      + `so BookForge passes --base-model explicitly — there is nothing to download yet.`
+      + `This checkpoint is not in foundry's model catalog (it is unpublished), so `
+      + `BookForge passes --base-model explicitly — there is nothing to download.`
     );
   }
   return file;

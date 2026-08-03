@@ -313,18 +313,14 @@ export function parseProgress(line: string): { done: number; total: number } | n
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Arguments every model stage carries: our llama-server, and an explicit GGUF.
+ * The one argument EVERY model stage carries: the llama-server this app ships.
  *
- * Exported because a foundry stage is not always a stage of a RUN: `foundry
- * footnotes --epub` is the same binary, the same server and the same weights
- * pointed at a finished book, and it is driven from `processing-passes.ts`. One
- * definition of "how this app asks foundry to load a model", not two.
+ * Exported because a foundry stage is not always a stage of a RUN — `foundry
+ * footnotes --epub` is the same binary and the same server pointed at a finished
+ * book, driven from `processing-passes.ts` — and because it is now the WHOLE
+ * argument list for the footnotes stage, which resolves its own weights.
  */
-export function foundryModelArgs(stage: FoundryModelStage): string[] {
-  return modelArgs(stage);
-}
-
-function modelArgs(stage: FoundryModelStage): string[] {
+export function foundryLlamaServerArgs(): string[] {
   const { resolveLlamaServerBinary } =
     require('./llama-bridge') as typeof import('./llama-bridge');
   const llamaServer = resolveLlamaServerBinary();
@@ -335,10 +331,18 @@ function modelArgs(stage: FoundryModelStage): string[] {
       + '`npm run download:llama` in a dev checkout.'
     );
   }
+  return ['--llama-server', llamaServer];
+}
+
+/**
+ * A stage whose checkpoint is unpublished: our llama-server, plus the GGUF this
+ * machine holds. See foundry-interim-config for which stages those are and why.
+ */
+function modelArgs(stage: FoundryModelStage): string[] {
   // A merged fine-tune: --base-model with NO --adapter. foundry then reads the
   // prompt-format version out of the base filename, which is the same rule it
   // always applies — the version lives in the name of whatever weights answer.
-  return ['--llama-server', llamaServer, '--base-model', requireFoundryModel(stage)];
+  return [...foundryLlamaServerArgs(), '--base-model', requireFoundryModel(stage)];
 }
 
 /** Which foundry stages `run.json` already reports as done. */
@@ -444,10 +448,16 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
   // minutes to deliver a message it could have delivered immediately. Only the
   // stages this run will actually execute are checked: a Tesseract-only pass must
   // not be blocked by a model it never loads.
+  //
+  // `footnotes` is deliberately absent: it resolves from foundry's own catalog,
+  // and re-deriving that catalog's filenames and data directory over here to
+  // pre-check it would be a second copy of foundry's catalog, drifting the day
+  // a model is superseded. foundry's own failure names the model id, the path
+  // and `foundry models pull`, which is the fix — the only thing lost is a few
+  // minutes of rendering on a run that also asked for a scan.
   requireFoundryPath();
   if (wanted.includes('ocr')) requireFoundryModel('ocr');
   if (wanted.includes('blocks')) requireFoundryModel('blocks');
-  if (wanted.includes('footnotes')) requireFoundryModel('footnotes');
 
   const runDir = foundryRunDir(opts.bookKey);
   if (opts.redo) {
@@ -575,8 +585,11 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
 
       // ── footnotes (optional) ──────────────────────────────────────────────
       if (wanted.includes('footnotes') && !alreadyDone.has('footnotes')) {
+        // No --base-model: foundry resolves `foundry-footnotes-v1-4b` on
+        // `foundry:4b` from its catalog and serves the adapter with
+        // --lora-scaled, which is how it was trained and measured.
         await runStage(run, 'footnotes', nextIndex(), stageCount, [
-          'footnotes', '--run', runDir, ...modelArgs('footnotes'),
+          'footnotes', '--run', runDir, ...foundryLlamaServerArgs(),
         ]);
       }
 
