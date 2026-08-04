@@ -175,6 +175,53 @@ export const DESKTOP_VRAM_MARGIN_MB = 3072;
 export const ORPHEUS_MIN_VRAM_MB = 8200;
 
 /**
+ * Which artifact form an Orpheus spawn will serve. Sizing differs — see below.
+ */
+export type OrpheusServeArtifact = 'merged' | 'adapter';
+
+/**
+ * VRAM (MB) an ADAPTER-mode spawn needs OUTSIDE vLLM's own reservation.
+ *
+ * MEASURED (step-1 A/B, 2026-08-03): vLLM 0.7.3 profiles IDENTICAL weights and KV
+ * budgets in merged and adapter mode — it does not account for the resident LoRA
+ * (~0.39 GB per adapter) or the punica kernel workspace at all. Those allocations
+ * therefore come out of whatever slack is left INSIDE the reservation, and the first
+ * thing to run out of slack is SNAC decode: the adapter run took a recoverable
+ * SNAC-decode CUDA OOM (freed cache, retried, output complete) at
+ * GPU_MEM_UTIL = 0.70 with max_loras = 1. A recoverable OOM is a warning, not a
+ * result — on a tighter card, or with max_loras > 1 for per-character casting, that
+ * becomes a routine first-batch failure.
+ *
+ * So an adapter spawn RESERVES 1.0 GiB LESS for vLLM than the equivalent merged
+ * spawn, leaving that GiB physically free for the adapter + punica + SNAC's slack.
+ * 1.0 GiB covers 0.4 GiB × max_loras=1 plus the workspace with real margin; revisit
+ * (0.4 GiB per extra resident adapter) when max_loras rises above 1.
+ *
+ * MERGED SPAWNS ARE COMPLETELY UNAFFECTED: headroom is 0 and every number below
+ * resolves to what it was before.
+ */
+export const ORPHEUS_ADAPTER_HEADROOM_MB = 1024;
+
+/**
+ * vLLM's OWN weights+KV floor in adapter mode. The base (`unsloth/orpheus-3b-0.1-ft`,
+ * ~6.2 GiB) is what vLLM loads — the merged 6.6 GiB figure includes the fine-tune
+ * delta, which in adapter mode lives in the headroom above, not in the reservation.
+ * Same minimum KV allowance as merged (~1.4 GiB).
+ */
+export const ORPHEUS_ADAPTER_MIN_VRAM_MB = 7800;
+
+/** The floor vLLM's own reservation must clear, per artifact form. */
+export function orpheusMinVllmVramMB(artifact: OrpheusServeArtifact = 'merged'): number {
+  return artifact === 'adapter' ? ORPHEUS_ADAPTER_MIN_VRAM_MB : ORPHEUS_MIN_VRAM_MB;
+}
+
+/** Total free VRAM a spawn needs: vLLM's reservation floor PLUS anything that lives
+ *  outside it. Merged ⇒ exactly ORPHEUS_MIN_VRAM_MB, unchanged. */
+export function orpheusMinFreeVramMB(artifact: OrpheusServeArtifact = 'merged'): number {
+  return orpheusMinVllmVramMB(artifact) + (artifact === 'adapter' ? ORPHEUS_ADAPTER_HEADROOM_MB : 0);
+}
+
+/**
  * Size vLLM's `gpu_memory_utilization` (a fraction of TOTAL VRAM it reserves up
  * front and holds) so Orpheus takes a BOUNDED, absolute slice and leaves the rest of
  * the card free for Chrome / the desktop.
@@ -197,6 +244,7 @@ export async function computeSafeGpuUtil(
   capMB: number,
   marginMB: number = DESKTOP_VRAM_MARGIN_MB,
   ceiling = 0.9,
+  artifact: OrpheusServeArtifact = 'merged',
 ): Promise<{ util: number; freeMB: number | null; totalMB: number | null; sufficient: boolean; reserveMB: number | null }> {
   const mem = await getGpuMemMB();
   if (!mem) {
@@ -205,9 +253,12 @@ export async function computeSafeGpuUtil(
   }
 
   const cap = Math.min(Math.max(ceiling, 0.1), 0.95);
-  // The bounded reservation: never more than the tier cap, never past free−margin.
-  const reserveMB = Math.min(capMB, mem.freeMB - marginMB);
-  const sufficient = reserveMB >= ORPHEUS_MIN_VRAM_MB;
+  // The bounded reservation: never more than the tier cap, never past free−margin,
+  // MINUS whatever this artifact form allocates outside vLLM's budget (adapter +
+  // punica workspace — see ORPHEUS_ADAPTER_HEADROOM_MB). Merged subtracts 0.
+  const headroomMB = artifact === 'adapter' ? ORPHEUS_ADAPTER_HEADROOM_MB : 0;
+  const reserveMB = Math.min(capMB, mem.freeMB - marginMB) - headroomMB;
+  const sufficient = reserveMB >= orpheusMinVllmVramMB(artifact);
   // util is a fraction of TOTAL; clamp to [0.05, ceiling]. Never above the reservation
   // (which is ≤ free), so vLLM can't over-commit and spill.
   const util = Math.max(Math.min(reserveMB / mem.totalMB, cap), 0.05);

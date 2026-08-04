@@ -560,6 +560,20 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
       error: `Orpheus voice '${voice}' is not a built-in voice and has no valid model folder under the Orpheus models directory — refusing to silently fall back to the default voice.`,
     };
   }
+  // LoRA-ADAPTER voices are not servable by the resident streaming worker yet: it
+  // sends a single `modelDir` and orpheus_stream.py loads it as the model, so an
+  // adapter folder would either fail deep in vLLM or (worse, if it ever loaded the
+  // base instead) render in the WRONG voice with no error. Refuse loudly until the
+  // streaming per-request-voice work lands and this path learns baseDir+adapterDir.
+  if (model?.artifact === 'adapter') {
+    return {
+      success: false,
+      error:
+        `Orpheus voice '${voice}' is installed as a LoRA adapter, which the live streaming ` +
+        `server can't serve yet (full audiobook rendering supports it). Install the merged ` +
+        `version of this voice, or pick another voice for streaming.`,
+    };
+  }
   const loadToken = model ? model.voice : v;
   const modelDir = model ? translateModelDirForSpawn(model.dir) : undefined;
   // Per-voice tuning caps from the SAME catalog the audiobook worker reads
