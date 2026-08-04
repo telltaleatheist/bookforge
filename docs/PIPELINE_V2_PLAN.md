@@ -91,24 +91,29 @@ stars clear, honestly.
 
 ## Picker modes and rail
 
-Three pointer modes, mapped to where they mean something:
+Two pointer modes (RULED 2026-08-04: Edit mode is deleted outright — see
+Chapter titles below):
 
 | Mode | Lives on | Notes |
 |---|---|---|
 | Select | PDF + EPUB tabs | The one curation mode; the label palette is inside it (right-nav tabs). Rail's separate Label entry deleted. |
-| Edit | EPUB tab only | The working PDF's text is never edited; hand text fixes happen on the book, on screen. |
 | Crop | PDF tabs | Bulk spatial deletion — unchanged mechanics, deletion flags underneath. |
 
+- **Edit mode is gone everywhere.** Hand text editing is unnecessary — the
+  EPUB passes (correction, footnotes, simplify, translate) do the text work.
+  The ONE exception is chapter titles, which are edited in the right-nav
+  **Chapter tab**, not on the canvas: double-click a chapter entry to edit
+  its text; merge adjacent chapter blocks from the same tab (usually already
+  merged by then).
 - **Merge** is a context-menu entry on a multi-selection in Select mode,
   enabled only when the selected blocks are ADJACENT — consecutive in reading
   order on one page — grayed out otherwise (stricter than today, deliberately).
 - **Retired panels**: Headers & footers (its whole job is select-category →
   delete), Paragraphs (paragraph structure is reflow's job now; the panel fed
   the deleted client-side exporter).
-- **Split spreads**: OPEN — only meaningful before the cast (two facing book
-  pages per scan page). If kept, it becomes an interactive option at the
-  OCR/cast step on the archive tab, consumed by cast. Deferred unless the
-  corpus actually contains spread scans.
+- **Split spreads**: RESOLVED 2026-08-04 — Owen's corpus has no spread scans.
+  Split leaves the rail entirely. If a spread book ever shows up, splitting
+  returns as an option at the OCR/Cast step, consumed by cast.
 - **Analysis and Search stay** as-is.
 
 ## What is retired
@@ -150,11 +155,14 @@ Three pointer modes, mapped to where they mean something:
 - **A (small, first): picker fixes.** Deletion rewired to direct document
   writes (+ page deletion), Label rail entry deleted (palette lives in
   Select), Headers & footers and Paragraphs panels retired, merge gated on
-  adjacency, the delete-bug regression test. (Edit mode's move to the EPUB
-  tab waits for Phase B, when that tab exists.)
+  adjacency, the delete-bug regression test. (Edit mode's fate was still
+  open in Phase A; ruled in Phase B — deleted outright.)
 - **B: stations + tabs.** Picker tabs, station actions where they belong,
   Next-button navigation with gate sentences, OCR modal reduced to Cast
   (correction moved out), "run in background" / "open when finished".
+  Also (rulings 2026-08-04): Edit mode deleted outright and Split removed
+  from the rail; chapter-title editing moves into the Chapter tab
+  (double-click to edit, merge adjacent chapter blocks there).
 - **C: versions + retirement.** Grouped versions page with derived stars and
   staleness, per-row Process button, Processing/TTS/Reassembly tabs replaced
   by ladder + global jobs monitor, chain wizard deleted.
