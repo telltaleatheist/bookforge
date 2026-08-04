@@ -771,7 +771,7 @@ interface AlertModal {
                 (selectAll)="selectAllBlocks()"
                 (deselectAll)="clearSelection()"
                 (merge)="mergeSelectedBlocks()"
-                (chapterClick)="selectChapter($event)"
+                (chapterClick)="selectChapterBlocks($event)"
                 (retitle)="retitleChapterBlock($event)"
                 (resetTo)="resetToStage($event)"
               />
@@ -11514,14 +11514,6 @@ export class PdfPickerComponent implements OnInit {
     await this.saveProject();
   }
 
-  selectChapter(chapterId: string): void {
-    this.selectedChapterId.set(chapterId);
-    const chapter = this.chapters().find(c => c.id === chapterId);
-    if (chapter) {
-      this.scrollToPage(chapter.page);
-    }
-  }
-
   clearAllChapters(): void {
     this.chapters.set([]);
     this.chaptersSource.set('manual');
@@ -12254,6 +12246,37 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
+   * A chapter row (or a shift-range of them) was clicked in the Chapter tab.
+   *
+   * It drives the SAME selection a click on the page does — there is one
+   * selection in this window, so the Merge button, the page overlay and the
+   * Label palette are all looking at what the user just picked, and Merge from
+   * the Chapter tab is the Select tab's merge with nothing duplicated.
+   */
+  selectChapterBlocks(event: { blockIds: string[]; additive: boolean }): void {
+    const { blockIds, additive } = event;
+    if (blockIds.length === 0) return;
+
+    if (additive) {
+      const selected = [...this.selectedBlockIds()];
+      for (const id of blockIds) {
+        const at = selected.indexOf(id);
+        if (at >= 0) selected.splice(at, 1); else selected.push(id);
+      }
+      this.setSelectionWithHistory(selected);
+    } else {
+      this.setSelectionWithHistory(blockIds);
+    }
+
+    // Take the page to the row the user landed on. A block the block layer does
+    // not carry cannot be scrolled to, and that is a real state while a detect
+    // is replacing the annotations — so it simply does not scroll.
+    const last = blockIds[blockIds.length - 1];
+    const block = this.blocks().find(b => b.id === last);
+    if (block) this.scrollToPage(block.page);
+  }
+
+  /**
    * Merge the selected blocks into one.
    *
    * The "the system thinks this is two blocks and it isn't" correction, and the
@@ -12261,8 +12284,9 @@ export class PdfPickerComponent implements OnInit {
    * pages — by name rather than producing something that looks merged.
    */
   mergeSelectedBlocks(): void {
+    let survivor: string;
     try {
-      this.documentBlocks.merge(this.selectedBlockIds());
+      survivor = this.documentBlocks.merge(this.selectedBlockIds());
     } catch (err) {
       this.showAlert({
         title: 'Could not merge these blocks',
@@ -12272,9 +12296,9 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
     // The blocks that were selected no longer exist as such — one of them now is
-    // all of them. Which one the service kept is its answer to give, so the
-    // selection is dropped rather than guessed at.
-    this.selectedBlockIds.set([]);
+    // all of them, and the selection collapses onto it. Which one that is, is
+    // the service's answer (the earliest in reading order), not a guess here.
+    this.selectedBlockIds.set([survivor]);
   }
 
   onOcrCompleted(event: OcrCompletionEvent | OcrPageResult[]): void {

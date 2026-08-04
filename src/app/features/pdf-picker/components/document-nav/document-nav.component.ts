@@ -164,10 +164,15 @@ export type DocumentNavTab = 'select' | 'label' | 'chapter';
         @case ('chapter') {
           <p class="tab-hint">
             Every block labelled a chapter opening, in reading order. The text here
-            IS the chapter's title in the book.
+            IS the chapter's title in the book — double-click one to retype it.
+            Ctrl/⌘-click or shift-click to pick several, then Merge.
           </p>
           @for (block of chapterBlocks(); track block.id) {
-            <div class="chapter-row" [class.editing]="editingId() === block.id">
+            <div
+              class="chapter-row"
+              [class.editing]="editingId() === block.id"
+              [class.selected]="isSelected(block.id)"
+            >
               @if (editingId() === block.id) {
                 <input
                   class="chapter-input"
@@ -179,10 +184,17 @@ export type DocumentNavTab = 'select' | 'label' | 'chapter';
                   (blur)="commitTitle(block)"
                 />
               } @else {
+                <!--
+                  A single click selects (the shell's ONE selection, the same one
+                  the page overlay paints), and a double-click opens the title
+                  for typing. The pencil stays: it is the discoverable way in,
+                  and a double-click is the fast one.
+                -->
                 <button
                   type="button"
                   class="chapter-title"
-                  (click)="chapterClick.emit(block.id)"
+                  (click)="onRowClick(block, $event)"
+                  (dblclick)="startEditing(block)"
                 >{{ block.text.trim() || '(no title)' }}</button>
                 <span class="chapter-page">p{{ block.page + 1 }}</span>
                 <button
@@ -200,6 +212,22 @@ export type DocumentNavTab = 'select' | 'label' | 'chapter';
               appears here.
             </p>
           }
+
+          <!--
+            The SAME merge as the Select tab's, judged by the SAME rule and
+            landed down the same service call. A scan that broke one heading
+            across two boxes is the case this exists for, and it is discovered
+            here — reading the chapter list — far more often than on the page.
+          -->
+          <div class="tab-actions">
+            <button
+              type="button"
+              class="action-btn"
+              [disabled]="!hasDocument() || mergeRefusal() !== null"
+              [title]="mergeTooltip()"
+              (click)="merge.emit()"
+            >Merge {{ selectedBlockIds().length >= 2 ? selectedBlockIds().length : '' }}</button>
+          </div>
         }
       }
     </div>
@@ -444,6 +472,11 @@ export type DocumentNavTab = 'select' | 'label' | 'chapter';
 
     .chapter-row:hover { background: var(--bg-hover); }
 
+    .chapter-row.selected {
+      background: color-mix(in srgb, var(--accent) 22%, transparent);
+      box-shadow: inset 2px 0 0 var(--accent);
+    }
+
     .chapter-title {
       flex: 1;
       background: none;
@@ -538,7 +571,16 @@ export class DocumentNavComponent {
   readonly selectAll = output<void>();
   readonly deselectAll = output<void>();
   readonly merge = output<void>();
-  readonly chapterClick = output<string>();
+  /**
+   * A chapter row was chosen. The ids are what the selection should BECOME when
+   * `additive` is false, and what to add to it when it is true.
+   *
+   * The list is resolved here rather than in the shell because a shift-click
+   * means "everything between", and "between" is an order — this component's
+   * order, the chapter list as it is drawn. Emitting the modifier and letting
+   * the shell re-derive the range would be a second copy of that order.
+   */
+  readonly chapterClick = output<{ blockIds: string[]; additive: boolean }>();
   readonly retitle = output<{ blockId: string; title: string }>();
   readonly resetTo = output<ResetTarget>();
   readonly tabChange = output<DocumentNavTab>();
@@ -547,6 +589,14 @@ export class DocumentNavComponent {
   private readonly editing = signal<string | null>(null);
   readonly editingId = this.editing.asReadonly();
   readonly draftTitle = signal('');
+
+  /**
+   * The chapter row a shift-click measures from: the last one clicked without
+   * shift. Null before the first click in this list, which is why a shift-click
+   * with no anchor selects only the row it landed on rather than guessing at
+   * one end of the book.
+   */
+  private rangeAnchor: string | null = null;
 
   readonly TABS: readonly { id: DocumentNavTab; label: string }[] = [
     { id: 'select', label: 'Select' },
@@ -618,6 +668,39 @@ export class DocumentNavComponent {
     const refusal = this.mergeRefusal();
     if (refusal) return refusal;
     return `Merge ${this.selectedBlockIds().length} blocks into one.`;
+  }
+
+  isSelected(blockId: string): boolean {
+    return this.selectedBlockIds().includes(blockId);
+  }
+
+  /**
+   * A click on a chapter row, with the modifiers a list has always had.
+   *
+   * Plain click replaces the selection with this row. Ctrl/⌘ adds it (the shell
+   * toggles, exactly as it does for a block on the page). Shift takes everything
+   * between the anchor and here, in the list's own order.
+   */
+  onRowClick(block: TextBlock, event: MouseEvent): void {
+    const additive = event.metaKey || event.ctrlKey;
+    if (event.shiftKey && this.rangeAnchor !== null) {
+      const list = this.chapterBlocks();
+      const from = list.findIndex(b => b.id === this.rangeAnchor);
+      const to = list.findIndex(b => b.id === block.id);
+      // An anchor the list no longer carries — its block was relabelled away
+      // from `chapter` since the click — is not a range. Fall to the plain
+      // single-row answer rather than inventing an end for it.
+      if (from >= 0 && to >= 0) {
+        const [lo, hi] = from <= to ? [from, to] : [to, from];
+        this.chapterClick.emit({
+          blockIds: list.slice(lo, hi + 1).map(b => b.id),
+          additive: false,
+        });
+        return;
+      }
+    }
+    if (!event.shiftKey) this.rangeAnchor = block.id;
+    this.chapterClick.emit({ blockIds: [block.id], additive });
   }
 
   startEditing(block: TextBlock): void {

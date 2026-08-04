@@ -208,8 +208,13 @@ export class DocumentBlocksService {
    *
    * What it refuses, and why, is `mergeRefusal` — the same rule the Merge button
    * and the block menu are greyed out by, so a refusal here is never news.
+   *
+   * Returns the id of the block that survived, so the caller can leave the user
+   * looking at what they made. Which member that is, is this method's answer to
+   * give — a caller that picked one itself would be picking by array order,
+   * which is not reading order.
    */
-  merge(blockIds: readonly string[]): void {
+  merge(blockIds: readonly string[]): string {
     const unique = [...new Set(blockIds)];
     const members = this.blocks().filter(b => unique.includes(b.id));
     // A selected id this book's blocks do not carry means the selection and the
@@ -246,6 +251,7 @@ export class DocumentBlocksService {
         }
         : b)));
     this.queue({ kind: 'merge', blockIds: members.map(m => m.id) });
+    return lead.id;
   }
 
   private queue(edit: WorkingDocumentEdit): void {
