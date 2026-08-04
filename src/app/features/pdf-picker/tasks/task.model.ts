@@ -22,7 +22,6 @@ export type TaskId =
   | 'edit'
   | 'crop'
   | 'label'
-  | 'detect'
   | 'split'
   | 'ocr'
   | 'cleanup'
@@ -38,7 +37,7 @@ export type TaskId =
  * `select` and `edit` are pointer interactions and open no panel; `crop` and
  * `label` are modes that also own the right pane.
  */
-export const MODE_IDS = ['select', 'edit', 'crop', 'label', 'detect'] as const;
+export const MODE_IDS = ['select', 'edit', 'crop', 'label'] as const;
 export type ModeId = typeof MODE_IDS[number];
 
 export function isModeId(id: TaskId): id is ModeId {
@@ -63,7 +62,7 @@ export interface TaskGroup {
 }
 
 export const TASK_GROUPS: readonly TaskGroup[] = [
-  { id: 'modes', label: 'Mode', tasks: ['select', 'edit', 'crop', 'label', 'detect'] },
+  { id: 'modes', label: 'Mode', tasks: ['select', 'edit', 'crop', 'label'] },
   { id: 'setup', label: 'Setup', tasks: ['split', 'ocr'] },
   { id: 'cleanup', label: 'Clean up', tasks: ['cleanup', 'merge'] },
   { id: 'structure', label: 'Structure', tasks: ['chapters', 'paragraphs'] },
@@ -75,7 +74,6 @@ export const TASK_LABELS: Record<TaskId, string> = {
   edit: 'Edit',
   crop: 'Crop',
   label: 'Label',
-  detect: 'Detect',
   split: 'Split spreads',
   ocr: 'OCR text',
   cleanup: 'Headers & footers',
@@ -98,11 +96,6 @@ export const TASK_ORDER: readonly TaskId[] = TASK_GROUPS.flatMap(g => [...g.task
 const LETTER_TASKS: Readonly<Partial<Record<TaskId, string>>> = {
   select: 'S',
   edit: 'E',
-  // Detect keeps a letter for the same reason Select and Edit do, and for one
-  // more: slotting it into the digits would have pushed Split from 3 to 4 and
-  // every task after it along by one, spending existing muscle memory to buy
-  // nothing.
-  detect: 'D',
 };
 
 const DIGIT_TASKS: readonly TaskId[] = TASK_ORDER.filter(id => !(id in LETTER_TASKS));
@@ -179,22 +172,6 @@ export function deriveLabelStatus(labelCount: number): TaskStatus {
     return { kind: 'done', detail: `${labelCount} ${plural(labelCount, 'block')} labelled` };
   }
   return { kind: 'untouched', detail: 'no categories set by hand' };
-}
-
-/**
- * Detect is a PREVIEW of the fine-tuned category model, and its status says so.
- * Predictions are held in memory and drawn over the page; they are not project
- * state and are not written anywhere, so this never reports 'done' — there is
- * no durable work to have finished. Closing the book discards them.
- */
-export function deriveDetectStatus(predictionCount: number): TaskStatus {
-  if (predictionCount > 0) {
-    return {
-      kind: 'suggested',
-      detail: `${predictionCount} ${plural(predictionCount, 'block')} predicted (preview only)`,
-    };
-  }
-  return { kind: 'untouched', detail: 'not run' };
 }
 
 // ── Crop ──────────────────────────────────────────────────────────────────
@@ -384,8 +361,6 @@ export interface TaskStatusContext {
   readonly textEditCount: number;
   /** Blocks with a hand-set category — what Label mode is for. */
   readonly labelCount: number;
-  /** Blocks the category model has predicted this session — Detect mode. */
-  readonly detectPredictionCount: number;
   readonly crop: CropStatusInput;
   readonly split: SplitStatusInput;
   readonly ocr: OcrStatusInput;
@@ -408,8 +383,6 @@ export function deriveTaskStatus(id: TaskId, ctx: TaskStatusContext): TaskStatus
       return deriveEditStatus(ctx.textEditCount);
     case 'label':
       return deriveLabelStatus(ctx.labelCount);
-    case 'detect':
-      return deriveDetectStatus(ctx.detectPredictionCount);
     case 'crop':
       return deriveCropStatus(ctx.crop);
     case 'split':

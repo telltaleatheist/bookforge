@@ -139,11 +139,6 @@ interface ThresholdControl {
             <desktop-button variant="ghost" size="sm" (click)="resetLabels.emit()">
               Clear labels
             </desktop-button>
-            @if (hasLabelSnapshot()) {
-              <desktop-button variant="ghost" size="sm" (click)="restoreLabels.emit()">
-                Restore labels
-              </desktop-button>
-            }
           </div>
           @if (corpusMode()) {
             <p class="redetect-hint">
@@ -754,20 +749,10 @@ export class CleanupPanelComponent {
   readonly includedChars = input.required<number>();
   readonly excludedChars = input.required<number>();
   readonly categoryCorrections = input<Map<string, string>>(new Map());
-  /**
-   * The same block-id → category map the viewer paints with. Corrections are
-   * already in `block.category_id`; Detect's predictions never are, and they
-   * outlive the Detect panel. Counting rows without this map made a row promise
-   * a number the click could not deliver, because the shell's select/delete
-   * gestures resolve the painted category.
-   */
-  readonly categoryOverride = input<ReadonlyMap<string, string>>(new Map());
   readonly showCategoryColors = input<boolean>(false);
   readonly uncertainCount = input<number>(0);
   readonly labelMode = input<boolean>(false);
   readonly labelSourceName = input<string>('');
-  /** Whether a pre-adopt snapshot exists — gates the Restore button. */
-  readonly hasLabelSnapshot = input<boolean>(false);
   /**
    * Corpus book: labels are written explicitly to the book's own folder under
    * /Volumes/Callisto/training/rubric/, and there is no project to save into.
@@ -803,8 +788,6 @@ export class CleanupPanelComponent {
   readonly showCategoryColorsChange = output<boolean>();
   readonly exportTrainingData = output<void>();
   readonly resetLabels = output<void>();
-  /** Put back labels saved before Detect's predictions overwrote them. */
-  readonly restoreLabels = output<void>();
   readonly saveCorpusLabels = output<void>();
   readonly alignFromEpub = output<void>();
   readonly assignCategory = output<string>();
@@ -839,23 +822,12 @@ export class CleanupPanelComponent {
     this.categories().filter(c => this.thresholdCategories.has(c.id))
   );
 
-  /**
-   * The category a block is wearing on screen — `categoryOverride` first, then
-   * the stored id. Mirrors the viewer's `getCategoryColor` and the shell's
-   * `effectiveCategoryId`; `??`, never `||`, so an unlabelled block stays
-   * unlabelled instead of being promoted back to its stored category.
-   */
-  private effectiveCategoryId(block: TextBlock, override: ReadonlyMap<string, string>): string {
-    return override.get(block.id) ?? block.category_id;
-  }
-
   /** Per class: how many blocks exist, and how many of those are deleted. */
   private readonly liveCounts = computed(() => {
     const deleted = this.deletedBlockIds();
-    const override = this.categoryOverride();
     const counts = new Map<string, { total: number; deleted: number }>();
     for (const block of this.blocks()) {
-      const categoryId = this.effectiveCategoryId(block, override);
+      const categoryId = block.category_id;
       const c = counts.get(categoryId) ?? { total: 0, deleted: 0 };
       c.total++;
       if (deleted.has(block.id)) c.deleted++;
@@ -877,10 +849,9 @@ export class CleanupPanelComponent {
   private readonly selectionCounts = computed(() => {
     const counts = new Map<string, number>();
     const selected = new Set(this.selectedBlockIds());
-    const override = this.categoryOverride();
     for (const block of this.blocks()) {
       if (selected.has(block.id)) {
-        const categoryId = this.effectiveCategoryId(block, override);
+        const categoryId = block.category_id;
         counts.set(categoryId, (counts.get(categoryId) || 0) + 1);
       }
     }

@@ -2,11 +2,13 @@
  * Blocks predictions as project state — the write half of headless Detect, and
  * the error report that comes back out after a human corrects it.
  *
- * The app's in-picker Detect mode is deliberately PREVIEW ONLY: predictions live
- * in a signal, paint through `categoryOverride`, and are dropped on close. That is
- * right for "what would the model say", and wrong for the labelling loop, which
- * needs the predictions to still be there tomorrow so a human can walk the book
- * correcting them. So this module persists a run.
+ * The app had an in-picker Detect mode that was deliberately PREVIEW ONLY —
+ * predictions lived in a signal, painted through an override map, and were
+ * dropped on close. That was right for "what would the model say", and wrong for
+ * the labelling loop, which needs the predictions to still be there tomorrow so
+ * a human can walk the book correcting them. So this module persists a run. (The
+ * preview mode itself is gone with the document pipeline: a block has one
+ * category field, in its annotation, and there is one detect.)
  *
  * THE POINT IS THE DIFF, not the predictions. A prediction that a human then
  * corrects is a labelled training example *and* a measurement of where the model

@@ -12,38 +12,9 @@ import type { BookResetSummary } from '@shared/processing/reset-book';
 import type { PassDiffFile } from '../models/diff.types';
 
 /**
- * A block-category run, as main reports it. Mirrors the interfaces in
- * electron/blocks-run.ts — declared again because the renderer build has no
- * path into electron/, which is why every other IPC shape in this file is
- * declared here too.
- *
- * `answers` is TEXT, not predictions: main never parses the model's output, so
- * that the prompt format and its parser exist exactly once, in
- * features/pdf-picker/services/blocks-encoder.ts.
- */
-export interface BlocksRunState {
-  bookKey: string;
-  status: 'running' | 'done' | 'error' | 'cancelled';
-  /**
-   * Whether a worker is behind this state right now. `false` with
-   * `status: 'running'` is a run the app died in the middle of — its answers are
-   * real and worth painting, but nothing is working on them and resuming means
-   * loading the model, so that stays the user's call.
-   */
-  live: boolean;
-  model: string;
-  adapter: string;
-  total: number;
-  done: number;
-  answers: (string | null)[];
-  error?: string;
-  startedAt: number;
-  updatedAt: number;
-}
-
-/**
  * A training-corpus book, as main reports it. Mirrors electron/corpus-book.ts —
- * declared again for the same reason as BlocksRunState above.
+ * declared again because the renderer build has no path into electron/, which
+ * is why every other IPC shape in this file is declared here too.
  *
  * `session.blocks` is the block snapshot the labels are keyed to and MUST be
  * what the editor shows: OCR block ids carry a per-run suffix, so blocks
@@ -84,9 +55,9 @@ export interface CorpusBookInfo {
   from: 'labels.json' | 'blocks.json' | 'book.json';
   labelled: boolean;
   /**
-   * When a human declared this book done, or null. This is what closes OCR and
-   * Detect for a corpus book — not the presence of labels, which a model can
-   * produce by the thousand and which cost only a re-run to replace.
+   * When a human declared this book done, or null. This is what closes OCR for
+   * a corpus book — not the presence of labels, which a model can produce by
+   * the thousand and which cost only a re-run to replace.
    */
   reviewedAt: string | null;
   /**
@@ -215,16 +186,6 @@ export interface CorpusSaveResult {
   removed: number;
   /** The file's identity after the write — what the session watches from now on. */
   fingerprint: CorpusFingerprint;
-}
-
-export interface BlocksRunProgress {
-  bookKey: string;
-  status: 'running' | 'done' | 'error' | 'cancelled';
-  done: number;
-  total: number;
-  error?: string;
-  /** Only this chunk's answers, so the message stays small on a long book. */
-  answered: Array<{ index: number; answer: string }>;
 }
 
 // Lightweight match rectangle for custom category highlights
@@ -1748,17 +1709,14 @@ export class ElectronService {
   /**
    * Open the editor window with a project directory and a specific source version
    * This ensures project state (deletions, chapters) is preserved
-   *
-   * `options.detect` starts the import-time page-layout detection once the book
-   * is open — see PdfPickerComponent.detectOnOpen.
    */
-  async editorOpenWindowWithBfp(projectDir: string, sourcePath: string, options?: { detect?: boolean }): Promise<{
+  async editorOpenWindowWithBfp(projectDir: string, sourcePath: string): Promise<{
     success: boolean;
     alreadyOpen?: boolean;
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.editor.openWindowWithBfp(projectDir, sourcePath, options);
+      return (window as any).electron.editor.openWindowWithBfp(projectDir, sourcePath);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -3431,46 +3389,6 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  /**
-   * Hand a whole book to main and let IT drive the run.
-   *
-   * The renderer is reloaded on every edit under src/ by `ng serve`, which used
-   * to take the in-progress run with it. Main is not reloaded, so it owns the
-   * queue and this side only watches — see electron/blocks-run.ts.
-   */
-  async blocksRunStart(payload: {
-    bookKey: string;
-    endpoint: string;
-    backend: 'local' | 'ollama' | 'service';
-    model: string;
-    adapter: string;
-    stop?: string;
-    numCtx?: number;
-    chunk?: number;
-    pages: Array<{ page: number; system: string; user: string; raw: string }>;
-  }): Promise<{ success: boolean; state?: BlocksRunState; error?: string }> {
-    if (this.isElectron) return (window as any).electron.blocks.runStart(payload);
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /** The run for this book, if main still has one — including a finished one. */
-  async blocksRunAttach(bookKey: string): Promise<{ success: boolean; state?: BlocksRunState | null }> {
-    if (this.isElectron) return (window as any).electron.blocks.runAttach(bookKey);
-    return { success: false, state: null };
-  }
-
-  async blocksRunCancel(bookKey: string): Promise<{ cancelled: boolean }> {
-    if (this.isElectron) return (window as any).electron.blocks.runCancel(bookKey);
-    return { cancelled: false };
-  }
-
-  /** Chunk-by-chunk progress for whichever run is working. Returns an unsubscribe. */
-  onBlocksRunProgress(callback: (progress: BlocksRunProgress) => void): () => void {
-    if (this.isElectron) return (window as any).electron.blocks.onRunProgress(callback);
-    return () => {};
-  }
-
-
   async trainingPickEpub(defaultPath?: string): Promise<{ success: boolean; path?: string }> {
     if (this.isElectron) return (window as any).electron.training.pickEpub(defaultPath);
     return { success: false };
@@ -3499,43 +3417,6 @@ export class ElectronService {
   async trainingExport(projectDir: string, records: unknown[]): Promise<{ success: boolean; path?: string; count?: number; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.training.export(projectDir, records);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Replace this book's model-correction log — where Detect was wrong, for
-   * deciding what to label next. Diagnostics, never training data: pass the
-   * COMPLETE current set, since the file holds one record per block.
-   */
-  async trainingWriteCorrections(projectDir: string, records: unknown[]): Promise<{ success: boolean; path?: string; count?: number; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.training.writeCorrections(projectDir, records);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async trainingReadCorrections(projectDir: string): Promise<{ success: boolean; records?: unknown[]; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.training.readCorrections(projectDir);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Save a book's hand labels before something overwrites them. Latest snapshot
-   * only — an undo point that survives a reload, not a history.
-   */
-  async trainingSnapshotLabels(projectDir: string, snapshot: { savedAt: string; reason: string; labels: Record<string, string> }): Promise<{ success: boolean; path?: string; count?: number; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.training.snapshotLabels(projectDir, snapshot);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async trainingReadLabelSnapshot(projectDir: string): Promise<{ success: boolean; snapshot?: { savedAt: string; reason: string; labels: Record<string, string> } | null; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.training.readLabelSnapshot(projectDir);
     }
     return { success: false, error: 'Not running in Electron' };
   }

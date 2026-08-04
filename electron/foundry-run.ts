@@ -1,8 +1,8 @@
 /**
  * foundry-run — the OCR pipeline, owned by MAIN so a reload cannot kill it.
  *
- * This is the third module in this codebase built to the same shape, for the
- * same reason (see `blocks-run.ts` and `corpus-ocr-run.ts`): the renderer is the
+ * This is the second module in this codebase built to the same shape, for the
+ * same reason (see `corpus-ocr-run.ts`): the renderer is the
  * part of the app that gets thrown away routinely — `ng serve` reloads it on
  * every edit under `src/`, a window closes, a tab changes — and a run that lives
  * in it dies with it. foundry's `ocr` stage costs roughly 0.8 seconds a line,

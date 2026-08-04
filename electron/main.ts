@@ -963,25 +963,6 @@ function openEditorWindow(
 }
 
 function setupIpcHandlers(): void {
-  // Point the block-category run manager at its state directory and at every
-  // window. BROADCAST, not `event.sender`: the renderer that started a run is
-  // usually not the one still listening by the time it ends — that is the whole
-  // reason the run lives in main.
-  void import('./blocks-run.js').then(({ blocksRunInit }) => {
-    blocksRunInit({
-      // Renamed from 'rubric-runs' with the rest of the rubric -> blocks rename
-      // (Aug 3 2026). Deliberately NOT migrated: a run directory holds a Detect
-      // run in flight, keyed by file hash, and the cost of losing one is
-      // re-running Detect — not user data. The old directory is left on disk.
-      stateDir: path.join(app.getPath('userData'), 'blocks-runs'),
-      emit: (progress) => {
-        for (const win of BrowserWindow.getAllWindows()) {
-          if (!win.isDestroyed()) win.webContents.send('blocks:run-progress', progress);
-        }
-      },
-    });
-  });
-
   // ClipForge: open its dedicated window (second app in this workspace).
   ipcMain.handle('clipforge:open-window', () => { openClipforgeWindow(); return { success: true }; });
 
@@ -6838,28 +6819,6 @@ function setupIpcHandlers(): void {
     return blocksClassify(payload);
   });
 
-  // A whole-book run, owned here rather than by the renderer's loop, so that
-  // reloading the renderer — which `ng serve` does on every edit under src/ —
-  // does not throw away the work. See electron/blocks-run.ts.
-  ipcMain.handle('blocks:run-start', async (_event, payload: unknown) => {
-    const { blocksRunStart } = await import('./blocks-run.js');
-    try {
-      return { success: true, state: blocksRunStart(payload as any) };
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
-  ipcMain.handle('blocks:run-attach', async (_event, bookKey: string) => {
-    const { blocksRunAttach } = await import('./blocks-run.js');
-    return { success: true, state: blocksRunAttach(bookKey) };
-  });
-
-  ipcMain.handle('blocks:run-cancel', async (_event, bookKey: string) => {
-    const { blocksRunCancel } = await import('./blocks-run.js');
-    return blocksRunCancel(bookKey);
-  });
-
   ipcMain.handle('training:align', async (_event, payload: {
     epubPath: string;
     blocks: Array<{ id: string; page: number; x: number; y: number; width: number; height: number;
@@ -6971,54 +6930,6 @@ function setupIpcHandlers(): void {
       const trainingData = await import('./training-data.js');
       const outputPath = await trainingData.writeDataset(projectDir, records);
       return { success: true, path: outputPath, count: records.length };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Where the model was wrong, for deciding what to label next — NOT training
-  // data. The whole set is replaced each time so the file holds one record per
-  // block (the final label), never the sequence of flips that produced it.
-  ipcMain.handle('training:write-corrections', async (
-    _event, projectDir: string, records: unknown[]) => {
-    try {
-      const trainingData = await import('./training-data.js');
-      const { path: target, written } = await trainingData.writeCorrections(
-        projectDir, records as any);
-      return { success: true, path: target, count: written };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('training:read-corrections', async (_event, projectDir: string) => {
-    try {
-      const trainingData = await import('./training-data.js');
-      return { success: true, records: await trainingData.readCorrections(projectDir) };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // A durable undo point for the one destructive step in labelling — adopting
-  // Detect's predictions over labels that already exist. In-memory undo does not
-  // survive a reload; hours of hand-labelling should.
-  ipcMain.handle('training:snapshot-labels', async (
-    _event, projectDir: string, snapshot: unknown) => {
-    try {
-      const trainingData = await import('./training-data.js');
-      const { path: target, count } = await trainingData.writeLabelSnapshot(
-        projectDir, snapshot as any);
-      return { success: true, path: target, count };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('training:read-label-snapshot', async (_event, projectDir: string) => {
-    try {
-      const trainingData = await import('./training-data.js');
-      return { success: true, snapshot: await trainingData.readLabelSnapshot(projectDir) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -9876,21 +9787,13 @@ function setupIpcHandlers(): void {
 
   // Open editor window with a project directory and a specific source version
   // This ensures project state (deletions, chapters) is preserved
-  //
-  // `options.detect` carries the answer to the "detect page-layout categories?"
-  // prompt the importer showed. It travels in the ROUTE rather than over a
-  // separate message because the editor is a different BrowserWindow that has
-  // not booted yet — anything sent to it before `did-finish-load` lands nowhere,
-  // and the picker would have to poll for an intent it should simply be told.
   ipcMain.handle('editor:open-window-with-bfp', async (
     _event,
     projectDir: string,
     rawSourcePath: string,
-    options?: { detect?: boolean },
   ) => {
     // The source file may be stored NFD while the disk is NFC (Syncthing Mac↔Win).
     const sourcePath = normalizeFsPath(rawSourcePath);
-    const detectParam = options?.detect ? '&detect=1' : '';
     // Use the project directory as the window key so we track by project, not by source file
     const existingWindow = editorWindows.get(projectDir);
     if (existingWindow && !existingWindow.isDestroyed()) {
@@ -9898,12 +9801,12 @@ function setupIpcHandlers(): void {
       const encodedProjectDir = encodeURIComponent(projectDir);
       const encodedSource = encodeURIComponent(sourcePath);
       if (isDev) {
-        existingWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedProjectDir}&source=${encodedSource}${detectParam}`);
+        existingWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedProjectDir}&source=${encodedSource}`);
       } else {
         const appPath = codeRoot;
         const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
         existingWindow.loadFile(indexPath, {
-          hash: `/editor?project=${encodedProjectDir}&source=${encodedSource}${detectParam}`
+          hash: `/editor?project=${encodedProjectDir}&source=${encodedSource}`
         });
       }
       existingWindow.focus();
@@ -9950,12 +9853,12 @@ function setupIpcHandlers(): void {
     const encodedProjectDir = encodeURIComponent(projectDir);
     const encodedSource = encodeURIComponent(sourcePath);
     if (isDev) {
-      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedProjectDir}&source=${encodedSource}${detectParam}`);
+      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedProjectDir}&source=${encodedSource}`);
     } else {
       const appPath = codeRoot;
       const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
       editorWindow.loadFile(indexPath, {
-        hash: `/editor?project=${encodedProjectDir}&source=${encodedSource}${detectParam}`
+        hash: `/editor?project=${encodedProjectDir}&source=${encodedSource}`
       });
     }
 
@@ -11013,21 +10916,7 @@ app.on('before-quit', async (event) => {
   }
 
 
-  // Stop any classification run BEFORE unloading, or the chunk in flight would
-  // re-load the model straight after we released it. Waits for that chunk so its
-  // answers reach disk — a resumed run then starts from there instead of
-  // re-asking pages the GPU already paid for.
-  try {
-    const { blocksRunCancelAll, blocksRunActive } = await import('./blocks-run.js');
-    if (blocksRunActive()) {
-      console.log('[MAIN] Stopping the block-category run...');
-      await blocksRunCancelAll();
-    }
-  } catch (err) {
-    console.warn('[MAIN] Could not stop the block-category run:', err);
-  }
-
-  // Same for a foundry OCR run: killing the process would leave its llama-server
+  // A foundry OCR run: killing the process would leave its llama-server
   // holding several GB with nothing left to stop it. Every artifact written so
   // far stays on disk and the editor can still read it — but the pass does not
   // resume from it: submitting an OCR correction again reads the book from the

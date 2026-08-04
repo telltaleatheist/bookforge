@@ -2,7 +2,7 @@ import { Component, inject, signal, computed, HostListener, ViewChild, ElementRe
 import { CommonModule } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
-import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits, BlocksRunState, CorpusBookInfo, CorpusFileChanged, CorpusOcrRunState } from '../../core/services/electron.service';
+import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits, CorpusBookInfo, CorpusFileChanged, CorpusOcrRunState } from '../../core/services/electron.service';
 import { PdfEditorStateService, HistoryAction, BlockEdit, SplitDefinition, MergeDefinition, CropRegion } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
 import { ExportService, DeletedHighlight, ExportResult as EpubExportResult } from './services/export.service';
@@ -36,8 +36,6 @@ import { ExportSettingsModalComponent, ExportSettings, ExportResult, ExportForma
 import { BackgroundProgressComponent, BackgroundJob } from './components/background-progress/background-progress.component';
 import { OcrJobService, OcrJob } from './services/ocr-job.service';
 import { TaskRailComponent } from './components/task-rail/task-rail.component';
-import { DetectPanelComponent, DetectRunState, DetectBackend } from './components/detect-panel/detect-panel.component';
-import { encodeBook, parseAnswer, toRawPrompt, BLOCKS_STOP, BlocksVersion, blocksVersionFor } from './services/blocks-encoder';
 import { BLOCK_CATEGORIES, normalizeCategories, UNLABEL_CATEGORY, isFoundryCategory } from '@shared/ocr/block-categories';
 import { OCR_RENDER_SCALE } from '@shared/ocr/ocr-render';
 import {
@@ -429,7 +427,6 @@ interface AlertModal {
     ExportSettingsModalComponent,
     BackgroundProgressComponent,
     TaskRailComponent,
-    DetectPanelComponent,
     OcrPanelComponent,
   ],
   template: `
@@ -724,9 +721,7 @@ interface AlertModal {
               [categoryCorrections]="editorState.categoryCorrections()"
               [pageTypes]="editorState.pageTypes()"
               [canMarkPageTypes]="canMarkPageTypes()"
-              [categoryOverride]="detectPaintOverride()"
-              [overrideOnly]="detectMode()"
-              [showCategoryColors]="showCategoryColors() || detectMode()"
+              [showCategoryColors]="showCategoryColors()"
               [labelMode]="labelMode()"
               (paragraphBreakToggle)="toggleParagraphBreak($event)"
               (paragraphBreakDelete)="deleteParagraphBreak($event)"
@@ -820,28 +815,6 @@ interface AlertModal {
         <!-- Side Panel (Secondary): one instantiation per panel -->
         <div pane-secondary class="secondary-pane-host">
           @switch (activePanel()) {
-            @case ('detect') {
-              <app-detect-panel
-                [state]="detectState()"
-                [endpoint]="detectEndpoint()"
-                [backend]="detectBackend()"
-                [model]="detectModel()"
-                [models]="detectModelOptions()"
-                [isTrainedModel]="detectModelIsTrained()"
-                [categories]="autoDetectedCategoryList()"
-                [predictions]="detectPredictions()"
-                [selectedBlockIds]="selectedBlockIds()"
-                (endpointChange)="setDetectEndpoint($event)"
-                (backendChange)="setDetectBackend($event)"
-                (modelChange)="setDetectModel($event)"
-                (loadCategories)="runDetection()"
-                (stop)="cancelDetection()"
-                (selectCategory)="selectPredictedCategory($event)"
-                (clear)="clearDetection()"
-                (adopt)="adoptDetectPredictions()"
-                (done)="activatePanel(null)"
-              />
-            }
             @case ('crop') {
               <app-crop-panel
                 [currentPage]="cropCurrentPage()"
@@ -952,7 +925,6 @@ interface AlertModal {
                 [includedChars]="includedChars()"
                 [excludedChars]="excludedChars()"
                 [categoryCorrections]="editorState.categoryCorrections()"
-                [categoryOverride]="detectPaintOverride()"
                 [showCategoryColors]="showCategoryColors()"
                 [uncertainCount]="uncertainBlocks().length"
                 [labelMode]="labelMode()"
@@ -970,10 +942,8 @@ interface AlertModal {
                 [regexExpanded]="regexPanelExpanded()"
                 (close)="activatePanel(null)"
                 (clearCorrections)="clearCategoryCorrections()"
-                [hasLabelSnapshot]="hasLabelSnapshot()"
                 (exportTrainingData)="exportTrainingData()"
                 (resetLabels)="resetTrainingSession()"
-                (restoreLabels)="restoreLabelSnapshot()"
                 (alignFromEpub)="alignFromEpub()"
                 (assignCategory)="assignSelectedToCategory($event)"
                 (showCategoryColorsChange)="showCategoryColors.set($event)"
@@ -2728,16 +2698,6 @@ export class PdfPickerComponent implements OnInit {
    */
   readonly corpusPath = input<string | null>(null);
 
-  /**
-   * The importer asked "detect page-layout categories?" and the user said yes.
-   *
-   * PDFs only — an EPUB carries its own structure, so there is nothing for the
-   * blocks model to recover and the importer never asks. The flag arrives on the
-   * route because this window is created by the import, so there is no earlier
-   * moment at which to tell it. See `runImportDetection`.
-   */
-  readonly detectOnOpen = input<boolean>(false);
-
   /** Emitted when Finalize is clicked in embedded mode */
   readonly finalized = output<{ success: boolean; epubPath?: string; error?: string }>();
 
@@ -2777,26 +2737,6 @@ export class PdfPickerComponent implements OnInit {
     if (this.hasUnsavedChanges() && this.pdfLoaded()) {
       this.scheduleAutoSave();
     }
-  });
-
-  /**
-   * Rejoin the classification run for whichever book just finished opening.
-   *
-   * An effect rather than a call at the end of each load path, because there are
-   * several (project, PDF, restored tab) and a reattach missed on one of them
-   * looks exactly like the bug this whole mechanism exists to fix. Keyed on the
-   * book identity so it fires once per book, not once per block mutation.
-   */
-  private reattachedRunKey = '';
-  private readonly detectReattachEffect = effect(() => {
-    // `effectivePath()` is `detectBookKey()` — the document ON SCREEN. Read
-    // inline rather than through the method so "nothing is loaded" stays falsy
-    // (the method answers 'unknown' for callers that need a string).
-    const key = this.effectivePath();
-    const ready = this.blocks().length > 0;
-    if (!key || !ready || this.reattachedRunKey === key) return;
-    this.reattachedRunKey = key;
-    void this.reattachDetectionRun();
   });
 
   /**
@@ -2851,22 +2791,6 @@ export class PdfPickerComponent implements OnInit {
         console.warn('[foundry] could not re-attach to a run for this book:', err);
       }
     })();
-  });
-
-  /**
-   * Fire the import-time detection once the book is actually open.
-   *
-   * An effect rather than a call inside the load path for the same reason as
-   * `detectReattachEffect`: several paths finish a load. Readiness is
-   * `pdfLoaded`, NOT a non-empty block list — a scan has no blocks until it has
-   * been OCR'd, which is precisely the work this is here to start.
-   */
-  private importDetectionStarted = false;
-  private readonly importDetectionEffect = effect(() => {
-    if (!this.detectOnOpen() || this.importDetectionStarted) return;
-    if (!this.pdfLoaded() || this.totalPages() === 0) return;
-    this.importDetectionStarted = true;
-    void this.runImportDetection();
   });
 
   // Tab persistence - localStorage keys
@@ -3148,15 +3072,6 @@ export class PdfPickerComponent implements OnInit {
    * Initialize component - handles embedded mode auto-loading and tab restoration
    */
   ngOnInit(): void {
-    // Before anything loads: main may already be classifying a book from before
-    // this renderer existed, and its progress events must not fall on the floor
-    // while the document opens.
-    this.watchDetectionRun();
-    this.destroyRef.onDestroy(() => {
-      this.detectRunUnsubscribe?.();
-      this.detectRunUnsubscribe = null;
-    });
-
     const corpusDir = this.corpusPath();
     if (corpusDir) {
       // Training-corpus book: blocks and labels come from the corpus folder,
@@ -3416,10 +3331,6 @@ export class PdfPickerComponent implements OnInit {
           event.preventDefault();
           this.onRailPanelClick('edit');
           break;
-        case 'd': // Detect: the category model's predictions, as a preview
-          event.preventDefault();
-          this.onRailPanelClick('detect');
-          break;
         case 'a': // Analysis & search
           event.preventDefault();
           this.onRailPanelClick('analysis');
@@ -3653,8 +3564,8 @@ export class PdfPickerComponent implements OnInit {
    * watch a long run — so a run that finished while it was closed emitted its
    * completion into nothing. The editor then kept the block set it had loaded
    * when the book was opened: a 532-page book that had finished every page still
-   * offered Detect the 197 pages it knew about at open time, and looked for all
-   * the world like OCR had stopped early.
+   * showed the 197 pages it knew about at open time, and looked for all the
+   * world like OCR had stopped early.
    */
   private readonly corpusOcrWatcher = (() => {
     let wasRunning = false;
@@ -4275,211 +4186,11 @@ export class PdfPickerComponent implements OnInit {
   readonly labelMode = computed(() => this.activePanel() === 'label');
 
   /**
-   * Detect mode: run the fine-tuned category model over the book and paint what
-   * it predicts. A PREVIEW — predictions are held here in memory, never written
-   * to `category_corrections` and never saved, so looking at the model cannot
-   * damage the hand-labelling it is trained from. Closing the book drops them.
+   * Whether a saved label snapshot exists on disk for this book, gating the
+   * Restore button. Checked once on open so a snapshot from a previous session
+   * is still reachable after a reload — which is the entire reason it is on
+   * disk rather than in the undo stack.
    */
-  readonly detectMode = computed(() => this.activePanel() === 'detect');
-  readonly detectPredictions = signal<Map<string, string>>(new Map());
-
-  /**
-   * What Detect mode actually PAINTS: the predictions, with any hand label
-   * overriding the model.
-   *
-   * Predictions are a snapshot of one run and never learn about corrections made
-   * afterwards, so painting them raw meant the colours drifted out of agreement
-   * with the panel the longer someone worked. The panel's highlight counts
-   * `block.category_id`, which corrections DO update — so a corrected block was
-   * painted the model's colour while the row that lit up was the real label. On
-   * Nuremberg that hit 133 blocks, 83 of them corrected from `heading` to `list`:
-   * an orange block that lights the olive row, which reads as the palette being
-   * broken rather than as the prediction being stale.
-   *
-   * Corrections win, matching the rule the rest of the labelling path already
-   * follows — a human judgement is never overwritten by a model's.
-   */
-  readonly detectPaintOverride = computed(() => {
-    const merged = new Map(this.detectPredictions());
-    for (const [id, categoryId] of this.editorState.categoryCorrections()) {
-      merged.set(id, categoryId);
-    }
-    return merged;
-  });
-
-  /**
-   * The category a block is CURRENTLY WEARING — the identical resolution the
-   * viewer paints with (`getCategoryColor`: override, else the stored id).
-   *
-   * Every gesture that means "this one and the ones like it" must resolve
-   * through here, because the two readings genuinely diverge: Detect mode's
-   * predictions are a preview held in memory and never written to
-   * `category_id`, and they survive until the book closes — not until the panel
-   * closes. Double-clicking a block painted `footnote` therefore used to also
-   * grab blocks the screen was showing as body text, because the gesture read
-   * the stored id while the eye read the prediction.
-   *
-   * `??` and never `||`: an empty id is the deliberate result of Unlabel, and
-   * `||` would silently promote it back to the stored category.
-   */
-  effectiveCategoryId(block: TextBlock): string {
-    return this.detectPaintOverride().get(block.id) ?? block.category_id;
-  }
-  // Defaults to the BUILT-IN runtime: the downloaded GGUF on the llama-server
-  // that ships with the app. It used to default to Ollama, which meant Detect
-  // silently required a separate install plus a hand-built `ollama create` —
-  // not a thing to ask of someone who wants to make an audiobook. Ollama and
-  // the remote GPU service remain for anyone already set up that way, and for
-  // trying a checkpoint before it has been quantized.
-  //
-  // `bookforge-rubric-*` IS A PERSISTED KEY, not a description. The model family
-  // was renamed rubric -> blocks in Aug 2026 and these three keys were left
-  // alone: renaming them would silently reset a user's backend, endpoint and
-  // model choice on upgrade — a remote GPU-service URL they would have to retype
-  // for no benefit. Treat the name here as a contract. (The stored MODEL value
-  // does self-heal: refreshDetectModels drops a choice that is not installed.)
-  readonly detectBackend = signal<DetectBackend>(
-    (localStorage.getItem('bookforge-rubric-backend') as DetectBackend) || 'local');
-  // Default to the model that actually exists. Ollama's model list is the
-  // authority here, and a default naming something absent would fail on the
-  // first click for no reason.
-  /**
-   * No hardcoded model name as the fallback. There used to be one — 'blocks-v1'
-   * — and it aged into a trap: v1 answers with the retired front_matter/back_matter
-   * taxonomy, so a fresh install silently defaulted to the WORST installed model
-   * and to a class list the app no longer paints. Empty means "not chosen yet",
-   * and refreshDetectModels() resolves it against what is actually installed.
-   */
-  readonly detectModel = signal<string>(
-    localStorage.getItem('bookforge-rubric-model') || '');
-  readonly detectEndpoint = signal<string>(
-    localStorage.getItem('bookforge-rubric-endpoint') || 'http://localhost:11434');
-  private readonly detectRunning = signal(false);
-  private readonly detectDone = signal(0);
-  private readonly detectTotal = signal(0);
-  private readonly detectError = signal('');
-  private readonly detectAdapter = signal('');
-  /** Model names Ollama currently holds, refreshed when Detect is opened. */
-  private readonly detectAvailableModels = signal<readonly string[]>([]);
-
-  /**
-   * What the model answered, kept so a later hand label can be compared against
-   * it. `detectPredictions` is cleared whenever a run starts and is what the
-   * overlay paints; this survives leaving Detect mode, because the corrections
-   * happen afterwards in Label mode.
-   *
-   * Diagnostics only — see `writeModelCorrections`. Nothing here is training
-   * data, and it never reaches `category_corrections`.
-   */
-  private readonly detectPredictionSnapshot = signal<Map<string, string>>(new Map());
-  private readonly detectSnapshotAdapter = signal('');
-
-  /**
-   * Whether a pre-adopt label snapshot exists on disk for this book, gating the
-   * Restore button. Set when adopting writes one, and checked once on open so a
-   * snapshot from a previous session is still reachable after a reload — which
-   * is the entire reason it is on disk rather than in the undo stack.
-   */
-  readonly hasLabelSnapshot = signal(false);
-
-  /**
-   * A block-category fine-tune, by name. The prompt is written for THIS model
-   * family — a general chat model receives Qwen3 control tokens it may not even
-   * share and answers with prose, so the picker separates the two rather than
-   * letting a plausible-looking wrong choice hide among the rest.
-   */
-  private static isBlocksName(name: string): boolean {
-    // Three shapes, all real. `foundry-blocks-…` is what this app ships and what
-    // `foundry models list` reports. `blocks-…` and `rubric-…` are checkpoint
-    // names on somebody's own Ollama install or training box — the model family
-    // was called rubric until Aug 2026, and a run exported before then still has
-    // that name. Nothing here downloads or resolves those; this only decides
-    // which half of the picker they belong in.
-    return /^(foundry-blocks|blocks|rubric)/i.test(name);
-  }
-
-  /**
-   * Prompt version per model id, as DECLARED by the catalog (`blocks:models`).
-   *
-   * Only the built-in runtime can fill this: an Ollama or remote-service model is
-   * the user's own checkpoint and its name is all anyone has. See
-   * `resolvePromptVersion`.
-   */
-  private readonly detectPromptVersions = signal<Record<string, number>>({});
-
-  /**
-   * The prompt format to build for `name`.
-   *
-   * THE CATALOG ANSWERS FIRST. `foundry-blocks-v1-4b` names release 1 of a stage
-   * and was trained on the v5 prompt; reading `v1` out of the id would offer a
-   * twelve-class model the retired sixteen-class list, which does not fail — it
-   * just scores worse and reads like a bad model. Falls through to the name only
-   * for the legacy runtimes, where a name is genuinely all we have, and
-   * `blocksVersionFor` THROWS rather than guess at a foundry id it does not know.
-   */
-  private resolvePromptVersion(name: string): BlocksVersion {
-    const declared = this.detectPromptVersions()[name];
-    if (declared) return declared as BlocksVersion;
-    return blocksVersionFor(name);
-  }
-
-  /**
-   * Pick the best available block-category model.
-   *
-   * Highest prompt version wins, because a version is a TAXONOMY: v1 and v2
-   * still answer with `front_matter`/`back_matter`, classes v3 retired after
-   * they were found to be swallowing 18% of the corpus. An older adapter is not
-   * a slightly worse model, it is a model answering a different question.
-   *
-   * Ties are broken by Ollama's own order, which is newest-modified first — so
-   * the most recently exported model of the current taxonomy wins, which is
-   * what someone who has just finished a training run expects to see selected.
-   */
-  private bestBlocksModel(models: readonly string[]): string | undefined {
-    const trained = models.filter(m => PdfPickerComponent.isBlocksName(m));
-    if (!trained.length) return undefined;
-    // A model whose prompt format cannot be established is not a candidate: it
-    // would be served a prompt nobody declared. Ranked last, never silently
-    // treated as v1.
-    const rank = (m: string): number => {
-      try { return this.resolvePromptVersion(m); } catch { return -1; }
-    };
-    let best = trained[0];
-    let bestVersion = rank(best);
-    for (const m of trained.slice(1)) {
-      const v = rank(m);
-      if (v > bestVersion) { best = m; bestVersion = v; }
-    }
-    return bestVersion < 0 ? undefined : best;
-  }
-
-  readonly detectModelOptions = computed(() => {
-    const all = this.detectAvailableModels();
-    const trained = all.filter(n => PdfPickerComponent.isBlocksName(n));
-    const other = all.filter(n => !PdfPickerComponent.isBlocksName(n));
-    const groups: Array<{ label: string; options: Array<{ value: string; label: string }> }> = [];
-    if (trained.length) {
-      groups.push({ label: 'Block-category models', options: trained.map(n => ({ value: n, label: n })) });
-    }
-    if (other.length) {
-      groups.push({ label: 'Not trained for this', options: other.map(n => ({ value: n, label: n })) });
-    }
-    return groups;
-  });
-
-  readonly detectModelIsTrained = computed(() => {
-    const chosen = this.detectModel();
-    return !chosen || PdfPickerComponent.isBlocksName(chosen);
-  });
-
-  readonly detectState = computed<DetectRunState>(() => ({
-    running: this.detectRunning(),
-    done: this.detectDone(),
-    total: this.detectTotal(),
-    error: this.detectError(),
-    predicted: this.detectPredictions().size,
-    adapter: this.detectAdapter(),
-  }));
 
   // Task groups for the rail (static; TASK_ORDER drives digit shortcuts).
   readonly taskGroups = TASK_GROUPS;
@@ -4790,7 +4501,6 @@ export class PdfPickerComponent implements OnInit {
       removedBlockCount: deletedBlockIds.size,
       textEditCount: this.editorState.blockEdits().size,
       labelCount: this.editorState.categoryCorrections().size,
-      detectPredictionCount: this.detectPredictions().size,
       crop: { croppedPageCount: this.editorState.cropRegions().size },
       split: {
         applied: this.splitApplied(),
@@ -4842,9 +4552,9 @@ export class PdfPickerComponent implements OnInit {
     // document. Labels typed since the last save are exactly as easy to destroy
     // as saved ones, so either being non-empty closes the door.
     if (this.corpusMode()) {
-      // Reviewed closes the book; nothing else does. Both OCR and Detect rewrite
-      // what the labels are keyed to, so both answer to the same flag, and the
-      // flag is the one thing here a human sets deliberately.
+      // Reviewed closes the book; nothing else does. OCR rewrites what the
+      // labels are keyed to, so it answers to the same flag, and the flag is
+      // the one thing here a human sets deliberately.
       //
       // This used to gate on label COUNT, which was wrong in the direction that
       // costs work: a book became un-OCR-able the moment anything was written to
@@ -4855,12 +4565,11 @@ export class PdfPickerComponent implements OnInit {
       const reviewedAt = this.corpusBook()?.reviewedAt ?? null;
       for (const id of TASK_ORDER) {
         if (id === 'select' || id === 'label') continue;
-        if (id === 'ocr' || id === 'detect') {
+        if (id === 'ocr') {
           if (!reviewedAt) continue;
           disabled.set(
             id,
-            'This book is marked reviewed — un-mark it in the Training tab to run '
-            + `${id === 'ocr' ? 'OCR' : 'Detect'} again`,
+            'This book is marked reviewed — un-mark it in the Training tab to run OCR again',
           );
           continue;
         }
@@ -4961,7 +4670,7 @@ export class PdfPickerComponent implements OnInit {
     const missing = this.autoDetectedCategoryList()
       .filter(c => !have.has(c.id))
       .map(c => {
-        const mine = blocks.filter(b => this.effectiveCategoryId(b) === c.id && !b.is_image);
+        const mine = blocks.filter(b => b.category_id === c.id && !b.is_image);
         return {
           id: c.id, name: c.name, description: '', color: c.color,
           block_count: mine.length,
@@ -5528,7 +5237,6 @@ export class PdfPickerComponent implements OnInit {
     // the effects' once-per-key guards would otherwise refuse.
     this.setFoundryRunState(false);
     this.foundryAttachedKey = '';
-    this.reattachedRunKey = '';
     // Reset editor state via service
     this.editorState.reset();
     this.pageRenderService.closeDocument(); // Also frees the backend cached render doc
@@ -6257,12 +5965,12 @@ export class PdfPickerComponent implements OnInit {
   }
 
   selectLikeThis(block: TextBlock, additive: boolean = false): void {
-    // "Like this" means like what the screen shows this one to be — see
-    // effectiveCategoryId().
-    const categoryId = this.effectiveCategoryId(block);
+    // "Like this" means like the block's own category — the one field, no
+    // divergence possible.
+    const categoryId = block.category_id;
     const deleted = this.deletedBlockIds();
     const matching = this.blocks()
-      .filter(b => this.effectiveCategoryId(b) === categoryId && !deleted.has(b.id))
+      .filter(b => b.category_id === categoryId && !deleted.has(b.id))
       .map(b => b.id);
 
     if (additive) {
@@ -6514,10 +6222,10 @@ export class PdfPickerComponent implements OnInit {
     // The destructive twin of selectLikeThis, so it resolves the category the
     // same way the screen paints it — a delete that reached blocks the user was
     // looking at as body text would be far worse than a selection that did.
-    const categoryId = this.effectiveCategoryId(block);
+    const categoryId = block.category_id;
     const deleted = this.deletedBlockIds();
     const blocksToDelete = this.blocks()
-      .filter(b => this.effectiveCategoryId(b) === categoryId && !deleted.has(b.id));
+      .filter(b => b.category_id === categoryId && !deleted.has(b.id));
 
     if (blocksToDelete.length === 0) return;
 
@@ -6533,7 +6241,7 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  // ─── Category correction & re-detection ────────────────────────────────
+  // ─── Category correction ────────────────────────────────────────────────
 
   onSetBlockCategory(event: { blockIds: string[]; categoryId: string }): void {
     if (this.reviewMode()) return;  // read-only during EPUB review
@@ -6744,456 +6452,18 @@ export class PdfPickerComponent implements OnInit {
     this.editorState.resetThresholdsToDefault();
   }
 
-  // ── Detect mode: the fine-tuned category model ──────────────────────────
-
-  setDetectEndpoint(endpoint: string): void {
-    this.detectEndpoint.set(endpoint);
-    localStorage.setItem('bookforge-rubric-endpoint', endpoint);
-  }
 
   /**
-   * Ask the chosen runtime what models it has.
-   *
-   * For the built-in runtime that is the DOWNLOADED catalog — main answers from
-   * disk, so this works with no server running and costs nothing. For Ollama it
-   * is a live `/api/tags`. Silent on failure either way: the picker stays empty
-   * and pressing Load surfaces the real error.
-   */
-  async refreshDetectModels(): Promise<void> {
-    const backend = this.detectBackend();
-    if (backend === 'service') { this.detectAvailableModels.set([]); return; }
-    const res = await this.electronService.blocksModels(this.detectEndpoint().trim(), backend);
-    const models = res.success && res.models ? res.models : [];
-    this.detectAvailableModels.set(models);
-    // Only the built-in runtime declares these; the others report names only.
-    this.detectPromptVersions.set(res.promptVersions ?? {});
-
-    // Ollama reports fully-tagged names ("blocks-v1:latest") while a stored
-    // or default choice is usually bare ("blocks-v1"). A dropdown matches its
-    // value exactly, so without this the picker opens showing nothing selected
-    // even though the model is right there.
-    const chosen = this.detectModel();
-    if (chosen && !models.includes(chosen)) {
-      const tagged = models.find(m => m.split(':')[0] === chosen.split(':')[0]);
-      if (tagged) this.setDetectModel(tagged);
-    }
-    // Nothing chosen yet, or the choice is gone: land on the BEST trained model
-    // rather than whichever one Ollama happened to list first.
-    if (!this.detectModel() || !models.includes(this.detectModel())) {
-      const trained = this.bestBlocksModel(models);
-      if (trained) this.setDetectModel(trained);
-    }
-  }
-
-  setDetectModel(model: string): void {
-    this.detectModel.set(model);
-    localStorage.setItem('bookforge-rubric-model', model);
-  }
-
-  /**
-   * Switching backend moves the endpoint to that backend's default, since a
-   * GPU-service URL is never a valid Ollama one and vice versa.
-   *
-   * The built-in runtime has no user-visible endpoint at all — blocks-server
-   * owns its port — so switching to it leaves the stored one alone rather than
-   * overwriting a remote URL the user would have to retype on the way back.
-   */
-  setDetectBackend(backend: DetectBackend): void {
-    this.detectBackend.set(backend);
-    localStorage.setItem('bookforge-rubric-backend', backend);
-    if (backend === 'ollama') this.setDetectEndpoint('http://localhost:11434');
-    else if (backend === 'service') this.setDetectEndpoint('http://owens-pc:8770');
-    // A model chosen for one runtime rarely names one in another: Ollama reports
-    // "blocks-v3-4b:latest", the catalog says "blocks-v3-4b". Cleared so
-    // refreshDetectModels lands on something that exists here.
-    this.detectModel.set('');
-    void this.refreshDetectModels();
-  }
-
-  clearDetection(): void {
-    this.detectPredictions.set(new Map());
-    this.detectError.set('');
-  }
-
-  /**
-   * Stop the run. Keeps the pages already classified — they cost GPU time and
-   * are a valid partial result — and lets the chunk in flight land, so a later
-   * re-run resumes from there instead of re-asking.
-   */
-  async cancelDetection(): Promise<void> {
-    await this.electronService.blocksRunCancel(this.detectBookKey());
-  }
-
-  /**
-   * Copy the model's predictions into `category_corrections` so Label mode can
-   * edit them — the point of pre-labelling a book.
-   *
-   * Detect is a preview until this runs, which is what makes it safe to look at
-   * the model on any book. Adopting is therefore explicit, and on a book that
-   * already carries labels it CONFIRMS FIRST and writes a snapshot to disk
-   * beforehand. Hand labels are the expensive artifact in this project and
-   * in-memory undo does not survive a reload.
-   *
-   * The prediction snapshot is deliberately left in place: `writeModelCorrections`
-   * compares final labels against it, so adopting then flipping N blocks records
-   * exactly those N as corrections and nothing else.
-   *
-   * `silent` suppresses the confirmation alert for the automatic path — entering
-   * Label mode should not have to be dismissed. The overwrite warning is NOT
-   * suppressed by it; that one is a decision, not a notification.
-   */
-  async adoptDetectPredictions(silent = false): Promise<void> {
-    const predictions = this.detectPredictions();
-    if (predictions.size === 0) return;
-
-    const existing = this.editorState.categoryCorrections();
-    if (existing.size > 0) {
-      const choice = await this.electronService.showConfirmDialog({
-        title: 'Replace existing labels?',
-        message: `This book already has ${existing.size} categor`
-          + `${existing.size === 1 ? 'y' : 'ies'} set by hand. Using the model's `
-          + `${predictions.size} predictions will overwrite the ones that overlap.`,
-        detail: 'Your current labels are saved first, and "Restore labels" in the '
-          + 'Label panel brings them back.',
-        confirmLabel: 'Use predictions',
-        cancelLabel: 'Cancel',
-        type: 'warning',
-      });
-      if (!choice.confirmed) return;
-
-      const projectDir = this.trainingProjectDir();
-      if (projectDir) {
-        const snap = await this.electronService.trainingSnapshotLabels(projectDir, {
-          savedAt: new Date().toISOString(),
-          reason: `before adopting ${predictions.size} predictions from `
-            + `${this.detectAdapter() || this.detectModel()}`,
-          labels: Object.fromEntries(existing),
-        });
-        // A snapshot that failed to write is the one case worth stopping for:
-        // proceeding would destroy the labels the dialog just promised to keep.
-        if (!snap.success) {
-          this.showAlert({
-            title: 'Could not save your labels',
-            message: `Nothing was changed.\n${snap.error ?? ''}`.trim(),
-            type: 'error',
-          });
-          return;
-        }
-        this.hasLabelSnapshot.set(true);
-      }
-    }
-
-    // REGISTER THE CATEGORIES FIRST. A block whose category_id names a category
-    // the document does not carry has no colour to be drawn in, so it silently
-    // shows as unlabelled — the assignment succeeded and nothing appeared.
-    // Single-block assignment does this too (onSetBlockCategory); adopting a
-    // whole book hits it far harder, because the model uses classes the
-    // heuristic never assigned and so never registered.
-    const existingCategories = this.categories();
-    for (const categoryId of new Set(predictions.values())) {
-      if (existingCategories[categoryId]) continue;
-      const info = this.autoDetectedCategoryList().find(c => c.id === categoryId);
-      if (!info) continue;   // not one of the thirteen — ignore rather than invent
-      this.editorState.addCategory({
-        id: info.id,
-        name: info.name,
-        description: '',
-        color: info.color,
-        block_count: 0,
-        char_count: 0,
-        font_size: 0,
-        region: 'body',
-        sample_text: '',
-      });
-    }
-
-    this.editorState.setBulkCategoryCorrections(
-      [...predictions].map(([blockId, categoryId]) => ({ blockId, categoryId })));
-
-    // Label mode paints from the category colour layer; without it the labels
-    // are there but invisible, which reads as "nothing transferred".
-    this.showCategoryColors.set(true);
-
-    // These are real labels now, so drop the preview overlay: leaving it would
-    // paint the same answer twice, and clearing it is also what stops the
-    // automatic path re-adopting every time Label mode is entered. The snapshot
-    // that the correction log compares against is a separate signal and survives.
-    this.detectPredictions.set(new Map());
-
-    if (silent) return;
-    this.showAlert({
-      title: 'Predictions copied',
-      message: `${predictions.size} categories are now editable in Label mode. `
-        + `Correct them there — what you change is recorded so we can tell which `
-        + `categories the model is weakest at.`,
-    });
-  }
-
-  /**
-   * Note whether this book has a restorable snapshot. Called on open, because a
-   * snapshot's whole purpose is surviving the reload that clears the undo stack —
-   * if the button only appeared in the session that wrote it, it would be gone
-   * exactly when it is needed.
-   */
-  private async refreshLabelSnapshotState(): Promise<void> {
-    const projectDir = this.trainingProjectDir();
-    if (!projectDir) { this.hasLabelSnapshot.set(false); return; }
-    const result = await this.electronService.trainingReadLabelSnapshot(projectDir);
-    this.hasLabelSnapshot.set(!!(result.success && result.snapshot));
-  }
-
-  /** Put back the labels saved before predictions were adopted. */
-  async restoreLabelSnapshot(): Promise<void> {
-    const projectDir = this.trainingProjectDir();
-    if (!projectDir) return;
-    const result = await this.electronService.trainingReadLabelSnapshot(projectDir);
-    if (!result.success || !result.snapshot) {
-      this.showAlert({
-        title: 'Nothing to restore',
-        message: 'No labels have been overwritten for this book.',
-      });
-      return;
-    }
-    const { labels, savedAt, reason } = result.snapshot;
-    const count = Object.keys(labels).length;
-    const choice = await this.electronService.showConfirmDialog({
-      title: 'Restore saved labels?',
-      message: `Puts back the ${count} categor${count === 1 ? 'y' : 'ies'} saved `
-        + `${new Date(savedAt).toLocaleString()} (${reason}).`,
-      detail: 'This replaces the categories currently set for this book.',
-      confirmLabel: 'Restore',
-      cancelLabel: 'Cancel',
-      type: 'warning',
-    });
-    if (!choice.confirmed) return;
-
-    this.editorState.setBulkCategoryCorrections(
-      Object.entries(labels).map(([blockId, categoryId]) => ({ blockId, categoryId })));
-    this.showAlert({ title: 'Labels restored', message: `${count} categories put back.` });
-  }
-
-  /**
-   * Select every block the MODEL put in a category — read from the predictions,
-   * never from `block.category_id`. The two disagree constantly (that
-   * disagreement is the whole point of looking), so selecting by the stored
-   * category here would quietly answer a different question than the one the
-   * category list is showing.
-   *
-   * Toggles against the existing selection exactly as Select mode's list does:
-   * clicking a category adds its blocks, clicking it again removes them, and
-   * other categories already selected are left alone.
-   */
-  selectPredictedCategory(event: { categoryId: string; additive: boolean }): void {
-    const blockIds: string[] = [];
-    for (const [blockId, categoryId] of this.detectPredictions()) {
-      if (categoryId === event.categoryId) blockIds.push(blockId);
-    }
-    if (blockIds.length === 0) return;
-
-    const selection = new Set(this.selectedBlockIds());
-    const allSelected = blockIds.every(id => selection.has(id));
-    if (allSelected) {
-      blockIds.forEach(id => selection.delete(id));
-    } else {
-      blockIds.forEach(id => selection.add(id));
-    }
-    this.setSelectionWithHistory([...selection]);
-  }
-
-  /**
-   * Classify every page of the open book and paint the result.
-   *
-   * Deleted blocks are excluded: they are not in the exported EPUB, so asking
-   * the model about them would spend context on blocks nobody will see AND
-   * shift the geometry the remaining blocks are judged against — the gap above
-   * a block is measured from its predecessor, and a deleted predecessor would
-   * change it.
-   *
-   * The encoder version follows the ADAPTER the service reports rather than a
-   * setting here. v1 and v2 were trained on different prompt formats, and
-   * sending v2 features to the v1 checkpoint would produce confident nonsense
-   * that looks like a bad model rather than a mismatched client.
-   */
-  async runDetection(): Promise<void> {
-    if (this.detectRunning()) return;
-    const endpoint = this.detectEndpoint().trim();
-    if (!endpoint) return;
-
-    this.detectError.set('');
-
-    const backend = this.detectBackend();
-    const model = this.detectModel().trim();
-    const health = await this.electronService.blocksHealth(endpoint, backend, model);
-    if (!health.success) {
-      this.detectError.set(`Cannot reach the model service.\n${health.error ?? ''}`.trim());
-      return;
-    }
-    if (!health.loaded) {
-      this.detectError.set('The service is up but has no adapter loaded.');
-      return;
-    }
-    const adapter = health.adapter ?? '';
-    this.detectAdapter.set(adapter);
-
-    const encoded = this.encodeForDetection(adapter || model, health.promptVersion);
-    if (!encoded) return;
-    this.detectRunning.set(true);
-    this.detectDone.set(0);
-    this.detectTotal.set(encoded.pages.length);
-    this.detectPredictions.set(new Map());
-    this.detectRunAnswers = new Array(encoded.pages.length).fill(null);
-    this.detectRunVersion = encoded.version;
-    this.detectRunPages = encoded.pages;
-
-    // Main owns the loop from here. This side hands over the prompts once and
-    // then only listens — so an `ng serve` reload takes the listener with it and
-    // leaves the run untouched, and the fresh renderer re-attaches in ngOnInit.
-    const res = await this.electronService.blocksRunStart({
-      bookKey: this.detectBookKey(),
-      endpoint, backend, model, adapter,
-      stop: BLOCKS_STOP,
-      chunk: 8,
-      // `raw` carries the exact chat template the model was trained under.
-      // Ollama must not build the prompt itself — its stock Qwen3 template
-      // omits the empty <think> block training always included.
-      pages: encoded.pages.map(p => ({
-        page: p.page, system: p.system, user: p.user, raw: toRawPrompt(p),
-      })),
-    });
-    if (!res.success || !res.state) {
-      this.detectRunning.set(false);
-      this.detectError.set(res.error ?? 'could not start the run');
-      return;
-    }
-    // A run already in flight for the same pages is JOINED, not restarted, so
-    // this replays whatever it has already answered.
-    this.absorbRunState(res.state);
-  }
-
-  /**
-   * The import-time offer, carried out: OCR if the book has no blocks yet,
-   * classify, and adopt what comes back.
-   *
-   * The user agreed to this at import, in a dialog that said OCR would run
-   * first — so this is allowed to start a long job unattended. It is NOT
-   * allowed to do so quietly: Detect is opened first, so its progress bar and
-   * any error are on screen from the moment the window appears, and every
-   * failure below ends in a dialog rather than a document that silently never
-   * got labelled.
-   *
-   * Adoption is deferred to `finishRun`, the one place a run stops, because
-   * `runDetection` returns as soon as MAIN has taken the work — the answers
-   * arrive later over `blocks:run-progress`.
-   */
-  private async runImportDetection(): Promise<void> {
-    // Defence in depth. The importer never asks for an EPUB, but the flag rides
-    // a URL, and an EPUB's blocks come from its own markup — classifying them
-    // would spend hours re-deriving structure the file already states.
-    if (this.isCurrentDocumentEpub()) return;
-
-    this.activatePanel('detect');
-
-    // A born-digital PDF arrives with a text layer already parsed into blocks;
-    // only a scan needs Tesseract. Checking is not an optimisation — OCR would
-    // replace perfectly good blocks with a worse reading of a picture of them.
-    if (this.blocks().length === 0) {
-      const settings = this.ocrSettings();
-      const pages = Array.from({ length: this.totalPages() }, (_, i) => i);
-      const outcome = await this.runHeadlessOcr(settings.engine, settings.language, pages);
-      if (!outcome.ok) {
-        this.showAlert({
-          title: 'Could not detect page layout',
-          message: `The PDF had to be OCR'd first, and that failed.\n${outcome.error}`,
-          type: 'error',
-        });
-        return;
-      }
-    }
-
-    // refreshDetectModels lands on the highest-version installed blocks model;
-    // it is silent on failure, so the emptiness afterwards is what we report.
-    await this.refreshDetectModels();
-    if (!this.detectModel()) {
-      this.showAlert({
-        title: 'No page-layout model installed',
-        message: 'The book is ready to classify, but no blocks model is installed.\n\n'
-          + 'Install one from Settings → Add-ons, then press Load categories in the '
-          + 'Detect panel.',
-        type: 'error',
-      });
-      return;
-    }
-
-    this.adoptWhenRunFinishes = true;
-    await this.runDetection();
-    // runDetection reports a refusal to start (service unreachable, no adapter,
-    // nothing to classify) through detectError and returns without a run — which
-    // would otherwise leave the flag armed for whatever the user starts next.
-    // Still-armed is the test, not "not running": a run that reached finishRun
-    // already disarmed and already said its piece, and two dialogs about one
-    // failure is worse than none.
-    if (this.adoptWhenRunFinishes && !this.detectRunning()) {
-      this.adoptWhenRunFinishes = false;
-      const reason = this.detectError();
-      if (reason) {
-        this.showAlert({ title: 'Could not detect page layout', message: reason, type: 'error' });
-      }
-    }
-  }
-
-  /**
-   * The pages to classify, encoded for whichever adapter is loaded, or null with
-   * `detectError` set.
-   *
-   * Deleted blocks are excluded: they are not in the exported EPUB, so asking
-   * the model about them would spend context on blocks nobody will see AND
-   * shift the geometry the remaining blocks are judged against.
-   *
-   * The encoder version follows the ADAPTER the service reports rather than a
-   * setting here. v1 and v2 were trained on different prompt formats, and
-   * sending v2 features to the v1 checkpoint would produce confident nonsense
-   * that looks like a bad model rather than a mismatched client.
-   */
-  private encodeForDetection(adapterOrModel: string, declaredVersion?: number):
-    { pages: ReturnType<typeof encodeBook>; version: BlocksVersion } | null {
-    let version: BlocksVersion;
-    try {
-      version = (declaredVersion as BlocksVersion | undefined)
-        ?? this.resolvePromptVersion(adapterOrModel);
-    } catch (err) {
-      // An undeclared prompt format is a hard stop, not a default: serving the
-      // wrong class list looks exactly like an undertrained model.
-      this.detectError.set(err instanceof Error ? err.message : String(err));
-      return null;
-    }
-    const deleted = this.deletedBlockIds();
-    const live = this.blocks().filter(b => !deleted.has(b.id));
-    if (live.length === 0) {
-      this.detectError.set('No blocks to classify — run OCR first.');
-      return null;
-    }
-    const pages = encodeBook(live, this.pageDimensions(), {
-      version,
-      totalPages: this.totalPages(),
-    });
-    if (pages.length === 0) {
-      this.detectError.set('No pages to classify.');
-      return null;
-    }
-    return { pages, version };
-  }
-
-  /**
-   * How a run is found again after the renderer was thrown away.
+   * The run key for this document, shared with the foundry OCR pipeline.
    *
    * THE FILE ON SCREEN, and nothing else. `effectivePath()` is the document this
    * session actually analyzed and is painting — the override the version picker
    * chose, the library copy, the corpus book — so a run found under it is by
    * construction a reading of that document. It is stable across a reload (a
-   * path is not minted per session), which is the property the old key was
-   * chosen for.
+   * path is not minted per session), which is the property this key was chosen
+   * for.
    *
-   * Neither of the old signals says that:
+   * Neither of the alternatives says that:
    *
    *  - `editorState.fileHash()` means two different things on the two load
    *    paths. From `loadPdf` it is the hash of the file being shown; from
@@ -7218,230 +6488,6 @@ export class PdfPickerComponent implements OnInit {
    */
   private detectBookKey(): string {
     return this.effectivePath() || 'unknown';
-  }
-
-  /**
-   * Answer text by page index for the run being watched, and the pages it was
-   * asked about. Plain fields rather than signals: they are bookkeeping for
-   * parsing, and nothing renders from them.
-   */
-  private detectRunAnswers: (string | null)[] = [];
-  private detectRunPages: ReturnType<typeof encodeBook> = [];
-  private detectRunVersion: BlocksVersion = 3;
-  private detectRunUnsubscribe: (() => void) | null = null;
-
-  /**
-   * Set only by the import-time chain: adopt this run's answers as soon as it
-   * stops. A run the user starts by hand stays a preview, which is what makes
-   * Detect safe to point at any book.
-   */
-  private adoptWhenRunFinishes = false;
-
-  /**
-   * Adopt a run's state wholesale: parse every answer it holds and paint.
-   *
-   * Used on attach (where the answers arrived while this renderer did not
-   * exist) and on start (where a joined run may already have some).
-   */
-  private absorbRunState(state: BlocksRunState): void {
-    this.detectAdapter.set(state.adapter);
-    this.detectTotal.set(state.total);
-    this.detectDone.set(state.done);
-    this.detectRunAnswers = state.answers.slice();
-    // `live`, not `status`: a run recovered from disk reads `running` because
-    // that is how it was interrupted, but nothing is behind it, so showing a
-    // progress bar that will never move would be a lie.
-    this.detectRunning.set(state.live);
-    if (state.status === 'error' && state.error) {
-      this.detectError.set(`Stopped after ${state.done} of ${state.total} pages.\n${state.error}`);
-    }
-    this.repaintFromRunAnswers();
-    if (!state.live) this.finishRun(state);
-  }
-
-  /**
-   * Re-derive every prediction from the answer text.
-   *
-   * Parsing is cheap next to generating, and re-parsing the lot is what makes
-   * attach trivially correct: there is no incremental state to reconcile, just
-   * the same pure function over the same strings.
-   */
-  private repaintFromRunAnswers(): void {
-    if (this.detectRunPages.length !== this.detectRunAnswers.length) return;
-    const merged = new Map<string, string>();
-    this.detectRunAnswers.forEach((answer, i) => {
-      if (answer === null) return;
-      const page = this.detectRunPages[i];
-      for (const [blockId, category] of parseAnswer(answer, page.blockIds, this.detectRunVersion)) {
-        merged.set(blockId, category);
-      }
-    });
-    this.detectPredictions.set(merged);
-  }
-
-  /**
-   * Record what the model said, once the run is no longer moving.
-   *
-   * Set even on a partial run — the pages it did answer are still a valid
-   * measurement, and a run that stopped early is the normal case on a long book.
-   * Adapter recorded alongside, since a log spanning two models is unreadable.
-   */
-  private finishRun(state: BlocksRunState): void {
-    this.detectRunning.set(false);
-    this.detectPredictionSnapshot.set(new Map(this.detectPredictions()));
-    this.detectSnapshotAdapter.set(state.adapter || state.model);
-
-    // The import-time chain's last step. Disarmed first, so a partial run that
-    // the user later resumes does not adopt a second time behind their back.
-    if (this.adoptWhenRunFinishes) {
-      this.adoptWhenRunFinishes = false;
-      if (this.detectPredictions().size > 0) {
-        void this.adoptDetectPredictions(true);
-      } else {
-        this.showAlert({
-          title: 'Nothing was labelled',
-          message: this.detectError()
-            || 'The model returned no usable labels for this book.',
-          type: 'error',
-        });
-      }
-    }
-  }
-
-  /**
-   * Follow the run main is driving. Called once, and never unsubscribed while
-   * the component lives — a run outlives any single visit to Detect mode, and
-   * the whole point is that leaving and coming back does not lose it.
-   */
-  private watchDetectionRun(): void {
-    if (this.detectRunUnsubscribe) return;
-    this.detectRunUnsubscribe = this.electronService.onBlocksRunProgress((progress) => {
-      if (progress.bookKey !== this.detectBookKey()) return;
-      for (const { index, answer } of progress.answered) {
-        if (index < this.detectRunAnswers.length) this.detectRunAnswers[index] = answer;
-      }
-      this.detectDone.set(progress.done);
-      this.detectTotal.set(progress.total);
-      this.repaintFromRunAnswers();
-
-      // A model that answers nothing parseable for the first chunk is the wrong
-      // model, not a hard page. Say so rather than grinding through the book
-      // painting nothing. Checked here rather than in main, which cannot parse.
-      if (progress.done > 0 && progress.done <= 8 && this.detectPredictions().size === 0) {
-        this.detectError.set(
-          `"${this.detectModel().trim()}" did not answer in the expected format — no `
-          + `block labels came back for the first ${progress.done} pages.\n\n`
-          + `This prompt is written for the block-category fine-tune. A general `
-          + `chat model will not produce "<id> <category>" lines.`);
-        void this.electronService.blocksRunCancel(this.detectBookKey());
-        return;
-      }
-
-      if (progress.status === 'error' && progress.error) {
-        this.detectError.set(
-          `Stopped after ${progress.done} of ${progress.total} pages.\n${progress.error}`);
-      }
-      if (progress.status !== 'running') {
-        this.finishRun({
-          bookKey: progress.bookKey, status: progress.status, live: false,
-          model: this.detectModel().trim(), adapter: this.detectAdapter(),
-          total: progress.total, done: progress.done,
-          answers: this.detectRunAnswers, startedAt: 0, updatedAt: 0,
-        });
-      }
-    });
-  }
-
-  /**
-   * Rejoin the run for this book, if main is still driving one.
-   *
-   * This is what makes an edit under src/ survive: `ng serve` reloads the
-   * renderer, main keeps classifying, and the fresh renderer arrives here,
-   * re-encodes the same pages (cheap — no model involved), and picks up every
-   * answer collected while it was gone.
-   *
-   * Deliberately does NOT restart a dead run. A run that only exists on disk —
-   * the app died mid-book — comes back `live: false`, and its partial answers
-   * are painted and left alone. Resuming it would mean loading several GB of
-   * model as a side effect of opening a book, which is not something to do
-   * unasked. Pressing "Load categories" resumes from `done` instead of starting
-   * over, because run-start matches the saved fingerprint.
-   */
-  private async reattachDetectionRun(): Promise<void> {
-    const res = await this.electronService.blocksRunAttach(this.detectBookKey());
-    const state = res.state;
-    if (!state || state.total === 0) return;
-
-    const encoded = this.encodeForDetection(state.adapter || state.model);
-    if (!encoded) { this.detectError.set(''); return; }
-    if (encoded.pages.length !== state.total) {
-      // The book changed while the run was away, so its answers are about pages
-      // that no longer line up. Dropped rather than misapplied — the same guard
-      // main enforces by fingerprint, applied before anything paints.
-      console.info('[detect] ignoring a run for %d pages; the book now encodes to %d',
-        state.total, encoded.pages.length);
-      return;
-    }
-    this.detectRunPages = encoded.pages;
-    this.detectRunVersion = encoded.version;
-    this.absorbRunState(state);
-    console.info('[detect] re-attached to a %s run: %d/%d pages already answered',
-      state.live ? 'live' : 'stopped', state.done, state.total);
-  }
-
-  /**
-   * Write the model-correction log: for each block the model answered, the label
-   * it ended up with by hand.
-   *
-   * ONE RECORD PER BLOCK, and only where the two disagree. A block flipped
-   * body -> quote -> list yields `list`; a block flipped away and back to the
-   * model's own answer yields nothing, because agreeing is not a correction.
-   * That falls out of reading final state rather than watching keystrokes —
-   * there is deliberately no per-flip hook.
-   *
-   * This is DIAGNOSTIC, never training data. The corrected label alone is the
-   * training signal (cross-entropy already weights a confident mistake more
-   * heavily than a near miss); what this answers is which class boundaries are
-   * hard and whether a confusion is systematic or scattered.
-   */
-  private async writeModelCorrections(projectDir: string): Promise<void> {
-    const predicted = this.detectPredictionSnapshot();
-    if (predicted.size === 0) return;   // Detect never ran for this book
-
-    const labels = this.editorState.categoryCorrections();
-    const byId = new Map(this.blocks().map(b => [b.id, b]));
-    const at = new Date().toISOString();
-    const book = projectDir.split(/[/\\]/).pop() || 'book';
-    const adapter = this.detectSnapshotAdapter();
-
-    const records = [];
-    for (const [blockId, corrected] of labels) {
-      const prediction = predicted.get(blockId);
-      // Untouched by the model, or the model already agreed.
-      if (prediction === undefined || prediction === corrected) continue;
-      const block = byId.get(blockId);
-      records.push({
-        at, book, adapter, blockId,
-        page: block?.page ?? -1,
-        predicted: prediction,
-        corrected,
-        fsize: block?.font_size,
-        lines: block?.line_count,
-        chars: block?.char_count,
-        // Enough text to recognise the block when reading the log; the full
-        // string lives in labels.json if it is ever needed.
-        text: (block?.text || '').replace(/\s+/g, ' ').trim().slice(0, 120),
-      });
-    }
-
-    const result = await this.electronService.trainingWriteCorrections(projectDir, records);
-    if (!result.success) {
-      // Diagnostics must never block an export — the labels are the valuable
-      // part and they are already written.
-      console.error('[Training] Correction log not written:', result.error);
-      return;
-    }
-    console.log(`[Training] ${records.length} model correction(s) -> ${result.path}`);
   }
 
   recategorizeBlocks(): void {
@@ -8443,11 +7489,11 @@ export class PdfPickerComponent implements OnInit {
 
     // Regular categories: select ALL blocks in category (including deleted ones)
     // User can press Delete to toggle deletion state.
-    // Category resolved the way the viewer paints it (effectiveCategoryId), and
+    // Category resolved the way the viewer paints it (block.category_id), and
     // the row's own count resolves the same way — a row that says 12 and selects
     // 9 would just relocate the divergence this fix exists to remove.
     const allBlocks = this.blocks();
-    const categoryBlocks = allBlocks.filter(b => this.effectiveCategoryId(b) === categoryId);
+    const categoryBlocks = allBlocks.filter(b => b.category_id === categoryId);
     const blockIds = categoryBlocks.map(b => b.id);
 
     if (blockIds.length === 0) return;
@@ -8471,7 +7517,7 @@ export class PdfPickerComponent implements OnInit {
   selectInverseOfCategory(categoryId: string): void {
     const deleted = this.deletedBlockIds();
     const blockIds = this.blocks()
-      .filter(b => this.effectiveCategoryId(b) === categoryId && !deleted.has(b.id))
+      .filter(b => b.category_id === categoryId && !deleted.has(b.id))
       .map(b => b.id);
 
     const currentSelection = new Set(this.selectedBlockIds());
@@ -9151,7 +8197,6 @@ export class PdfPickerComponent implements OnInit {
     this.corpusReadOnlyReason.set(null);
     if (session) this.applyCorpusSnapshot(book, session);
 
-    await this.refreshLabelSnapshotState();
 
     // Open on the work that is actually available. With a snapshot on screen
     // that is labelling. Without one the only thing that can happen next is an
@@ -9200,7 +8245,6 @@ export class PdfPickerComponent implements OnInit {
     this.corpusBook.set(book);
     if (book.session) {
       this.applyCorpusSnapshot(book, book.session);
-      await this.refreshLabelSnapshotState();
       this.activatePanel('label');
     }
   }
@@ -9689,11 +8733,6 @@ export class PdfPickerComponent implements OnInit {
     // dataset export continues regardless — the snapshot is provenance, not a
     // precondition.
     await this.saveTrainingSession();
-
-    // Where the model was wrong, alongside the labels rather than inside them.
-    // Written on export because that is when the labels are final; a no-op for a
-    // book Detect never ran on.
-    await this.writeModelCorrections(projectDir);
 
     const records = this.trainingExport.buildRecords(
       projectDir.split(/[/\\]/).pop() || 'book',
@@ -12351,7 +11390,6 @@ export class PdfPickerComponent implements OnInit {
           // exist, which for a PDF is here rather than at the end of the load.
           if (this.activeDocumentId() === docId) {
             await this.importTrainingLabelsOnce();
-            await this.refreshLabelSnapshotState();
           }
 
           // Run deferred analysis matching now that text/spans are ready
@@ -12387,7 +11425,6 @@ export class PdfPickerComponent implements OnInit {
       // an archived session. Bring it in when this project has none of its own;
       // the archive itself is only ever read.
       await this.importTrainingLabelsOnce();
-      await this.refreshLabelSnapshotState();
     } catch (err) {
       console.error('Failed to load project source file:', err);
       const errorMsg = (err as Error).message || String(err);
@@ -13106,22 +12143,10 @@ export class PdfPickerComponent implements OnInit {
       this.currentCropRect.set(null);
     }
 
-    // Entering detect: ask Ollama what it currently holds, so the picker shows
-    // models that exist rather than a name typed from memory.
-    if (id === 'detect' && previous !== 'detect') {
-      void this.refreshDetectModels();
-    }
-
     // Entering label: labelling is driven by selecting blocks and pressing a
     // category key, which the edit pointer cannot do.
     if (id === 'label' && previous !== 'label') {
       this.viewerInteraction.set('select');
-      // Predictions waiting from a Detect run become the starting point, because
-      // going to Label mode right after a run means exactly one thing: correct
-      // what the model said. `adoptDetectPredictions` still confirms and
-      // snapshots first when the book already carries labels, so arriving here
-      // can never silently overwrite hand-labelling.
-      if (this.detectPredictions().size > 0) void this.adoptDetectPredictions(true);
     }
 
     // Entering split: auto-enable splitting and reset the preview page.
@@ -14919,7 +13944,7 @@ export class PdfPickerComponent implements OnInit {
       && !block.is_image;
   }
 
-  /** The run key for this document — the same book identity Detect uses. */
+  /** The run key for this document. */
   foundryBookKey(): string {
     return this.detectBookKey();
   }

@@ -27,14 +27,16 @@
  * — are gone, and so is the file that held them. A model this machine lacks is
  * foundry's error to raise, naming the model id and `foundry models pull`.
  *
- * The CODE cutover is not done. pdf-picker's OCR button goes to foundry and only
- * to foundry, but this app's own encoder and appliers are still in the tree —
+ * The CODE cutover is nearly done. The picker's own Detect panel — the second
+ * detect path, and half the reason a second copy of the prompt format existed —
+ * is gone: there is one detect, and it is `foundry blocks` writing annotations
+ * into the working document. What is left in the tree is
  * `src/app/features/pdf-picker/services/blocks-encoder.ts` and the blocks
- * servers — because they still back two features foundry does not replace: the
- * picker's manual Detect panel and the Training tab's corpus building. The
- * extraction is not finished until those copies are *deleted*, because two
- * implementations of a prompt format is the failure it exists to prevent; that
- * deletion is a decision about those two features, not about this module.
+ * servers, for the one feature foundry does not replace: the Training tab's
+ * corpus building, which drives the model page by page from a checkout rather
+ * than as a batch. The extraction finishes when that copy is *deleted* too,
+ * because two implementations of a prompt format is the failure it exists to
+ * prevent; that deletion is a decision about that feature, not about this module.
  *
  * ── Resolution, and why there is no PATH lookup ──
  *

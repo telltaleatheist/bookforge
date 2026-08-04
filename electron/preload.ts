@@ -12,7 +12,6 @@ import type { OrpheusBatchConfig } from './orpheus-batch';
 import type { EpubPreservingEdits } from './epub-processor';
 import type { WhisperModelStatus, WhisperDownloadProgress } from './whisper-models';
 import type { CorrectSentencesSession, GenerateCandidatesResult } from './correct-sentences-bridge';
-import type { BlocksRunState, BlocksRunProgress } from './blocks-run';
 import type { JobStageProgress } from './job-stages';
 // Types only — this module compiles to nothing at runtime, so the wire shapes are
 // imported rather than re-declared (see shared/processing/pass-types.ts).
@@ -2266,7 +2265,7 @@ export interface ElectronAPI {
   };
   editor: {
     openWindow: (projectPath: string, options?: { mode?: string }) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
-    openWindowWithBfp: (projectDir: string, sourcePath: string, options?: { detect?: boolean }) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
+    openWindowWithBfp: (projectDir: string, sourcePath: string) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
     closeWindow: (projectPath: string) => Promise<{ success: boolean }>;
     getVersions: (projectDir: string) => Promise<{
       success: boolean;
@@ -2303,10 +2302,6 @@ export interface ElectronAPI {
     load: (projectDir: string) => Promise<{ success: boolean; session?: unknown; error?: string }>;
     save: (projectDir: string, session: unknown) => Promise<{ success: boolean; skipped?: boolean; path?: string; error?: string }>;
     export: (projectDir: string, records: unknown[]) => Promise<{ success: boolean; path?: string; count?: number; error?: string }>;
-    writeCorrections: (projectDir: string, records: unknown[]) => Promise<{ success: boolean; path?: string; count?: number; error?: string }>;
-    readCorrections: (projectDir: string) => Promise<{ success: boolean; records?: unknown[]; error?: string }>;
-    snapshotLabels: (projectDir: string, snapshot: unknown) => Promise<{ success: boolean; path?: string; count?: number; error?: string }>;
-    readLabelSnapshot: (projectDir: string) => Promise<{ success: boolean; snapshot?: { savedAt: string; reason: string; labels: Record<string, string> } | null; error?: string }>;
     // The Training tab: the corpus as a browsable list, plus the OCR write that
     // gives a newly added book blocks for labels to key to. Same namespace as
     // the label-session calls above because both are the corpus, not the library.
@@ -2354,10 +2349,6 @@ export interface ElectronAPI {
     models: (endpoint: string, backend?: string) => Promise<{ success: boolean; models?: string[]; error?: string }>;
     unload: (endpoint?: string, model?: string) => Promise<{ success: boolean; error?: string }>;
     classify: (payload: unknown) => Promise<{ success: boolean; answers?: string[]; error?: string }>;
-    runStart: (payload: unknown) => Promise<{ success: boolean; state?: BlocksRunState; error?: string }>;
-    runAttach: (bookKey: string) => Promise<{ success: boolean; state?: BlocksRunState | null }>;
-    runCancel: (bookKey: string) => Promise<{ cancelled: boolean }>;
-    onRunProgress: (callback: (progress: BlocksRunProgress) => void) => () => void;
   };
   analysis: {
     delete: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
@@ -4152,8 +4143,8 @@ const electronAPI: ElectronAPI = {
   editor: {
     openWindow: (projectPath: string, options?: { mode?: string }) =>
       ipcRenderer.invoke('editor:open-window', projectPath, options),
-    openWindowWithBfp: (projectDir: string, sourcePath: string, options?: { detect?: boolean }) =>
-      ipcRenderer.invoke('editor:open-window-with-bfp', projectDir, sourcePath, options),
+    openWindowWithBfp: (projectDir: string, sourcePath: string) =>
+      ipcRenderer.invoke('editor:open-window-with-bfp', projectDir, sourcePath),
     closeWindow: (projectPath: string) =>
       ipcRenderer.invoke('editor:close-window', projectPath),
     getVersions: (projectDir: string) =>
@@ -4180,14 +4171,6 @@ const electronAPI: ElectronAPI = {
     load: (projectDir: string) => ipcRenderer.invoke('training:load', projectDir),
     save: (projectDir: string, session: unknown) => ipcRenderer.invoke('training:save', projectDir, session),
     export: (projectDir: string, records: unknown[]) => ipcRenderer.invoke('training:export', projectDir, records),
-    writeCorrections: (projectDir: string, records: unknown[]) =>
-      ipcRenderer.invoke('training:write-corrections', projectDir, records),
-    readCorrections: (projectDir: string) =>
-      ipcRenderer.invoke('training:read-corrections', projectDir),
-    snapshotLabels: (projectDir: string, snapshot: unknown) =>
-      ipcRenderer.invoke('training:snapshot-labels', projectDir, snapshot),
-    readLabelSnapshot: (projectDir: string) =>
-      ipcRenderer.invoke('training:read-label-snapshot', projectDir),
     list: () => ipcRenderer.invoke('training:list'),
     corpora: () => ipcRenderer.invoke('training:corpora'),
     setReviewed: (dir: string, reviewed: boolean) =>
@@ -4230,21 +4213,6 @@ const electronAPI: ElectronAPI = {
     unload: (endpoint?: string, model?: string) =>
       ipcRenderer.invoke('blocks:unload', endpoint, model),
     classify: (payload: unknown) => ipcRenderer.invoke('blocks:classify', payload),
-    // A whole-book run owned by main, so it survives this renderer being
-    // reloaded out from under it. `attach` is what a fresh renderer calls to
-    // find the run it lost and pick the answers back up.
-    runStart: (payload: unknown) => ipcRenderer.invoke('blocks:run-start', payload),
-    runAttach: (bookKey: string) => ipcRenderer.invoke('blocks:run-attach', bookKey),
-    runCancel: (bookKey: string) => ipcRenderer.invoke('blocks:run-cancel', bookKey),
-    onRunProgress: (callback: (progress: BlocksRunProgress) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, progress: BlocksRunProgress) => {
-        callback(progress);
-      };
-      ipcRenderer.on('blocks:run-progress', listener);
-      return () => {
-        ipcRenderer.removeListener('blocks:run-progress', listener);
-      };
-    },
   },
   analysis: {
     delete: (projectDir: string) =>
