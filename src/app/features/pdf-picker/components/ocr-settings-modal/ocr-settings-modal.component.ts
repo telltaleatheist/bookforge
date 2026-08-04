@@ -186,6 +186,45 @@ export interface OcrCompletionEvent {
             <p class="estimate">{{ estimate() }}</p>
           }
 
+          @if (!corpusMode()) {
+            <!--
+              How the run is WATCHED, never what it does. It runs in the main
+              process either way; these say whether this dialog stays to watch
+              it and whether the window follows the working copy it makes.
+            -->
+            <div class="section">
+              <h3 class="section-title">While it runs</h3>
+              <label class="checkbox-option">
+                <input
+                  type="checkbox"
+                  [checked]="runInBackground()"
+                  (change)="runInBackgroundChange.emit($any($event.target).checked)"
+                />
+                <span class="checkbox-label">
+                  <strong>Run in background</strong>
+                  <span class="checkbox-hint">
+                    Close this dialog as soon as it is queued. Progress lives on the Queue tab,
+                    where it serializes against everything else that wants the GPU.
+                  </span>
+                </span>
+              </label>
+              <label class="checkbox-option">
+                <input
+                  type="checkbox"
+                  [checked]="openWhenFinished()"
+                  (change)="openWhenFinishedChange.emit($any($event.target).checked)"
+                />
+                <span class="checkbox-label">
+                  <strong>Open when finished</strong>
+                  <span class="checkbox-hint">
+                    Show the working copy the moment the run lands — unless the window has
+                    moved on to another book by then.
+                  </span>
+                </span>
+              </label>
+            </div>
+          }
+
           @if (running()) {
             <div class="section">
               <h3 class="section-title">Progress</h3>
@@ -592,9 +631,17 @@ export class OcrSettingsModalComponent implements OnDestroy {
   projectDir = input<string>('');
   /** Set when this window is labelling a TRAINING book. See the class comment. */
   corpusBookDir = input<string>('');
+  /**
+   * The window's two long-run habits, owned by the picker so this dialog and the
+   * station bar cannot answer them differently. Neither changes the WORK.
+   */
+  runInBackground = input<boolean>(false);
+  openWhenFinished = input<boolean>(true);
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   close = output<void>();
+  runInBackgroundChange = output<boolean>();
+  openWhenFinishedChange = output<boolean>();
   /** The legacy corpus/background path still reports page results this way. */
   ocrCompleted = output<OcrCompletionEvent>();
   backgroundJobStarted = output<string>();
@@ -878,7 +925,12 @@ export class OcrSettingsModalComponent implements OnDestroy {
       });
       if (!result.success) {
         this.error.set(result.error || 'The run was refused and no reason was given.');
+        return;
       }
+      // "Run in background" is literally "stop watching": the run belongs to
+      // main, so closing this dialog changes nothing about it, and the queue is
+      // where a long job is watched and cancelled.
+      if (this.runInBackground()) this.close.emit();
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
     }

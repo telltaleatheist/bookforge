@@ -28,7 +28,24 @@ import { MergePanelComponent } from './components/merge-panel/merge-panel.compon
 import { RegexCriteria, defaultRegexCriteria } from './components/regex-category-builder/regex-category-builder.component';
 import { FilePickerComponent } from './components/file-picker/file-picker.component';
 import { CropPanelComponent } from './components/crop-panel/crop-panel.component';
-import { PipelineBarComponent, PipelineStation } from './components/pipeline-bar/pipeline-bar.component';
+import { StationBarComponent, StationTab, StationAction } from './components/station-bar/station-bar.component';
+import {
+  PassOptionsModalComponent,
+  type PassAiChoice,
+  type PassOptionsKind,
+  type PassOptionsResult,
+} from './components/pass-options-modal/pass-options-modal.component';
+import {
+  STATIONS,
+  STATION_LABELS,
+  existingStations,
+  nextStation,
+  stationMintedBy,
+  type StationId,
+} from '@shared/document/stations';
+import type { ChainPassRequest } from '@shared/processing/pass-types';
+import { QueueService } from '../queue/services/queue.service';
+import { SettingsService } from '../../core/services/settings.service';
 import { computeBaselines, learnFromBreaks, detectParagraphBreaks, getDefaultConfig, type DetectionConfig } from './services/paragraph-detector';
 import { recategorize as recategorizeBlocksFromLearner, classifyBlockHeuristic, computeBaselines as computeCategoryBaselines, isDefaultThresholds, detectMergeableGroups, createMergedBlock, type BlockAssignment, type CategoryBaselines, type ClassificationThresholds, type MergeGroup } from './services/category-learner';
 import { TrainingExportService } from './services/training-export.service';
@@ -313,8 +330,6 @@ const UNCERTAIN_CONFIDENCE = 0.15;
  * chapter-marking screen whether or not it needed one; it is a rail row now,
  * and the export gate is what makes sure it was not simply forgotten.
  */
-type PipelineStep = 'select' | 'epub-review';
-
 // Alert modal
 interface AlertModal {
   title: string;
@@ -341,7 +356,8 @@ interface AlertModal {
     FilePickerComponent,
     CropPanelComponent,
     DocumentNavComponent,
-    PipelineBarComponent,
+    StationBarComponent,
+    PassOptionsModalComponent,
     TabBarComponent,
     OcrSettingsModalComponent,
     ExportSettingsModalComponent,
@@ -565,11 +581,12 @@ interface AlertModal {
           <div class="viewer-timeline-wrapper">
             <!-- Viewer -->
             <div class="viewer-pane">
-              @if (reviewMode()) {
+              <!-- Said, never hidden: a station whose gestures silently do
+                   nothing is indistinguishable from a broken picker. -->
+              @if (curationReadOnlyReason(); as reason) {
                 <div class="review-banner">
-                  <span class="review-banner-icon">🎧</span>
-                  <span class="review-banner-text">This is the final text that goes to TTS — review only.</span>
-                  <span class="review-banner-hint">See a problem? Hit <strong>Back</strong> to fix it at the source.</span>
+                  <span class="review-banner-icon">🔒</span>
+                  <span class="review-banner-text">{{ reason }}</span>
                 </div>
               }
               @if (lightweightMode()) {
@@ -588,7 +605,7 @@ interface AlertModal {
                 </div>
               } @else {
                 <app-pdf-viewer
-                [blocks]="blocks()"
+                [blocks]="stationBlocks()"
                 [categories]="categoriesWithPreview()"
                 [hiddenCategoryIds]="hiddenCategoryIds()"
               [categoryHighlights]="combinedHighlights()"
@@ -780,19 +797,45 @@ interface AlertModal {
         </div>
       </desktop-split-pane>
 
-      <!-- Bottom control bar: the audiobook-prep path (embedded pipeline only).
-           Never for a corpus book — every station of it writes into a project. -->
+      <!-- The ladder. Never for a corpus book — every station of it writes into
+           a project, and a corpus book is deliberately not one. -->
       @if (embedded() && !corpusMode()) {
-        <app-pipeline-bar
-          [stations]="pipelineStations()"
-          [contextLine]="pipelineContext()"
-          [primaryLabel]="pipelinePrimaryLabel()"
-          [backDisabled]="pipelineStep() === 'select'"
-          [busy]="pipelineBusy()"
-          (back)="pipelineBack()"
-          (primary)="pipelinePrimary()"
-          (stationClick)="goToStation($event)"
-        />
+        <div class="station-foot">
+          <app-station-bar
+            [tabs]="stationTabs()"
+            [actions]="stationActions()"
+            [contextLine]="stationContext()"
+            [nextLabel]="stationNextLabel()"
+            [nextReason]="stationNextStep().lockedReason"
+            [busy]="stationBusy()"
+            (stationClick)="openStation($event)"
+            (actionClick)="onStationAction($event)"
+            (next)="stationNext()"
+          />
+          <!--
+            How a long operation is WATCHED, never what it does. The stage runs
+            in main either way; these say whether the queue watches it and
+            whether this window follows the artifact it makes.
+          -->
+          <div class="long-run-options">
+            <label class="long-run-option">
+              <input
+                type="checkbox"
+                [checked]="runInBackground()"
+                (change)="setRunInBackground($any($event.target).checked)"
+              />
+              <span>Run in background</span>
+            </label>
+            <label class="long-run-option">
+              <input
+                type="checkbox"
+                [checked]="openWhenFinished()"
+                (change)="setOpenWhenFinished($any($event.target).checked)"
+              />
+              <span>Open when finished</span>
+            </label>
+          </div>
+        </div>
       }
     } @else if (embedded()) {
       <!-- Loading state for embedded mode -->
@@ -1030,10 +1073,24 @@ interface AlertModal {
         [bookKey]="bookKey()"
         [projectDir]="projectPath() || ''"
         [corpusBookDir]="corpusBook()?.dir || ''"
+        [runInBackground]="runInBackground()"
+        [openWhenFinished]="openWhenFinished()"
         (close)="showOcrSettings.set(false)"
+        (runInBackgroundChange)="setRunInBackground($event)"
+        (openWhenFinishedChange)="setOpenWhenFinished($event)"
         (ocrCompleted)="onOcrCompleted($event)"
         (documentReadyToPaint)="onDocumentReadyToPaint()"
         (backgroundJobStarted)="onBackgroundOcrStarted($event)"
+      />
+    }
+
+    <!-- The two EPUB passes that cannot start from a button alone. -->
+    @if (passOptionsKind(); as kind) {
+      <app-pass-options-modal
+        [kind]="kind"
+        [ai]="passAiChoice()"
+        (cancel)="passOptionsKind.set(null)"
+        (confirmed)="onPassOptionsConfirmed($event)"
       />
     }
 
@@ -1311,7 +1368,33 @@ interface AlertModal {
       overflow: hidden;
     }
 
-    /* Read-only banner shown over the viewer during the EPUB review station */
+    .station-foot {
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .long-run-options {
+      display: flex;
+      gap: var(--ui-spacing-lg);
+      padding: var(--ui-spacing-xs) var(--ui-spacing-md);
+      background: var(--bg-toolbar);
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .long-run-option {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-xs);
+      font-size: var(--ui-font-xs);
+      color: var(--text-secondary);
+      cursor: pointer;
+
+      input { accent-color: var(--accent); }
+    }
+
+    /* The sentence saying why the artifact on screen is not curated here */
     .review-banner {
       display: flex;
       align-items: center;
@@ -2523,6 +2606,8 @@ export class PdfPickerComponent implements OnInit {
   private readonly ocrJobService = inject(OcrJobService);
   readonly themeService = inject(DesktopThemeService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly queueService = inject(QueueService);
+  private readonly settingsService = inject(SettingsService);
 
   // Injected services for state management
   readonly editorState = inject(PdfEditorStateService);
@@ -2851,6 +2936,18 @@ export class PdfPickerComponent implements OnInit {
     const unwatch = this.documentBlocks.watchProgress();
     this.destroyRef.onDestroy(unwatch);
 
+    this.restoreLongRunOptions();
+
+    // A stage this window did not start still changes what this book HAS — the
+    // OCR dialog submits to the queue, and the queue's worker is a different
+    // process's business. So the station tabs are re-measured whenever any stage
+    // for THIS project lands, rather than only after a stage this window awaited.
+    const unwatchFinished = this.electronService.onDocumentStageFinished((event) => {
+      if (event.projectDir !== this.projectPath()) return;
+      void this.onProjectStageFinished(event.stage);
+    });
+    this.destroyRef.onDestroy(unwatchFinished);
+
     const corpusDir = this.corpusPath();
     if (corpusDir) {
       // Training-corpus book: blocks and labels come from the corpus folder,
@@ -3080,7 +3177,7 @@ export class PdfPickerComponent implements OnInit {
       // Category assignment — label mode only. Normal editing keeps these keys
       // free: someone cleaning a book shouldn't be able to reassign a category
       // by brushing a letter key with blocks selected.
-      if (this.labelMode() && this.selectedBlockIds().length > 0 && !this.reviewMode()) {
+      if (this.labelMode() && this.selectedBlockIds().length > 0 && !this.curationLocked()) {
         const categoryId = CATEGORY_SHORTCUTS[event.shiftKey ? `shift+${key}` : key];
         if (categoryId) {
           event.preventDefault();
@@ -3176,55 +3273,237 @@ export class PdfPickerComponent implements OnInit {
   readonly loadingText = signal('Loading...');
   readonly lightweightMode = signal(false);  // Process without rendering pages
 
-  // Pipeline state (embedded mode: Select → Chapters → EPUB Review)
-  readonly pipelineStep = signal<PipelineStep>('select');
-  private pipelineTransitioning = false; // guard to prevent reset during transitions
+  // ───────────────────────────────────────────────────────────────────────────
+  // THE LADDER — Archive → Working → EPUB → Narration
+  // ───────────────────────────────────────────────────────────────────────────
+  //
+  // Pipeline V2 (docs/PIPELINE_V2_PLAN.md). Processing is not a place: every
+  // operation is a button on the station where its INPUT lives, and every step
+  // produces a visible artifact you can open. What replaced what is worth saying
+  // once, because the difference is the whole design:
+  //
+  // The old model was a two-station wizard — Prepare, then Review — with a
+  // `pipelineStep` signal, a `visitedStations` set and a "generate" button that
+  // both did work and navigated. That meant the app REMEMBERED where a book was,
+  // and the memory could be wrong: a set that said 'epub-review' was visited
+  // said nothing about whether the EPUB was still on disk, and the Back button
+  // had to reload the source because the review had swapped the document out
+  // from under the editor.
+  //
+  // Now nothing is remembered. `viewedStation` is which file is in the viewer —
+  // a fact about this window, not about the book — and everything else is
+  // derived from the binding record every time it is asked
+  // (`shared/document/stations.ts`). A station exists because its artifact is on
+  // disk, so the tabs cannot disagree with the project folder.
 
-  // The review station used to have to remember WHICH exporter produced the
-  // file it was showing, because finishing the pipeline wrote the review's own
-  // re-extracted blocks back over it — which was right for one exporter and
-  // destroyed the other's work. There is one exporter per source now and it is
-  // finished when it returns, so there is nothing left to remember.
+  private stationSwapping = false; // guard: a station load is not the user leaving
 
-  // ── Bottom-bar station model ──────────────────────────────────────────────
-  // The path is Prepare → Review. 'select' is visited from the start. Returning
-  // to editing after a generate clears the 'epub-review' visit (the output is
-  // now stale → must regenerate).
-  readonly visitedStations = signal<Set<PipelineStep>>(new Set<PipelineStep>(['select']));
+  // ── How a long operation is watched ───────────────────────────────────────
+  //
+  // Neither of these decides anything about the WORK. A document stage runs in
+  // the main process either way, and closing this window changes nothing about
+  // it; these two say whether the queue is what watches it, and whether this
+  // window follows the artifact it produces.
+  //
+  // Persisted in localStorage rather than in Settings, because they are a habit
+  // about this window rather than a fact about the pipeline — and localStorage
+  // is where the picker already keeps its rail state. One key for both
+  // surfaces (the OCR dialog and the station bar): they are the same preference
+  // asked in two places, and two records of it would answer differently.
+  private static readonly LONG_RUN_KEY = 'bookforge-picker-long-run';
 
-  /** True while showing the read-only generated EPUB for final approval. */
-  readonly reviewMode = computed(() => this.pipelineStep() === 'epub-review');
+  readonly runInBackground = signal(false);
+  readonly openWhenFinished = signal(true);
 
-  /** Busy spinner state for the bottom bar during generate/reload/save. */
-  readonly pipelineBusy = signal(false);
+  setRunInBackground(on: boolean): void {
+    this.runInBackground.set(on);
+    this.persistLongRunOptions();
+  }
 
-  private readonly pipelineStationMeta: Record<PipelineStep, { label: string; context: string }> = {
-    'select':      { label: 'Prepare book', context: 'Work through the rail on the left: crop, split, OCR, remove what you don’t want, and mark chapters.' },
-    'epub-review': { label: 'Review',       context: 'The final text for TTS. Approve, or go back to fix.' },
-  };
+  setOpenWhenFinished(on: boolean): void {
+    this.openWhenFinished.set(on);
+    this.persistLongRunOptions();
+  }
 
-  /** Chips for the bottom bar, in path order, with per-station state. */
-  readonly pipelineStations = computed<PipelineStation[]>(() => {
-    const order: PipelineStep[] = ['select', 'epub-review'];
-    const current = this.pipelineStep();
-    const visited = this.visitedStations();
-    return order.map(id => {
-      let state: PipelineStation['state'];
-      if (id === current) state = 'current';
-      else if (visited.has(id)) state = 'done';
-      else state = 'todo';
-      return { id, label: this.pipelineStationMeta[id].label, state };
-    });
+  private persistLongRunOptions(): void {
+    try {
+      localStorage.setItem(PdfPickerComponent.LONG_RUN_KEY, JSON.stringify({
+        runInBackground: this.runInBackground(),
+        openWhenFinished: this.openWhenFinished(),
+      }));
+    } catch (err) {
+      // A storage that refuses a write is not a reason to stop working; the
+      // choice still holds for this session, and it is said once here.
+      console.warn('[picker] could not remember the long-run options:', err);
+    }
+  }
+
+  private restoreLongRunOptions(): void {
+    let raw: string | null;
+    try {
+      raw = localStorage.getItem(PdfPickerComponent.LONG_RUN_KEY);
+    } catch (err) {
+      console.warn('[picker] could not read the long-run options:', err);
+      return;
+    }
+    // Nothing stored is the ordinary first-run state, not a failure.
+    if (!raw) return;
+    const stored = JSON.parse(raw) as { runInBackground?: unknown; openWhenFinished?: unknown };
+    if (typeof stored.runInBackground === 'boolean') this.runInBackground.set(stored.runInBackground);
+    if (typeof stored.openWhenFinished === 'boolean') this.openWhenFinished.set(stored.openWhenFinished);
+  }
+
+  /** The artifact in the viewer. Which FILE is on screen, and nothing more. */
+  readonly viewedStation = signal<StationId>('archive');
+
+  /** A stage is running for this book, so nothing on the bar should be pressable. */
+  readonly stationBusy = computed(() =>
+    this.documentBlocks.stageRunning() !== null || this.loading());
+
+  /** The stations this book HAS, measured off the binding record. */
+  readonly presentStations = computed<StationId[]>(() => {
+    const state = this.documentBlocks.state();
+    // No state means main has not answered about this book's documents — a
+    // corpus book, a loose file, a project still opening. The archive original
+    // is the one thing that always exists for a book that is on screen at all.
+    if (!state) return ['archive'];
+    return existingStations(state.stages);
   });
 
-  readonly pipelineContext = computed(() => this.pipelineStationMeta[this.pipelineStep()].context);
+  /**
+   * What is missing between the station on screen and the next one, or null.
+   *
+   * Read by BOTH the Next button and the disabled action buttons, so a lock is
+   * explained with one sentence rather than two that can drift.
+   */
+  readonly stationNextStep = computed(() => {
+    const present = this.presentStations();
+    const at = this.viewedStation();
+    // A window showing a station the book no longer has is a real state — a
+    // reset removed the working copy while it was open — and the ladder throws
+    // on it by name. Here it means "you are back at the archive", which is
+    // exactly where a reset leaves the book.
+    if (!present.includes(at)) return nextStation('archive', present);
+    return nextStation(at, present);
+  });
 
-  readonly pipelinePrimaryLabel = computed(() => {
-    switch (this.pipelineStep()) {
-      case 'select':      return 'Generate EPUB →';
-      case 'epub-review': return 'Approve & finish ✓';
+  readonly stationTabs = computed<StationTab[]>(() => {
+    const present = this.presentStations();
+    const at = this.viewedStation();
+    return STATIONS.map(id => ({
+      id,
+      label: STATION_LABELS[id],
+      // Narration is not an artifact — it is where the picker hands the book on
+      // — so it is reachable exactly when the EPUB it needs exists.
+      present: id === 'tts' ? present.includes('epub') : present.includes(id),
+      current: id === at,
+      reason: this.stationAbsenceReason(id, present),
+    }));
+  });
+
+  /** One line saying what the station on screen IS. */
+  readonly stationContext = computed(() => {
+    switch (this.viewedStation()) {
+      case 'archive':
+        return 'The archived original, exactly as it was imported. Nothing is ever written to it.';
+      case 'working':
+        return 'The working copy: the cast text and the block annotations. Curate here, then build the book.';
+      case 'epub':
+        return 'The book. Every text transformation happens here, on screen, where you can read the result.';
+      case 'tts':
+        return 'The finished book, handed to narration.';
     }
   });
+
+  /**
+   * The buttons this station offers.
+   *
+   * Each one lives where its INPUT lives, which is the whole of the V2 idea, and
+   * each carries the sentence it is disabled WITH rather than being hidden — a
+   * button that vanishes teaches nothing about how to get it back.
+   */
+  readonly stationActions = computed<StationAction[]>(() => {
+    const present = this.presentStations();
+    const noProject = this.projectPath() ? null
+      : 'This document does not belong to a BookForge project, and every station writes into one.';
+    switch (this.viewedStation()) {
+      case 'archive':
+        return [
+          { id: 'cast', label: 'OCR / Cast', reason: noProject, primary: true },
+          // Detect implies the cast when there is none — the OCR dialog submits
+          // both passes, in that order, and the planner refuses them the other
+          // way round by name.
+          { id: 'detect-from-archive', label: 'Detect', reason: noProject },
+        ];
+      case 'working':
+        return [
+          { id: 'detect', label: 'Detect', reason: noProject },
+          {
+            id: 'reflow',
+            label: 'Build the book',
+            reason: noProject ?? (present.includes('working') ? null
+              : 'There is no working copy to build from — press OCR / Cast.'),
+            primary: true,
+          },
+        ];
+      case 'epub':
+        return [
+          { id: 'footnotes', label: 'Remove footnotes', reason: noProject },
+          { id: 'simplify', label: 'Simplify', reason: noProject },
+          { id: 'translate', label: 'Translate', reason: noProject },
+        ];
+      case 'tts':
+        return [];
+    }
+  });
+
+  readonly stationNextLabel = computed(() => {
+    const next = this.stationNextStep().next;
+    if (next === null) return 'Next';
+    return `Next: ${STATION_LABELS[next]} →`;
+  });
+
+  /**
+   * Why curation is refused on the artifact currently on screen, or null.
+   *
+   * Curation is an edit to the WORKING copy's annotations, so it is offered at
+   * exactly one station. The other two are said rather than hidden: an archive
+   * whose gestures silently do nothing is indistinguishable from a broken
+   * picker, and the sentence names the button that makes an editable copy.
+   */
+  readonly curationReadOnlyReason = computed<string | null>(() => {
+    switch (this.viewedStation()) {
+      case 'archive':
+        return 'This is the archived original — cast a working copy to edit.';
+      case 'epub':
+        return 'This is the built book. Curation happens on the working copy; the text passes happen here.';
+      case 'tts':
+        return 'The book has been handed to narration.';
+      case 'working':
+        return null;
+    }
+  });
+
+  /** True when nothing on screen may be curated. Every mutation entry point asks. */
+  readonly curationLocked = computed(() => this.curationReadOnlyReason() !== null);
+
+  /**
+   * The blocks the viewer paints — empty at the Archive station.
+   *
+   * Archive and Working show the same PAGES, because the working document is a
+   * copy of the archive original with an invisible text layer and the block
+   * annotations added: rendering the original and painting the annotations over
+   * it IS the working document on screen, and it costs no second analysis of a
+   * 300 MB scan. What separates the two stations is therefore exactly what the
+   * annotations are: the archive is the pages with nothing drawn on them, which
+   * is what "the archived original, untouched" looks like.
+   *
+   * It also keeps `<Original>.working.pdf` out of the tab strip, which
+   * docs/DOCUMENT_PIPELINE.md requires — it is a system file and gets no
+   * user-facing listing.
+   */
+  readonly stationBlocks = computed(() =>
+    this.viewedStation() === 'archive' ? [] : this.blocks());
 
   // Search state
   readonly showSearch = signal(false);
@@ -3939,7 +4218,9 @@ export class PdfPickerComponent implements OnInit {
 
   // The rail is hidden only while reviewing the exported EPUB; it is fully
   // usable at both editable stations (select AND chapters) in embedded mode.
-  readonly showToolbox = computed(() => this.pipelineStep() !== 'epub-review');
+  // The rail curates the working copy, so it is shown at the station where
+  // curation happens and nowhere else.
+  readonly showToolbox = computed(() => this.viewedStation() === 'working');
 
   // Crop mode state (derived from activePanel)
   readonly cropMode = computed(() => this.activePanel() === 'crop');
@@ -4226,7 +4507,6 @@ export class PdfPickerComponent implements OnInit {
     const disabled = new Map<TaskId, string>();
     const isEpub = this.isCurrentDocumentEpub();
     const lightweight = this.lightweightMode();
-    const step = this.pipelineStep();
 
     // A corpus book is open for two jobs: recognizing its blocks, and checking
     // and correcting the labels on them. Everything else on the rail produces
@@ -4952,10 +5232,9 @@ export class PdfPickerComponent implements OnInit {
 
   async loadPdf(path: string, lightweight: boolean = false): Promise<void> {
     this.showFilePicker.set(false);
-    if (!this.pipelineTransitioning) {
-      this.pipelineStep.set('select');
-      this.visitedStations.set(new Set<PipelineStep>(['select']));
-    }
+    // A station swap is this window changing which artifact it shows, not the
+    // user opening a different book, so it does not send the ladder home.
+    if (!this.stationSwapping) this.viewedStation.set('archive');
 
     const lowerPath = path.toLowerCase();
     let effectivePath = path;
@@ -5161,7 +5440,7 @@ export class PdfPickerComponent implements OnInit {
       // Also skip during pipeline transitions (review / paragraph-fix reloads of a
       // DERIVED epub) — projectPath already points at the manifest project and must
       // stay bound to it, not rebind to the exported artifact's (absent) project.
-      if (!this.embedded() && !this.pipelineTransitioning) {
+      if (!this.embedded() && !this.stationSwapping) {
         await this.autoCreateProject(path, quickResult.pdf_name);
       }
 
@@ -5258,7 +5537,7 @@ export class PdfPickerComponent implements OnInit {
     metaKey: boolean;
     ctrlKey: boolean;
   }): void {
-    if (this.reviewMode()) return;  // read-only during EPUB review
+    if (this.curationLocked()) return;  // the artifact on screen is not curated here
     const { block, metaKey, ctrlKey } = event;
     // Crop owns the pointer while its panel is open, and a double-click inside a
     // crop rectangle is not a request to select the page's body text.
@@ -5510,7 +5789,7 @@ export class PdfPickerComponent implements OnInit {
   }
 
   deleteSelectedBlocks(): void {
-    if (this.reviewMode()) return;  // read-only during EPUB review
+    if (this.curationLocked()) return;  // the artifact on screen is not curated here
     const selected = this.selectedBlockIds();
     if (selected.length === 0) return;
 
@@ -5632,7 +5911,7 @@ export class PdfPickerComponent implements OnInit {
   }
 
   deleteLikeThis(block: TextBlock): void {
-    if (this.reviewMode()) return;  // read-only during EPUB review
+    if (this.curationLocked()) return;  // the artifact on screen is not curated here
     // The destructive twin of selectLikeThis, so it resolves the category the
     // same way the screen paints it — a delete that reached blocks the user was
     // looking at as body text would be far worse than a selection that did.
@@ -5659,7 +5938,7 @@ export class PdfPickerComponent implements OnInit {
   // ─── Category correction ────────────────────────────────────────────────
 
   onSetBlockCategory(event: { blockIds: string[]; categoryId: string }): void {
-    if (this.reviewMode()) return;  // read-only during EPUB review
+    if (this.curationLocked()) return;  // the artifact on screen is not curated here
 
     // Unlabel is not a category: it deletes the corrections, so the blocks
     // save as unjudged (missing key in labels.json) and render unpainted.
@@ -5987,7 +6266,7 @@ export class PdfPickerComponent implements OnInit {
   }
 
   deleteBlock(blockId: string): void {
-    if (this.reviewMode()) return;  // read-only during EPUB review
+    if (this.curationLocked()) return;  // the artifact on screen is not curated here
     if (this.deletedBlockIds().has(blockId)) return;
 
     // Get the block's page before deletion
@@ -6005,7 +6284,7 @@ export class PdfPickerComponent implements OnInit {
   // ─── Split Block Popover ────────────────────────────────────────────────────
 
   async onSplitBlockRequest(block: TextBlock): Promise<void> {
-    if (this.reviewMode()) return;  // read-only during EPUB review
+    if (this.curationLocked()) return;  // the artifact on screen is not curated here
     if (this.editorState.textLoading()) {
       this.showAlert({ title: 'Split Block', message: 'Text extraction is still in progress. Please wait for it to complete.', type: 'error' });
       return;
@@ -6835,7 +7114,7 @@ export class PdfPickerComponent implements OnInit {
   }
 
   revertBlockText(blockId: string): void {
-    if (this.reviewMode()) return;  // read-only during EPUB review
+    if (this.curationLocked()) return;  // the artifact on screen is not curated here
     // Clear the text correction to revert to original
     this.editorState.clearTextCorrection(blockId);
     // Re-render the page to show original text
@@ -7030,7 +7309,7 @@ export class PdfPickerComponent implements OnInit {
   // drop the record of having done it, which is worse than not offering it.
 
   readonly canMarkPageTypes = computed(() =>
-    this.labelMode() && this.corpusMode() && !this.reviewMode());
+    this.labelMode() && this.corpusMode() && !this.curationLocked());
 
   /**
    * The book's modal body type size — what the speck floor is measured against.
@@ -8374,7 +8653,7 @@ export class PdfPickerComponent implements OnInit {
     this.loadingText.set('Preparing audiobook export...');
 
     // EPUB source: edit the book's own markup instead of rebuilding it from block
-    // text, exactly as finalizeProject() and pipelineExportAndReview() do. Same
+    // text, exactly as finalizeProject() and Build the book do. Same
     // destination either way — the book-named export recorded in
     // manifest.outputs.epub — and the same navigation to the producer that
     // navigateAfter: true gives below.
@@ -8661,38 +8940,235 @@ export class PdfPickerComponent implements OnInit {
       this.loading.set(false);
     }
   }
-
   // ─────────────────────────────────────────────────────────────────────────
-  // Pipeline Navigation (Prepare → EPUB Review)
+  // The ladder: walking it, and the buttons on each rung
   // ─────────────────────────────────────────────────────────────────────────
 
-  /** The bottom bar's primary button: generate the EPUB, or finish at review. */
-  pipelinePrimary(): void {
-    switch (this.pipelineStep()) {
-      case 'select':      this.requestGenerate(); break;
-      case 'epub-review': this.pipelineComplete(); break;
+  /**
+   * A stage for this project finished — anywhere. Re-measure, then maybe follow.
+   *
+   * "Open when finished" is honoured only if this window is still looking at the
+   * project the stage was about, which `projectPath()` was already checked
+   * against. It is deliberately not honoured for a stage that mints no artifact:
+   * moving the user somewhere on a guess is worse than leaving them be.
+   */
+  private async onProjectStageFinished(stage: string): Promise<void> {
+    const projectDir = this.projectPath();
+    if (!projectDir) return;
+
+    // The measurement first, always: the tabs are what the documents say, and a
+    // stage that landed changed them whether or not anybody is following it.
+    await this.documentBlocks.refreshState();
+
+    const minted = stationMintedBy(stage);
+    if (minted === null || !this.openWhenFinished()) return;
+    // Re-read the project directory: a station switch is an await away, and the
+    // window may have been pointed at another book in the meantime.
+    if (this.projectPath() !== projectDir) return;
+    if (!this.presentStations().includes(minted)) return;
+    await this.openStation(minted);
+  }
+
+  /** Why a station cannot be opened, or null. The tab's tooltip IS this. */
+  private stationAbsenceReason(id: StationId, present: readonly StationId[]): string | null {
+    switch (id) {
+      case 'archive':
+        return null;  // A book on screen has an original, by construction.
+      case 'working':
+        return present.includes('working') ? null
+          : 'There is no working copy yet — press OCR / Cast on the Archive station.';
+      case 'epub':
+        return present.includes('epub') ? null
+          : 'This book has not been built yet — press Build the book on the Working station.';
+      case 'tts':
+        return present.includes('epub') ? null
+          : 'Narration reads the book, and there is not one yet — press Build the book.';
     }
   }
 
-  /** The bottom bar's Back button: step one station toward the source. */
-  pipelineBack(): void {
-    if (this.pipelineStep() === 'epub-review') this.pipelineReloadSource('select');
+  /**
+   * Show a station's artifact.
+   *
+   * Archive and Working are the same pages with and without the annotations
+   * painted (see `stationBlocks`), so switching between them changes no file.
+   * The EPUB is a different document and is loaded; coming back from it reloads
+   * the project, because the picker curates the PDF and not the book.
+   */
+  async openStation(id: StationId): Promise<void> {
+    if (this.stationBusy()) return;
+    const at = this.viewedStation();
+    if (id === at) return;
+
+    if (id === 'tts') {
+      this.handOffToNarration();
+      return;
+    }
+
+    if (id === 'epub') {
+      const epubPath = this.stationEpubPath();
+      if (!epubPath) {
+        // Unreachable through the tab (it is disabled without an EPUB), and
+        // stated rather than ignored if some other caller gets here: a station
+        // that silently does nothing is indistinguishable from a broken one.
+        this.showAlert({
+          title: 'There is no book yet',
+          message: 'Build the book on the Working station first — the EPUB station shows the file it writes.',
+          type: 'warning',
+        });
+        return;
+      }
+      await this.showEpubStation(epubPath);
+      return;
+    }
+
+    // Back to the PDF stations. Only a reload when the EPUB is what is on
+    // screen; otherwise this is purely which overlay is painted.
+    if (at === 'epub' || at === 'tts') {
+      await this.reloadProjectDocument();
+    }
+    this.viewedStation.set(id);
+  }
+
+  /** Load the project's book and stand at the EPUB station. */
+  private async showEpubStation(epubPath: string): Promise<void> {
+    this.loading.set(true);
+    this.loadingText.set('Opening the book...');
+    try {
+      // The tab is dropped first because `loadPdf` refuses a document that is
+      // already open, and `stationSwapping` is what keeps the close-then-open
+      // from being read as the user leaving the project.
+      const currentDocId = this.activeDocumentId();
+      if (currentDocId) {
+        this.openDocuments.update(docs => docs.filter(d => d.id !== currentDocId));
+      }
+      this.stationSwapping = true;
+      this.closePdf();
+      await this.loadPdf(epubPath);
+      this.activatePanel(null);
+      this.viewedStation.set('epub');
+    } catch (error) {
+      this.showAlert({
+        title: 'Could not open the book',
+        message: error instanceof Error ? error.message : String(error),
+        type: 'error',
+      });
+    } finally {
+      this.stationSwapping = false;
+      this.loading.set(false);
+    }
+  }
+
+  /** Put the project's own document back on screen after the EPUB was shown. */
+  private async reloadProjectDocument(): Promise<void> {
+    const dir = this.projectDir();
+    if (!dir) return;
+    this.loading.set(true);
+    this.loadingText.set('Reloading the document...');
+    try {
+      const currentDocId = this.activeDocumentId();
+      if (currentDocId) {
+        this.openDocuments.update(docs => docs.filter(d => d.id !== currentDocId));
+      }
+      this.stationSwapping = true;
+      this.closePdf();
+      await this.openTarget(dir);
+      this.activatePanel(null);
+    } catch (error) {
+      this.showAlert({
+        title: 'Could not reopen the document',
+        message: error instanceof Error ? error.message : String(error),
+        type: 'error',
+      });
+    } finally {
+      this.stationSwapping = false;
+      this.loading.set(false);
+    }
+  }
+
+  /** The project's book, absolute, or null when reflow has never written one. */
+  private stationEpubPath(): string | null {
+    const state = this.documentBlocks.state();
+    const dir = this.projectPath();
+    if (!state || !dir || !state.epubRelPath) return null;
+    return `${dir}/${state.epubRelPath}`;
   }
 
   /**
-   * Generate the EPUB, after making sure chapters were not simply forgotten.
+   * Next. Pure navigation — it never starts work.
+   *
+   * When it is locked it does nothing at all, because the sentence explaining
+   * why is already on the button and beneath the bar. A Next that ran the
+   * missing step would be the wizard again, one press further along.
+   */
+  async stationNext(): Promise<void> {
+    const step = this.stationNextStep();
+    if (step.lockedReason !== null || step.next === null) return;
+    await this.openStation(step.next);
+  }
+
+  /**
+   * Hand the finished book on. The studio host owns what happens next.
+   *
+   * The contract is unchanged from the wizard it replaces — `finalized` with the
+   * path of the book on disk — so the destination is Phase C's business and not
+   * this component's.
+   */
+  private handOffToNarration(): void {
+    const epubPath = this.stationEpubPath();
+    if (!epubPath) return;
+    // The window holds no unsaved book state: every curation edit is already an
+    // incremental update in the working document, and the EPUB on disk is what
+    // reflow wrote.
+    this.editorState.hasUnsavedChanges.set(false);
+    this.viewedStation.set('tts');
+    this.finalized.emit({ success: true, epubPath });
+  }
+
+  /** A station button was pressed. Each one belongs to the artifact on screen. */
+  onStationAction(actionId: string): void {
+    switch (actionId) {
+      // The OCR dialog submits `get-text` then `blocks` as one run, which is
+      // both of these: casting is what it does, and detecting is what it does
+      // next. Detect from the Archive station therefore opens the same dialog —
+      // the cast it implies is the first pass of the run.
+      case 'cast':
+      case 'detect-from-archive':
+        this.showOcrSettings.set(true);
+        return;
+      case 'detect':
+        void this.runDetect();
+        return;
+      case 'reflow':
+        this.requestBuildTheBook();
+        return;
+      case 'footnotes':
+        void this.enqueueEpubPass({ kind: 'footnotes' });
+        return;
+      case 'simplify':
+        this.passOptionsKind.set('simplify');
+        return;
+      case 'translate':
+        this.passOptionsKind.set('translate');
+        return;
+      default:
+        throw new Error(`The station bar offered an action this window does not know: ${actionId}`);
+    }
+  }
+
+  /**
+   * Build the book, after making sure chapters were not simply forgotten.
    *
    * The check is a warning, not a gate: an article or a single essay really is
    * one chapter, and a hard block would strand those books. But an unchaptered
    * book produces one enormous audiobook file with no navigation, and that is
    * discovered hours later at TTS time — so it is worth one interruption here.
    */
-  private requestGenerate(): void {
-    if (this.pipelineBusy()) return;
+  private requestBuildTheBook(): void {
+    if (this.stationBusy()) return;
 
-    const count = this.chapters().length;
+    const count = this.documentBlocks.chapterBlocks().length;
     if (count >= CHAPTERS_EXPORT_MINIMUM) {
-      this.startGenerate();
+      void this.buildTheBook();
       return;
     }
 
@@ -8705,52 +9181,141 @@ export class PdfPickerComponent implements OnInit {
         '\n\nLabel the blocks that open each chapter and they appear in the Chapter tab.',
       type: 'warning',
       confirmText: 'Go to Chapters',
-      cancelText: 'Export anyway',
+      cancelText: 'Build it anyway',
       // The modal closes itself around these (see onAlertConfirm/onAlertCancel).
       onConfirm: () => this.setNavTab('chapter'),
-      onCancel: () => this.startGenerate(),
+      onCancel: () => { void this.buildTheBook(); },
     });
-  }
-
-  /** Consolidate fragmented blocks, then export and show the review. */
-  private startGenerate(): void {
-    this.autoMergeForPipeline();
-    this.pipelineExportAndReview();
   }
 
   /**
-   * Navigate to a station (chip clicks + primary/back route through here).
-   * Leaving the read-only review reloads the source, because review never edits.
+   * Reflow: the working document in, `<Original>.epub` out.
+   *
+   * Two checkboxes on the bar decide how it is watched, and neither decides
+   * anything about the WORK — the stage runs in main either way:
+   *
+   *  - **Run in background** submits it to the queue, where it serializes
+   *    against everything else that wants the GPU, and returns immediately.
+   *  - **Open when finished** switches this window to the EPUB station once the
+   *    stage lands — see `stageFinishedSubscription`, which checks the window is
+   *    still looking at the same project before it moves anything.
    */
-  goToStation(targetId: string): void {
-    const target = targetId as PipelineStep;
-    if (this.pipelineBusy()) return;
-    const current = this.pipelineStep();
-    if (target === current) return;
-
-    if (current === 'epub-review') {
-      this.pipelineReloadSource('select');
+  private async buildTheBook(): Promise<void> {
+    const projectDir = this.projectPath();
+    if (!projectDir) {
+      this.showAlert({
+        title: 'No project',
+        message: 'Building the book writes into a project, and this document does not belong to one. '
+          + 'Import it from Studio first.',
+        type: 'error',
+      });
       return;
     }
 
-    // Into review = generate the EPUB, under the same chapter check as the
-    // primary button: a chip is another way to press it, not a way around it.
-    if (target === 'epub-review') {
-      this.requestGenerate();
+    if (this.runInBackground()) {
+      // Queued rather than run here: the same submission the wizard makes, one
+      // reflow pass over this project's working document.
+      await this.submitPassRun(projectDir, [{ kind: 'reflow' }]);
+      return;
+    }
+
+    this.autoMergeForPipeline();
+    this.loading.set(true);
+    this.loadingText.set('Building the book...');
+    try {
+      const epubPath = await this.reflowToEpub();
+      if (this.openWhenFinished()) {
+        await this.showEpubStation(epubPath);
+      }
+    } catch (error) {
+      this.showAlert({
+        title: 'The book was not built',
+        message: error instanceof Error ? error.message : String(error),
+        type: 'error',
+      });
+    } finally {
+      this.loading.set(false);
     }
   }
 
-  /** Set panel + step for the editing station and update visited/staleness. */
-  private enterStation(target: PipelineStep): void {
-    this.activatePanel(null);
-    this.pipelineStep.set(target);
-    this.visitedStations.update(s => {
-      const next = new Set(s);
-      next.add(target);
-      // Returning to editing invalidates any previously generated review.
-      if (target === 'select') next.delete('epub-review');
-      return next;
-    });
+  /**
+   * Queue one text pass over this project's book.
+   *
+   * Footnote removal, Simplify and Translate all edit the EPUB in place and all
+   * take minutes to hours, so there is no in-place variant of them: they go to
+   * the queue, which is where a long job is watched and cancelled.
+   */
+  private async enqueueEpubPass(pass: ChainPassRequest): Promise<void> {
+    const projectDir = this.projectPath();
+    if (!projectDir) {
+      this.showAlert({
+        title: 'No project',
+        message: 'A text pass rewrites the project\'s book, and this document does not belong to a project.',
+        type: 'error',
+      });
+      return;
+    }
+    await this.submitPassRun(projectDir, [pass]);
+  }
+
+  /** Submit passes to the queue, surfacing main's own refusal verbatim. */
+  private async submitPassRun(projectDir: string, passes: ChainPassRequest[]): Promise<void> {
+    try {
+      const result = await this.queueService.submitProcessingRun({ projectDir, passes });
+      if (!result.success) {
+        this.showAlert({
+          title: 'That run was refused',
+          message: result.error || 'The run was refused and no reason was given.',
+          type: 'error',
+        });
+        return;
+      }
+      this.showAlert({
+        title: 'Queued',
+        message: 'It runs when the queue reaches it. Watch it on the Queue tab.',
+        type: 'success',
+      });
+    } catch (err) {
+      this.showAlert({
+        title: 'That run was refused',
+        message: err instanceof Error ? err.message : String(err),
+        type: 'error',
+      });
+    }
+  }
+
+  /** The simplify/translate dialog is open for this pass, or null. */
+  readonly passOptionsKind = signal<PassOptionsKind | null>(null);
+
+  /**
+   * Who runs a text pass: the provider and model set in Settings → Pipeline
+   * Defaults, plus whatever credentials the AI settings hold.
+   *
+   * Read here rather than in the dialog so the dialog stays presentational, and
+   * an empty model is passed through as an empty model — the dialog refuses it
+   * by name, which is the only useful thing to do with "no model chosen".
+   */
+  readonly passAiChoice = computed<PassAiChoice>(() => {
+    const kind = this.passOptionsKind();
+    const defaults = this.settingsService.getPipelineDefaults();
+    const ai = this.settingsService.getAIConfig();
+    const provider = kind === 'translate' ? defaults.translateProvider : defaults.simplifyProvider;
+    const model = kind === 'translate' ? defaults.translateModel : defaults.simplifyModel;
+    return {
+      provider,
+      model,
+      ...(ai.ollama?.baseUrl ? { ollamaBaseUrl: ai.ollama.baseUrl } : {}),
+      ...(ai.claude?.apiKey ? { claudeApiKey: ai.claude.apiKey } : {}),
+      ...(ai.openai?.apiKey ? { openaiApiKey: ai.openai.apiKey } : {}),
+    };
+  });
+
+  onPassOptionsConfirmed(result: PassOptionsResult): void {
+    this.passOptionsKind.set(null);
+    void this.enqueueEpubPass(
+      result.kind === 'simplify'
+        ? { kind: 'simplify', simplify: result.simplify }
+        : { kind: 'translate', translate: result.translate });
   }
 
   /**
@@ -8763,9 +9328,7 @@ export class PdfPickerComponent implements OnInit {
    * suppresses a chapter's title in the body by matching the marker's block id,
    * so folding that block into a merged paragraph (which gets a NEW id) would
    * make the title lose its binding and be voiced twice — once as the heading,
-   * once inside the paragraph that swallowed it. Chapters are marked before
-   * this runs now that Chapters is a rail task rather than a station, so the
-   * ordering that used to make this impossible is gone.
+   * once inside the paragraph that swallowed it.
    */
   private autoMergeForPipeline(): void {
     if (this.editorState.paragraphBreaks().size === 0) {
@@ -8799,163 +9362,6 @@ export class PdfPickerComponent implements OnInit {
     this.applyMergeGroups(safe);
   }
 
-  /** Export EPUB and transition to review step. */
-  private async pipelineExportAndReview(): Promise<void> {
-    const projectPath = this.projectPath();
-    if (!projectPath) {
-      this.showAlert({
-        title: 'Export Failed',
-        message: 'No project path available. Please save the project first.',
-        type: 'error'
-      });
-      return;
-    }
-
-    this.pipelineBusy.set(true);
-    this.loading.set(true);
-    this.loadingText.set('Exporting EPUB...');
-
-    try {
-      // Save project state first
-      await this.saveProjectToPath(projectPath, true);
-
-      // Reflow for a PDF, the markup-preserving path for a book that already IS
-      // markup. Both write the project's canonical export, both are finished
-      // books when they return, and neither is a fallback for the other: the
-      // question they answer is what the source is, and the source cannot be
-      // both.
-      const result = this.useEpubPreservingExport()
-        ? await this.runEpubPreservingExport(projectPath, null)
-        : { success: true, message: '', epubPath: await this.reflowToEpub() };
-
-      if (!result.success) {
-        this.showAlert({
-          title: 'Export Failed',
-          message: result.message || 'Failed to export EPUB',
-          type: 'error'
-        });
-        return;
-      }
-
-      // Use the path the export ACTUALLY wrote. The name is derived from the
-      // book's title in main (manifest-service), so the renderer cannot
-      // reconstruct it — and must not try.
-      if (!result.epubPath) {
-        this.showAlert({
-          title: 'Export Failed',
-          message: 'Export did not report where the EPUB was written.',
-          type: 'error'
-        });
-        return;
-      }
-      await this.enterReviewWithEpub(result.epubPath);
-    } catch (error) {
-      this.pipelineTransitioning = false;
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      this.showAlert({
-        title: 'Export Failed',
-        message: errorMessage,
-        type: 'error'
-      });
-    } finally {
-      this.loading.set(false);
-      this.pipelineBusy.set(false);
-    }
-  }
-
-  /**
-   * Swap the source document for the EPUB that was just written and stop at the
-   * review station.
-   *
-   * Extracted so that both exporters — Reflow and the markup-preserving path —
-   * arrive at the review the same way. The tab is
-   * dropped first because `loadPdf` refuses a document that is already open, and
-   * `pipelineTransitioning` is what keeps the close-then-open from being read as
-   * the user leaving the pipeline.
-   */
-  private async enterReviewWithEpub(epubPath: string): Promise<void> {
-    const currentDocId = this.activeDocumentId();
-    if (currentDocId) {
-      this.openDocuments.update(docs => docs.filter(d => d.id !== currentDocId));
-    }
-
-    this.pipelineTransitioning = true;
-    this.closePdf();
-    await this.loadPdf(epubPath);
-    this.activatePanel(null);
-    this.pipelineStep.set('epub-review');
-    this.visitedStations.update(s => new Set(s).add('epub-review'));
-    this.pipelineTransitioning = false;
-  }
-
-  /**
-   * Leave the read-only review and reload the source project back at the
-   * editing station. The review shows the generated EPUB; edits only ever
-   * happen on the source, so we reload it here.
-   */
-  private async pipelineReloadSource(target: 'select'): Promise<void> {
-    const dir = this.projectDir();
-    if (!dir) return;
-
-    this.pipelineBusy.set(true);
-    this.loading.set(true);
-    this.loadingText.set('Reloading source...');
-
-    try {
-      // Remove current document from open tabs so loadProjectFromPath won't hit duplicate check
-      const currentDocId = this.activeDocumentId();
-      if (currentDocId) {
-        this.openDocuments.update(docs => docs.filter(d => d.id !== currentDocId));
-      }
-
-      this.pipelineTransitioning = true;
-      this.closePdf();
-      await this.openTarget(dir);
-      this.enterStation(target);
-      this.pipelineTransitioning = false;
-    } catch (error) {
-      this.pipelineTransitioning = false;
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      this.showAlert({
-        title: 'Load Failed',
-        message: errorMessage,
-        type: 'error'
-      });
-    } finally {
-      this.loading.set(false);
-      this.pipelineBusy.set(false);
-    }
-  }
-
-  /**
-   * Complete the pipeline: the review station has nothing left to write.
-   *
-   * Whichever path produced it, the EPUB on screen is already the finished book
-   * on disk. There used to be a save here that rebuilt the file from the
-   * review's own re-extracted blocks — a different book, by a different writer,
-   * over the one that was just made. Deleting boxes and relabelling happen at
-   * the editing station, and the way to apply them is to build the book again.
-   */
-  private async pipelineComplete(): Promise<void> {
-    const epubPath = this.effectivePath();
-    if (!epubPath) return;
-
-    // No unsaved-changes check. The review is read-only — every mutation entry
-    // point returns in reviewMode, and auto-save is disabled at this station —
-    // but the pipeline's OWN paragraph consolidation marks the document dirty on
-    // load, so the flag here is always a false positive about the user. Whatever
-    // the session holds is display state, discarded with the review.
-    this.editorState.hasUnsavedChanges.set(false);
-
-    this.pipelineStep.set('select');
-    this.visitedStations.set(new Set<PipelineStep>(['select']));
-    this.finalized.emit({ success: true, epubPath });
-    this.showAlert({
-      title: 'Complete',
-      message: `The book is ${epubPath}`,
-      type: 'success',
-    });
-  }
 
   /**
    * Save changes back to the source EPUB file.
@@ -9556,16 +9962,15 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    // The pipeline review shows a DERIVED artifact — the EPUB that was just
-    // exported — and the manifest describes the SOURCE. An auto-save here
-    // either writes the review session's state (reflowed blocks, no deletions,
-    // no merges) over the source's edit set, or, with the binding dropped by
-    // the document swap, reaches autoCreateProject, rebinds to the owning
-    // project and pulls the source's deletions, pages and OCR blocks onto the
-    // review document (Working Towards The Führer, Aug 2 2026 — both arms of
-    // this actually happened). Review edits reach disk through
-    // pipelineComplete, never through the project file.
-    if (this.pipelineStep() === 'epub-review') return;
+    // The EPUB station shows a DERIVED artifact — the book reflow wrote — and
+    // the manifest describes the SOURCE. An auto-save here either writes that
+    // session's state (reflowed blocks, no deletions, no merges) over the
+    // source's edit set, or, with the binding dropped by the document swap,
+    // reaches autoCreateProject, rebinds to the owning project and pulls the
+    // source's deletions, pages and OCR blocks onto the book (Working Towards
+    // The Führer, Aug 2 2026 — both arms of this actually happened). The book
+    // is edited by the EPUB passes, on disk, never through the project file.
+    if (this.viewedStation() === 'epub') return;
 
     if (this.autoSaveTimeout) {
       clearTimeout(this.autoSaveTimeout);
@@ -9583,7 +9988,7 @@ export class PdfPickerComponent implements OnInit {
     // Checked again at fire time: a save scheduled at the editing station can
     // reach this timer AFTER the export swapped the review EPUB in, and it
     // would run against the wrong document — see scheduleAutoSave.
-    if (this.pipelineStep() === 'epub-review') return;
+    if (this.viewedStation() === 'epub') return;
 
     const projectPath = this.projectPath();
     if (projectPath) {
@@ -9711,7 +10116,7 @@ export class PdfPickerComponent implements OnInit {
     // The one place every project-state write goes through, so the one place that
     // can guarantee a session which declined to load the project's edits cannot
     // overwrite them (see projectStateNotApplied). Callers that export as well as
-    // save — finalizeProject, pipelineExportAndReview — still export: the export
+    // save — finalizeProject, Build the book — still export: the export
     // describes the file in front of the user, only the project write is refused.
     if (this.projectStateNotApplied()) {
       console.error(
@@ -9875,10 +10280,9 @@ export class PdfPickerComponent implements OnInit {
   async loadProjectFromPath(filePath: string, lightweight: boolean = false): Promise<void> {
     // Clear sourceFilePath when opening a project - finalize must use the project export flow
     this.sourceFilePath.set(null);
-    if (!this.pipelineTransitioning) {
-      this.pipelineStep.set('select');
-      this.visitedStations.set(new Set<PipelineStep>(['select']));
-    }
+    // A station swap is this window changing which artifact it shows, not the
+    // user opening a different book, so it does not send the ladder home.
+    if (!this.stationSwapping) this.viewedStation.set('archive');
 
     // Check if this project is already open
     const existingDoc = this.openDocuments().find(d => d.projectPath === filePath);
@@ -11638,7 +12042,7 @@ export class PdfPickerComponent implements OnInit {
 
   // Page deletion methods (with undo/redo support via editor state)
   togglePageDeleted(pageNum: number): void {
-    if (this.reviewMode()) return;  // read-only during EPUB review
+    if (this.curationLocked()) return;  // the artifact on screen is not curated here
     this.landPageToggle(this.editorState.togglePageDeletion([pageNum]));
   }
 
@@ -11701,7 +12105,7 @@ export class PdfPickerComponent implements OnInit {
   }
 
   onDeleteSelectedPages(pages: Set<number>): void {
-    if (this.reviewMode()) return;  // read-only during EPUB review
+    if (this.curationLocked()) return;  // the artifact on screen is not curated here
     if (pages.size === 0) {
       // Clear selection
       this.selectedPageNumbers.set(new Set());
