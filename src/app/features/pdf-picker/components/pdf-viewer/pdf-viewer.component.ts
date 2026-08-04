@@ -32,7 +32,7 @@ export interface CropRect {
       </div>
     } @else {
       <!-- Use CDK virtual scrolling for vertical layout, regular scroll for grid/edit/organize -->
-      @if (layout() !== 'grid' && editorMode() !== 'select' && editorMode() !== 'edit') {
+      @if (layout() !== 'grid' && editorMode() !== 'select') {
         <cdk-virtual-scroll-viewport
           #cdkViewport
           class="pdf-viewport"
@@ -73,7 +73,6 @@ export interface CropRect {
                   [class.crop-mode]="cropMode()"
                   [class.sample-mode]="sampleMode()"
                   [class.marquee-mode]="isMarqueeSelecting()"
-                  [class.edit-mode]="editorMode() === 'edit'"
                   [attr.viewBox]="getViewBox(pageNum)"
                   preserveAspectRatio="none"
                   (mousedown)="onOverlayMouseDown($event, pageNum)"
@@ -177,9 +176,6 @@ export interface CropRect {
                           [class.moved]="hasOffset(block.id)"
                           [class.search-highlight]="isSearchHighlighted(block.id)"
                           [class.search-current]="isCurrentSearchResult(block.id)"
-                          [class.dragging]="isDraggingBlock() && draggingBlock?.id === block.id"
-                          [style.cursor]="editorMode() === 'edit' ? 'move' : 'pointer'"
-                          (mousedown)="onBlockMouseDown($event, block)"
                           (click)="onBlockClick($event, block)"
                           (dblclick)="onBlockDoubleClick($event, block)"
                           (contextmenu)="onContextMenu($event, block)"
@@ -363,84 +359,6 @@ export interface CropRect {
                     }
                   }
 
-                  <!-- Split line overlay -->
-                  @if (splitMode() && splitEnabled() && !isPageSkipped(pageNum)) {
-                    <!-- Left half shade -->
-                    <rect
-                      class="split-shade split-shade-left"
-                      x="0"
-                      y="0"
-                      [attr.width]="getSplitLineX(pageNum)"
-                      [attr.height]="getPageDimensions(pageNum)?.height || 0"
-                      fill="rgba(59, 130, 246, 0.08)"
-                    />
-                    <!-- Right half shade -->
-                    <rect
-                      class="split-shade split-shade-right"
-                      [attr.x]="getSplitLineX(pageNum)"
-                      y="0"
-                      [attr.width]="(getPageDimensions(pageNum)?.width || 0) - getSplitLineX(pageNum)"
-                      [attr.height]="getPageDimensions(pageNum)?.height || 0"
-                      fill="rgba(245, 158, 11, 0.08)"
-                    />
-                    <!-- Split line -->
-                    <line
-                      class="split-line"
-                      [attr.x1]="getSplitLineX(pageNum)"
-                      [attr.y1]="0"
-                      [attr.x2]="getSplitLineX(pageNum)"
-                      [attr.y2]="getPageDimensions(pageNum)?.height || 0"
-                      stroke="#FF9500"
-                      stroke-width="3"
-                      stroke-dasharray="10,5"
-                    />
-                    <!-- Draggable handle area (invisible wide strip for easier grabbing) -->
-                    <rect
-                      class="split-handle"
-                      [attr.x]="getSplitLineX(pageNum) - 15"
-                      y="0"
-                      width="30"
-                      [attr.height]="getPageDimensions(pageNum)?.height || 0"
-                      fill="transparent"
-                      style="cursor: ew-resize"
-                      (mousedown)="onSplitDragStart($event, pageNum)"
-                    />
-                    <!-- Visual handle indicator -->
-                    <rect
-                      class="split-handle-visual"
-                      [attr.x]="getSplitLineX(pageNum) - 8"
-                      [attr.y]="((getPageDimensions(pageNum)?.height || 0) / 2) - 30"
-                      width="16"
-                      height="60"
-                      rx="4"
-                      fill="#FF9500"
-                      style="cursor: ew-resize; pointer-events: none"
-                    />
-                    <!-- Page number labels -->
-                    <text
-                      class="split-label"
-                      [attr.x]="getSplitLineX(pageNum) / 2"
-                      [attr.y]="30"
-                      text-anchor="middle"
-                      fill="#3b82f6"
-                      font-size="14"
-                      font-weight="600"
-                    >
-                      {{ getSplitLeftPageNum(pageNum) }}
-                    </text>
-                    <text
-                      class="split-label"
-                      [attr.x]="getSplitLineX(pageNum) + ((getPageDimensions(pageNum)?.width || 0) - getSplitLineX(pageNum)) / 2"
-                      [attr.y]="30"
-                      text-anchor="middle"
-                      fill="#f59e0b"
-                      font-size="14"
-                      font-weight="600"
-                    >
-                      {{ getSplitRightPageNum(pageNum) }}
-                    </text>
-                  }
-
                   <!-- Sample mode rectangles -->
                   @if (sampleMode()) {
                     <!-- Completed sample rectangles on this page -->
@@ -474,16 +392,6 @@ export interface CropRect {
                 </svg>
               </div>
               <div class="page-label">
-                @if (splitMode() && splitEnabled()) {
-                  <label class="split-checkbox" (click)="$event.stopPropagation()">
-                    <input
-                      type="checkbox"
-                      [checked]="!isPageSkipped(pageNum)"
-                      (change)="togglePageSplit($event, pageNum)"
-                    />
-                    <span>Split</span>
-                  </label>
-                }
                 Page {{ pageNum + 1 }}
                 @if (isPageMarkedDeleted(pageNum)) {
                   <span class="deleted-badge">excluded</span>
@@ -508,7 +416,7 @@ export interface CropRect {
           <div
             class="pdf-container"
             [class.grid]="layout() === 'grid'"
-            [class.organize-mode]="editorMode() === 'select' || editorMode() === 'edit'"
+            [class.organize-mode]="editorMode() === 'select'"
           >
             @for (pageNum of pageNumbers(); track pageNum; let idx = $index) {
               <div
@@ -522,7 +430,7 @@ export interface CropRect {
                 [class.drag-over]="dragOverIndex() === idx"
                 [class.drag-over-before]="dragOverIndex() === idx && dropTargetIndex === idx"
                 [class.drag-over-after]="dragOverIndex() === idx && dropTargetIndex === idx + 1"
-                [draggable]="editorMode() === 'select' || editorMode() === 'edit'"
+                [draggable]="editorMode() === 'select'"
                 (click)="onPageClick($event, pageNum)"
                 (contextmenu)="onPageContextMenu($event, pageNum)"
                 (dragstart)="onPageDragStart($event, idx, pageNum)"
@@ -551,8 +459,7 @@ export interface CropRect {
                     class="block-overlay"
                     [class.crop-mode]="cropMode()"
                     [class.sample-mode]="sampleMode()"
-                    [class.edit-mode]="editorMode() === 'edit'"
-                    [attr.viewBox]="getViewBox(pageNum)"
+                      [attr.viewBox]="getViewBox(pageNum)"
                     preserveAspectRatio="none"
                     (mousedown)="onOverlayMouseDown($event, pageNum)"
                     (mousemove)="onOverlayMouseMove($event, pageNum)"
@@ -652,8 +559,6 @@ export interface CropRect {
                             [class.moved]="hasOffset(block.id)"
                             [class.search-highlight]="isSearchHighlighted(block.id)"
                             [class.search-current]="isCurrentSearchResult(block.id)"
-                            [style.cursor]="editorMode() === 'edit' ? 'move' : 'pointer'"
-                            (mousedown)="onBlockMouseDown($event, block)"
                             (click)="onBlockClick($event, block)"
                             (dblclick)="onBlockDoubleClick($event, block)"
                             (contextmenu)="onContextMenu($event, block)"
@@ -1275,10 +1180,6 @@ export interface CropRect {
         cursor: crosshair;
       }
 
-      &.edit-mode {
-        cursor: text;
-      }
-
       &.organize-mode {
         cursor: grab;
       }
@@ -1385,10 +1286,6 @@ export interface CropRect {
       cursor: pointer;
       stroke-width: 0.5;
       transition: stroke-width $duration-fast $ease-out, filter $duration-fast $ease-out, opacity $duration-fast $ease-out;
-    }
-
-    .block-overlay.edit-mode .block-rect {
-      cursor: text;
     }
 
     .block-overlay .block-rect:hover {
@@ -1835,14 +1732,10 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   // an entry get a subtle dim over everything OUTSIDE the rect, so an applied
   // crop is visible outside crop mode. Shape matches CropRect's geometry subset.
   cropRegions = input<Map<number, { x: number; y: number; width: number; height: number }>>(new Map());
-  editorMode = input<string>('select'); // 'select' | 'edit' | 'crop' | 'split'
+  /** What the pointer does: 'select', or 'crop' while the crop panel owns it. */
+  editorMode = input<string>('select');
   pageOrder = input<number[]>([]); // Custom page order for organize mode
 
-  // Split mode inputs
-  splitMode = input<boolean>(false);
-  splitEnabled = input<boolean>(false);  // Whether splitting is enabled in config
-  splitPositionFn = input<((pageNum: number) => number) | null>(null);  // Function to get split position for a page
-  skippedPages = input<Set<number>>(new Set());  // Pages to NOT split
 
   // Sample mode inputs (for custom category creation)
   sampleMode = input<boolean>(false);
@@ -1988,16 +1881,12 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   markPageType = output<{ pageNum: number; pageType: CorpusPageType }>();
   cropComplete = output<CropRect>();
   pageReorder = output<number[]>(); // Emitted when pages are reordered
-  splitPositionChange = output<{ pageNum: number; position: number }>(); // Emitted when split line is dragged
-  splitPageToggle = output<{ pageNum: number; enabled: boolean }>(); // Emitted when page split checkbox toggled
 
   // Sample mode outputs
   sampleMouseDown = output<{ event: MouseEvent; page: number; pageX: number; pageY: number }>();
   sampleMouseMove = output<{ pageX: number; pageY: number }>();
   sampleMouseUp = output<void>();
   // Block drag output (for edit mode)
-  blockMoved = output<{ blockId: string; offsetX: number; offsetY: number }>();
-  blockDragEnd = output<{ blockId: string; pageNum: number }>();
 
   // Gutter handle drop: create a chapter at the dropped position, snapping to the
   // nearest block when one is present. The parent decides whether to merge the
@@ -2111,7 +2000,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     // In edit/select mode, use the DOM-observed visible pages so the
     // on-demand renderer only gets pages near the viewport (previously this
     // returned ALL pages, requesting the whole document at once)
-    if (this.editorMode() === 'select' || this.editorMode() === 'edit') {
+    if (this.editorMode() === 'select') {
       const visible = this.domVisiblePages();
       if (visible.size === 0) {
         const end = Math.min(allPages.length, 5);
@@ -2220,12 +2109,6 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   readonly dragOverIndex = signal<number | null>(null);
 
   // Block drag state (for edit mode)
-  draggingBlock: TextBlock | null = null;  // Public for template access
-  private dragStartX: number = 0;
-  private dragStartY: number = 0;
-  private dragStartBlockX: number = 0;
-  private dragStartBlockY: number = 0;
-  readonly isDraggingBlock = signal(false);
 
   // Paragraph break drag state
   private draggingParagraphBreakId: string | null = null;
@@ -3870,7 +3753,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   // Page drag/drop for edit/select mode
   onPageDragStart(event: DragEvent, index: number, pageNum: number): void {
-    if (this.editorMode() !== 'select' && this.editorMode() !== 'edit') {
+    if (this.editorMode() !== 'select') {
       event.preventDefault();
       return;
     }
@@ -3892,7 +3775,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   onPageDragOver(event: DragEvent, index: number): void {
-    if ((this.editorMode() !== 'select' && this.editorMode() !== 'edit') || this.draggedPageIndex === null) return;
+    if ((this.editorMode() !== 'select') || this.draggedPageIndex === null) return;
 
     event.preventDefault();
     if (event.dataTransfer) {
@@ -4197,7 +4080,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
     // For CDK virtual scroll mode, let CDK do the offset math — it positions
     // content by index × itemSize, which disagrees with cumulative real heights
-    if (this.layout() !== 'grid' && this.editorMode() !== 'select' && this.editorMode() !== 'edit') {
+    if (this.layout() !== 'grid' && this.editorMode() !== 'select') {
       const index = this.pageNumbers().indexOf(pageNum);
       if (index >= 0 && this.cdkViewport) {
         this.cdkViewport.scrollToIndex(index);
@@ -4239,15 +4122,6 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   // Unified overlay mouse handlers (for crop, marquee selection, and sample mode)
   onOverlayMouseDown(event: MouseEvent, pageNum: number): void {
-    // In edit mode, block rects handle their own mousedown (for block dragging)
-    // In all other modes, let mousedown through for marquee selection
-    if (this.editorMode() === 'edit') {
-      const target = event.target as Element;
-      if (target.classList.contains('block-rect')) {
-        return; // Let block drag handler take over
-      }
-    }
-
     event.preventDefault();
 
     const coords = this.getSvgCoordinates(event, pageNum);
@@ -4779,210 +4653,6 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     this.cropDragType.set(null);
     this.cropDragStart.set(null);
   }
-
-  // ===========================================================================
-  // SPLIT MODE - Page splitting for scanned book spreads
-  // ===========================================================================
-
-  // Split drag state
-  private readonly isDraggingSplit = signal(false);
-  private readonly splitDragPageNum = signal<number | null>(null);
-  private readonly splitDragStartX = signal<number | null>(null);
-
-  // Get split line X position for a page
-  getSplitLineX(pageNum: number): number {
-    const fn = this.splitPositionFn();
-    if (!fn) return 0;
-
-    const dims = this.pageDimensions()[pageNum];
-    if (!dims) return 0;
-
-    const position = fn(pageNum); // 0-1 percentage
-    return dims.width * position;
-  }
-
-  // Get page dimensions helper
-  getPageDimensions(pageNum: number): PageDimension | null {
-    return this.pageDimensions()[pageNum] || null;
-  }
-
-  // Get the left half page number after split
-  getSplitLeftPageNum(pageNum: number): string {
-    // Reading order: left-to-right means left side comes first
-    // For page 0: left = page 1, right = page 2
-    // For page 1: left = page 3, right = page 4
-    const baseNum = pageNum * 2 + 1;
-    return `P${baseNum}`;
-  }
-
-  // Get the right half page number after split
-  getSplitRightPageNum(pageNum: number): string {
-    const baseNum = pageNum * 2 + 2;
-    return `P${baseNum}`;
-  }
-
-  // Check if page is skipped (not split)
-  isPageSkipped(pageNum: number): boolean {
-    return this.skippedPages().has(pageNum);
-  }
-
-  // Toggle whether a page should be split
-  togglePageSplit(event: Event, pageNum: number): void {
-    const checked = (event.target as HTMLInputElement).checked;
-    this.splitPageToggle.emit({ pageNum, enabled: checked });
-  }
-
-  // Start dragging split line
-  onSplitDragStart(event: MouseEvent, pageNum: number): void {
-    event.preventDefault();
-    event.stopPropagation();
-
-    this.isDraggingSplit.set(true);
-    this.splitDragPageNum.set(pageNum);
-
-    const coords = this.getSvgCoordinates(event, pageNum);
-    if (coords) {
-      this.splitDragStartX.set(coords.x);
-    }
-
-    // Add document-level listeners for drag
-    document.addEventListener('mousemove', this.onSplitDragMove);
-    document.addEventListener('mouseup', this.onSplitDragEnd);
-  }
-
-  // Handle split line drag
-  private onSplitDragMove = (event: MouseEvent): void => {
-    if (!this.isDraggingSplit()) return;
-
-    const pageNum = this.splitDragPageNum();
-    if (pageNum === null) return;
-
-    const dims = this.pageDimensions()[pageNum];
-    if (!dims) return;
-
-    // Get the page wrapper element
-    const pageWrapper = document.querySelector(`[data-page="${pageNum}"]`);
-    if (!pageWrapper) return;
-
-    const svg = pageWrapper.querySelector('.block-overlay') as SVGSVGElement;
-    if (!svg) return;
-
-    // Convert mouse position to SVG coordinates
-    const pt = svg.createSVGPoint();
-    pt.x = event.clientX;
-    pt.y = event.clientY;
-    const svgP = pt.matrixTransform(svg.getScreenCTM()?.inverse());
-
-    // Calculate new position as percentage
-    const newPosition = Math.max(0.1, Math.min(0.9, svgP.x / dims.width));
-
-    // Emit the change
-    this.splitPositionChange.emit({ pageNum, position: newPosition });
-  };
-
-  // End split line drag
-  private onSplitDragEnd = (): void => {
-    this.isDraggingSplit.set(false);
-    this.splitDragPageNum.set(null);
-    this.splitDragStartX.set(null);
-
-    document.removeEventListener('mousemove', this.onSplitDragMove);
-    document.removeEventListener('mouseup', this.onSplitDragEnd);
-  };
-
-  // ===========================================================================
-  // BLOCK DRAG - Drag text blocks to reposition them (edit mode)
-  // ===========================================================================
-
-  // Start dragging a block
-  onBlockMouseDown(event: MouseEvent, block: TextBlock): void {
-    // Only allow block dragging in edit mode
-    if (this.editorMode() !== 'edit') return;
-
-    event.preventDefault();
-    event.stopPropagation();
-
-    // Get SVG coordinates
-    const coords = this.getSvgCoordinates(event, block.page);
-    if (!coords) return;
-
-    // Get current block position (including any existing offset)
-    const currentOffset = this.blockOffsets().get(block.id);
-    const blockX = block.x + (currentOffset?.offsetX ?? 0);
-    const blockY = block.y + (currentOffset?.offsetY ?? 0);
-
-    // Store drag start state
-    this.draggingBlock = block;
-    this.dragStartX = coords.x;
-    this.dragStartY = coords.y;
-    this.dragStartBlockX = blockX;
-    this.dragStartBlockY = blockY;
-    this.isDraggingBlock.set(true);
-
-    // Add document-level listeners for drag
-    document.addEventListener('mousemove', this.onBlockDragMove);
-    document.addEventListener('mouseup', this.onBlockDragEnd);
-  }
-
-  // Handle block drag movement
-  private onBlockDragMove = (event: MouseEvent): void => {
-    if (!this.isDraggingBlock() || !this.draggingBlock) return;
-
-    const block = this.draggingBlock;
-    const dims = this.pageDimensions()[block.page];
-    if (!dims) return;
-
-    // Get the page wrapper element
-    const pageWrapper = document.querySelector(`[data-page="${block.page}"]`);
-    if (!pageWrapper) return;
-
-    const svg = pageWrapper.querySelector('.block-overlay') as SVGSVGElement;
-    if (!svg) return;
-
-    // Convert mouse position to SVG coordinates
-    const pt = svg.createSVGPoint();
-    pt.x = event.clientX;
-    pt.y = event.clientY;
-    const ctm = svg.getScreenCTM();
-    if (!ctm) return;
-    const svgP = pt.matrixTransform(ctm.inverse());
-
-    // Calculate delta from start
-    const deltaX = svgP.x - this.dragStartX;
-    const deltaY = svgP.y - this.dragStartY;
-
-    // Calculate new position
-    let newX = this.dragStartBlockX + deltaX;
-    let newY = this.dragStartBlockY + deltaY;
-
-    // Constrain to page bounds
-    newX = Math.max(0, Math.min(newX, dims.width - block.width));
-    newY = Math.max(0, Math.min(newY, dims.height - block.height));
-
-    // Calculate offset from original position
-    const offsetX = newX - block.x;
-    const offsetY = newY - block.y;
-
-    // Emit the position change
-    this.blockMoved.emit({ blockId: block.id, offsetX, offsetY });
-  };
-
-  // End block drag
-  private onBlockDragEnd = (): void => {
-    // Emit drag end event before clearing state
-    if (this.draggingBlock) {
-      this.blockDragEnd.emit({
-        blockId: this.draggingBlock.id,
-        pageNum: this.draggingBlock.page
-      });
-    }
-
-    this.draggingBlock = null;
-    this.isDraggingBlock.set(false);
-
-    document.removeEventListener('mousemove', this.onBlockDragMove);
-    document.removeEventListener('mouseup', this.onBlockDragEnd);
-  };
 
   // ═══════════════════════════════════════════════════════════════════════════
   // EXPORT: Render page with text overlays composited onto canvas

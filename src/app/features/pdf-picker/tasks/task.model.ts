@@ -1,4 +1,4 @@
-import { TextBlock, PageDimension } from '../services/pdf.service';
+import { TextBlock } from '../services/pdf.service';
 
 /**
  * Task model for the PDF-picker task-checklist rail.
@@ -19,9 +19,7 @@ import { TextBlock, PageDimension } from '../services/pdf.service';
 
 export type TaskId =
   | 'select'
-  | 'edit'
   | 'crop'
-  | 'split'
   | 'ocr'
   | 'merge';
 
@@ -30,12 +28,17 @@ export type TaskId =
  * ordinary rail entries with ordinary statuses — the rail IS the mode switcher,
  * so there is no second control anywhere that can disagree with it.
  *
- * `select` and `edit` are pointer interactions and open no panel; `crop` is a
- * mode that also owns the right pane. Labelling is not among them: the palette
- * lives inside Select, on the right-side nav's own tabs, because a label is
- * something you do to a selection rather than a different thing the pointer is.
+ * `select` is the pointer interaction and opens no panel; `crop` is a mode that
+ * also owns the right pane. Labelling is not among them: the palette lives
+ * inside Select, on the right-side nav's own tabs, because a label is something
+ * you do to a selection rather than a different thing the pointer is.
+ *
+ * Edit left this list on 2026-08-04 (docs/PIPELINE_V2_PLAN.md). Hand text
+ * editing on the canvas is unnecessary — the EPUB passes do the text work — and
+ * the working PDF's text is never edited at all. The one exception, chapter
+ * titles, is edited in the right-nav Chapter tab.
  */
-export const MODE_IDS = ['select', 'edit', 'crop'] as const;
+export const MODE_IDS = ['select', 'crop'] as const;
 export type ModeId = typeof MODE_IDS[number];
 
 export function isModeId(id: TaskId): id is ModeId {
@@ -60,8 +63,11 @@ export interface TaskGroup {
 }
 
 export const TASK_GROUPS: readonly TaskGroup[] = [
-  { id: 'modes', label: 'Mode', tasks: ['select', 'edit', 'crop'] },
-  { id: 'setup', label: 'Setup', tasks: ['split', 'ocr'] },
+  { id: 'modes', label: 'Mode', tasks: ['select', 'crop'] },
+  // Split spreads left this rail on 2026-08-04: Owen's corpus has no spread
+  // scans, and if one ever shows up splitting returns at the OCR/Cast step,
+  // consumed by the cast, rather than as a mode the pointer can be in.
+  { id: 'setup', label: 'Setup', tasks: ['ocr'] },
   // Chapters left this rail when they stopped being a list beside the book. A
   // chapter is a block labelled `chapter`, so it is made on the Label tab and
   // read on the Chapter tab of the document nav — there is nothing left for a
@@ -74,9 +80,7 @@ export const TASK_GROUPS: readonly TaskGroup[] = [
 /** Human, sentence-case labels shown in the rail. */
 export const TASK_LABELS: Record<TaskId, string> = {
   select: 'Select',
-  edit: 'Edit',
   crop: 'Crop',
-  split: 'Split spreads',
   ocr: 'OCR text',
   merge: 'Merge blocks',
 };
@@ -94,7 +98,6 @@ export const TASK_ORDER: readonly TaskId[] = TASK_GROUPS.flatMap(g => [...g.task
  */
 const LETTER_TASKS: Readonly<Partial<Record<TaskId, string>>> = {
   select: 'S',
-  edit: 'E',
 };
 
 const DIGIT_TASKS: readonly TaskId[] = TASK_ORDER.filter(id => !(id in LETTER_TASKS));
@@ -127,25 +130,11 @@ function plural(n: number, word: string): string {
   return n === 1 ? word : `${word}s`;
 }
 
-/** Median width/height aspect ratio across pages, or 0 when there are none. */
-function medianAspect(pageDimensions: readonly PageDimension[]): number {
-  if (pageDimensions.length === 0) return 0;
-  const ratios = pageDimensions
-    .filter(d => d.height > 0)
-    .map(d => d.width / d.height)
-    .sort((a, b) => a - b);
-  if (ratios.length === 0) return 0;
-  const mid = Math.floor(ratios.length / 2);
-  return ratios.length % 2 === 0
-    ? (ratios[mid - 1] + ratios[mid]) / 2
-    : ratios[mid];
-}
-
-// ── Select / Edit / Label (modes) ──────────────────────────────────────────
+// ── Select (mode) ─────────────────────────────────────────────────────────
 
 /**
- * The pointer modes report what has been done THROUGH them rather than whether
- * they are switched on: "which mode am I in" is already answered by the active
+ * The pointer mode reports what has been done THROUGH it rather than whether it
+ * is switched on: "which mode am I in" is already answered by the active
  * highlight, so a status that repeated it would carry no information.
  */
 export function deriveSelectStatus(removedBlockCount: number): TaskStatus {
@@ -153,13 +142,6 @@ export function deriveSelectStatus(removedBlockCount: number): TaskStatus {
     return { kind: 'done', detail: `${removedBlockCount} ${plural(removedBlockCount, 'block')} removed` };
   }
   return { kind: 'untouched', detail: 'nothing removed' };
-}
-
-export function deriveEditStatus(textEditCount: number): TaskStatus {
-  if (textEditCount > 0) {
-    return { kind: 'done', detail: `${textEditCount} text ${plural(textEditCount, 'edit')}` };
-  }
-  return { kind: 'untouched', detail: 'no text edits' };
 }
 
 // ── Crop ──────────────────────────────────────────────────────────────────
@@ -200,28 +182,6 @@ export interface CropStatusInput {
 export function deriveCropStatus(i: CropStatusInput): TaskStatus {
   if (i.croppedPageCount > 0) {
     return { kind: 'done', detail: `applied to ${i.croppedPageCount} ${plural(i.croppedPageCount, 'page')}` };
-  }
-  return { kind: 'untouched', detail: 'not applied' };
-}
-
-// ── Split ─────────────────────────────────────────────────────────────────
-
-export interface SplitStatusInput {
-  /** True only after the user explicitly applied the split (not mere panel entry). */
-  readonly applied: boolean;
-  readonly enabled: boolean;
-  readonly skippedCount: number;
-  readonly pageDimensions: readonly PageDimension[];
-}
-
-export function deriveSplitStatus(i: SplitStatusInput): TaskStatus {
-  // `enabled` alone is not proof of work: entering the split panel auto-enables
-  // the config. Only an explicit Apply makes the status factual "done".
-  if (i.applied && i.enabled) {
-    return { kind: 'done', detail: `applied (${i.skippedCount} skipped)` };
-  }
-  if (medianAspect(i.pageDimensions) > 1.3) {
-    return { kind: 'suggested', detail: 'wide pages detected' };
   }
   return { kind: 'untouched', detail: 'not applied' };
 }
@@ -291,10 +251,7 @@ export const CHAPTERS_EXPORT_MINIMUM = 2;
 export interface TaskStatusContext {
   /** Blocks the user removed (deleted) — what Select mode is for. */
   readonly removedBlockCount: number;
-  /** Blocks whose text the user rewrote — what Edit mode is for. */
-  readonly textEditCount: number;
   readonly crop: CropStatusInput;
-  readonly split: SplitStatusInput;
   readonly ocr: OcrStatusInput;
   readonly mergeCount: number;
 }
@@ -307,12 +264,8 @@ export function deriveTaskStatus(id: TaskId, ctx: TaskStatusContext): TaskStatus
   switch (id) {
     case 'select':
       return deriveSelectStatus(ctx.removedBlockCount);
-    case 'edit':
-      return deriveEditStatus(ctx.textEditCount);
     case 'crop':
       return deriveCropStatus(ctx.crop);
-    case 'split':
-      return deriveSplitStatus(ctx.split);
     case 'ocr':
       return deriveOcrStatus(ctx.ocr);
     case 'merge':

@@ -28,14 +28,12 @@ import { MergePanelComponent } from './components/merge-panel/merge-panel.compon
 import { RegexCriteria, defaultRegexCriteria } from './components/regex-category-builder/regex-category-builder.component';
 import { FilePickerComponent } from './components/file-picker/file-picker.component';
 import { CropPanelComponent } from './components/crop-panel/crop-panel.component';
-import { SplitPanelComponent, SplitConfig } from './components/split-panel/split-panel.component';
 import { PipelineBarComponent, PipelineStation } from './components/pipeline-bar/pipeline-bar.component';
 import { computeBaselines, learnFromBreaks, detectParagraphBreaks, getDefaultConfig, type DetectionConfig } from './services/paragraph-detector';
 import { recategorize as recategorizeBlocksFromLearner, classifyBlockHeuristic, computeBaselines as computeCategoryBaselines, isDefaultThresholds, detectMergeableGroups, createMergedBlock, type BlockAssignment, type CategoryBaselines, type ClassificationThresholds, type MergeGroup } from './services/category-learner';
 import { TrainingExportService } from './services/training-export.service';
 import { TabBarComponent, DocumentTab } from './components/tab-bar/tab-bar.component';
 import { OcrSettingsModalComponent, OcrSettings, OcrPageResult, OcrCompletionEvent } from './components/ocr-settings-modal/ocr-settings-modal.component';
-import { InlineTextEditorComponent, TextEditResult } from './components/inline-text-editor/inline-text-editor.component';
 import { ExportSettingsModalComponent, ExportSettings, ExportResult, ExportFormat } from './components/export-settings-modal/export-settings-modal.component';
 import { BackgroundProgressComponent, BackgroundJob } from './components/background-progress/background-progress.component';
 import { OcrJobService, OcrJob } from './services/ocr-job.service';
@@ -92,9 +90,6 @@ interface OpenDocument {
   metadata?: BookMetadata;
   categoryHighlights?: CategoryHighlights;
   deletedHighlightIds?: Set<string>;
-  splitConfig?: SplitConfig;
-  /** Session-scoped: user explicitly applied the split (enabled alone is not proof). */
-  splitApplied?: boolean;
   /** Persistent crop regions per page (0-indexed). Durable across tab switches. */
   cropRegions?: Map<number, CropRegion>;
   blankedPages?: Set<number>;
@@ -345,12 +340,10 @@ interface AlertModal {
     MergePanelComponent,
     FilePickerComponent,
     CropPanelComponent,
-    SplitPanelComponent,
     DocumentNavComponent,
     PipelineBarComponent,
     TabBarComponent,
     OcrSettingsModalComponent,
-    InlineTextEditorComponent,
     ExportSettingsModalComponent,
     BackgroundProgressComponent,
     TaskRailComponent,
@@ -617,10 +610,6 @@ interface AlertModal {
               [cropRegions]="cropRegionRects()"
               [editorMode]="viewerEditorMode()"
               [pageOrder]="pageOrder()"
-              [splitMode]="splitMode()"
-              [splitEnabled]="splitConfig().enabled"
-              [splitPositionFn]="getSplitPositionForPageFn"
-              [skippedPages]="splitConfig().skippedPages"
               [sampleMode]="sampleMode()"
               [sampleRects]="sampleRects()"
               [sampleCurrentRect]="sampleDrawingRect()"
@@ -667,13 +656,9 @@ interface AlertModal {
               (cropComplete)="onCropComplete($event)"
               (marqueeSelect)="onMarqueeSelect($event)"
               (pageReorder)="onPageReorder($event)"
-              (splitPositionChange)="onSplitPositionChange($event)"
-              (splitPageToggle)="onSplitPageToggle($event)"
               (sampleMouseDown)="onSampleMouseDown($event.event, $event.page, $event.pageX, $event.pageY)"
               (sampleMouseMove)="onSampleMouseMove($event.pageX, $event.pageY)"
               (sampleMouseUp)="onSampleMouseUp()"
-              (blockMoved)="onBlockMoved($event)"
-              (blockDragEnd)="onBlockDragEnd($event)"
               [getPageImageUrl]="getPageImageUrlFn"
             />
               }
@@ -733,22 +718,6 @@ interface AlertModal {
                 (cancel)="cancelCrop()"
                 (apply)="applyCropFromPanel($event)"
                 (clearCrop)="clearCropFromPanel($event)"
-              />
-            }
-            @case ('split') {
-              <app-split-panel
-                [config]="splitConfig()"
-                [currentPage]="splitPreviewPage()"
-                [totalPages]="totalPages()"
-                [deskewing]="deskewing()"
-                [lastDeskewAngle]="lastDeskewAngle()"
-                (prevPage)="splitPrevPage()"
-                (nextPage)="splitNextPage()"
-                (cancel)="cancelSplitMode()"
-                (apply)="applySplit()"
-                (configChange)="onSplitConfigChange($event)"
-                (deskewCurrentPage)="deskewCurrentPage()"
-                (deskewAllPages)="deskewAllPages()"
               />
             }
             @case ('ocr') {
@@ -929,21 +898,6 @@ interface AlertModal {
       </div>
     }
 
-    <!-- Inline Text Editor (for OCR corrections) -->
-    @if (showInlineEditor() && inlineEditorBlock()) {
-      <app-inline-text-editor
-        [blockId]="inlineEditorBlock()!.id"
-        [originalText]="inlineEditorBlock()!.text"
-        [correctedText]="editorState.textCorrections().get(inlineEditorBlock()!.id) ?? null"
-        [x]="inlineEditorX()"
-        [y]="inlineEditorY()"
-        [width]="inlineEditorWidth()"
-        [height]="inlineEditorHeight()"
-        [fontSize]="inlineEditorFontSize()"
-        (editComplete)="onInlineEditComplete($event)"
-      />
-    }
-
     <!-- Split Block Popover -->
     @if (splitPopoverBlock()) {
       <div class="modal-overlay" (click)="cancelSplit()">
@@ -1067,7 +1021,7 @@ interface AlertModal {
       <app-ocr-settings-modal
         [currentSettings]="ocrSettings()"
         [totalPages]="totalPages()"
-        [currentPage]="splitPreviewPage()"
+        [currentPage]="currentPageIndex()"
         [getPageImage]="getPageImageForOcrFn"
         [documentId]="activeDocumentId() || 'unknown'"
         [documentName]="pdfName()"
@@ -2985,11 +2939,6 @@ export class PdfPickerComponent implements OnInit {
 
   @HostListener('window:keydown', ['$event'])
   onKeyDown(event: KeyboardEvent): void {
-    // Inline text editor is open - let it handle its own shortcuts
-    if (this.showInlineEditor()) {
-      return;
-    }
-
     // Text editor modal shortcuts
     if (this.showTextEditor()) {
       if (event.key === 'Escape') {
@@ -3152,10 +3101,6 @@ export class PdfPickerComponent implements OnInit {
           event.preventDefault();
           this.onRailPanelClick('select');
           break;
-        case 'e': // Pointer: edit
-          event.preventDefault();
-          this.onRailPanelClick('edit');
-          break;
         case 'a': // Analysis & search
           event.preventDefault();
           this.onRailPanelClick('analysis');
@@ -3309,18 +3254,6 @@ export class PdfPickerComponent implements OnInit {
   readonly regexMatches = signal<MatchRect[]>([]);
   readonly regexMatchCount = signal(0);
   private regexDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-
-  // Inline text editor state (for OCR corrections)
-  readonly showInlineEditor = signal(false);
-  readonly inlineEditorBlock = signal<TextBlock | null>(null);
-  readonly inlineEditorX = signal(0);
-  readonly inlineEditorY = signal(0);
-  readonly inlineEditorWidth = signal(200);
-  readonly inlineEditorHeight = signal(50);
-  // Pre-calculated font size set when opening the editor (matches visible text exactly)
-  readonly inlineEditorCalculatedFontSize = signal(14);
-  // Use the pre-calculated font size
-  readonly inlineEditorFontSize = computed(() => this.inlineEditorCalculatedFontSize());
 
   // Legacy text editor modal state (kept for compatibility, may be removed later)
   readonly showTextEditor = signal(false);
@@ -3948,11 +3881,16 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  // Task/panel state. `activePanel` is the single source of truth for the
-  // right pane and viewer overlay; `viewerInteraction` is the pointer mode
-  // (select/edit), independent of which task panel is open.
+  // Task/panel state. `activePanel` is the single source of truth for the right
+  // pane and the viewer overlay.
+  //
+  // There is no second "pointer mode" signal beside it any more. There used to
+  // be — `viewerInteraction`, select or edit — and Edit mode is deleted
+  // (docs/PIPELINE_V2_PLAN.md, ruled 2026-08-04), which left it a union of one.
+  // Crop is a PANEL rather than a thing the pointer can be, so the pointer is
+  // select whenever no panel has taken it, and that is a fact about
+  // `activePanel` rather than a value to keep in step with it.
   readonly activePanel = signal<PanelId | null>(null);   // null = the document nav
-  readonly viewerInteraction = signal<'select' | 'edit'>('select');
 
   /**
    * Which tab of the document nav is open — and, for Label, what a click on a
@@ -3971,8 +3909,10 @@ export class PdfPickerComponent implements OnInit {
    * among them: the Label tab is a palette over the selection Select made, not
    * a fourth thing the pointer can be.
    */
-  readonly railCurrent = computed<PanelId>(() =>
-    this.activePanel() ?? this.viewerInteraction());
+  // `?? 'select'` is not a fallback for a missing value: `activePanel` being
+  // null IS the state "no panel has taken the pointer", and select is what the
+  // pointer does then.
+  readonly railCurrent = computed<PanelId>(() => this.activePanel() ?? 'select');
 
   /**
    * Label mode: assign a category to the selected blocks by clicking the palette
@@ -3993,14 +3933,9 @@ export class PdfPickerComponent implements OnInit {
   // Collapsed rail groups (persisted; see rail persistence effect).
   readonly collapsedGroups = signal<ReadonlySet<string>>(new Set());
 
-  // Viewer editor mode: crop/split when those panels are active, else the
-  // current pointer interaction (select/edit).
-  readonly viewerEditorMode = computed<string>(() => {
-    const panel = this.activePanel();
-    if (panel === 'crop') return 'crop';
-    if (panel === 'split') return 'split';
-    return this.viewerInteraction();
-  });
+  // Viewer editor mode: crop while that panel owns the pointer, else select.
+  readonly viewerEditorMode = computed<string>(() =>
+    this.activePanel() === 'crop' ? 'crop' : 'select');
 
   // The rail is hidden only while reviewing the exported EPUB; it is fully
   // usable at both editable stations (select AND chapters) in embedded mode.
@@ -4022,24 +3957,15 @@ export class PdfPickerComponent implements OnInit {
     return out;
   });
 
-  // Split mode state (for scanned book pages)
-  readonly splitMode = computed(() => this.activePanel() === 'split');
-  readonly splitConfig = signal<SplitConfig>({
-    enabled: false,
-    oddPageSplit: 0.5,
-    evenPageSplit: 0.5,
-    pageOverrides: {},
-    skippedPages: new Set<number>(),
-    readingOrder: 'left-to-right'
-  });
-  // True only after the user explicitly applied the split this session.
-  // Entering the split panel auto-enables splitConfig, so `enabled` alone is
-  // not evidence of applied work — this flag keeps the rail status factual.
-  readonly splitApplied = signal(false);
-  readonly splitPreviewPage = signal(0);  // Page being previewed in split mode
-  readonly isDraggingSplit = signal(false);
-  readonly deskewing = signal(false);
-  readonly lastDeskewAngle = signal<number | null>(null);
+  /**
+   * The page the viewer was last taken to. Zero-based.
+   *
+   * The only thing that reads it is the OCR dialog's "current page" scope, which
+   * a training-corpus book uses to recognize one page. It used to read the split
+   * panel's preview page — which was 0 unless somebody had been in Split mode,
+   * so "current page" meant page 1 for everyone else.
+   */
+  readonly currentPageIndex = signal(0);
 
   // Analysis mode state
   readonly analysisMode = computed(() => this.activePanel() === 'analysis');
@@ -4278,17 +4204,9 @@ export class PdfPickerComponent implements OnInit {
   readonly taskStatuses = computed<Map<TaskId, TaskStatus>>(() => {
     const blocks = this.blocks();
     const deletedBlockIds = this.deletedBlockIds();
-    const splitConfig = this.splitConfig();
     return deriveAllTaskStatuses({
       removedBlockCount: deletedBlockIds.size,
-      textEditCount: this.editorState.blockEdits().size,
       crop: { croppedPageCount: this.editorState.cropRegions().size },
-      split: {
-        applied: this.splitApplied(),
-        enabled: splitConfig.enabled,
-        skippedCount: splitConfig.skippedPages.size,
-        pageDimensions: this.pageDimensions(),
-      },
       ocr: { blocks, deletedBlockIds, totalPages: this.totalPages() },
       mergeCount: this.editorState.blockMerges().size,
     });
@@ -4300,9 +4218,9 @@ export class PdfPickerComponent implements OnInit {
    * lightweight mode allows only OCR; paragraphs are unavailable while
    * reviewing the exported EPUB.
    *
-   * Select and Edit are never disabled. They are how the pointer behaves rather
-   * than work to be done, and a rail whose current row is disabled would have
-   * nowhere to put the user.
+   * Select is never disabled. It is how the pointer behaves rather than work to
+   * be done, and a rail whose current row is disabled would have nowhere to put
+   * the user.
    */
   readonly disabledTasks = computed<Map<TaskId, string>>(() => {
     const disabled = new Map<TaskId, string>();
@@ -4356,8 +4274,8 @@ export class PdfPickerComponent implements OnInit {
     }
 
     for (const id of TASK_ORDER) {
-      if (id === 'select' || id === 'edit') continue;
-      if (isEpub && (id === 'crop' || id === 'split' || id === 'ocr')) {
+      if (id === 'select') continue;
+      if (isEpub && (id === 'crop' || id === 'ocr')) {
         disabled.set(id, 'PDF only — not available for EPUB');
         continue;
       }
@@ -4871,7 +4789,6 @@ export class PdfPickerComponent implements OnInit {
   // Stable function references for template inputs — avoids creating a new
   // function identity on every change-detection pass (defeats OnPush children)
   readonly getPageImageUrlFn = (pageNum: number): string => this.getPageImageUrl(pageNum);
-  readonly getSplitPositionForPageFn = (pageNum: number): number => this.getSplitPositionForPage(pageNum);
   readonly getPageImageForOcrFn = (pageNum: number): Promise<string | null> => this.getPageImageForOcr(pageNum);
 
   private getRenderScale(pageCount: number): number {
@@ -5022,8 +4939,6 @@ export class PdfPickerComponent implements OnInit {
     this.metadata.set({});
     this.categoryHighlights.set(new Map());
     this.deletedHighlightIds.set(new Set());
-    this.splitConfig.set(this.defaultSplitConfig());
-    this.splitApplied.set(false);
     this.projectCreatedAt = null;
     this.analyzedSourceSha256.set(null);
     // No document, nothing declined — the next load decides this again.
@@ -5032,7 +4947,6 @@ export class PdfPickerComponent implements OnInit {
     // Clear crop / task panel state (cropRegions live on editorState and are
     // reset by editorState.reset()/loadDocument()).
     this.activePanel.set(null);
-    this.viewerInteraction.set('select');
     this.currentCropRect.set(null);
   }
 
@@ -5202,8 +5116,6 @@ export class PdfPickerComponent implements OnInit {
       this.chaptersSource.set('manual');
       this.categoryHighlights.set(new Map());
       this.deletedHighlightIds.set(new Set());
-      this.splitConfig.set(this.defaultSplitConfig());
-      this.splitApplied.set(false);
       // A new document has no working document until its OWN is read
       // (workingDocumentEffect), which is keyed to the project and the file on
       // screen — never inherited from the tab this one replaced.
@@ -5332,219 +5244,28 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
+  /**
+   * Double-click on a block: select everything of its category.
+   *
+   * There is no longer a second answer for a chapter block. A chapter's title is
+   * edited in the right-nav Chapter tab — double-click the entry there — because
+   * the working PDF's text is never edited on the canvas at all
+   * (docs/PIPELINE_V2_PLAN.md, ruled 2026-08-04). So a chapter block
+   * double-clicks like every other block.
+   */
   onBlockDoubleClick(event: {
     block: TextBlock;
     metaKey: boolean;
     ctrlKey: boolean;
-    screenX: number;
-    screenY: number;
-    screenWidth: number;
-    screenHeight: number;
   }): void {
     if (this.reviewMode()) return;  // read-only during EPUB review
-    const { block, metaKey, ctrlKey, screenX, screenY, screenWidth, screenHeight } = event;
-    const mode = this.viewerInteraction();
-    const additive = metaKey || ctrlKey;
-
-    // A chapter block is editable wherever you are. It is not a box that happens
-    // to hold a heading — it IS the chapter, and its text IS the title, so
-    // retyping it is the only way to fix a heading the scan misread. Selecting
-    // "everything that looks like this" instead would be an odd answer to a
-    // double-click on the one block on the page that is unique.
-    if (this.isChapterBlock(block)) {
-      this.openInlineEditor(block, screenX, screenY, screenWidth, screenHeight);
-      return;
-    }
-
-    if (mode === 'select') {
-      // In select mode, double-click selects all similar items
-      // With Cmd/Ctrl held, add to existing selection
-      this.selectLikeThis(block, additive);
-    } else if (mode === 'edit') {
-      // In edit mode, double-click opens inline text editor
-      this.openInlineEditor(block, screenX, screenY, screenWidth, screenHeight);
-    }
-    // In crop/organize modes, double-click does nothing
+    const { block, metaKey, ctrlKey } = event;
+    // Crop owns the pointer while its panel is open, and a double-click inside a
+    // crop rectangle is not a request to select the page's body text.
+    if (this.activePanel() === 'crop') return;
+    this.selectLikeThis(block, metaKey || ctrlKey);
   }
 
-  openInlineEditor(block: TextBlock, x: number, y: number, width: number, height: number): void {
-    // Position the editor at the block's screen location
-    // Calculate scale from screen rect to PDF coordinates
-    const scale = block.height > 0 ? height / block.height : 1;
-
-    // Get the text and base font size
-    const text = this.editorState.textCorrections().get(block.id) ?? block.text;
-    const baseFontSize = block.font_size || 12;
-
-    // Check if this is a single-line block (height close to one line of text)
-    const isSingleLine = block.height < baseFontSize * 2;
-
-    // For multi-line blocks, use the original font size
-    // For single-line blocks, shrink to fit if needed
-    let fittedFontSize = baseFontSize;
-
-    if (isSingleLine) {
-      const padding = 8;
-      const availableWidth = block.width - padding;
-
-      if (availableWidth > 0 && text) {
-        const avgCharWidthRatio = 0.55;
-        const estimatedTextWidth = text.length * baseFontSize * avgCharWidthRatio;
-        if (estimatedTextWidth > availableWidth) {
-          const singleLineFontSize = availableWidth / (text.length * avgCharWidthRatio);
-          const minFontSize = Math.max(8, baseFontSize * 0.5);
-          fittedFontSize = Math.max(minFontSize, singleLineFontSize);
-        }
-      }
-    }
-
-    // Convert to screen coordinates
-    // Apply a small adjustment factor (0.92) to match SVG text rendering more closely
-    // SVG foreignObject text and CSS textarea text render at slightly different effective sizes
-    const screenFontSize = fittedFontSize * scale * 0.92;
-
-    // Store the calculated values
-    this.inlineEditorBlock.set(block);
-    this.inlineEditorX.set(x);
-    this.inlineEditorY.set(y);
-    // Slightly reduce dimensions to match the text area more closely
-    this.inlineEditorWidth.set(Math.max(width * 0.98, 150));
-    this.inlineEditorHeight.set(Math.max(height * 0.98, 40));
-    this.inlineEditorCalculatedFontSize.set(Math.max(10, Math.min(48, screenFontSize)));
-    this.showInlineEditor.set(true);
-  }
-
-  closeInlineEditor(): void {
-    this.showInlineEditor.set(false);
-    this.inlineEditorBlock.set(null);
-  }
-
-  onInlineEditComplete(result: TextEditResult): void {
-    // A chapter box abandoned empty (cancelled, or saved with no name) would
-    // otherwise persist as a titleless <h1> that splits the book at that page.
-    if (this.discardEmptyChapterBox(result.blockId, result.cancelled ? '' : result.text)) {
-      this.inlineEditorBlock.set(null);
-      return;
-    }
-    if (!result.cancelled) {
-      const block = this.inlineEditorBlock();
-      // With a working document the block's TEXT is the annotation's, and for a
-      // chapter block it is the title the book is built with. So it is written
-      // into the document rather than parked in a corrections map beside it —
-      // that map is the override layer this pipeline deleted.
-      if (block && this.blockLayerRead()) {
-        const text = result.text.trim();
-        if (text.length > 0 && text !== block.text.trim()) {
-          this.documentBlocks.retitle(block.id, text);
-          this.rerenderPageWithEdits(block.page);
-        }
-        this.inlineEditorBlock.set(null);
-        return;
-      }
-      if (block) {
-        // Check if text was actually changed
-        const originalText = block.text;
-        const correctedText = this.editorState.textCorrections().get(block.id);
-        const previousText = correctedText ?? originalText;
-
-        let needsRerender = false;
-
-        if (result.text !== previousText) {
-          if (result.text === originalText) {
-            // Text was reverted to original - clear the correction
-            this.editorState.clearTextCorrection(block.id);
-          } else {
-            // Text was changed - save as a correction (automatically adds to history)
-            this.editorState.setTextCorrection(block.id, result.text);
-            needsRerender = true;
-          }
-        }
-
-        // Handle resize if dimensions changed
-        if (result.width !== undefined && result.height !== undefined) {
-          // Convert screen dimensions back to PDF coordinates
-          const screenHeight = this.inlineEditorHeight();
-          const pdfHeight = block.height;
-          const scale = screenHeight / pdfHeight;
-
-          const newPdfWidth = result.width / scale;
-          const newPdfHeight = result.height / scale;
-
-          // Get previous size for history
-          const edit = this.editorState.blockEdits().get(block.id);
-          const prevWidth = edit?.width ?? block.width;
-          const prevHeight = edit?.height ?? block.height;
-
-          // Update size
-          this.editorState.setBlockSize(block.id, newPdfWidth, newPdfHeight, false);
-
-          // Record resize in history
-          this.editorState.recordResize(block.id, prevWidth, prevHeight, newPdfWidth, newPdfHeight);
-
-          needsRerender = true;
-        }
-
-        // Re-render page with redactions to hide original text
-        if (needsRerender) {
-          this.rerenderPageWithEdits(block.page);
-        }
-      }
-    }
-    this.closeInlineEditor();
-  }
-
-  // Track initial position before drag for undo support
-  private dragStartPosition: { blockId: string; offsetX: number; offsetY: number } | null = null;
-
-  // Handle block position changes from drag/drop in edit mode (called during drag)
-  onBlockMoved(event: { blockId: string; offsetX: number; offsetY: number }): void {
-    if (this.reviewMode()) return;  // read-only during EPUB review
-    const { blockId, offsetX, offsetY } = event;
-
-    // Capture initial position when drag starts
-    if (!this.dragStartPosition || this.dragStartPosition.blockId !== blockId) {
-      const edit = this.editorState.blockEdits().get(blockId);
-      this.dragStartPosition = {
-        blockId,
-        offsetX: edit?.offsetX ?? 0,
-        offsetY: edit?.offsetY ?? 0
-      };
-    }
-
-    // Update position for visual feedback during drag (no re-render yet)
-    if (Math.abs(offsetX) > 0.5 || Math.abs(offsetY) > 0.5) {
-      this.editorState.setBlockPosition(blockId, offsetX, offsetY, false);
-    } else {
-      this.editorState.clearBlockPosition(blockId, false);
-    }
-  }
-
-  // Handle block drag completion - re-render page with redactions
-  onBlockDragEnd(event: { blockId: string; pageNum: number }): void {
-    if (this.reviewMode()) return;  // read-only during EPUB review
-    const { blockId, pageNum } = event;
-
-    // Add to undo history if position changed
-    if (this.dragStartPosition && this.dragStartPosition.blockId === blockId) {
-      const edit = this.editorState.blockEdits().get(blockId);
-      const finalOffsetX = edit?.offsetX ?? 0;
-      const finalOffsetY = edit?.offsetY ?? 0;
-
-      // Record the move in history with before/after positions
-      this.editorState.recordMove(
-        blockId,
-        this.dragStartPosition.offsetX,
-        this.dragStartPosition.offsetY,
-        finalOffsetX,
-        finalOffsetY
-      );
-
-      this.dragStartPosition = null;
-    }
-
-    // Re-render the page with redactions now that drag is complete
-    this.rerenderPageWithEdits(pageNum);
-  }
 
   /**
    * Get all redact regions for a page (deleted blocks and edited blocks' original positions)
@@ -7401,6 +7122,7 @@ export class PdfPickerComponent implements OnInit {
 
   // Scroll to a specific page (used by timeline)
   scrollToPage(pageNum: number): void {
+    this.currentPageIndex.set(pageNum);
     this.pdfViewer?.scrollToPage(pageNum);
   }
 
@@ -9021,7 +8743,6 @@ export class PdfPickerComponent implements OnInit {
   /** Set panel + step for the editing station and update visited/staleness. */
   private enterStation(target: PipelineStep): void {
     this.activatePanel(null);
-    this.viewerInteraction.set('select');
     this.pipelineStep.set(target);
     this.visitedStations.update(s => {
       const next = new Set(s);
@@ -10413,8 +10134,6 @@ export class PdfPickerComponent implements OnInit {
       this.metadata.set({});
       this.categoryHighlights.set(new Map());
       this.deletedHighlightIds.set(new Set());
-      this.splitConfig.set(this.defaultSplitConfig());
-      this.splitApplied.set(false);
       this.blankedPages.set(new Set());
       this.projectCreatedAt = project.created_at || null;
 
@@ -11441,12 +11160,6 @@ export class PdfPickerComponent implements OnInit {
       this.currentCropRect.set(null);
     }
 
-    // Entering split: auto-enable splitting and reset the preview page.
-    if (id === 'split' && previous !== 'split') {
-      this.splitConfig.update(config => ({ ...config, enabled: true }));
-      this.splitPreviewPage.set(0);
-    }
-
     this.activePanel.set(id);
   }
 
@@ -11464,7 +11177,6 @@ export class PdfPickerComponent implements OnInit {
    */
   setNavTab(tab: DocumentNavTab): void {
     if (tab === 'label' && this.corpusMode() && !this.ensureCorpusLabelUniverse()) return;
-    if (tab === 'label') this.viewerInteraction.set('select');
     this.navTab.set(tab);
     this.activatePanel(null);
   }
@@ -11484,10 +11196,9 @@ export class PdfPickerComponent implements OnInit {
     // bypass used to sit in front of the check.
     if (this.disabledTasks().has(id as TaskId)) return;
 
-    // Pointer modes own no panel: choosing one closes whatever panel had taken
-    // over the pointer, so the click does what it looks like it does.
-    if (id === 'select' || id === 'edit') {
-      this.viewerInteraction.set(id);
+    // Select owns no panel: choosing it closes whatever panel had taken over the
+    // pointer, so the click does what it looks like it does.
+    if (id === 'select') {
       this.setNavTab('select');
       return;
     }
@@ -11626,174 +11337,6 @@ export class PdfPickerComponent implements OnInit {
     // the document as the deletions it made and nothing else — the rectangle
     // itself is the editor's record of how to reverse them.
     this.landBlockDeletions(this.editorState.applyCrop(entries, allToDelete), true);
-  }
-
-  // Split mode methods
-  splitPrevPage(): void {
-    const current = this.splitPreviewPage();
-    if (current > 0) {
-      this.splitPreviewPage.set(current - 1);
-      this.scrollToPage(current - 1);
-    }
-  }
-
-  splitNextPage(): void {
-    const current = this.splitPreviewPage();
-    if (current < this.totalPages() - 1) {
-      this.splitPreviewPage.set(current + 1);
-      this.scrollToPage(current + 1);
-    }
-  }
-
-  exitSplitMode(): void {
-    this.activatePanel(null);
-  }
-
-  // Cancel split mode - discard changes and disable split
-  cancelSplitMode(): void {
-    this.splitConfig.update(config => ({ ...config, enabled: false }));
-    this.splitApplied.set(false);
-    this.activatePanel(null);
-  }
-
-  // Apply split settings and exit split mode
-  applySplit(): void {
-    // Keep split enabled, mark as changed, and exit mode
-    this.splitApplied.set(true);
-    this.editorState.markChanged();
-    this.activatePanel(null);
-  }
-
-  onSplitConfigChange(config: SplitConfig): void {
-    this.splitConfig.set(config);
-    this.editorState.markChanged();
-  }
-
-  // Get split position for a specific page (considering overrides)
-  getSplitPositionForPage(pageNum: number): number {
-    const config = this.splitConfig();
-    if (!config.enabled) return 0.5;
-
-    // Check for page-specific override
-    if (pageNum in config.pageOverrides) {
-      return config.pageOverrides[pageNum];
-    }
-
-    // Use odd/even setting
-    const isOdd = (pageNum + 1) % 2 === 1;
-    return isOdd ? config.oddPageSplit : config.evenPageSplit;
-  }
-
-  // Set split position override for current page (called from pdf-viewer drag)
-  setSplitOverrideForPage(pageNum: number, position: number): void {
-    const config = this.splitConfig();
-    const newOverrides = { ...config.pageOverrides, [pageNum]: position };
-    this.splitConfig.set({ ...config, pageOverrides: newOverrides });
-    this.editorState.markChanged();
-  }
-
-  // Handle split position change from pdf-viewer drag
-  onSplitPositionChange(event: { pageNum: number; position: number }): void {
-    this.setSplitOverrideForPage(event.pageNum, event.position);
-  }
-
-  // Handle split page checkbox toggle
-  onSplitPageToggle(event: { pageNum: number; enabled: boolean }): void {
-    const config = this.splitConfig();
-    const newSkipped = new Set(config.skippedPages);
-
-    if (event.enabled) {
-      // Page should be split - remove from skipped
-      newSkipped.delete(event.pageNum);
-    } else {
-      // Page should NOT be split - add to skipped
-      newSkipped.add(event.pageNum);
-    }
-
-    this.splitConfig.set({ ...config, skippedPages: newSkipped });
-    this.editorState.markChanged();
-  }
-
-  // Deskew methods for split mode
-  async deskewCurrentPage(): Promise<void> {
-    const pageNum = this.splitPreviewPage();
-    await this.deskewPage(pageNum);
-  }
-
-  async deskewAllPages(): Promise<void> {
-    this.deskewing.set(true);
-    const total = this.totalPages();
-    let analyzed = 0;
-
-    for (let i = 0; i < total; i++) {
-      if (await this.deskewPage(i)) {
-        analyzed++;
-      }
-    }
-
-    this.deskewing.set(false);
-    if (analyzed === 0) {
-      this.showAlert({
-        title: 'Deskew Failed',
-        message: `Could not analyze any of the ${total} pages — no skew angles were detected and no pages were changed.`,
-        type: 'error'
-      });
-    } else {
-      this.showAlert({
-        title: 'Deskew Analysis Complete',
-        message: `Analyzed ${analyzed} of ${total} pages. Detected skew angles are NOT applied — rotation correction is not implemented yet, so all pages are unchanged.`,
-        type: 'warning'
-      });
-    }
-  }
-
-  /**
-   * Detect (but NOT apply) the skew angle for one page.
-   * Returns true if the analysis ran successfully, false if it failed.
-   */
-  private async deskewPage(pageNum: number): Promise<boolean> {
-    this.deskewing.set(true);
-
-    try {
-      // Get the page image for OCR analysis
-      const pageImage = this.pageImages().get(pageNum);
-      if (!pageImage) {
-        console.warn(`No image cached for page ${pageNum}`);
-        this.deskewing.set(false);
-        return false;
-      }
-
-      // Detect skew angle using Tesseract
-      const result = await this.electronService.ocrDetectSkew(pageImage);
-
-      // null = detection FAILED — do not record a fabricated 0° or count the
-      // page as analyzed (0° from a failure is indistinguishable from "straight")
-      if (!result) {
-        console.warn(`Skew detection failed for page ${pageNum}`);
-        this.deskewing.set(false);
-        return false;
-      }
-
-      this.lastDeskewAngle.set(result.angle);
-      // TODO: Apply the rotation to the page (only meaningful when |angle| > 0.1)
-      // This would require either:
-      // 1. Modifying the PDF itself (complex, requires PDF manipulation)
-      // 2. Applying CSS transform to the displayed page (visual only)
-      // 3. Storing rotation info to be applied during export
-      // For now, we just detect and report the angle
-    } catch (err) {
-      console.error('Deskew detection failed:', err);
-      this.showAlert({
-        title: 'Deskew Failed',
-        message: 'Could not detect page orientation. Make sure Tesseract is installed.',
-        type: 'error'
-      });
-      this.deskewing.set(false);
-      return false;
-    }
-
-    this.deskewing.set(false);
-    return true;
   }
 
   // Chapter methods
@@ -13278,8 +12821,6 @@ export class PdfPickerComponent implements OnInit {
             metadata: this.metadata(),
             categoryHighlights: this.categoryHighlights(),
             deletedHighlightIds: this.deletedHighlightIds(),
-            splitConfig: this.splitConfig(),
-            splitApplied: this.splitApplied(),
             cropRegions: this.editorState.cropRegions(),
             blankedPages: this.blankedPages(),
             createdAt: this.projectCreatedAt ?? undefined,
@@ -13337,8 +12878,6 @@ export class PdfPickerComponent implements OnInit {
     this.metadata.set(doc.metadata ?? {});
     this.categoryHighlights.set(doc.categoryHighlights ?? new Map());
     this.deletedHighlightIds.set(doc.deletedHighlightIds ?? new Set());
-    this.splitConfig.set(doc.splitConfig ?? this.defaultSplitConfig());
-    this.splitApplied.set(doc.splitApplied === true);
     // cropRegions is restored via loadDocument() above (it lives on editorState).
     this.blankedPages.set(doc.blankedPages ?? new Set());
     this.projectCreatedAt = doc.createdAt ?? null;
@@ -13352,18 +12891,6 @@ export class PdfPickerComponent implements OnInit {
 
     // Note: paragraphBreaks and categoryCorrections are now passed directly to
     // loadDocument() above, which applies corrections to blocks automatically.
-  }
-
-  /** Default split configuration for a freshly opened document */
-  private defaultSplitConfig(): SplitConfig {
-    return {
-      enabled: false,
-      oddPageSplit: 0.5,
-      evenPageSplit: 0.5,
-      pageOverrides: {},
-      skippedPages: new Set<number>(),
-      readingOrder: 'left-to-right'
-    };
   }
 
   private clearDocumentState(): void {
