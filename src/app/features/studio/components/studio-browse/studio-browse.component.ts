@@ -64,6 +64,9 @@ import { StudioItem } from '../../models/studio.types';
           @if (ctx.item.audiobookPath || hasBilingual(ctx.item)) {
             <button class="ctx-item" (click)="exportRequested.emit(ctx.item); ctxMenu.set(null)">Export audiobook…</button>
           }
+          <button class="ctx-item" (click)="reclassifyRequested.emit(ctx.item); ctxMenu.set(null)">
+            {{ ctx.item.type === 'article' ? 'Classify as Book' : 'Classify as Article' }}
+          </button>
         </div>
       }
     </div>
@@ -166,6 +169,8 @@ export class StudioBrowseComponent {
   readonly open = output<StudioItem>();
   readonly editRequested = output<StudioItem>();
   readonly exportRequested = output<StudioItem>();
+  /** Move this item between the Books and Articles sections (flips projectType). */
+  readonly reclassifyRequested = output<StudioItem>();
   /** New combined order (item ids) after a drag. */
   readonly reorder = output<string[]>();
 

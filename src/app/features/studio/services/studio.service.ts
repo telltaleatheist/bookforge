@@ -988,6 +988,36 @@ export class StudioService {
   }
 
   /**
+   * Re-classify items as books or articles.
+   *
+   * Studio's Books/Articles split, the Bookshelf's Ebooks/Articles split and
+   * `manifestList({type})` all read the manifest's ONE `projectType` field, so
+   * this only flips that tag — no file moves, nothing is rewritten. It exists
+   * because the classification is decided at import (a PDF dropped through an
+   * article path, say) and was until now unfixable from the app.
+   *
+   * Returns the ids of items that changed, in their POST-conversion form: a
+   * book's StudioItem id is its project directory and an article's is its
+   * manifest id, so a converted item's id is not the one that was passed in.
+   */
+  async setItemType(ids: string[], type: StudioItemType): Promise<string[]> {
+    const converted: string[] = [];
+    for (const id of ids) {
+      const item = this.getItem(id);
+      if (!item || item.type === type) continue;
+      const projectId = this.resolveProjectId(item);
+      const result = await this.electronService.manifestUpdate({ projectId, projectType: type });
+      if (!result.success) {
+        console.error(`[StudioService] Failed to re-classify ${projectId}:`, result.error);
+        continue;
+      }
+      converted.push(type === 'book' ? (item.projectDir || id) : projectId);
+    }
+    if (converted.length > 0) await this.loadAll();
+    return converted;
+  }
+
+  /**
    * Unarchive one or more items (move back to their original sections)
    */
   async unarchiveItems(ids: string[]): Promise<void> {

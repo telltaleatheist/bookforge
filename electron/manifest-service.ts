@@ -505,6 +505,17 @@ export async function updateManifest(update: ManifestUpdate): Promise<ManifestSa
     if (update.editor) {
       manifest.editor = { ...manifest.editor, ...update.editor };
     }
+    if (update.projectType !== undefined) {
+      // Re-classify a project as a book or an article. Every consumer — Studio's
+      // two sections, the Bookshelf's Ebooks/Articles split, `listProjects({type})`
+      // — reads this ONE field, so flipping it is the whole operation; nothing on
+      // disk moves. Refuse an unknown value rather than storing a type that would
+      // make the project vanish from both lists.
+      if (update.projectType !== 'book' && update.projectType !== 'article') {
+        throw new Error(`Invalid projectType: ${String(update.projectType)}`);
+      }
+      manifest.projectType = update.projectType;
+    }
     if (update.archived !== undefined) {
       manifest.archived = update.archived;
     }

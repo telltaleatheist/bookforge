@@ -7,7 +7,7 @@ import {
   DesktopSelectItems
 } from '../../creamsicle-desktop';
 import { StudioService } from './services/studio.service';
-import { StudioItem, MainTab, AudiobookSubTab, LanguageLearningSubTab, ProcessStep } from './models/studio.types';
+import { StudioItem, StudioItemType, MainTab, AudiobookSubTab, LanguageLearningSubTab, ProcessStep } from './models/studio.types';
 import { sortStudioItems } from './models/studio-sort';
 import { StudioListComponent } from './components/studio-list/studio-list.component';
 import { StudioBrowseComponent } from './components/studio-browse/studio-browse.component';
@@ -147,6 +147,7 @@ import { looseMatch } from '../../shared/search';
           (open)="openInWorkspace($event)"
           (editRequested)="editFromBrowse($event)"
           (exportRequested)="exportFromBrowse($event)"
+          (reclassifyRequested)="reclassifyFromBrowse($event)"
           (reorder)="onBrowseReorder($event)"
         />
       } @else {
@@ -528,6 +529,11 @@ import { looseMatch } from '../../shared/search';
           </button>
         }
         <div class="context-menu-separator"></div>
+        @if (contextMenuItem(); as ctxItem) {
+          <button class="context-menu-item" (click)="reclassifyContextMenuItem()">
+            {{ ctxItem.type === 'article' ? 'Classify as Book' : 'Classify as Article' }}{{ contextMenuSelectedIds().length > 1 ? ' (' + contextMenuSelectedIds().length + ' items)' : '' }}
+          </button>
+        }
         <button class="context-menu-item" (click)="archiveContextMenuItem()">
           {{ contextMenuItem()?.archived ? 'Unarchive' : 'Archive' }}{{ contextMenuSelectedIds().length > 1 ? ' (' + contextMenuSelectedIds().length + ' items)' : '' }}
         </button>
@@ -1999,6 +2005,14 @@ export class StudioComponent implements OnInit, OnDestroy {
     void this.exportM4b();
   }
 
+  // "Classify as Book/Article" from the Browse context menu. Browse has no
+  // multi-selection, so this is always the one clicked item.
+  reclassifyFromBrowse(item: StudioItem): void {
+    this.contextMenuItem.set(item);
+    this.contextMenuSelectedIds.set([item.id]);
+    void this.reclassifyContextMenuItem();
+  }
+
   onItemAdded(item: StudioItem): void {
     this.selectItem(item);
   }
@@ -2144,6 +2158,45 @@ export class StudioComponent implements OnInit, OnDestroy {
       this.exportStatus.set(`Couldn't delete ${failures.length} item${failures.length > 1 ? 's' : ''}: ${failures[0]}`);
     }
     this.hideContextMenu();
+  }
+
+  /**
+   * Move the context-menu item (or the whole selection) between the Books and
+   * Articles sections. The clicked item decides the direction, so a mixed
+   * selection all ends up on the same side — which is the only reading of
+   * "Classify as Book" that isn't a surprise.
+   */
+  async reclassifyContextMenuItem(): Promise<void> {
+    const item = this.contextMenuItem();
+    if (!item) return;
+    this.hideContextMenu();
+
+    const target: StudioItemType = item.type === 'article' ? 'book' : 'article';
+    const selectedIds = this.contextMenuSelectedIds();
+    const ids = selectedIds.length > 1 ? selectedIds : [item.id];
+    const wasSelected = ids.includes(this.selectedItemId() ?? '');
+
+    const converted = await this.studioService.setItemType(ids, target);
+    if (converted.length === 0) {
+      this.exportStatus.set(`Couldn't classify as ${target === 'book' ? 'book' : 'article'}`);
+      setTimeout(() => this.exportStatus.set(null), 3000);
+      return;
+    }
+
+    // A converted item's id changes form (a book's id is its project directory,
+    // an article's is its manifest id), so a selection pointing at the old one
+    // now points at nothing. Re-point it rather than silently clearing the pane.
+    if (wasSelected) {
+      const stillThere = converted.find(id => !!this.studioService.getItem(id));
+      this.selectedItemId.set(stillThere ?? null);
+    }
+
+    this.exportStatus.set(
+      converted.length > 1
+        ? `Classified ${converted.length} items as ${target === 'book' ? 'books' : 'articles'}`
+        : `Classified as ${target === 'book' ? 'book' : 'article'}`,
+    );
+    setTimeout(() => this.exportStatus.set(null), 3000);
   }
 
   async archiveContextMenuItem(): Promise<void> {

@@ -4044,6 +4044,10 @@ const electronAPI: ElectronAPI = {
       pipeline?: any;
       outputs?: any;
       editor?: any;
+      /** Re-classify the project; Studio and the Bookshelf split their lists by it. */
+      projectType?: 'book' | 'article';
+      archived?: boolean;
+      sortOrder?: number;
     }): Promise<{
       success: boolean;
       manifestPath?: string;
