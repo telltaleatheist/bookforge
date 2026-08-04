@@ -21,22 +21,21 @@ export type TaskId =
   | 'select'
   | 'edit'
   | 'crop'
-  | 'label'
   | 'split'
   | 'ocr'
-  | 'cleanup'
-  | 'merge'
-  | 'paragraphs';
+  | 'merge';
 
 /**
- * The four entries that change what the pointer does in the viewer. They are
+ * The entries that change what the pointer does in the viewer. They are
  * ordinary rail entries with ordinary statuses — the rail IS the mode switcher,
  * so there is no second control anywhere that can disagree with it.
  *
- * `select` and `edit` are pointer interactions and open no panel; `crop` and
- * `label` are modes that also own the right pane.
+ * `select` and `edit` are pointer interactions and open no panel; `crop` is a
+ * mode that also owns the right pane. Labelling is not among them: the palette
+ * lives inside Select, on the right-side nav's own tabs, because a label is
+ * something you do to a selection rather than a different thing the pointer is.
  */
-export const MODE_IDS = ['select', 'edit', 'crop', 'label'] as const;
+export const MODE_IDS = ['select', 'edit', 'crop'] as const;
 export type ModeId = typeof MODE_IDS[number];
 
 export function isModeId(id: TaskId): id is ModeId {
@@ -61,14 +60,15 @@ export interface TaskGroup {
 }
 
 export const TASK_GROUPS: readonly TaskGroup[] = [
-  { id: 'modes', label: 'Mode', tasks: ['select', 'edit', 'crop', 'label'] },
+  { id: 'modes', label: 'Mode', tasks: ['select', 'edit', 'crop'] },
   { id: 'setup', label: 'Setup', tasks: ['split', 'ocr'] },
-  { id: 'cleanup', label: 'Clean up', tasks: ['cleanup', 'merge'] },
   // Chapters left this rail when they stopped being a list beside the book. A
-  // chapter is a block labelled `chapter`, so it is made in the Label tab and
-  // read in the Chapter tab of the document nav — there is nothing left for a
-  // checklist row to have a status about.
-  { id: 'structure', label: 'Structure', tasks: ['paragraphs'] },
+  // chapter is a block labelled `chapter`, so it is made on the Label tab and
+  // read on the Chapter tab of the document nav — there is nothing left for a
+  // checklist row to have a status about. Headers and footers left it for the
+  // same reason: they are a category, and a category is selected and deleted
+  // like any other. Paragraph structure left it because reflow decides it.
+  { id: 'cleanup', label: 'Clean up', tasks: ['merge'] },
 ] as const;
 
 /** Human, sentence-case labels shown in the rail. */
@@ -76,12 +76,9 @@ export const TASK_LABELS: Record<TaskId, string> = {
   select: 'Select',
   edit: 'Edit',
   crop: 'Crop',
-  label: 'Label',
   split: 'Split spreads',
   ocr: 'OCR text',
-  cleanup: 'Headers & footers',
   merge: 'Merge blocks',
-  paragraphs: 'Paragraphs',
 };
 
 /**
@@ -163,13 +160,6 @@ export function deriveEditStatus(textEditCount: number): TaskStatus {
     return { kind: 'done', detail: `${textEditCount} text ${plural(textEditCount, 'edit')}` };
   }
   return { kind: 'untouched', detail: 'no text edits' };
-}
-
-export function deriveLabelStatus(labelCount: number): TaskStatus {
-  if (labelCount > 0) {
-    return { kind: 'done', detail: `${labelCount} ${plural(labelCount, 'block')} labelled` };
-  }
-  return { kind: 'untouched', detail: 'no categories set by hand' };
 }
 
 // ── Crop ──────────────────────────────────────────────────────────────────
@@ -275,37 +265,6 @@ export function countPagesWithoutText(i: OcrStatusInput): number {
   return Math.max(0, i.totalPages - pagesWithText.size);
 }
 
-// ── Clean up (headers & footers) ────────────────────────────────────────────
-
-export interface CleanupStatusInput {
-  readonly blocks: readonly TextBlock[];
-  readonly deletedBlockIds: ReadonlySet<string>;
-}
-
-export function deriveCleanupStatus(i: CleanupStatusInput): TaskStatus {
-  let live = 0;
-  let removed = 0;
-  let total = 0;
-  for (const b of i.blocks) {
-    if (b.region !== 'header' && b.region !== 'footer') continue;
-    total++;
-    // Removed means DELETED, and nothing else. A category no longer excludes
-    // itself from the export, so deletion is the only signal there is.
-    if (i.deletedBlockIds.has(b.id)) {
-      removed++;
-    } else {
-      live++;
-    }
-  }
-  if (total === 0) {
-    return { kind: 'untouched', detail: 'no header/footer blocks detected' };
-  }
-  if (live > 0) {
-    return { kind: 'suggested', detail: `${live} header/footer ${plural(live, 'block')} present` };
-  }
-  return { kind: 'done', detail: `${removed} ${plural(removed, 'block')} removed` };
-}
-
 // ── Merge ─────────────────────────────────────────────────────────────────
 
 export function deriveMergeStatus(mergeCount: number): TaskStatus {
@@ -325,15 +284,6 @@ export function deriveMergeStatus(mergeCount: number): TaskStatus {
  */
 export const CHAPTERS_EXPORT_MINIMUM = 2;
 
-// ── Paragraphs ────────────────────────────────────────────────────────────
-
-export function deriveParagraphsStatus(breakCount: number): TaskStatus {
-  if (breakCount > 0) {
-    return { kind: 'done', detail: `${breakCount} ${plural(breakCount, 'break')}` };
-  }
-  return { kind: 'untouched', detail: 'not run' };
-}
-
 // ─────────────────────────────────────────────────────────────────────────
 // Exhaustive dispatcher
 // ─────────────────────────────────────────────────────────────────────────
@@ -343,14 +293,10 @@ export interface TaskStatusContext {
   readonly removedBlockCount: number;
   /** Blocks whose text the user rewrote — what Edit mode is for. */
   readonly textEditCount: number;
-  /** Blocks with a hand-set category — what Label mode is for. */
-  readonly labelCount: number;
   readonly crop: CropStatusInput;
   readonly split: SplitStatusInput;
   readonly ocr: OcrStatusInput;
-  readonly cleanup: CleanupStatusInput;
   readonly mergeCount: number;
-  readonly paragraphBreakCount: number;
 }
 
 function assertNever(x: never): never {
@@ -363,20 +309,14 @@ export function deriveTaskStatus(id: TaskId, ctx: TaskStatusContext): TaskStatus
       return deriveSelectStatus(ctx.removedBlockCount);
     case 'edit':
       return deriveEditStatus(ctx.textEditCount);
-    case 'label':
-      return deriveLabelStatus(ctx.labelCount);
     case 'crop':
       return deriveCropStatus(ctx.crop);
     case 'split':
       return deriveSplitStatus(ctx.split);
     case 'ocr':
       return deriveOcrStatus(ctx.ocr);
-    case 'cleanup':
-      return deriveCleanupStatus(ctx.cleanup);
     case 'merge':
       return deriveMergeStatus(ctx.mergeCount);
-    case 'paragraphs':
-      return deriveParagraphsStatus(ctx.paragraphBreakCount);
     default:
       return assertNever(id);
   }

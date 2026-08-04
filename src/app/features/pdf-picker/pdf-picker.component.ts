@@ -23,7 +23,6 @@ import {
 } from './components/document-nav/document-nav.component';
 import type { DocumentRef, ResetTarget } from '@shared/document/pipeline-types';
 import { PdfViewerComponent, CropRect } from './components/pdf-viewer/pdf-viewer.component';
-import { CleanupPanelComponent } from './components/cleanup-panel/cleanup-panel.component';
 import { AnalysisPanelComponent } from './components/analysis-panel/analysis-panel.component';
 import { MergePanelComponent } from './components/merge-panel/merge-panel.component';
 import { RegexCriteria, defaultRegexCriteria } from './components/regex-category-builder/regex-category-builder.component';
@@ -31,8 +30,7 @@ import { FilePickerComponent } from './components/file-picker/file-picker.compon
 import { CropPanelComponent } from './components/crop-panel/crop-panel.component';
 import { SplitPanelComponent, SplitConfig } from './components/split-panel/split-panel.component';
 import { PipelineBarComponent, PipelineStation } from './components/pipeline-bar/pipeline-bar.component';
-import { ParagraphPanelComponent } from './components/paragraph-panel/paragraph-panel.component';
-import { computeBaselines, learnFromBreaks, detectParagraphBreaks, getDefaultConfig, type DetectionStats, type DetectionConfig, type DocumentBaselines } from './services/paragraph-detector';
+import { computeBaselines, learnFromBreaks, detectParagraphBreaks, getDefaultConfig, type DetectionConfig } from './services/paragraph-detector';
 import { recategorize as recategorizeBlocksFromLearner, classifyBlockHeuristic, computeBaselines as computeCategoryBaselines, isDefaultThresholds, detectMergeableGroups, createMergedBlock, type BlockAssignment, type CategoryBaselines, type ClassificationThresholds, type MergeGroup } from './services/category-learner';
 import { TrainingExportService } from './services/training-export.service';
 import { TabBarComponent, DocumentTab } from './components/tab-bar/tab-bar.component';
@@ -343,7 +341,6 @@ interface AlertModal {
     ToolbarComponent,
     DesktopButtonComponent,
     PdfViewerComponent,
-    CleanupPanelComponent,
     AnalysisPanelComponent,
     MergePanelComponent,
     FilePickerComponent,
@@ -351,7 +348,6 @@ interface AlertModal {
     SplitPanelComponent,
     DocumentNavComponent,
     PipelineBarComponent,
-    ParagraphPanelComponent,
     TabBarComponent,
     OcrSettingsModalComponent,
     InlineTextEditorComponent,
@@ -642,7 +638,6 @@ interface AlertModal {
               [deletedPages]="deletedPages()"
               [selectedPages]="selectedPageNumbers()"
               [organizeMode]="organizeMode()"
-              [paragraphMode]="paragraphMode()"
               [paragraphBreaks]="editorState.paragraphBreaks()"
               [categoryList]="autoDetectedCategoryList()"
               [categoryCorrections]="editorState.categoryCorrections()"
@@ -650,9 +645,6 @@ interface AlertModal {
               [canMarkPageTypes]="canMarkPageTypes()"
               [showCategoryColors]="showCategoryColors()"
               [labelMode]="labelMode()"
-              (paragraphBreakToggle)="toggleParagraphBreak($event)"
-              (paragraphBreakDelete)="deleteParagraphBreak($event)"
-              (paragraphBreakMove)="moveParagraphBreak($event)"
               (blockClick)="onBlockClick($event)"
               (chapterFromBlocks)="onChapterFromBlocks($event)"
               (pageDeleteToggle)="togglePageDeleted($event)"
@@ -758,18 +750,6 @@ interface AlertModal {
                 (deskewAllPages)="deskewAllPages()"
               />
             }
-            @case ('paragraphs') {
-              <app-paragraph-panel
-                [paragraphBreaks]="editorState.paragraphBreaks()"
-                [detectionStats]="paragraphDetectionStats()"
-                [detectionConfig]="paragraphDetectionConfig()"
-                [baselines]="paragraphBaselines()"
-                (detect)="detectParagraphs()"
-                (clearAll)="clearParagraphs()"
-                (configChange)="onParagraphConfigChange($event)"
-                (done)="activatePanel(null)"
-              />
-            }
             @case ('ocr') {
               <app-ocr-panel
                 [status]="ocrStatus()"
@@ -794,53 +774,6 @@ interface AlertModal {
                 [mergeCount]="editorState.blockMerges().size"
                 (close)="activatePanel(null)"
                 (merge)="mergeAdjacentBlocks()"
-              />
-            }
-            @case ('cleanup') {
-              <app-cleanup-panel
-                [categories]="categoriesArray()"
-                [hiddenCategoryIds]="hiddenCategoryIds()"
-                [deletedBlockIds]="deletedBlockIds()"
-                [blocks]="textLayerFilteredBlocks()"
-                [selectedBlockIds]="selectedBlockIds()"
-                [includedChars]="includedChars()"
-                [excludedChars]="excludedChars()"
-                [categoryCorrections]="editorState.categoryCorrections()"
-                [showCategoryColors]="showCategoryColors()"
-                [uncertainCount]="uncertainBlocks().length"
-                [labelMode]="labelMode()"
-                [labelSourceName]="labelSourceBasename()"
-                [corpusMode]="corpusMode()"
-                [corpusDir]="corpusPath() || ''"
-                [corpusReadOnly]="!!corpusReadOnlyReason()"
-                (saveCorpusLabels)="saveCorpusLabels()"
-                [thresholds]="editorState.classificationThresholds()"
-                [baselines]="computedBaselines()"
-                [regexMatches]="regexMatches()"
-                [regexMatchCount]="regexMatchCount()"
-                [regexEditCriteria]="regexEditCriteria()"
-                [regexIsEditing]="!!editingCategoryId()"
-                [regexExpanded]="regexPanelExpanded()"
-                (close)="activatePanel(null)"
-                (clearCorrections)="clearCategoryCorrections()"
-                (exportTrainingData)="exportTrainingData()"
-                (resetLabels)="resetTrainingSession()"
-                (alignFromEpub)="alignFromEpub()"
-                (assignCategory)="assignSelectedToCategory($event)"
-                (showCategoryColorsChange)="showCategoryColors.set($event)"
-                (thresholdChange)="onThresholdChange($event)"
-                (recategorize)="recategorizeBlocks()"
-                (resetThresholds)="resetThresholds()"
-                (selectCategory)="selectAllOfCategory($event)"
-                (selectInverse)="selectInverseOfCategory($event)"
-                (selectAll)="selectAllBlocks()"
-                (deselectAll)="clearSelection()"
-                (enterSampleMode)="enterSampleMode()"
-                (deleteCategory)="deleteCustomCategory($event)"
-                (editCategory)="editCustomCategory($event)"
-                (regexCriteriaChange)="onRegexCriteriaChange($event)"
-                (regexCreate)="onRegexCreate($event)"
-                (regexExpandedChange)="onRegexExpandedChange($event)"
               />
             }
             @default {
@@ -2807,7 +2740,6 @@ export class PdfPickerComponent implements OnInit {
   })();
 
   @ViewChild(PdfViewerComponent) pdfViewer!: PdfViewerComponent;
-  @ViewChild(CleanupPanelComponent) cleanupPanel?: CleanupPanelComponent;
   @ViewChild('searchInput') searchInputRef?: ElementRef<HTMLInputElement>;
 
   // Fixed sidebar width - doesn't change with window size
@@ -4033,12 +3965,13 @@ export class PdfPickerComponent implements OnInit {
 
   /**
    * The one rail row shown as current: the open panel, or — with no panel open
-   * — the Label tab if that is what the nav is showing, or whichever pointer
-   * mode is live. The rail is the mode switcher, so this is what tells the user
-   * where they are.
+   * — whichever pointer mode is live. The rail is the mode switcher, so this is
+   * what tells the user where they are. Which TAB of the nav is showing is not
+   * among them: the Label tab is a palette over the selection Select made, not
+   * a fourth thing the pointer can be.
    */
-  readonly railCurrent = computed<PanelId>(() => this.activePanel()
-    ?? (this.navTab() === 'label' ? 'label' : this.viewerInteraction()));
+  readonly railCurrent = computed<PanelId>(() =>
+    this.activePanel() ?? this.viewerInteraction());
 
   /**
    * Label mode: assign a category to the selected blocks by clicking the palette
@@ -4110,12 +4043,10 @@ export class PdfPickerComponent implements OnInit {
   // Analysis mode state
   readonly analysisMode = computed(() => this.activePanel() === 'analysis');
 
-  // Paragraph mode state
-  readonly paragraphMode = computed(() => this.activePanel() === 'paragraphs');
-  readonly paragraphDetectionStats = signal<DetectionStats | null>(null);
-  readonly paragraphDetectionConfig = signal<DetectionConfig | null>(null);
-  readonly paragraphBaselines = signal<DocumentBaselines | null>(null);
-  private userDetectionConfig: DetectionConfig | null = null;
+  // Paragraph breaks are no longer curated by hand. They are detected on the way
+  // into a merge and read by the merge grouping and the EPUB exporter; reflow
+  // decides paragraph structure for a working document, so there is nothing here
+  // for the user to set.
 
   // Chapter state. The list is DERIVED from the `chapter` blocks in the working
   // document (documentChaptersEffect) and set directly only by the books that
@@ -4233,12 +4164,11 @@ export class PdfPickerComponent implements OnInit {
   get deletedPages() { return this.editorState.deletedPages; }
 
   // Organize mode state (page selection, deletion, reordering). Active on the
-  // default/cleanup/merge/OCR panels — i.e. any panel that does not commandeer
-  // the pointer (crop/split/chapters/paragraphs/analysis do).
+  // default/merge/OCR panels — i.e. any panel that does not commandeer the
+  // pointer (crop/split/analysis do).
   readonly organizeMode = computed(() => {
     const panel = this.activePanel();
-    return panel === null || panel === 'ocr' || panel === 'cleanup'
-      || panel === 'merge' || panel === 'label';
+    return panel === null || panel === 'ocr' || panel === 'merge';
   });
   readonly selectedPageNumbers = signal<Set<number>>(new Set());  // Selected pages for bulk operations
   private lastSelectedPage: number | null = null;  // For shift-click range selection
@@ -4351,7 +4281,6 @@ export class PdfPickerComponent implements OnInit {
     return deriveAllTaskStatuses({
       removedBlockCount: deletedBlockIds.size,
       textEditCount: this.editorState.blockEdits().size,
-      labelCount: this.editorState.categoryCorrections().size,
       crop: { croppedPageCount: this.editorState.cropRegions().size },
       split: {
         applied: this.splitApplied(),
@@ -4360,9 +4289,7 @@ export class PdfPickerComponent implements OnInit {
         pageDimensions: this.pageDimensions(),
       },
       ocr: { blocks, deletedBlockIds, totalPages: this.totalPages() },
-      cleanup: { blocks, deletedBlockIds },
       mergeCount: this.editorState.blockMerges().size,
-      paragraphBreakCount: this.editorState.paragraphBreaks().size,
     });
   });
 
@@ -4413,7 +4340,7 @@ export class PdfPickerComponent implements OnInit {
       // not be overwritten by accident.
       const reviewedAt = this.corpusBook()?.reviewedAt ?? null;
       for (const id of TASK_ORDER) {
-        if (id === 'select' || id === 'label') continue;
+        if (id === 'select') continue;
         if (id === 'ocr') {
           if (!reviewedAt) continue;
           disabled.set(
@@ -4433,19 +4360,8 @@ export class PdfPickerComponent implements OnInit {
         disabled.set(id, 'PDF only — not available for EPUB');
         continue;
       }
-      // An EPUB's blocks come from its own markup, already carrying the
-      // structure the classifier exists to recover. Labelling them would train
-      // the model on the answer sheet.
-      if (isEpub && id === 'label') {
-        disabled.set(id, 'Scans only — an EPUB already carries its structure');
-        continue;
-      }
       if (lightweight && id !== 'ocr') {
         disabled.set(id, 'Not available in lightweight mode');
-        continue;
-      }
-      if (step === 'epub-review' && id === 'paragraphs') {
-        disabled.set(id, 'Not available while reviewing the exported EPUB');
         continue;
       }
     }
@@ -5385,7 +5301,6 @@ export class PdfPickerComponent implements OnInit {
   }
 
   onBlockClick(event: { block: TextBlock; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }): void {
-    if (this.paragraphMode()) return;
     const { block, shiftKey, metaKey, ctrlKey } = event;
     const isCmdOrCtrl = metaKey || ctrlKey;
 
@@ -7962,7 +7877,7 @@ export class PdfPickerComponent implements OnInit {
     // panel: the rail entry opens the settings modal (see `onRailPanelClick`).
     // Going through it also means this cannot open a modal the rail forbids.
     if (session) {
-      this.activatePanel('label');
+      this.setNavTab('label');
     } else {
       this.onRailPanelClick('ocr');
     }
@@ -8000,7 +7915,7 @@ export class PdfPickerComponent implements OnInit {
     this.corpusBook.set(book);
     if (book.session) {
       this.applyCorpusSnapshot(book, book.session);
-      this.activatePanel('label');
+      this.setNavTab('label');
     }
   }
 
@@ -11012,8 +10927,6 @@ export class PdfPickerComponent implements OnInit {
     this.editorState.markChanged();
     this.exitSampleMode();
 
-    // Collapse the custom-category section
-    this.cleanupPanel?.collapseCustomSection();
 
     this.showAlert({
       title: 'Category Created',
@@ -11397,8 +11310,6 @@ export class PdfPickerComponent implements OnInit {
     this.editingCategoryId.set(null);
     this.regexEditCriteria.set(null);
 
-    // Collapse the custom-category section
-    this.cleanupPanel?.collapseCustomSection();
 
   }
 
@@ -11577,13 +11488,6 @@ export class PdfPickerComponent implements OnInit {
     if (id === 'select' || id === 'edit') {
       this.viewerInteraction.set(id);
       this.setNavTab('select');
-      return;
-    }
-
-    // Label is a TAB of the document nav, and the rail is another way to reach
-    // it. Two entry points, one value — see `navTab`.
-    if (id === 'label') {
-      this.setNavTab('label');
       return;
     }
 
@@ -12101,65 +12005,18 @@ export class PdfPickerComponent implements OnInit {
 
     const baselines = computeBaselines(blocks, deletedIds);
 
-    let config: DetectionConfig | undefined;
-    if (this.userDetectionConfig) {
-      config = this.userDetectionConfig;
-    }
-
-    const sdz = config?.shortLineDeadZone ?? getDefaultConfig().shortLineDeadZone;
-    const model = learnFromBreaks(blocks, manualBreaks, baselines, deletedIds, sdz);
-
-    // If no user config, build one from auto-learned model + defaults
-    if (!config) {
-      const defaults = getDefaultConfig();
-      config = {
-        ...defaults,
-        weights: model.weights,
-        threshold: model.threshold,
-      };
-    }
+    const defaults = getDefaultConfig();
+    const model = learnFromBreaks(
+      blocks, manualBreaks, baselines, deletedIds, defaults.shortLineDeadZone);
+    const config: DetectionConfig = {
+      ...defaults,
+      weights: model.weights,
+      threshold: model.threshold,
+    };
 
     const result = detectParagraphBreaks(blocks, model, baselines, deletedIds, chapterBlockIds, manualBreaks, config);
 
     this.editorState.setParagraphBreaks(result.breaks);
-    this.paragraphDetectionStats.set(result.stats);
-    this.paragraphDetectionConfig.set(result.config);
-    this.paragraphBaselines.set(result.baselines);
-  }
-
-  onParagraphConfigChange(config: DetectionConfig): void {
-    this.userDetectionConfig = config;
-  }
-
-  clearParagraphs(): void {
-    this.editorState.clearParagraphBreaks();
-    this.paragraphDetectionStats.set(null);
-    this.paragraphDetectionConfig.set(null);
-    this.paragraphBaselines.set(null);
-    this.userDetectionConfig = null;
-  }
-
-  toggleParagraphBreak(blockId: string): void {
-    this.editorState.toggleParagraphBreak(blockId);
-  }
-
-  deleteParagraphBreak(blockId: string): void {
-    const breaks = this.editorState.paragraphBreaks();
-    if (breaks.has(blockId)) {
-      const newBreaks = new Set(breaks);
-      newBreaks.delete(blockId);
-      this.editorState.setParagraphBreaks(newBreaks);
-    }
-  }
-
-  moveParagraphBreak(move: { fromBlockId: string; toBlockId: string }): void {
-    const breaks = this.editorState.paragraphBreaks();
-    const newBreaks = new Set(breaks);
-    newBreaks.delete(move.fromBlockId);
-    newBreaks.add(move.toBlockId);
-    if (newBreaks.size !== breaks.size || !breaks.has(move.toBlockId) || !breaks.has(move.fromBlockId)) {
-      this.editorState.setParagraphBreaks(newBreaks);
-    }
   }
 
   /**
