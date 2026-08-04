@@ -254,7 +254,7 @@ class OrpheusStreamServer:
         self.current_model_dir = None # None = stock model; else a custom model dir
         self.device = None
 
-    def _ensure_engine(self, voice: str, model_dir: str = None):
+    def _ensure_engine(self, voice: str, model_dir: str = None, caps: dict = None):
         """Load (or reload) the Orpheus model and set the voice; on first load WARM
         the generate path before reporting ready.
 
@@ -305,6 +305,20 @@ class OrpheusStreamServer:
         # Voice is just the prompt prefix — switch instantly within the same model.
         self.orph.voice = v
         self.current_voice = v
+
+        # Register the voice's tuning BEFORE the warmup, so the warm-up renders
+        # exercise the same sampling path the real sentences will. Must come after
+        # the engine exists (the registry lives on the e2a Orpheus class) and after
+        # `v` is resolved (caps are keyed by the token the engine actually uses).
+        # A registration failure must not leave the loaded engine serving requests
+        # with default tuning — generate/generate_batch guard only on `self.orph is
+        # None`, and a consumed `first_load` would also skip the warmup forever —
+        # so tear the engine down and let the error propagate as a load failure.
+        try:
+            self._apply_voice_caps(v, caps)
+        except Exception:
+            self._teardown_engine()
+            raise
 
         # Warm the generate path ONCE per load, so the cold-start cost is paid here
         # (absorbed by the user's "start the server and find an article" window),
@@ -388,44 +402,50 @@ class OrpheusStreamServer:
 
     def load_voice(self, voice: str, model_dir: str = None, caps: dict = None) -> bool:
         try:
-            self._apply_voice_caps(caps)
-            return self._ensure_engine(voice, model_dir)
+            return self._ensure_engine(voice, model_dir, caps)
         except Exception as e:
             send_response('error', {'message': f'Failed to load Orpheus: {e}'})
             return False
 
-    # Per-voice cap → the env var e2a's orpheus.py reads for it. Only caps that are
-    # meaningful to the STREAMING paths are listed: prep packing (ORPHEUS_MAX_CHARS)
-    # is an audiobook-prep concern, and the vLLM EOS boost is read at engine load.
-    _CAP_ENV = {
-        'maxCharsPerSec': 'ORPHEUS_MAX_CHARS_PER_SEC',
-        'repPenalty': 'ORPHEUS_REP_PENALTY',
-        'sentenceGap': 'ORPHEUS_SENTENCE_GAP',
-    }
-
-    def _apply_voice_caps(self, caps: dict) -> None:
-        """Apply the catalog's per-voice tuning for the voice being loaded.
+    def _apply_voice_caps(self, voice: str, caps: dict) -> None:
+        """Register the catalog's per-voice tuning for the voice being loaded.
 
         This worker is RESIDENT and switches voices without respawning, so caps
         cannot ride the spawn environment the way the audiobook worker's do
         (parallel-tts-bridge sets them once per spawn). They arrive on the 'load'
-        message instead and are written into os.environ here — which works because
-        orpheus.py reads these with os.environ.get() at CALL time, not at import.
+        message instead and are handed to the engine's per-voice registry, which
+        resolves every sampling value per REQUEST: registered cap -> ORPHEUS_* env
+        -> class default.
 
-        A cap the new voice does NOT declare is UNSET, never left behind from the
-        previous voice: a stale ceiling from a fast fine-tune would silently
-        disable the truncation guard for a slow one.
+        This used to write os.environ instead, which was wrong twice over. The env
+        is ONE global slot per process, so it cannot describe a batch that mixes
+        voices; and the values it fed are read by orpheus.py at IMPORT for
+        everything except the chars/sec guard, so a repPenalty set on the second
+        voice load never took effect at all — the first voice's value stayed bound
+        to the class for the life of the server. eosBoost was omitted entirely on
+        the (incorrect) grounds that it is "read at engine load", so streaming ran
+        every voice with eosBoost=0 while the catalog declares 8 @ 2.0 for the
+        bed-free fine-tunes. Registration fixes all of it in one place.
+
+        Registration REPLACES the voice's caps, so a cap the payload omits reverts
+        to env/default rather than lingering from an earlier load. Non-tuning keys
+        in the same payload (maxChars = prep packing, sentenceGap = assembly, and
+        neither is read on any streaming path — streaming pads with its own
+        STREAM_GAP) are accepted and ignored BY NAME on the e2a side; a key that is
+        neither raises.
         """
-        caps = caps or {}
-        for key, env_name in self._CAP_ENV.items():
-            value = caps.get(key)
-            if value is None:
-                os.environ.pop(env_name, None)
-            else:
-                os.environ[env_name] = str(value)
-        applied = {k: caps[k] for k in self._CAP_ENV if caps.get(k) is not None}
-        print(f'[orpheus_stream] voice caps applied: {applied or "none (e2a defaults)"}',
-              file=sys.stderr)
+        orph = self.orph
+        if not hasattr(orph, 'register_voice_caps'):
+            raise RuntimeError(
+                'This e2a checkout predates per-voice Orpheus caps '
+                '(Orpheus.register_voice_caps is missing), so the catalog tuning for '
+                f"'{voice}' cannot be applied — it would render with the wrong "
+                'truncation guard, repetition penalty and no EOS boost. Update the '
+                'e2a checkout this worker runs against.'
+            )
+        applied = orph.register_voice_caps(voice, caps or {})
+        print(f'[orpheus_stream] voice caps registered for {voice}: '
+              f'{applied or "none (e2a defaults)"}', file=sys.stderr)
 
     def _generate_audio(self, text: str):
         """Generate one sentence to a float numpy waveform via the e2a Orpheus
@@ -474,16 +494,7 @@ class OrpheusStreamServer:
         cleaned = [orph._clean_sentence_for_tts(t) for t in texts]
 
         if orph.backend == 'vllm':
-            from vllm import SamplingParams, TokensPrompt
-            # Sampling from the engine's class constants (env-overridable
-            # ORPHEUS_TEMPERATURE/TOP_P/MIN_P/REP_PENALTY) — hardcoding them here
-            # made streaming silently diverge from the audiobook path whenever
-            # the defaults were retuned (e.g. the 0.85 temp / min_p 0.05 pass).
-            sp = SamplingParams(
-                temperature=orph.TEMPERATURE, top_p=orph.TOP_P, min_p=orph.MIN_P,
-                repetition_penalty=orph.REP_PENALTY,
-                max_tokens=orph.MAX_AUDIO_TOKENS, stop_token_ids=[orph.END_OF_AUDIO_TOKEN],
-            )
+            from vllm import TokensPrompt
             results = [None] * len(texts)
             nonempty = [i for i, c in enumerate(cleaned) if c]
             # Feed raw token IDs via TokensPrompt — byte-identical to the fixed
@@ -493,11 +504,27 @@ class OrpheusStreamServer:
             # vLLM re-tokenized with a stray second BOS (the voice-token leak); that
             # method was deleted by the BOS fix, so this path must use _format_prompt_ids.
             prompts = [TokensPrompt(prompt_token_ids=orph._format_prompt_ids(cleaned[i])) for i in nonempty]
+            # Sampling comes from e2a's _vllm_sampling_params — the ONE builder the
+            # audiobook path uses (convert_batch) — instead of a SamplingParams
+            # assembled here. Assembling it locally meant streaming silently
+            # diverged from the audiobook path every time the config grew: it
+            # dropped the per-request EOS-boost logits processor outright, so every
+            # streamed voice ran with eosBoost=0 no matter what the catalog
+            # declared. A LIST aligned to `prompts` (vLLM accepts one params per
+            # prompt) because the boost's start threshold is sized from each
+            # sentence's own length — and, later, from each item's own voice.
+            sp = [orph._vllm_sampling_params(len(cleaned[i])) for i in nonempty]
+            # lora_request must ride on BOTH arms: the fallback without it would
+            # render the base voice the moment adapter mode reaches streaming.
+            # None today (this server never sets orpheus_adapter_dir yet), which
+            # is vLLM's own default.
+            lora = orph._lora_request()
             if prompts:
                 try:
-                    outputs = orph.engine.generate(prompts, sp, use_tqdm=False)
+                    outputs = orph.engine.generate(prompts, sp, use_tqdm=False,
+                                                   lora_request=lora)
                 except TypeError:
-                    outputs = orph.engine.generate(prompts, sp)
+                    outputs = orph.engine.generate(prompts, sp, lora_request=lora)
                 # vLLM returns outputs in prompt order.
                 for i, out in zip(nonempty, outputs):
                     tokens = list(out.outputs[0].token_ids)

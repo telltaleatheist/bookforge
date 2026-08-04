@@ -325,8 +325,11 @@ function buildSpawnPlan(scriptPath: string, gpuUtil?: number): SpawnPlan {
     const wslE2a = getWslE2aPath();
     const orpheusEnv = getWslOrpheusCondaEnv();
     const scriptWsl = windowsToWslPath(scriptPath);
+    // VLLM_USE_V1=0: streaming now applies per-request logits processors (the
+    // EOS boost), a V0-only feature — every other Orpheus spawn already pins
+    // this; without it a future vLLM bump (V1 default-on) breaks only streaming.
     const exportCmd =
-      `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 ORPHEUS_DISABLE_EAGER=1${utilExport} ` +
+      `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 ORPHEUS_DISABLE_EAGER=1 VLLM_USE_V1=0${utilExport} ` +
       `ORPHEUS_STREAM_BATCH=${STREAM_BATCH_WIDTH} EBOOK2AUDIOBOOK_PATH=${shellQuote(wslE2a)}`;
     const cd = `cd ${shellQuote(wslE2a)}`;
     const run =
@@ -346,6 +349,8 @@ function buildSpawnPlan(scriptPath: string, gpuUtil?: number): SpawnPlan {
     env: buildCondaSpawnEnv({
       PYTHONUNBUFFERED: '1',
       PYTHONIOENCODING: 'utf-8',
+      // Same V0 pin as the WSL arm — streaming's EOS boost is a V0-only feature.
+      VLLM_USE_V1: '0',
       EBOOK2AUDIOBOOK_PATH: E2A_PATH,
       ORPHEUS_STREAM_BATCH: String(STREAM_BATCH_WIDTH),
       // Mac/MLX: bound the MLX freed-buffer cache for the resident stream server
