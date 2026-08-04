@@ -349,6 +349,66 @@ test('a working document that is not there names the stage that casts one', asyn
   );
 });
 
+test('a curation session of deletions round-trips: blocks, pages, and the undo of both', async () => {
+  // The gestures a session actually makes, in the order it makes them, as one
+  // batch and then as several. Deletion is the half of curation that never
+  // reached the document while it was inferred from a comparison of two sets
+  // rather than written when it was made, so this is what "it arrived" looks
+  // like: the flags the file carries after the session, cold.
+  const file = await seedBlocks(standardBlocks());
+
+  // Delete-all-like-this: every `chapter` block, in one batch, with a page.
+  await writer.applyWorkingDocumentEdits(file, [
+    { kind: 'delete', blockId: 'b1' },
+    { kind: 'delete', blockId: 'b2' },
+    { kind: 'delete-page', page: 1 },
+  ]);
+  let cold = await coldRead(file);
+  assert.strictEqual(cold.byId.get('b1').deleted, true);
+  assert.strictEqual(cold.byId.get('b2').deleted, true);
+  assert.strictEqual(cold.byId.get('b3').deleted, false, 'nothing else was touched');
+  assert.strictEqual(cold.pages[1].deleted, true);
+  assert.strictEqual(cold.blocks.length, 4, 'deletion is a flag, so the layer is intact');
+
+  // One more deletion on top, in its own batch — a session is a sequence of
+  // appends and every one of them has to leave a readable document.
+  await writer.applyWorkingDocumentEdits(file, [{ kind: 'delete', blockId: 'b3' }]);
+  cold = await coldRead(file);
+  assert.strictEqual(cold.byId.get('b3').deleted, true);
+  assert.strictEqual(cold.byId.get('b1').deleted, true, 'the earlier batch still stands');
+
+  // Undo, as the picker issues it: the delta, both kinds, one batch.
+  await writer.applyWorkingDocumentEdits(file, [
+    { kind: 'restore', blockId: 'b1' },
+    { kind: 'restore', blockId: 'b2' },
+    { kind: 'restore', blockId: 'b3' },
+    { kind: 'restore-page', page: 1 },
+  ]);
+  cold = await coldRead(file);
+  for (const id of ['b1', 'b2', 'b3', 'b4']) {
+    assert.strictEqual(cold.byId.get(id).deleted, false, `${id} came back`);
+  }
+  assert.strictEqual(cold.pages[1].deleted, false, 'and so did the page');
+  assert.strictEqual(cold.byId.get('b3').text, 'It was a dark night.', 'with its text');
+});
+
+test('a delete and its restore in ONE batch leave the document saying nothing', async () => {
+  // Two halves of a toggle collected inside one batch window: the writer applies
+  // both to the same annotation and the key ends up absent, which reads exactly
+  // like a deletion that never happened. It IS a deletion that never happened —
+  // the user undid it — and the point of pinning it is that this is the only
+  // shape in which "no flag in the file" is the correct answer.
+  const file = await seedBlocks(standardBlocks());
+  await writer.applyWorkingDocumentEdits(file, [
+    { kind: 'delete', blockId: 'b3' },
+    { kind: 'restore', blockId: 'b3' },
+  ]);
+  const { byId } = await coldRead(file);
+  assert.strictEqual(byId.get('b3').deleted, false);
+  const dict = await coldAnnot(file, 'b3');
+  assert.strictEqual(dict.lookup(PDFName.of('FoundryDeleted')), undefined);
+});
+
 test('the marker and the pages survive curation untouched', async () => {
   const file = await seedBlocks(standardBlocks());
   const before = await coldRead(file);
