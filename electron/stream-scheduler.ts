@@ -272,6 +272,14 @@ function endSession(s: SchedulerSession | undefined): void {
   // session has one of its openers mid-stream — otherwise we'd abort an unrelated
   // session's sentence (cancelStreaming hits every streaming worker).
   if (s.streamingCount > 0) getActiveEngine().cancelStreaming();
+  // This session's rows may be the last live ones in the engine's in-flight batch —
+  // and on a serial batching engine (Orpheus) that batch is 30-43s of work whose
+  // results are now discarded on arrival, with the next voice load and the next
+  // block's batch queued behind it. Ask the engine to abandon it. It refuses unless
+  // EVERY outstanding row is stale, so a batch still carrying another session's
+  // sentences is untouched — which is why this must come AFTER `s.stopped` and the
+  // map removal above (the staleness predicates read exactly that state).
+  getActiveEngine().cancelPendingBatchIfStale?.();
   if (!s.completeSent) s.sink({ kind: 'cancelled', requestId: s.requestId });
   // After the session is out of the map, so rampPendingOnPriority() sees the truth.
   // (Harmless inside stopAll: a session it has already stopped pumps to nothing, and

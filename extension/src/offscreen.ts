@@ -529,6 +529,18 @@ let preState: 'connecting' | 'starting-engine' | 'buffering' = 'connecting';
 let stallSince: number | null = null;
 let finishedSent = false;
 let lastReportedSentence = -1;
+// The furthest sentence of the CURRENT session playback has actually reached — a
+// high-water mark, sampled by the status ticker.
+//
+// `session.sentenceAt(audio.currentTime)` is the live answer, but it is only valid
+// while the <audio> element holds the blob it was measured against. Every underrun
+// and every sentence-boundary reload replaces `audio.src` and calls load(), and
+// until 'loadedmetadata' fires and loadBlob's handler restores the position,
+// currentTime reads 0 — so asking mid-reload says "sentence 0" about a listener who
+// is ten sentences in. That window is not rare: it is exactly when a stalling
+// generator makes someone reach for the voice picker. The high-water mark is what
+// survives it. Reset wherever a new session is installed.
+let playedSentence = 0;
 // When the user clicks mid-block, the fraction (0..1) into the block where playback
 // should begin. Resolved to a sentence boundary once that sentence is buffered, so
 // the existing/cached audio is reached by a seek rather than re-synthesized. null
@@ -821,7 +833,10 @@ function handleServerEvent(msg: ServerEvent): void {
       // Keep what it managed to render: the next play resumes from there rather
       // than paying to synthesize these sentences again.
       retainSession(session, sessionItem);
-      finishGeneration(false, 'Playback was taken over by another BookForge client');
+      // …unless WE cancelled it, which is what a voice switch does before asking the
+      // engine to load. Blaming another client for our own cancel put a false note on
+      // screen for the whole load.
+      finishGeneration(false, switchingVoice ? undefined : 'Playback was taken over by another BookForge client');
       concludeIfIdle();
       broadcast();
       return;
@@ -1015,6 +1030,13 @@ function skipCurrent(): void {
  * blocker — `enqueue()` will take over via `currentIsDone()`.
  */
 function concludeCurrent(): void {
+  // A voice switch is mid-flight. It cancelled generation ON PURPOSE and is going to
+  // re-speak THIS block, from the listener's own position, the moment the engine
+  // confirms the new voice — so the block is not finished, whatever the player thinks.
+  // Without this the switch's own 'cancelled' event (or the buffer simply draining
+  // during a slow load) advanced the queue, and the switch then resumed the NEXT
+  // block from its first sentence: the "it started the article over" symptom.
+  if (switchingVoice) return;
   const next = upcoming.shift();
   // Nothing left to play: broadcast the terminal state, then stop the 300ms ticker so
   // it doesn't keep the MV3 service worker awake forever. Broadcast first so the final
@@ -1078,6 +1100,7 @@ function resetPlayer(): void {
   blobBytes = 0;
   finishedSent = false;
   lastReportedSentence = -1;
+  playedSentence = 0;
   pendingStartFraction = null;
   stallSince = null;
   errorMsg = null;
@@ -1278,6 +1301,7 @@ function adoptPrefetchFor(item: QueueItem): boolean {
   blobBytes = 0;
   finishedSent = false;
   lastReportedSentence = -1;
+  playedSentence = 0;
   // A click partway into the block still lands there — on the buffered audio, by
   // seeking, not by re-synthesizing a partial.
   pendingStartFraction = item.startChar && item.text.length
@@ -1787,6 +1811,14 @@ async function handleEngine(op: 'start' | 'stop'): Promise<void> {
  * does whatever was playing restart, in the new voice, from the sentence the
  * listener had reached.
  *
+ * WHERE they had reached is snapshotted HERE, at the moment they asked — never read
+ * again after the engine confirms. The wait can be long (a load queues behind
+ * whatever the serial worker is rendering) and the player does not sit still through
+ * it: the buffer drains, the <audio> element reloads, and both of those made a
+ * later reading answer "sentence 0". The block is snapshotted too, so a confirmation
+ * arriving after the queue moved on cannot paste this position onto another
+ * paragraph. See resumeCharForSwitch.
+ *
  * The old voice's audio stays in the cache under its own key — switch back and it
  * replays instantly instead of being rendered again.
  */
@@ -1796,21 +1828,22 @@ async function handleSetVoice(voice: string): Promise<void> {
   // A switch already waiting is now moot — let it go without it reporting an error.
   resolveVoiceWait();
 
-  // Where to pick the read back up: the character offset of the sentence being
-  // read. (Counting characters, not sentences — startChar is resolved back through
+  // Where to pick the read back up: the character offset of the sentence being read.
+  // (Counting characters, not sentences — startChar is resolved back through
   // cumulative sentence lengths, so a sentence-count fraction would drift on a
-  // paragraph of uneven sentences.)
-  const resumeChar = started && session && session.sentences.length > 0
-    ? session.sentences.slice(0, session.sentenceAt(audio.currentTime)).reduce((n, s) => n + s.length, 0)
-    : 0;
-  const wasPlaying = !!current;
+  // paragraph of uneven sentences.) Taken BEFORE anything below disturbs the player.
+  const resumeChar = resumeCharForSwitch();
+  const resumeItem = current;
 
+  // Marked as switching FIRST: it is what stops the queue advancing past this block
+  // while generation is cancelled and the engine loads (concludeCurrent), and what
+  // tells the incoming 'cancelled' event that this cancel was ours.
+  switchingVoice = voice;
   // Nothing may keep generating in the outgoing voice.
   cancelGeneration();
   dropAllPrefetch();
   forgetAllRendered();
   chosenVoice = voice;
-  switchingVoice = voice;
   persistVoice(voice);
   broadcast();
 
@@ -1849,8 +1882,15 @@ async function handleSetVoice(voice: string): Promise<void> {
   if (token !== voiceSwitchToken) return; // a newer switch owns the engine now
 
   // Confirmed loaded. Pick the read back up where it was, now in the new voice.
-  if (wasPlaying && current) {
-    current = { ...current, startChar: resumeChar > 0 ? resumeChar : undefined };
+  // The position belongs to the block it was measured in: if `current` is somehow no
+  // longer that block, restart it from its own beginning rather than dropping the
+  // listener into an arbitrary point of a paragraph they have not heard.
+  if (current) {
+    // Same block: set the resume point, or CLEAR a stale one (a startChar left over
+    // from an earlier mid-block click would otherwise re-apply itself here).
+    if (resumeItem && current.id === resumeItem.id) {
+      current = { ...current, startChar: resumeChar > 0 ? resumeChar : undefined };
+    }
     await startCurrent(true);
   } else {
     broadcast();
@@ -1894,10 +1934,52 @@ let statusTimer: number | null = null;
 
 function ensureStatusTicker(): void {
   if (statusTimer !== null) return;
-  statusTimer = setInterval(() => { reportPlayhead(); broadcast(); }, STATUS_INTERVAL_MS) as unknown as number;
+  statusTimer = setInterval(() => { notePlayedSentence(); reportPlayhead(); broadcast(); }, STATUS_INTERVAL_MS) as unknown as number;
 }
 function stopStatusTicker(): void {
   if (statusTimer !== null) { clearInterval(statusTimer); statusTimer = null; }
+}
+
+/** Sample where playback has actually got to, for {@link resumeCharForSwitch}. Runs
+ *  on the status ticker, i.e. several times a second while a block plays. Only ever
+ *  moves forward, and ignores the mid-reload window where currentTime reads 0. */
+function notePlayedSentence(): void {
+  if (!session || !started) return;
+  if (audio.currentTime <= 0) return; // between blobs — the element has no position
+  const idx = session.sentenceAt(audio.currentTime);
+  if (idx > playedSentence) playedSentence = idx;
+}
+
+/**
+ * The character offset a voice switch must pick the read back up at: the start of
+ * the sentence the listener is on.
+ *
+ * Characters, not a sentence index, because that is what `startChar` is: startCurrent
+ * turns it into a fraction of the block and sentenceStartSecondsFor maps that fraction
+ * back over the NEW session's cumulative sentence lengths, so it lands on a sentence
+ * boundary even if the server splits the text a little differently.
+ *
+ * Two things it must survive, both of which used to make it answer 0 — the beginning
+ * of the block — for a listener who was well into it:
+ *   - a stall. An underrun (or any sentence-boundary blob reload) leaves
+ *     audio.currentTime at 0 until the reload completes, so the high-water mark
+ *     playedSentence is consulted alongside the live reading, never instead of it.
+ *   - never having started. A block still buffering has started === false and no
+ *     position at all, but if the user clicked into the middle of it that intent is
+ *     held in pendingStartFraction, and it is still where they want to be.
+ */
+function resumeCharForSwitch(): number {
+  if (!session) return 0;
+  if (!started) {
+    // Not playing yet: keep the mid-block start point the user asked for, if any.
+    if (pendingStartFraction == null || !sessionItem) return 0;
+    return Math.floor(pendingStartFraction * sessionItem.text.length);
+  }
+  const sents = session.sentences;
+  if (sents.length === 0) return 0;
+  let idx = playedSentence;
+  if (audio.currentTime > 0) idx = Math.max(idx, session.sentenceAt(audio.currentTime));
+  return sents.slice(0, Math.min(idx, sents.length)).reduce((n, s) => n + s.length, 0);
 }
 
 function reportPlayhead(): void {

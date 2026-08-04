@@ -173,6 +173,13 @@ interface PendingRequest {
 interface PendingBatch {
   resolvers: Map<number, (r: GenResult) => void>;
   timeout: NodeJS.Timeout;
+  /** Each row's staleness predicate, by the same index. Kept for the life of the
+   *  batch so a preempt can ask whether EVERY row is now dead — which is the only
+   *  condition under which the batch may be cancelled (see
+   *  cancelPendingBatchIfStale). Rows that never supplied one count as live. */
+  cancels: Map<number, () => boolean>;
+  /** A 'cancel' has already gone out for this batch; don't send a second one. */
+  cancelSent?: boolean;
 }
 
 interface Worker {
@@ -245,6 +252,24 @@ function forgetEngineVoices(): void {
   loadedEngineKey = null;
   voiceTokens.clear();
 }
+
+// ── The load in flight ───────────────────────────────────────────────────────
+// The `currentVoice === v` short-circuit at the top of loadVoice only fires once a
+// load has RESOLVED, and a load is a worker round-trip on a serial worker. The
+// extension answers a voice switch with a burst of speaks — one per read-ahead block
+// — and every one of them calls ensureEngine → loadVoice before the first has come
+// back, so the same voice was loaded once per block: N round-trips queued nose to
+// tail, each one delaying the speak behind it (the API server awaits ITS load before
+// starting ITS session). The user's log showed 'Voice loaded: deathstalker' printed
+// once per prefetch block.
+//
+// So a load for a voice already loading JOINS that load instead of queueing another:
+// N concurrent speaks for one voice cost exactly one round-trip. A load for a
+// DIFFERENT voice still proceeds and still serializes on the worker — two voices are
+// two engines' worth of intent, and collapsing them would be the wrong narrator.
+let inFlightLoad:
+  | { voice: string; engineKey: string; promise: Promise<{ success: boolean; error?: string }> }
+  | null = null;
 
 /**
  * Forget ONE voice's registration, so its next use re-sends a full load.
@@ -799,6 +824,12 @@ export async function loadVoice(
 
   const v = (voice || ORPHEUS_DEFAULT_VOICE).toLowerCase();
   if (currentVoice === v) return { success: true };
+  // Already loading this exact voice — wait on THAT load rather than sending a second
+  // one. See inFlightLoad.
+  if (inFlightLoad && inFlightLoad.voice === v) {
+    console.log(`[Orpheus Pool] Voice '${v}' is already loading — joining that load`);
+    return inFlightLoad.promise;
+  }
 
   let plan: LoadPlan;
   try {
@@ -822,7 +853,7 @@ export async function loadVoice(
   // The Python worker is serial: route the load through the same serialization the
   // stream path uses (priority tier) so it never clobbers an in-flight stream's
   // pendingRequest. Inside the job the worker is guaranteed free.
-  return runOnWorker<{ success: boolean; error?: string }>(
+  const loading = runOnWorker<{ success: boolean; error?: string }>(
     (w) =>
       new Promise((resolve) => {
         let resolved = false;
@@ -915,6 +946,18 @@ export async function loadVoice(
     () => ({ success: false, error: 'No Orpheus worker' }),
     true
   );
+
+  // Published only for the window this load is actually in flight — including while
+  // it merely SITS in the worker's priority queue, which is most of the window that
+  // matters. Cleared on settle (success, failure, timeout, worker death: every one of
+  // those resolves the promise), and only if this record is still the current one, so
+  // a load for another voice that started meanwhile isn't cleared by ours.
+  const record = { voice: v, engineKey, promise: loading };
+  inFlightLoad = record;
+  void loading.finally(() => {
+    if (inFlightLoad === record) inFlightLoad = null;
+  });
+  return loading;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1050,8 +1093,10 @@ function flushBatch(): void {
   // for themselves by being full.
   const picked = batchQueue.splice(0, STREAM_BATCH_WIDTH);
   const resolvers = new Map<number, (r: GenResult) => void>();
+  const cancels = new Map<number, () => boolean>();
   const items = picked.map((it, i) => {
     resolvers.set(i, it.resolve);
+    if (it.isCancelled) cancels.set(i, it.isCancelled);
     return { i, text: it.text, ...(it.voice ? { voice: it.voice } : {}) };
   });
 
@@ -1067,8 +1112,42 @@ function flushBatch(): void {
     }
   }, 180000);
 
-  worker.pendingBatch = { resolvers, timeout };
+  worker.pendingBatch = { resolvers, timeout, cancels };
   send({ action: 'generate_batch', items });
+}
+
+/**
+ * Free the serial worker when the batch it is rendering has become entirely stale.
+ *
+ * The worker renders ONE thing at a time and a read-ahead batch is 30-43s deep, so a
+ * preempting play — or a voice switch — used to wait out the whole batch before the
+ * new voice's load could even be sent, and the results it waited for were discarded
+ * on arrival. This tells the worker to stop: un-rendered rows come back as ordinary
+ * per-item failures ('cancelled') and 'batch_done' fires as always, so the batch
+ * closes through the NORMAL path — its timeout is cleared, nothing is tainted.
+ *
+ * EVERY remaining row must be stale. One batch mixes sessions (the pool fills it from
+ * a single queue, priority first), so a batch cancelled on behalf of one dead session
+ * would take a live session's sentences with it — and those sentences would have to be
+ * asked for again, which is exactly the cost this exists to avoid. A row that supplied
+ * no isCancelled predicate can never be proven dead and therefore counts as live.
+ *
+ * Called by the scheduler when a session ends, AFTER it is marked stopped and removed
+ * from the map — the predicates read that state, so calling earlier proves nothing.
+ */
+export function cancelPendingBatchIfStale(): void {
+  const w = worker;
+  const pb = w?.pendingBatch;
+  if (!w || !pb || pb.cancelSent) return;
+  // No rows left un-emitted: the batch is already ending on its own.
+  if (pb.resolvers.size === 0) return;
+  for (const idx of pb.resolvers.keys()) {
+    const isCancelled = pb.cancels.get(idx);
+    if (!isCancelled || !isCancelled()) return;
+  }
+  pb.cancelSent = true;
+  console.log(`[Orpheus Pool] All ${pb.resolvers.size} un-rendered rows of the in-flight batch are stale — cancelling it to free the worker`);
+  send({ action: 'cancel' });
 }
 
 function runOnWorker<T>(
@@ -1513,6 +1592,7 @@ export const orpheusWorkerPool = {
   generateSentence,
   generateSentenceStream,
   cancelStreaming,
+  cancelPendingBatchIfStale,
   stop,
   endSession,
   isSessionActive,

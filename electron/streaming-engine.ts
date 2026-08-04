@@ -62,6 +62,13 @@ export interface StreamingEngine {
     isCancelled?: () => boolean
   ): Promise<StreamResult>;
   cancelStreaming(): void;
+  /** Optional. Abort the engine's in-flight BATCH, but only if every row still
+   *  outstanding in it has been marked stale by its own isCancelled predicate.
+   *  Called when a session ends, so a preempting play/voice switch does not have to
+   *  wait out ~40s of renders whose results will be thrown away. Absent on engines
+   *  whose renders are short or whose batches cannot be interrupted (XTTS), where a
+   *  stale render costs one sentence, not a whole read-ahead window. */
+  cancelPendingBatchIfStale?(): void;
   stop(): void;
   endSession(): Promise<void>;
   isSessionActive(): boolean;

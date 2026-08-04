@@ -27,6 +27,9 @@ Protocol (one JSON object per line):
           {action: 'generate', text, voice?, stream?: bool, ...}
           {action: 'generate_batch', items: [{i, text, voice?}], ...}
           {action: 'cancel' | 'stop' | 'quit'}
+                 # 'cancel'/'stop' ABORT a running generate_batch — see the reader
+                 # thread in run(). Un-rendered rows come back as ordinary per-item
+                 # failures with message 'cancelled', then 'batch_done' as always.
   stdout: {type: 'ready', device, backend?}
           {type: 'status' | 'loaded' | 'error' | 'stopped', ...}
           {type: 'audio', format:'pcm16', data, duration, sampleRate}        # batch
@@ -77,11 +80,13 @@ in whatever is loaded.
 """
 
 import json
+import queue
 import signal
 import sys
 import os
 import re
 import base64
+import threading
 import numpy as np
 
 DEFAULT_SAMPLERATE = 24000
@@ -334,6 +339,13 @@ class OrpheusStreamServer:
         self.engine_voice_ids = {}
         self.device = None
         self.backend = None           # e2a's detected backend, probed at 'ready'
+        # Set by the STDIN READER THREAD the moment a 'cancel'/'stop' arrives, so a
+        # generate_batch already running on the main thread can see it between decode
+        # steps and abandon what is left. Cleared by the main loop when it dequeues
+        # that same cancel and acknowledges it — never anywhere else, so the flag can
+        # only ever describe work that was already in flight when the cancel landed.
+        # See run() for the ordering argument.
+        self._cancel = threading.Event()
 
     def _ensure_engine(self, voice: str, model_dir: str = None, caps: dict = None,
                        adapter_dir: str = None, base_dir: str = None,
@@ -509,6 +521,14 @@ class OrpheusStreamServer:
 
         send_response('status', {'message': f'Voice loaded: {v}'})
         return True
+
+    def _is_cancelled(self) -> bool:
+        """Has a 'cancel'/'stop' arrived since this work started?
+
+        Handed to e2a as `should_stop` and checked around each group, so it must stay
+        a plain flag read — no I/O, no locking beyond Event's own.
+        """
+        return self._cancel.is_set()
 
     def _check_token_owner(self, token: str, voice_id: str) -> bool:
         """Refuse a load whose PROMPT TOKEN is already claimed by a different catalog id.
@@ -981,6 +1001,14 @@ class OrpheusStreamServer:
         the grouping. It used to fail the entire batch, which meant one stray voice
         killed both reading blocks in flight; the offending item is the only one that
         cannot be rendered, so it is the only one that fails.
+
+        CANCELLABLE. e2a's generator is handed self._is_cancelled and checks it once
+        per decode step, so a 'cancel' arriving on stdin frees this worker within a
+        step (~50-60ms) instead of at the end of a 30-43s batch. Rows already emitted
+        through on_row stand; every row that never rendered is reported as an ordinary
+        per-item failure with message 'cancelled' (the sweep in `finally`), and
+        batch_done fires exactly as it always does — so the pool's accounting closes
+        on the normal path and the batch never reaches its taint/timeout machinery.
         """
         try:
             cap = int(os.environ.get('ORPHEUS_STREAM_BATCH', '16'))
@@ -1034,6 +1062,8 @@ class OrpheusStreamServer:
                 groups.append(cur)
 
             for group in groups:
+                if self._is_cancelled():
+                    break
                 # Empty singleton → tiny silence (the "empty → silence" contract).
                 if len(group) == 1 and not cleaned[group[0]]:
                     pos = group[0]
@@ -1087,8 +1117,10 @@ class OrpheusStreamServer:
 
                 try:
                     # One consecutive reading-order group == one e2a batch, whose rows
-                    # stream out through _resolve as they retire.
-                    raw = orph._generate_mlx_batch_audio(group_texts, on_row=_resolve)
+                    # stream out through _resolve as they retire — and which abandons
+                    # what is left the moment a cancel lands on stdin.
+                    raw = orph._generate_mlx_batch_audio(
+                        group_texts, on_row=_resolve, should_stop=self._is_cancelled)
                 except Exception as e:
                     import traceback
                     traceback.print_exc(file=sys.stderr)
@@ -1102,6 +1134,11 @@ class OrpheusStreamServer:
 
                 # Sweep: rows the generator never retired through on_row (an internal
                 # bucket failure) still get their item, from the returned list.
+                # SKIPPED on a cancel: those rows were abandoned unrendered, and
+                # resolving them here would run the retake ladder (a fresh solo
+                # render each) on the very work the cancel exists to stop.
+                if self._is_cancelled():
+                    break
                 for k in range(len(group)):
                     _resolve(k, raw[k] if k < len(raw) else None)
         except Exception as e:
@@ -1111,6 +1148,19 @@ class OrpheusStreamServer:
                 if pos not in emitted:
                     send_response('batch_item', {'i': it.get('i'), 'message': f'Batch generation failed: {e}'})
         finally:
+            # Every item is answered exactly once, cancel or not — the pool resolves a
+            # batch by index and a row with no message would hang its sentence until
+            # the 180s timeout tainted the worker. On the cancel path that message is
+            # 'cancelled'; the scheduler is already dropping these as stale.
+            cancelled = self._is_cancelled()
+            for pos, it in enumerate(items):
+                if pos in emitted:
+                    continue
+                emitted.add(pos)
+                send_response('batch_item', {
+                    'i': it.get('i'),
+                    'message': 'cancelled' if cancelled else 'No audio generated',
+                })
             send_response('batch_done', {'count': len(items)})
 
     def generate_batch(self, items, language: str = 'en'):
@@ -1177,6 +1227,19 @@ class OrpheusStreamServer:
                 if id(it) not in emitted:
                     send_response('batch_item', {'i': it.get('i'), 'message': f'Batch generation failed: {e}'})
         finally:
+            # Same one-answer-per-item guarantee as the MLX path. vLLM's
+            # engine.generate() is one blocking call with no abort hook, so a cancel
+            # cannot shorten a vLLM batch — it can only label the rows that never made
+            # it. (Nothing here pretends otherwise: the flag is read, not waited on.)
+            cancelled = self._is_cancelled()
+            for it in items:
+                if id(it) in emitted:
+                    continue
+                emitted.add(id(it))
+                send_response('batch_item', {
+                    'i': it.get('i'),
+                    'message': 'cancelled' if cancelled else 'No audio generated',
+                })
             send_response('batch_done', {'count': len(items)})
 
     def generate(self, text: str, language: str = 'en', stream: bool = False,
@@ -1221,6 +1284,44 @@ class OrpheusStreamServer:
             traceback.print_exc(file=sys.stderr)
             send_response('error', {'message': f'Generation failed: {e}'})
 
+    def _read_stdin(self, inbox: "queue.Queue"):
+        """Read stdin on its OWN thread and hand each request to the main loop.
+
+        The main loop used to BE the stdin loop (`for raw in sys.stdin`), which meant
+        a message could only be seen between requests — and a read-ahead batch is
+        30-43s long. So a 'cancel' sent the instant the listener switched voice was
+        not read until the batch it was meant to abort had already finished, and the
+        new voice's load queued behind renders nobody would ever hear. A reader thread
+        is the smallest thing that fixes that: it OBSERVES the cancel while the main
+        thread is inside MLX, sets the flag the generator polls, and still puts the
+        request on the queue so the main loop acknowledges it in arrival order.
+
+        Everything else stays exactly as it was — one request executed at a time, all
+        stdout writes from the main thread, so the JSON-lines protocol keeps both of
+        its ordering guarantees (a request's messages are contiguous, and 'batch_done'
+        is the last of its batch).
+        """
+        try:
+            for raw in sys.stdin:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    request = json.loads(line)
+                except Exception as e:
+                    inbox.put(('bad-json', str(e)))
+                    continue
+                # THE POINT OF THE THREAD: flip the flag here, not when the main loop
+                # gets around to this message. A generate_batch already running sees
+                # it at its next decode step.
+                if request.get('action') in ('cancel', 'stop'):
+                    self._cancel.set()
+                inbox.put(('request', request))
+        except Exception as e:
+            print(f'[orpheus_stream] stdin reader failed: {e}', file=sys.stderr, flush=True)
+        finally:
+            inbox.put(('eof', None))
+
     def run(self):
         self.device = detect_device()
         self.backend = detect_backend()
@@ -1230,15 +1331,19 @@ class OrpheusStreamServer:
         send_response('ready', {'device': self.device,
                                 **({'backend': self.backend} if self.backend else {})})
 
-        for raw in sys.stdin:
-            line = raw.strip()
-            if not line:
+        inbox: "queue.Queue" = queue.Queue()
+        reader = threading.Thread(target=self._read_stdin, args=(inbox,),
+                                  name='orpheus-stdin', daemon=True)
+        reader.start()
+
+        while True:
+            kind, payload = inbox.get()
+            if kind == 'eof':
+                break
+            if kind == 'bad-json':
+                send_response('error', {'message': f'Invalid JSON: {payload}'})
                 continue
-            try:
-                request = json.loads(line)
-            except Exception as e:
-                send_response('error', {'message': f'Invalid JSON: {e}'})
-                continue
+            request = payload
 
             action = request.get('action')
             if action == 'load':
@@ -1275,8 +1380,13 @@ class OrpheusStreamServer:
                     language=request.get('language', 'en'),
                 )
             elif action in ('cancel', 'stop'):
-                # Orpheus generation is whole-sentence and not interruptible; the
-                # scheduler drops stale results. Acknowledge and continue.
+                # The reader thread already SET the flag when this line arrived —
+                # whatever was in flight has seen it. Reaching it here means that work
+                # is over, so this is where the flag is cleared, and the only place:
+                # the queue is FIFO and the reader only ever sets it, so a cancel can
+                # never outlive the request it arrived during and can never suppress a
+                # batch queued after it (that batch is behind this ack in the queue).
+                self._cancel.clear()
                 send_response('stopped')
             elif action == 'quit':
                 break
