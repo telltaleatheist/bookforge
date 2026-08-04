@@ -31,15 +31,17 @@ export type JobType = 'tts-conversion' | 'translation' | 'rvc-enhancement' | 're
   // in the user's order against ONE project. Every one of them runs through the
   // same main-process handler; the pass kind is in the config.
   //
-  // 'foundry-ocr' reads the pages and repairs what was misread; 'foundry-detect'
-  // labels every block. They were one row ('foundry-ocr-correct') until Aug 2026,
-  // and both that type and the 'foundry-scan' before it are retired — see
-  // RETIRED_JOB_TYPES.
-  | 'foundry-ocr' | 'foundry-detect' | 'foundry-footnotes' | 'simplify' | 'translate-pass';
+  // Each document pass is one row: 'document-get-text' casts the working PDF and
+  // puts the words in it, 'document-blocks' labels every block into it, and
+  // 'document-reflow' writes the book out of it. The whole 'foundry-*' scan-chain
+  // vocabulary that preceded them is retired — see RETIRED_JOB_TYPES.
+  | 'document-get-text' | 'document-blocks' | 'document-reflow'
+  | 'foundry-footnotes' | 'simplify' | 'translate-pass';
 
-/** The five job types that are processing passes, for a runtime membership test. */
+/** The six job types that are processing passes, for a runtime membership test. */
 export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
-  'foundry-ocr', 'foundry-detect', 'foundry-footnotes', 'simplify', 'translate-pass',
+  'document-get-text', 'document-blocks', 'document-reflow',
+  'foundry-footnotes', 'simplify', 'translate-pass',
 ]);
 
 /**
@@ -51,13 +53,17 @@ export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
  * that explains it, never left pending in a queue that silently steps over it.
  */
 export const RETIRED_JOB_TYPES: ReadonlyMap<string, string> = new Map([
-  ['foundry-scan', 'Tesseract is no longer a queue step of its own: reading the pages is the '
-    + 'first stage of the pass that needs a scan and cannot find one. Remove this row and start '
-    + 'the run again from the Process tab.'],
-  ['foundry-ocr-correct', 'OCR correction and Detection are separate passes now: repairing what '
-    + 'Tesseract misread and labelling the blocks are different work, and a PDF that already '
-    + 'carries text needs the second without the first. Remove this row and plan the run again '
-    + 'from the Process tab.'],
+  ['foundry-scan', 'Tesseract is no longer a queue step of its own: reading the pages is what '
+    + 'the Get Text pass IS. Remove this row and start the run again from the Process tab.'],
+  ['foundry-ocr-correct', 'OCR correction is not a pass any more \u2014 repairing what Tesseract '
+    + 'misread happens inside Build the book, on the blocks you kept, so the ones you deleted '
+    + 'cost nothing. Remove this row and plan the run again from the Process tab.'],
+  ['foundry-ocr', 'OCR correction is not a pass any more \u2014 repairing what Tesseract misread '
+    + 'happens inside Build the book, on the blocks you kept. Remove this row and plan the run '
+    + 'again from the Process tab.'],
+  ['foundry-detect', 'Detection is now Detect blocks, and it writes its answer into the working '
+    + 'PDF instead of a run directory. This row was queued against the run directory, which no '
+    + 'longer exists. Remove it and plan the run again from the Process tab.'],
 ]);
 
 // Job status
@@ -254,7 +260,8 @@ export interface QueueJob {
  * the plan, verbatim: a pass job is not re-planned when it runs.
  */
 export type ProcessingPassJobConfig = PassJobConfig & {
-  type: 'foundry-ocr' | 'foundry-detect' | 'foundry-footnotes' | 'simplify' | 'translate-pass';
+  type: 'document-get-text' | 'document-blocks' | 'document-reflow'
+    | 'foundry-footnotes' | 'simplify' | 'translate-pass';
 };
 
 // Job configuration union type

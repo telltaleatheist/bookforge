@@ -378,13 +378,19 @@ export interface EpubOutput {
 // names. `detection` (labelling the blocks) split away from `ocr-correction`
 // (repairing what Tesseract misread) in Aug 2026 — a born-digital PDF needs the
 // second and not the first.
+// The current passes are the document transformations; the retired three are
+// here because a manifest is a book's own history and books already record them
+// (see electron/manifest-types.ts). They cannot be requested.
+export type RetiredPassKind = 'tesseract' | 'ocr-correction' | 'detection';
+
 export type AppliedPassKind =
-  | 'tesseract'
-  | 'ocr-correction'
-  | 'detection'
+  | 'get-text'
+  | 'blocks'
+  | 'reflow'
   | 'footnotes'
   | 'simplify'
-  | 'translate';
+  | 'translate'
+  | RetiredPassKind;
 
 // One completed pass. Appended when the pass finishes, never on failure.
 export interface AppliedPass {

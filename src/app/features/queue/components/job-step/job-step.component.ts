@@ -521,8 +521,9 @@ export class JobStepComponent {
       case 'audiobook': return 'Audiobook';
       case 'book-analysis': return 'Book Analysis';
       case 'generate-sentences': return 'Generate Sentences';
-      case 'foundry-ocr': return 'OCR Correction';
-      case 'foundry-detect': return 'Detection';
+      case 'document-get-text': return 'Get Text';
+      case 'document-blocks': return 'Detect Blocks';
+      case 'document-reflow': return 'Build the Book';
       case 'foundry-footnotes': return 'Footnote Removal';
       case 'simplify': return 'Simplify';
       case 'translate-pass': return 'Translate';

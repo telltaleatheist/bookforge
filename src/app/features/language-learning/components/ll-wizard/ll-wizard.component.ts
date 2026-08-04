@@ -127,29 +127,31 @@ interface PalettteEntry {
  * are about, and `chainErrorAt` matches on that to put the message on the right
  * row. Change one, change both.
  *
- * `tesseract` is here for the same reason it is there — it is a provenance kind
- * the book records — and for no other: it is never a row, never a palette item
- * and never in a chain request, so no refusal can open with it.
+ * The three document passes are named for the document each produces rather than
+ * for the machinery inside it — the user is composing transformations of their
+ * book, not scheduling stages of a scanner.
  */
 const PASS_LABELS: Record<ProcessingPassKind, string> = {
-  tesseract: 'Tesseract',
-  'ocr-correction': 'OCR correction',
-  detection: 'Detection',
+  'get-text': 'Get Text',
+  blocks: 'Detect blocks',
+  reflow: 'Build the book',
   footnotes: 'Footnote removal',
   simplify: 'Simplify',
   translate: 'Translate',
 };
 
 /**
- * The passes that read a PDF's scanned pages and nothing else.
+ * The passes that read the working PDF and nothing else.
  *
- * Footnote removal is deliberately NOT one of them: it runs as a foundry stage
- * on a PDF run and over the book EPUB otherwise, so switching the run to an EPUB
- * keeps it (mirroring `SCAN_ONLY_KINDS` in electron/processing-chain.ts).
+ * Footnote removal is deliberately NOT one of them: it rewrites the working
+ * PDF's text layer on a PDF run and the book EPUB otherwise, so switching the
+ * run to an EPUB keeps it (mirroring `DOCUMENT_ONLY_KINDS` in
+ * electron/processing-chain.ts).
  */
 const SCAN_ONLY_PASS_KINDS: ReadonlySet<ProcessingPassKind> = new Set<ProcessingPassKind>([
-  'ocr-correction',
-  'detection',
+  'get-text',
+  'blocks',
+  'reflow',
 ]);
 
 /** A queue submission as the wizard builds it, before the queue stamps its ids. */
@@ -3473,25 +3475,35 @@ export class LLWizardComponent implements OnInit {
     const noPdf = 'Reads the scanned pages — pick the PDF version of this book.';
     return [
       {
-        // Reading the pages and repairing what was read are one pass: the repair
-        // has nothing to read without the scan, and re-running the repair means
-        // reading the pages again. So it is one queue row over two foundry
-        // stages, with a progress bar for each.
+        // The cast: the archive original in, a working PDF with the words in it
+        // out. For a scan that is Tesseract over every page; for a PDF that
+        // already carries text it is one pass over the publisher's own layer and
+        // costs seconds. Either way the result opens in any reader with the text
+        // selectable, which is the whole test of whether it worked.
         //
-        // What it is NOT is the whole scan chain. Labelling the blocks is its own
-        // pass below, because a PDF that already carries text is read accurately
-        // and has nothing to repair — and paying half an hour of GPU to change
-        // nothing was the reason to split them.
-        kind: 'ocr-correction', label: PASS_LABELS['ocr-correction'],
-        desc: 'Read the pages with Tesseract and repair what it misread. Add Detection after it to build the book.',
+        // Repairing what Tesseract misread is NOT here. That happens inside Build
+        // the book, on the blocks that survived curation — so the running heads
+        // and footnotes somebody deleted cost no GPU at all, instead of half an
+        // hour of it before anyone had looked at them.
+        kind: 'get-text', label: PASS_LABELS['get-text'],
+        desc: 'Read the pages into a working PDF you can open and search. Add Detect blocks after it.',
         enabled: pdf, why: noPdf,
       },
       {
-        // The pass that makes a book out of a scan: every block labelled body,
-        // chapter opening, running head, footnote, caption… which is what decides
-        // what gets narrated and where the chapters split.
-        kind: 'detection', label: PASS_LABELS['detection'],
-        desc: 'Label every block — body, chapter, running head, footnote — and build the book EPUB. Reads the pages itself if nothing else has.',
+        // The pass that makes a book possible: every block labelled body, chapter
+        // opening, running head, footnote, caption — which is what decides what
+        // gets narrated and where the chapters split. It writes the answer INTO
+        // the working PDF as real annotations, so Acrobat shows the boxes.
+        kind: 'blocks', label: PASS_LABELS['blocks'],
+        desc: 'Label every block — body, chapter, running head, footnote — as annotations in the working PDF.',
+        enabled: pdf, why: noPdf,
+      },
+      {
+        // The one exporter. Drops what was deleted, repairs the OCR of what was
+        // kept, reflows the lines into paragraphs and takes each chapter's title
+        // from its own block.
+        kind: 'reflow', label: PASS_LABELS['reflow'],
+        desc: 'Build the book EPUB from the working PDF — dropping what you deleted and repairing the OCR of what you kept.',
         enabled: pdf, why: noPdf,
       },
       {
@@ -5558,18 +5570,21 @@ export class LLWizardComponent implements OnInit {
     }
   }
 
-  /** The OCR unit, added if the run has none. First in the order — it builds the book. */
+  /**
+   * Get Text, added if the run has none. First in the order — nothing downstream
+   * has a document to read until it has run.
+   */
   private ensureOcrPass(): void {
-    if (this.passes().some(p => p.kind === 'ocr-correction')) return;
+    if (this.passes().some(p => p.kind === 'get-text')) return;
     this.passes.update(list => [
-      { uid: this.nextPassUid(), kind: 'ocr-correction' as ProcessingPassKind },
+      { uid: this.nextPassUid(), kind: 'get-text' as ProcessingPassKind },
       ...list,
     ]);
   }
 
-  /** True when this row is the OCR unit and this PDF cannot be read without it. */
+  /** True when this row is Get Text and this PDF cannot be read without it. */
   passLocked(pass: BuilderPass): boolean {
-    return pass.kind === 'ocr-correction' && this.ocrRequiredReason() !== null;
+    return pass.kind === 'get-text' && this.ocrRequiredReason() !== null;
   }
 
   onPaletteClick(kind: ProcessingPassKind): void {
@@ -5578,8 +5593,8 @@ export class LLWizardComponent implements OnInit {
       return;
     }
     // Footnote removal has one option, and it exists only when the pass reads the
-    // book EPUB. On a PDF the pass is a scan-chain stage with nothing to set, so
-    // it is added on the click like Tesseract is.
+    // book EPUB. On a PDF the pass rewrites the working document's text layer and
+    // has nothing to set, so it is added on the click like the document passes.
     if (kind === 'footnotes' && !this.selectedIsPdf()) {
       this.palettePanel.set(this.palettePanel() === kind ? null : kind);
       return;
@@ -5663,19 +5678,20 @@ export class LLWizardComponent implements OnInit {
   }
 
   passDetail(pass: BuilderPass): string {
-    if (pass.kind === 'ocr-correction') {
-      // Said on the row because it is what the pass DOES, not an option: the run
-      // directory is started over, so the pages are rasterized and read again.
-      return 'Reads the pages again: Tesseract, then the repair model';
+    if (pass.kind === 'get-text') {
+      // Said on the row because it is what the pass DOES, not an option: the cast
+      // REPLACES the working document, so the pages are read again from the
+      // archive original and whatever was in it before is gone.
+      return 'Reads every page again and casts the working PDF fresh';
     }
-    if (pass.kind === 'detection') {
-      // The plan decides where the scan comes from, so the row cannot say which
-      // of the three ways this one will get it — only that it will not go
-      // without. See `detectionMode` in shared/processing/pass-types.ts.
-      return 'Labels every block; reads the pages first if nothing else in the run does';
+    if (pass.kind === 'blocks') {
+      return 'Labels every block into the working PDF as annotations';
+    }
+    if (pass.kind === 'reflow') {
+      return 'Drops what you deleted, repairs the OCR of what you kept, writes the book';
     }
     if (pass.kind === 'footnotes') {
-      if (this.selectedIsPdf()) return 'On the scanned pages';
+      if (this.selectedIsPdf()) return "On the working PDF's text layer";
       return pass.footnotes?.askEverything
         ? 'Note bodies and index entries too'
         : 'Note bodies and index entries left alone';

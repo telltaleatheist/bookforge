@@ -607,7 +607,8 @@ export class OcrSettingsModalComponent implements OnDestroy {
    */
   readonly queued = computed(() =>
     this.queueService.jobs().some((job) =>
-      (job.type === 'foundry-ocr' || job.type === 'foundry-detect')
+      (job.type === 'document-get-text' || job.type === 'document-blocks'
+        || job.type === 'document-reflow')
       && (job.config as { bookKey?: string } | undefined)?.bookKey === this.bookKey()
       && (job.status === 'pending' || job.status === 'processing')));
   readonly running = signal(false);
@@ -807,14 +808,16 @@ export class OcrSettingsModalComponent implements OnDestroy {
       return;
     }
 
-    // The SAME submission the wizard uses — the two scan-chain passes over this
+    // The SAME submission the wizard uses — the document passes over this
     // project's PDF, planned in main and queued as one run. This dialog's whole
-    // purpose is the full repair-and-label chain (its step list says so), so it
+    // purpose is to take a book from an untouched PDF to a curatable one, so it
     // asks for both rather than making the user compose them; the wizard is where
-    // a run is slimmed down to Detection alone. The pages are the project's own
-    // page order, resolved by the planner: a run directory covers ONE page set,
-    // and the last foundry pass exports the book from it, so a partial run would
-    // rebuild the book out of a handful of pages.
+    // a run is slimmed down to one pass.
+    //
+    // There is no run identity to pass. A document pass is about the PROJECT and
+    // the PDF the plan resolved, and its output is the working document beside
+    // them — so there is no run directory for a key to name, and no window
+    // watching one.
     //
     // NO FALLBACK. If foundry is not installed, or a GGUF is missing, or the
     // ordering cannot work, main says exactly which and this dialog prints it.
@@ -822,18 +825,10 @@ export class OcrSettingsModalComponent implements OnDestroy {
       const result = await this.queueService.submitProcessingRun({
         projectDir: this.projectDir(),
         sourcePath: this.pdfPath(),
-        // The run identity this dialog and the editor already watch. Without it
-        // the planner would key the run by the source path, and the blocks would
-        // land in a directory nothing in this window is looking at.
-        bookKey: this.bookKey(),
-        // No "redo" to pass on: a submitted OCR-correction pass always starts the
-        // run directory over and reads the pages again. `redo` above is the
-        // CORPUS path's flag, which is a different pipeline.
-        // Detection AFTER the repair, and not optional here: OCR correction
-        // re-reads the pages, which re-mints every line id and leaves any
-        // existing labels describing a scan that is gone. The planner refuses
-        // the pair the other way round, by name.
-        passes: [{ kind: 'ocr-correction' }, { kind: 'detection' }],
+        // Detect AFTER the cast, and not optional here: Get Text replaces the
+        // working document, which leaves it carrying no annotations at all. The
+        // planner refuses the pair the other way round, by name.
+        passes: [{ kind: 'get-text' }, { kind: 'blocks' }],
       });
       if (!result.success) {
         this.error.set(result.error || 'The run was refused and no reason was given.');

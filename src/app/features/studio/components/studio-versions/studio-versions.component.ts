@@ -69,21 +69,29 @@ interface FootnotesReport {
 /** Pass display names. Shared by the badges and the diff rows so one pass is
  *  never called two things in the same panel. */
 const PASS_LABELS: Record<AppliedPassKind, string> = {
-  tesseract: 'Tesseract',
-  'ocr-correction': 'OCR correction',
-  detection: 'Detection',
+  'get-text': 'Get Text',
+  blocks: 'Detect blocks',
+  reflow: 'Build the book',
   footnotes: 'Footnote removal',
   simplify: 'Simplify',
   translate: 'Translate',
+  // Retired, and named anyway: books processed before Aug 2026 carry these, and a
+  // badge that could not name a pass would shorten a real book's own history.
+  tesseract: 'Tesseract',
+  'ocr-correction': 'OCR correction',
+  detection: 'Detection',
 };
 
 const PASS_ICONS: Record<AppliedPassKind, string> = {
-  tesseract: '\u{1F50D}',
-  'ocr-correction': '\u{1F524}',
-  detection: '\u{1F5C3}\u{FE0F}',
+  'get-text': '\u{1F50D}',
+  blocks: '\u{1F5C3}\u{FE0F}',
+  reflow: '\u{1F4D6}',
   footnotes: '\u{1F5D1}\u{FE0F}',
   simplify: '\u{2702}\u{FE0F}',
   translate: '\u{1F310}',
+  tesseract: '\u{1F50D}',
+  'ocr-correction': '\u{1F524}',
+  detection: '\u{1F5C3}\u{FE0F}',
 };
 
 const AUDIO_EXTS = new Set([

@@ -9,28 +9,36 @@
  * they are types and nothing else, so both programs import THEM rather than a
  * copy of them.
  *
- * The model they describe is in docs/PROCESSING_PIPELINE_V2.md.
+ * The model they describe is in docs/DOCUMENT_PIPELINE.md.
  */
 
 /**
- * The six things a run can do to a book. Mirrors AppliedPassKind.
+ * The six things a run can do to a book, as document transformations.
  *
- * `tesseract` is a PROVENANCE kind and not a requestable pass: reading the pages
- * is the first stage of whichever pass needs a scan and does not have one. The
- * book still records it separately — what was done to it is not the same fact as
- * how many rows the queue drew — so the kind survives here and a `tesseract` in a
- * chain request is refused by name.
+ * Every one of the first three is document-in → document-out, and each is named
+ * for the document it produces rather than for the machinery inside it:
  *
- * `ocr-correction` (repair what Tesseract misread) and `detection` (label every
- * block) are SEPARATE passes as of Aug 2026. They were one unit while the repair
- * was assumed necessary; a born-digital PDF does not need repairing and does need
- * labelling, and welding them together made the user pay half an hour of GPU for
- * a stage that had nothing to fix.
+ *  - `get-text` casts `<Original>.working.pdf` from the archive original and
+ *    puts the words in it. For a scan that is Tesseract; for a PDF that already
+ *    carries text it is one pass over the publisher's own layer. Open the
+ *    result in any reader and the text selects.
+ *  - `blocks` labels every block and writes the answer INTO that document as
+ *    real PDF annotations. There is one detect.
+ *  - `reflow` reads the working document and writes `<Original>.epub`. It is
+ *    THE exporter — there is no second one and no gate choosing between them —
+ *    and OCR correction happens inside it, on the KEPT lines only, so blocks
+ *    the user culled cost zero GPU.
+ *
+ * `ocr-correction` and `detection` are gone as passes. Repair is a step of
+ * Reflow, not a stage a user schedules; labelling is `blocks`. `tesseract` is
+ * gone too: reading the pages is what `get-text` IS, rather than a phantom
+ * pass beside it. All three survive in `AppliedPassKind` because a book records
+ * what was done to it and those books exist.
  */
 export type ProcessingPassKind =
-  | 'tesseract'
-  | 'ocr-correction'
-  | 'detection'
+  | 'get-text'
+  | 'blocks'
+  | 'reflow'
   | 'footnotes'
   | 'simplify'
   | 'translate';
@@ -38,15 +46,16 @@ export type ProcessingPassKind =
 /**
  * The queue job type each pass is persisted as. These strings live in queue.json.
  *
- * `foundry-scan` was RETIRED when the OCR unit became one job (Aug 2026), and
- * `foundry-ocr-correct` was retired weeks later when that unit was SPLIT into
- * `foundry-ocr` and `foundry-detect`. A queue.json restored from before either
- * change carries rows of the retired type; they are failed on load with a message
- * naming the change, never run.
+ * The `foundry-*` names for the scan chain are RETIRED (Aug 2026) along with the
+ * run-directory model they described: `foundry-scan`, `foundry-ocr-correct`,
+ * `foundry-ocr` and `foundry-detect`. A queue.json restored from before the
+ * change carries rows of those types; they are failed on load with a message
+ * naming the change, never run — nothing knows what they would do now.
  */
 export type PassJobType =
-  | 'foundry-ocr'
-  | 'foundry-detect'
+  | 'document-get-text'
+  | 'document-blocks'
+  | 'document-reflow'
   | 'foundry-footnotes'
   | 'simplify'
   | 'translate-pass';
@@ -86,8 +95,17 @@ export interface FootnotesPassParams {
   askEverything?: boolean;
 }
 
-/** Where a Detection pass's scan comes from. See `PassJobConfig.detectionMode`. */
-export type DetectionMode = 'scan-in-chain' | 'scan-on-disk' | 'scan-here';
+/** Reflow's options. Everything else it needs is in the working document. */
+export interface ReflowPassParams {
+  /**
+   * Whole categories to drop from this export, e.g. `footnote`.
+   *
+   * A statement about THIS export rather than about the book — which is why it
+   * is a pass parameter and not a document edit. Deleting the blocks is the
+   * other way to say it, and that one is durable.
+   */
+  excludeCategories?: string[];
+}
 
 export interface TranslatePassParams {
   sourceLang: string;
@@ -112,71 +130,32 @@ export interface PassJobConfig {
   projectDir: string;
   /** Project-relative stage dir this pass works and writes its diff in. */
   stageRelDir: string;
-  /** Foundry passes: the PDF being read, absolute. */
-  pdfPath?: string;
-  /** Foundry passes: document pages, zero-based, in reading order. */
-  pages?: number[];
-  /** Foundry run identity. Defaults to the PDF's path. */
-  bookKey?: string;
-  /*
-   * There is no `redoScan` here, and there is nothing to migrate.
-   *
-   * It used to mean "wipe the run directory and read the pages again", opt-in on
-   * the OCR-correction pass, default OFF — which made re-running a pass hand back
-   * the artifacts it already had, instantly, looking like success. A submitted
-   * pass now ALWAYS re-runs its own stages: OCR correction wipes the run
-   * directory, footnote removal clears its own stage. A job persisted in
-   * queue.json carrying `redoScan: true` therefore asks for what now happens
-   * unconditionally, and the extra property is simply ignored.
-   */
   /**
-   * This is the last foundry pass of its chain: export the book EPUB from the
-   * run directory when it finishes, and record the passes that produced it.
+   * Which of the project's PDFs the document passes read.
+   *
+   * A project can hold several versions of a book, and the working document is
+   * cast from ONE of them. The plan records which; the executor never picks.
    */
-  exportAfter?: boolean;
+  variantId?: string;
+  /** An absolute path the planner already resolved, inside the project. */
+  sourcePath?: string;
   /**
-   * The foundry passes this export materializes, in execution order, INCLUDING
-   * this one. They cannot record themselves earlier: until the export runs, the
-   * project has no book for a pass record to describe.
+   * Footnote removal only, and REQUIRED for it: which document it reads.
+   *
+   * The pass has one name and two implementations, and which one runs is a fact
+   * about the RUN, not about the job type — so the planner decides it and the
+   * executor is never left to infer it from which other fields happen to be set.
+   *
+   *  - `pdf` — `foundry footnotes --pdf` over the working document, rewriting
+   *    its text layer. Scanned class only; foundry refuses to re-lay-out a
+   *    publisher's page description from a parse of it.
+   *  - `epub` — `foundry footnotes --epub` over the project's book, rewriting it
+   *    in place. The DEFAULT for a scanned book, run after Reflow: the adapter
+   *    measures 97.0% applied / 0.5% false-fire on clean text against
+   *    90.5% / 2.1% on raw OCR text.
    */
-  exportPasses?: Array<{ kind: ProcessingPassKind; diff?: string; params?: Record<string, unknown> }>;
-  /**
-   * Footnote removal only, and REQUIRED for it: which of its two modes this job
-   * is. The pass has one name and two implementations, and which one runs is a
-   * fact about the RUN (what the passes read), not about the job type — so the
-   * planner decides it and the executor is never left to infer it from which
-   * other fields happen to be set.
-   *
-   *  - `foundry-run` — a stage of the PDF chain. Reads the run directory the
-   *    scan built, writes `footnotes/deletions.json`, and the book comes out of
-   *    the export at the end of the chain.
-   *  - `epub` — `foundry footnotes --epub` over the project's book EPUB,
-   *    rewriting it in place like every other EPUB pass.
-   */
-  footnotesMode?: 'foundry-run' | 'epub';
-  /**
-   * Detection only, and REQUIRED for it: where its scan comes from.
-   *
-   * The blocks stage reads the scan and nothing else, so a Detection pass either
-   * finds one or makes one — and WHICH is a fact about the run, decided when the
-   * chain is planned, exactly like `footnotesMode`. The executor refuses a job
-   * that does not say rather than looking at the disk at run time and guessing:
-   * the disk it would look at is minutes older than the answer the user was
-   * shown, and the two disagreeing is a pass that silently re-reads a book.
-   *
-   *  - `scan-in-chain` — an earlier foundry pass in THIS run produces the scan.
-   *    Runs `blocks` alone.
-   *  - `scan-on-disk` — the run directory already holds a finished scan, and it
-   *    is INPUT to this pass the way the book EPUB is input to a simplify pass.
-   *    Runs `blocks` alone.
-   *  - `scan-here` — nothing else provides one, so this pass reads the pages
-   *    itself. Runs `scan` then `blocks`, and records `tesseract` alongside
-   *    `detection` in the book's provenance because it genuinely did both.
-   *
-   * The `blocks` stage itself is cleared and re-run in every mode: a submitted
-   * pass runs its own stages.
-   */
-  detectionMode?: DetectionMode;
+  footnotesMode?: 'pdf' | 'epub';
+  reflow?: ReflowPassParams;
   footnotes?: FootnotesPassParams;
   simplify?: SimplifyPassParams;
   translate?: TranslatePassParams;
@@ -186,6 +165,7 @@ export interface ChainPassRequest {
   kind: ProcessingPassKind;
   /** Footnote removal over an EPUB. Refused on a PDF run, where it means nothing. */
   footnotes?: FootnotesPassParams;
+  reflow?: ReflowPassParams;
   simplify?: SimplifyPassParams;
   translate?: TranslatePassParams;
 }
@@ -198,20 +178,10 @@ export interface ProcessingChainRequest {
    * Which of the project's files the passes apply to. A variant id is what the
    * wizard's variant cards carry; an explicit path is for a caller that already
    * resolved one. Absent means the obvious file: the project's PDF for a chain
-   * with foundry passes, its book EPUB otherwise.
+   * with document passes, its book EPUB otherwise.
    */
   variantId?: string;
   sourcePath?: string;
-  /**
-   * The foundry run identity, when the caller already has one it is watching.
-   *
-   * The pdf-picker keys a run by the document's file hash, and it paints the run
-   * directory that key names. A chain submitted from that window must therefore
-   * use the same key or the blocks land somewhere nothing is looking. Absent —
-   * the wizard's case — the planner uses the source path, which is what the run
-   * directory has always been keyed by for a project opened in place.
-   */
-  bookKey?: string;
   passes: ChainPassRequest[];
 }
 
@@ -226,11 +196,11 @@ export interface ProcessingChainPlan {
   projectId: string;
   projectDir: string;
   title: string;
-  /** The file the passes read: the PDF for a foundry chain, else the book EPUB. */
+  /** The file the passes read: the PDF for a document chain, else the book EPUB. */
   sourcePath: string;
   /** Where the book EPUB is (or will be) when the chain finishes. */
   bookEpubPath: string;
-  /** True when a foundry pass in this chain will (re)build the book EPUB. */
+  /** True when a Reflow pass in this chain will (re)build the book EPUB. */
   producesEpub: boolean;
   jobs: PlannedPassJob[];
 }

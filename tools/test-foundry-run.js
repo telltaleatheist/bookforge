@@ -622,11 +622,11 @@ function reset(bookKey) {
     ok('and nothing was spawned', calls.length === 0, JSON.stringify(calls));
   }
 
-  console.log('\n13. a Detection job that does not say where its scan comes from');
+  console.log('\n13. a queue row naming a pass this build no longer has');
   {
-    // The executor's own refusal, mirroring `footnotesMode`. A job persisted in
-    // queue.json before the split carries no `detectionMode`, and inferring one
-    // from the disk is how a pass silently re-reads a whole book.
+    // queue.json outlives the code that wrote it. A row whose kind is retired
+    // cannot be reasoned about — nothing knows what it would do now — so it is
+    // refused with the sentence that explains the change, never run.
     const passes = require(path.join(DIST, 'processing-passes.js'));
     const result = await passes.runProcessingPass(
       'stale-job',
@@ -634,9 +634,18 @@ function reset(bookKey) {
       null
     );
     ok('the job fails instead of guessing', result.success === false);
-    ok('and the message names the field and the fix',
-      /detectionMode/.test(result.error || '') && /Process tab/.test(result.error || ''),
+    ok('and the message names the change and the fix',
+      /Detect blocks/.test(result.error || '') && /Process tab/.test(result.error || ''),
       result.error);
+
+    const ocr = await passes.runProcessingPass(
+      'stale-ocr',
+      { kind: 'ocr-correction', projectDir: scratch, stageRelDir: 'stages/01-ocr' },
+      null
+    );
+    ok('and OCR correction says where the repair went',
+      ocr.success === false && /Build the book/.test(ocr.error || ''),
+      ocr.error);
   }
 
   console.log('\n14. a failed run is swept by the attach that reports it — once');

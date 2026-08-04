@@ -318,19 +318,29 @@ export interface EpubOutput {
 }
 
 /**
- * The six things a processing run can do to a book. Each except `tesseract` maps
- * to one queue job type; see docs/PROCESSING_PIPELINE_V2.md for the user-facing
- * names. `detection` (labelling the blocks) split away from `ocr-correction`
- * (repairing what Tesseract misread) in Aug 2026 — a born-digital PDF needs the
- * second and not the first.
+ * What a processing run can do to a book — the current passes, plus the ones
+ * books already record.
+ *
+ * The current six are the document transformations (docs/DOCUMENT_PIPELINE.md):
+ * `get-text`, `blocks`, `reflow`, `footnotes`, `simplify`, `translate`.
+ *
+ * `RetiredPassKind` is not a live pass and cannot be requested. It is here
+ * because a manifest is a BOOK'S OWN HISTORY: books processed before Aug 2026
+ * carry `tesseract`, `ocr-correction` and `detection` records, and dropping the
+ * names would make a real book's provenance unreadable — the history would
+ * silently shorten rather than say what happened. `reflow` supersedes them all:
+ * repair is a step inside it, and labelling is `blocks`.
  */
+export type RetiredPassKind = 'tesseract' | 'ocr-correction' | 'detection';
+
 export type AppliedPassKind =
-  | 'tesseract'
-  | 'ocr-correction'
-  | 'detection'
+  | 'get-text'
+  | 'blocks'
+  | 'reflow'
   | 'footnotes'
   | 'simplify'
-  | 'translate';
+  | 'translate'
+  | RetiredPassKind;
 
 /** One completed pass. Appended when the pass finishes, never on failure. */
 export interface AppliedPass {

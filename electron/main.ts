@@ -6640,38 +6640,10 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('foundry:export', async (
-    _event, req: import('./foundry-run.js').FoundryExportRequest) => {
-    try {
-      // foundry writes wherever it was pointed; the records that make the file
-      // findable AND reviewable are written here, at the boundary that knows it
-      // is a project's export. A destination outside a project (there is no such
-      // caller today) is left unrecorded rather than forced into some manifest.
-      const projectDir = path.dirname(path.dirname(req.outputPath));
-      const inProject = fsSync.existsSync(path.join(projectDir, 'manifest.json'));
-
-      // The editor's export produces exactly what the queue's export produces:
-      // a stage diff per pass the run completed, and a provenance record for
-      // each. The diffs are written FIRST, from the run directory — a book whose
-      // changes cannot be reviewed must not be built (see prepareFoundryExportRecord).
-      const record = inProject
-        ? await (await import('./processing-passes.js')).prepareFoundryExportRecord(projectDir, req.bookKey)
-        : null;
-
-      const { foundryExport } = await import('./foundry-run.js');
-      const result = await foundryExport(req);
-
-      if (inProject) {
-        await manifestService.registerEpubExport(projectDir, result.epubPath);
-        await record!.commit();
-        mainWindow?.webContents.send('project:files-changed', projectDir);
-      }
-
-      return { success: true, ...result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
+  // There is no `foundry:export`. Reflow is the ONE exporter (`document:reflow`),
+  // and it reads the working document rather than a run directory — so there is
+  // no second book-builder for a gate to choose between, and no orphaned run
+  // object an export can be refused on.
 
   // ── Processing passes ───────────────────────────────────────────────────
   // ONE run handler for all five pass types: the pass kind is in the config, and
