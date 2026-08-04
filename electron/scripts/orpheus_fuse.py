@@ -1,36 +1,53 @@
 """Fuse a PEFT LoRA adapter into a copy of its base model, offline, on the CPU.
 
-WHY THIS EXISTS (macOS / MLX). Orpheus voices ship as ~0.39 GB LoRA adapters over one
-shared 6.6 GB base. vLLM serves those adapters per request; MLX CANNOT — `mlx_audio`'s
-`load_model` takes no adapter argument and mlx-lm's `load_adapters` expects mlx-lm's own
-adapter schema, not PEFT's (e2a's orpheus.py refuses adapter mode on any non-vLLM backend
-for exactly that reason). So on darwin BookForge downloads base + adapter and FUSES them
-here at install time into an ordinary merged model folder that the existing MLX load path
-opens unchanged. The user still pays 0.4 GB per extra voice instead of 6.6 GB; instant
-per-request voice switching is stage B2, not this.
+WHY THIS EXISTS (macOS / MLX): MLX cannot serve a LoRA at all, so on darwin BookForge
+downloads base + adapter and fuses them here at install time into an ordinary merged
+model folder. The canonical statement of that constraint — what MLX lacks, what e2a
+does about it, and why the fused copy wins resolution — lives ONCE, on the darwin branch
+of `resolveOrpheusInstall` in electron/orpheus-models.ts. Read it there.
 
 WHAT IT IS NOT: this is not `peft`. It imports nothing but `safetensors` and `torch`, and
-never instantiates a transformers model class — the runtime e2a environment on the Mac has
-neither peft nor the RAM headroom to build a 3B model twice. It is pure tensor arithmetic:
+never instantiates a transformers model class. That is a deliberate choice, not a
+workaround for a missing package: depending on peft here would couple a one-shot weight
+merge to peft's own version drift in the shared runtime env. It is pure tensor arithmetic:
 
-    W' = W + (lora_alpha / r) · B @ A
+    W' = W + (lora_alpha / r) * B @ A
 
 for every projection the adapter targets, with everything else copied verbatim. Compute is
 fp32; every fused tensor is stored back in the BASE tensor's own dtype (bf16 here), so the
 output is byte-shaped exactly like the base: same shard files, same index, same aux files.
 
+MEMORY. Weights are read LAZILY, one tensor at a time (`safe_open` + `get_tensor` per key
+— never `load_file` over a whole shard); the LoRA pair for a weight is released the moment
+it is consumed; and the output shard is serialized tensor-by-tensor (see _serialize_shard)
+rather than through `save_file`, which would hold the shard as torch tensors AND as bytes
+simultaneously. What is unavoidably resident is ONE SHARD, in one representation, plus the
+not-yet-consumed LoRA pairs and an fp32 scratch copy of the tensor being fused. Measured on
+Orpheus-3B (shards 4.99 + 1.61 GB, 0.39 GB adapter held as fp32), Linux, 2026-08-04: peak
+RSS 10.2 GB of which only 5.1 GB is ANONYMOUS — the other 5.1 GB is resident page cache for
+the mmap'd source shard, clean pages the kernel drops the moment anything else wants them.
+Through save_file the same merge peaks at 11.4 GB RSS / 8.8 GB anonymous. So the number
+that decides whether an 8 GB Mac swaps went 8.8 -> 5.1 GB.
+
 NO FALLBACKS. Every ambiguity is fatal and says why: an adapter config this arithmetic
-does not implement (rslora, dora, bias, modules_to_save, per-layer rank/alpha patterns),
-a lora key that names no base tensor, a shape or dtype mismatch, an unpaired lora_A/lora_B,
-or a non-empty output dir without --force. A wrong fuse produces a fluent, confident model
-in the wrong voice with nothing anywhere reporting a problem — the one failure class this
-script must never manufacture.
+does not implement (rslora, dora, bias, PiSSA/OLoRA init, loftq, megatron, modules_to_save,
+per-layer rank/alpha patterns), a lora key that names no base tensor, a shape or dtype
+mismatch, an unpaired lora_A/lora_B, or a non-empty output dir without --force. A wrong
+fuse produces a fluent, confident model in the wrong voice with nothing anywhere reporting
+a problem — the one failure class this script must never manufacture.
 
 Usage:
-    python orpheus_fuse.py --base <dir> --adapter <dir> --out <dir> [--force] [--verify]
+    python orpheus_fuse.py --base <dir> --adapter <dir> --out <dir> --workspace <dir>
+                           [--force] [--verify]
 
-Prints human-readable `[FUSE] …` progress lines (one per layer group / per shard) to
-stdout for the installer UI, then ONE final JSON line: {"ok": true, "out": "..."} or
+--workspace is where the model is BUILT; it must be on the same filesystem as --out,
+because promotion is a rename (see promote()). BookForge passes
+`<models>/.fusework/<id>`, a scratch dir the model scan skips by name. It is deleted at
+the start of a run and again on any failure, so a failed fuse leaves nothing behind for
+the "is it installed" predicates to adopt.
+
+Prints ASCII-only `[FUSE] ...` progress lines (one per layer group / per shard) to stdout
+for the installer UI, then ONE final JSON line: {"ok": true, "out": "..."} or
 {"ok": false, "error": "..."} — the same contract orpheus_download.py uses.
 """
 import argparse
@@ -40,10 +57,10 @@ import shutil
 import sys
 
 
-# ── adapter config: what this arithmetic is allowed to see ────────────────────
+# -- adapter config: what this arithmetic is allowed to see --------------------
 
 # Keys whose presence (truthy / non-default) means the adapter is NOT a plain
-# W + (alpha/r)·B@A merge. Each maps to the reason it changes the math, because a
+# W + (alpha/r)*B@A merge. Each maps to the reason it changes the math, because a
 # refusal that doesn't explain itself gets worked around instead of fixed.
 _UNSUPPORTED = {
     "use_dora": "DoRA decomposes the update into magnitude + direction; merging it needs the "
@@ -53,7 +70,8 @@ _UNSUPPORTED = {
     "lora_bias": "the adapter carries bias vectors, which this merge does not apply",
     "fan_in_fan_out": "the base weights are stored transposed, so B@A would be applied the wrong way round",
 }
-# Keys that must be absent/empty because they make the merge PER-LAYER rather than uniform.
+# Keys that must be absent/empty because they make the merge PER-LAYER rather than uniform,
+# or because they mean the stored A/B are not the whole update.
 _MUST_BE_EMPTY = {
     "rank_pattern": "per-layer rank overrides mean the scaling is not a single alpha/r",
     "alpha_pattern": "per-layer alpha overrides mean the scaling is not a single alpha/r",
@@ -63,7 +81,25 @@ _MUST_BE_EMPTY = {
     "target_parameters": "parameter-level (rather than module-level) targeting is not this merge",
     "trainable_token_indices": "trainable token embeddings are full weights, not a low-rank delta",
     "exclude_modules": "module exclusions are only meaningful against a live model graph",
+    # PiSSA/OLoRA/LoftQ/EVA/CorDA rewrite the BASE at adapter-creation time: the residual
+    # W_res the adapter was trained against is not the W in this base dir, so W + B@A is
+    # the wrong sum by exactly the part of W the initializer moved into A/B. The result
+    # loads, generates fluently, and is a different voice.
+    "loftq_config": "LoftQ re-initialises A/B against a QUANTIZED base, so this base's W is not "
+                    "the residual those weights were trained against",
+    "megatron_config": "a Megatron-parallel adapter stores per-shard slices of the update, not "
+                       "the whole B@A for a single dense weight",
+    "eva_config": "EVA data-drives the initialisation from the base's activations; the merge is "
+                  "only valid against the base that was profiled",
+    "corda_config": "CorDA decomposes the base weight and folds part of it into the adapter, so "
+                    "the stored base is no longer the full W",
 }
+# `init_lora_weights` is the one config key whose SAFE values are the non-obvious ones:
+# `true` (the default: A ~ Kaiming, B = 0) and `gaussian` both leave the base weight
+# untouched at init, so W in this dir is the W that was trained against. PiSSA and OLoRA
+# instead SUBTRACT their initial B@A from the base and ship the residual; merging them
+# against the pristine base double-counts that principal component.
+_SAFE_INIT_LORA_WEIGHTS = (True, "gaussian")
 
 
 class FuseError(Exception):
@@ -74,7 +110,7 @@ def load_adapter_config(adapter_dir):
     """Read + validate adapter_config.json, returning (scaling, target_modules)."""
     cfg_path = os.path.join(adapter_dir, "adapter_config.json")
     if not os.path.isfile(cfg_path):
-        raise FuseError("adapter dir %s has no adapter_config.json — not a PEFT LoRA folder" % adapter_dir)
+        raise FuseError("adapter dir %s has no adapter_config.json - not a PEFT LoRA folder" % adapter_dir)
     try:
         with open(cfg_path, "r", encoding="utf-8") as fh:
             cfg = json.load(fh)
@@ -96,13 +132,26 @@ def load_adapter_config(adapter_dir):
     if bias != "none":
         raise FuseError("adapter %s declares bias=%r; only bias='none' is a pure weight merge" % (adapter_dir, bias))
 
+    # Absent means PEFT's default, which is `true` and is safe.
+    init = cfg.get("init_lora_weights", True)
+    if init not in _SAFE_INIT_LORA_WEIGHTS:
+        raise FuseError(
+            "adapter %s declares init_lora_weights=%r. PiSSA and OLoRA (and their quantized "
+            "variants) initialise A/B from a decomposition of the base weight and SUBTRACT it, "
+            "shipping the residual as the base; merging them onto an unmodified base adds that "
+            "component back twice. Only init_lora_weights true/gaussian leave the base untouched. "
+            "If this adapter really is PiSSA, convert it with peft's "
+            "`save_pretrained(..., path_initial_model_for_weight_conversion=...)` first."
+            % (adapter_dir, init)
+        )
+
     for key, why in _UNSUPPORTED.items():
         if cfg.get(key):
-            raise FuseError("adapter %s declares %s=%r — %s" % (adapter_dir, key, cfg.get(key), why))
+            raise FuseError("adapter %s declares %s=%r - %s" % (adapter_dir, key, cfg.get(key), why))
     for key, why in _MUST_BE_EMPTY.items():
         val = cfg.get(key)
         if val:  # non-null, non-empty dict/list
-            raise FuseError("adapter %s declares %s=%r — %s" % (adapter_dir, key, val, why))
+            raise FuseError("adapter %s declares %s=%r - %s" % (adapter_dir, key, val, why))
 
     targets = cfg.get("target_modules")
     if not isinstance(targets, (list, tuple)) or not targets:
@@ -111,7 +160,32 @@ def load_adapter_config(adapter_dir):
     return float(alpha) / float(r), sorted(str(t) for t in targets)
 
 
-# ── key mapping: PEFT module path → base state-dict key ───────────────────────
+# -- dtypes ---------------------------------------------------------------------
+
+def _dtype_allowlist():
+    """The float dtypes this merge is defined for, as a set of torch dtypes.
+
+    Anything else - int8/uint8/fp8 quantized weights above all - is refused BY NAME. A
+    quantized tensor of matching shape would take the add silently (torch would round the
+    fp32 sum straight back into the integer grid), destroying the weights while every
+    shape and header check still passed. Merging into a quantized base is a real
+    operation, but it is dequantize-merge-requantize with the base's own scales, not
+    this.
+    """
+    import torch
+    return {torch.bfloat16, torch.float16, torch.float32}
+
+
+def _check_dtype(t, what, key):
+    if t.dtype not in _dtype_allowlist():
+        raise FuseError(
+            "%s for %r is %s; this merge is only defined for bfloat16, float16 and float32. "
+            "A quantized checkpoint has to be dequantized with its own scales before a LoRA "
+            "can be merged into it." % (what, key, str(t.dtype).replace("torch.", ""))
+        )
+
+
+# -- key mapping: PEFT module path -> base state-dict key -----------------------
 
 _PEFT_PREFIX = "base_model.model."
 
@@ -120,7 +194,7 @@ def base_key_for(lora_key):
     """Map a PEFT adapter tensor name to the base weight it modifies, or None.
 
     `base_model.model.model.layers.7.self_attn.q_proj.lora_A.weight`
-        → ('model.layers.7.self_attn.q_proj.weight', 'A')
+        -> ('model.layers.7.self_attn.q_proj.weight', 'A')
 
     PEFT writes an adapter-name segment (`.lora_A.default.weight`) when a model holds
     several named adapters; a single-adapter save omits it. Both forms are accepted and
@@ -143,10 +217,10 @@ def base_key_for(lora_key):
 
 
 def collect_lora_pairs(adapter_dir):
-    """Read adapter_model.safetensors → {base_key: {'A': tensor, 'B': tensor}}.
+    """Read adapter_model.safetensors -> {base_key: {'A': tensor, 'B': tensor}}.
 
-    Tensors come back as fp32 CPU tensors (whatever they were stored as), because the
-    merge is computed in fp32 and only rounded on the way out.
+    Read one key at a time (never the whole file at once) and returned as fp32 CPU
+    tensors, because the merge is computed in fp32 and only rounded on the way out.
     """
     import torch
     from safetensors import safe_open
@@ -168,11 +242,13 @@ def collect_lora_pairs(adapter_dir):
             slot = pairs.setdefault(base_key, {})
             if side in slot:
                 raise FuseError(
-                    "adapter %s has two lora_%s tensors for the same base weight %r — "
+                    "adapter %s has two lora_%s tensors for the same base weight %r - "
                     "this file holds more than one adapter and there is no way to tell which to merge"
                     % (weights_path, side, base_key)
                 )
-            slot[side] = fh.get_tensor(key).to(dtype=torch.float32)
+            t = fh.get_tensor(key)
+            _check_dtype(t, "the adapter's lora_%s" % side, base_key)
+            slot[side] = t.to(dtype=torch.float32)
 
     if not pairs:
         raise FuseError("adapter %s contains no LoRA weights" % weights_path)
@@ -180,7 +256,7 @@ def collect_lora_pairs(adapter_dir):
         missing = [s for s in ("A", "B") if s not in slot]
         if missing:
             raise FuseError(
-                "adapter %s has no lora_%s for %r (only lora_%s) — half a LoRA cannot be merged"
+                "adapter %s has no lora_%s for %r (only lora_%s) - half a LoRA cannot be merged"
                 % (weights_path, missing[0], base_key, "".join(sorted(slot)))
             )
         a, b = slot["A"], slot["B"]
@@ -188,13 +264,13 @@ def collect_lora_pairs(adapter_dir):
             raise FuseError("LoRA tensors for %r are not 2-D (A=%s, B=%s)" % (base_key, tuple(a.shape), tuple(b.shape)))
         if a.shape[0] != b.shape[1]:
             raise FuseError(
-                "LoRA rank mismatch for %r: lora_A is %s and lora_B is %s — their inner dims must agree"
+                "LoRA rank mismatch for %r: lora_A is %s and lora_B is %s - their inner dims must agree"
                 % (base_key, tuple(a.shape), tuple(b.shape))
             )
     return pairs
 
 
-# ── base model layout ─────────────────────────────────────────────────────────
+# -- base model layout ----------------------------------------------------------
 
 def read_base_layout(base_dir):
     """Return (shard_files, weight_map_or_None).
@@ -225,7 +301,7 @@ def read_base_layout(base_dir):
         raise FuseError("base dir %s is not readable: %s" % (base_dir, e))
     if len(loose) != 1:
         raise FuseError(
-            "base %s has no model.safetensors.index.json and %d loose .safetensors files — "
+            "base %s has no model.safetensors.index.json and %d loose .safetensors files - "
             "cannot tell what the checkpoint is" % (base_dir, len(loose))
         )
     return loose, None
@@ -240,18 +316,19 @@ def layer_of(key):
     return "-"
 
 
-# ── the merge ─────────────────────────────────────────────────────────────────
+# -- the merge ------------------------------------------------------------------
 
 def fuse_tensor(base_w, a, b, scaling, key):
-    """W' = W + scaling · B @ A, computed in fp32 and returned in W's own dtype."""
+    """W' = W + scaling * B @ A, computed in fp32 and returned in W's own dtype."""
     import torch
 
     if base_w.ndim != 2:
         raise FuseError("base weight %r is %d-D; a LoRA target must be a 2-D projection" % (key, base_w.ndim))
+    _check_dtype(base_w, "the base weight", key)
     out_features, in_features = base_w.shape
     if b.shape[0] != out_features or a.shape[1] != in_features:
         raise FuseError(
-            "shape mismatch fusing %r: base is %s but lora_B@lora_A is %s — the adapter was "
+            "shape mismatch fusing %r: base is %s but lora_B@lora_A is %s - the adapter was "
             "trained against a different base model" % (key, tuple(base_w.shape), (b.shape[0], a.shape[1]))
         )
     delta = torch.matmul(b, a).mul_(scaling)
@@ -259,15 +336,111 @@ def fuse_tensor(base_w, a, b, scaling, key):
     return fused.to(dtype=base_w.dtype)
 
 
-def fuse(base_dir, adapter_dir, out_dir, force, verify):
-    from safetensors import safe_open
-    from safetensors.torch import save_file
+# The suffix the OLD copy of a voice is parked under while the new one is renamed into
+# place. It must stay in step with PREVIOUS_SUFFIX in electron/orpheus-models.ts, which is
+# what makes the model scan ignore a leftover one.
+PREVIOUS_SUFFIX = ".previous"
 
+
+def prepare_workspace(workspace):
+    """Empty scratch dir for this run, with any stale one from a killed run removed.
+
+    A previous run that was killed (or crashed hard enough to skip the cleanup in fuse())
+    leaves its half-written shards here. Reusing them would be catastrophic in the quiet
+    way this whole script exists to prevent — a shard from the WRONG adapter surviving
+    into the new model — so the first thing a run does is delete the workspace outright.
+    """
+    if os.path.isdir(workspace):
+        print("[FUSE] removing a stale workspace from an interrupted run: %s" % workspace, flush=True)
+        shutil.rmtree(workspace)
+    elif os.path.exists(workspace):
+        raise FuseError("workspace path %s exists and is not a directory" % workspace)
+    os.makedirs(workspace)
+
+
+def discard_workspace(workspace):
+    """Best-effort delete after a failure. Returns '' or a note to append to the error."""
+    try:
+        if os.path.isdir(workspace):
+            shutil.rmtree(workspace)
+        return ""
+    except Exception as e:
+        return (" (the fuse workspace %s could NOT be removed: %s - delete it by hand; it is "
+                "several GB of a half-written model)" % (workspace, e))
+
+
+def promote(workspace, out_dir):
+    """Swap the finished workspace into place without a window where neither copy exists.
+
+    rmtree(out) THEN rename(new) is the obvious order and the wrong one: a kill (or a
+    failed rmtree) between the two steps destroys the working voice and leaves nothing,
+    and re-installing the same repo is the COMMON path, not a rare one. So:
+
+        rename(out -> out.previous)   the old copy is still whole, just renamed
+        rename(workspace -> out)      the new copy becomes the voice
+        rmtree(out.previous)          only now is anything deleted
+
+    Every step is a rename until the last one, so an interruption anywhere leaves either
+    the old model or the new model under `out`, never a hole. `.previous` is in the model
+    scan's skip set, so a leftover one is inert rather than adopted as a voice.
+
+    Returns a warning string (empty when clean).
+    """
+    previous = out_dir + PREVIOUS_SUFFIX
+    if os.path.isdir(previous):
+        shutil.rmtree(previous)  # leftover from an interrupted earlier promote
+    stashed = False
+    if os.path.exists(out_dir):
+        try:
+            os.rename(out_dir, previous)
+        except OSError as e:
+            raise FuseError("could not park the existing model at %s out of the way: %s" % (out_dir, e))
+        stashed = True
+    try:
+        os.rename(workspace, out_dir)
+    except OSError as e:
+        if stashed:
+            try:
+                os.rename(previous, out_dir)
+            except OSError as e2:
+                raise FuseError(
+                    "could not move the fused model into %s (%s) AND could not restore the previous "
+                    "model from %s (%s) - the previous copy is intact at that path and has to be "
+                    "renamed back by hand" % (out_dir, e, previous, e2)
+                )
+        raise FuseError(
+            "could not move the fused model from %s into %s: %s. The workspace and the output must "
+            "be on the same filesystem - promotion is a rename so the previous copy is never deleted "
+            "before the new one is in place." % (workspace, out_dir, e)
+        )
+    if stashed:
+        try:
+            shutil.rmtree(previous)
+        except Exception as e:
+            # The new model is already in place, so this is not a failure of the fuse -
+            # just several GB of a superseded copy left on disk. Say so loudly anyway.
+            return ("the fused model is installed, but the previous copy could not be deleted from %s "
+                    "(%s) - remove it by hand to reclaim the space" % (previous, e))
+    return ""
+
+
+def fuse(base_dir, adapter_dir, out_dir, workspace, force, verify):
+    """Build the fused model in `workspace`, verify it, then promote it onto `out_dir`.
+
+    Returns {'fused': n} plus 'warning' when something non-fatal was left behind. On ANY
+    failure the workspace is removed before the error propagates, so a failed fuse cannot
+    strand ~6.6 GB of half-written model — nor leave anything shaped enough like a model
+    for BookForge's "is it installed" predicates to adopt.
+    """
     for label, d in (("base", base_dir), ("adapter", adapter_dir)):
         if not os.path.isdir(d):
             raise FuseError("%s dir %s does not exist" % (label, d))
-    if os.path.realpath(out_dir) in (os.path.realpath(base_dir), os.path.realpath(adapter_dir)):
+    real_out = os.path.realpath(out_dir)
+    if real_out in (os.path.realpath(base_dir), os.path.realpath(adapter_dir)):
         raise FuseError("--out %s is the base or the adapter dir; refusing to overwrite an input" % out_dir)
+    real_ws = os.path.realpath(workspace)
+    if real_ws in (real_out, os.path.realpath(base_dir), os.path.realpath(adapter_dir)):
+        raise FuseError("--workspace %s is the output, the base or the adapter dir; it must be its own scratch dir" % workspace)
 
     # A non-empty output is refused unless the caller says it means to replace it. The
     # installer passes --force (a re-install of a retrained voice MUST replace the old
@@ -276,7 +449,7 @@ def fuse(base_dir, adapter_dir, out_dir, force, verify):
         existing = [f for f in os.listdir(out_dir) if f.endswith(".safetensors") or f == "config.json"]
         if existing:
             raise FuseError(
-                "out dir %s already holds a model (%s…). Pass --force to replace it."
+                "out dir %s already holds a model (%s...). Pass --force to replace it."
                 % (out_dir, existing[0])
             )
 
@@ -288,16 +461,85 @@ def fuse(base_dir, adapter_dir, out_dir, force, verify):
     shards, weight_map = read_base_layout(base_dir)
     print("[FUSE] base %s: %d shard(s)" % (base_dir, len(shards)), flush=True)
 
-    # Write to a sibling `.partial` and swap only after everything (including --verify)
-    # passes. Fusing straight into out_dir would leave a half-written model behind on any
-    # failure, and a half-written model is exactly what every "is it installed" predicate
-    # in BookForge reads as installed.
-    partial = out_dir.rstrip("/\\") + ".partial"
-    if os.path.isdir(partial):
-        shutil.rmtree(partial)
-    os.makedirs(partial)
+    prepare_workspace(workspace)
+    try:
+        result = _build(base_dir, workspace, shards, weight_map, pairs, scaling, verify)
+        # Inside the try as well: a promote that fails leaves the finished model sitting in
+        # the workspace, which is still several GB of nothing-anyone-can-use. (It cannot
+        # fail AFTER the model reaches out_dir — the only step past that point is deleting
+        # the superseded copy, which returns a warning rather than raising.)
+        warning = promote(workspace, out_dir)
+    except BaseException as exc:  # including a kill: leave nothing behind either way
+        note = discard_workspace(workspace)
+        if note and isinstance(exc, Exception):
+            raise FuseError(_describe(exc) + note)
+        raise
+    if warning:
+        print("[FUSE] warning: %s" % warning, flush=True)
+        result["warning"] = warning
+    print("[FUSE] fused model written to %s" % out_dir, flush=True)
+    return result
 
-    remaining = dict(pairs)  # base_key → {'A','B'}; drained as shards are processed
+
+def _describe(exc):
+    return str(exc) if isinstance(exc, FuseError) else "%s: %s" % (type(exc).__name__, exc)
+
+
+def _tensor_bytes(t):
+    """A tensor's raw little-endian buffer as `bytes`, via a uint8 view (no reinterpret
+    beyond the byte level, so bf16 — which numpy has no dtype for — works)."""
+    import torch
+
+    if sys.byteorder != "little":
+        # safetensors files are little-endian. Byte-swapping is a real thing to implement,
+        # not something to get silently wrong on a host nobody has tested this on.
+        raise FuseError("this host is big-endian; the fused shards would need byte-swapping and this script does not do that")
+    if not t.is_contiguous():
+        t = t.contiguous()
+    return t.view(torch.uint8).numpy().tobytes()
+
+
+def _serialize_shard(tensors, dst, metadata):
+    """Write one shard, CONSUMING `tensors`, without holding the shard twice.
+
+    `safetensors.torch.save_file` flattens first: its `_flatten` copies EVERY tensor into
+    a Python `bytes` via `_tobytes` and only then hands the whole dict to the Rust writer,
+    so for the duration of the write a shard exists in RAM as both torch tensors and bytes.
+    On Orpheus's 4.99 GB shard that duplicate is ~5 GB — measured as the single largest
+    term in this script's peak RSS.
+
+    Same serializer (`safetensors.serialize_file` is exactly what save_file calls, so the
+    output is byte-identical), fed one tensor at a time, dropping each torch tensor the
+    moment its bytes exist. Peak becomes one shard rather than two.
+    """
+    from safetensors import serialize_file
+
+    flat = {}
+    for key in list(tensors):
+        t = tensors.pop(key)
+        flat[key] = {
+            "dtype": str(t.dtype).split(".")[-1],
+            "shape": tuple(t.shape),
+            "data": _tensor_bytes(t),
+        }
+        del t
+    serialize_file(flat, dst, metadata=metadata)
+
+
+def _build(base_dir, workspace, shards, weight_map, pairs, scaling, verify):
+    """The merge itself, writing shard-for-shard into an empty `workspace`."""
+    from safetensors import safe_open
+
+    # verify_output re-derives three of the fused weights from the base + adapter, so
+    # those three LoRA pairs have to outlive the merge. Every OTHER pair is dropped the
+    # moment its base tensor is fused (`remaining.pop`), which is why `remaining` is the
+    # dict itself rather than a copy of it: with ~0.8 GB of fp32 adapter in play, holding
+    # a second reference to all of it for the whole run is 0.8 GB of peak for nothing.
+    fused_keys = sorted(pairs)
+    picks = sorted({fused_keys[0], fused_keys[len(fused_keys) // 2], fused_keys[-1]})
+    verify_pairs = {k: pairs[k] for k in picks}
+    remaining = pairs
+
     fused_count = 0
     for si, shard in enumerate(shards, 1):
         src = os.path.join(base_dir, shard)
@@ -307,6 +549,8 @@ def fuse(base_dir, adapter_dir, out_dir, force, verify):
             keys = list(fh.keys())
             last_layer = None
             for key in keys:
+                # One tensor at a time: the shard is never materialised twice, and a key
+                # that needs no fusing is read straight through to the output dict.
                 t = fh.get_tensor(key)
                 slot = remaining.pop(key, None)
                 if slot is not None:
@@ -316,10 +560,12 @@ def fuse(base_dir, adapter_dir, out_dir, force, verify):
                         last_layer = layer
                     t = fuse_tensor(t, slot["A"], slot["B"], scaling, key)
                     fused_count += 1
+                    del slot  # frees the pair unless verify_pairs still holds it
                 tensors[key] = t
-        dst = os.path.join(partial, shard)
-        save_file(tensors, dst, metadata=metadata)
-        print("[FUSE] wrote %s (%d tensors, %d fused so far)" % (shard, len(tensors), fused_count), flush=True)
+        dst = os.path.join(workspace, shard)
+        written = len(tensors)
+        _serialize_shard(tensors, dst, metadata)  # consumes `tensors`
+        print("[FUSE] wrote %s (%d tensors, %d fused so far)" % (shard, written, fused_count), flush=True)
         del tensors
 
     if remaining:
@@ -329,7 +575,7 @@ def fuse(base_dir, adapter_dir, out_dir, force, verify):
         # projections — audible only as a subtly wrong voice.
         sample = sorted(remaining)[:3]
         raise FuseError(
-            "%d LoRA weights name base tensors that do not exist in %s (e.g. %s) — "
+            "%d LoRA weights name base tensors that do not exist in %s (e.g. %s) - "
             "this adapter does not belong to this base model" % (len(remaining), base_dir, ", ".join(sample))
         )
 
@@ -341,21 +587,16 @@ def fuse(base_dir, adapter_dir, out_dir, force, verify):
         src = os.path.join(base_dir, name)
         if not os.path.isfile(src) or name.endswith(".safetensors"):
             continue
-        shutil.copyfile(src, os.path.join(partial, name))
+        shutil.copyfile(src, os.path.join(workspace, name))
         copied += 1
     print("[FUSE] copied %d config/tokenizer files from the base" % copied, flush=True)
 
     if verify:
-        verify_output(partial, base_dir, pairs, scaling, weight_map, shards)
-
-    if os.path.isdir(out_dir):
-        shutil.rmtree(out_dir)
-    os.rename(partial, out_dir)
-    print("[FUSE] fused model written to %s" % out_dir, flush=True)
-    return fused_count
+        verify_output(workspace, base_dir, fused_keys, verify_pairs, scaling, weight_map, shards)
+    return {"fused": fused_count}
 
 
-# ── verification ──────────────────────────────────────────────────────────────
+# -- verification ---------------------------------------------------------------
 
 # One bf16 mantissa step is 2^-8 relative; allow two of them so a fp32 summation-order
 # difference between the fuse pass and the verify pass (different thread counts, say)
@@ -364,7 +605,7 @@ def fuse(base_dir, adapter_dir, out_dir, force, verify):
 _ULP_RELATIVE = 2.0 ** -7
 
 
-def verify_output(out_dir, base_dir, pairs, scaling, weight_map, shards):
+def verify_output(out_dir, base_dir, fused_keys, verify_pairs, scaling, weight_map, shards):
     """Re-open the written model: every declared tensor present with the right shape,
     plus a recomputed spot-check of three fused matrices."""
     import torch
@@ -391,28 +632,26 @@ def verify_output(out_dir, base_dir, pairs, scaling, weight_map, shards):
             raise FuseError("verify: fused output holds %d tensors the index does not declare (e.g. %s)"
                             % (len(extra), extra[0]))
 
-    for key in pairs:
+    for key in fused_keys:
         if key not in shapes:
             raise FuseError("verify: fused tensor %r is not in the output" % key)
 
     # Spot-check: recompute W' from the BASE + adapter and compare to what was written.
-    keys = sorted(pairs)
-    picks = sorted({keys[0], keys[len(keys) // 2], keys[-1]})
     base_shards, _ = read_base_layout(base_dir)
-    for key in picks:
+    for key in sorted(verify_pairs):
         base_w = _read_tensor(base_dir, base_shards, key)
         stored = _read_tensor(out_dir, shards, key)
         if tuple(stored.shape) != tuple(base_w.shape):
             raise FuseError("verify: %r is %s in the output but %s in the base" % (key, tuple(stored.shape), tuple(base_w.shape)))
-        expected = fuse_tensor(base_w, pairs[key]["A"], pairs[key]["B"], scaling, key)
+        expected = fuse_tensor(base_w, verify_pairs[key]["A"], verify_pairs[key]["B"], scaling, key)
         diff = (stored.to(torch.float32) - expected.to(torch.float32)).abs().max().item()
         bound = expected.to(torch.float32).abs().max().item() * _ULP_RELATIVE
         if diff > bound:
             raise FuseError(
                 "verify: %r differs from a freshly computed W' by %.3e (bf16 tolerance %.3e)" % (key, diff, bound)
             )
-        print("[FUSE] verify %s: max|Δ|=%.3e (tolerance %.3e)" % (key, diff, bound), flush=True)
-    print("[FUSE] verify OK: %d tensors, %d spot-checked" % (len(shapes), len(picks)), flush=True)
+        print("[FUSE] verify %s: max abs diff=%.3e (tolerance %.3e)" % (key, diff, bound), flush=True)
+    print("[FUSE] verify OK: %d tensors, %d spot-checked" % (len(shapes), len(verify_pairs)), flush=True)
 
 
 def _read_tensor(model_dir, shards, key):
@@ -425,26 +664,29 @@ def _read_tensor(model_dir, shards, key):
     raise FuseError("tensor %r not found in %s" % (key, model_dir))
 
 
-# ── cli ───────────────────────────────────────────────────────────────────────
+# -- cli ------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="Fuse a PEFT LoRA adapter into a copy of its base model.")
     parser.add_argument("--base", required=True, help="the shared base model dir")
     parser.add_argument("--adapter", required=True, help="the PEFT LoRA adapter dir")
     parser.add_argument("--out", required=True, help="the merged model dir to write")
+    parser.add_argument("--workspace", required=True,
+                        help="scratch dir to build in; must be on the same filesystem as --out "
+                             "(it is renamed into place) and is deleted on failure")
     parser.add_argument("--force", action="store_true", help="replace an existing model at --out")
     parser.add_argument("--verify", action="store_true", help="re-read the output and spot-check the merge")
     args = parser.parse_args()
 
     try:
-        count = fuse(args.base, args.adapter, args.out, args.force, args.verify)
+        result = fuse(args.base, args.adapter, args.out, args.workspace, args.force, args.verify)
     except FuseError as e:
         print(json.dumps({"ok": False, "error": str(e)}), flush=True)
         return 1
     except Exception as e:  # surface the real reason (missing torch/safetensors, disk full, …)
-        print(json.dumps({"ok": False, "error": "%s: %s" % (type(e).__name__, e)}), flush=True)
+        print(json.dumps({"ok": False, "error": _describe(e)}), flush=True)
         return 1
-    print(json.dumps({"ok": True, "out": args.out, "fused": count}), flush=True)
+    print(json.dumps(dict({"ok": True, "out": args.out}, **result)), flush=True)
     return 0
 
 

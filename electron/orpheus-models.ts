@@ -133,8 +133,32 @@ export interface OrpheusBaseRef {
 /** The `adapters/` and `_base/` subdirs of the models root are LAYOUT, not voices. */
 export const ADAPTERS_SUBDIR = 'adapters';
 export const BASE_SUBDIR = '_base';
-/** Skipped by the top-level merged-folder scan (they hold adapters / the base). */
-const LAYOUT_SUBDIRS = new Set<string>([ADAPTERS_SUBDIR, BASE_SUBDIR]);
+/**
+ * Scratch root for the macOS fuse (`<models>/.fusework/<id>/`), where orpheus_fuse.py
+ * BUILDS a fused voice before renaming it into place. It holds a full model shape mid-run
+ * — config.json lands with the shards — which is exactly what isMergedModelFolder looks
+ * for, so it must never be scanned: a killed fuse would otherwise be adopted as a voice
+ * named `.fusework` and rendered with `--fine_tuned .fusework`, a token no model was
+ * trained on. Kept OUT of the way by LOCATION (one dotted dir, skipped below) rather than
+ * by a per-folder content check, so it stays inert no matter how complete the half-written
+ * model inside it looks.
+ */
+export const FUSEWORK_SUBDIR = '.fusework';
+/**
+ * Suffix the SUPERSEDED copy of a voice wears for the few milliseconds of a crash-safe
+ * promote (`<id>` → `<id>.previous` → deleted; see orpheus_fuse.py promote()). A kill in
+ * that window leaves it on disk holding a complete, valid model — so it is skipped for
+ * the same reason `.fusework` is: it is a real model that is not a real voice.
+ */
+export const PREVIOUS_SUFFIX = '.previous';
+/**
+ * Names the top-level merged-folder scan skips: the layout dirs (they hold adapters / the
+ * base), the fuse scratch dir, and any leftover `.previous` backup.
+ */
+const LAYOUT_SUBDIRS = new Set<string>([ADAPTERS_SUBDIR, BASE_SUBDIR, FUSEWORK_SUBDIR]);
+function isScannableVoiceFolder(name: string): boolean {
+  return !LAYOUT_SUBDIRS.has(name) && !name.endsWith(PREVIOUS_SUFFIX);
+}
 
 /** A resolved, loadable custom voice. */
 export interface OrpheusModel {
@@ -776,18 +800,31 @@ function resolveOrpheusInstall(
   // merged copy; absent means adapter, because an adapter install is a deliberate act.
   // One installed → that one (see the OrpheusManifestEntry.artifact doc block).
   //
-  // …EXCEPT on macOS, where a fused copy always wins. MLX cannot serve a LoRA at all:
-  // `mlx_audio.tts.utils.load_model` takes no adapter argument, and e2a's orpheus.py
-  // hard-refuses adapter mode on any non-vLLM backend rather than quietly rendering the
-  // bare base. So the Mac installer downloads base + adapter and FUSES them into the
-  // merged folder (orpheus_fuse.py, stage B1) — the adapter dir stays on disk as
-  // provenance and as the input stage B2 will serve directly once MLX grows LoRA layer
-  // wrappers. Until then, "an adapter is installed" is NOT a reason to serve one here:
-  // the declaration this preference overrides is the repo tuning CATALOG's
-  // `artifact: 'adapter'`, which applyTuning spreads over the runtime manifest's
-  // `artifact: 'merged'` and would otherwise pick the one form this platform cannot load.
-  // The catalog is right about the voice (it ships as a LoRA) and wrong about this
-  // machine, which is exactly the split this branch encodes.
+  // …EXCEPT on macOS, where a fused copy always wins.
+  //
+  // ┌── CANONICAL: THE MAC CANNOT SERVE A LoRA ────────────────────────────────────────┐
+  // │ This is the ONE statement of the constraint; everything else that mentions the    │
+  // │ fuse (orpheus_fuse.py, runFuse + the install's third phase in                     │
+  // │ orpheus-hf-catalog.ts, the 'fuse' progress phase in preload.ts and the voices     │
+  // │ panel) points HERE instead of restating it.                                       │
+  // │                                                                                   │
+  // │ `mlx_audio.tts.utils.load_model` takes no adapter argument, and mlx-lm's          │
+  // │ `load_adapters` expects mlx-lm's own adapter schema rather than PEFT's; e2a's     │
+  // │ orpheus.py therefore hard-refuses adapter mode on any non-vLLM backend rather     │
+  // │ than quietly render the bare base under a voice's name. So on darwin the          │
+  // │ installer downloads base + adapter and FUSES them into the merged folder          │
+  // │ (electron/scripts/orpheus_fuse.py — stage B1 of ORPHEUS_ADAPTER_MIGRATION.md      │
+  // │ work area B). The adapter dir stays on disk as the provenance of those weights    │
+  // │ and as the input stage B2 will serve directly once MLX grows LoRA layer wrappers, │
+  // │ at which point this branch is what gets deleted.                                  │
+  // │                                                                                   │
+  // │ Until then, "an adapter is installed" is NOT a reason to serve one here: the      │
+  // │ declaration this preference overrides is the repo tuning CATALOG's                │
+  // │ `artifact: 'adapter'`, which applyTuning spreads over the runtime manifest's      │
+  // │ `artifact: 'merged'` and would otherwise pick the one form this platform cannot   │
+  // │ load. The catalog is right about the voice (it ships as a LoRA) and wrong about   │
+  // │ this machine, which is exactly the split this branch encodes.                     │
+  // └───────────────────────────────────────────────────────────────────────────────────┘
   const fusedWinsOnDarwin = process.platform === 'darwin' && hasMerged;
   const preferred: OrpheusArtifact =
     fusedWinsOnDarwin || entry.artifact === 'merged' ? 'merged' : 'adapter';
@@ -921,10 +958,12 @@ export function listOrpheusModels(): OrpheusModel[] {
   // 2) Reconcile top-level MERGED folders not in the manifest (dropped by hand). Still
   //    overlay the catalog so a catalogued-but-unlisted voice shows its curated
   //    label/token/tuning; an uncatalogued folder guesses token = folder name.
-  //    `adapters/` and `_base/` are LAYOUT, never voices — skip them explicitly so a
-  //    future full-model shape inside them can never be mistaken for a voice folder.
+  //    `adapters/`, `_base/`, `.fusework/` and any `<id>.previous` are LAYOUT or scratch,
+  //    never voices — skipped explicitly (isScannableVoiceFolder) so a full-model shape in
+  //    any of them can never be mistaken for a voice folder. The two dotted ones matter
+  //    most: both hold a COMPLETE model at some point, and adoption is by location.
   for (const d of readDirents(root)) {
-    if (!d.isDirectory() || LAYOUT_SUBDIRS.has(d.name) || listed.has(d.name)) continue;
+    if (!d.isDirectory() || !isScannableVoiceFolder(d.name) || listed.has(d.name)) continue;
     if (!isMergedModelFolder(path.join(root, d.name))) continue;
     push({ id: d.name } as OrpheusManifestEntry);
   }

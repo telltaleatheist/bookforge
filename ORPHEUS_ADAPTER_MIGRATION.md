@@ -82,16 +82,36 @@ monkey-patch (482–506) is load-order sensitive. Two stages, neither blocks vLL
   Mac into `orpheus-models/<id>/` (new `electron/scripts/orpheus_fuse.py`, darwin
   only). Gets the download win, not instant switching. Zero orpheus.py changes.
   **IMPLEMENTED 2026-08-04** (branch `orpheus-mac-fuse`), with one resolution to the
-  plan's open question: the fuse needs NO extra env. The plan assumed peft (which the
-  runtime e2a env lacks per MAC_INFERENCE.md); the script instead does the arithmetic
-  itself over `safetensors` + `torch` on the CPU, never instantiating a transformers
-  model class, so it runs in the same env orpheus_download.py already uses. Install
-  gains a third progress phase (`fuse`); the manifest records `artifact: 'merged'` with
-  `adapterDir` + `base` kept as provenance/B2 input, and `resolveOrpheusInstall` prefers
-  the fused copy on darwin so the catalog's `artifact: adapter` cannot pick the one form
-  MLX can't load. VERIFIED on Windows/WSL against the deployed thirdreich merge: 12
-  differing bf16 elements out of ~3.2 B, worst |Δ| 1.22e-4 = one bf16 ulp. NOT yet
-  run on the Mac — the "identical audio" gate below is still owed.
+  plan's open question: the fuse needs NO extra env. The plan expected to need peft; the
+  script instead does the arithmetic itself over `safetensors` + `torch` on the CPU,
+  never instantiating a transformers model class, so it runs in the same env
+  orpheus_download.py already uses. (The runtime e2a env DOES have peft now — avoiding it
+  is a choice, not a necessity: a one-shot weight merge should not be coupled to peft's
+  version drift in a shared env.) Install gains a third progress phase (`fuse`); the
+  manifest records `artifact: 'merged'` with `adapterDir` + `base` kept as provenance/B2
+  input, and `resolveOrpheusInstall` prefers the fused copy on darwin so the catalog's
+  `artifact: adapter` cannot pick the one form MLX can't load — that branch carries the
+  CANONICAL statement of the MLX-can't-serve-a-LoRA constraint; everything else points at
+  it. VERIFIED on Windows/WSL against the deployed thirdreich merge: 12 differing bf16
+  elements out of ~3.2 B, worst |Δ| 1.22e-4 = one bf16 ulp. NOT yet run on the Mac — the
+  "identical audio" gate below is still owed.
+  Post-review (2026-08-04) the fuse builds in `<models>/.fusework/<id>/` (a scratch dir
+  the model scan skips, deleted on any failure) and promotes by rename via
+  `<id>.previous`, so neither a failed fuse nor a killed re-install can leave a
+  half-written model where the "is it installed" predicates would adopt it, nor destroy
+  the working copy of a voice being updated. An adapter install of a voice the Mac
+  already has MERGED is treated as an upgrade rather than a token collision.
+  Two things B1 knowingly does NOT solve, both owed to B2:
+  - Uninstalling the shared base is still allowed while fused voices exist. It cannot
+    break them (fused weights are standalone) but it costs a 6.6 GB re-download on the
+    next adapter install; at B2 the base becomes load-bearing at render time and
+    `removeOrpheusModel`'s dependant count must include darwin's adapter-provenance
+    voices (comment recorded at that guard).
+  - A failed fuse leaves the downloaded adapter in place, and the reconcile scan adopts
+    `adapters/<id>/` as a voice. On darwin that voice looks normal in the picker and
+    fails at RENDER (e2a refuses adapter mode off vLLM) — loud, but late. B2 removes the
+    class of problem by making the adapter directly servable; until then the install's
+    own error message is the primary signal.
 - B2: resident base + LoRA layer wrappers — `_apply_mlx_adapter(model, adapter_dir)`
   wrapping the 7 proj modules with W(x)+(alpha/r)·B(A(x)), ~40-line PEFT→mlx key
   remap, `_clear_mlx_adapter()` for switching. Must stay compatible with
