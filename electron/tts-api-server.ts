@@ -43,7 +43,12 @@
  *     {type:'failed',   requestId, sentenceIndex, error}
  *     {type:'complete', requestId}
  *     {type:'cancelled',requestId}                     // stopped or preempted
- *     {type:'error',    requestId?, message}
+ *     {type:'error',    requestId?, code?, message}
+ *
+ *   `code` is present only where a client can usefully branch on it. Today that is
+ *   409: the requested voice needs a different model than the one loaded, and another
+ *   session is streaming on it — a CONFLICT, not a bad request. Retrying later works;
+ *   retrying immediately does not.
  *
  * Playback control (pause/seek/rewind) is entirely client-side: the client
  * keeps the PCM it receives, so the only transport verbs here are speak and
@@ -428,6 +433,39 @@ export class TtsApiServer {
       topP: requested.topP,
       repetitionPenalty: requested.repetitionPenalty
     };
+
+    // BEFORE the engine is touched: refuse a voice that would EVICT an engine another
+    // session is streaming on right now.
+    //
+    // Voice loading is otherwise unrestricted, which is the point of per-request
+    // voices — but only voices that share an engine are actually free. A merged
+    // fine-tune (or a voice on a different base) forces a full rebuild: ~6 GB of
+    // weights and a CUDA-graph recapture, during which the other session's engine
+    // simply does not exist. Two clients alternating such voices would reload the
+    // engine on every block, forever, each destroying the other's progress. Since
+    // ensureEngine does the load, the check has to happen here, before it.
+    //
+    // Deliberately narrow: this is a brake, not a queue. Same-engine switches
+    // (adapter or stock over the shared base) stay unrestricted, and a client is never
+    // blocked by its OWN sessions. Nothing is deferred or retried — the client is told
+    // no, with both voices named, and decides what to do.
+    if (engine.wouldRebuildEngine?.(voice) === true) {
+      const others = streamScheduler.activeIds().filter((id) => !state.activeRequestIds.has(id));
+      if (others.length > 0) {
+        const loaded = engine.getCurrentVoice();
+        this.send(ws, {
+          type: 'error',
+          requestId,
+          code: 409,
+          message:
+            `'${voice}' needs a different model than the one loaded${loaded ? ` ('${loaded}')` : ''}, ` +
+            `and ${others.length} other session${others.length === 1 ? ' is' : 's are'} streaming on it right now. ` +
+            `Loading '${voice}' would tear that engine down mid-sentence. Retry when the other session finishes, ` +
+            `or use a voice that shares the loaded model.`,
+        });
+        return;
+      }
+    }
 
     // Cold engine: start it now. The client sees progress via 'state' pushes.
     const started = await this.ensureEngine(voice);

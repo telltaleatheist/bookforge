@@ -64,9 +64,14 @@ export interface StreamingEngine {
   getCurrentVoice(): string | null;
   /** Optional. True when `voice` can be rendered per REQUEST, so a client asking
    *  for it does not conflict with whatever else is loaded (Orpheus built-ins and
-   *  LoRA-adapter voices). Absent, or false, means loading a voice is exclusive and
-   *  a mismatch between requested and loaded is a real error. */
+   *  LoRA-adapter voices on the vLLM backend). Absent, or false, means loading a
+   *  voice is exclusive and a mismatch between requested and loaded is a real error. */
   canServeVoicePerRequest?(voice: string): boolean;
+  /** Optional. True when loading `voice` would tear down and REBUILD the engine
+   *  (different weights), as opposed to registering a voice on the warm one. Absent
+   *  means the engine has no cheap-switch concept and every load is a rebuild's
+   *  worth of work — callers that only guard against thrash treat that as false. */
+  wouldRebuildEngine?(voice: string): boolean;
   getLastVoice(): string | null;
   getDefaultVoice(): string;
   getWorkerCount(): number;
