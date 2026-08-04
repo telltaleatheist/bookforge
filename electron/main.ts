@@ -1691,10 +1691,10 @@ function setupIpcHandlers(): void {
         // Update manifest with editor state
         if (!manifest.source) manifest.source = {};
         manifest.source.deletedBlockIds = mergedData.deleted_block_ids || [];
-        // The deletions in the identity that outlives a blocks re-run. Written
-        // whenever the editor has a foundry run painted; carried through
-        // untouched when it has not, so opening a book without its run does not
-        // erase the record the exporter reads (shared/foundry/block-exclusions).
+        // INERT (see manifest-types.ts): nothing resolves scan-line deletions
+        // any more — a deletion is `/FoundryDeleted` on the block's own
+        // annotation. Carried through untouched so manifests that have the
+        // field keep it until their projects go through the document pipeline.
         manifest.source.deletedBlockLines = mergedData.deleted_block_lines || undefined;
         // The one-title rule's "already ruled on" ledger, in the same
         // scan-stamped line identity — it was dropped on the floor here until

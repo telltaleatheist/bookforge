@@ -87,7 +87,14 @@ export async function resolveDocumentProject(
 ): Promise<DocumentProject> {
   const projectDir = path.resolve(request.projectDir);
   const manifest = await readManifest(projectDir);
-  const projectId = manifest.projectId || path.basename(projectDir);
+  const projectId = manifest.projectId;
+  if (!projectId) {
+    throw new Error(
+      `${path.join(projectDir, 'manifest.json')} has no projectId. Every v2 manifest carries one; `
+      + 'a project without it is damaged, and inventing an id here would bind documents to a name '
+      + 'nothing else uses.'
+    );
+  }
 
   if (request.sourcePath) {
     const abs = path.resolve(request.sourcePath);

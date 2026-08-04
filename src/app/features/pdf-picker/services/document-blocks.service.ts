@@ -273,8 +273,15 @@ export class DocumentBlocksService {
         // The document is the authority and it did not take these edits, so the
         // screen is now the thing that is wrong. Re-read rather than retry: a
         // retry would land an edit whose target may no longer exist.
-        const payload = await this.electron.documentReadBlocks(this.requireRef());
-        this.adopt(payload);
+        try {
+          const payload = await this.electron.documentReadBlocks(this.requireRef());
+          this.adopt(payload);
+        } catch (reread) {
+          // Swallowed deliberately: a rejection here would leave `inFlight`
+          // rejected forever, and every later batch would chain onto it and
+          // silently never land. The refusal already on screen is the news.
+          console.error('[document-blocks] could not re-read after a refused write:', reread);
+        }
       }
     });
     return this.inFlight;
