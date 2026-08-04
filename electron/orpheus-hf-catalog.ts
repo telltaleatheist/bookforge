@@ -36,6 +36,12 @@ import {
   removeManifestEntry,
   listOrpheusModels,
   readManifest,
+  resolveOrpheusBase,
+  orpheusBaseFolderName,
+  ADAPTERS_SUBDIR,
+  BASE_SUBDIR,
+  type OrpheusArtifact,
+  type OrpheusBaseRef,
 } from './orpheus-models';
 
 /** Built-in Orpheus voice sources (HF repo ids), offered by default so voices are
@@ -101,7 +107,14 @@ export function removeOrpheusSource(repoId: string): string[] {
 export interface OrpheusCatalogEntry {
   /** Full HF repo id, e.g. "owenmorgan/owen-morgan-orpheus-3b". */
   repoId: string;
-  /** Local id / folder name (the repo's short name). */
+  /**
+   * The LOCAL id this repo installs as — the card's `orpheus_token`, NOT the repo's
+   * short name. One voice = one id, whatever the repo is called and whichever artifact
+   * form it ships, which is what lets `owenmorgan/thirdreich-orpheus-3b-lora` and the
+   * older `owenmorgan/thirdreich-orpheus-3b` land on (and update) the SAME manifest
+   * entry `thirdreich` — the id the curated tuning catalog is keyed by. See
+   * installOrpheusModel for why any other choice silently drops the voice's tuning.
+   */
   id: string;
   /** Prompt token the model was fine-tuned on (from card `orpheus_token`). */
   token: string;
@@ -111,10 +124,124 @@ export interface OrpheusCatalogEntry {
   private: boolean;
   /** Already present in the local manifest/folder. */
   installed: boolean;
-  /** The local folder/manifest id when installed (may differ from `id` — e.g. the
-   *  folder is `deathstalker` while the repo short-name is `deathstalker-orpheus-3b`).
-   *  Uninstall must target THIS, not the catalog id. Absent when not installed. */
+  /** The local folder/manifest id when installed. Normally equal to `id`; it can still
+   *  differ for a hand-dropped folder named after the repo short-name, or a voice
+   *  installed by an older build that keyed on the short name. Uninstall must target
+   *  THIS, not the catalog id. Absent when not installed. */
   installedId?: string;
+  /**
+   * What this repo ships, read from the card's `orpheus_artifact` key. ABSENT on the
+   * card ⇒ `'merged'`, so every existing voice repo keeps its exact meaning and the
+   * whole migration stays additive.
+   */
+  artifact: OrpheusArtifact;
+  /** The shared base an adapter voice needs (card `orpheus_base`). Adapter repos only. */
+  base?: OrpheusBaseRef;
+  /** True for an adapter voice whose shared base is not installed yet — the UI
+   *  disables Download and says so, because installing the adapter alone is useless. */
+  needsBase?: boolean;
+  /** Rough download size in bytes, for the UI ("0.4 GB" vs "6.6 GB"). Nominal per
+   *  artifact kind, not a HEAD of every file — it exists to set expectations. */
+  approxSizeBytes: number;
+}
+
+/**
+ * Nominal artifact sizes for the UI. MEASURED on the deployed voices: an r=64 LoRA
+ * over the 7 attention/MLP projections is 389,074,464 bytes (~0.39 GB) and a merged
+ * Orpheus-3B fine-tune is ~6.6 GB across two bf16 shards. The shared base is a
+ * one-time ~6.6 GB that all adapters then reuse.
+ */
+const ADAPTER_APPROX_BYTES = 0.4 * 1024 ** 3;
+const MERGED_APPROX_BYTES = 6.6 * 1024 ** 3;
+export const ORPHEUS_BASE_APPROX_BYTES = MERGED_APPROX_BYTES;
+
+/** Stable catalog id for the shared base, whatever repo it is pulled from. */
+const ORPHEUS_BASE_ID = 'orpheus-3b-base';
+
+/**
+ * The base the Settings "Base model" card offers when NO adapter voice in the catalog
+ * has declared one — i.e. the identity of the card itself, nothing more. It is a REAL,
+ * public repo id, not a placeholder.
+ *
+ * It is emphatically NOT a fallback for an adapter card that forgot `orpheus_base`:
+ * such a card is REJECTED (see baseRefFromCard's callers). Serving a LoRA on the wrong
+ * base produces confident, fluent, WRONG audio with no error anywhere — the one failure
+ * class this module must never manufacture.
+ */
+export const DEFAULT_ORPHEUS_BASE: OrpheusBaseRef = {
+  id: ORPHEUS_BASE_ID,
+  ref: 'unsloth/orpheus-3b-0.1-ft',
+};
+
+/** Parse a card's `orpheus_base` value ("unsloth/orpheus-3b-0.1-ft") into a base ref.
+ *  Undefined when the card doesn't declare one — which for an adapter card is fatal,
+ *  never defaulted. */
+function baseRefFromCard(meta: Record<string, string>): OrpheusBaseRef | undefined {
+  const ref = (meta.orpheus_base || '').trim();
+  if (!ref) return undefined;
+  return { id: ORPHEUS_BASE_ID, ref };
+}
+
+/** A card's `orpheus_artifact` value. Anything other than "adapter" — including an
+ *  absent key — means merged, which is the pre-migration meaning of every card. */
+function artifactFromCard(meta: Record<string, string>): OrpheusArtifact {
+  return (meta.orpheus_artifact || '').trim().toLowerCase() === 'adapter' ? 'adapter' : 'merged';
+}
+
+/** Is this base installed? Listing-safe: a WSL-down throw becomes "not installed"
+ *  for the CATALOG view only (the render path still throws — see orpheus-models). */
+function isBaseRefInstalled(base: OrpheusBaseRef): boolean {
+  try {
+    return resolveOrpheusBase(base) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/** Status of the shared base model, for the Settings "Base model" card + the wizard. */
+export interface OrpheusBaseStatus {
+  /** The base every adapter voice in the current catalog needs. */
+  base: OrpheusBaseRef;
+  installed: boolean;
+  /** False when the install is a symlink this process can't traverse (normal on
+   *  Windows, where the base is a link into the WSL HuggingFace cache). */
+  verified: boolean;
+  /** Absolute path when installed. */
+  dir?: string;
+  approxSizeBytes: number;
+  /** True when at least one configured source repo is an adapter voice, i.e. the base
+   *  is actually needed on this machine. */
+  required: boolean;
+}
+
+/**
+ * Which base the machine needs and whether it's there. `required` is computed from
+ * the CATALOG (a network read), so callers that only want the local answer can pass
+ * a pre-fetched catalog in.
+ */
+export async function getOrpheusBaseStatus(catalog?: OrpheusCatalogEntry[]): Promise<OrpheusBaseStatus> {
+  const entries = catalog ?? (await fetchOrpheusCatalog());
+  const adapters = entries.filter((e) => e.artifact === 'adapter');
+  // Every catalogued adapter declares a base (fetchOrpheusCatalog drops the ones that
+  // don't), so this is a real declaration whenever any adapter voice exists. With NO
+  // adapter voices there is nothing to derive from and nothing that needs a base:
+  // `required` is false, the Settings card is hidden, and DEFAULT_ORPHEUS_BASE is
+  // simply the identity that card would show — not a substituted per-voice base.
+  const base = adapters.length > 0 ? adapters[0].base! : DEFAULT_ORPHEUS_BASE;
+  let resolved: { dir: string; verified: boolean } | null = null;
+  try {
+    resolved = resolveOrpheusBase(base);
+  } catch {
+    resolved = null; // WSL down — report "not installed" rather than failing the panel
+  }
+  return {
+    base,
+    installed: resolved !== null,
+    verified: resolved?.verified ?? false,
+    ...(resolved ? { dir: resolved.dir } : {}),
+    approxSizeBytes: ORPHEUS_BASE_APPROX_BYTES,
+    required: adapters.length > 0,
+  };
 }
 
 // ── credentials / account ─────────────────────────────────────────────────────
@@ -193,17 +320,24 @@ export async function fetchOrpheusCatalog(): Promise<OrpheusCatalogEntry[]> {
   const headers: Record<string, string> = { 'User-Agent': 'BookForge' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  // "Installed?" is keyed by the SOURCE repo, not the folder id. listOrpheusModels
-  // only exposes the folder id — which for our voices is the prompt token / folder
-  // name ("deathstalker"), NOT the repo short-name the catalog uses
-  // ("deathstalker-orpheus-3b") — so an id-vs-id compare never matches and every
-  // installed voice mis-renders as "Available". Match on the manifest's recorded
-  // source.ref (the exact HF repo) instead, with id-match kept as a fallback for
-  // hand-dropped folders that happen to be named after the repo short-name.
+  // "Installed?" is matched on TWO keys, because neither alone is sufficient:
+  //
+  //  1. The manifest's recorded `source.ref` — the exact HF repo a voice was installed
+  //     from. Catches a voice installed from THIS repo under any local id.
+  //  2. The card's `orpheus_token`, which is the id every install now lands under (see
+  //     installOrpheusModel). Catches the same VOICE installed from a different repo:
+  //     the deployed merged installs record the old `…-orpheus-3b` refs, while this
+  //     catalog now lists the `…-orpheus-3b-lora` repos. Without this key all three
+  //     primaries render "Available" with an enabled Download on the very machine
+  //     they are installed on.
+  //
+  // A third, weaker key is kept last: a folder named after the repo SHORT NAME. That
+  // only ever matches a hand-dropped folder (or one installed by a pre-token-id build),
+  // so it stays a match of last resort.
   const installedModels = listOrpheusModels();
   const installedIds = new Set(installedModels.map((m) => m.id));
   // repo ref → the local folder id it was installed as, so Uninstall can target the
-  // right folder even when it differs from the catalog's repo-short-name id.
+  // right folder even when it differs from the id this catalog would install under.
   const localIdByRepoRef = new Map<string, string>();
   for (const e of readManifest().models) {
     if (installedIds.has(e.id) && e.source?.ref) localIdByRepoRef.set(e.source.ref, e.id);
@@ -215,25 +349,50 @@ export async function fetchOrpheusCatalog(): Promise<OrpheusCatalogEntry[]> {
         const meta = await fetchCardMeta(repoId, headers);
         const voiceToken = (meta.orpheus_token || '').trim();
         if (!voiceToken) return null; // not a usable voice without its prompt token
-        const id = repoId.split('/').pop()!;
+        const shortName = repoId.split('/').pop()!;
+        // The local id is the voice's TOKEN — see OrpheusCatalogEntry.id.
+        const id = voiceToken;
+        const artifact = artifactFromCard(meta);
+        // An adapter card MUST declare its base. A LoRA served on the wrong base still
+        // produces fluent audio in a subtly wrong voice, with no error at any layer —
+        // so a card that omits `orpheus_base` is not a usable voice, exactly like a card
+        // that omits `orpheus_token`, and is dropped from the catalogue rather than
+        // being handed a guessed default.
+        const base = artifact === 'adapter' ? baseRefFromCard(meta) : undefined;
+        if (artifact === 'adapter' && !base) {
+          console.warn(
+            `[ORPHEUS-CATALOG] Skipping '${repoId}': its model card declares ` +
+              `orpheus_artifact: adapter but no orpheus_base, and a LoRA cannot be served ` +
+              `without knowing which base model it was trained against.`,
+          );
+          return null;
+        }
         // Best-effort private flag from the model-info endpoint.
         let isPrivate = false;
         try {
           const info = await fetch(`https://huggingface.co/api/models/${repoId}`, { headers });
           if (info.ok) isPrivate = !!(await info.json()).private;
         } catch { /* ignore */ }
-        // Installed if the manifest records this repo as a source, or (fallback for
-        // hand-dropped folders) a folder is named after the repo short-name.
-        const localId = localIdByRepoRef.get(repoId) ?? (installedIds.has(id) ? id : undefined);
+        // Installed if the manifest records this repo as a source, or the voice's token
+        // id is installed (the same voice from an older/other repo), or — last resort —
+        // a hand-dropped folder is named after the repo short-name.
+        const localId =
+          localIdByRepoRef.get(repoId) ??
+          (installedIds.has(id) ? id : installedIds.has(shortName) ? shortName : undefined);
+        const baseInstalled = base ? isBaseRefInstalled(base) : true;
         return {
           repoId,
           id,
           token: voiceToken,
-          label: (meta.label || '').trim() || prettyFromId(id),
+          label: (meta.label || '').trim() || prettyFromId(shortName),
           sampleRate: Number(meta.sample_rate) || 24000,
           private: isPrivate,
           installed: localId !== undefined,
           installedId: localId,
+          artifact,
+          ...(base ? { base } : {}),
+          ...(base && !baseInstalled ? { needsBase: true as const } : {}),
+          approxSizeBytes: artifact === 'adapter' ? ADAPTER_APPROX_BYTES : MERGED_APPROX_BYTES,
         };
       } catch {
         return null;
@@ -272,11 +431,37 @@ function resolveDownloadScript(): string {
   return candidates.find((p) => fs.existsSync(p)) || candidates[candidates.length - 1];
 }
 
-function runDownload(repoId: string, id: string, token: string | null): Promise<{ ok: boolean; error?: string }> {
+/** What the downloader is fetching, and hence where it lands + how it's validated. */
+type DownloadKind = 'merged' | 'adapter' | 'base';
+
+/**
+ * The path a download of `kind` writes to, in the spawn's own path flavour (native
+ * Windows/POSIX, or WSL-native when the download runs inside WSL).
+ *
+ *   merged   <models>/<id>
+ *   adapter  <models>/adapters/<id>
+ *   base     <models>/_base/<id>
+ *
+ * The merged case is byte-identical to what this function did before.
+ */
+function destForKind(kind: DownloadKind, id: string, viaWsl: boolean): string {
+  const sep = viaWsl ? '/' : path.sep;
+  const root = modelsDirForSpawn(viaWsl);
+  if (kind === 'adapter') return `${root}${sep}${ADAPTERS_SUBDIR}${sep}${id}`;
+  if (kind === 'base') return `${root}${sep}${BASE_SUBDIR}${sep}${id}`;
+  return `${root}${sep}${id}`;
+}
+
+function runDownload(
+  repoId: string,
+  id: string,
+  token: string | null,
+  kind: DownloadKind = 'merged',
+): Promise<{ ok: boolean; error?: string }> {
   const scriptPath = resolveDownloadScript();
 
   const viaWsl = process.platform === 'win32' && shouldUseWsl2ForOrpheus();
-  const destDir = `${modelsDirForSpawn(viaWsl)}${viaWsl ? '/' : path.sep}${id}`;
+  const destDir = destForKind(kind, id, viaWsl);
 
   return new Promise((resolve) => {
     let command: string;
@@ -293,14 +478,14 @@ function runDownload(repoId: string, id: string, token: string | null): Promise<
       const bash =
         `${exportTok}cd ${shellQuote(wslE2a)} && ` +
         `${shellQuote(wslConda)} run --no-capture-output -n ${shellQuote(orpheusEnv)} ` +
-        `python -u ${shellQuote(scriptWsl)} ${shellQuote(repoId)} ${shellQuote(destDir)}`;
+        `python -u ${shellQuote(scriptWsl)} ${shellQuote(repoId)} ${shellQuote(destDir)} --kind ${shellQuote(kind)}`;
       command = 'wsl.exe';
       args = distro ? ['-d', distro, 'bash', '-c', bash] : ['bash', '-c', bash];
       env = process.env;
     } else {
       const py = getPythonInvocation(getDefaultE2aPath(), 'orpheus');
       command = py.command;
-      args = [...py.args, '-u', scriptPath, repoId, destDir];
+      args = [...py.args, '-u', scriptPath, repoId, destDir, '--kind', kind];
       env = buildCondaSpawnEnv(token ? { HF_TOKEN: token } : {});
     }
 
@@ -326,11 +511,87 @@ function runDownload(repoId: string, id: string, token: string | null): Promise<
   });
 }
 
+/** Two-phase install progress. Phase 'base' only ever fires on the FIRST adapter
+ *  install of a machine's life — after that the base is already there and the
+ *  install is a single ~0.4 GB step. */
+export interface OrpheusInstallProgress {
+  repoId: string;
+  phase: 'base' | 'voice';
+  message: string;
+}
+export type OrpheusInstallProgressFn = (p: OrpheusInstallProgress) => void;
+
+/**
+ * Download the ONE shared base model into `<models>/_base/<short-name>` and record a
+ * `kind: 'base'` manifest entry. Idempotent: an already-installed base returns
+ * success without re-downloading (6.6 GB), which is what makes the two-phase adapter
+ * install cheap from the second voice onward.
+ */
+export async function installOrpheusBase(
+  base: OrpheusBaseRef,
+): Promise<{ success: boolean; error?: string; alreadyInstalled?: boolean }> {
+  const folder = orpheusBaseFolderName(base);
+  try {
+    if (resolveOrpheusBase(base)) return { success: true, alreadyInstalled: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  const result = await runDownload(base.ref, folder, getHfToken(), 'base');
+  if (!result.ok) return { success: false, error: result.error || 'base model download failed' };
+  try {
+    upsertManifestEntry({
+      id: base.id,
+      label: 'Orpheus 3B (shared base model)',
+      // A base is never prompted, so it has no fine-tune token. The field is required
+      // by the entry shape; the id is the least surprising thing to put in it, and
+      // `kind: 'base'` is what actually keeps this record out of every voice list.
+      token: base.id,
+      kind: 'base',
+      dir: folder,
+      base,
+      format: 'hf',
+      sampleRate: 24000,
+      source: { type: 'hf', ref: base.ref },
+      addedAt: new Date().toISOString().slice(0, 10),
+    });
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  return { success: true };
+}
+
 /**
  * Download a catalogue voice into the models dir and record it in the manifest.
  * `addedAt` is stamped here (normal Electron code — Date is fine outside workflows).
+ *
+ * TWO PHASES for an adapter voice: ensure the shared base (~6.6 GB, once per machine)
+ * and then the adapter itself (~0.4 GB). A MERGED voice takes exactly the path it
+ * always took — one download into `<models>/<id>`, no base involved.
+ *
+ * THE INSTALL ID IS THE CARD'S `orpheus_token`, not the repo's short name. That single
+ * rule is what keeps a voice's identity stable across repos and artifact forms, and it
+ * is load-bearing in two places:
+ *
+ *  - The curated tuning catalog (electron/data/orpheus-models.json) is keyed by id, and
+ *    applyTuning matches by id. An install under `deathstalker-orpheus-3b-lora` matches
+ *    NOTHING there, so the voice renders with no eosBoost / repPenalty / maxCharsPerSec
+ *    / sentenceGap — i.e. exactly the untuned configuration whose silence-loop runaways
+ *    those caps exist to prevent.
+ *  - Re-installing the same voice from a different repo (merged → lora) must UPDATE the
+ *    one entry, not add a near-duplicate voice to every picker.
+ *
+ * A card with no `orpheus_token` is rejected below, so the id always exists.
+ *
+ * COLLISION with an existing entry of the same id is not an error — it is the intended
+ * A/B state (both forms of one voice installed). The existing record's other-form
+ * inventory is carried forward and only the fields this install owns are overwritten,
+ * so installing the adapter of an already-merged voice flips `artifact` and adds
+ * `adapterDir` while leaving `dir` pointing at the merged copy that is still on disk.
  */
-export async function installOrpheusModel(repoId: string): Promise<{ success: boolean; error?: string }> {
+export async function installOrpheusModel(
+  repoId: string,
+  onProgress?: OrpheusInstallProgressFn,
+): Promise<{ success: boolean; error?: string }> {
   const token = getHfToken();
   const headers: Record<string, string> = { 'User-Agent': 'BookForge' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -341,18 +602,102 @@ export async function installOrpheusModel(repoId: string): Promise<{ success: bo
   if (!voiceToken) {
     return { success: false, error: `Repo "${repoId}" has no orpheus_token on its model card — not a BookForge Orpheus voice.` };
   }
-  const id = repoId.split('/').pop()!;
-  const label = (meta.label || '').trim() || prettyFromId(id);
+  const id = voiceToken;
+  const label = (meta.label || '').trim() || prettyFromId(repoId.split('/').pop()!);
   const sampleRate = Number(meta.sample_rate) || 24000;
+  const artifact = artifactFromCard(meta);
+  // Same rule as the catalogue: an adapter with no declared base is not installable.
+  // Guessing one would serve this LoRA on some other model — fluent, confident, and
+  // the wrong voice, with nothing anywhere reporting a problem.
+  const base = artifact === 'adapter' ? baseRefFromCard(meta) : undefined;
+  if (artifact === 'adapter' && !base) {
+    return {
+      success: false,
+      error:
+        `Repo "${repoId}" declares orpheus_artifact: adapter but no orpheus_base on its model card. ` +
+        `A LoRA can only be served on the exact base model it was trained against, so BookForge ` +
+        `will not install it without that declaration.`,
+    };
+  }
 
-  const result = await runDownload(repoId, id, token);
+  // Because the id IS the token, two DIFFERENT repos that declare the same
+  // `orpheus_token` claim the same local identity — and the deployed source list has
+  // exactly that: `deathstalker-orpheus-3b-lora` and `deathstalker-narration-orpheus-3b`
+  // both say `deathstalker`. Installing the second AS THE SAME FORM would download
+  // straight over the first's folder and destroy it, silently, before any manifest
+  // write. That is not the A/B state (which is one voice in two forms, in two different
+  // folders, and is allowed below) — it is two voices fighting over one name, and the
+  // only honest answer is to refuse and say which cards collide. Re-installing the SAME
+  // repo is an update and passes.
+  const existing = readManifest().models.find((e) => e.id === id);
+  if (existing?.kind === 'base') {
+    return {
+      success: false,
+      error:
+        `Can't install "${repoId}" as voice id "${id}": that id is already the shared base ` +
+        `model record. Change the repo's orpheus_token — it must name the voice, not the base.`,
+    };
+  }
+  const existingRef = existing?.source?.ref;
+  const sameFormFolder = artifact === 'adapter' ? existing?.adapterDir : existing?.dir;
+  if (existing && sameFormFolder && existingRef && existingRef !== repoId) {
+    const dest = artifact === 'adapter'
+      ? path.join(getOrpheusModelsDir(), ADAPTERS_SUBDIR, sameFormFolder)
+      : path.join(getOrpheusModelsDir(), sameFormFolder);
+    let occupied = false;
+    try {
+      occupied = fs.existsSync(dest);
+    } catch {
+      occupied = false; // unreadable models dir — the download itself will report it
+    }
+    if (occupied) {
+      return {
+        success: false,
+        error:
+          `"${repoId}" and the already-installed "${existingRef}" both declare orpheus_token ` +
+          `"${id}", so both want to live in ${dest}. Installing this one would overwrite the ` +
+          `other. Give one of the two model cards a distinct orpheus_token, or uninstall ` +
+          `"${existing.label}" first.`,
+      };
+    }
+  }
+
+  if (base) {
+    onProgress?.({ repoId, phase: 'base', message: 'Downloading shared base model (one time)…' });
+    const baseResult = await installOrpheusBase(base);
+    if (!baseResult.success) {
+      return { success: false, error: `Shared base model "${base.ref}" failed to install: ${baseResult.error}` };
+    }
+  }
+
+  onProgress?.({
+    repoId,
+    phase: 'voice',
+    message: base ? `Downloading the ${label} voice adapter…` : `Downloading the ${label} voice…`,
+  });
+  const result = await runDownload(repoId, id, token, artifact);
   if (!result.ok) return { success: false, error: result.error || 'download failed' };
 
+  // Carry forward the OTHER form's folder if this voice already has one installed —
+  // upsertManifestEntry replaces the record wholesale, so dropping `dir` here would
+  // orphan a merged copy that is still on disk (and vice-versa). Exactly one field
+  // describes each form, and `artifact` says which one is served.
   upsertManifestEntry({
+    ...(existing?.dir ? { dir: existing.dir } : {}),
+    ...(existing?.adapterDir ? { adapterDir: existing.adapterDir } : {}),
+    // …including the base an already-installed adapter declared: installing the MERGED
+    // form of the same voice must not strip the adapter's base ref and leave the other
+    // half unservable.
+    ...(existing?.base ? { base: existing.base } : {}),
     id,
     label,
     token: voiceToken,
-    dir: id,
+    // An adapter lands under adapters/<id>; a merged voice keeps the top-level <id>.
+    // `artifact` is written EXPLICITLY in both cases: this install is a deliberate
+    // choice of form, and when both forms are present it is the only thing that says
+    // which one to serve.
+    ...(artifact === 'adapter' ? { adapterDir: id, artifact: 'adapter' as const } : { dir: id, artifact: 'merged' as const }),
+    ...(base ? { base } : {}),
     format: 'hf',
     sampleRate,
     source: { type: 'hf', ref: repoId },
@@ -361,18 +706,51 @@ export async function installOrpheusModel(repoId: string): Promise<{ success: bo
   return { success: true };
 }
 
-/** Drop a voice from the manifest and delete its folder (best-effort). */
+/**
+ * Drop a voice from the manifest and delete its folder (best-effort).
+ *
+ * Deletes BOTH artifact locations for the id — `<models>/<id>` and
+ * `<models>/adapters/<id>` — because "uninstall this voice" must not leave the other
+ * half behind to be silently adopted by the reconcile scan on the next launch.
+ * A `kind: 'base'` record is refused while any installed voice still references it:
+ * deleting the shared base would break every adapter at once.
+ *
+ * PRE-EXISTING HAZARD (not introduced by the adapter migration, not fixed here): the
+ * catalogue's ref→local-id map (fetchOrpheusCatalog) keeps ONE id per `source.ref`, so
+ * if two manifest entries somehow record the SAME repo as their source, the later entry
+ * wins the map and this function would be handed that id — uninstalling the wrong one of
+ * the two. It cannot happen through the installer (one id per voice, and re-installing
+ * updates that id's entry in place); it needs a hand-edited models.json. Worth knowing
+ * before adding any code path that writes a second entry with an existing ref.
+ */
 export function removeOrpheusModel(id: string): { success: boolean; error?: string } {
   try {
+    const entry = readManifest().models.find((e) => e.id === id);
+    if (entry?.kind === 'base') {
+      const dependants = listOrpheusModels().filter((m) => m.artifact === 'adapter').map((m) => m.id);
+      if (dependants.length > 0) {
+        return {
+          success: false,
+          error:
+            `The shared Orpheus base model is still used by ${dependants.length} installed adapter ` +
+            `voice${dependants.length === 1 ? '' : 's'} (${dependants.join(', ')}). Uninstall those voices first.`,
+        };
+      }
+    }
     // removeManifestEntry → writeManifest THROWS when the \\wsl$ models dir is
     // unreachable (WSL down/wedged) — that also guards the sync rmSync below, which
     // against a wedged VM would block the main thread forever.
     removeManifestEntry(id);
-    const dir = path.join(getOrpheusModelsDir(), id);
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-    } catch {
-      /* folder may be gone, locked, or on an unmounted \\wsl$ — manifest is updated regardless */
+    const root = getOrpheusModelsDir();
+    const targets = entry?.kind === 'base'
+      ? [path.join(root, BASE_SUBDIR, entry.base ? orpheusBaseFolderName(entry.base) : entry.dir || id)]
+      : [path.join(root, entry?.dir || id), path.join(root, ADAPTERS_SUBDIR, entry?.adapterDir || id)];
+    for (const dir of targets) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* folder may be gone, locked, or on an unmounted \\wsl$ — manifest is updated regardless */
+      }
     }
     return { success: true };
   } catch (err) {

@@ -1,19 +1,34 @@
 /**
  * Folder-discovered custom Orpheus models, backed by a local manifest.
  *
- * Models live in
+ * Two artifact forms live side by side under `<orpheusModelsDir>/`:
  *
- *   <orpheusModelsDir>/<id>/        (config.json + a *.safetensors shard)
+ *   <id>/                       MERGED voice — a full 6.6 GB fine-tune
+ *                               (config.json + *.safetensors). The legacy layout.
+ *   adapters/<id>/              ADAPTER voice — a ~0.4 GB LoRA
+ *                               (adapter_config.json + adapter_model.safetensors)
+ *                               that is served on top of…
+ *   _base/<base-folder>/        …the ONE shared base model every adapter rides on
+ *                               (config.json + *.safetensors), e.g.
+ *                               `_base/orpheus-3b-0.1-ft`.
  *
- * and are catalogued in a `models.json` manifest in that same dir. The manifest
- * is the source of truth for the things the filesystem can't tell us — above all
- * the **prompt token** the model was fine-tuned on (e.g. `owen:`), which often
- * differs from the folder name for third-party models. It also records the source
- * (HF repo / URL) so a voice can be re-pulled, plus label/format/sample-rate.
+ * All three are catalogued in a `models.json` manifest in that same dir. The
+ * manifest is the source of truth for the things the filesystem can't tell us —
+ * above all the **prompt token** the model was fine-tuned on (e.g. `owen:`), which
+ * often differs from the folder name for third-party models. It also records the
+ * source (HF repo / URL) so a voice can be re-pulled, plus label/format/sample-rate,
+ * and (new) the `kind` / `artifact` / `base` discriminators described on
+ * OrpheusManifestEntry.
  *
  * Discovery is manifest-first, with a reconcile fallback: any folder that is a
- * valid model but missing from the manifest is still offered (auto-imported with
- * its folder name guessed as the token), so manually-dropped folders keep working.
+ * valid model (merged voice, adapter voice, or base) but missing from the manifest
+ * is still offered, so manually-dropped folders — and a machine whose adapters were
+ * rsync'd in by the deploy script — keep working with no re-download.
+ *
+ * BACKWARD COMPATIBILITY IS STRUCTURAL. A machine that only ever installed merged
+ * voices has no `adapters/` and no `_base/`, so every predicate below sees exactly
+ * what it saw before and every resolved model comes back `artifact: 'merged'` with
+ * the same `dir`. Nothing about that path changed.
  *
  * The catalogue of what's *available to download* lives on HuggingFace (see
  * orpheus-hf-catalog.ts); installing a voice writes its files here and upserts a
@@ -92,6 +107,35 @@ export interface OrpheusVoiceCaps {
   eosBoostStart?: number;
 }
 
+/**
+ * Which artifact form a voice is SERVED from.
+ *
+ *  - `merged`  — a full fine-tune folder loaded as the model itself
+ *                (`--orpheus_model_dir`). The legacy, pre-adapter path.
+ *  - `adapter` — a LoRA folder served on top of the shared base
+ *                (`--orpheus_base_dir` + `--orpheus_adapter_dir`).
+ *
+ * ABSENT on a manifest/catalog entry means MERGED — that is what makes the
+ * migration structurally backward-compatible.
+ */
+export type OrpheusArtifact = 'merged' | 'adapter';
+
+/** The shared base model an adapter voice rides on. */
+export interface OrpheusBaseRef {
+  /** Stable catalog id for the base, e.g. `orpheus-3b-base`. */
+  id: string;
+  /** HuggingFace repo the base is pulled from, e.g. `unsloth/orpheus-3b-0.1-ft`. */
+  ref: string;
+  /** Folder name under `<models>/_base/`. Absent ⇒ the short name of `ref`. */
+  dir?: string;
+}
+
+/** The `adapters/` and `_base/` subdirs of the models root are LAYOUT, not voices. */
+export const ADAPTERS_SUBDIR = 'adapters';
+export const BASE_SUBDIR = '_base';
+/** Skipped by the top-level merged-folder scan (they hold adapters / the base). */
+const LAYOUT_SUBDIRS = new Set<string>([ADAPTERS_SUBDIR, BASE_SUBDIR]);
+
 /** A resolved, loadable custom voice. */
 export interface OrpheusModel {
   /** Dropdown value / folder id. */
@@ -100,8 +144,43 @@ export interface OrpheusModel {
   label: string;
   /** The prompt token (`--fine_tuned`). From the manifest; may differ from id. */
   voice: string;
-  /** Absolute path to the model folder (`--orpheus_model_dir`). */
+  /**
+   * Absolute path to the voice's own folder. For `artifact: 'merged'` this is the
+   * full model dir (`--orpheus_model_dir`) exactly as before; for
+   * `artifact: 'adapter'` it is the LoRA folder (`--orpheus_adapter_dir`), which is
+   * NOT loadable on its own — pair it with `baseDir`.
+   */
   dir: string;
+  /**
+   * How this voice is served. ALWAYS set on a resolved model (never absent), so a
+   * consumer that forgets to branch gets a value it can assert on rather than a
+   * silent undefined. Legacy merged installs resolve to `'merged'`.
+   */
+  artifact: OrpheusArtifact;
+  /**
+   * Absolute path to the shared base model (`--orpheus_base_dir`). Present ONLY for
+   * `artifact: 'adapter'`, and only when the base is actually installed — an adapter
+   * voice whose base is missing THROWS out of resolveOrpheusModel rather than
+   * resolving without it (see the resolution doc block).
+   */
+  baseDir?: string;
+  /** The base reference this adapter declares. Present only for `artifact: 'adapter'`. */
+  base?: OrpheusBaseRef;
+  /**
+   * LISTING-ONLY flag: this is an adapter voice whose base model is not installed, so
+   * it cannot render. `listOrpheusModels` sets it instead of throwing (a broken voice
+   * must stay VISIBLE so the UI can say "install the base model"); the RENDER path,
+   * `resolveOrpheusModel`, throws for the same voice. Never set for merged voices.
+   *
+   * CONSUMED BY exactly one surface: the Settings Orpheus voices panel, which reads it
+   * through `orpheusModels.list` and shows the voice as unusable ("Needs the base
+   * model") with its install action pointing at the base. EVERY OTHER surface keeps the
+   * loud throw and must not learn about this flag — starting an audiobook job
+   * (pushVoiceArgs → resolveOrpheusModel) and loading a streaming voice both fail the
+   * request with the base-missing message, which is the correct behaviour: the point of
+   * the annotation is to explain a broken voice in a list, never to let one be USED.
+   */
+  baseMissing?: true;
   /**
    * Per-voice packing cap (chars) — the PREP-time sentence-packing limit for this
    * fine-tune (→ ORPHEUS_MAX_CHARS). Voice-level, ALL backends; a per-backend value
@@ -188,8 +267,43 @@ export interface OrpheusManifestEntry {
   label: string;
   /** The prompt token the model was fine-tuned on — the thing we can't guess. */
   token: string;
-  /** Folder name under the models dir (defaults to id). */
+  /**
+   * What this record IS. Absent ⇒ `'voice'` (every pre-adapter entry, so the
+   * discriminator is additive). `'base'` records the ONE shared base model under
+   * `_base/<dir>`; base records are never offered as voices and never carry a token
+   * that means anything.
+   */
+  kind?: 'voice' | 'base';
+  /**
+   * Which artifact form of this voice is ACTIVE. Absent ⇒ merged, which is what
+   * makes every pre-existing manifest resolve byte-for-byte as before.
+   *
+   * A voice may have BOTH forms installed at once — that is the intended A/B state
+   * while adapters are being proven (deploy_voice.sh can push a merged copy and an
+   * adapter for the same voice). There is still exactly ONE manifest entry for the
+   * voice; this field says which of the two installs is served:
+   *
+   *   both installed + `artifact: 'merged'`   → the merged folder (explicit pin)
+   *   both installed + `artifact: 'adapter'`  → the adapter (the curated default)
+   *   both installed + artifact ABSENT        → the adapter (adapters win by default)
+   *   only one installed                      → that one, whatever this field says
+   *
+   * The last line is NOT a fallback: a voice installed in exactly one form has only
+   * one thing to serve. What is explicitly forbidden is serving a MERGED copy because
+   * an adapter's BASE is missing — that throws (see resolveOrpheusModel).
+   */
+  artifact?: OrpheusArtifact;
+  /** Folder name under the models dir for the MERGED install (defaults to id). */
   dir?: string;
+  /** Folder name under `<models>/adapters/` for the ADAPTER install (defaults to id). */
+  adapterDir?: string;
+  /**
+   * The shared base an ADAPTER voice rides on. Required to serve `artifact:'adapter'`
+   * — an adapter entry with no base declaration fails resolution loudly rather than
+   * guessing a base. Ignored for merged voices. On a `kind: 'base'` record this is
+   * the base's own identity.
+   */
+  base?: OrpheusBaseRef;
   /** Model format. */
   format?: 'hf' | 'mlx';
   /** Native sample rate (Orpheus = 24000). */
@@ -436,14 +550,216 @@ function applyTuning<T extends { id: string }>(base: T, catalog: Map<string, Orp
   return (cat ? { ...stripped, ...cat } : stripped) as T;
 }
 
-/** A folder is a usable model when it has config.json + at least one safetensors shard. */
-function isModelFolder(dir: string): boolean {
+/**
+ * A folder holds a FULL model when it has config.json + at least one safetensors
+ * shard. This is the original `isModelFolder` predicate, unchanged — it identifies
+ * both a legacy MERGED voice folder and the shared BASE folder, which have the same
+ * on-disk shape.
+ */
+function isFullModelFolder(dir: string): boolean {
   try {
     if (!fs.existsSync(path.join(dir, 'config.json'))) return false;
     return fs.readdirSync(dir).some((f) => f.endsWith('.safetensors'));
   } catch {
     return false;
   }
+}
+
+/** A MERGED voice folder: a full fine-tune, loadable as the model itself. */
+function isMergedModelFolder(dir: string): boolean {
+  return isFullModelFolder(dir);
+}
+
+/**
+ * The shared BASE folder — a full model, checked SHARD BY SHARD.
+ *
+ * The base is the one artifact whose download can be interrupted and leave something
+ * that still looks valid: config.json lands first and the ~6.6 GB of weights arrive in
+ * two shards, so a download killed between them satisfies "config.json + at least one
+ * .safetensors". That half-install then reads as INSTALLED everywhere — the Settings
+ * card says Installed, resolveOrpheusBase hands the path to a render, and the failure
+ * finally surfaces as an opaque vLLM error deep inside a job, with no way to retry the
+ * download from the UI because nothing thinks anything is missing.
+ *
+ * So when the model declares a shard index (`model.safetensors.index.json`, which every
+ * sharded HF checkpoint including this base ships), every shard it names must be present
+ * and non-empty. A single-file checkpoint has no index and keeps the original check, with
+ * the size test added: a 0-byte weights file is never a finished download.
+ *
+ * Note this is only reachable when the folder can actually be READ. On Windows the base
+ * is typically an untraversable `\\wsl$` symlink, which baseInstallState reports as
+ * `unverifiable` without calling this at all — see its doc block.
+ */
+function isBaseModelFolder(dir: string): boolean {
+  try {
+    if (!fs.existsSync(path.join(dir, 'config.json'))) return false;
+    const nonEmpty = (name: string): boolean => {
+      try {
+        return fs.statSync(path.join(dir, name)).size > 0;
+      } catch {
+        return false;
+      }
+    };
+    const indexPath = path.join(dir, 'model.safetensors.index.json');
+    if (fs.existsSync(indexPath)) {
+      const index = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
+      const weightMap = index?.weight_map;
+      if (!weightMap || typeof weightMap !== 'object') return false;
+      const shards = new Set<string>(Object.values(weightMap as Record<string, unknown>).filter((v): v is string => typeof v === 'string'));
+      if (shards.size === 0) return false;
+      return [...shards].every(nonEmpty);
+    }
+    return fs.readdirSync(dir).some((f) => f.endsWith('.safetensors') && nonEmpty(f));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A LoRA ADAPTER folder: PEFT's adapter_config.json + the adapter weights. A folder
+ * with only one of the two is a half-finished download, not an adapter, and must not
+ * resolve — vLLM would fail deep inside engine start with an opaque error.
+ */
+function isAdapterFolder(dir: string): boolean {
+  try {
+    if (!fs.existsSync(path.join(dir, 'adapter_config.json'))) return false;
+    return fs.readdirSync(dir).some((f) => f === 'adapter_model.safetensors' || f.endsWith('.safetensors'));
+  } catch {
+    return false;
+  }
+}
+
+/** The base repo an adapter folder declares (PEFT `base_model_name_or_path`), or null.
+ *  Used ONLY to reconcile a hand-dropped adapter that has no catalog/manifest entry. */
+function readAdapterBaseRef(dir: string): string | null {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'adapter_config.json'), 'utf-8'));
+    const ref = cfg?.base_model_name_or_path;
+    return typeof ref === 'string' && ref.trim() ? ref.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The folder name a base ref occupies under `<models>/_base/`. */
+export function orpheusBaseFolderName(base: OrpheusBaseRef): string {
+  return base.dir || base.ref.split('/').pop()!;
+}
+
+/**
+ * Is the shared base installed, and can we PROVE it from this process?
+ *
+ *  - `valid`        — a real directory we read, holding config.json + weights.
+ *  - `unverifiable` — the entry exists as a SYMLINK we cannot traverse. This is the
+ *                     normal, expected state on Windows: the deploy script points
+ *                     `_base/orpheus-3b-0.1-ft` at the WSL HuggingFace cache
+ *                     (`/home/…/.cache/huggingface/hub/models--unsloth--…/snapshots/…`),
+ *                     and over the `\\wsl$` 9p mount Windows surfaces that WSL-native
+ *                     symlink as a reparse point it refuses to resolve — readdir on
+ *                     the parent reports `isSymbolicLink()`, while stat/readdir/
+ *                     readlink of the link itself all fail (verified 2026-08-03:
+ *                     ENOENT, ENOENT, EISDIR respectively). The consumer of this path
+ *                     is the WSL-side spawn, where the link resolves natively, so we
+ *                     treat it as installed and say so — while recording that we did
+ *                     not verify it, so a genuinely broken link surfaces as a loud
+ *                     e2a-side error rather than a wrong silent render.
+ *  - `absent`       — no such entry, or a directory that isn't a model.
+ */
+export type OrpheusBaseState = 'valid' | 'unverifiable' | 'absent';
+
+function baseInstallState(folder: string): { state: OrpheusBaseState; dir: string } {
+  const dir = path.join(getOrpheusModelsDir(), BASE_SUBDIR, folder);
+  let dirents: fs.Dirent[];
+  try {
+    dirents = fs.readdirSync(path.join(getOrpheusModelsDir(), BASE_SUBDIR), { withFileTypes: true });
+  } catch {
+    return { state: 'absent', dir };
+  }
+  const found = dirents.find((d) => d.name === folder);
+  if (!found) return { state: 'absent', dir };
+  if (found.isDirectory()) return { state: isBaseModelFolder(dir) ? 'valid' : 'absent', dir };
+  if (found.isSymbolicLink()) {
+    // Traversable symlink (any real POSIX host, or a Windows junction): verify it.
+    try {
+      fs.statSync(dir);
+      return { state: isBaseModelFolder(dir) ? 'valid' : 'absent', dir };
+    } catch {
+      // Untraversable. On win32 that is the \\wsl$ LX-symlink case described above.
+      // Anywhere else an unstattable symlink is simply broken.
+      return { state: process.platform === 'win32' ? 'unverifiable' : 'absent', dir };
+    }
+  }
+  return { state: 'absent', dir };
+}
+
+/**
+ * Resolve the shared base model an adapter needs: its absolute dir plus whether the
+ * install could be verified from this process. Returns null when the base is NOT
+ * installed — callers decide whether that is a listing annotation or a hard error.
+ * WSL-gated like every other entry point here (a sync stat of `\\wsl$` on a wedged VM
+ * hangs the main thread).
+ */
+export function resolveOrpheusBase(base: OrpheusBaseRef): { dir: string; verified: boolean } | null {
+  if (!orpheusDirAccessible()) {
+    throw new Error(isWslWedged() ? wslWedgedMessage() : `WSL is not responding — cannot resolve the Orpheus base model '${base.ref}' from the \\\\wsl$ models directory.`);
+  }
+  const { state, dir } = baseInstallState(orpheusBaseFolderName(base));
+  if (state === 'absent') return null;
+  return { dir, verified: state === 'valid' };
+}
+
+/** True when the shared base for `base` is installed (verified or symlink-present). */
+export function isOrpheusBaseInstalled(base: OrpheusBaseRef): boolean {
+  return resolveOrpheusBase(base) !== null;
+}
+
+/**
+ * Which artifact form of a voice is installed, and where.
+ *
+ * Returns null when NEITHER form is on disk (i.e. "not an installed custom voice" —
+ * exactly what the pre-adapter `isModelFolder` check returned false for).
+ *
+ * THROWS when the active form is an adapter that cannot be served: no base declared,
+ * or a base that isn't installed. That is deliberate and is the whole point of the
+ * NO-FALLBACK rule here — a machine mid-migration can easily have BOTH a merged copy
+ * and an adapter for the same voice, and quietly serving the merged copy because the
+ * base download failed would hide the failure behind subtly different audio.
+ */
+function resolveOrpheusInstall(
+  entry: OrpheusManifestEntry,
+): { artifact: OrpheusArtifact; dir: string; baseDir?: string; base?: OrpheusBaseRef } | null {
+  const root = getOrpheusModelsDir();
+  const mergedDir = path.join(root, entry.dir || entry.id);
+  const adapterDir = path.join(root, ADAPTERS_SUBDIR, entry.adapterDir || entry.id);
+  const hasMerged = isMergedModelFolder(mergedDir);
+  const hasAdapter = isAdapterFolder(adapterDir);
+  if (!hasMerged && !hasAdapter) return null;
+
+  // Both installed → the declaration decides, and only an EXPLICIT 'merged' pins the
+  // merged copy; absent means adapter, because an adapter install is a deliberate act.
+  // One installed → that one (see the OrpheusManifestEntry.artifact doc block).
+  const preferred: OrpheusArtifact = entry.artifact === 'merged' ? 'merged' : 'adapter';
+  const active: OrpheusArtifact =
+    hasMerged && hasAdapter ? preferred : hasAdapter ? 'adapter' : 'merged';
+
+  if (active === 'merged') return { artifact: 'merged', dir: mergedDir };
+
+  const base = entry.base;
+  if (!base) {
+    throw new Error(
+      `Orpheus voice '${entry.id}' is installed as a LoRA adapter (${adapterDir}) but declares no base model. ` +
+        `Add a "base" reference to its catalog entry (electron/data/orpheus-models.json) or reinstall the voice.`,
+    );
+  }
+  const resolvedBase = resolveOrpheusBase(base);
+  if (!resolvedBase) {
+    throw new Error(
+      `Orpheus voice '${entry.id}' is a LoRA adapter and needs the shared base model '${base.ref}', ` +
+        `which is not installed (expected ${path.join(root, BASE_SUBDIR, orpheusBaseFolderName(base))}). ` +
+        `Install it from Settings → Orpheus Voices — refusing to render this voice without its base.`,
+    );
+  }
+  return { artifact: 'adapter', dir: adapterDir, baseDir: resolvedBase.dir, base };
 }
 
 /** Prettify a folder name into a display label: "owen-morgan_v2" → "Owen Morgan V2". */
@@ -454,10 +770,45 @@ function prettyLabel(folder: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/** The per-voice tuning fields, spread onto a model only when actually declared. */
+type OrpheusTuningFields = Pick<
+  OrpheusModel,
+  'maxChars' | 'maxCharsPerSec' | 'repPenalty' | 'backends' | 'postRenderFilter' | 'sentenceGap' | 'minChunkGap' | 'measuredSentenceGapS'
+>;
+function tuningFields(e: OrpheusManifestEntry): OrpheusTuningFields {
+  return {
+    ...(e.maxChars !== undefined ? { maxChars: e.maxChars } : {}),
+    ...(e.maxCharsPerSec !== undefined ? { maxCharsPerSec: e.maxCharsPerSec } : {}),
+    ...(e.repPenalty !== undefined ? { repPenalty: e.repPenalty } : {}),
+    ...(e.backends !== undefined ? { backends: e.backends } : {}),
+    ...(e.postRenderFilter !== undefined ? { postRenderFilter: e.postRenderFilter } : {}),
+    ...(e.sentenceGap !== undefined ? { sentenceGap: e.sentenceGap } : {}),
+    ...(e.minChunkGap !== undefined ? { minChunkGap: e.minChunkGap } : {}),
+    ...(e.measuredSentenceGapS !== undefined ? { measuredSentenceGapS: e.measuredSentenceGapS } : {}),
+  };
+}
+
 /**
  * Installed custom Orpheus models, sorted by label. Manifest-first (so the token
  * is authoritative), with valid-but-unlisted folders auto-imported (token guessed
  * as the folder name) so manually-dropped folders still appear.
+ *
+ * ADOPTION (how a hand-deployed adapter becomes visible with no re-download): the
+ * reconcile pass now scans THREE places — top-level merged folders (skipping the
+ * `adapters/` and `_base/` layout dirs), `adapters/<id>/`, and `_base/<name>/`. An
+ * adapter folder whose id already has a manifest entry AUGMENTS that entry rather
+ * than adding a second one: there is exactly one entry per voice, and its `artifact`
+ * says which install is served. An adapter with no entry anywhere synthesises its
+ * base ref from the adapter's own PEFT `base_model_name_or_path`. Reconcile is
+ * read-only (in-memory) exactly as before — nothing here writes models.json, which
+ * also keeps this safe to call while the models dir is a `\\wsl$` mount.
+ *
+ * `kind: 'base'` records and `_base/` folders are NOT voices and never appear in this
+ * list; use listOrpheusBases().
+ *
+ * An adapter voice whose base is missing is listed with `baseMissing: true` instead
+ * of throwing — a broken voice must stay visible so the UI can explain it. The RENDER
+ * path (resolveOrpheusModel) throws for that same voice.
  */
 export function listOrpheusModels(): OrpheusModel[] {
   if (!orpheusDirAccessible()) {
@@ -467,50 +818,128 @@ export function listOrpheusModels(): OrpheusModel[] {
   const root = getOrpheusModelsDir();
   const manifest = readManifest();
   const catalog = loadTuningCatalog();
-  const listed = new Set(manifest.models.map((e) => e.id));
   const out: OrpheusModel[] = [];
+  const emitted = new Set<string>();
 
-  // Build a picker entry from a base (runtime-manifest or reconciled-folder), overlaying the
-  // repo tuning catalog (catalog wins). Only declared caps ride along — an unset field stays
-  // unset (no invented default). Token falls back to the id/folder name when uncatalogued.
-  const build = (base: OrpheusManifestEntry, dir: string): OrpheusModel => {
+  // Build a picker entry, overlaying the repo tuning catalog (catalog wins) and
+  // resolving which artifact form is installed. Returns null when nothing is on disk.
+  // A base-missing adapter is annotated, not thrown (see the doc block).
+  const build = (base: OrpheusManifestEntry): OrpheusModel | null => {
     const e = applyTuning<OrpheusManifestEntry>(base, catalog);
-    return {
-      id: e.id, label: e.label || prettyLabel(e.id), voice: e.token || e.id, dir,
-      ...(e.maxChars !== undefined ? { maxChars: e.maxChars } : {}),
-      ...(e.maxCharsPerSec !== undefined ? { maxCharsPerSec: e.maxCharsPerSec } : {}),
-      ...(e.repPenalty !== undefined ? { repPenalty: e.repPenalty } : {}),
-      ...(e.backends !== undefined ? { backends: e.backends } : {}),
-      ...(e.postRenderFilter !== undefined ? { postRenderFilter: e.postRenderFilter } : {}),
-      ...(e.sentenceGap !== undefined ? { sentenceGap: e.sentenceGap } : {}),
-      ...(e.minChunkGap !== undefined ? { minChunkGap: e.minChunkGap } : {}),
-      ...(e.measuredSentenceGapS !== undefined ? { measuredSentenceGapS: e.measuredSentenceGapS } : {}),
-    };
+    if (e.kind === 'base') return null;
+    try {
+      const install = resolveOrpheusInstall(e);
+      if (!install) return null;
+      return {
+        id: e.id, label: e.label || prettyLabel(e.id), voice: e.token || e.id,
+        dir: install.dir, artifact: install.artifact,
+        ...(install.baseDir !== undefined ? { baseDir: install.baseDir } : {}),
+        ...(install.base !== undefined ? { base: install.base } : {}),
+        ...tuningFields(e),
+      };
+    } catch (err) {
+      // Adapter installed but unusable (no base declared / base not installed). Show it
+      // as broken so the panel can say what to do; the render path still throws.
+      const adapterDir = path.join(root, ADAPTERS_SUBDIR, e.adapterDir || e.id);
+      if (!isAdapterFolder(adapterDir)) throw err;
+      console.warn(`[ORPHEUS-MODELS] ${err instanceof Error ? err.message : String(err)}`);
+      return {
+        id: e.id, label: e.label || prettyLabel(e.id), voice: e.token || e.id,
+        dir: adapterDir, artifact: 'adapter', baseMissing: true,
+        ...(e.base !== undefined ? { base: e.base } : {}),
+        ...tuningFields(e),
+      };
+    }
   };
 
-  // 1) Manifest entries whose folder is actually a valid model.
-  for (const e of manifest.models) {
-    const dir = path.join(root, e.dir || e.id);
-    if (isModelFolder(dir)) out.push(build(e, dir));
+  const push = (entry: OrpheusManifestEntry): void => {
+    if (emitted.has(entry.id)) return;
+    const m = build(entry);
+    if (m) { out.push(m); emitted.add(m.id); }
+  };
+
+  // 1) Manifest VOICE entries with a real install (merged and/or adapter).
+  for (const e of manifest.models) push(e);
+
+  const listed = new Set(manifest.models.map((e) => e.id));
+  const readDirents = (dir: string): fs.Dirent[] => {
+    try { return fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+  };
+
+  // 2) Reconcile top-level MERGED folders not in the manifest (dropped by hand). Still
+  //    overlay the catalog so a catalogued-but-unlisted voice shows its curated
+  //    label/token/tuning; an uncatalogued folder guesses token = folder name.
+  //    `adapters/` and `_base/` are LAYOUT, never voices — skip them explicitly so a
+  //    future full-model shape inside them can never be mistaken for a voice folder.
+  for (const d of readDirents(root)) {
+    if (!d.isDirectory() || LAYOUT_SUBDIRS.has(d.name) || listed.has(d.name)) continue;
+    if (!isMergedModelFolder(path.join(root, d.name))) continue;
+    push({ id: d.name } as OrpheusManifestEntry);
   }
 
-  // 2) Reconcile: valid folders not in the manifest (dropped by hand). Still overlay the
-  //    catalog so a catalogued-but-unlisted voice shows its curated label/token/tuning;
-  //    an uncatalogued folder guesses token = folder name (via build's `e.token || e.id`).
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(root, { withFileTypes: true });
-  } catch {
-    entries = [];
-  }
-  for (const d of entries) {
-    if (!d.isDirectory() || listed.has(d.name)) continue;
-    const dir = path.join(root, d.name);
-    if (!isModelFolder(dir)) continue;
-    out.push(build({ id: d.name } as OrpheusManifestEntry, dir));
+  // 3) Reconcile ADAPTER folders not in the manifest — this is how a machine whose
+  //    adapters were rsync'd/deployed by hand sees them without re-downloading. An
+  //    uncatalogued adapter takes its base ref from its own adapter_config.json.
+  for (const d of readDirents(path.join(root, ADAPTERS_SUBDIR))) {
+    if (!d.isDirectory() || emitted.has(d.name)) continue;
+    const dir = path.join(root, ADAPTERS_SUBDIR, d.name);
+    if (!isAdapterFolder(dir)) continue;
+    const declaredRef = readAdapterBaseRef(dir);
+    push({
+      id: d.name,
+      artifact: 'adapter',
+      ...(declaredRef ? { base: { id: declaredRef, ref: declaredRef } } : {}),
+    } as OrpheusManifestEntry);
   }
 
   out.sort((a, b) => a.label.localeCompare(b.label));
+  return out;
+}
+
+/** One installed shared base model. */
+export interface OrpheusBaseInstall {
+  /** Folder name under `_base/`. */
+  folder: string;
+  /** Absolute path (`--orpheus_base_dir`). */
+  dir: string;
+  /** False when the install is an untraversable symlink (see baseInstallState). */
+  verified: boolean;
+}
+
+/**
+ * The shared base models installed under `_base/`. Manifest `kind: 'base'` records
+ * first, then any `_base/<name>/` folder not already listed (the adoption path for a
+ * base that was deployed/symlinked by hand — which is exactly how the dev machine's
+ * base was set up, as a symlink into the WSL HuggingFace cache).
+ */
+export function listOrpheusBases(): OrpheusBaseInstall[] {
+  if (!orpheusDirAccessible()) {
+    console.warn('[ORPHEUS-MODELS] listOrpheusBases skipped — WSL not responding (models dir is \\\\wsl$)');
+    return [];
+  }
+  const root = getOrpheusModelsDir();
+  const out: OrpheusBaseInstall[] = [];
+  const seen = new Set<string>();
+  const add = (folder: string): void => {
+    if (seen.has(folder)) return;
+    const { state, dir } = baseInstallState(folder);
+    if (state === 'absent') return;
+    seen.add(folder);
+    out.push({ folder, dir, verified: state === 'valid' });
+  };
+  for (const e of readManifest().models) {
+    if (e.kind !== 'base') continue;
+    add(e.base ? orpheusBaseFolderName(e.base) : e.dir || e.id);
+  }
+  let dirents: fs.Dirent[];
+  try {
+    dirents = fs.readdirSync(path.join(root, BASE_SUBDIR), { withFileTypes: true });
+  } catch {
+    dirents = [];
+  }
+  for (const d of dirents) {
+    if (d.isDirectory() || d.isSymbolicLink()) add(d.name);
+  }
   return out;
 }
 
@@ -518,6 +947,12 @@ export function listOrpheusModels(): OrpheusModel[] {
  * Resolve a selected voice id to its model dir + prompt token, or null when the id
  * is not an installed custom model (i.e. it's a built-in voice). Uses the manifest
  * token when present, else falls back to id-as-token for an unlisted folder.
+ *
+ * This is the RENDER path, so unlike listOrpheusModels it FAILS LOUDLY rather than
+ * annotating: an adapter voice whose base model is missing (or that declares no base)
+ * throws. It must never quietly serve a merged copy of the same voice that happens to
+ * still be on disk — mid-migration that is the likeliest state, and the substitution
+ * would be inaudible until someone A/B'd the whole book.
  */
 export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel | null {
   if (!id) return null;
@@ -527,7 +962,6 @@ export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel
   if (!orpheusDirAccessible()) {
     throw new Error(isWslWedged() ? wslWedgedMessage() : `WSL is not responding — cannot resolve Orpheus voice '${id}' from the \\\\wsl$ models directory.`);
   }
-  const root = getOrpheusModelsDir();
   const runtime = readManifest().models.find((e) => e.id === id);
   // Overlay the repo tuning catalog (authoritative for tuning) onto the runtime install
   // entry. Catalog wins for any field it declares; install-specific fields (dir/addedAt/
@@ -537,20 +971,29 @@ export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel
     { id, ...(runtime ?? {}) } as OrpheusManifestEntry,
     loadTuningCatalog(),
   );
-  const dir = path.join(root, entry.dir || id);
-  if (!isModelFolder(dir)) return null;
+  // A base record is not a voice: selecting one must read as "unknown id", not as a
+  // voice that renders in the base model's stock timbre.
+  if (entry.kind === 'base') return null;
+  // Reconcile seam: an adapter deployed by hand has no manifest entry at all, so pick
+  // its base ref off its own adapter_config.json — the same adoption listOrpheusModels
+  // does, so the picker and the renderer agree on what is installed.
+  if (!entry.base) {
+    const adapterDir = path.join(getOrpheusModelsDir(), ADAPTERS_SUBDIR, entry.adapterDir || id);
+    if (isAdapterFolder(adapterDir)) {
+      const declaredRef = readAdapterBaseRef(adapterDir);
+      if (declaredRef) entry.base = { id: declaredRef, ref: declaredRef };
+    }
+  }
+  const install = resolveOrpheusInstall(entry);
+  if (!install) return null;
   return {
-    id, label: entry.label || prettyLabel(id), voice: entry.token || id, dir,
+    id, label: entry.label || prettyLabel(id), voice: entry.token || id,
+    dir: install.dir, artifact: install.artifact,
+    ...(install.baseDir !== undefined ? { baseDir: install.baseDir } : {}),
+    ...(install.base !== undefined ? { base: install.base } : {}),
     // Optional per-voice caps ride along only when declared (catalog or manifest); an
     // unlisted, uncatalogued hand-dropped folder has none.
-    ...(entry.maxChars !== undefined ? { maxChars: entry.maxChars } : {}),
-    ...(entry.maxCharsPerSec !== undefined ? { maxCharsPerSec: entry.maxCharsPerSec } : {}),
-    ...(entry.repPenalty !== undefined ? { repPenalty: entry.repPenalty } : {}),
-    ...(entry.backends !== undefined ? { backends: entry.backends } : {}),
-    ...(entry.postRenderFilter !== undefined ? { postRenderFilter: entry.postRenderFilter } : {}),
-    ...(entry.sentenceGap !== undefined ? { sentenceGap: entry.sentenceGap } : {}),
-    ...(entry.minChunkGap !== undefined ? { minChunkGap: entry.minChunkGap } : {}),
-    ...(entry.measuredSentenceGapS !== undefined ? { measuredSentenceGapS: entry.measuredSentenceGapS } : {}),
+    ...tuningFields(entry),
   };
 }
 

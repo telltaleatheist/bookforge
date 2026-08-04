@@ -129,18 +129,29 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
 }
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
 import { resolveOrpheusModel, orpheusVoiceCapsForModel, OrpheusVoiceCaps } from './orpheus-models';
-import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB, DESKTOP_VRAM_MARGIN_MB, unloadOllamaModels } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB, orpheusMinFreeVramMB, DESKTOP_VRAM_MARGIN_MB, unloadOllamaModels, type OrpheusServeArtifact } from './gpu-arbiter';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 
 /**
  * Append the voice/fine-tune CLI args for the selected voice. Centralizes the
- * three cases so prep, the lightweight worker, and the app.py worker stay in sync:
+ * cases so prep, the lightweight worker, and the app.py worker stay in sync:
  *
- *  1. Folder-discovered custom Orpheus model → --orpheus_model_dir + the folder's
- *     voice token (orpheus.py points every backend at the dir and skips the
- *     built-in allowlist that otherwise drops it to leah).
+ *  1. Folder-discovered custom Orpheus model:
+ *     - MERGED  → --orpheus_model_dir + the folder's voice token (orpheus.py points
+ *       every backend at the dir and skips the built-in allowlist that otherwise
+ *       drops it to leah).
+ *     - ADAPTER → --orpheus_base_dir + --orpheus_adapter_dir + the voice token.
+ *       e2a loads the shared base and serves the LoRA per request; it hard-errors on
+ *       a missing base, a malformed adapter, or a missing/'internal' voice, so the
+ *       three flags always travel together.
  *  2. User-added XTTS custom voice → pre-stage its checkpoint, pass --custom_model*.
  *  3. Catalog fine-tune / built-in voice → pass --fine_tuned verbatim.
+ *
+ * PATHS ARE PUSHED IN THEIR NATIVE WINDOWS FORM. Every arg later passes through
+ * buildWslBashCommand, which rewrites `\\wsl$\…` and `C:\…` args to WSL-native paths
+ * for an Orpheus-via-WSL spawn (see its loop over condaArgs). Translating here as
+ * well would be redundant, and pre-translating would break the NON-WSL spawn, which
+ * gets the same array untouched.
  */
 // Mirrors VALID_VOICES in the fork's orpheus.py (and ORPHEUS_VOICES in
 // orpheus-worker-pool.ts) — the only ids allowed through as a bare --fine_tuned.
@@ -156,8 +167,25 @@ function pushVoiceArgs(args: string[], settings: ParallelTtsSettings): void {
       args.push('--fine_tuned', settings.fineTuned);
       return;
     }
+    // resolveOrpheusModel THROWS for an adapter voice whose shared base is missing —
+    // that propagates out of here as a job failure, which is the point: we never fall
+    // back to a merged copy of the same voice that happens to still be on disk.
     const model = resolveOrpheusModel(settings.fineTuned);
     if (model) {
+      if (model.artifact === 'adapter') {
+        // Belt-and-braces: resolveOrpheusModel guarantees baseDir for an adapter, so
+        // this can only fire if that contract is ever broken. Loud, never silent.
+        if (!model.baseDir) {
+          throw new Error(
+            `Orpheus voice "${settings.fineTuned}" is a LoRA adapter but resolved without a base model directory. ` +
+            `Install the Orpheus base model from Settings → Orpheus Voices — refusing to render without it.`
+          );
+        }
+        args.push('--orpheus_base_dir', model.baseDir);
+        args.push('--orpheus_adapter_dir', model.dir);
+        args.push('--fine_tuned', model.voice);
+        return;
+      }
       args.push('--orpheus_model_dir', model.dir);
       args.push('--fine_tuned', model.voice);
       return;
@@ -210,6 +238,23 @@ function pushVoiceArgs(args: string[], settings: ParallelTtsSettings): void {
  * voices. Mirrors pushVoiceArgs' registry resolution so the caps track the exact
  * fine-tune that will render.
  */
+/**
+ * Which artifact form THIS job's Orpheus voice will be served from — the input to
+ * VRAM sizing, because an adapter spawn allocates the resident LoRA and the punica
+ * workspace OUTSIDE vLLM's reservation (see ORPHEUS_ADAPTER_HEADROOM_MB).
+ *
+ * Mirrors pushVoiceArgs' resolution exactly, so sizing and the spawn can never
+ * disagree about what is being loaded. A non-Orpheus job, an explicit
+ * --orpheus_model_dir (a merged folder by definition), and a stock/unresolvable voice
+ * are all 'merged' — i.e. every pre-adapter path keeps its exact previous sizing.
+ * Propagates the base-missing throw: the preflight is the right place to surface it.
+ */
+function orpheusServeArtifact(settings: ParallelTtsSettings): OrpheusServeArtifact {
+  if (settings.ttsEngine !== 'orpheus') return 'merged';
+  if (settings.orpheusModelDir) return 'merged';
+  return resolveOrpheusModel(settings.fineTuned)?.artifact ?? 'merged';
+}
+
 function orpheusVoiceCaps(settings: ParallelTtsSettings): OrpheusVoiceCaps {
   if (settings.ttsEngine !== 'orpheus') return {};
   // Explicit CLI --model-dir bypasses models.json, so there's no manifest entry to
@@ -2298,6 +2343,12 @@ interface ConversionSession {
   // The concrete Orpheus memory tier this job resolved to (from the user's choice,
   // or auto-sized to free VRAM). Used to lower the auto ceiling if the job OOMs.
   orpheusTier?: ConcreteOrpheusTier;
+  // Which artifact form this job's Orpheus voice is served from ('merged' or
+  // 'adapter'), resolved ONCE in the GPU preflight (acquireGpuForJob) and reused by
+  // the OOM-retry VRAM wait so the retry can't ask for a smaller floor than the
+  // preflight required — an adapter spawn needs ~1.8 GiB more than a merged one.
+  // Absent on a job whose preflight never ran (CPU / non-Orpheus engines).
+  orpheusServeArtifact?: OrpheusServeArtifact;
   // Display label for the resolved tier (e.g. 'Light') — shown as a queue badge.
   orpheusMemLevel?: string;
   // vLLM submission batch matched to the level's KV cache (win/linux), so it doesn't
@@ -4353,7 +4404,17 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
     // blind immediate respawns were the 3-attempt OOM cascade. Async on purpose:
     // worker.status is already 'pending', so checkAllWorkersComplete keeps the
     // session open while we wait.
-    void waitForFreeVram(ORPHEUS_MIN_VRAM_MB, {
+    //
+    // The floor must be the one THIS job's preflight enforced. An adapter spawn needs
+    // the LoRA + punica workspace on top of vLLM's (higher) reservation floor, so
+    // waiting on the merged number would respawn ~1.8 GiB short of what acquireGpuForJob
+    // demanded — i.e. straight back into the OOM cascade this wait exists to break.
+    // A job with no recorded artifact never went through the Orpheus GPU preflight
+    // (XTTS, or Orpheus pinned to CPU) and keeps the floor it has always waited on.
+    const retryFloorMB = engine === 'orpheus' && session.orpheusServeArtifact
+      ? orpheusMinFreeVramMB(session.orpheusServeArtifact)
+      : ORPHEUS_MIN_VRAM_MB;
+    void waitForFreeVram(retryFloorMB, {
       timeoutMs: 90_000,
       onWait: (freeMB, neededMB) =>
         console.log(`[PARALLEL-TTS] Retry of worker ${worker.id} waiting for VRAM: ${freeMB} MB free, need ~${neededMB} MB`),
@@ -5815,9 +5876,10 @@ async function requiredVramMB(ttsEngine: string): Promise<number> {
   const mem = await getGpuMemMB();
   if (!mem) return 0; // no NVIDIA GPU → nothing to gate on
   if (ttsEngine === 'orpheus') {
-    // Orpheus now takes a BOUNDED slice (the tier cap), not a fraction of total, so the
-    // gate only needs the weights+KV floor free — computeSafeGpuUtil then sizes the
-    // reservation within whatever is actually free at spawn.
+    // NOT REACHED from acquireGpuForJob: the Orpheus branch there does its own
+    // artifact-aware floor gate + tier sizing and returns before this call. Kept as the
+    // correct answer for any other caller, and deliberately NOT artifact-parameterised —
+    // a second, uninformed sizing path is exactly how the two halves drift apart.
     return ORPHEUS_MIN_VRAM_MB;
   }
   return 4500; // XTTS / F5 / Voxtral conservative floor
@@ -5849,6 +5911,24 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
   if (deviceArg === 'CPU' && !orpheusOnGpu) return;
   const jobId = session.jobId;
   const orpheusViaWsl = engine === 'orpheus' && process.platform === 'win32' && shouldUseWsl2ForOrpheus();
+
+  // MERGED or ADAPTER? An adapter spawn needs ~1 GiB more free VRAM than the merged
+  // equivalent, because vLLM does not account for the resident LoRA or the punica
+  // workspace in its reservation. Resolve it once, here, and thread it through every
+  // sizing call below. A voice that can't resolve (e.g. an adapter whose base isn't
+  // installed) fails the job here rather than at spawn — same error, earlier and with
+  // the GPU not yet reserved.
+  let serveArtifact: OrpheusServeArtifact;
+  try {
+    serveArtifact = orpheusServeArtifact(session.config.settings);
+  } catch (err) {
+    session.gpuPreflightError = err instanceof Error ? err.message : String(err);
+    console.error(`[PARALLEL-TTS] Job ${jobId}: ${session.gpuPreflightError}`);
+    return;
+  }
+  // Remembered for the whole job: a worker that dies OOM re-waits for VRAM before
+  // respawning, and that wait must ask for the SAME floor this preflight enforced.
+  session.orpheusServeArtifact = serveArtifact;
 
   // Never spawn into a wedged VM — it can only deepen the wedge. Fail loudly instead.
   if (orpheusViaWsl && isWslWedged()) {
@@ -5933,7 +6013,7 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
     // took off the margin and reserved BELOW the weights+KV floor → vLLM OOM at load
     // (observed with the AI-cleanup model still resident: ~9 GB free passed an 8.2 GB gate,
     // then reserved only ~6 GB and couldn't fit the 6.6 GB weights).
-    const orpheusFreeFloorMB = ORPHEUS_MIN_VRAM_MB + DESKTOP_VRAM_MARGIN_MB;
+    const orpheusFreeFloorMB = orpheusMinFreeVramMB(serveArtifact) + DESKTOP_VRAM_MARGIN_MB;
     const floorWait = await waitForFreeVram(orpheusFreeFloorMB, {
       timeoutMs: 90_000,
       onWait: (freeMB, neededMB) => {
@@ -5960,16 +6040,16 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
     const mem = await getGpuMemMB();
     const free = mem?.freeMB ?? null;
     const total = mem?.totalMB ?? null;
-    const wanted = resolveConcreteOrpheusTier(free, total);
-    const fit = fitOrpheusTier(wanted, free, total);
+    const wanted = resolveConcreteOrpheusTier(free, total, serveArtifact);
+    const fit = fitOrpheusTier(wanted, free, total, serveArtifact);
     const tier = fit.tier;
     session.orpheusTier = tier; // remembered so an OOM can lower the auto ceiling
     session.orpheusMemLevel = orpheusTierLabel(tier);
-    const profile = orpheusMemoryProfile(tier);
+    const profile = orpheusMemoryProfile(tier, serveArtifact);
     session.orpheusVllmBatch = profile.vllmBatch; // match submission batch to KV cache
     const ceiling = Number(process.env.ORPHEUS_GPU_MEM_UTIL) || profile.ceiling;
-    const sized = await computeSafeGpuUtil(profile.capMB, profile.marginMB, ceiling);
-    console.log(`[PARALLEL-TTS] Job ${jobId} Orpheus memory '${getOrpheusMemoryTier()}' → wanted '${wanted}', using '${tier}'${fit.steppedDown ? ' (stepped down)' : ''} (cap ${profile.capMB} MB, ceiling ${ceiling})`);
+    const sized = await computeSafeGpuUtil(profile.capMB, profile.marginMB, ceiling, serveArtifact);
+    console.log(`[PARALLEL-TTS] Job ${jobId} Orpheus memory '${getOrpheusMemoryTier()}' → wanted '${wanted}', using '${tier}'${fit.steppedDown ? ' (stepped down)' : ''} (cap ${profile.capMB} MB, ceiling ${ceiling}, artifact ${serveArtifact})`);
     if (sized.totalMB !== null && sized.freeMB !== null) {
       session.orpheusGpuMemUtil = sized.util;
       const reserveGB = ((sized.reserveMB ?? 0) / 1024).toFixed(1);

@@ -1,6 +1,7 @@
 {
   "version": 1,
   "_comment": "Repo-tracked CURATED tuning catalog for custom Orpheus voices. Machine-independent (folder name + token + tuning only — the models ROOT is resolved per-machine). This file is the AUTHORITATIVE source for per-voice tuning and OVERLAYS the per-machine runtime install manifest (models.json in the models dir): the runtime manifest records what is installed WHERE (dir/token/addedAt, written by the installer); this catalog overrides the curated tuning fields (label, token, caps, backends, postRenderFilter, sentenceGap, measuredSentenceGapS, ...). Catalog wins for any field it declares. Commit + push to propagate identical tuning to every machine (Windows/WSL/Mac). measuredSentenceGapS = the natural inter-sentence gap MEASURED from the training source (end-of-word to start-of-next-word, chapter gaps >2s excluded) — the target 'we are shooting for'. sentenceGap = the tuned ASSEMBLY-time inject; set it only after a generation probe shows how much the model self-produces. modelSelfTailS = the TRAILING silence the model emits on its own - THIS, not the internal gap, is what an inject stacks onto (confusing the two is exactly how thirdreich ended up 0.24s long on every join). modelInternalGapS = the gap the model leaves BETWEEN sentences inside one packed chunk, i.e. its own sentence rhythm and the thing a chunk join should imitate. Measure both with orpheus-finetune/pipeline/measure_sentence_gaps.py against any rendered sentence cache; choose sentenceGap so that (modelSelfTailS + sentenceGap) ~= 0.75 * modelInternalGapS, where the ear-approved deathstalker sits. RE-MEASURE AFTER EVERY RETRAIN - corpus tail trimming changes modelSelfTailS directly. Absent sentenceGap => untested => the assembly page shows the 0.6s universal default (DEFAULT_SENTENCE_GAP).",
+  "_artifactComment": "artifact/base/adapterDir describe HOW a voice is served. 'artifact' ABSENT means MERGED — a full 6.6 GB fine-tune in <models>/<dir>/, the original layout — so every voice that omits it (owen, ender) behaves exactly as it always did and a machine that only ever installed merged voices needs no migration. 'artifact': 'adapter' means a ~0.4 GB LoRA in <models>/adapters/<adapterDir>/ served on top of the ONE shared base in <models>/_base/<short-name-of base.ref>/, passed to e2a as --orpheus_base_dir + --orpheus_adapter_dir. BOTH forms of one voice may be installed at once (that is the intended A/B state while adapters are being proven): there is still exactly ONE entry per voice and this field says which install is ACTIVE — an explicit 'merged' pins the merged copy, 'adapter' (or absent, when an adapter is present) serves the adapter. When only one form is on disk that one is served regardless. What is NEVER allowed is serving the merged copy because an adapter's BASE is missing: that throws, because the substitution would be inaudible until someone A/B'd the whole book. 'source.ref' for an adapter voice points at the -lora repo; the merged repos still exist on HF but are no longer the download path.",
   "models": [
     {
       "id": "owen",
@@ -22,11 +23,17 @@
       "label": "Third Reich (Sean Pratt)",
       "token": "thirdreich",
       "dir": "thirdreich",
+      "adapterDir": "thirdreich",
+      "artifact": "adapter",
+      "base": {
+        "id": "orpheus-3b-base",
+        "ref": "unsloth/orpheus-3b-0.1-ft"
+      },
       "format": "hf",
       "sampleRate": 24000,
       "source": {
         "type": "hf",
-        "ref": "owenmorgan/thirdreich-orpheus-3b"
+        "ref": "owenmorgan/thirdreich-orpheus-3b-lora"
       },
       "license": "apache-2.0",
       "addedAt": "2026-07-28",
@@ -56,11 +63,17 @@
       "label": "Mistborn (Michael Kramer)",
       "token": "mistborn",
       "dir": "mistborn",
+      "adapterDir": "mistborn",
+      "artifact": "adapter",
+      "base": {
+        "id": "orpheus-3b-base",
+        "ref": "unsloth/orpheus-3b-0.1-ft"
+      },
       "format": "hf",
       "sampleRate": 24000,
       "source": {
         "type": "hf",
-        "ref": "owenmorgan/mistborn-orpheus-3b"
+        "ref": "owenmorgan/mistborn-orpheus-3b-lora"
       },
       "license": "apache-2.0",
       "addedAt": "2026-07-21",
@@ -113,11 +126,17 @@
       "label": "Deathstalker",
       "token": "deathstalker",
       "dir": "deathstalker",
+      "adapterDir": "deathstalker",
+      "artifact": "adapter",
+      "base": {
+        "id": "orpheus-3b-base",
+        "ref": "unsloth/orpheus-3b-0.1-ft"
+      },
       "format": "hf",
       "sampleRate": 24000,
       "source": {
         "type": "hf",
-        "ref": "owenmorgan/deathstalker-orpheus-3b"
+        "ref": "owenmorgan/deathstalker-orpheus-3b-lora"
       },
       "license": "apache-2.0",
       "addedAt": "2026-07-28",
