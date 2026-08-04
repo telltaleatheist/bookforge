@@ -15,6 +15,7 @@ import { getHeadlessOcrService } from './headless-ocr';
 import { initializeLoggers, getMainLogger, getTTSLogger, closeLoggers } from './rolling-logger';
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import { registerClipforgeIpc } from './clipforge-bridge';
+import { registerDocumentIpc } from './document-ipc';
 import * as manifestService from './manifest-service';
 import * as manifestMigration from './manifest-migration';
 import * as archiveMigration from './archive-migration';
@@ -10584,6 +10585,7 @@ app.whenReady().then(async () => {
   setupIpcHandlers();
   setupAlignmentIpc();
   registerClipforgeIpc();
+  registerDocumentIpc();
   // `electron . --clipforge` (the clipforge:electron:dev script) opens ONLY the
   // ClipForge window for a clean single-app dev session; otherwise BookForge.
   if (process.argv.includes('--clipforge')) {

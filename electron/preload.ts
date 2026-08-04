@@ -25,6 +25,14 @@ import type {
 import type { BookResetSummary } from '../shared/processing/reset-book';
 import type { TextLayerReport } from '../shared/pdf/text-layer';
 import type {
+  DocumentBlocksPayload,
+  DocumentPipelineState,
+  DocumentRef,
+  DocumentStageProgressEvent,
+  ResetTarget,
+  WorkingDocumentEdit,
+} from '../shared/document/pipeline-types';
+import type {
   EnhanceCacheEntry,
   EnhanceProcessConfig,
   EnhanceOverridesPatch,
@@ -1392,6 +1400,36 @@ export interface ElectronAPI {
     exportEpub: (req: FoundryExportRequest) =>
       Promise<{ success: boolean; epubPath?: string; error?: string }>;
     onProgress: (callback: (state: FoundryRunState) => void) => () => void;
+  };
+  /**
+   * The document pipeline: a book's working PDF and the book itself.
+   *
+   * Every call names a PROJECT, never a path. The working document's name is
+   * derived from the original's, so a renderer that held one could hold a stale
+   * one — and a window open across a re-import would then curate a document
+   * belonging to different bytes. Deriving it per call costs a path join and
+   * makes that unreachable.
+   */
+  document: {
+    state: (ref: DocumentRef) =>
+      Promise<{ success: boolean; state?: DocumentPipelineState; error?: string }>;
+    readBlocks: (ref: DocumentRef) =>
+      Promise<{ success: boolean; error?: string } & Partial<DocumentBlocksPayload>>;
+    /** A batch of curation edits, landed as ONE incremental update. */
+    applyEdits: (ref: DocumentRef, edits: WorkingDocumentEdit[]) =>
+      Promise<{ success: boolean; bytes?: number; appended?: number; error?: string }>;
+    getText: (ref: DocumentRef) =>
+      Promise<{ success: boolean; documentClass?: 'scanned' | 'text'; error?: string }>;
+    detect: (ref: DocumentRef) => Promise<{ success: boolean; error?: string }>;
+    reflow: (ref: DocumentRef, options?: { excludeCategories?: string[]; coverPath?: string }) =>
+      Promise<{ success: boolean; epubPath?: string; error?: string }>;
+    cancelStage: (projectDir: string) => Promise<{ success: boolean; stopped?: boolean }>;
+    resetTo: (ref: DocumentRef, target: ResetTarget) =>
+      Promise<{ success: boolean; error?: string }>;
+    discard: (ref: DocumentRef) => Promise<{ success: boolean; error?: string }>;
+    onStageProgress: (callback: (event: DocumentStageProgressEvent) => void) => () => void;
+    onStageStarted: (callback: (event: { projectDir: string; stage: string }) => void) => () => void;
+    onStageFinished: (callback: (event: { projectDir: string; stage: string }) => void) => () => void;
   };
   /**
    * A processing run: an ordered list of passes over one project's book.
@@ -3024,6 +3062,38 @@ const electronAPI: ElectronAPI = {
       return () => {
         ipcRenderer.removeListener('foundry:run-progress', listener);
       };
+    },
+  },
+  document: {
+    state: (ref: DocumentRef) => ipcRenderer.invoke('document:state', ref),
+    readBlocks: (ref: DocumentRef) => ipcRenderer.invoke('document:read-blocks', ref),
+    applyEdits: (ref: DocumentRef, edits: WorkingDocumentEdit[]) =>
+      ipcRenderer.invoke('document:apply-edits', ref, edits),
+    getText: (ref: DocumentRef) => ipcRenderer.invoke('document:get-text', ref),
+    detect: (ref: DocumentRef) => ipcRenderer.invoke('document:blocks', ref),
+    reflow: (ref: DocumentRef, options?: { excludeCategories?: string[]; coverPath?: string }) =>
+      ipcRenderer.invoke('document:reflow', ref, options),
+    cancelStage: (projectDir: string) => ipcRenderer.invoke('document:cancel-stage', projectDir),
+    resetTo: (ref: DocumentRef, target: ResetTarget) =>
+      ipcRenderer.invoke('document:reset-to', ref, target),
+    discard: (ref: DocumentRef) => ipcRenderer.invoke('document:discard', ref),
+    onStageProgress: (callback: (event: DocumentStageProgressEvent) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, event: DocumentStageProgressEvent) =>
+        callback(event);
+      ipcRenderer.on('document:stage-progress', listener);
+      return () => { ipcRenderer.removeListener('document:stage-progress', listener); };
+    },
+    onStageStarted: (callback: (event: { projectDir: string; stage: string }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, event: { projectDir: string; stage: string }) =>
+        callback(event);
+      ipcRenderer.on('document:stage-started', listener);
+      return () => { ipcRenderer.removeListener('document:stage-started', listener); };
+    },
+    onStageFinished: (callback: (event: { projectDir: string; stage: string }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, event: { projectDir: string; stage: string }) =>
+        callback(event);
+      ipcRenderer.on('document:stage-finished', listener);
+      return () => { ipcRenderer.removeListener('document:stage-finished', listener); };
     },
   },
   window: {

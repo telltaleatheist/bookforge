@@ -50,6 +50,7 @@ import {
 } from '@cantoo/pdf-lib';
 
 import { BLOCK_CATEGORY_IDS, blockCategoryColor } from '../shared/ocr/block-categories';
+import type { WorkingDocumentEdit } from '../shared/document/pipeline-types';
 
 const K_PAGE_DELETED = PDFName.of('FoundryPageDeleted');
 const K_CATEGORY = PDFName.of('FoundryCategory');
@@ -71,27 +72,11 @@ export class WorkingDocumentWriteError extends Error {
 }
 
 /**
- * One curation edit.
- *
- * A block has ONE category field, so `relabel` is the whole of "what this block
- * is" and there is no second place for a selection or a colour to disagree with
- * it. `delete` is a FLAG rather than a removal, which is what makes `restore`
- * possible at all: the annotation stays, carrying its geometry and its text, and
- * reflow skips it.
+ * One curation edit. Declared in `shared/document/pipeline-types.ts` — the
+ * picker composes these and this module applies them, so one declaration serves
+ * both rather than two that drift silently across the IPC boundary.
  */
-export type WorkingDocumentEdit =
-  | { kind: 'relabel'; blockId: string; category: string }
-  | { kind: 'retitle'; blockId: string; text: string }
-  | { kind: 'delete'; blockId: string }
-  | { kind: 'restore'; blockId: string }
-  | { kind: 'delete-page'; page: number }
-  | { kind: 'restore-page'; page: number }
-  /**
-   * "The system thinks it's two blocks but it isn't." The blocks collapse into
-   * the earliest of them in reading order, which keeps its id, its category, its
-   * page and its place in the book; the rest are removed from the page.
-   */
-  | { kind: 'merge'; blockIds: string[] };
+export type { WorkingDocumentEdit };
 
 export interface WorkingDocumentWriteResult {
   /** The file's length after the append — the next boundary, if a stage records one. */

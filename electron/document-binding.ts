@@ -53,7 +53,12 @@ import {
   sha256File,
   writeFileAtomic,
 } from './sidecar-binding';
-import type { DocumentClass } from './working-document';
+import {
+  DOCUMENT_STAGES as STAGES,
+  type DocumentClass,
+  type DocumentStage,
+  type ResetTarget,
+} from '../shared/document/pipeline-types';
 
 /** The binding shape's own version, inside the shared protocol envelope. */
 export const DOCUMENT_BINDING_KIND = 'document-pipeline-v1' as const;
@@ -67,12 +72,13 @@ const GENERATOR = 'bookforge-document-pipeline/1';
  * EPUB, so it moves no byte of `working.pdf` and has no boundary. Its output is
  * recorded as the binding's `epub` instead, which is the thing "reset past
  * Reflow" would remove.
+ *
+ * Declared in `shared/document/pipeline-types.ts` because the picker's Reset
+ * menu names the same stages, and two lists of them would be two answers to
+ * "what can this book be reset to".
  */
-export const DOCUMENT_STAGES = ['get-text', 'blocks', 'footnotes'] as const;
-export type DocumentStage = (typeof DOCUMENT_STAGES)[number];
-
-/** Where a reset can land. `none` is "before Get Text" — no working document. */
-export type ResetTarget = DocumentStage | 'none';
+export { DOCUMENT_STAGES } from '../shared/document/pipeline-types';
+export type { DocumentStage, ResetTarget } from '../shared/document/pipeline-types';
 
 export interface DocumentStageBoundary {
   stage: DocumentStage;
@@ -192,7 +198,7 @@ function isDocumentBinding(value: unknown): value is DocumentBinding {
   for (const entry of b['boundaries'] as unknown[]) {
     const e = entry as Record<string, unknown> | null;
     if (!e || typeof e !== 'object') return false;
-    if (!(DOCUMENT_STAGES as readonly string[]).includes(e['stage'] as string)) return false;
+    if (!(STAGES as readonly string[]).includes(e['stage'] as string)) return false;
     if (typeof e['offset'] !== 'number' || !Number.isInteger(e['offset']) || e['offset'] < 0) return false;
   }
   return true;
@@ -304,7 +310,7 @@ export async function verifyPrimary(
 // ─────────────────────────────────────────────────────────────────────────────
 
 const STAGE_ORDER = new Map<DocumentStage, number>(
-  DOCUMENT_STAGES.map((stage, index) => [stage, index])
+  STAGES.map((stage, index) => [stage, index])
 );
 
 function stageIndex(stage: DocumentStage): number {

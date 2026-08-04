@@ -9,6 +9,14 @@ import type {
   ProcessingChainRequest,
 } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
+import type {
+  DocumentBlocksPayload,
+  DocumentPipelineState,
+  DocumentRef,
+  DocumentStageProgressEvent,
+  ResetTarget,
+  WorkingDocumentEdit,
+} from '@shared/document/pipeline-types';
 import type { PassDiffFile } from '../models/diff.types';
 
 /**
@@ -2585,6 +2593,117 @@ export class ElectronService {
       throw new Error(result.error || 'Reading the OCR run failed with no message.');
     }
     return result.result;
+  }
+
+  // ── The document pipeline ────────────────────────────────────────────────
+  //
+  // Every call names a project, and every failure is thrown with the message the
+  // main process produced — never swallowed into a null that a caller reads as
+  // "nothing here yet". A missing input in this pipeline always names the stage
+  // that writes it, and that sentence is the whole value of the error.
+
+  /** What has happened to this book's documents, measured off the documents. */
+  async documentState(ref: DocumentRef): Promise<DocumentPipelineState> {
+    if (!this.isElectron) throw new Error('The document pipeline needs the desktop app.');
+    const result = await (window as any).electron.document.state(ref);
+    if (!result.success || !result.state) {
+      throw new Error(result.error || 'Reading the document pipeline failed with no message.');
+    }
+    return result.state;
+  }
+
+  /**
+   * The block layer, read with pdf-lib in the main process.
+   *
+   * Never through pdf.js: its `getAnnotations()` parses against a fixed key
+   * whitelist and silently drops custom dictionary keys, so every category would
+   * come back as nothing at all — a book that reads as "no blocks yet" rather
+   * than as an error.
+   */
+  async documentReadBlocks(ref: DocumentRef): Promise<DocumentBlocksPayload> {
+    if (!this.isElectron) throw new Error('The document pipeline needs the desktop app.');
+    const result = await (window as any).electron.document.readBlocks(ref);
+    if (!result.success || !result.blocks || !result.pages) {
+      throw new Error(result.error || 'Reading the block layer failed with no message.');
+    }
+    return {
+      documentClass: result.documentClass,
+      dpi: result.dpi,
+      pages: result.pages,
+      blocks: result.blocks,
+    };
+  }
+
+  /** A batch of curation edits, landed as ONE incremental update. */
+  async documentApplyEdits(ref: DocumentRef, edits: WorkingDocumentEdit[]): Promise<number> {
+    if (!this.isElectron) throw new Error('The document pipeline needs the desktop app.');
+    const result = await (window as any).electron.document.applyEdits(ref, edits);
+    if (!result.success || typeof result.bytes !== 'number') {
+      throw new Error(result.error || 'Saving the edit into the document failed with no message.');
+    }
+    return result.bytes;
+  }
+
+  /** Get Text — the cast. Replaces whatever working document was there. */
+  async documentGetText(ref: DocumentRef): Promise<'scanned' | 'text'> {
+    if (!this.isElectron) throw new Error('The document pipeline needs the desktop app.');
+    const result = await (window as any).electron.document.getText(ref);
+    if (!result.success || !result.documentClass) {
+      throw new Error(result.error || 'Reading the pages failed with no message.');
+    }
+    return result.documentClass;
+  }
+
+  /** Detect. There is one, and it replaces the annotations in the document. */
+  async documentDetect(ref: DocumentRef): Promise<void> {
+    if (!this.isElectron) throw new Error('The document pipeline needs the desktop app.');
+    const result = await (window as any).electron.document.detect(ref);
+    if (!result.success) {
+      throw new Error(result.error || 'Detecting the blocks failed with no message.');
+    }
+  }
+
+  /** Reflow — the working document in, the book out. The one exporter. */
+  async documentReflow(
+    ref: DocumentRef,
+    options?: { excludeCategories?: string[]; coverPath?: string },
+  ): Promise<string> {
+    if (!this.isElectron) throw new Error('The document pipeline needs the desktop app.');
+    const result = await (window as any).electron.document.reflow(ref, options);
+    if (!result.success || !result.epubPath) {
+      throw new Error(result.error || 'Building the book failed with no message.');
+    }
+    return result.epubPath;
+  }
+
+  async documentCancelStage(projectDir: string): Promise<boolean> {
+    if (!this.isElectron) return false;
+    const result = await (window as any).electron.document.cancelStage(projectDir);
+    return result?.stopped === true;
+  }
+
+  /** Reset to the end of a stage — one truncate, no GPU, no re-run. */
+  async documentResetTo(ref: DocumentRef, target: ResetTarget): Promise<void> {
+    if (!this.isElectron) throw new Error('The document pipeline needs the desktop app.');
+    const result = await (window as any).electron.document.resetTo(ref, target);
+    if (!result.success) {
+      throw new Error(result.error || 'Resetting the document failed with no message.');
+    }
+  }
+
+  onDocumentStageProgress(callback: (event: DocumentStageProgressEvent) => void): () => void {
+    if (!this.isElectron) return () => { /* nothing subscribed */ };
+    return (window as any).electron.document.onStageProgress(callback);
+  }
+
+  onDocumentStageStarted(callback: (e: { projectDir: string; stage: string }) => void): () => void {
+    if (!this.isElectron) return () => { /* nothing subscribed */ };
+    return (window as any).electron.document.onStageStarted(callback);
+  }
+
+  onDocumentStageFinished(callback: (e: { projectDir: string; stage: string }) => void): () => void {
+    if (!this.isElectron) return () => { /* nothing subscribed */ };
+    return (window as any).electron.document.onStageFinished(callback);
   }
 
   /** Exclusion list → `foundry export` → the project's export EPUB. */

@@ -52,19 +52,22 @@ import {
   PDFString,
 } from '@cantoo/pdf-lib';
 
+import type {
+  BlockAnnotation,
+  DocumentClass,
+  DocumentPage,
+} from '../shared/document/pipeline-types';
+
+// The wire shapes are declared once, in `shared/document/pipeline-types.ts`, and
+// carried under this module's own names because that is what its callers already
+// say. Re-exported rather than re-declared: a second copy of a shape that
+// crosses the IPC boundary is a shape that drifts without breaking a build.
+export type { DocumentClass };
+export type WorkingBlockAnnotation = BlockAnnotation;
+export type WorkingDocumentPage = DocumentPage;
+
 /** The marker format version this build reads. Mirrors foundry's MARKER_VERSION. */
 export const FOUNDRY_MARKER_VERSION = 1;
-
-/**
- * Which pipeline a working document belongs to.
- *
- * `scanned` — the words came out of Tesseract and are repaired, line by line, by
- * the ocr model before they are reflowed. `text` — the words are the publisher's
- * and no model is pointed at them. The distinction decides whether a model edits
- * somebody's book, and the wrong answer is silent either way, which is why it
- * lives in the document and is read from there every time.
- */
-export type DocumentClass = 'scanned' | 'text';
 
 const DOCUMENT_CLASSES: readonly DocumentClass[] = ['scanned', 'text'];
 
@@ -79,33 +82,6 @@ export interface FoundryMarker {
   sourceSha256: string;
   /** The foundry build that cast it. */
   producer: string;
-}
-
-/** One block, as the document carries it. */
-export interface WorkingBlockAnnotation {
-  id: string;
-  /** 0-based page index in the working document. */
-  page: number;
-  /** Position in the book's reading order. Unique across the document. */
-  seq: number;
-  category: string;
-  /** `[x0,y0,x1,y1]` in PDF user space, corners normalized low→high. */
-  rect: [number, number, number, number];
-  /** The block's text. For a `chapter` block this IS the chapter's title. */
-  text: string;
-  /** The block ids this one was merged from. Empty when it is one block. */
-  merged: string[];
-  /** Dropped from the book. */
-  deleted: boolean;
-}
-
-export interface WorkingDocumentPage {
-  /** 0-based index. */
-  index: number;
-  /** `[x0,y0,x1,y1]` of the page's crop box, in PDF user space. */
-  cropBox: [number, number, number, number];
-  /** The page was removed in the picker (`/FoundryPageDeleted`). */
-  deleted: boolean;
 }
 
 /**
