@@ -115,14 +115,30 @@ export function nextStation(from: StationId, present: readonly StationId[]): Nex
  * This is what "open when finished" opens. It is keyed to the stage rather than
  * to what changed on disk, because the user asked for a stage and the artifact
  * it writes is the answer to that question.
+ *
+ * Three vocabularies reach this function, and all three are listed rather than
+ * normalized somewhere upstream, because they are what actually travels on
+ * `document:stage-finished`: the picker-initiated path names its stages
+ * ('Get Text', 'Blocks', 'Reflow' — `electron/document-ipc.ts`), the queue path
+ * names them with its own bar labels ('Read the pages', 'Detect blocks',
+ * 'Build the book' — `electron/processing-passes.ts`), and the pass KINDS are
+ * what a caller holding a job config has. A name none of them use returns null,
+ * which is the honest answer: nothing has been proved to exist, so nothing is
+ * opened.
  */
 export function stationMintedBy(stage: string): StationId | null {
   switch (stage) {
     // The cast and the detect both write into the working document.
     case 'Get Text':
+    case 'Read the pages':
+    case 'get-text':
     case 'Blocks':
+    case 'Detect blocks':
+    case 'blocks':
       return 'working';
     case 'Reflow':
+    case 'Build the book':
+    case 'reflow':
       return 'epub';
     default:
       return null;

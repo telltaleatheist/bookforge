@@ -48,7 +48,10 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { BrowserWindow } from 'electron';
+// `BrowserWindow` is a VALUE here as well as a type: a document stage run from
+// the queue has to reach every window that is looking at the book, not only the
+// one that happens to be handed in for progress rows.
+import { BrowserWindow } from 'electron';
 
 import * as manifestService from './manifest-service';
 import type { AppliedPassKind } from './manifest-types';
@@ -291,6 +294,24 @@ export async function cancelProcessingPass(jobId: string): Promise<boolean> {
 }
 
 /**
+ * Tell every window a document stage happened, on the channels that exist for it.
+ *
+ * A stage is about a PROJECT, and a project's documents change whoever ran the
+ * stage — so a window looking at that book has to hear about it whether the user
+ * pressed the button in the picker or dropped the run into the queue. The
+ * picker-initiated path (`document-ipc.ts::withStage`) has always broadcast
+ * these three; the queue path did not, which meant a book cast from the queue
+ * left every open picker showing the documents as they were before it, and the
+ * OCR dialog — which SUBMITS to the queue and then watches these channels —
+ * watching a run it could never see.
+ */
+function broadcastDocumentStage(channel: string, payload: Record<string, unknown>): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, payload);
+  }
+}
+
+/**
  * Run one document stage as a queue job: bars, cancellation, and foundry's own
  * words on the row.
  *
@@ -317,7 +338,11 @@ async function withDocumentStage<T>(
   // Claimed in the shared registry too, so a reset submitted from another window
   // sees this stage and refuses rather than being silently undone by it when the
   // staged temp lands.
-  const release = beginStage(project.projectDir, DOCUMENT_STAGE_BARS[config.kind] ?? config.kind, abort);
+  const stageName = DOCUMENT_STAGE_BARS[config.kind] ?? config.kind;
+  const release = beginStage(project.projectDir, stageName, abort);
+  broadcastDocumentStage('document:stage-started', {
+    projectDir: project.projectDir, stage: stageName,
+  });
   try {
     sendProgress(mainWindow, jobId, config.kind, tracker.master(), 'Preparing…', barsOf());
     await ensureFoundryForJob(jobId, config.kind, mainWindow);
@@ -332,6 +357,9 @@ async function withDocumentStage<T>(
           tracker.set(progress.stage, (progress.done / progress.total) * 100);
         }
         sendProgress(mainWindow, jobId, config.kind, tracker.master(), progress.message, barsOf());
+        broadcastDocumentStage('document:stage-progress', {
+          projectDir: project.projectDir, ...progress,
+        });
       },
     });
     tracker.completeAll();
@@ -339,6 +367,13 @@ async function withDocumentStage<T>(
   } finally {
     release();
     activeDocumentPasses.delete(jobId);
+    // In `finally` for the same reason the picker-initiated path has it there: a
+    // stage that FAILED still stopped, and a window waiting for it to stop has
+    // to stop waiting. What it changed on disk is measured afterwards, not
+    // inferred from the fact that it ended.
+    broadcastDocumentStage('document:stage-finished', {
+      projectDir: project.projectDir, stage: stageName,
+    });
   }
 }
 

@@ -145,6 +145,22 @@ test('reflow lands on the EPUB', () => {
   assert.strictEqual(stationMintedBy('Reflow'), 'epub');
 });
 
+test('the queue names its stages differently, and lands in the same places', () => {
+  // Both producers of `document:stage-finished` are real: the picker path uses
+  // document-ipc's names, the queue path uses processing-passes' bar labels. A
+  // background run that opened nothing because the label differed would be a
+  // checkbox that works only when you are watching it.
+  assert.strictEqual(stationMintedBy('Read the pages'), 'working');
+  assert.strictEqual(stationMintedBy('Detect blocks'), 'working');
+  assert.strictEqual(stationMintedBy('Build the book'), 'epub');
+});
+
+test('a pass kind lands where its stage does', () => {
+  assert.strictEqual(stationMintedBy('get-text'), 'working');
+  assert.strictEqual(stationMintedBy('blocks'), 'working');
+  assert.strictEqual(stationMintedBy('reflow'), 'epub');
+});
+
 test('a stage that mints no artifact opens nothing', () => {
   // Null rather than a guess: a stage this does not know about has not been
   // proved to produce a station, and switching tabs on a guess moves the user
