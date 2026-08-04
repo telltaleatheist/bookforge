@@ -11,9 +11,18 @@ interface OrpheusCatalogEntry {
   /** 'merged' = a full ~6.6 GB fine-tune; 'adapter' = a ~0.4 GB LoRA on the shared base. */
   artifact: 'merged' | 'adapter';
   base?: { id: string; ref: string; dir?: string };
-  /** Adapter voice whose shared base isn't installed — Download is blocked until it is. */
+  /** Adapter voice whose shared base isn't installed yet. NOT a block on Download —
+   *  the install runs base-then-voice — just what the size/copy explains. */
   needsBase?: boolean;
   approxSizeBytes: number;
+}
+
+/** An INSTALLED voice as `orpheusModels.list` reports it. Read here for one thing:
+ *  `baseMissing`, the adapter voice that is installed but can't render. */
+interface OrpheusInstalledModel {
+  id: string; label: string; voice: string; dir: string;
+  artifact: 'merged' | 'adapter';
+  baseMissing?: true;
 }
 
 interface OrpheusBaseStatus {
@@ -47,9 +56,9 @@ interface OrpheusBaseStatus {
       <div class="explainer">
         <p>
           <strong>Orpheus</strong> is a more natural, GPU-heavy narration engine. Install the engine,
-          then the shared base model, then the voices you want. Most voices are small
-          <strong>voice packs</strong> (about 0.4&nbsp;GB each) that run on top of the one shared base
-          model, so after the first download every extra voice is quick. A few older voices are full
+          then the voices you want. Most voices are small <strong>voice packs</strong> (about
+          0.4&nbsp;GB each) that run on top of one shared base model — the first voice pack downloads
+          that base model for you, and every voice after it is quick. A few older voices are full
           standalone models and are correspondingly large. Voices come from the sources below; add more
           HuggingFace repos (tagged with an <code>orpheus_token</code>) to grow the list.
         </p>
@@ -138,7 +147,7 @@ interface OrpheusBaseStatus {
         <p class="muted">No voices resolved from the current sources. Add a source below, or check your HuggingFace token in Settings for private repos.</p>
       } @else {
         @for (v of catalog(); track v.repoId) {
-          <div class="component-card">
+          <div class="component-card" [class.unusable]="isUnusable(v)">
             <div class="component-head">
               <div class="component-meta">
                 <h4 class="component-name">{{ v.label }} @if (v.private) { <span class="lock" title="Private repo — needs your HuggingFace token">🔒</span> }</h4>
@@ -148,9 +157,13 @@ interface OrpheusBaseStatus {
                 </p>
               </div>
               <div class="component-badge">
-                <span class="status-badge" [ngClass]="v.installed ? 'installed' : (busy().has(v.repoId) ? 'installing' : 'available')">
-                  {{ v.installed ? 'Installed' : (busy().has(v.repoId) ? 'Installing' : 'Available') }}
-                </span>
+                @if (isUnusable(v)) {
+                  <span class="status-badge unusable">Needs base model</span>
+                } @else {
+                  <span class="status-badge" [ngClass]="v.installed ? 'installed' : (busy().has(v.repoId) ? 'installing' : 'available')">
+                    {{ v.installed ? 'Installed' : (busy().has(v.repoId) ? 'Installing' : 'Available') }}
+                  </span>
+                }
                 <span class="component-size">{{ formatBytes(v.approxSizeBytes) }}</span>
               </div>
             </div>
@@ -161,12 +174,25 @@ interface OrpheusBaseStatus {
               </div>
             }
             <div class="component-actions">
-              @if (v.installed) {
+              @if (isUnusable(v)) {
+                <span class="action-note">
+                  Installed, but it can't be used until the shared base model above is installed.
+                </span>
+                <desktop-button variant="primary" size="sm" (click)="installBase()" [disabled]="baseBusy()">
+                  {{ baseBusy() ? 'Downloading…' : 'Install base model' }}
+                </desktop-button>
+                <desktop-button variant="ghost" size="sm" (click)="removeVoice(v)" [disabled]="busy().has(v.repoId)">Uninstall</desktop-button>
+              } @else if (v.installed) {
                 <desktop-button variant="ghost" size="sm" (click)="removeVoice(v)" [disabled]="busy().has(v.repoId)">Uninstall</desktop-button>
               } @else {
-                @if (v.needsBase && !baseInstalled()) { <span class="action-note">Requires the Orpheus base model</span> }
+                <!-- The Download button drives BOTH phases: an adapter voice whose base
+                     is missing installs the base first, then the voice. So this is a
+                     passive note, never a gate. -->
+                @if (v.artifact === 'adapter' && !baseInstalled()) {
+                  <span class="action-note">Also downloads the shared base model (once)</span>
+                }
                 <desktop-button variant="primary" size="sm" (click)="installVoice(v)"
-                                [disabled]="busy().has(v.repoId) || (!!v.needsBase && !baseInstalled())">
+                                [disabled]="busy().has(v.repoId)">
                   {{ busy().has(v.repoId) ? 'Downloading…' : 'Download & Install' }}
                 </desktop-button>
               }
@@ -213,7 +239,12 @@ interface OrpheusBaseStatus {
     .status-badge { font-size: var(--ui-font-xs); padding: 2px 8px; border-radius: 4px; white-space: nowrap;
       &.installed { background: var(--success-bg); color: var(--success); }
       &.available { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
-      &.installing { background: var(--bg-elevated); color: var(--text-secondary); } }
+      &.installing { background: var(--bg-elevated); color: var(--text-secondary); }
+      &.unusable { background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning); } }
+    /* Installed but not renderable (adapter voice, base model missing): dimmed so it
+       reads as inert, with the fix offered in its own actions row. */
+    .component-card.unusable { border-color: color-mix(in srgb, var(--warning) 40%, var(--border-subtle));
+      .component-name, .component-desc { opacity: 0.65; } }
     .component-size { font-size: var(--ui-font-xs); color: var(--text-tertiary); }
     .install-progress { display: flex; flex-direction: column; gap: var(--ui-spacing-xs); }
     .progress-bar { width: 100%; height: 6px; background: var(--bg-elevated); border-radius: 3px; overflow: hidden; }
@@ -236,6 +267,8 @@ export class OrpheusVoicesPanelComponent implements OnInit, OnDestroy {
 
   readonly catalog = signal<OrpheusCatalogEntry[]>([]);
   readonly base = signal<OrpheusBaseStatus | null>(null);
+  /** Locally installed voices — read for `baseMissing` (see isUnusable). */
+  readonly installed = signal<OrpheusInstalledModel[]>([]);
   readonly sources = signal<string[]>([]);
   readonly busy = signal<Set<string>>(new Set());
   readonly baseBusy = signal(false);
@@ -250,8 +283,21 @@ export class OrpheusVoicesPanelComponent implements OnInit, OnDestroy {
     this.svc.components().find((s) => s.component.id === 'orpheus') ?? null,
   );
 
-  /** True once the shared base is on disk — gates every adapter voice's Download. */
+  /** True once the shared base is on disk. Informational only — it does NOT gate any
+   *  Download, because the install itself fetches the base when it's missing. */
   readonly baseInstalled = computed(() => this.base()?.installed === true);
+
+  /** Installed voices that resolved BROKEN — an adapter whose shared base isn't there.
+   *  They are installed and visible everywhere, but every render path refuses them, so
+   *  this panel is where that gets explained. Keyed by local id. */
+  private readonly baseMissingIds = computed(
+    () => new Set(this.installed().filter((m) => m.baseMissing).map((m) => m.id)),
+  );
+
+  /** This catalogue voice is installed but can't render (its base model is missing). */
+  isUnusable(v: OrpheusCatalogEntry): boolean {
+    return v.installed && this.baseMissingIds().has(v.installedId ?? v.id);
+  }
 
   private unsubscribeProgress?: () => void;
 
@@ -275,14 +321,19 @@ export class OrpheusVoicesPanelComponent implements OnInit, OnDestroy {
     if (!this.api) { this.loading.set(false); return; }
     this.loading.set(true);
     try {
-      const [cat, src, base] = await Promise.all([
+      // The catalogue is fetched FIRST and then handed to baseStatus: which base this
+      // machine needs is a fact about the catalogue, so asking for it in parallel makes
+      // the main process fetch every source repo's model card a second time.
+      const [cat, src, list] = await Promise.all([
         this.api.catalogList?.(),
         this.api.sourcesGet?.(),
-        this.api.baseStatus?.(),
+        this.api.list?.(),
       ]);
       if (cat?.success) this.catalog.set(cat.data ?? []);
       else if (cat && !cat.success) this.error.set(cat.error ?? null);
       if (src?.success) this.sources.set(src.data ?? []);
+      if (list?.success) this.installed.set(list.data ?? []);
+      const base = await this.api.baseStatus?.(cat?.success ? cat.data : undefined);
       if (base?.success) this.base.set(base.data ?? null);
       else if (base && !base.success) this.error.set(base.error ?? null);
     } catch (e) {
@@ -302,7 +353,7 @@ export class OrpheusVoicesPanelComponent implements OnInit, OnDestroy {
     this.error.set(null);
     this.baseBusy.set(true);
     try {
-      const res = await this.api?.baseInstall?.();
+      const res = await this.api?.baseInstall?.(this.catalog());
       if (res && !res.success) this.error.set(res.error ?? 'Base model install failed.');
     } finally {
       this.baseBusy.set(false);

@@ -29,6 +29,10 @@ import { addVariant, importAudiobookProject, saveVariantMetadata, setPrimaryVari
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
+// TYPE ONLY — the module itself stays behind the dynamic imports in the orpheus:* IPC
+// handlers (it pulls in the HF catalogue + WSL path machinery), so this import erases
+// completely at build time and costs nothing at startup.
+import type { OrpheusCatalogEntry } from './orpheus-hf-catalog';
 import { getGpuMemMB } from './gpu-arbiter';
 import { loadConfig as loadToolPathsConfig } from './tool-paths';
 import { getRenderCacheBaseDir } from './render-cache';
@@ -4475,12 +4479,18 @@ function setupIpcHandlers(): void {
 
   // Status of the ONE shared base model every LoRA-adapter voice rides on. Same
   // \\wsl$ sync-fs guard as catalog-list — resolving the base stats the models dir.
-  ipcMain.handle('orpheus:base-status', async () => {
+  //
+  // `catalog` is the list the caller ALREADY fetched (the Settings panel always has
+  // one by the time it asks). Which base is needed is a fact about the catalogue, so
+  // without it this handler has to re-fetch every source repo — N × 2 HTTP round trips
+  // duplicating the ones catalog-list just made. Omitted only by a caller that has no
+  // catalogue yet, which then pays for its own fetch.
+  ipcMain.handle('orpheus:base-status', async (_event, catalog?: OrpheusCatalogEntry[]) => {
     try {
       const { isWslAlive } = await import('./wsl-lifecycle.js');
       await isWslAlive();
       const { getOrpheusBaseStatus } = await import('./orpheus-hf-catalog.js');
-      return { success: true, data: await getOrpheusBaseStatus() };
+      return { success: true, data: await getOrpheusBaseStatus(catalog) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -4489,12 +4499,13 @@ function setupIpcHandlers(): void {
   // Install the shared base on its own (the "Base model" card in Settings / the
   // first-run wizard). Installing a voice does this implicitly too; this exists so a
   // user can pay the one-time 6.6 GB up front and then add 0.4 GB voices.
-  ipcMain.handle('orpheus:base-install', async () => {
+  // Takes the caller's already-fetched catalogue for the same reason base-status does.
+  ipcMain.handle('orpheus:base-install', async (_event, catalog?: OrpheusCatalogEntry[]) => {
     try {
       const { isWslAlive } = await import('./wsl-lifecycle.js');
       await isWslAlive();
       const { installOrpheusBase, getOrpheusBaseStatus } = await import('./orpheus-hf-catalog.js');
-      const status = await getOrpheusBaseStatus();
+      const status = await getOrpheusBaseStatus(catalog);
       const result = await installOrpheusBase(status.base);
       // A newly installed base makes previously-unusable adapter voices resolvable —
       // refresh the live voice list for the same reason a voice install does.

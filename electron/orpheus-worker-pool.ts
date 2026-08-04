@@ -569,9 +569,8 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
     return {
       success: false,
       error:
-        `Orpheus voice '${voice}' is installed as a LoRA adapter, which the live streaming ` +
-        `server can't serve yet (full audiobook rendering supports it). Install the merged ` +
-        `version of this voice, or pick another voice for streaming.`,
+        `The '${model.label}' voice is served as an adapter, which streaming does not support yet; ` +
+        `audiobook rendering works. Streaming support is coming in the next update.`,
     };
   }
   const loadToken = model ? model.voice : v;
