@@ -125,13 +125,24 @@ const SIDECAR_MAX_BASE_BYTES = 255 - 16;
  *  derivation, never by scanning. Readable (`Book.m4b`) when the name fits; a
  *  truncated name + `~<sha1[:8]>` when it would overflow the filesystem limit. */
 export function sidecarBase(m4bPath: string): string {
-  const dir = path.dirname(m4bPath);
-  const name = path.basename(m4bPath); // includes ".m4b"
-  if (Buffer.byteLength(name) <= SIDECAR_MAX_BASE_BYTES) return path.join(dir, name);
+  return path.join(path.dirname(m4bPath), boundedSidecarName(path.basename(m4bPath)));
+}
+
+/**
+ * The naming rule itself, without a directory — so a sidecar that CANNOT sit
+ * beside its primary still gets the same name.
+ *
+ * The document pipeline needs exactly that: its primary is `archive/<Book>.pdf`
+ * and archive/ is never written to, so the binding record lives in the project
+ * ROOT while still being named after the primary (DOCUMENT_PIPELINE.md, "Documents,
+ * names, and bindings"). One rule, two directories — the alternative was a second
+ * copy of the 255-byte budget that would drift the day one of them was tuned.
+ */
+export function boundedSidecarName(name: string): string {
+  if (Buffer.byteLength(name) <= SIDECAR_MAX_BASE_BYTES) return name;
   const tag = crypto.createHash('sha1').update(name).digest('hex').slice(0, 8);
   // Trim by characters conservatively (well under the byte budget for any script).
-  const kept = name.slice(0, 180);
-  return path.join(dir, `${kept}~${tag}`);
+  return `${name.slice(0, 180)}~${tag}`;
 }
 
 /** Co-located sidecar paths for an m4b, e.g. output/Book.m4b →
