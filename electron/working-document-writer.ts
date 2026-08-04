@@ -259,6 +259,17 @@ class WorkingDocumentEditor {
       case 'delete-page': return this.setPageDeleted(edit.page, true);
       case 'restore-page': return this.setPageDeleted(edit.page, false);
       case 'merge': return this.merge(edit.blockIds);
+      default: {
+        // The union is exhaustive at compile time, so this is only reachable
+        // across the IPC boundary — a renderer built against a different edit
+        // vocabulary. Refused rather than skipped: an edit that does nothing
+        // would leave the picker showing a change the document never took.
+        const unknown = edit as { kind?: unknown };
+        throw new WorkingDocumentWriteError(
+          this.file,
+          `"${String(unknown.kind)}" is not a curation edit this build knows how to apply.`
+        );
+      }
     }
   }
 

@@ -28,15 +28,11 @@ interface ParagraphForm {
     <app-panel-shell title="Paragraphs" [hasAdvanced]="true" (close)="onClose()">
       <!-- Plain actions first -->
       <div class="section">
-        @if (paragraphFixMode()) {
-          <p class="hint">Review the detected paragraph breaks. Adjust parameters and re-detect, or save when they look right.</p>
-        } @else {
-          <p class="hint">Place some breaks first, then detect to fill in the rest.</p>
-        }
+        <p class="hint">Place some breaks first, then detect to fill in the rest.</p>
         <desktop-button
           variant="primary"
           size="sm"
-          [disabled]="!paragraphFixMode() && paragraphBreaks().size < 1"
+          [disabled]="paragraphBreaks().size < 1"
           (click)="onDetect()"
         >
           {{ detectionStats() ? 'Re-detect paragraphs' : 'Detect paragraphs' }}
@@ -202,13 +198,8 @@ interface ParagraphForm {
         }
       </div>
 
-      <!-- Footer keeps the Save & Done / Done distinction -->
       <div footer>
-        @if (paragraphFixMode()) {
-          <desktop-button variant="primary" size="sm" (click)="finishFix.emit()">Save &amp; Done</desktop-button>
-        } @else {
-          <desktop-button variant="ghost" size="sm" (click)="done.emit()">Done</desktop-button>
-        }
+        <desktop-button variant="ghost" size="sm" (click)="done.emit()">Done</desktop-button>
       </div>
     </app-panel-shell>
   `,
@@ -344,13 +335,11 @@ export class ParagraphPanelComponent {
   detectionStats = input<DetectionStats | null>(null);
   detectionConfig = input<DetectionConfig | null>(null);
   baselines = input<DocumentBaselines | null>(null);
-  paragraphFixMode = input<boolean>(false);
 
   // Outputs
   detect = output<void>();
   clearAll = output<void>();
   done = output<void>();
-  finishFix = output<void>();
   configChange = output<DetectionConfig>();
 
   /**
@@ -427,12 +416,6 @@ export class ParagraphPanelComponent {
   }
 
   onClose(): void {
-    // The header close mirrors the footer's mode-specific action: in fix mode
-    // it saves (finish), otherwise it just closes.
-    if (this.paragraphFixMode()) {
-      this.finishFix.emit();
-    } else {
-      this.done.emit();
-    }
+    this.done.emit();
   }
 }

@@ -61,6 +61,7 @@ import {
   type FoundryEpubFootnotesReport,
 } from './foundry-bridge';
 import { readDocumentBinding } from './document-binding';
+import { beginStage } from './document-stage-registry';
 import { reflowOutputPath, resolveDocumentProject } from './document-project';
 import {
   bindingAbsPath,
@@ -313,6 +314,10 @@ async function withDocumentStage<T>(
 
   const abort = new AbortController();
   activeDocumentPasses.set(jobId, abort);
+  // Claimed in the shared registry too, so a reset submitted from another window
+  // sees this stage and refuses rather than being silently undone by it when the
+  // staged temp lands.
+  const release = beginStage(project.projectDir, DOCUMENT_STAGE_BARS[config.kind] ?? config.kind, abort);
   try {
     sendProgress(mainWindow, jobId, config.kind, tracker.master(), 'Preparing…', barsOf());
     await ensureFoundryForJob(jobId, config.kind, mainWindow);
@@ -332,6 +337,7 @@ async function withDocumentStage<T>(
     tracker.completeAll();
     return result;
   } finally {
+    release();
     activeDocumentPasses.delete(jobId);
   }
 }

@@ -1,11 +1,11 @@
 /**
  * processing-reset — put a book back the way it was imported.
  *
- * A project accretes state as it is processed: a foundry run directory holding
- * the page renders, the scan, the repaired lines and the labelled blocks; a
- * numbered stage directory per pass with its diff; the exported book EPUB and
- * the `appliedPasses` provenance that says what was done to it; and the editor's
- * deletions, recorded against the scan they were made against.
+ * A project accretes state as it is processed: the working PDF the stages read
+ * and write, its binding record, and the machine-local scratch foundry scanned
+ * into; a numbered stage directory per pass with its diff; the exported book
+ * EPUB and the `appliedPasses` provenance that says what was done to it; and the
+ * editor's deletions, recorded against the scan they were made against.
  *
  * Every one of those is DERIVED from the source document. When a run went wrong
  * — a bad OCR model, footnote removal that ate the wrong markers, a book that
@@ -31,14 +31,42 @@
  * whether there is anything to go at all. Both are answered by running the same
  * code with `preview: true`, so the sentence the user reads and the act they
  * confirm cannot drift apart.
+ *
+ * ── THERE IS NO LONGER ANYTHING HERE TO REFUSE ON ────────────────────────────
+ *
+ * This module refuses while a stage is working on the book, and the refusal is
+ * not a nicety. foundry's failure discipline is a staged temp renamed into place
+ * at the very end, so a stage that started before a reset and lands after it
+ * puts back the working document the user asked to be gone — silently, seconds
+ * later, looking for all the world like the reset simply did not work.
+ *
+ * The old run model answered this by accident: a run was an object in main's
+ * memory, so "is something writing into that directory right now?" was a
+ * question main could already answer. A stage is a function call owned by
+ * whoever started it — the picker's handler (document-ipc.ts) or the queue job
+ * (processing-passes.ts) — so the two of them publish their claim in
+ * `document-stage-registry.ts` and this reads it. That registry is the one piece
+ * of the document pipeline that is state in memory, and deliberately so: it says
+ * nothing about what has HAPPENED to a book (that is read off the documents),
+ * only about what is happening to it this instant, which is precisely what a
+ * file on disk cannot tell you.
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 import * as manifestService from './manifest-service';
-import { attachFoundryRun, foundryRunDir } from './foundry-run';
-import { normalizeFsPath } from './path-utils';
+import { readDocumentBinding } from './document-binding';
+import { stageRunningFor } from './document-stage-registry';
+import {
+  bindingAbsPath,
+  discardDocumentPipeline,
+  documentScratchDir,
+  workingAbsPath,
+  type DocumentProject,
+} from './document-stages';
+import { boundedRunKey, normalizeFsPath } from './path-utils';
 import type { ProjectManifest } from './manifest-types';
 import {
   selectPassStageDirs,
@@ -49,18 +77,38 @@ import {
 export type { BookResetItem, BookResetSummary };
 
 /**
- * Every run identity this project's documents could have been scanned under.
+ * A run directory as builds before the document pipeline named one.
  *
- * A run is keyed by the PATH of the document it reads (`resolveBookKey` in
- * processing-passes: `config.bookKey || config.pdfPath`), and the picker may pin
- * it to the document's file hash instead. Neither is recorded in the manifest,
- * so the keys are re-derived HERE THE SAME WAY the planner derives them — every
- * variant's absolute path, plus `source/original.pdf`, plus the recorded file
- * hash — and each is turned into a directory by `foundryRunDir`, which is the
- * one implementation of that name (`boundedRunKey`). None of it is guessed at
- * with string surgery: a key that maps to no directory simply finds nothing.
+ * Nothing in this app writes one any more — the working PDF carries the text
+ * layer and the block annotations now, and what is left machine-local is
+ * `documentScratchDir`, keyed by the original's hash. But a book processed by an
+ * older build still has hundreds of megabytes of page rasters and intermediate
+ * JSON sitting under `foundry-runs/<key>`, and "start this book over" is the one
+ * place that is asked to go and remove it. So the naming rule survives HERE,
+ * where its only remaining purpose — finding old directories in order to delete
+ * them — is plain, rather than in a module about running stages.
+ *
+ * The key is the PATH of the document the run read, sanitized and bounded by
+ * `boundedRunKey`, which is the one implementation of that name. Byte-identical
+ * to what the old `foundryRunDir` produced, because a directory this cannot name
+ * is a directory this cannot delete.
  */
-function candidateRunDirs(projectDir: string, manifest: ProjectManifest): Array<{ bookKey: string; runDir: string }> {
+function legacyRunDir(bookKey: string): string {
+  return path.join(os.homedir(), 'Documents', 'BookForge', 'foundry-runs', boundedRunKey(bookKey));
+}
+
+/**
+ * Every run directory this project's documents could have been scanned into by
+ * an older build.
+ *
+ * A run was keyed by the path of the document it read, and the picker could pin
+ * it to the document's file hash instead. Neither was ever recorded in the
+ * manifest, so the keys are re-derived HERE THE SAME WAY they were minted —
+ * every variant's absolute path, plus `source/original.pdf`, plus the recorded
+ * file hash. None of it is guessed at with string surgery: a key that maps to no
+ * directory simply finds nothing.
+ */
+function candidateRunDirs(projectDir: string, manifest: ProjectManifest): string[] {
   const keys: string[] = [];
   const { variants } = manifestService.getVariants(manifest);
   for (const variant of variants) {
@@ -70,41 +118,38 @@ function candidateRunDirs(projectDir: string, manifest: ProjectManifest): Array<
   keys.push(path.join(projectDir, 'source', 'original.pdf'));
   if (manifest.source?.fileHash) keys.push(manifest.source.fileHash);
 
-  const seen = new Set<string>();
-  const out: Array<{ bookKey: string; runDir: string }> = [];
-  for (const bookKey of keys) {
-    const runDir = foundryRunDir(bookKey);
-    if (seen.has(runDir)) continue;
-    seen.add(runDir);
-    out.push({ bookKey, runDir });
-  }
-  return out;
+  return [...new Set(keys.map(legacyRunDir))];
 }
 
 /**
- * Refuse while foundry is still working on one of this project's documents.
+ * Every document pipeline this project could have started — one per PDF version.
  *
- * The queue is the renderer's, and the renderer gates on it before it ever calls
- * here — but a run is owned by MAIN and outlives an ng-serve reload, so main is
- * the only side that can answer "is something writing into that directory right
- * now?". Wiping a live run's directory under it produces a foundry failure whose
- * message names a missing file, which is a lie about what happened.
+ * `resolveDocumentProject` is deliberately not used, and the difference is the
+ * whole point of it: that function CHOOSES a document and refuses when a project
+ * holds several, because a stage that guessed would cast a working document from
+ * a book nobody picked. A reset chooses nothing. Every PDF the project holds may
+ * have been cast and curated, so every one of them is swept; a project that was
+ * imported as a book has no PDF and yields none, which is "nothing to remove"
+ * rather than a refusal.
  */
-function refuseWhileRunning(candidates: Array<{ bookKey: string; runDir: string }>): void {
-  for (const { bookKey, runDir } of candidates) {
-    const state = attachFoundryRun(bookKey);
-    if (state?.live && state.status === 'running') {
-      throw new Error(
-        `A foundry run is working on this book right now (${runDir}). Stop it from the Queue, `
-        + 'then start the book over.'
-      );
-    }
-  }
+function documentPipelines(projectDir: string, manifest: ProjectManifest): DocumentProject[] {
+  const { variants } = manifestService.getVariants(manifest);
+  return variants
+    .filter((v) => v.path && v.format.toLowerCase() === 'pdf')
+    .map((v) => ({ projectId: manifest.projectId, projectDir, primaryRelPath: v.path }));
 }
 
 function statDir(p: string): boolean {
   try {
     return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function statFile(p: string): boolean {
+  try {
+    return fs.statSync(p).isFile();
   } catch {
     return false;
   }
@@ -120,8 +165,8 @@ function statDir(p: string): boolean {
  * corrupt project.
  *
  * Any failure throws NAMING THE PATH. There is no partial-success return: a
- * reset that could not remove the run directory has not started the book over,
- * and saying so is the only useful answer.
+ * reset that could not remove the working document has not started the book
+ * over, and saying so is the only useful answer.
  */
 export async function resetBookProcessing(
   rawProjectDir: string,
@@ -135,33 +180,65 @@ export async function resetBookProcessing(
   }
   const manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf-8')) as ProjectManifest;
 
+  // Checked on the preview too. A preview that listed a working document as
+  // "will be removed" while a stage was about to rewrite it would be describing
+  // a book that will not exist by the time the user reads the list.
+  const busy = stageRunningFor(projectDir);
+  if (busy) {
+    throw new Error(
+      `${busy} is working on this book right now, so it cannot be started over. That stage finishes `
+      + 'by renaming a file into place, which would put back the very documents this removes — stop '
+      + 'it, or wait for it, and reset then.'
+    );
+  }
+
   const candidates = candidateRunDirs(projectDir, manifest);
-  if (!preview) refuseWhileRunning(candidates);
 
   const items: BookResetItem[] = [];
 
-  // ── The foundry run directory ───────────────────────────────────────────────
-  // Machine-local, so a book scanned on another machine has none HERE. That is
-  // reported as "not present", never as a deletion that did nothing.
-  const liveRunDirs = candidates.filter((c) => statDir(c.runDir));
-  if (liveRunDirs.length === 0) {
+  // ── The documents the pipeline made ────────────────────────────────────────
+  // The working PDF, its binding record and the machine-local scan scratch, one
+  // set per PDF version. They go together because they only mean anything
+  // together: the binding is what says the working PDF was cast from THIS
+  // archive original, and the scratch is named after that original's hash.
+  //
+
+  const pipelines = documentPipelines(projectDir, manifest);
+  const documentItems = new Map<BookResetItem, DocumentProject>();
+  for (const project of pipelines) {
+    const working = workingAbsPath(project);
+    const bindingPath = bindingAbsPath(project);
+    // Throws when a binding record is there and unreadable, and that is the
+    // right answer even here: the message names the file and says to delete it,
+    // and a reset that swallowed it would be removing documents it could not
+    // prove belong to this book.
+    const binding = readDocumentBinding(bindingPath);
+    const scratch = binding ? documentScratchDir(binding.primary.sha256) : null;
+    const item: BookResetItem = {
+      kind: 'working-document',
+      label: 'The working PDF, its binding record and the scan working files — '
+        + path.basename(working),
+      path: working,
+      present: statFile(working) || statFile(bindingPath) || (scratch !== null && statDir(scratch)),
+      removed: false,
+    };
+    items.push(item);
+    documentItems.set(item, project);
+  }
+
+  // ── A run directory an older build left behind ─────────────────────────────
+  // Machine-local, and no longer written by anything, so most books have none:
+  // only one processed before the document pipeline does. Listed only when it is
+  // actually there — an absent line for a directory this build cannot create
+  // would be a sentence about the app's history, not about the user's book.
+  for (const runDir of candidates.filter(statDir)) {
     items.push({
       kind: 'run-dir',
-      label: 'Scan / OCR working files (nothing on this machine)',
-      path: candidates[0]?.runDir,
-      present: false,
+      label: 'Scan / OCR working files from an earlier version (page images, scan, corrections, block labels)',
+      path: runDir,
+      present: true,
       removed: false,
     });
-  } else {
-    for (const { runDir } of liveRunDirs) {
-      items.push({
-        kind: 'run-dir',
-        label: 'Scan / OCR working files (page images, scan, corrections, block labels)',
-        path: runDir,
-        present: true,
-        removed: false,
-      });
-    }
   }
 
   // ── The pass stage directories ─────────────────────────────────────────────
@@ -231,8 +308,27 @@ export async function resetBookProcessing(
     if (item.kind === 'source-records') item.removed = cleared.clearedSourceKeys.length > 0;
   }
 
+  // The document pipeline goes through its own discard rather than this loop's
+  // `rm`, and it has to: the three files it removes are one act — the working
+  // PDF in the project, the binding record beside it, and a machine-local
+  // scratch whose name is only knowable by reading that record first. Unpicking
+  // that here would be a second implementation of it, drifting the day the
+  // pipeline grows a fourth file.
+  for (const [item, project] of documentItems) {
+    if (!item.present) continue;
+    try {
+      await discardDocumentPipeline(project);
+      item.removed = true;
+    } catch (err) {
+      throw new Error(
+        `Starting the book over stopped at ${project.primaryRelPath}'s working document: `
+        + `${(err as Error).message}. Nothing further was removed; the project is part-way reset.`
+      );
+    }
+  }
+
   for (const item of items) {
-    if (!item.present || !item.path) continue;
+    if (!item.present || !item.path || documentItems.has(item)) continue;
     try {
       if (item.kind === 'book-epub') {
         // THE USER'S OWN DELETION. Nothing in this app removes a book on its own

@@ -14,9 +14,11 @@
  * re-running a single model.
  *
  * This module is the transport and the typed reader. The PIPELINE that drives it
- * — render pages to PGM, scan, ocr, blocks, optionally footnotes, then export —
- * lives in `electron/foundry-run.ts`, which owns a run in MAIN so a renderer
- * reload cannot kill a thirty-minute book.
+ * lives in `electron/document-stages.ts`, where every stage is a transformation
+ * of ONE document — the archive original cast into `<Original>.working.pdf`, the
+ * text layer and the block annotations written into that file, and the book
+ * reflowed out of it. A stage owns no state; which of them have run is read back
+ * off the document itself.
  *
  * ── How far the cutover has got ──
  *
@@ -303,7 +305,7 @@ async function downloadFoundry(
  * every machine that already installed keeps answering with the old binary
  * forever (the documented uninstall-reinstall limitation in rvc-env.ts, which
  * is livable for a 2 GiB env and wrong for a 38 MB CLI the app versions in
- * lockstep with its own foundry-run contract).
+ * lockstep with its own document-stage contract).
  */
 export async function ensureFoundryPath(
   onProgress?: (p: InstallProgress) => void

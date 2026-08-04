@@ -26,7 +26,6 @@ export type TaskId =
   | 'ocr'
   | 'cleanup'
   | 'merge'
-  | 'chapters'
   | 'paragraphs';
 
 /**
@@ -65,7 +64,11 @@ export const TASK_GROUPS: readonly TaskGroup[] = [
   { id: 'modes', label: 'Mode', tasks: ['select', 'edit', 'crop', 'label'] },
   { id: 'setup', label: 'Setup', tasks: ['split', 'ocr'] },
   { id: 'cleanup', label: 'Clean up', tasks: ['cleanup', 'merge'] },
-  { id: 'structure', label: 'Structure', tasks: ['chapters', 'paragraphs'] },
+  // Chapters left this rail when they stopped being a list beside the book. A
+  // chapter is a block labelled `chapter`, so it is made in the Label tab and
+  // read in the Chapter tab of the document nav — there is nothing left for a
+  // checklist row to have a status about.
+  { id: 'structure', label: 'Structure', tasks: ['paragraphs'] },
 ] as const;
 
 /** Human, sentence-case labels shown in the rail. */
@@ -78,7 +81,6 @@ export const TASK_LABELS: Record<TaskId, string> = {
   ocr: 'OCR text',
   cleanup: 'Headers & footers',
   merge: 'Merge blocks',
-  chapters: 'Chapters',
   paragraphs: 'Paragraphs',
 };
 
@@ -126,10 +128,6 @@ export const STATUS_GLYPH: Record<TaskStatusKind, string> = {
 
 function plural(n: number, word: string): string {
   return n === 1 ? word : `${word}s`;
-}
-
-function sourceLabel(source: 'toc' | 'heuristic' | 'manual' | 'mixed'): string {
-  return source === 'toc' ? 'TOC' : source;
 }
 
 /** Median width/height aspect ratio across pages, or 0 when there are none. */
@@ -317,29 +315,15 @@ export function deriveMergeStatus(mergeCount: number): TaskStatus {
   return { kind: 'untouched', detail: 'not applied' };
 }
 
-// ── Chapters ──────────────────────────────────────────────────────────────
-
 /**
- * The three bands here are the same three the export gate uses, so the rail and
- * the "you should address chapters" warning can never tell the user different
- * things: green at 2+, an attention state at 1 (legitimate for an article, but
- * usually a book whose chapters were never marked), and the next-thing-to-do
- * state at 0.
+ * The count below which building the book is worth one interruption.
+ *
+ * Not a gate: an article or a single essay really is one chapter, and refusing
+ * those books outright would strand them. But an unchaptered book produces one
+ * enormous audiobook file with nothing to skip between, and that is discovered
+ * hours later at TTS time.
  */
 export const CHAPTERS_EXPORT_MINIMUM = 2;
-
-export function deriveChaptersStatus(
-  chapterCount: number,
-  source: 'toc' | 'heuristic' | 'manual' | 'mixed',
-): TaskStatus {
-  if (chapterCount >= CHAPTERS_EXPORT_MINIMUM) {
-    return { kind: 'done', detail: `${chapterCount} chapters (${sourceLabel(source)})` };
-  }
-  if (chapterCount === 1) {
-    return { kind: 'suggested', detail: `1 chapter (${sourceLabel(source)}) — the whole book as one` };
-  }
-  return { kind: 'required-missing', detail: 'none marked — do this before export' };
-}
 
 // ── Paragraphs ────────────────────────────────────────────────────────────
 
@@ -366,8 +350,6 @@ export interface TaskStatusContext {
   readonly ocr: OcrStatusInput;
   readonly cleanup: CleanupStatusInput;
   readonly mergeCount: number;
-  readonly chapterCount: number;
-  readonly chaptersSource: 'toc' | 'heuristic' | 'manual' | 'mixed';
   readonly paragraphBreakCount: number;
 }
 
@@ -393,8 +375,6 @@ export function deriveTaskStatus(id: TaskId, ctx: TaskStatusContext): TaskStatus
       return deriveCleanupStatus(ctx.cleanup);
     case 'merge':
       return deriveMergeStatus(ctx.mergeCount);
-    case 'chapters':
-      return deriveChaptersStatus(ctx.chapterCount, ctx.chaptersSource);
     case 'paragraphs':
       return deriveParagraphsStatus(ctx.paragraphBreakCount);
     default:

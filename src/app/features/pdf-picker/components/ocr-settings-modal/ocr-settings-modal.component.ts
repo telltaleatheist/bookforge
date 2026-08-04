@@ -2,7 +2,7 @@ import { Component, input, output, signal, computed, effect, inject, ChangeDetec
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
-import { ElectronService, CorpusOcrRunState, FoundryRunState } from '../../../../core/services/electron.service';
+import { ElectronService, CorpusOcrRunState } from '../../../../core/services/electron.service';
 import { QueueService } from '../../../queue/services/queue.service';
 import { OcrTextLine } from '../../services/ocr-job.service';
 
@@ -57,6 +57,23 @@ import { OcrTextLine } from '../../services/ocr-job.service';
 export type OcrEngine = string;
 export type OcrScope = 'all' | 'current' | 'selected' | 'range';
 
+/**
+ * A stage as this dialog shows it: which one, its own most recent line, and how
+ * far through it is.
+ *
+ * Deliberately not a status. A document stage is a process — when it stops there
+ * is nothing left holding a state for this to mirror, and whether the BOOK is
+ * ready is read off the document instead (`readDocumentState`). This is only
+ * what to draw while something is working.
+ */
+interface StageView {
+  stage: string;
+  /** foundry's own line, verbatim: the only place a DEGRADED calibration is said. */
+  message: string;
+  done: number;
+  total: number;
+}
+
 export interface OcrSettings {
   engine: string;
   language: string;
@@ -81,12 +98,6 @@ export interface OcrPageResult {
 
 export interface OcrCompletionEvent {
   results: OcrPageResult[];
-}
-
-/** What the window is told when a foundry run finishes and can be painted. */
-export interface FoundryRunFinished {
-  bookKey: string;
-  pages: number[];
 }
 
 @Component({
@@ -587,8 +598,15 @@ export class OcrSettingsModalComponent implements OnDestroy {
   /** The legacy corpus/background path still reports page results this way. */
   ocrCompleted = output<OcrCompletionEvent>();
   backgroundJobStarted = output<string>();
-  /** A foundry run finished — the window should read it and paint the blocks. */
-  foundryFinished = output<FoundryRunFinished>();
+  /**
+   * The working document now carries a block layer — the window should read it
+   * and paint it.
+   *
+   * Carries nothing. There is no run to identify and no page list to hand over:
+   * the window re-reads the document, which is the only thing that knows what is
+   * in it.
+   */
+  documentReadyToPaint = output<void>();
 
   private readonly electronService = inject(ElectronService);
   private readonly queueService = inject(QueueService);
@@ -599,7 +617,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
   readonly rangeEnd = signal<number>(1);
 
   /**
-   * A foundry pass for this book is in the queue and has not started working.
+   * A document pass for this book is in the queue and has not started working.
    *
    * Read from the queue rather than remembered locally: this component is
    * destroyed every time the dialog closes, so a flag of its own would forget a
@@ -609,30 +627,39 @@ export class OcrSettingsModalComponent implements OnDestroy {
     this.queueService.jobs().some((job) =>
       (job.type === 'document-get-text' || job.type === 'document-blocks'
         || job.type === 'document-reflow')
-      && (job.config as { bookKey?: string } | undefined)?.bookKey === this.bookKey()
+      && (job.config as { projectDir?: string } | undefined)?.projectDir === this.projectDir()
       && (job.status === 'pending' || job.status === 'processing')));
   readonly running = signal(false);
   readonly completed = signal(false);
   readonly error = signal<string | null>(null);
-  readonly runState = signal<FoundryRunState | null>(null);
+  readonly runState = signal<StageView | null>(null);
   readonly resultLine = signal('');
   /** A run whose worker died with the app: real artifacts, nobody working. */
   readonly staleRun = signal(false);
+  /** The working document carries a block layer — the book is ready to curate. */
+  readonly documentReady = signal(false);
 
   private startTime = 0;
   readonly elapsedSeconds = signal(0);
   private elapsedTimer: ReturnType<typeof setInterval> | null = null;
   private unsubscribe: (() => void) | null = null;
-  /** Guards against emitting `foundryFinished` twice for the same run. */
+  /** Guards against announcing the same document state twice. */
   private announcedFinish = '';
 
   readonly corpusMode = computed(() => this.corpusBookDir().length > 0);
 
-  /** Fixed: this dialog runs scan → ocr → blocks and nothing else. */
+  /**
+   * Fixed: this dialog runs Get Text then Detect blocks, and nothing else.
+   *
+   * There is no "repair the text" step, and its absence is the point. Repairing
+   * what Tesseract misread happens inside Build the book, on the blocks that
+   * survived curation — so the running heads and footnotes deleted on the next
+   * screen cost no GPU at all. Naming it here would promise work this run does
+   * not do.
+   */
   readonly pipelineSteps = [
     { id: 'render', name: 'Render pages', note: '200 dpi grayscale' },
-    { id: 'scan', name: 'Find the lines', note: 'pinned Tesseract' },
-    { id: 'ocr', name: 'Repair the text', note: 'corrects what the scanner misread' },
+    { id: 'get-text', name: 'Read the pages', note: 'pinned Tesseract, written into the working PDF' },
     { id: 'blocks', name: 'Label the blocks', note: 'body, chapter, footnote, running head…' },
   ];
 
@@ -659,14 +686,47 @@ export class OcrSettingsModalComponent implements OnDestroy {
       if (state.bookDir !== this.corpusBookDir()) return;
       this.applyCorpusRunState(state);
     });
-    const unsubFoundry = this.electronService.onFoundryRunProgress((state) => {
-      if (state.bookKey !== this.bookKey()) return;
-      this.applyFoundryRunState(state);
-    });
-    this.unsubscribe = () => { unsubCorpus(); unsubFoundry(); };
 
-    // Attach on open. This is what makes reopening the dialog mid-run show the
-    // run rather than an invitation to start a second one.
+    // A document stage reports itself three ways — started, each line while it
+    // works, finished — and all three are keyed by PROJECT, because that is what
+    // a stage is about. There is no run to attach to and no run identity to
+    // match: the stage is a process, and when it stops there is nothing left
+    // holding a status.
+    const unsubStarted = this.electronService.onDocumentStageStarted((event) => {
+      if (event.projectDir !== this.projectDir()) return;
+      this.error.set(null);
+      this.completed.set(false);
+      this.running.set(true);
+      this.runState.set({ stage: event.stage, message: '', done: 0, total: 0 });
+      if (!this.elapsedTimer) this.startElapsedTimer(Date.now());
+    });
+    const unsubProgress = this.electronService.onDocumentStageProgress((event) => {
+      if (event.projectDir !== this.projectDir()) return;
+      this.running.set(true);
+      this.runState.set({
+        stage: event.stage,
+        message: event.message,
+        done: event.done,
+        total: event.total,
+      });
+    });
+    const unsubFinished = this.electronService.onDocumentStageFinished((event) => {
+      if (event.projectDir !== this.projectDir()) return;
+      this.running.set(false);
+      this.stopElapsedTimer();
+      // Whether the book is READY is a fact about the document, not about the
+      // stage that just stopped — a Get Text that finished is a book with no
+      // blocks yet. So it is read back off the document rather than inferred
+      // from the stage having ended.
+      void this.readDocumentState();
+    });
+
+    this.unsubscribe = () => {
+      unsubCorpus(); unsubStarted(); unsubProgress(); unsubFinished();
+    };
+
+    // On open. This is what makes reopening the dialog after a run show what the
+    // book actually carries rather than an invitation to read it again.
     effect(() => {
       const corpusDir = this.corpusBookDir();
       if (corpusDir) {
@@ -675,53 +735,50 @@ export class OcrSettingsModalComponent implements OnDestroy {
           .catch(err => console.error('[OCR] Could not read the corpus run state:', err));
         return;
       }
-      const key = this.bookKey();
-      if (!key) return;
-      void this.electronService.foundryRunAttach(key)
-        .then(({ state, cleared }) => {
-          // A failed run is swept by the attach, and the reason comes back
-          // exactly once. This panel is where somebody opened to ask what
-          // happened, so it says so in its own error line rather than showing
-          // the blank "nothing has been read yet" face that the sweep leaves.
-          if (cleared) {
-            this.error.set(
-              `The last run failed at the ${cleared.stage ?? 'foundry'} stage and was cleared, `
-              + `so nothing from it was kept: ${cleared.message}`);
-          }
-          if (state) this.applyFoundryRunState(state);
-        })
-        .catch(err => console.error('[OCR] Could not read the foundry run state:', err));
+      if (!this.projectDir()) return;
+      void this.readDocumentState();
     }, { allowSignalWrites: true });
   }
 
-  private applyFoundryRunState(state: FoundryRunState): void {
-    this.runState.set(state);
-
-    const running = state.status === 'running' && state.live;
-    this.running.set(running);
-    this.staleRun.set(state.status === 'running' && !state.live);
-    if (running && !this.elapsedTimer) this.startElapsedTimer(state.startedAt);
-
-    if (!running) {
-      this.stopElapsedTimer();
-      this.completed.set(state.status === 'done');
-      if (state.status === 'error') this.error.set(state.error ?? state.message);
-      if (state.status === 'done') {
-        this.error.set(null);
+  /**
+   * What this book's documents say has happened to them.
+   *
+   * The whole of "has this book been read yet", measured off the files: a marker
+   * means Get Text has run, annotations mean Blocks has. A book whose working
+   * document was never cast simply reports neither, which is an ordinary state
+   * and not an error — so nothing is said about it.
+   */
+  private async readDocumentState(): Promise<void> {
+    try {
+      const state = await this.electronService.documentState({
+        projectDir: this.projectDir(),
+        sourcePath: this.pdfPath(),
+      });
+      this.documentReady.set(state.stages.blocks);
+      this.completed.set(state.stages.blocks);
+      if (state.stages.blocks) {
         this.resultLine.set(
-          `${state.pages.length} ${state.pages.length === 1 ? 'page' : 'pages'} read. `
-          + 'The text and the block labels are on the pages now — scan through them, '
-          + 'delete anything that should not be in the book, then export.'
+          `${state.blockCount} block${state.blockCount === 1 ? '' : 's'} labelled across `
+          + `${this.totalPages()} page${this.totalPages() === 1 ? '' : 's'}. The text and the block `
+          + 'labels are in the working PDF now — scan through them, delete anything that should not '
+          + 'be in the book, then build it.'
         );
-        // Announced once per run. The window reads the run directory and paints
-        // it; this component deliberately never holds the blocks, because it is
-        // destroyed on close and a long run finishes most often after that.
-        const stamp = `${state.bookKey}:${state.updatedAt}`;
+        // Announced once per document state. The window re-reads the working
+        // document and paints it; this component deliberately never holds the
+        // blocks, because it is destroyed on close and a long run most often
+        // finishes after that.
+        const stamp = `${this.projectDir()}:${state.blockCount}`;
         if (this.announcedFinish !== stamp) {
           this.announcedFinish = stamp;
-          this.foundryFinished.emit({ bookKey: state.bookKey, pages: state.pages });
+          this.documentReadyToPaint.emit();
         }
       }
+    } catch (err) {
+      // A book with no working document yet is the ordinary case on first open
+      // and reads as "nothing has happened", not as a failure — the error names
+      // the stage that casts one, which is exactly what this dialog offers.
+      this.documentReady.set(false);
+      console.log('[OCR] No working document for this book yet:', (err as Error).message);
     }
   }
 
@@ -729,21 +786,10 @@ export class OcrSettingsModalComponent implements OnDestroy {
     const running = state.status === 'running';
     this.running.set(running);
     this.runState.set({
-      bookKey: state.bookDir,
-      runDir: state.bookDir,
-      pdfPath: '',
-      pages: [],
-      status: state.status === 'cancelled' ? 'cancelled' : state.status,
-      live: running,
-      stage: 'scan',
-      stageIndex: 1,
-      stageCount: 1,
+      stage: 'get-text',
       message: state.currentPage !== null ? `page ${state.currentPage + 1}` : '',
       done: state.journalPages,
       total: state.bookPages,
-      error: state.error,
-      startedAt: state.startedAt,
-      updatedAt: Date.now(),
     });
     if (running && !this.elapsedTimer) this.startElapsedTimer(state.startedAt);
     if (!running) {
@@ -760,13 +806,13 @@ export class OcrSettingsModalComponent implements OnDestroy {
     if (this.running() || this.queued()) return false;
     if (this.totalPages() <= 0) return false;
     if (this.corpusMode()) return true;
-    return !!this.bookKey() && !!this.pdfPath() && !!this.projectDir();
+    return !!this.pdfPath() && !!this.projectDir();
   }
 
   startLabel(): string {
-    // Only the corpus pipeline resumes. A project's OCR-correction pass starts
-    // the run directory over every time it is submitted, so "Resume" would be a
-    // button promising something the run does not do.
+    // Only the corpus pipeline resumes. Get Text REPLACES the working document
+    // every time it is submitted, so "Resume" would be a button promising
+    // something the stage does not do.
     if (this.staleRun() && this.corpusMode()) return 'Resume';
     return this.corpusMode() ? 'Start OCR' : 'Read this book';
   }
@@ -843,11 +889,11 @@ export class OcrSettingsModalComponent implements OnDestroy {
       if (this.corpusMode()) {
         await this.electronService.corpusOcrCancel(this.corpusBookDir());
       } else {
-        // Stops at the next stage boundary. Every artifact already written stays
-        // on disk and the editor can still read it — but starting the pass again
-        // does NOT resume from it: an OCR-correction pass reads the book from the
-        // page images every time.
-        await this.electronService.foundryRunCancel(this.bookKey());
+        // Aborted where it stands. foundry builds each update completely in
+        // memory and renames a staged temp into place, so a stopped stage leaves
+        // the working document exactly as it stood before it started — there is
+        // no half-written state to resume from, and none to clean up.
+        await this.electronService.documentCancelStage(this.projectDir());
       }
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
@@ -857,12 +903,11 @@ export class OcrSettingsModalComponent implements OnDestroy {
   // ── Display ───────────────────────────────────────────────────────────────
 
   stageIsDone(stage: string): boolean {
+    if (this.documentReady()) return true;
     const state = this.runState();
     if (!state) return false;
-    if (state.status === 'done') return true;
     const order = this.pipelineSteps.map(s => s.id);
-    const current = state.stage ? order.indexOf(state.stage) : -1;
-    return current > order.indexOf(stage);
+    return order.indexOf(state.stage) > order.indexOf(stage);
   }
 
   progressPercent(): number {
@@ -875,7 +920,10 @@ export class OcrSettingsModalComponent implements OnDestroy {
     const state = this.runState();
     if (!state) return '';
     const stage = this.pipelineSteps.find(s => s.id === state.stage);
-    const name = stage?.name ?? state.stage ?? 'Working';
+    // A stage the step list does not name still reports itself by its own name —
+    // this dialog submits two stages, and the queue may be running a third over
+    // the same book.
+    const name = stage ? stage.name : state.stage;
     if (state.total > 0) {
       return `${name} — ${state.done} of ${state.total}`;
     }

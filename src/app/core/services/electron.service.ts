@@ -690,132 +690,6 @@ export interface CorpusOcrRunStart {
   force?: boolean;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Foundry OCR pipeline
-//
-// Mirrors electron/foundry-run.ts. The renderer never constructs one of these;
-// it starts a run and reads what main reports, because the run belongs to main.
-// ─────────────────────────────────────────────────────────────────────────────
-
-export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'blocks' | 'footnotes';
-
-export interface FoundryRunState {
-  bookKey: string;
-  runDir: string;
-  pdfPath: string;
-  pages: number[];
-  status: 'running' | 'done' | 'error' | 'cancelled';
-  /**
-   * Whether a worker is actually behind this state. `running` and not `live`
-   * means the app died mid-run: real artifacts, nothing working on them.
-   */
-  live: boolean;
-  stage: FoundryRunStageName | null;
-  stageIndex: number;
-  stageCount: number;
-  /** foundry's own most recent progress line, verbatim. */
-  message: string;
-  done: number;
-  total: number;
-  error?: string;
-  startedAt: number;
-  updatedAt: number;
-}
-
-/** Why an attach came back empty, when it came back empty because it swept. */
-export interface FoundryRunCleared {
-  /** The stage that failed, or null when it failed before one started. */
-  stage: FoundryRunStageName | null;
-  /** foundry's own words for the failure. */
-  message: string;
-}
-
-/**
- * What attaching answers: the run, and — when there was a failed one — the
- * reason it was thrown away instead of handed over.
- *
- * `cleared` arrives EXACTLY ONCE, on the attach that swept it. Anything that
- * wants the user to see it must show it on that attach; a later attach reports
- * an empty book with no explanation, because that is now the truth.
- */
-export interface FoundryRunAttachment {
-  state: FoundryRunState | null;
-  cleared?: FoundryRunCleared;
-}
-
-/**
- * A foundry block in the picker's coordinate space.
- *
- * `id` is foundry's OWN block id, kept verbatim all the way through, so a box on
- * screen and a block in `blocks/blocks.json` are the same thing while the run is
- * painted. It is not an identity that OUTLIVES the run — the blocks stage
- * re-mints ids by position — so `line_ids` is what deletions are recorded as.
- */
-export interface FoundryPickerBlock {
-  id: string;
-  /** The block's scan lines, foundry's ids. The identity that survives a
-   *  blocks re-run, and what deletions are recorded as. */
-  line_ids: string[];
-  page: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  text: string;
-  font_size: number;
-  font_name: string;
-  char_count: number;
-  region: string;
-  category_id: string;
-  line_count: number;
-  is_ocr: true;
-  ocr_confidence: number;
-  line_boxes: Array<[number, number, number, number]>;
-}
-
-export interface FoundryRunResult {
-  bookKey: string;
-  runDir: string;
-  /** run.json's runId — the identity of the SCAN these line ids belong to. */
-  scanId: string;
-  pages: number[];
-  blocks: FoundryPickerBlock[];
-  /** The book's paragraph convention. `degraded` is reported, never hidden. */
-  calibration?: { convention: 'indent' | 'block' | 'none'; degraded: boolean; message: string };
-  /** True when the text came from the ocr stage rather than the raw scan. */
-  corrected: boolean;
-  correctedLines: number;
-  /** Model outputs the guards refused. Those lines shipped unchanged. */
-  refusedLines: number;
-  markersRemoved: number;
-  /** Deskew applied per document page — boxes were measured straightened. */
-  deskewByPage: Record<number, number>;
-  epubPath?: string;
-}
-
-/** One block the user retyped or relabelled, carried into `foundry export`. */
-export interface FoundryBlockOverride {
-  /** Foundry's own block id, verbatim. */
-  id: string;
-  /** The block's WHOLE text, as one line. */
-  text?: string;
-  /** A relabel. Must be a category foundry renders — see FOUNDRY_CATEGORY_IDS. */
-  category?: string;
-}
-
-export interface FoundryExportRequest {
-  bookKey: string;
-  /** Deleted SCAN LINE ids + the scan they belong to. Block ids are derived in
-   *  main — see shared/foundry/block-exclusions.ts. */
-  excludeLines: { scanId: string; lineIds: string[] };
-  excludeCategories: string[];
-  /** Text and category edits made in the picker. Absent means none. */
-  overrides?: FoundryBlockOverride[];
-  outputPath: string;
-  /** Absolute JPEG/PNG cover. Absent means the book has no cover. */
-  coverPath?: string;
-}
-
 /**
  * Tesseract's availability, as reported by the main process. Mirrors
  * OcrAvailability in electron/ocr-service.ts.
@@ -2559,42 +2433,6 @@ export class ElectronService {
   // and they are the product — nothing here summarizes them, and there is no
   // fallback to the legacy OCR engines.
 
-  /**
-   * The run for this book, if there is one — including a finished or cancelled
-   * one. A FAILED run is not one: main sweeps it and hands back `cleared`
-   * instead, once, naming the stage and quoting foundry. Callers that drop
-   * `cleared` on the floor are choosing to say nothing about a failure the user
-   * will otherwise experience as a book that silently forgot its OCR.
-   */
-  async foundryRunAttach(bookKey: string): Promise<FoundryRunAttachment> {
-    if (!this.isElectron) return { state: null, cleared: undefined };
-    const result = await (window as any).electron.foundry.runAttach(bookKey);
-    if (!result.success) {
-      throw new Error(result.error || 'Reading the OCR run state failed with no message.');
-    }
-    return { state: result.state ?? null, cleared: result.cleared };
-  }
-
-  async foundryRunCancel(bookKey: string): Promise<void> {
-    if (!this.isElectron) return;
-    const result = await (window as any).electron.foundry.runCancel(bookKey);
-    if (!result.success) {
-      throw new Error(result.error || 'Cancelling the OCR run failed with no message.');
-    }
-  }
-
-  /** The run directory's blocks and corrected text, in the picker's model. */
-  async foundryRunRead(bookKey: string): Promise<FoundryRunResult> {
-    if (!this.isElectron) {
-      throw new Error('Reading a foundry run needs the desktop app.');
-    }
-    const result = await (window as any).electron.foundry.runRead(bookKey);
-    if (!result.success || !result.result) {
-      throw new Error(result.error || 'Reading the OCR run failed with no message.');
-    }
-    return result.result;
-  }
-
   // ── The document pipeline ────────────────────────────────────────────────
   //
   // Every call names a project, and every failure is thrown with the message the
@@ -2704,25 +2542,6 @@ export class ElectronService {
   onDocumentStageFinished(callback: (e: { projectDir: string; stage: string }) => void): () => void {
     if (!this.isElectron) return () => { /* nothing subscribed */ };
     return (window as any).electron.document.onStageFinished(callback);
-  }
-
-  /** Exclusion list → `foundry export` → the project's export EPUB. */
-  async foundryExport(req: FoundryExportRequest): Promise<string> {
-    if (!this.isElectron) {
-      throw new Error('Exporting through foundry needs the desktop app.');
-    }
-    const result = await (window as any).electron.foundry.exportEpub(req);
-    if (!result.success || !result.epubPath) {
-      throw new Error(result.error || 'The foundry export failed with no message.');
-    }
-    return result.epubPath;
-  }
-
-  onFoundryRunProgress(callback: (state: FoundryRunState) => void): () => void {
-    if (this.isElectron) {
-      return (window as any).electron.foundry.onProgress(callback);
-    }
-    return () => {};
   }
 
   // Window control operations

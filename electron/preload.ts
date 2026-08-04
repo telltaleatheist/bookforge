@@ -190,98 +190,6 @@ export interface CorpusOcrRunStart {
   force?: boolean;
 }
 
-// ── Foundry OCR pipeline ────────────────────────────────────────────────────
-// Mirrors electron/foundry-run.ts. Re-declared rather than imported because
-// preload's declarations are the renderer's view of the wire, and the main
-// module reaches for `electron` at load.
-
-export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'blocks' | 'footnotes';
-
-export interface FoundryRunState {
-  bookKey: string;
-  runDir: string;
-  pdfPath: string;
-  pages: number[];
-  status: 'running' | 'done' | 'error' | 'cancelled';
-  /** False means the artifacts are real but nothing is working on them. */
-  live: boolean;
-  stage: FoundryRunStageName | null;
-  stageIndex: number;
-  stageCount: number;
-  message: string;
-  done: number;
-  total: number;
-  error?: string;
-  startedAt: number;
-  updatedAt: number;
-}
-
-/** A foundry block in the picker's coordinate space, keeping foundry's own id. */
-export interface FoundryPickerBlock {
-  id: string;
-  /** The block's scan lines, foundry's ids. The identity that survives a
-   *  blocks re-run, and what deletions are recorded as. */
-  line_ids: string[];
-  page: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  text: string;
-  font_size: number;
-  font_name: string;
-  char_count: number;
-  region: string;
-  category_id: string;
-  line_count: number;
-  is_ocr: true;
-  ocr_confidence: number;
-  line_boxes: Array<[number, number, number, number]>;
-}
-
-export interface FoundryRunResult {
-  bookKey: string;
-  runDir: string;
-  /** run.json's runId — the identity of the SCAN these line ids belong to. */
-  scanId: string;
-  pages: number[];
-  blocks: FoundryPickerBlock[];
-  calibration?: {
-    convention: 'indent' | 'block' | 'none';
-    degraded: boolean;
-    message: string;
-  };
-  corrected: boolean;
-  correctedLines: number;
-  refusedLines: number;
-  markersRemoved: number;
-  deskewByPage: Record<number, number>;
-  epubPath?: string;
-}
-
-/** One block the user retyped or relabelled, carried into `foundry export`. */
-export interface FoundryBlockOverride {
-  /** Foundry's own block id, verbatim. */
-  id: string;
-  /** The block's WHOLE text, as one line. */
-  text?: string;
-  /** A relabel. Must be a category foundry renders — see FOUNDRY_CATEGORY_IDS. */
-  category?: string;
-}
-
-export interface FoundryExportRequest {
-  bookKey: string;
-  /** Deleted SCAN LINE ids + the scan they belong to. Block ids are derived in
-   *  main — see shared/foundry/block-exclusions.ts. */
-  excludeLines: { scanId: string; lineIds: string[] };
-  excludeCategories: string[];
-  /** Text and category edits made in the picker. Absent means none. */
-  overrides?: FoundryBlockOverride[];
-  outputPath: string;
-  /** Absolute JPEG/PNG cover. Absent means the book has no cover. */
-  coverPath?: string;
-}
-
 // Plugin system types
 export interface PluginInfo {
   id: string;
@@ -1384,22 +1292,16 @@ export interface ElectronAPI {
     onProgress: (callback: (state: CorpusOcrRunState) => void) => () => void;
   };
   /**
-   * The foundry OCR pipeline: render → scan → ocr → blocks → [footnotes].
+   * Which foundry this machine has — the version banner, and the check the
+   * add-ons page runs.
    *
-   * The run lives in MAIN, so this surface is start / attach / cancel / watch
-   * and nothing that carries the work itself. A reload re-attaches; it never
-   * restarts.
+   * That is the whole of it. foundry's stages are reached through `document`
+   * below, because a stage is a transformation of one of this book's documents
+   * rather than a job with a life of its own; there is nothing here to start,
+   * attach to, cancel or read back.
    */
   foundry: {
     version: () => Promise<{ ok: boolean; path?: string; version?: string; commit?: string | null; error?: string }>;
-    runAttach: (bookKey: string) =>
-      Promise<{ success: boolean; state?: FoundryRunState | null; error?: string }>;
-    runCancel: (bookKey: string) => Promise<{ success: boolean; error?: string }>;
-    runRead: (bookKey: string) =>
-      Promise<{ success: boolean; result?: FoundryRunResult; error?: string }>;
-    exportEpub: (req: FoundryExportRequest) =>
-      Promise<{ success: boolean; epubPath?: string; error?: string }>;
-    onProgress: (callback: (state: FoundryRunState) => void) => () => void;
   };
   /**
    * The document pipeline: a book's working PDF and the book itself.
@@ -3052,17 +2954,6 @@ const electronAPI: ElectronAPI = {
   },
   foundry: {
     version: () => ipcRenderer.invoke('foundry:version'),
-    runAttach: (bookKey: string) => ipcRenderer.invoke('foundry:run-attach', bookKey),
-    runCancel: (bookKey: string) => ipcRenderer.invoke('foundry:run-cancel', bookKey),
-    runRead: (bookKey: string) => ipcRenderer.invoke('foundry:run-read', bookKey),
-    exportEpub: (req: FoundryExportRequest) => ipcRenderer.invoke('foundry:export', req),
-    onProgress: (callback: (state: FoundryRunState) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, state: FoundryRunState) => callback(state);
-      ipcRenderer.on('foundry:run-progress', listener);
-      return () => {
-        ipcRenderer.removeListener('foundry:run-progress', listener);
-      };
-    },
   },
   document: {
     state: (ref: DocumentRef) => ipcRenderer.invoke('document:state', ref),

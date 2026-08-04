@@ -27,6 +27,17 @@ export interface TextBlock {
   region: string;
   category_id: string;
   /**
+   * The block's place in the book's READING ORDER, as the working document
+   * states it (`/FoundrySeq`).
+   *
+   * Stated rather than implied by array order, because reading order has to
+   * survive a round trip through any reader that rewrote a page's `/Annots`
+   * array — and because two blocks claiming the same place is an error rather
+   * than an arbitrary tiebreak. Absent on blocks that did not come from a
+   * working document: a native PDF text-layer analysis has only page order.
+   */
+  seq?: number;
+  /**
    * Authored by the user, not by OCR or the PDF text layer — currently a chapter
    * box dropped where the page carries no usable chapter title.
    *

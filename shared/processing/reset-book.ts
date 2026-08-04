@@ -18,11 +18,15 @@
  * The pass kinds that name a stage directory — `manifest-service.passStageRelDir`
  * builds `stages/NN-<kind>` out of exactly these.
  *
- * `tesseract` is in the list because it is still a provenance KIND (see
- * docs/PROCESSING_PIPELINE_V2.md); it is not a job, but a directory named after
- * it could only have been made by this pipeline.
+ * The retired three are still in the list, and have to be: a reset is asked to
+ * clean up books this pipeline processed under older builds, and a directory
+ * named `stages/02-ocr-correction` could only have been made by it. Dropping the
+ * name would leave that directory behind forever.
  */
 export const PASS_STAGE_KINDS: readonly string[] = [
+  'get-text',
+  'blocks',
+  'reflow',
   'tesseract',
   'ocr-correction',
   'detection',
@@ -86,7 +90,19 @@ export function selectPassStageDirs(names: readonly string[]): string[] {
  * none here, and "not present" is a different statement from "deleted".
  */
 export interface BookResetItem {
-  kind: 'run-dir' | 'stage-dir' | 'book-epub' | 'provenance' | 'source-records';
+  /**
+   * `working-document` is the working PDF, its binding record and the
+   * machine-local scan scratch that goes with them — one set per PDF version,
+   * removed together because they only mean anything together (the binding is
+   * what says the working PDF was cast from THIS archive original, and the
+   * scratch is named after that original's hash).
+   *
+   * `run-dir` survives for the run directories an OLDER build left behind.
+   * Nothing this build makes is one; a reset is simply the only thing that ever
+   * has to find them, and hundreds of megabytes are worth removing.
+   */
+  kind: 'working-document' | 'run-dir' | 'stage-dir' | 'book-epub' | 'provenance'
+    | 'source-records';
   /** One line for the confirmation dialog and the result. */
   label: string;
   /** Absolute path for a file or directory; absent for a manifest record. */

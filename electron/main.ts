@@ -6579,72 +6579,6 @@ function setupIpcHandlers(): void {
   // category labels. The engine is tools/aligner/align-core.mjs — one
   // implementation shared with the batch CLI. Dev-tool: tools/ is not packaged,
   // and the handler says so instead of failing cryptically.
-  // ── Foundry CLI ─────────────────────────────────────────────────────────
-  // The standalone binary this app's page-layout model, OCR-repair contract and
-  // footnote-marker remover were extracted into (github.com/telltaleatheist/
-  // foundry). Every OCR run goes here and ONLY here — there is no fallback to the
-  // legacy engines; a missing binary or a missing GGUF is an error that names it.
-  // The legacy OCR code is still in the tree, but nothing the user drives reaches
-  // it. The migration is not finished until BookForge's own copies of the prompt
-  // formats are DELETED, which is the failure the whole extraction exists to
-  // prevent.
-  //
-  // A run is owned by MAIN (electron/foundry-run.ts), like Detect and corpus
-  // OCR: the ocr stage costs ~0.8s a line, and an `ng serve` reload must not be
-  // able to throw away half an hour of a book.
-  void (async () => {
-    const { onFoundryRunProgress } = await import('./foundry-run.js');
-    onFoundryRunProgress((state) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) win.webContents.send('foundry:run-progress', state);
-      }
-    });
-  })();
-
-  // There is no `foundry:run-start`. A run is started by a queue pass job and
-  // nowhere else (electron/processing-passes.ts): the renderer attaches, watches
-  // and reads. The handler that let a window start one directly was the picker's
-  // private path around the queue.
-  // The ONE clearing attach. Opening a book is where a dead failure gets swept
-  // and named; every other caller (the passes, the reset guard) reads.
-  ipcMain.handle('foundry:run-attach', async (_event, bookKey: string) => {
-    try {
-      const { attachOrClearFoundryRun } = await import('./foundry-run.js');
-      const { state, cleared } = attachOrClearFoundryRun(bookKey);
-      return { success: true, state, cleared };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('foundry:run-cancel', async (_event, bookKey: string) => {
-    try {
-      const { cancelFoundryRun } = await import('./foundry-run.js');
-      await cancelFoundryRun(bookKey);
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // The run directory, mapped into the picker's block model: foundry block ids
-  // kept verbatim, each block's scan line ids alongside them (the identity
-  // deletions are recorded as — block ids are re-minted by every blocks run),
-  // page indices translated back to document pages, pixels to points.
-  ipcMain.handle('foundry:run-read', async (_event, bookKey: string) => {
-    try {
-      const { readFoundryRun } = await import('./foundry-run.js');
-      return { success: true, result: readFoundryRun(bookKey) };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // There is no `foundry:export`. Reflow is the ONE exporter (`document:reflow`),
-  // and it reads the working document rather than a run directory — so there is
-  // no second book-builder for a gate to choose between, and no orphaned run
-  // object an export can be refused on.
-
   // ── Processing passes ───────────────────────────────────────────────────
   // ONE run handler for all five pass types: the pass kind is in the config, and
   // every pass has the same contract (transform the project's book, leave a diff,
@@ -6749,6 +6683,21 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ── Foundry CLI ─────────────────────────────────────────────────────────
+  // The standalone binary this app's page-layout model, OCR-repair contract and
+  // footnote-marker remover were extracted into (github.com/telltaleatheist/
+  // foundry). Every OCR run goes here and ONLY here — there is no fallback to the
+  // legacy engines; a missing binary or a missing GGUF is an error that names it.
+  //
+  // `foundry:version` is the whole surface. There is no `foundry:run-start`,
+  // `-attach`, `-cancel`, `-read`, `-progress` or `foundry:export`, and their
+  // absence IS the document pipeline (docs/DOCUMENT_PIPELINE.md): a stage is a
+  // transformation of a file in the project, so what a window asks about is the
+  // DOCUMENT (`document:*`, electron/document-ipc.ts) and the answer it gets is
+  // the document as it stands. A run object that could be attached to, swept, or
+  // refused an export on was a record of work rather than the work itself, and
+  // every one of its consumers was reading it to guess at something the file on
+  // disk says outright.
   ipcMain.handle('foundry:version', async () => {
     const { foundryVersion } = await import('./foundry-bridge.js');
     try {
@@ -10880,6 +10829,19 @@ app.on('before-quit', async (event) => {
 
   console.log('[MAIN] Running cleanup before quit...');
 
+  // Stop whatever document stage is mid-flight. Each one owns a foundry process
+  // which owns a llama-server holding several GB on the GPU; closing the window
+  // without aborting leaves both running with nothing left to report to. The
+  // abort is what foundry's own staged-temp discipline needs to leave the
+  // working document exactly as it stood.
+  try {
+    const { abortAllStages } = await import('./document-stage-registry.js');
+    const stopped = abortAllStages();
+    if (stopped > 0) console.log(`[MAIN] Stopped ${stopped} document stage(s)`);
+  } catch (err) {
+    console.warn('[MAIN] Could not stop the document stages:', err);
+  }
+
   // Stop the built-in page-layout server. Several GB of resident weights, and a
   // detached llama-server would outlive the app that spawned it.
   try {
@@ -10887,22 +10849,6 @@ app.on('before-quit', async (event) => {
     await stopBlocksServer();
   } catch (err) {
     console.warn('[MAIN] Could not stop the page-layout model server:', err);
-  }
-
-
-  // A foundry OCR run: killing the process would leave its llama-server
-  // holding several GB with nothing left to stop it. Every artifact written so
-  // far stays on disk and the editor can still read it — but the pass does not
-  // resume from it: submitting an OCR correction again reads the book from the
-  // page images.
-  try {
-    const { cancelAllFoundryRuns, foundryRunActive } = await import('./foundry-run.js');
-    if (foundryRunActive()) {
-      console.log('[MAIN] Stopping the foundry OCR run...');
-      await cancelAllFoundryRuns();
-    }
-  } catch (err) {
-    console.warn('[MAIN] Could not stop the foundry run:', err);
   }
 
   // Release the category model. Ollama keeps it resident on its own idle timer

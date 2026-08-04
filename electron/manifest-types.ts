@@ -142,24 +142,21 @@ export interface ManifestSource {
   fetchedAt?: string;
   deletedBlockIds?: string[];
   /**
-   * The same deletions, said in the identity that survives an ocr/blocks re-run.
+   * INERT. The scan-line identity a deletion used to be recorded under, from
+   * when block ids were re-minted by every blocks run and the exporter had to
+   * re-resolve them against the scan on disk.
    *
-   * Foundry block ids are re-minted by position every time the blocks stage
-   * runs, so `deletedBlockIds` above is only usable while the run that painted
-   * it is the run on disk. This is what the exporter reads instead — see
-   * `shared/foundry/block-exclusions.ts`. Absent on a project that has never
-   * been through a foundry run, and on one whose deletions predate the record.
+   * Nothing reads it any more: a deletion is `/FoundryDeleted` on the block's own
+   * annotation in the working document, which is the block itself rather than a
+   * name for it, so there is nothing left to re-resolve and nothing that can go
+   * stale. Still declared because manifests on disk carry it and a type that
+   * refused to admit a field the file has would make those projects unreadable.
    */
   deletedBlockLines?: { scanId: string; lineIds: string[] };
   /**
-   * The foundry `title` units the editor's one-title rule has already ruled on,
-   * in the same scan-stamped line identity as `deletedBlockLines` above — and
-   * for the same reason: block ids do not outlive a blocks run.
-   *
-   * A ruling the user REVERSED is the thing this protects; without it the rule
-   * re-deletes a part card on every open. When the stamp does not match the run
-   * on disk the record is void and the rule rules afresh, which is safe here
-   * precisely because it is an auto-decision (see `blockIdsCoveredByLines`).
+   * INERT, for the same reason as `deletedBlockLines` above: the editor's
+   * one-title rule is gone, and a relabel is now a category written into the
+   * block's own annotation rather than a ruling held beside it.
    */
   foundryAutoDiscardedLines?: { scanId: string; lineIds: string[] };
   pageOrder?: number[];

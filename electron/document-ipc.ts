@@ -41,27 +41,15 @@ import {
   type DocumentProject,
   type DocumentStageProgress,
 } from './document-stages';
-import { readWorkingDocumentBlocks, type WorkingBlockAnnotation } from './working-document';
+import { readWorkingDocumentBlocks } from './working-document';
 import { applyWorkingDocumentEdits, type WorkingDocumentEdit } from './working-document-writer';
+import { abortStageFor, beginStage } from './document-stage-registry';
 import { workingDocumentPath } from './document-binding';
-import type { ResetTarget } from './document-binding';
-
-/** What the renderer names a document by: its project, and which version. */
-interface DocumentRef {
-  projectDir: string;
-  variantId?: string;
-  sourcePath?: string;
-}
-
-/**
- * The stages a window started, so it can stop them.
- *
- * Keyed by project directory because that is what a stage is ABOUT — two windows
- * on one book are two views of one document, and the second asking to detect
- * while the first is detecting is not two runs. Starting a stage that is already
- * running is refused rather than queued: the two would write into the same file.
- */
-const running = new Map<string, AbortController>();
+import type {
+  DocumentBlocksPayload,
+  DocumentRef,
+  ResetTarget,
+} from '../shared/document/pipeline-types';
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -94,14 +82,11 @@ async function withStage<T>(
     onProgress: (progress: DocumentStageProgress) => void;
   }) => Promise<T>
 ): Promise<T> {
-  if (running.has(project.projectDir)) {
-    throw new Error(
-      `A ${stage} stage is already working on this book. Wait for it to finish, or stop it, before `
-      + 'starting another — both would write into the same working document.'
-    );
-  }
   const controller = new AbortController();
-  running.set(project.projectDir, controller);
+  // Claimed in the shared registry rather than a map private to this module: a
+  // reset has to be able to see a stage the QUEUE started, and quit has to be
+  // able to stop one either of us started.
+  const release = beginStage(project.projectDir, stage, controller);
   broadcast('document:stage-started', { projectDir: project.projectDir, stage });
   try {
     return await run({
@@ -112,23 +97,11 @@ async function withStage<T>(
       },
     });
   } finally {
-    running.delete(project.projectDir);
+    release();
     broadcast('document:stage-finished', { projectDir: project.projectDir, stage });
   }
 }
 
-export interface DocumentBlocksPayload {
-  /** The pixel frame the geometry was measured in, and what the document is. */
-  documentClass: 'scanned' | 'text';
-  dpi: number;
-  pages: Array<{
-    index: number;
-    /** `[x0,y0,x1,y1]` of the crop box, PDF user space — the painter's frame. */
-    cropBox: [number, number, number, number];
-    deleted: boolean;
-  }>;
-  blocks: WorkingBlockAnnotation[];
-}
 
 let registered = false;
 
@@ -280,10 +253,7 @@ export function registerDocumentIpc(): void {
   });
 
   ipcMain.handle('document:cancel-stage', async (_event, projectDir: string) => {
-    const controller = running.get(projectDir);
-    if (!controller) return { success: true, stopped: false };
-    controller.abort();
-    return { success: true, stopped: true };
+    return { success: true, stopped: abortStageFor(projectDir) };
   });
 
   /**

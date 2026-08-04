@@ -1,4 +1,4 @@
-import { Component, inject, signal, computed, HostListener, ViewChild, ElementRef, effect, DestroyRef, ChangeDetectionStrategy, input, output, OnInit } from '@angular/core';
+import { Component, inject, signal, computed, untracked, HostListener, ViewChild, ElementRef, effect, DestroyRef, ChangeDetectionStrategy, input, output, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
@@ -15,6 +15,13 @@ import {
   ToolbarItem,
   DesktopButtonComponent
 } from '../../creamsicle-desktop';
+import { DocumentBlocksService } from './services/document-blocks.service';
+import {
+  DOCUMENT_STAGE_LABELS,
+  DocumentNavComponent,
+  DocumentNavTab,
+} from './components/document-nav/document-nav.component';
+import type { DocumentRef, ResetTarget } from '@shared/document/pipeline-types';
 import { PdfViewerComponent, CropRect } from './components/pdf-viewer/pdf-viewer.component';
 import { CleanupPanelComponent } from './components/cleanup-panel/cleanup-panel.component';
 import { AnalysisPanelComponent } from './components/analysis-panel/analysis-panel.component';
@@ -23,7 +30,6 @@ import { RegexCriteria, defaultRegexCriteria } from './components/regex-category
 import { FilePickerComponent } from './components/file-picker/file-picker.component';
 import { CropPanelComponent } from './components/crop-panel/crop-panel.component';
 import { SplitPanelComponent, SplitConfig } from './components/split-panel/split-panel.component';
-import { ChaptersPanelComponent } from './components/chapters-panel/chapters-panel.component';
 import { PipelineBarComponent, PipelineStation } from './components/pipeline-bar/pipeline-bar.component';
 import { ParagraphPanelComponent } from './components/paragraph-panel/paragraph-panel.component';
 import { computeBaselines, learnFromBreaks, detectParagraphBreaks, getDefaultConfig, type DetectionStats, type DetectionConfig, type DocumentBaselines } from './services/paragraph-detector';
@@ -36,11 +42,8 @@ import { ExportSettingsModalComponent, ExportSettings, ExportResult, ExportForma
 import { BackgroundProgressComponent, BackgroundJob } from './components/background-progress/background-progress.component';
 import { OcrJobService, OcrJob } from './services/ocr-job.service';
 import { TaskRailComponent } from './components/task-rail/task-rail.component';
-import { BLOCK_CATEGORIES, normalizeCategories, UNLABEL_CATEGORY, isFoundryCategory } from '@shared/ocr/block-categories';
+import { BLOCK_CATEGORIES, normalizeCategories, UNLABEL_CATEGORY } from '@shared/ocr/block-categories';
 import { OCR_RENDER_SCALE } from '@shared/ocr/ocr-render';
-import {
-  blockIdsCoveredByLines, isFoundryBlockId, planFoundryExclusions,
-} from '@shared/foundry/block-exclusions';
 import {
   CORPUS_PAGE_TYPE_NAMES, bookModalFontSize, planPageTypeLabels, type CorpusPageType,
 } from '@shared/ocr/page-types';
@@ -72,11 +75,6 @@ interface OpenDocument {
   pageDimensions: PageDimension[];
   totalPages: number;
   deletedBlockIds: Set<string>;
-  /** Per-document, like the deletions it records: the foundry title units this
-   *  document's one-title rule has already ruled on (see applyFoundryTitleRule).
-   *  The WORKING set — current block ids. `foundryAutoDiscardedLines` below is
-   *  the form that outlives them. */
-  foundryAutoDiscardedIds?: Set<string>;
   deletedPages: Set<number>;  // Pages excluded from export
   selectedBlockIds: string[];
   pageOrder: number[]; // Custom page order for organize mode
@@ -118,28 +116,6 @@ interface OpenDocument {
    * the original, and only the derived one is forbidden to save.
    */
   projectStateNotApplied?: boolean;
-  /**
-   * Whether a foundry run has been painted onto THIS document, and the run's own
-   * text/page ledger for it (see foundryRunLoaded / foundryArtifactText /
-   * foundryArtifactPage).
-   *
-   * Per-document for the same reason `blocks` is: a run is a reading of ONE
-   * file. Left on the component they outlive the tab that earned them, and the
-   * next document opened is treated as foundry-backed — its export routed
-   * through a run directory that never read it, its chapter edits interpreted as
-   * marker edits, its blocks compared against another book's baseline text.
-   */
-  foundryRunLoaded?: boolean;
-  foundryArtifactText?: Map<string, string>;
-  foundryArtifactPage?: Map<string, number>;
-  /** Block id → its scan lines, and the scan they belong to. What deletions are
-   *  recorded as, because block ids do not survive a blocks re-run. */
-  foundryArtifactLines?: Map<string, readonly string[]>;
-  foundryScanId?: string;
-  /** The persisted deletion record for this tab's project. */
-  foundryDeletedLines?: { scanId: string; lineIds: string[] } | null;
-  /** The persisted one-title-rule ledger for this tab's project, same identity. */
-  foundryAutoDiscardedLines?: { scanId: string; lineIds: string[] } | null;
 }
 
 // Serializable custom category for project persistence
@@ -241,32 +217,6 @@ interface BookForgeProject {
    */
   exported_epub_path?: string;
   deleted_block_ids?: string[];
-  /**
-   * The foundry deletions in the identity that survives a blocks re-run: the
-   * SCAN LINE ids the deleted blocks held, and the scan they belong to.
-   *
-   * `deleted_block_ids` above is the editor's working set and is keyed to
-   * whatever block ids are painted at the time. Foundry re-mints those by
-   * position every time its blocks stage runs, so after an OCR-correction pass
-   * they name other blocks — which is why the exporter reads THIS instead. See
-   * `@shared/foundry/block-exclusions`.
-   */
-  deleted_block_lines?: { scanId: string; lineIds: string[] };
-  /**
-   * LEGACY, never written any more: the one-title rule's ledger keyed to foundry
-   * BLOCK ids. Those are re-minted by every blocks run, so a loaded value names
-   * nothing or — worse — names other blocks, which for this ledger means the
-   * rule silently re-deletes a unit the user restored, or leaves one it should
-   * have ruled on. It is discarded on load with a warning naming the project,
-   * never resolved against the blocks on screen.
-   */
-  foundry_auto_discarded_ids?: string[];
-  /**
-   * The same ledger in the identity that survives a blocks re-run: the SCAN LINE
-   * ids of the units already ruled on, and the scan they belong to. Mapped back
-   * to current block ids when a run paints — see reattachFoundryAutoDiscarded.
-   */
-  foundry_auto_discarded_lines?: { scanId: string; lineIds: string[] };
   deleted_highlight_ids?: string[];  // Deleted custom category highlights
   page_order?: number[];  // Custom page order for organize mode
   custom_categories?: CustomCategoryData[];  // User-created categories with regex/sample matches
@@ -362,25 +312,6 @@ const CATEGORY_SHORTCUTS: Record<string, string> = {
 const UNCERTAIN_CONFIDENCE = 0.15;
 
 /**
- * The foundry categories painted as one-line editable markers, and merged with
- * their same-page neighbours. The same two foundry's exporter treats as section
- * openers, deliberately: a marker in the picker is a section label in the EPUB,
- * and a third category here would be a marker that opens nothing.
- */
-const FOUNDRY_MARKER_CATEGORIES = new Set(['chapter', 'title']);
-
-/**
- * The longest a later `title` unit may be and still read as a part card.
- *
- * A part card is a few printed words alone on a page ("OMENS"); an interior
- * title page is the title, the subtitle, the author and whatever the fleurons
- * OCR'd as, which is always longer. Measured against real books, not tuned: the
- * Barnett title-page pile merges to 84 characters and the shortest thing on the
- * other side of the line is a part number.
- */
-const FOUNDRY_PART_CARD_MAX_CHARS = 60;
-
-/**
  * Stations on the embedded audiobook-prep path, in order.
  *
  * There is one editing station: everything the user does to the book — modes,
@@ -418,7 +349,7 @@ interface AlertModal {
     FilePickerComponent,
     CropPanelComponent,
     SplitPanelComponent,
-    ChaptersPanelComponent,
+    DocumentNavComponent,
     PipelineBarComponent,
     ParagraphPanelComponent,
     TabBarComponent,
@@ -704,10 +635,6 @@ interface AlertModal {
               [showOcrTextBlocks]="showOcrTextLayer()"
               [blankedPages]="blankedPages()"
               [pageImages]="pageImages()"
-              [chapters]="chapters()"
-              [chaptersMode]="chaptersMode()"
-              [chaptersTabActive]="activePanel() === 'chapters'"
-              [foundryChapters]="foundryRunLoaded()"
               [tocSelectedBlockIds]="tocSelectedBlockIdSet()"
               [isEpub]="isCurrentDocumentEpub()"
               [splitOriginalBlockIds]="splitOriginalBlockIds()"
@@ -727,15 +654,7 @@ interface AlertModal {
               (paragraphBreakDelete)="deleteParagraphBreak($event)"
               (paragraphBreakMove)="moveParagraphBreak($event)"
               (blockClick)="onBlockClick($event)"
-              (chapterClick)="onChapterClick($event)"
-              (chapterPlacement)="onChapterPlacement($event)"
-              (chapterGutterDrop)="onChapterGutterDrop($event)"
               (chapterFromBlocks)="onChapterFromBlocks($event)"
-              (chapterDrag)="onChapterDrag($event)"
-              (chapterDelete)="removeChapter($event)"
-              (chapterSelect)="selectChapter($event)"
-              (chapterRename)="renameChapter($event)"
-              (chapterLevelChange)="changeChapterLevel($event)"
               (pageDeleteToggle)="togglePageDeleted($event)"
               (pageSelect)="onPageSelect($event)"
               (deleteSelectedPages)="onDeleteSelectedPages($event)"
@@ -760,11 +679,6 @@ interface AlertModal {
               (sampleMouseDown)="onSampleMouseDown($event.event, $event.page, $event.pageX, $event.pageY)"
               (sampleMouseMove)="onSampleMouseMove($event.pageX, $event.pageY)"
               (sampleMouseUp)="onSampleMouseUp()"
-              [chapterBoxMode]="chapterBoxMode()"
-              [chapterBoxCurrentRect]="chapterBoxDrawingRect()"
-              (chapterBoxMouseDown)="onChapterBoxMouseDown($event.event, $event.page, $event.pageX, $event.pageY)"
-              (chapterBoxMouseMove)="onChapterBoxMouseMove($event.pageX, $event.pageY)"
-              (chapterBoxMouseUp)="onChapterBoxMouseUp()"
               (blockMoved)="onBlockMoved($event)"
               (blockDragEnd)="onBlockDragEnd($event)"
               [getPageImageUrl]="getPageImageUrlFn"
@@ -844,48 +758,16 @@ interface AlertModal {
                 (deskewAllPages)="deskewAllPages()"
               />
             }
-            @case ('chapters') {
-              <app-chapters-panel
-                [chapters]="chapters()"
-                [chaptersSource]="chaptersSource()"
-                [detecting]="detectingChapters()"
-                [finalizing]="finalizingChapters()"
-                [selectedChapterId]="selectedChapterId()"
-                [tocMode]="tocMode()"
-                [tocEntryCount]="tocBlockIds().length"
-                [tocStep]="tocStep()"
-                [tocLines]="tocLines()"
-                [tocCheckedIndexes]="tocCheckedIndexes()"
-                (cancel)="activatePanel(null)"
-                (autoDetect)="autoDetectChapters()"
-                (findSimilarChapters)="findSimilarChapters()"
-                (toggleTocMode)="toggleTocMode()"
-                [chapterBoxMode]="chapterBoxMode()"
-                (toggleChapterBoxMode)="chapterBoxMode.set(!chapterBoxMode())"
-                (splitTocBlocks)="splitTocBlocks()"
-                (mapTocEntries)="mapTocEntries()"
-                (toggleTocLineCheck)="toggleTocLineCheck($event)"
-                (tocGoBack)="tocGoBackToBlocks()"
-                (clearChapters)="clearAllChapters()"
-                (selectChapter)="selectChapter($event)"
-                (removeChapter)="removeChapter($event)"
-                (renameChapter)="renameChapter($event)"
-                (changeLevelChapter)="changeChapterLevel($event)"
-                (finalizeChapters)="finalizeChapters()"
-              />
-            }
             @case ('paragraphs') {
               <app-paragraph-panel
                 [paragraphBreaks]="editorState.paragraphBreaks()"
                 [detectionStats]="paragraphDetectionStats()"
                 [detectionConfig]="paragraphDetectionConfig()"
                 [baselines]="paragraphBaselines()"
-                [paragraphFixMode]="paragraphFixMode()"
                 (detect)="detectParagraphs()"
                 (clearAll)="clearParagraphs()"
                 (configChange)="onParagraphConfigChange($event)"
                 (done)="activatePanel(null)"
-                (finishFix)="finishParagraphFix()"
               />
             }
             @case ('ocr') {
@@ -914,8 +796,7 @@ interface AlertModal {
                 (merge)="mergeAdjacentBlocks()"
               />
             }
-            @default {
-              <!-- null (default) and cleanup both use the cleanup panel -->
+            @case ('cleanup') {
               <app-cleanup-panel
                 [categories]="categoriesArray()"
                 [hiddenCategoryIds]="hiddenCategoryIds()"
@@ -960,6 +841,36 @@ interface AlertModal {
                 (regexCriteriaChange)="onRegexCriteriaChange($event)"
                 (regexCreate)="onRegexCreate($event)"
                 (regexExpandedChange)="onRegexExpandedChange($event)"
+              />
+            }
+            @default {
+              <!--
+                The default nav, and the one the spec calls THE right-side nav:
+                Detect over Select / Label / Chapter. Everything else in this
+                switch is a tool that takes over the pointer for a while and
+                hands it back.
+              -->
+              <app-document-nav
+                [blocks]="textLayerFilteredBlocks()"
+                [selectedBlockIds]="selectedBlockIds()"
+                [chapterBlocks]="documentBlocks.chapterBlocks()"
+                [state]="documentBlocks.state()"
+                [stageRunning]="documentBlocks.stageRunning()"
+                [stageMessage]="documentBlocks.stageMessage()"
+                [lastError]="documentBlocks.lastError()"
+                [hasDocument]="workingDocumentOpen()"
+                [tab]="navTab()"
+                (tabChange)="setNavTab($event)"
+                (detect)="runDetect()"
+                (cancelStage)="documentBlocks.cancelStage()"
+                (selectCategory)="selectAllOfCategory({ categoryId: $event, additive: false })"
+                (assignCategory)="assignSelectedToCategory($event)"
+                (selectAll)="selectAllBlocks()"
+                (deselectAll)="clearSelection()"
+                (merge)="mergeSelectedBlocks()"
+                (chapterClick)="selectChapter($event)"
+                (retitle)="retitleChapterBlock($event)"
+                (resetTo)="resetToStage($event)"
               />
             }
           }
@@ -1228,12 +1139,12 @@ interface AlertModal {
         [documentName]="pdfName()"
         [lightweightMode]="lightweightMode()"
         [pdfPath]="effectivePath()"
-        [bookKey]="foundryBookKey()"
+        [bookKey]="bookKey()"
         [projectDir]="projectPath() || ''"
         [corpusBookDir]="corpusBook()?.dir || ''"
         (close)="showOcrSettings.set(false)"
         (ocrCompleted)="onOcrCompleted($event)"
-        (foundryFinished)="onFoundryFinished($event)"
+        (documentReadyToPaint)="onDocumentReadyToPaint()"
         (backgroundJobStarted)="onBackgroundOcrStarted($event)"
       />
     }
@@ -2728,6 +2639,12 @@ export class PdfPickerComponent implements OnInit {
   // Injected services for state management
   readonly editorState = inject(PdfEditorStateService);
   readonly projectService = inject(ProjectService);
+  /**
+   * The block layer of `<Original>.working.pdf`. Public because the right-side
+   * nav is bound straight to it — reading the document through a second set of
+   * component signals is exactly the copy this pipeline exists to remove.
+   */
+  readonly documentBlocks = inject(DocumentBlocksService);
 
   /** Unsubscribe functions for pdf:text-ready events, keyed by document ID */
   private textReadyUnsubs = new Map<string, () => void>();
@@ -2740,57 +2657,26 @@ export class PdfPickerComponent implements OnInit {
   });
 
   /**
-   * Rejoin a FOUNDRY run for the book that just opened, and paint it if it
-   * finished while nobody was watching.
+   * Read the working document for the book that just opened.
    *
    * Readiness is `pdfLoaded`, not a non-empty block list: a scan has no blocks
-   * until foundry has read it, which is exactly the case this is here to
-   * recover. A run still working is left alone — its own progress events will
-   * arrive, and the modal shows them when it is opened.
+   * of its own until Get Text and Detect have run, which is exactly the state
+   * this has to be able to open into.
    *
-   * NEVER for a corpus book. A corpus book's blocks are the segmentation its
-   * labels.json is keyed to, and foundry's are a different reading of the same
-   * paper under different ids — painted over the corpus universe, every label
-   * the user then makes is against an id the corpus does not have, and the save
-   * guard refuses the lot at the end of the session. `corpusMode()` is read
-   * before the key is consumed so the run still attaches if the same file is
-   * later opened as an ordinary document.
+   * Keyed to the ref rather than run once, because one window opens many books
+   * — a tab switch, the pipeline's swap to the review EPUB — and each of them
+   * has its own documents. A book with no ref (a corpus book, a loose file) is
+   * not a failure to open: `loadWorkingDocument` reads that as "there is nothing
+   * to open" and leaves the editor's own block list alone.
    */
-  private foundryAttachedKey = '';
-  private readonly foundryReattachEffect = effect(() => {
-    if (this.corpusMode()) return;
-    // The document ON SCREEN — see detectBookKey(). Read inline so that "nothing
-    // is loaded" stays falsy.
-    const key = this.effectivePath();
-    if (!key || !this.pdfLoaded() || this.foundryAttachedKey === key) return;
-    this.foundryAttachedKey = key;
-    void (async () => {
-      try {
-        const { state, cleared } = await this.electronService.foundryRunAttach(key);
-        // The one moment the sweep is reported. It is not an interruption about
-        // work nobody asked for — it is the answer to "where did my OCR go",
-        // and main hands it over exactly once, so not showing it here means
-        // never showing it.
-        if (cleared) {
-          this.showAlert({
-            type: 'warning',
-            title: 'The last OCR run failed and was cleared',
-            message:
-              `The ${cleared.stage ?? 'foundry'} stage failed, so nothing from that run was kept:\n\n` +
-              `${cleared.message}\n\n` +
-              'Run it again when you have dealt with the cause.',
-          });
-        }
-        if (state?.status !== 'done') return;
-        await this.loadFoundryRun();
-      } catch (err) {
-        // Not fatal: a book with no run, or a run this build cannot read, is a
-        // book that simply has not been through foundry. The message is logged
-        // rather than shown, because opening a book is not the moment to
-        // interrupt somebody about an OCR pass they have not asked for yet.
-        console.warn('[foundry] could not re-attach to a run for this book:', err);
-      }
-    })();
+  private openedDocumentKey = '';
+  private readonly workingDocumentEffect = effect(() => {
+    const ref = this.workingDocumentRef();
+    if (!this.pdfLoaded()) return;
+    const key = ref ? `${ref.projectDir}|${ref.sourcePath ?? ''}` : '';
+    if (this.openedDocumentKey === key) return;
+    this.openedDocumentKey = key;
+    void this.loadWorkingDocument();
   });
 
   // Tab persistence - localStorage keys
@@ -3072,6 +2958,12 @@ export class PdfPickerComponent implements OnInit {
    * Initialize component - handles embedded mode auto-loading and tab restoration
    */
   ngOnInit(): void {
+    // A stage's own most recent line, as it runs, for the nav to show verbatim.
+    // Torn down with the component so a second window's stages are not narrated
+    // into this one's.
+    const unwatch = this.documentBlocks.watchProgress();
+    this.destroyRef.onDestroy(unwatch);
+
     const corpusDir = this.corpusPath();
     if (corpusDir) {
       // Training-corpus book: blocks and labels come from the corpus folder,
@@ -3410,28 +3302,11 @@ export class PdfPickerComponent implements OnInit {
   readonly pipelineStep = signal<PipelineStep>('select');
   private pipelineTransitioning = false; // guard to prevent reset during transitions
 
-  /**
-   * Was the EPUB now under review produced by the markup-preserving export?
-   *
-   * The review station always has an EPUB loaded, so the loaded file's extension
-   * cannot answer this — a PDF's rebuilt exported.epub looks identical to a
-   * preserved one. It decides whether finishing the pipeline may write the review's
-   * edits back into the file (a rebuild, fine for a PDF) or must refuse to
-   * (it would flatten a preserved book). Cleared on return to editing.
-   */
-  private reviewExportWasPreserving = false;
-
-  /**
-   * Was the EPUB now under review produced by FOUNDRY's exporter?
-   *
-   * Same problem, same shape as `reviewExportWasPreserving`: at the review
-   * station the loaded file cannot say who wrote it. The first end-to-end run
-   * (Aug 1 2026) proved why this must exist — pipelineComplete rebuilt the
-   * review's blocks with `saveToEpub` and overwrote foundry's exported.epub
-   * with a legacy rebuild, 8 seconds after foundry wrote it. A foundry export
-   * is FINAL: the review is read-only, and edits mean "go back and re-export".
-   */
-  private reviewExportWasFoundry = false;
+  // The review station used to have to remember WHICH exporter produced the
+  // file it was showing, because finishing the pipeline wrote the review's own
+  // re-extracted blocks back over it — which was right for one exporter and
+  // destroyed the other's work. There is one exporter per source now and it is
+  // finished when it returns, so there is nothing left to remember.
 
   // ── Bottom-bar station model ──────────────────────────────────────────────
   // The path is Prepare → Review. 'select' is visited from the start. Returning
@@ -3669,25 +3544,6 @@ export class PdfPickerComponent implements OnInit {
    * saying so. Not persisted: it is a glance, not a decision about the book.
    */
   readonly hiddenCategoryIds = signal<Set<string>>(new Set());
-
-  /**
-   * Chapter-box mode: drag a rectangle on the page and type the chapter name
-   * into it. For books where OCR produced no usable chapter title, or the page
-   * simply has no printed heading.
-   *
-   * It creates a real block categorised `chapter`, not a free-standing marker,
-   * so it flows through the same category-derived chapter planning the exporter
-   * uses and counts as a hand label for training.
-   */
-  readonly chapterBoxMode = signal(false);
-  readonly chapterBoxDrawingRect = signal<{ page: number; x: number; y: number; width: number; height: number } | null>(null);
-  /** Live drag state, plus the page→screen mapping captured at mousedown so the
-   *  inline editor can be opened over the box without a second render pass. */
-  private chapterBoxDrag: {
-    page: number; startX: number; startY: number; currentX: number; currentY: number;
-    originLeft: number; originTop: number; scaleX: number; scaleY: number;
-  } | null = null;
-
 
   readonly analysisCategories = signal<Array<{
     id: string;
@@ -4162,35 +4018,40 @@ export class PdfPickerComponent implements OnInit {
   // Task/panel state. `activePanel` is the single source of truth for the
   // right pane and viewer overlay; `viewerInteraction` is the pointer mode
   // (select/edit), independent of which task panel is open.
-  readonly activePanel = signal<PanelId | null>(null);   // null = default panel (cleanup)
+  readonly activePanel = signal<PanelId | null>(null);   // null = the document nav
   readonly viewerInteraction = signal<'select' | 'edit'>('select');
 
   /**
-   * The one rail row shown as current: the open panel, or — with no panel open
-   * — whichever pointer mode is live. The rail is the mode switcher, so this is
-   * what tells the user where they are.
-   */
-  readonly railCurrent = computed<PanelId>(() => this.activePanel() ?? this.viewerInteraction());
-
-  /**
-   * Label mode: assign a training category to the selected blocks by clicking
-   * the palette or pressing its key. It is a mode like Crop, reachable from the
-   * rail on any open book.
+   * Which tab of the document nav is open — and, for Label, what a click on a
+   * block MEANS.
    *
-   * Labels are ordinary project state (`category_corrections`), the same field
-   * Select and Edit read, so a category set here shows up everywhere and
-   * survives in the book's project file. Training sessions under
-   * /Volumes/Callisto/training/rubric/ are treated as READ-ONLY history: they are
-   * imported into a project that has no labels yet, and never rewritten.
+   * It lives here rather than in the nav because the left rail offers Label too
+   * and the viewer's pointer changes with it. One value, so the rail row, the
+   * pointer and the tab strip cannot say three different things.
    */
-  readonly labelMode = computed(() => this.activePanel() === 'label');
+  readonly navTab = signal<DocumentNavTab>('select');
 
   /**
-   * Whether a saved label snapshot exists on disk for this book, gating the
-   * Restore button. Checked once on open so a snapshot from a previous session
-   * is still reachable after a reload — which is the entire reason it is on
-   * disk rather than in the undo stack.
+   * The one rail row shown as current: the open panel, or — with no panel open
+   * — the Label tab if that is what the nav is showing, or whichever pointer
+   * mode is live. The rail is the mode switcher, so this is what tells the user
+   * where they are.
    */
+  readonly railCurrent = computed<PanelId>(() => this.activePanel()
+    ?? (this.navTab() === 'label' ? 'label' : this.viewerInteraction()));
+
+  /**
+   * Label mode: assign a category to the selected blocks by clicking the palette
+   * or pressing its key.
+   *
+   * With a working document a label is the block's ONE category field, written
+   * into the annotation. Without one it is ordinary project state
+   * (`category_corrections`), the same field Select and Edit read. Training
+   * sessions under /Volumes/Callisto/training/rubric/ are treated as READ-ONLY
+   * history: they are imported into a project that has no labels yet, and never
+   * rewritten.
+   */
+  readonly labelMode = computed(() => this.navTab() === 'label');
 
   // Task groups for the rail (static; TASK_ORDER drives digit shortcuts).
   readonly taskGroups = TASK_GROUPS;
@@ -4256,12 +4117,9 @@ export class PdfPickerComponent implements OnInit {
   readonly paragraphBaselines = signal<DocumentBaselines | null>(null);
   private userDetectionConfig: DetectionConfig | null = null;
 
-  // Paragraph fix mode — entered after save to auto-detect and fix paragraph breaks
-  readonly paragraphFixMode = signal(false);
-  readonly paragraphFixEpubPath = signal<string | null>(null);
-
-  // Chapters mode state
-  readonly chaptersMode = computed(() => this.activePanel() === 'chapters');
+  // Chapter state. The list is DERIVED from the `chapter` blocks in the working
+  // document (documentChaptersEffect) and set directly only by the books that
+  // have none — an EPUB read for its own markup, a loose file.
   readonly chapters = signal<Chapter[]>([]);
   readonly chaptersSource = signal<'toc' | 'heuristic' | 'manual' | 'mixed'>('manual');
   readonly detectingChapters = signal(false);
@@ -4422,9 +4280,6 @@ export class PdfPickerComponent implements OnInit {
 
     // Items only shown when PDF is open
     if (pdfIsOpen) {
-      const inFixMode = this.paragraphFixMode();
-
-      // In paragraph fix mode, show "Done" instead of normal save/export.
       // The embedded audiobook-prep path (Back / Next / Generate / Approve) now
       // lives in the bottom control bar, not the top toolbar — both embedded and
       // standalone keep just Export up here.
@@ -4435,10 +4290,6 @@ export class PdfPickerComponent implements OnInit {
             { id: 'saveCorpusLabels', type: 'button', icon: '💾', label: 'Save labels',
               tooltip: 'Write labels back to this corpus book (Cmd+S)',
               disabled: !!this.corpusReadOnlyReason() },
-          ]
-        : inFixMode
-        ? [
-            { id: 'finishParagraphFix', type: 'button', icon: '✓', label: 'Done', tooltip: 'Save paragraph corrections and finish' },
           ]
         : [
             { id: 'export', type: 'button', icon: '📤', label: 'Export', tooltip: 'Export document (Cmd+E)' },
@@ -4511,8 +4362,6 @@ export class PdfPickerComponent implements OnInit {
       ocr: { blocks, deletedBlockIds, totalPages: this.totalPages() },
       cleanup: { blocks, deletedBlockIds },
       mergeCount: this.editorState.blockMerges().size,
-      chapterCount: this.chapters().length,
-      chaptersSource: this.chaptersSource(),
       paragraphBreakCount: this.editorState.paragraphBreaks().size,
     });
   });
@@ -4780,9 +4629,6 @@ export class PdfPickerComponent implements OnInit {
         break;
       case 'saveCorpusLabels':
         void this.saveCorpusLabels();
-        break;
-      case 'finishParagraphFix':
-        this.finishParagraphFix();
         break;
       case 'search':
         this.toggleSearch();
@@ -5230,13 +5076,13 @@ export class PdfPickerComponent implements OnInit {
     // Reset all state to show library view
     this.pdfLoaded.set(false);
     this.blocks.set([]);
-    // Foundry state is per-DOCUMENT. Left set, the next document loaded into
-    // this component (the review EPUB, most immediately) would pass the
-    // foundryRunLoaded() checks and export through another book's run. The
-    // attach keys are cleared with it so reopening the same book re-attaches —
-    // the effects' once-per-key guards would otherwise refuse.
-    this.setFoundryRunState(false);
-    this.foundryAttachedKey = '';
+    // The working document belongs to the BOOK, so closing one puts this window
+    // back to knowing about none. The open key goes with it, so reopening the
+    // same book reads the document again rather than being refused by the
+    // effect's once-per-ref guard.
+    this.workingDocumentOpen.set(false);
+    this.blockLayerRead.set(false);
+    this.openedDocumentKey = '';
     // Reset editor state via service
     this.editorState.reset();
     this.pageRenderService.closeDocument(); // Also frees the backend cached render doc
@@ -5434,18 +5280,11 @@ export class PdfPickerComponent implements OnInit {
       this.deletedHighlightIds.set(new Set());
       this.splitConfig.set(this.defaultSplitConfig());
       this.splitApplied.set(false);
-      // Rulings belong to the document that was ruled on; restoreProjectState
-      // fills these from the project file if there is one, and the record is
-      // mapped back onto block ids when a run paints.
-      this.foundryAutoDiscarded.set(new Set());
-      this.foundryAutoDiscardedLines = null;
-      // Same for the deletion record it sits beside: it belongs to a project,
-      // and this document has not been bound to one yet.
-      this.foundryDeletedLines = null;
-      // So does a foundry run. A new document is not foundry-backed until its
-      // OWN run attaches (foundryReattachEffect), which is keyed to the file on
+      // A new document has no working document until its OWN is read
+      // (workingDocumentEffect), which is keyed to the project and the file on
       // screen — never inherited from the tab this one replaced.
-      this.setFoundryRunState(false);
+      this.workingDocumentOpen.set(false);
+      this.blockLayerRead.set(false);
       this.projectCreatedAt = null;
       this.analyzedSourceSha256.set(quickResult.sourceSha256);
       // A fresh document is bound to no project yet, so nothing has been declined.
@@ -5584,12 +5423,12 @@ export class PdfPickerComponent implements OnInit {
     const mode = this.viewerInteraction();
     const additive = metaKey || ctrlKey;
 
-    // A marker is editable wherever you are. It is not a box that happens to
-    // hold a heading — it IS the chapter or the title card, and retyping it is
-    // the only way to fix a heading the scan misread or block formation cut in
-    // three. Selecting "everything that looks like this" instead would be an odd
-    // answer to a double-click on the one block on the page that is unique.
-    if (this.isFoundryMarkerBlock(block)) {
+    // A chapter block is editable wherever you are. It is not a box that happens
+    // to hold a heading — it IS the chapter, and its text IS the title, so
+    // retyping it is the only way to fix a heading the scan misread. Selecting
+    // "everything that looks like this" instead would be an odd answer to a
+    // double-click on the one block on the page that is unique.
+    if (this.isChapterBlock(block)) {
       this.openInlineEditor(block, screenX, screenY, screenWidth, screenHeight);
       return;
     }
@@ -5666,6 +5505,19 @@ export class PdfPickerComponent implements OnInit {
     }
     if (!result.cancelled) {
       const block = this.inlineEditorBlock();
+      // With a working document the block's TEXT is the annotation's, and for a
+      // chapter block it is the title the book is built with. So it is written
+      // into the document rather than parked in a corrections map beside it —
+      // that map is the override layer this pipeline deleted.
+      if (block && this.blockLayerRead()) {
+        const text = result.text.trim();
+        if (text.length > 0 && text !== block.text.trim()) {
+          this.documentBlocks.retitle(block.id, text);
+          this.rerenderPageWithEdits(block.page);
+        }
+        this.inlineEditorBlock.set(null);
+        return;
+      }
       if (block) {
         // Check if text was actually changed
         const originalText = block.text;
@@ -6122,88 +5974,6 @@ export class PdfPickerComponent implements OnInit {
     });
   }
 
-  onChapterBoxMouseDown(event: MouseEvent, page: number, pageX: number, pageY: number): void {
-    if (!this.chapterBoxMode() || this.reviewMode()) return;
-
-    // The overlay SVG is stretched to the page with preserveAspectRatio="none",
-    // so one linear map converts page points to screen pixels in each axis.
-    // Captured here because mousemove/mouseup carry page coordinates only.
-    const svg = event.currentTarget as SVGGraphicsElement | null;
-    const dims = this.pageDimensions()[page];
-    if (!svg || !dims) return;
-    const box = svg.getBoundingClientRect();
-
-    this.chapterBoxDrag = {
-      page, startX: pageX, startY: pageY, currentX: pageX, currentY: pageY,
-      originLeft: box.left, originTop: box.top,
-      scaleX: box.width / dims.width, scaleY: box.height / dims.height,
-    };
-    this.chapterBoxDrawingRect.set({ page, x: pageX, y: pageY, width: 0, height: 0 });
-  }
-
-  onChapterBoxMouseMove(pageX: number, pageY: number): void {
-    const drag = this.chapterBoxDrag;
-    if (!drag) return;
-    drag.currentX = pageX;
-    drag.currentY = pageY;
-    this.chapterBoxDrawingRect.set({
-      page: drag.page,
-      x: Math.min(drag.startX, drag.currentX),
-      y: Math.min(drag.startY, drag.currentY),
-      width: Math.abs(drag.currentX - drag.startX),
-      height: Math.abs(drag.currentY - drag.startY),
-    });
-  }
-
-  onChapterBoxMouseUp(): void {
-    const drag = this.chapterBoxDrag;
-    this.chapterBoxDrag = null;
-    this.chapterBoxDrawingRect.set(null);
-    if (!drag) return;
-
-    const x = Math.min(drag.startX, drag.currentX);
-    const y = Math.min(drag.startY, drag.currentY);
-    const width = Math.abs(drag.currentX - drag.startX);
-    const height = Math.abs(drag.currentY - drag.startY);
-    // A click rather than a drag. Same floor sample mode uses.
-    if (width <= 5 || height <= 5) return;
-
-    const id = `chapbox_p${drag.page}_${Math.abs(
-      [drag.page, x, y, width, height].join(',').split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0),
-    ).toString(36)}`;
-
-    const block: TextBlock = {
-      id,
-      page: drag.page,
-      x, y, width, height,
-      text: '',
-      // Explicit, because the overlay derives a font size from area ÷ character
-      // count for OCR blocks and an empty box would divide by zero.
-      font_size: Math.max(12, Math.min(height * 0.7, 28)),
-      font_name: 'Manual',
-      char_count: 0,
-      region: 'body',
-      category_id: 'chapter',
-      line_count: 1,
-      is_ocr: true,
-      is_manual: true,
-    };
-
-    this.editorState.addBlocks([block]);
-    // Route through the normal path so the `chapter` category record is created
-    // if this book has never had one — otherwise the box paints in the fallback
-    // orange and the palette has no entry for it.
-    this.onSetBlockCategory({ blockIds: [id], categoryId: 'chapter' });
-
-    this.openInlineEditor(
-      block,
-      drag.originLeft + x * drag.scaleX,
-      drag.originTop + y * drag.scaleY,
-      width * drag.scaleX,
-      height * drag.scaleY,
-    );
-  }
-
   /**
    * A chapter box that was never given a name is not a chapter — it is an empty
    * rectangle that would export as a titleless <h1> and split the book there.
@@ -6254,6 +6024,15 @@ export class PdfPickerComponent implements OnInit {
     }
 
     this.ensureCategoryDefined(event.categoryId);
+
+    // With a working document the category IS the annotation's one field, so the
+    // relabel goes into the PDF and the mirror paints what came back. The
+    // corrections map is not written alongside it: a second record of the same
+    // fact is the override layer this pipeline deleted.
+    if (this.blockLayerRead()) {
+      for (const id of event.blockIds) this.documentBlocks.relabel(id, event.categoryId);
+      return;
+    }
 
     if (event.blockIds.length === 1) {
       this.editorState.setCategoryCorrection(event.blockIds[0], event.categoryId);
@@ -6475,11 +6254,11 @@ export class PdfPickerComponent implements OnInit {
    *    source PDF even while the export EPUB is on screen.
    *
    * That is exactly how opening a project's export EPUB came up wearing the
-   * source PDF's foundry blocks: the key resolved to the PDF's archive path,
-   * `foundryReattachEffect` found the PDF's finished run under it, and
-   * `loadFoundryRun` painted 17 pages of PDF-geometry OCR blocks (JSTOR cover
-   * page included) over the EPUB's reflowed pages — with every manifest guard
-   * doing its job, because the manifest was never the leak (Aug 3 2026).
+   * source PDF's blocks: the key resolved to the PDF's archive path, the
+   * PDF's finished run was found under it, and 17 pages of PDF-geometry OCR
+   * blocks (JSTOR cover page included) were painted over the EPUB's reflowed
+   * pages — with every manifest guard doing its job, because the manifest was
+   * never the leak (Aug 3 2026).
    *
    * It is also the value main already expects: the OCR dialog submits
    * `{ bookKey, sourcePath: effectivePath() }` and `processing-passes` falls
@@ -7782,43 +7561,6 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  async exportEpub(): Promise<void> {
-    // Use chapter-aware export if chapters are defined
-    const chapters = this.chapters();
-    const deletedHighlights = this.getDeletedHighlights();
-    const epubPB = this.editorState.paragraphBreaks();
-    const result = chapters.length > 0
-      ? await this.exportService.exportEpubWithChapters(
-          this.blocks(),
-          this.deletedBlockIds(),
-          chapters,
-          this.pdfName(),
-          this.textCorrections(),
-          this.deletedPages(),
-          deletedHighlights,
-          epubPB.size > 0 ? epubPB : undefined,
-          this.metadata()
-        )
-      : await this.exportService.exportEpub(
-          this.blocks(),
-          this.deletedBlockIds(),
-          this.pdfName(),
-          this.textCorrections(),
-          this.deletedPages(),
-          deletedHighlights,
-          epubPB,
-          this.metadata()
-        );
-
-    if (!result.success) {
-      this.showAlert({
-        title: 'Nothing to Export',
-        message: result.message,
-        type: 'warning'
-      });
-    }
-  }
-
   /**
    * Show export settings modal
    */
@@ -8279,11 +8021,13 @@ export class PdfPickerComponent implements OnInit {
 
     this.editorState.pageDimensions.set(dims);
     this.editorState.blocks.set(session.blocks as TextBlock[]);
-    // The blocks on screen are the corpus book's own from here on, so nothing
-    // may still treat them as a foundry run's: the marker merging, the title
-    // rule and the derived chapter list all key off this flag, and all three are
-    // the wrong shape for a per-block labelling universe.
-    this.setFoundryRunState(false);
+    // The blocks on screen are the corpus book's own from here on, and nothing
+    // may paint a working document's over them: a corpus book's ids are what its
+    // labels.json is keyed to, and any other segmentation makes every label the
+    // user then sets worthless. `workingDocumentRef` already refuses a corpus
+    // book; this is the same statement said where the blocks are set.
+    this.blockLayerRead.set(false);
+    this.workingDocumentOpen.set(false);
     this.editorState.categoryCorrections.set(new Map(Object.entries(session.labels)));
     this.editorState.pageTypes.set(new Map(
       Object.entries(session.pageTypes ?? {}).map(([page, type]) => [Number(page), type])
@@ -8332,12 +8076,12 @@ export class PdfPickerComponent implements OnInit {
     }
 
     if (!book.session) {
-      if (this.foundryRunLoaded()) {
+      if (this.blockLayerRead()) {
         this.showAlert({
           title: 'These are not this book\'s blocks',
           message: `${book.dir} has no OCR snapshot yet, and the blocks on screen came from a `
-            + 'foundry run. Run OCR from the corpus book itself, so that the labels key to blocks '
-            + 'the corpus records.',
+            + 'working document. Run OCR from the corpus book itself, so that the labels key to '
+            + 'blocks the corpus records.',
           type: 'error',
         });
         return false;
@@ -8954,43 +8698,16 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    // Regular EPUB export (existing code)
-    this.loadingText.set('Generating EPUB...');
-
-    // Use chapter-aware export if chapters are defined
-    const chapters = this.chapters();
-    const deletedHighlights = this.getDeletedHighlights();
-    const exportPB = this.editorState.paragraphBreaks();
-    const result = chapters.length > 0
-      ? await this.exportService.exportEpubWithChapters(
-          this.blocks(),
-          this.deletedBlockIds(),
-          chapters,
-          this.pdfName(),
-          this.editorState.textCorrections(),
-          this.deletedPages(),
-          deletedHighlights,
-          exportPB.size > 0 ? exportPB : undefined,
-          this.metadata()
-        )
-      : await this.exportService.exportEpub(
-          this.blocks(),
-          this.deletedBlockIds(),
-          this.pdfName(),
-          this.editorState.textCorrections(),
-          this.deletedPages(),
-          deletedHighlights,
-          exportPB,
-          this.metadata()
-        );
-
-    if (!result.success) {
-      this.showAlert({
-        title: 'Export Failed',
-        message: result.message,
-        type: 'error'
-      });
-    }
+    // The book itself. Reflow reads the working document and writes
+    // `<Original>.epub` into the project, named after the book from birth —
+    // there is no blob to hand the browser and no filename to invent here.
+    this.loadingText.set('Building the book...');
+    const epubPath = await this.reflowToEpub();
+    this.showAlert({
+      title: 'Book built',
+      message: `Written to ${epubPath}`,
+      type: 'success',
+    });
   }
 
   /**
@@ -9038,40 +8755,11 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    const chapters = this.chapters();
-    const deletedHighlights = this.getDeletedHighlights();
-
-    const paragraphBreaks = this.editorState.paragraphBreaks();
-    const result = await this.exportService.exportToAudiobook(
-      this.blocks(),
-      this.deletedBlockIds(),
-      chapters,
-      this.pdfName(),
-      this.projectPath() || '',  // Pass the project directory
-      this.editorState.textCorrections(),
-      this.deletedPages(),
-      deletedHighlights,
-      this.metadata(),  // Pass metadata for title, author, cover, etc.
-      true, // Navigate to audiobook producer after
-      undefined,
-      undefined,
-      paragraphBreaks.size > 0 ? paragraphBreaks : undefined
-    );
-
-    if (!result.success) {
-      this.showAlert({
-        title: 'Export Failed',
-        message: result.message,
-        type: 'error'
-      });
-    } else if (result.warning) {
-      // Show warning about chapter mismatch - export succeeded but there's an issue
-      this.showAlert({
-        title: 'Chapter Warning',
-        message: result.warning,
-        type: 'warning'
-      });
-    }
+    // Everything else IS Reflow. The book it writes is the one the producer
+    // takes: `<Original>.epub`, in the project, named after the book.
+    const epubPath = await this.reflowToEpub();
+    console.log('[exportToAudiobook] Reflow wrote', epubPath);
+    await this.router.navigate(['/studio']);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -9243,18 +8931,12 @@ export class PdfPickerComponent implements OnInit {
           result = await this.runEpubPreservingExport(null, chosen.filePath);
         }
       } else {
-        const saveAsPB = this.editorState.paragraphBreaks();
-        result = await this.exportService.saveEpubAs(
-          this.blocks(),
-          this.deletedBlockIds(),
-          this.chapters(),
-          this.pdfName(),
-          this.editorState.textCorrections(),
-          this.deletedPages(),
-          this.getDeletedHighlights(),
-          this.metadata(),
-          saveAsPB.size > 0 ? saveAsPB : undefined,
-        );
+        // A book that is not an EPUB already has exactly one book made of it,
+        // and Reflow names and places it: `<Original>.epub` in the project. So
+        // Save As here is Reflow, and it says where the file went rather than
+        // asking the user to choose a location it would then not be found at.
+        const epubPath = await this.reflowToEpub();
+        result = { success: true, message: `Written to ${epubPath}`, epubPath };
       }
 
       if (result.message === 'Canceled') {
@@ -9295,159 +8977,35 @@ export class PdfPickerComponent implements OnInit {
     // Persist editor state (chapters, undo/redo, deletions, etc.) to manifest
     await this.saveProjectToPath(projectPath, true);
 
-    // Determine save target: if opened file is an EPUB (not original.epub), save back to it.
-    // Non-EPUB sources (PDFs, etc.) always produce exported.epub.
-    const overridePath = this.overrideSourcePath();
-    const isOverrideEpub = overridePath?.toLowerCase().endsWith('.epub');
-    const isOriginalEpub = overridePath?.replace(/\\/g, '/').endsWith('/original.epub');
-    const savePath = (overridePath && isOverrideEpub && !isOriginalEpub)
-      ? overridePath
-      : undefined;
-
-    // A foundry-backed book exports through foundry — its blocks are foundry's
-    // artifacts and only its exporter knows how to make a book out of them. A
-    // branch, not a fallback: if it fails, this says so rather than rebuilding
-    // a different book from block text. Called UNCONDITIONALLY: tryFoundryExport
-    // returns null only for a book that truly never went through foundry, and
-    // throws for one whose run exists but is not attached — the case where
-    // falling through to the writers below would silently ship the wrong book.
+    // EPUB source: edit the book's own markup instead of rebuilding it.
+    //
+    // This is not a second exporter. Reflow makes a book out of a PDF's text
+    // layer and annotations; there is no PDF here, and the file the user opened
+    // is the ALIGNMENT BASELINE — every block id in the edit set was resolved
+    // against its bytes. So the book's own XHTML is edited in place, in main,
+    // and the canonical export is the target. Save As is how the user writes a
+    // preserved EPUB anywhere else.
     try {
-      const viaFoundry = await this.tryFoundryExport(projectPath);
-      if (viaFoundry) {
-        this.loading.set(false);
-        // NO enterParagraphFixMode. That mode reloads the export and rebuilds
-        // its paragraphs from plain text, and foundry's exporter has already
-        // assembled them under the book's measured convention (the §9d ladder:
-        // wrap-hyphen continues, category transition breaks, model `continues`
-        // for the residue). Re-deriving them here would throw that away — the
-        // same reason the markup-preserving path skips it.
-        this.finalized.emit({ success: true, epubPath: viaFoundry.epubPath });
+      const result = this.useEpubPreservingExport()
+        ? await this.runEpubPreservingExport(projectPath, null)
+        : { success: true, message: '', epubPath: await this.reflowToEpub() };
+
+      if (result.success && result.epubPath) {
+        this.finalized.emit({ success: true, epubPath: result.epubPath });
         this.showAlert({
           title: 'Saved',
-          message: `Exported to ${viaFoundry.epubPath}`,
+          message: result.message || `Exported to ${result.epubPath}`,
           type: 'success',
         });
-        return;
+      } else {
+        // The exporter names the block that blocked the export — verbatim.
+        this.finalized.emit({ success: false, error: result.message });
+        this.showAlert({ title: 'Save Failed', message: result.message, type: 'error' });
       }
     } catch (error) {
-      this.loading.set(false);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.finalized.emit({ success: false, error: errorMessage });
       this.showAlert({ title: 'Save Failed', message: errorMessage, type: 'error' });
-      return;
-    }
-
-    // EPUB source: edit the book's own markup instead of rebuilding it.
-    //
-    // The save-back-in-place target above does NOT apply here. That rule means
-    // "write into the derived version you opened", and on this path the file the
-    // user opened is the ALIGNMENT BASELINE — every block id in the edit set was
-    // resolved against its bytes. Writing the export over it would destroy the
-    // only file those edits mean anything against (and the main process refuses
-    // it outright). The canonical source/exported.epub is the target instead;
-    // Save As is how the user writes a preserved EPUB anywhere else.
-    if (this.useEpubPreservingExport()) {
-      try {
-        const result = await this.runEpubPreservingExport(projectPath, null);
-
-        if (result.success && result.epubPath) {
-          // NO enterParagraphFixMode: it reloads the export and rebuilds it from
-          // plain text, which would undo everything this path just preserved.
-          // Paragraph repair is a PDF concern — the source EPUB's paragraphs are
-          // already the author's.
-          this.finalized.emit({ success: true, epubPath: result.epubPath });
-          this.showAlert({
-            title: 'Saved',
-            message: result.message,
-            type: 'success'
-          });
-        } else {
-          // The exporter names the block that blocked the export — verbatim.
-          this.finalized.emit({ success: false, error: result.message });
-          this.showAlert({
-            title: 'Save Failed',
-            message: result.message,
-            type: 'error'
-          });
-        }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        this.finalized.emit({ success: false, error: errorMessage });
-        this.showAlert({ title: 'Save Failed', message: errorMessage, type: 'error' });
-      } finally {
-        this.loading.set(false);
-      }
-      return;
-    }
-
-    try {
-      const chapters = this.chapters();
-      const deletedHighlights = this.getDeletedHighlights();
-
-      // Export to audiobook folder - NEVER modifies the original source file
-      const pBreaks = this.editorState.paragraphBreaks();
-      const result = await this.exportService.exportToAudiobook(
-        this.blocks(),
-        this.deletedBlockIds(),
-        chapters,
-        this.pdfName(),
-        projectPath,
-        this.editorState.textCorrections(),
-        this.deletedPages(),
-        deletedHighlights,
-        this.metadata(),
-        false, // Don't navigate to audiobook producer
-        undefined, // categories
-        savePath,
-        pBreaks.size > 0 ? pBreaks : undefined
-      );
-
-      if (result.success) {
-        // Main wrote the file and reports where — the export is named after the
-        // book, so there is nothing to reconstruct here.
-        const fullEpubPath = result.epubPath;
-        if (!fullEpubPath) {
-          this.finalized.emit({
-            success: false,
-            error: 'The export reported success but no file path — nothing to open.',
-          });
-          return;
-        }
-
-        if (result.warning) {
-          this.showAlert({
-            title: 'Saved with Warning',
-            message: result.warning,
-            type: 'warning',
-            onConfirm: () => this.enterParagraphFixMode(fullEpubPath)
-          });
-        } else {
-          this.enterParagraphFixMode(fullEpubPath);
-        }
-      } else {
-        this.finalized.emit({
-          success: false,
-          error: result.message || 'Failed to save'
-        });
-
-        this.showAlert({
-          title: 'Save Failed',
-          message: result.message || 'Failed to save EPUB',
-          type: 'error'
-        });
-      }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      this.finalized.emit({
-        success: false,
-        error: errorMessage
-      });
-
-      this.showAlert({
-        title: 'Save Failed',
-        message: errorMessage,
-        type: 'error'
-      });
     } finally {
       this.loading.set(false);
     }
@@ -9493,12 +9051,12 @@ export class PdfPickerComponent implements OnInit {
         (count === 0
           ? 'This book has no chapter markers, so the audiobook will be one continuous file with nothing to skip between.'
           : 'This book has a single chapter, so the audiobook will be one continuous file with nothing to skip between.') +
-        '\n\nOpen Chapters in the left rail to mark where each chapter begins — most books detect automatically.',
+        '\n\nLabel the blocks that open each chapter and they appear in the Chapter tab.',
       type: 'warning',
       confirmText: 'Go to Chapters',
       cancelText: 'Export anyway',
       // The modal closes itself around these (see onAlertConfirm/onAlertCancel).
-      onConfirm: () => this.onRailPanelClick('chapters'),
+      onConfirm: () => this.setNavTab('chapter'),
       onCancel: () => this.startGenerate(),
     });
   }
@@ -9536,10 +9094,6 @@ export class PdfPickerComponent implements OnInit {
     this.activatePanel(null);
     this.viewerInteraction.set('select');
     this.pipelineStep.set(target);
-    if (target === 'select') {
-      this.reviewExportWasPreserving = false;
-      this.reviewExportWasFoundry = false;
-    }
     this.visitedStations.update(s => {
       const next = new Set(s);
       next.add(target);
@@ -9615,46 +9169,14 @@ export class PdfPickerComponent implements OnInit {
       // Save project state first
       await this.saveProjectToPath(projectPath, true);
 
-      // A foundry-backed book exports through foundry: the surviving blocks are
-      // its own artifacts, and its exporter is the only thing that knows how to
-      // turn them into a book (chapter splits from `chapter` blocks, footnotes
-      // to the end of the chapter, hyphens healed against the calibration). The
-      // app's own writer would rebuild it from block text and produce a
-      // DIFFERENT book, so this is a branch, never a fallback.
-      const viaFoundry = await this.tryFoundryExport(projectPath);
-      if (viaFoundry) {
-        this.reviewExportWasPreserving = false;
-        this.reviewExportWasFoundry = true;
-        await this.enterReviewWithEpub(viaFoundry.epubPath);
-        return;
-      }
-      this.reviewExportWasFoundry = false;
-
-      // How the review EPUB was produced. At the review station the loaded file
-      // is always an EPUB, so useEpubPreservingExport() can no longer tell a
-      // preserved book from a PDF's rebuilt one — pipelineComplete needs this.
-      const preserving = this.useEpubPreservingExport();
-      this.reviewExportWasPreserving = preserving;
-
-      // Pipeline always exports to the project's canonical export path
-      const pBreaks = this.editorState.paragraphBreaks();
-      const result = preserving
+      // Reflow for a PDF, the markup-preserving path for a book that already IS
+      // markup. Both write the project's canonical export, both are finished
+      // books when they return, and neither is a fallback for the other: the
+      // question they answer is what the source is, and the source cannot be
+      // both.
+      const result = this.useEpubPreservingExport()
         ? await this.runEpubPreservingExport(projectPath, null)
-        : await this.exportService.exportToAudiobook(
-            this.blocks(),
-            this.deletedBlockIds(),
-            this.chapters(),
-            this.pdfName(),
-            projectPath,
-            this.editorState.textCorrections(),
-            this.deletedPages(),
-            this.getDeletedHighlights(),
-            this.metadata(),
-            false,
-            undefined,
-            undefined, // No savePath override — main writes the canonical export
-            pBreaks.size > 0 ? pBreaks : undefined
-          );
+        : { success: true, message: '', epubPath: await this.reflowToEpub() };
 
       if (!result.success) {
         this.showAlert({
@@ -9695,8 +9217,8 @@ export class PdfPickerComponent implements OnInit {
    * Swap the source document for the EPUB that was just written and stop at the
    * review station.
    *
-   * Extracted so that every exporter — the app's own writer, the markup-
-   * preserving path, foundry — arrives at the review the same way. The tab is
+   * Extracted so that both exporters — Reflow and the markup-preserving path —
+   * arrive at the review the same way. The tab is
    * dropped first because `loadPdf` refuses a document that is already open, and
    * `pipelineTransitioning` is what keeps the close-then-open from being read as
    * the user leaving the pipeline.
@@ -9755,105 +9277,34 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  /** Complete the pipeline: save EPUB changes and emit finalized event. */
+  /**
+   * Complete the pipeline: the review station has nothing left to write.
+   *
+   * Whichever path produced it, the EPUB on screen is already the finished book
+   * on disk. There used to be a save here that rebuilt the file from the
+   * review's own re-extracted blocks — a different book, by a different writer,
+   * over the one that was just made. Deleting boxes and relabelling happen at
+   * the editing station, and the way to apply them is to build the book again.
+   */
   private async pipelineComplete(): Promise<void> {
     const epubPath = this.effectivePath();
     if (!epubPath) return;
 
-    // A foundry export is already the finished book. saveToEpub() below would
-    // rebuild it from the review's re-extracted blocks — a DIFFERENT book, from
-    // a different exporter, over the file foundry just wrote. Deleting boxes or
-    // relabelling happens at the editing station, and the way to apply it is to
-    // export again.
-    if (this.reviewExportWasFoundry) {
-      // No unsaved-changes check. The review is read-only — every mutation
-      // entry point returns in reviewMode, and auto-save is disabled at this
-      // station — but the pipeline's OWN paragraph consolidation marks the
-      // document dirty on load, so the flag here is always a false positive
-      // about the user. The exported EPUB is already final on disk; whatever
-      // the session holds is display state, discarded with the review.
-      this.editorState.hasUnsavedChanges.set(false);
+    // No unsaved-changes check. The review is read-only — every mutation entry
+    // point returns in reviewMode, and auto-save is disabled at this station —
+    // but the pipeline's OWN paragraph consolidation marks the document dirty on
+    // load, so the flag here is always a false positive about the user. Whatever
+    // the session holds is display state, discarded with the review.
+    this.editorState.hasUnsavedChanges.set(false);
 
-      this.pipelineStep.set('select');
-      this.visitedStations.set(new Set<PipelineStep>(['select']));
-      this.reviewExportWasFoundry = false;
-      this.finalized.emit({ success: true, epubPath });
-      this.showAlert({
-        title: 'Complete',
-        message: 'EPUB exported through foundry.',
-        type: 'success'
-      });
-      return;
-    }
-
-    // A preserved EPUB is already finished. saveToEpub() below rebuilds the file
-    // from block text, which is right for a PDF's exported.epub but would flatten
-    // every <sup>, <em> and list this export just carried over from the source —
-    // so on this path the review really is read-only, and edits made in it have
-    // nowhere to go. Say so rather than silently discarding them.
-    if (this.reviewExportWasPreserving) {
-      // Same as the foundry branch above: read-only review, file already
-      // written, the dirty flag is the pipeline's own doing — discard.
-      this.editorState.hasUnsavedChanges.set(false);
-
-      this.pipelineStep.set('select');
-      this.visitedStations.set(new Set<PipelineStep>(['select']));
-      this.reviewExportWasPreserving = false;
-      this.finalized.emit({ success: true, epubPath });
-      this.showAlert({
-        title: 'Complete',
-        message: 'EPUB exported with the source book\'s markup preserved.',
-        type: 'success'
-      });
-      return;
-    }
-
-    this.pipelineBusy.set(true);
-    this.loading.set(true);
-    this.loadingText.set('Saving...');
-
-    try {
-      const pBreaks = this.editorState.paragraphBreaks();
-      const result = await this.exportService.saveToEpub(
-        this.blocks(),
-        this.deletedBlockIds(),
-        this.chapters(),
-        this.pdfName(),
-        epubPath,
-        this.editorState.textCorrections(),
-        this.deletedPages(),
-        this.getDeletedHighlights(),
-        this.metadata(),
-        pBreaks.size > 0 ? pBreaks : undefined
-      );
-
-      if (result.success) {
-        this.pipelineStep.set('select');
-        this.visitedStations.set(new Set<PipelineStep>(['select']));
-        this.finalized.emit({ success: true, epubPath });
-        this.showAlert({
-          title: 'Complete',
-          message: 'EPUB saved successfully.',
-          type: 'success'
-        });
-      } else {
-        this.showAlert({
-          title: 'Save Failed',
-          message: result.message || 'Failed to save EPUB',
-          type: 'error'
-        });
-      }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      this.showAlert({
-        title: 'Save Failed',
-        message: errorMessage,
-        type: 'error'
-      });
-    } finally {
-      this.loading.set(false);
-      this.pipelineBusy.set(false);
-    }
+    this.pipelineStep.set('select');
+    this.visitedStations.set(new Set<PipelineStep>(['select']));
+    this.finalized.emit({ success: true, epubPath });
+    this.showAlert({
+      title: 'Complete',
+      message: `The book is ${epubPath}`,
+      type: 'success',
+    });
   }
 
   /**
@@ -9862,39 +9313,16 @@ export class PdfPickerComponent implements OnInit {
    */
   private async saveToSourceEpub(epubPath: string): Promise<void> {
     try {
-      const chapters = this.chapters();
-      const deletedHighlights = this.getDeletedHighlights();
-      const blocks = this.blocks();
-      const deletedBlockIds = this.deletedBlockIds();
-      const deletedPages = this.deletedPages();
-
-      console.log('[saveToSourceEpub] Starting save to:', epubPath);
-      console.log('[saveToSourceEpub] Total blocks:', blocks.length);
-      console.log('[saveToSourceEpub] Deleted block IDs:', deletedBlockIds.size);
-      console.log('[saveToSourceEpub] Deleted pages:', deletedPages.size);
-      console.log('[saveToSourceEpub] Chapters:', chapters.length);
-
-      // Generate the EPUB with the same logic as export, but write to the source path
-      const savePB = this.editorState.paragraphBreaks();
-      const result = await this.exportService.saveToEpub(
-        blocks,
-        deletedBlockIds,
-        chapters,
-        this.pdfName(),
-        epubPath, // Save back to the source file
-        this.editorState.textCorrections(),
-        deletedPages,
-        deletedHighlights,
-        this.metadata(),
-        savePB.size > 0 ? savePB : undefined
-      );
+      // Library mode only ever holds an ebook, so this is the markup-preserving
+      // path with the user's chosen destination: the source book's own XHTML,
+      // edited in main, written where they said. Rebuilding it from block text
+      // would flatten every <sup>, <em> and list the file shipped with.
+      const result = await this.runEpubPreservingExport(null, epubPath);
 
       if (result.success) {
-        // Clear unsaved changes flag
         this.editorState.markSaved();
-
-        // Enter paragraph fix mode to auto-detect and fix paragraph breaks
-        this.enterParagraphFixMode(epubPath);
+        this.finalized.emit({ success: true, epubPath });
+        this.showAlert({ title: 'Saved', message: result.message, type: 'success' });
       } else {
         this.finalized.emit({
           success: false,
@@ -10309,23 +9737,6 @@ export class PdfPickerComponent implements OnInit {
     if (project.deleted_block_ids && project.deleted_block_ids.length > 0) {
       this.editorState.deletedBlockIds.set(new Set(project.deleted_block_ids));
     }
-    // …and the identity those ids are only a snapshot of. If a run is already
-    // painted (it finished while the book was closed, and the attach effect got
-    // here first), the ids just restored are keyed to whatever blocks existed
-    // when they were saved — so re-attach them now, exactly as the paint does.
-    this.foundryDeletedLines = project.deleted_block_lines ?? null;
-    const reattached = this.reattachFoundryDeletions();
-    if (reattached) this.showAlert(reattached);
-
-    // Which foundry title units have already been ruled on, in the identity a
-    // blocks re-run cannot renumber. Restored BEFORE the rule can run again — a
-    // run that painted while this load was in flight is re-ruled at the end of
-    // this function — and mapped onto that run's blocks by the same call.
-    this.discardLegacyAutoDiscardedIds(project);
-    this.foundryAutoDiscardedLines = project.foundry_auto_discarded_lines ?? null;
-    this.foundryAutoDiscarded.set(new Set());
-    this.reattachFoundryAutoDiscarded();
-
     // Restore persistent crop regions
     this.editorState.cropRegions.set(this.deserializeCropRegions(project.crop_regions));
 
@@ -10471,12 +9882,6 @@ export class PdfPickerComponent implements OnInit {
       this.autoSaveTimeout = null;
     }
     this.editorState.markSaved();
-
-    // A foundry run can finish attaching WHILE this load is in flight, in which
-    // case its title rule ran against a deletion set this function has just
-    // replaced. Re-run it here, where both halves are known: the ledger restored
-    // above makes it a no-op in every other ordering.
-    if (this.foundryRunLoaded()) this.applyFoundryTitleRule();
 
     console.log('[restoreProjectState] Restored project from:', projectFilePath,
       'chapters:', project.chapters?.length || 0,
@@ -10703,18 +10108,11 @@ export class PdfPickerComponent implements OnInit {
       library_path: this.libraryPath(),
       file_hash: this.fileHash(),
       source_file_sha256: this.requireAnalyzedSourceSha256(),
+      // The project file records deletions for the books that have no working
+      // document. A book that HAS one carries them in the annotation, where the
+      // exporter reads them from; this list is then a copy of it, and a copy is
+      // what the line-id ledger existed to reconcile.
       deleted_block_ids: [...this.deletedBlockIds()],
-      // The same deletions in the identity that outlives a blocks re-run.
-      // Derived from the painted run when there is one; carried through
-      // untouched when there is not, because a session that never painted the
-      // run has nothing to derive from and erasing the record would leave the
-      // exporter with block ids it cannot resolve.
-      deleted_block_lines: this.currentFoundryDeletedLines() ?? undefined,
-      // The one-title rule's ledger, in the SAME identity as the deletions above
-      // and for the same reason — its block ids are a snapshot of one run's
-      // numbering. Never written as ids: a ledger that names other blocks after
-      // a re-run re-deletes a unit the user restored, silently.
-      foundry_auto_discarded_lines: this.currentFoundryAutoDiscardedLines() ?? undefined,
       deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : [],
       page_order: order.length > 0 ? order : [],
       block_edits: blockEditsRecord,
@@ -11022,24 +10420,6 @@ export class PdfPickerComponent implements OnInit {
       const deletedBlockIds = applySavedEdits
         ? new Set<string>(project.deleted_block_ids || [])
         : new Set<string>();
-      // Travels with the deletions it records — a version whose saved edits are
-      // not applied has no deletions and no rulings either. EMPTY until a run
-      // paints: the working set is block ids, and this document has no run yet
-      // (setFoundryRunState(false) below), so there is nothing to key it to.
-      // reattachFoundryAutoDiscarded rebuilds it from the record when one does.
-      const foundryAutoDiscardedIds = new Set<string>();
-      this.foundryAutoDiscarded.set(foundryAutoDiscardedIds);
-      if (applySavedEdits) this.discardLegacyAutoDiscardedIds(project);
-      this.foundryAutoDiscardedLines = applySavedEdits
-        ? (project.foundry_auto_discarded_lines ?? null)
-        : null;
-      // Travels with the deletions too: it IS those deletions, said in the
-      // identity a blocks re-run cannot renumber.
-      this.foundryDeletedLines = applySavedEdits ? (project.deleted_block_lines ?? null) : null;
-      // Not foundry-backed until this document's OWN run attaches. Opening a
-      // project's export EPUB while its source PDF's run was painted in the tab
-      // before is precisely the case this stops.
-      this.setFoundryRunState(false);
       const deletedPages = applySavedEdits
         ? new Set<number>(project.deleted_pages || [])
         : new Set<number>();
@@ -11066,7 +10446,6 @@ export class PdfPickerComponent implements OnInit {
         pageDimensions: quickResult.page_dimensions,
         totalPages: quickResult.page_count,
         deletedBlockIds: deletedBlockIds,
-        foundryAutoDiscardedIds: foundryAutoDiscardedIds,
         deletedPages: deletedPages,
         cropRegions: cropRegions,
         selectedBlockIds: [],
@@ -12114,19 +11493,13 @@ export class PdfPickerComponent implements OnInit {
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * Activate a task panel (or `null` for the default cleanup panel), carrying
-   * the migrated per-panel side effects. OCR has no side effect now — it is a
-   * real panel, not a modal trigger.
+   * Activate a task panel (or `null` for the document nav), carrying the
+   * migrated per-panel side effects. OCR has no side effect now — it is a real
+   * panel, not a modal trigger.
    */
   activatePanel(id: PanelId | null): void {
     const previous = this.activePanel();
     if (id === previous) return;
-
-    // For a corpus book, Label mode may only open over the corpus book's OWN
-    // blocks — checked before anything else changes, so a refusal leaves the
-    // window exactly as it was. A session's labelling is otherwise only
-    // discovered to be worthless when the save is refused at the end of it.
-    if (id === 'label' && this.corpusMode() && !this.ensureCorpusLabelUniverse()) return;
 
     // Entering crop: save layout and force vertical; reset the crop rect.
     if (id === 'crop' && previous !== 'crop') {
@@ -12143,34 +11516,32 @@ export class PdfPickerComponent implements OnInit {
       this.currentCropRect.set(null);
     }
 
-    // Entering label: labelling is driven by selecting blocks and pressing a
-    // category key, which the edit pointer cannot do.
-    if (id === 'label' && previous !== 'label') {
-      this.viewerInteraction.set('select');
-    }
-
     // Entering split: auto-enable splitting and reset the preview page.
     if (id === 'split' && previous !== 'split') {
       this.splitConfig.update(config => ({ ...config, enabled: true }));
       this.splitPreviewPage.set(0);
     }
 
-    // Entering chapters: consolidate fragmented line-blocks first, then try to
-    // auto-load the outline on first entry.
-    //
-    // The merge is what the old "Next → Mark chapters" step ran on the way in,
-    // and detection depends on it: on a fragmented scan a title split across
-    // two line-blocks reads as one title only after they are merged. Now that
-    // Chapters is a rail task rather than a station, entering it is the moment
-    // that ordering has to be preserved.
-    if (id === 'chapters' && previous !== 'chapters') {
-      this.autoMergeForPipeline();
-      if (this.chapters().length === 0) {
-        this.tryLoadOutline();
-      }
-    }
-
     this.activePanel.set(id);
+  }
+
+  /**
+   * Open a tab of the document nav.
+   *
+   * Choosing a tab closes whatever panel had taken over the pointer, because the
+   * nav is where the pointer belongs — a Label tab you cannot click a block from
+   * is a palette, not a mode.
+   *
+   * For a corpus book, Label may only open over the corpus book's OWN blocks,
+   * and that is checked before anything changes so a refusal leaves the window
+   * exactly as it was. A session's labelling is otherwise only discovered to be
+   * worthless when the save is refused at the end of it.
+   */
+  setNavTab(tab: DocumentNavTab): void {
+    if (tab === 'label' && this.corpusMode() && !this.ensureCorpusLabelUniverse()) return;
+    if (tab === 'label') this.viewerInteraction.set('select');
+    this.navTab.set(tab);
+    this.activatePanel(null);
   }
 
   /**
@@ -12192,7 +11563,14 @@ export class PdfPickerComponent implements OnInit {
     // over the pointer, so the click does what it looks like it does.
     if (id === 'select' || id === 'edit') {
       this.viewerInteraction.set(id);
-      this.activatePanel(null);
+      this.setNavTab('select');
+      return;
+    }
+
+    // Label is a TAB of the document nav, and the rail is another way to reach
+    // it. Two entry points, one value — see `navTab`.
+    if (id === 'label') {
+      this.setNavTab('label');
       return;
     }
 
@@ -12204,7 +11582,7 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    if (id === 'crop' || id === 'label') {
+    if (id === 'crop') {
       this.activatePanel(id);
       return;
     }
@@ -12610,113 +11988,25 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  addChapterFromBlock(block: TextBlock, level: number = 1): void {
-    const chapterId = `manual-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const newChapter: Chapter = {
-      id: chapterId,
-      title: block.text.length > 80 ? block.text.substring(0, 77) + '...' : block.text,
-      page: block.page,
-      blockId: block.id,
-      y: block.y,
-      level,
-      source: 'manual',
-    };
-
-    // Insert in sorted order
-    const chapters = [...this.chapters(), newChapter].sort((a, b) => {
-      if (a.page !== b.page) return a.page - b.page;
-      return (a.y || 0) - (b.y || 0);
-    });
-
-    this.chapters.set(chapters);
-    this.selectedChapterId.set(chapterId);
-    this.chaptersSource.set(this.chapters().some(c => c.source !== 'manual') ? 'mixed' : 'manual');
-    this.editorState.markChanged();
-  }
-
   /**
-   * Create a single chapter heading from one or more (typically consecutive)
-   * blocks. All of the blocks are recorded as the chapter's anchor + merged
-   * title blocks, which excludes them from body text at export time so the
-   * chapter name isn't read twice by TTS. Their text is joined as the title.
-   */
-  addChapterFromBlocks(blocks: TextBlock[], level: number = 1): void {
-    const sorted = [...blocks].sort((a, b) => {
-      if (a.page !== b.page) return a.page - b.page;
-      return a.y - b.y;
-    });
-    if (sorted.length === 0) return;
-    if (sorted.length === 1) {
-      this.addChapterFromBlock(sorted[0], level);
-      return;
-    }
-
-    const anchor = sorted[0];
-    const joined = sorted.map(b => b.text.trim()).filter(Boolean).join(' ');
-    const chapterId = `manual-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const newChapter: Chapter = {
-      id: chapterId,
-      title: joined.length > 80 ? joined.substring(0, 77) + '...' : joined,
-      page: anchor.page,
-      blockId: anchor.id,
-      mergedBlockIds: sorted.map(b => b.id),
-      y: anchor.y,
-      level,
-      source: 'manual',
-    };
-
-    const chapters = [...this.chapters(), newChapter].sort((a, b) => {
-      if (a.page !== b.page) return a.page - b.page;
-      return (a.y || 0) - (b.y || 0);
-    });
-
-    this.chapters.set(chapters);
-    this.selectedChapterId.set(chapterId);
-    this.chaptersSource.set(this.chapters().some(c => c.source !== 'manual') ? 'mixed' : 'manual');
-    this.editorState.markChanged();
-  }
-
-  /**
-   * Gutter-handle drop: create a chapter at the drop point. If the drop landed on
-   * a block that's part of the current multi-selection, merge the whole selection
-   * into one chapter; otherwise anchor to the single dropped block, or place a
-   * blank chapter if dropped on empty space. Auto-switches the right nav to the
-   * Chapters tab.
-   */
-  onChapterGutterDrop(event: { pageNum: number; y: number; snapToBlock?: TextBlock }): void {
-    if (event.snapToBlock) {
-      const selected = this.selectedBlockIds();
-      if (selected.length > 1 && selected.includes(event.snapToBlock.id)) {
-        const blocks = this.blocks().filter(b => selected.includes(b.id));
-        this.addChapterFromBlocks(blocks, 1);
-      } else {
-        const existing = this.chapters().find(c => c.blockId === event.snapToBlock!.id);
-        if (!existing) {
-          this.addChapterFromBlock(event.snapToBlock, 1);
-        }
-      }
-    } else {
-      this.onChapterPlacement({ pageNum: event.pageNum, y: event.y, level: 1 });
-    }
-    this.activatePanel('chapters');
-  }
-
-  /**
-   * Context-menu "Mark as chapter": convert the given block ids into one chapter
-   * heading (removing them from body) and reveal the Chapters tab.
+   * Context-menu "Mark as chapter": label these blocks `chapter`.
+   *
+   * That is the whole of it now. A chapter is a block whose one category field
+   * says so, so marking one is a relabel and nothing else — no marker to place,
+   * no title to keep in step with the block under it, no anchor bookkeeping. The
+   * Chapter tab lists what comes out.
    */
   onChapterFromBlocks(event: { blockIds: string[] }): void {
-    const blocks = this.blocks().filter(b => event.blockIds.includes(b.id));
-    if (blocks.length === 0) return;
-    this.addChapterFromBlocks(blocks, 1);
-    this.activatePanel('chapters');
+    if (event.blockIds.length === 0) return;
+    this.onSetBlockCategory({ blockIds: event.blockIds, categoryId: 'chapter' });
+    this.setNavTab('chapter');
   }
 
   removeChapter(chapterId: string): void {
-    // In a foundry book the chapter IS the block, so removing it removes the
-    // block — anything else would put the list and the page into disagreement,
-    // and the derived list would win back on the next paint anyway.
-    if (this.foundryRunLoaded() && this.blocks().some(b => b.id === chapterId)) {
+    // With a working document the chapter IS the block, so removing it removes
+    // the block — anything else would put the list and the page into
+    // disagreement, and the derived list would win back on the next read anyway.
+    if (this.blockLayerRead() && this.blocks().some(b => b.id === chapterId)) {
       this.deleteBlock(chapterId);
       if (this.selectedChapterId() === chapterId) this.selectedChapterId.set(null);
       return;
@@ -12729,16 +12019,14 @@ export class PdfPickerComponent implements OnInit {
   }
 
   renameChapter(event: { chapterId: string; newTitle: string }): void {
-    // Same rule: renaming a foundry chapter edits the marker's text, which is
-    // what the title is derived from and what the export override carries.
-    if (this.foundryRunLoaded()) {
+    // Same rule: renaming a chapter edits the block's annotation text, which IS
+    // the title the book is built with. There is no second copy to update.
+    if (this.blockLayerRead()) {
       const block = this.blocks().find(b => b.id === event.chapterId);
       if (block) {
         const title = event.newTitle.trim();
-        if (title.length === 0 || title === block.text) {
-          this.editorState.clearTextCorrection(block.id);
-        } else {
-          this.editorState.setTextCorrection(block.id, title);
+        if (title.length > 0 && title !== block.text) {
+          this.documentBlocks.retitle(block.id, title);
         }
         return;
       }
@@ -12747,17 +12035,6 @@ export class PdfPickerComponent implements OnInit {
       chapters.map(c =>
         c.id === event.chapterId
           ? { ...c, title: event.newTitle }
-          : c
-      )
-    );
-    this.editorState.markChanged();
-  }
-
-  changeChapterLevel(event: { chapterId: string; level: number }): void {
-    this.chapters.update(chapters =>
-      chapters.map(c =>
-        c.id === event.chapterId
-          ? { ...c, level: event.level }
           : c
       )
     );
@@ -12866,107 +12143,6 @@ export class PdfPickerComponent implements OnInit {
     newBreaks.add(move.toBlockId);
     if (newBreaks.size !== breaks.size || !breaks.has(move.toBlockId) || !breaks.has(move.fromBlockId)) {
       this.editorState.setParagraphBreaks(newBreaks);
-    }
-  }
-
-  /**
-   * Enter paragraph fix mode after a save operation.
-   * Closes the current document (e.g., the PDF), reopens the exported EPUB
-   * so paragraph detection runs on EPUB text blocks (which map to <p> tags),
-   * then auto-detects paragraph breaks.
-   */
-  private async enterParagraphFixMode(epubPath: string): Promise<void> {
-    this.paragraphFixEpubPath.set(epubPath);
-    this.paragraphFixMode.set(true);
-
-    // Remove the current document from open tabs so loadPdf won't hit
-    // the duplicate-tab check (the EPUB path may differ from the original source)
-    const currentDocId = this.activeDocumentId();
-    if (currentDocId) {
-      this.openDocuments.update(docs => docs.filter(d => d.id !== currentDocId));
-    }
-
-    // Close the current document (frees WASM memory, resets editor state)
-    this.closePdf();
-
-    // Re-set fix mode state after closePdf resets it
-    this.paragraphFixMode.set(true);
-    this.paragraphFixEpubPath.set(epubPath);
-
-    // Load the exported EPUB — blocks will correspond to <p> tags. This is a
-    // DERIVED artifact of the already-bound project, so suppress auto-project
-    // binding (projectPath must stay the manifest project, not rebind here).
-    this.pipelineTransitioning = true;
-    try {
-      await this.loadPdf(epubPath);
-    } finally {
-      this.pipelineTransitioning = false;
-    }
-
-    // Switch to paragraph mode and auto-detect
-    this.activatePanel('paragraphs');
-    this.detectParagraphs();
-  }
-
-  /**
-   * Finish paragraph fix mode — save corrected paragraphs and emit finalized.
-   */
-  async finishParagraphFix(): Promise<void> {
-    const epubPath = this.paragraphFixEpubPath();
-    if (!epubPath) return;
-
-    this.loading.set(true);
-    this.loadingText.set('Saving paragraph corrections...');
-
-    try {
-      const chapters = this.chapters();
-      const deletedHighlights = this.getDeletedHighlights();
-      const blocks = this.blocks();
-      const deletedBlockIds = this.deletedBlockIds();
-      const deletedPages = this.deletedPages();
-      const pBreaks = this.editorState.paragraphBreaks();
-
-      const result = await this.exportService.saveToEpub(
-        blocks,
-        deletedBlockIds,
-        chapters,
-        this.pdfName(),
-        epubPath,
-        this.editorState.textCorrections(),
-        deletedPages,
-        deletedHighlights,
-        this.metadata(),
-        pBreaks.size > 0 ? pBreaks : undefined
-      );
-
-      // Exit paragraph fix mode
-      this.paragraphFixMode.set(false);
-      this.paragraphFixEpubPath.set(null);
-      this.activatePanel(null);
-
-      if (result.success) {
-        this.finalized.emit({ success: true, epubPath });
-        this.showAlert({
-          title: 'Saved',
-          message: 'EPUB saved with corrected paragraphs.',
-          type: 'success'
-        });
-      } else {
-        this.finalized.emit({ success: false, error: result.message || 'Failed to save' });
-        this.showAlert({
-          title: 'Save Failed',
-          message: result.message || 'Failed to save EPUB',
-          type: 'error'
-        });
-      }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      this.paragraphFixMode.set(false);
-      this.paragraphFixEpubPath.set(null);
-      this.finalized.emit({ success: false, error: errorMessage });
-      this.showAlert({ title: 'Save Failed', message: errorMessage, type: 'error' });
-    } finally {
-      this.loading.set(false);
     }
   }
 
@@ -13273,123 +12449,6 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  onChapterClick(event: { block: TextBlock; level: number }): void {
-    // In TOC mode, toggle block selection for TOC mapping
-    if (this.tocMode()) {
-      const blockId = event.block.id;
-      const current = this.tocBlockIds();
-      if (current.includes(blockId)) {
-        this.tocBlockIds.set(current.filter(id => id !== blockId));
-      } else {
-        this.tocBlockIds.set([...current, blockId]);
-      }
-      return;
-    }
-
-    // Check if this block is already marked as a chapter
-    const existingChapter = this.chapters().find(c => c.blockId === event.block.id);
-    if (existingChapter) {
-      // If it's already a chapter, remove it
-      this.removeChapter(existingChapter.id);
-    } else {
-      // Add new chapter
-      this.addChapterFromBlock(event.block, event.level);
-    }
-  }
-
-  /**
-   * Handle chapter placement on empty space (no block to snap to).
-   * Creates a chapter at the specified Y position on the page.
-   */
-  onChapterPlacement(event: { pageNum: number; y: number; level: number }): void {
-    // Check if there's already a chapter near this Y position on this page
-    const existingNearby = this.chapters().find(c =>
-      c.page === event.pageNum && Math.abs((c.y || 0) - event.y) < 20
-    );
-
-    if (existingNearby) {
-      // Remove existing nearby chapter (toggle behavior)
-      this.removeChapter(existingNearby.id);
-      return;
-    }
-
-    // Create a new chapter at this position
-    const chapterId = 'chapter_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-    const chapterNum = this.chapters().filter(c => c.level === event.level).length + 1;
-    const title = event.level === 1 ? `Chapter ${chapterNum}` : `Section ${chapterNum}`;
-
-    const newChapter: Chapter = {
-      id: chapterId,
-      title,
-      page: event.pageNum,
-      y: event.y,
-      level: event.level,
-      source: 'manual',
-      blockId: undefined // No block associated
-    };
-
-    this.chapters.update(chapters => [...chapters, newChapter].sort((a, b) => {
-      if (a.page !== b.page) return a.page - b.page;
-      return (a.y || 0) - (b.y || 0);
-    }));
-
-    this.chaptersSource.set('manual');
-    this.editorState.markChanged();
-  }
-
-  /**
-   * True when a chapter title is still an auto-generated placeholder ("Chapter 3",
-   * "Section 2", or empty) rather than something the user typed. Used to decide
-   * whether a drag-absorb may seed the title from the absorbed block's text.
-   */
-  private isDefaultChapterTitle(title: string | undefined): boolean {
-    const t = (title || '').trim();
-    return t === '' || /^(Chapter|Section)\s+\d+$/.test(t);
-  }
-
-  /**
-   * Handle chapter marker drag - update chapter position
-   */
-  onChapterDrag(event: { chapterId: string; pageNum: number; y: number; snapToBlock?: TextBlock }): void {
-    this.chapters.update(chapters =>
-      chapters.map(ch => {
-        if (ch.id !== event.chapterId) return ch;
-
-        if (event.snapToBlock) {
-          // Dropped directly on a block — absorb it as the heading. Seed the title
-          // from the block's text ONLY when the current title is still an
-          // auto-generated default ("Chapter N" / "Section N" / empty); a title the
-          // user actually typed is never overwritten by a drag.
-          const blockText = event.snapToBlock.text.trim().substring(0, 80);
-          return {
-            ...ch,
-            page: event.pageNum,
-            y: event.snapToBlock.y,
-            blockId: event.snapToBlock.id,
-            mergedBlockIds: undefined,  // single-block absorb; drop any prior merge
-            title: (this.isDefaultChapterTitle(ch.title) && blockText) ? blockText : ch.title,
-          };
-        }
-
-        // Free placement (empty space, or Alt-forced). Release any previously
-        // absorbed block(s) — clearing blockId/mergedBlockIds restores them to the
-        // body via the viewer's anchorBlockIds recompute — and keep the title.
-        return {
-          ...ch,
-          page: event.pageNum,
-          y: event.y,
-          blockId: undefined,
-          mergedBlockIds: undefined,
-        };
-      }).sort((a, b) => {
-        if (a.page !== b.page) return a.page - b.page;
-        return (a.y || 0) - (b.y || 0);
-      })
-    );
-
-    this.editorState.markChanged();
-  }
-
   // OCR methods
   /**
    * Supply a page image to OCR, rendering it if it isn't already.
@@ -13427,499 +12486,153 @@ export class PdfPickerComponent implements OnInit {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Foundry OCR
+  // The working document
   //
-  // The pipeline runs in main (electron/foundry-run.ts). What lives here is the
-  // two ends of it: painting a finished run onto the pages, and turning the
-  // boxes the user then deleted into the export's exclusion list.
+  // Curation reads and writes `<Original>.working.pdf` — the block layer is real
+  // PDF annotations, and every relabel, deletion, merge and chapter title is an
+  // incremental update appended to that file (docs/DOCUMENT_PIPELINE.md
+  // §Curation). `DocumentBlocksService` is the whole of the data layer; what
+  // lives here is the two ends of it: opening the document for the book on
+  // screen, and turning the picker's gestures into edits on it.
   //
-  // The block ids are foundry's, unchanged, from `boxes/blocks.json` through
-  // `editorState.blocks` to `--exclude-ids`. That is what lets deletion work
-  // with no new machinery: `deletedBlockIds` already IS the list, and the
-  // existing delete-a-box, delete-a-category and delete-a-page actions already
-  // fill it. No mapping table, so nothing to fall out of step.
+  // What this replaces is worth naming, because the shape of the bug it produced
+  // was always the same. The run directory was a SECOND place a book's blocks
+  // could live — one that had to be re-attached to a window, re-mapped onto
+  // whatever ids the last blocks run happened to mint, and re-reconciled against
+  // the deletions a project file remembered by line. Every one of those steps
+  // could quietly disagree with the page in front of the user: a deletion
+  // re-applied to a block it never named, an export routed through a run that had
+  // read a different file, a title unit auto-discarded twice. There is one place
+  // now, it is a file, and opening it in Acrobat shows exactly what the picker
+  // shows.
   // ───────────────────────────────────────────────────────────────────────────
 
-  /** True once a foundry run has been painted onto this document. */
-  readonly foundryRunLoaded = signal(false);
+  /**
+   * The documents for the book on screen, or null when there are none.
+   *
+   * A working document is cast into a PROJECT directory and named after the
+   * project's primary, so a book with no project has none — a corpus book (which
+   * is deliberately not a project), a loose file opened from the library, a
+   * review EPUB. That is a real state and not a missing value: those books are
+   * edited through the editor's own block list and never through annotations, so
+   * the affordances that need a document say so rather than guessing.
+   */
+  readonly workingDocumentRef = computed<DocumentRef | null>(() => {
+    if (this.corpusMode()) return null;
+    const projectDir = this.projectPath();
+    if (!projectDir) return null;
+    const sourcePath = this.effectivePath();
+    return sourcePath ? { projectDir, sourcePath } : { projectDir };
+  });
 
   /**
-   * Every foundry block's text AS THE RUN DIRECTORY HAS IT, by block id.
+   * True once main has answered about this book's documents at all.
    *
-   * The baseline the export overrides are measured against: a block whose text
-   * now differs from this — because the user retyped it, or because it swallowed
-   * its merged siblings — ships a `text` override, and one that matches ships
-   * nothing. Rebuilt on every paint from the run directory, and deliberately
-   * NOT persisted: the artifacts on disk are the only honest source for what
-   * foundry read, and a stale copy in a project file would make an unedited
-   * block look edited forever.
+   * What it gates is the pipeline's own affordances — Detect, Reset — and those
+   * are exactly what a book with no blocks YET still needs: every book starts
+   * with no block layer, and Detect is how it stops. So this is deliberately not
+   * "has blocks".
    */
-  private readonly foundryArtifactText = new Map<string, string>();
+  readonly workingDocumentOpen = signal(false);
 
   /**
-   * Run block id → page, from the same blocks.json read. Export needs it to
-   * turn a deleted PAGE into that page's block ids using the RUN's ledger:
-   * the picker's blocks() only holds what this session painted, so a block
-   * the user merged away — or one lost to an interrupted save — is absent
-   * there, and deriving the page's contents from it quietly ships the block.
+   * True once a block layer has actually been read off the document.
+   *
+   * Separate from the flag above because the mirror below REPLACES the editor's
+   * blocks and deletions with the document's. Running it against a document that
+   * has not been detected yet would wipe a project's restored deletions with an
+   * empty set — a book that has never been through Detect has nothing to say
+   * about them, and saying nothing is not the same as saying none.
    */
-  private readonly foundryArtifactPage = new Map<string, number>();
+  private readonly blockLayerRead = signal(false);
 
   /**
-   * Run block id → its SCAN LINE ids, from the same blocks.json read.
+   * The annotations, painted.
    *
-   * The block ids above are re-minted by position every time foundry's blocks
-   * stage runs; these are minted once, by the scan, and every stage after it
-   * carries them unchanged. So this is the map that turns "the user deleted
-   * these boxes" into something that still means the same boxes after the next
-   * OCR-correction pass — see `@shared/foundry/block-exclusions`.
+   * One-way, and deliberately so: the document is the authority, the editor's
+   * block list is the view of it. The service applies every edit to its own copy
+   * the moment it is made and re-reads from the file if the write is refused, so
+   * this fires with the document's answer either way — there is no window in
+   * which the screen shows an edit the PDF does not have.
+   *
+   * `untracked` around the write because the editor's own signals are what this
+   * writes INTO; reading them as dependencies would make the effect its own
+   * trigger. The blocks are painted with `replaceTextBlocksOnPages` rather than
+   * assigned, because that is the call the viewer, the category statistics and
+   * the correction map are all built around.
    */
-  private readonly foundryArtifactLines = new Map<string, readonly string[]>();
-
-  /** The scan the line ids above belong to (`run.json` runId), '' with no run. */
-  private foundryScanId = '';
-
-  /**
-   * The deletions as they are PERSISTED — line ids and the scan they name.
-   *
-   * Held rather than derived so a session that never painted the run (the book
-   * opened without its foundry run, a tab switched away from) writes the record
-   * back untouched instead of erasing what the exporter reads. Refreshed from
-   * the painted blocks on every save that HAS a run.
-   */
-  private foundryDeletedLines: { scanId: string; lineIds: string[] } | null = null;
-
-  /**
-   * The one-title rule's ledger as it is PERSISTED — line ids and their scan.
-   *
-   * Held for the same reason `foundryDeletedLines` is: a session that never
-   * painted the run has nothing to derive it from, and writing an empty record
-   * back would throw away every ruling the user has reversed.
-   *
-   * The in-memory working set (`foundryAutoDiscarded`) stays keyed to the block
-   * ids painted right now, which is what the rule compares against; this is the
-   * form that has to survive a run that renumbers them.
-   */
-  private foundryAutoDiscardedLines: { scanId: string; lineIds: string[] } | null = null;
-
-  /**
-   * Set the whole foundry-run binding at once — the flag and the ledger it is
-   * only meaningful with.
-   *
-   * ONE writer, so they can never disagree. They were cleared in three places
-   * and set in a fourth, and the combination "loaded, but the ledger belongs to
-   * the previous document" is what routes a book's export through a run
-   * directory that never read it. Absent arguments mean EMPTY, never "leave
-   * what is there".
-   */
-  private setFoundryRunState(
-    loaded: boolean,
-    text?: ReadonlyMap<string, string>,
-    page?: ReadonlyMap<string, number>,
-    lines?: ReadonlyMap<string, readonly string[]>,
-    scanId?: string,
-  ): void {
-    this.foundryArtifactText.clear();
-    this.foundryArtifactPage.clear();
-    this.foundryArtifactLines.clear();
-    if (text) for (const [id, value] of text) this.foundryArtifactText.set(id, value);
-    if (page) for (const [id, value] of page) this.foundryArtifactPage.set(id, value);
-    if (lines) for (const [id, value] of lines) this.foundryArtifactLines.set(id, value);
-    this.foundryScanId = scanId ?? '';
-    this.foundryRunLoaded.set(loaded);
-  }
-
-  /**
-   * The line ids the given foundry blocks hold, for the persisted record.
-   *
-   * Block ids the painted run does not know contribute nothing and are not an
-   * error: `deletedBlockIds` is one set across every kind of block a project can
-   * carry, and a book that lived through the in-app OCR keeps deletions named
-   * `ocr_p0_…`/`merge_…` from a segmentation foundry never saw. Those are not
-   * foundry deletions and cannot become foundry line ids.
-   */
-  private foundryLineIdsOf(blockIds: Iterable<string>): string[] {
-    const out = new Set<string>();
-    for (const id of blockIds) {
-      for (const lineId of this.foundryArtifactLines.get(id) ?? []) out.add(lineId);
-    }
-    return [...out].sort();
-  }
-
-  /**
-   * The record to persist: derived from the painted run, or the one loaded with
-   * the project when this session has no run to derive from.
-   */
-  private currentFoundryDeletedLines(): { scanId: string; lineIds: string[] } | null {
-    if (!this.foundryRunLoaded()) return this.foundryDeletedLines;
-    this.foundryDeletedLines = {
-      scanId: this.foundryScanId,
-      lineIds: this.foundryLineIdsOf(this.deletedBlockIds()),
-    };
-    return this.foundryDeletedLines;
-  }
-
-  /**
-   * Re-attach the project's deletions to the blocks this run actually has.
-   *
-   * A deletion is a fact about CONTENT — "these lines are not in the book" — but
-   * `deletedBlockIds` says it in block ids, and foundry re-mints those by
-   * position every time its blocks stage runs. So the same list means different
-   * boxes before and after an OCR-correction pass. Two situations, and both are
-   * settled here rather than at export, because here is the one place a person
-   * is looking at the page:
-   *
-   *  - **The project carries the line record and it belongs to this scan.** The
-   *    lines are the truth; the block ids are re-derived from them. A deletion
-   *    the re-run cut in half cannot be re-derived, so it is RESTORED — the box
-   *    comes back on screen, visibly, and is reported below. Silently excluding
-   *    a straddled block would drop text nobody deleted.
-   *  - **There is no record, or it belongs to an earlier scan.** Nothing on disk
-   *    says which lines those ids meant. They are taken at face value against
-   *    the blocks painted now — the only reading available — and the user is
-   *    told, because that reading is a guess and the boxes on screen are the
-   *    only way to check it. The queue's export refuses this case outright; the
-   *    editor is where it gets fixed.
-   *
-   * Returns what to say about it, or null when there was nothing to re-attach.
-   */
-  private reattachFoundryDeletions(
-  ): { title: string; message: string; type: 'warning' | 'info' } | null {
-    if (!this.foundryRunLoaded()) return null;
-    // The painted run's own ledger rather than a blocks list handed in, so this
-    // can also run when the PROJECT arrives after the paint — the two orders are
-    // both real (a run that finished while the book was closed paints from an
-    // effect, and the project state loads on its own schedule).
-    const blocks = [...this.foundryArtifactLines].map(([id, lineIds]) => ({
-      id, page: this.foundryArtifactPage.get(id) ?? 0, lineIds,
-    }));
-    const deleted = new Set(this.deletedBlockIds());
-    const foundryShaped = [...deleted].filter(isFoundryBlockId);
-    const record = this.foundryDeletedLines;
-
-    if (!record || record.scanId !== this.foundryScanId) {
-      // No line record to resolve. The ids are read as naming the blocks painted
-      // now, and recorded by line from here on. Ids the run does not have name
-      // nothing at all and are dropped rather than carried as a permanent
-      // mismatch — a book that lived through the in-app OCR keeps deletions from
-      // a segmentation foundry never saw (`ocr_p0_…`, `merge_…`), and those are
-      // left alone: they are not foundry-shaped, so they are not in this list.
-      const known = foundryShaped.filter(id => this.foundryArtifactLines.has(id));
-      for (const id of foundryShaped) if (!this.foundryArtifactLines.has(id)) deleted.delete(id);
-      this.editorState.deletedBlockIds.set(deleted);
-      this.foundryDeletedLines = {
-        scanId: this.foundryScanId,
-        lineIds: this.foundryLineIdsOf(known),
-      };
-      if (foundryShaped.length === 0) return null;
-      const lost = foundryShaped.length - known.length;
-      const why = record
-        ? 'against an earlier scan of this book'
-        : 'before BookForge recorded which lines a deleted block held';
-      const restored = lost > 0
-        ? `, and ${lost} that this run has no block for were restored`
-        : '';
-      return {
-        title: 'Check the deleted boxes',
-        message:
-          `${foundryShaped.length} deletion(s) in this project were saved ${why}, so which boxes `
-          + `they meant cannot be proved. They have been applied to the boxes of the same name in `
-          + `this run${restored}. Check the deleted boxes before exporting — from now on they are `
-          + 'recorded by line and survive a re-run.',
-        type: 'warning',
-      };
-    }
-
-    const plan = planFoundryExclusions(blocks, record.lineIds);
-    for (const id of foundryShaped) deleted.delete(id);
-    for (const id of plan.excluded) deleted.add(id);
-    this.editorState.deletedBlockIds.set(deleted);
-    this.foundryDeletedLines = {
-      scanId: this.foundryScanId,
-      lineIds: this.foundryLineIdsOf(plan.excluded),
-    };
-
-    const unresolved = plan.straddled.length + plan.missing.length;
-    if (unresolved === 0) return null;
-    const pages = [...new Set(plan.straddled.map(b => b.page + 1))].sort((a, b) => a - b);
-    const where = pages.length > 0
-      ? ` (page${pages.length === 1 ? '' : 's'} ${pages.slice(0, 10).join(', ')}`
-        + `${pages.length > 10 ? ', …' : ''})`
-      : '';
-    const gone = plan.missing.length > 0
-      ? `, and ${plan.missing.length} deleted line(s) are not in this run at all`
-      : '';
-    return {
-      title: 'Some deletions could not be re-applied',
-      message:
-        `This run re-cut ${plan.straddled.length} block(s) that a deletion only partly `
-        + `covers${where}${gone}. Those boxes are back on the page rather than dropped on a `
-        + 'guess — delete them again if they should not be in the book.',
-      type: 'warning',
-    };
-  }
-
-  /**
-   * Title units this component's own rule deleted, so it never rules twice.
-   *
-   * The rule below deletes with the ordinary deletion mechanism, which the user
-   * can undo like any other — and would then face again on the next open, since
-   * the rule re-runs on every paint. This is the ledger that stops that: an id in
-   * here has been ruled on, and whatever state the user has left it in afterwards
-   * (deleted, or explicitly restored) is the answer.
-   *
-   * WORKING SET ONLY. It is keyed to the block ids painted right now, which is
-   * what the rule compares against, and those ids do not outlive the run that
-   * minted them. It is persisted as `foundry_auto_discarded_lines` — the same
-   * scan-stamped line identity the deletions use — and rebuilt from it by
-   * `reattachFoundryAutoDiscarded` whenever a run paints.
-   */
-  private readonly foundryAutoDiscarded = signal<Set<string>>(new Set());
-
-  /**
-   * The ledger to persist: derived from the painted run, or the one loaded with
-   * the project when this session has no run to derive from.
-   *
-   * Mirrors `currentFoundryDeletedLines` — same reasoning, same shape.
-   */
-  private currentFoundryAutoDiscardedLines(): { scanId: string; lineIds: string[] } | null {
-    if (!this.foundryRunLoaded()) return this.foundryAutoDiscardedLines;
-    const lineIds = this.foundryLineIdsOf(this.foundryAutoDiscarded());
-    this.foundryAutoDiscardedLines = lineIds.length > 0
-      ? { scanId: this.foundryScanId, lineIds }
-      : null;
-    return this.foundryAutoDiscardedLines;
-  }
-
-  /**
-   * Rebuild the working ledger from the persisted one, against THIS run.
-   *
-   * The mirror of `reattachFoundryDeletions`, and deliberately quieter than it,
-   * because the two records fail differently:
-   *
-   *  - a DELETION that cannot be mapped is lost information — nothing on disk
-   *    can re-derive "the user did not want this text" — so it restores the box
-   *    and says so in front of the user;
-   *  - a RULING is an auto-decision, and `applyFoundryTitleRule` reaches the
-   *    same verdict again from the blocks in front of it. A ruling that cannot
-   *    be placed is simply re-derived. So a stamp from another scan voids the
-   *    whole ledger (console, not an alert) and the rule rules afresh, and a
-   *    unit this run re-cut is dropped from it rather than reported.
-   *
-   * The one thing that IS lost by re-ruling is a ruling the user reversed: a
-   * part card they restored comes back struck through once. That is a visible,
-   * one-click-reversible cost against a silent wrong ruling on another block —
-   * which is what an id-keyed ledger produces after a blocks re-run.
-   */
-  private reattachFoundryAutoDiscarded(): void {
-    if (!this.foundryRunLoaded()) return;
-    const record = this.foundryAutoDiscardedLines;
-    if (!record || record.scanId !== this.foundryScanId) {
-      if (record) {
-        console.warn(`[foundry] the one-title rule's ledger for ${this.projectPath() || 'this project'} `
-          + `was recorded against scan ${record.scanId}, and this run is ${this.foundryScanId}. `
-          + 'Discarded — the rule rules on this run\'s title units afresh.');
-      }
-      this.foundryAutoDiscarded.set(new Set());
-      this.foundryAutoDiscardedLines = null;
-      return;
-    }
-    const blocks = [...this.foundryArtifactLines].map(([id, lineIds]) => ({
-      id, page: this.foundryArtifactPage.get(id) ?? 0, lineIds,
-    }));
-    const ruled = blockIdsCoveredByLines(blocks, record.lineIds);
-    this.foundryAutoDiscarded.set(new Set(ruled));
-    // Re-derived rather than kept verbatim, so lines this run re-cut or dropped
-    // leave the record instead of riding along for ever.
-    this.foundryAutoDiscardedLines = ruled.length > 0
-      ? { scanId: this.foundryScanId, lineIds: this.foundryLineIdsOf(ruled) }
-      : null;
-  }
-
-  /**
-   * A ledger from before it was recorded by line: dropped, and named.
-   *
-   * `foundry_auto_discarded_ids` is foundry BLOCK ids, which the blocks stage
-   * re-mints by position on every run. Resolving them against the blocks on
-   * screen would be a guess with no way to check it — and the guess is silent
-   * either way it goes wrong (a restored part card deleted again, a repeat title
-   * never ruled on). The rule can re-derive the whole thing, so it does.
-   */
-  private discardLegacyAutoDiscardedIds(project: BookForgeProject): void {
-    const ids = project.foundry_auto_discarded_ids;
-    if (!ids?.length) return;
-    console.warn(`[foundry] ${ids.length} one-title ruling(s) in `
-      + `${this.projectPath() || project.source_path || 'this project'} are keyed to block ids, `
-      + 'which every blocks run re-mints. Discarded rather than resolved against blocks they may '
-      + 'no longer name — the rule rules on those units afresh.');
-  }
-
-  /**
-   * Adjacent marker blocks — `chapter` or `title` — become ONE marker.
-   *
-   * Block formation splits a display heading into one block per line — it cannot
-   * see that "Nationalism, Nazism, and" / "the Churches:" / "The Early Period"
-   * is one heading — so a real chapter opening arrives as two or three adjacent
-   * `chapter` blocks, sometimes with junk on the end of one ("The Lost Empire
-   * t"). Three fragments is three chapter markers, three TOC entries and three
-   * places to fix the same typo. A title page is the same shape and worse: "FOR."
-   * / "THE SOUL" / "OF THE" / "PEOPLE |." / a fleuron read as "Ap" is five.
-   *
-   * So they are merged where they are painted. The survivor keeps the FIRST
-   * block's id — foundry's own id, unchanged, which is what keeps exclusions and
-   * overrides addressable — takes the union of the bboxes, and carries the
-   * joined text as one line. The ids it swallowed ride along in
-   * `merged_foundry_ids`, and become exclusions at export.
-   *
-   * Categories never merge ACROSS each other: a part title and the chapter
-   * opening under it are two markers whatever order they arrive in. Run order is
-   * foundry's reading order, and the merge is bounded by the page: a part divider
-   * alone at the foot of one page and a chapter opening at the head of the next
-   * are two headings, not one. Same bound the exporter's own merge uses (foundry
-   * bb71977), which stays underneath this as a safety net.
-   */
-  private mergeFoundryMarkerBlocks(blocks: TextBlock[]): TextBlock[] {
-    const out: TextBlock[] = [];
-    for (const block of blocks) {
-      const prev = out[out.length - 1];
-      const mergeable = prev !== undefined
-        && FOUNDRY_MARKER_CATEGORIES.has(block.category_id)
-        && prev.category_id === block.category_id
-        && prev.page === block.page
-        && !prev.is_image && !block.is_image;
-      if (!mergeable) {
-        out.push({ ...block });
-        continue;
-      }
-      const text = `${prev.text} ${block.text}`.replace(/\s+/g, ' ').trim();
-      const x = Math.min(prev.x, block.x);
-      const y = Math.min(prev.y, block.y);
-      out[out.length - 1] = {
-        ...prev,
-        x,
-        y,
-        width: Math.max(prev.x + prev.width, block.x + block.width) - x,
-        height: Math.max(prev.y + prev.height, block.y + block.height) - y,
-        text,
-        char_count: text.length,
-        line_count: (prev.line_count ?? 1) + (block.line_count ?? 1),
-        line_boxes: [...(prev.line_boxes ?? []), ...(block.line_boxes ?? [])],
-        merged_foundry_ids: [...(prev.merged_foundry_ids ?? []), block.id],
-      };
-    }
-    return out;
-  }
-
-  /**
-   * ONE title unit at the front of the book, ONE title card per part page.
-   *
-   * A scanned book is full of `title` blocks and only one of them is the book's
-   * title: the cover, then an interior title page broken into a fragment per
-   * line with the subtitle, the author and whatever the fleurons OCR'd as ("Ap",
-   * "» ]>") mixed in, then the half-title repeat, then a card on every part
-   * divider. Shipping them all puts the title into the audiobook four times over
-   * and litters the TOC with letter salad.
-   *
-   * The rule, applied to the merged units in reading order:
-   *
-   *  - the FIRST unit is the book title card, and is kept;
-   *  - a later unit that repeats it — same letters and digits, ignoring case and
-   *    punctuation — is the half-title, and goes: a second printing of the title
-   *    is not a second section;
-   *  - a later unit is otherwise kept only as a PART CARD: alone on its page (no
-   *    `body` block on it) and at most FOUNDRY_PART_CARD_MAX_CHARS long;
-   *  - everything else is discarded.
-   *
-   * Discarded means DELETED, through the same mechanism as a box the user
-   * deleted by hand: it renders struck through, it can be restored by hand, and
-   * it reaches the exporter as an exclusion with the rest of the deletions. No
-   * second list of hidden blocks, and nothing the user cannot see or reverse.
-   *
-   * Idempotent across reloads through `foundryAutoDiscarded`: a unit is ruled on
-   * once, so a restored part card stays restored the next time the book opens.
-   * That ledger is persisted by LINE and re-attached before this runs — across a
-   * blocks re-run it is void, by design, and the rule judges the book again.
-   */
-  private applyFoundryTitleRule(): void {
-    const blocks = this.blocks();
-    const corrections = this.editorState.textCorrections();
-    const textOf = (b: TextBlock): string => (corrections.get(b.id) ?? b.text).trim();
-
-    const units = blocks
-      .filter(b => b.category_id === 'title' && !b.is_image)
-      .sort((a, b) => a.page - b.page || a.y - b.y);
-    if (units.length < 2) return;
-
-    const bodyPages = new Set(
-      blocks.filter(b => b.category_id === 'body' && !b.is_image).map(b => b.page));
-    // Compared on letters and digits only: the half-title is the same words set
-    // differently, and one page's "PEOPLE |." must not read as a new title.
-    const fold = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
-    const bookTitle = fold(textOf(units[0]));
-
-    const ruled = this.foundryAutoDiscarded();
-    const discard: string[] = [];
-    for (const unit of units.slice(1)) {
-      const text = textOf(unit);
-      const isRepeat = fold(text) === bookTitle;
-      const isPartCard = !isRepeat
-        && !bodyPages.has(unit.page)
-        && text.length <= FOUNDRY_PART_CARD_MAX_CHARS;
-      if (isPartCard) continue;
-      if (ruled.has(unit.id)) continue;   // ruled on already; the user's answer stands
-      discard.push(unit.id);
-    }
-    if (discard.length === 0) return;
-
-    this.editorState.deleteBlocks(discard);
-    this.foundryAutoDiscarded.update(ids => {
-      const next = new Set(ids);
-      for (const id of discard) next.add(id);
-      return next;
+  private readonly documentBlocksMirror = effect(() => {
+    if (!this.blockLayerRead()) return;
+    const blocks = this.documentBlocks.blocks();
+    const deleted = this.documentBlocks.deletedBlockIds();
+    const deletedPages = this.documentBlocks.deletedPages();
+    untracked(() => {
+      const pages = [...new Set(blocks.map(b => b.page))].sort((a, b) => a - b);
+      this.editorState.replaceTextBlocksOnPages(pages, blocks);
+      this.editorState.deletedBlockIds.set(new Set(deleted));
+      this.editorState.deletedPages.set(new Set(deletedPages));
+      this.editorState.updateCategoryStats();
     });
-    console.log(`[foundry] ${discard.length} title unit(s) auto-discarded: `
-      + `${units.length} on the page, one book title card and any part cards kept.`);
-  }
+  });
 
   /**
-   * The chapters of a foundry-backed book ARE its marker blocks.
+   * Deletions, landed in the document.
+   *
+   * Deleting a block is not one gesture — it is a box's context menu, a
+   * category's "delete all like this", a crop that removes what falls outside
+   * it, a page struck out, and every one of them reversible through the editor's
+   * undo stack. So this watches the RESULT rather than intercepting the acts:
+   * whatever the editor now says is dropped from the book, the annotations are
+   * made to say too.
+   *
+   * It cannot chase its own tail. The service applies each flag to its own copy
+   * as it takes it, so the next pass sees two identical sets and writes nothing;
+   * and the mirror above, running the other way, writes the same set the
+   * document already has.
+   */
+  private readonly documentDeletionsSync = effect(() => {
+    if (!this.blockLayerRead()) return;
+    const wanted = this.editorState.deletedBlockIds();
+    const wantedPages = this.editorState.deletedPages();
+    untracked(() => {
+      const landed = this.documentBlocks.deletedBlockIds();
+      for (const id of wanted) if (!landed.has(id)) this.documentBlocks.setDeleted(id, true);
+      for (const id of landed) if (!wanted.has(id)) this.documentBlocks.setDeleted(id, false);
+
+      const landedPages = this.documentBlocks.deletedPages();
+      for (const p of wantedPages) {
+        if (!landedPages.has(p)) this.documentBlocks.setPageDeleted(p, true);
+      }
+      for (const p of landedPages) {
+        if (!wantedPages.has(p)) this.documentBlocks.setPageDeleted(p, false);
+      }
+    });
+  });
+
+  /**
+   * The chapters of a book with a working document ARE its `chapter` blocks.
    *
    * There is no second list to keep in step and no green divider to drag: the
-   * marker on the page is the chapter, its id is the block's id, and its title
-   * is whatever that block's text currently says — including the user's edit.
-   * The old chapter machinery (`chapters()` as hand-placed markers, the dashed
-   * green lines) is left untouched for every document that never went through
-   * foundry.
-   *
-   * `title` markers are in the list for the same reason foundry's exporter opens
-   * a section on one: the surviving book title card and part cards ARE section
-   * openings in the EPUB, and a TOC that omitted them would disagree with the
-   * book it describes. The ones the title rule discarded are deleted, and
-   * deleted blocks are filtered out below.
+   * block on the page is the chapter, its id is the block's id, and its
+   * annotation text is the definitive title. Relabelling any block to `chapter`
+   * makes it a chapter; relabelling it away stops it being one, with nothing to
+   * keep in step.
    *
    * Written from an effect rather than made a computed because `chapters` is a
-   * signal a dozen legacy paths still set; this keeps that surface intact and
-   * simply keeps the list correct for foundry books. It writes only on a real
-   * change, so it cannot churn `hasUnsavedChanges`.
+   * signal the EPUB-source export path still reads and sets; this keeps that
+   * surface intact. It writes only on a real change, so it cannot churn
+   * `hasUnsavedChanges`.
    */
-  private readonly foundryChaptersEffect = effect(() => {
-    if (!this.foundryRunLoaded()) return;
-    const deleted = this.deletedBlockIds();
-    const deletedPages = this.deletedPages();
-    const corrections = this.editorState.textCorrections();
-
-    const derived: Chapter[] = this.blocks()
-      .filter(b => FOUNDRY_MARKER_CATEGORIES.has(b.category_id)
-        && !b.is_image
-        && !deleted.has(b.id)
-        && !deletedPages.has(b.page))
+  private readonly documentChaptersEffect = effect(() => {
+    if (!this.blockLayerRead()) return;
+    const derived: Chapter[] = this.documentBlocks.chapterBlocks()
+      .slice()
       .sort((a, b) => a.page - b.page || a.y - b.y)
       .map(b => ({
         id: b.id,
-        title: (corrections.get(b.id) ?? b.text).trim(),
+        title: b.text.trim(),
         page: b.page,
         blockId: b.id,
-        mergedBlockIds: [b.id, ...(b.merged_foundry_ids ?? [])],
         y: b.y,
         level: 1,
         source: 'heuristic' as const,
@@ -13928,411 +12641,184 @@ export class PdfPickerComponent implements OnInit {
     const same = (a: Chapter[], b: Chapter[]): boolean =>
       a.length === b.length
       && a.every((c, i) => c.id === b[i].id && c.title === b[i].title && c.page === b[i].page);
-    if (!same(derived, this.chapters())) this.chapters.set(derived);
+    untracked(() => {
+      if (!same(derived, this.chapters())) this.chapters.set(derived);
+    });
   });
 
   /**
-   * True for a block the viewer should paint as a marker: a `chapter` or `title`
-   * block in a foundry-backed document. Used to decide the double-click too —
-   * a marker is editable wherever you are, because editing it is the whole point
-   * of it being there. A part card the title rule kept is edited exactly like a
-   * chapter opening.
+   * True for a block the picker treats as a chapter opening: the one category
+   * field says so. Used for the double-click too — a chapter block's title is
+   * editable wherever you are, because editing it is the whole point of it being
+   * a chapter.
    */
-  isFoundryMarkerBlock(block: TextBlock): boolean {
-    return this.foundryRunLoaded()
-      && FOUNDRY_MARKER_CATEGORIES.has(block.category_id)
-      && !block.is_image;
+  isChapterBlock(block: TextBlock): boolean {
+    return block.category_id === 'chapter' && !block.is_image;
   }
 
-  /** The run key for this document. */
-  foundryBookKey(): string {
+  /** The run key for this document — see `detectBookKey`. */
+  bookKey(): string {
     return this.detectBookKey();
   }
 
   /**
-   * A finished run: read the run directory and paint it.
+   * A stage the queue ran for this book has finished: read the document again.
    *
-   * The modal never holds the blocks. It is destroyed when it closes, which is
-   * exactly when a thirty-minute run is most likely to finish, so the component
-   * that outlives the dialog does the reading.
+   * The dialog that submitted it is destroyed when it closes, which is exactly
+   * when a thirty-minute pass is most likely to finish, so the component that
+   * outlives it does the reading.
    */
-  async onFoundryFinished(event: { bookKey: string; pages: number[] }): Promise<void> {
-    if (event.bookKey !== this.foundryBookKey()) return;
+  async onDocumentReadyToPaint(): Promise<void> {
+    await this.loadWorkingDocument();
+  }
+
+  /**
+   * Read the working document and put its blocks on the pages.
+   *
+   * Three outcomes, and they are three different facts:
+   *
+   *  - **No ref.** The book is not a project (a corpus book, a loose file), so
+   *    there are no documents and nothing failed. The editor's own block list
+   *    stands.
+   *  - **A ref, and no block layer to read yet.** Every book is in this state
+   *    until Detect has run. The pipeline is still reachable — that is what
+   *    `workingDocumentOpen` says — and main's own sentence goes to the console,
+   *    because opening a book is not the moment to interrupt somebody about a
+   *    stage they have not asked for.
+   *  - **A block layer.** It replaces what is on screen. It is the document.
+   */
+  private async loadWorkingDocument(): Promise<void> {
+    const ref = this.workingDocumentRef();
+    if (!ref) {
+      this.workingDocumentOpen.set(false);
+      this.blockLayerRead.set(false);
+      return;
+    }
+    this.blockLayerRead.set(false);
     try {
-      await this.loadFoundryRun();
+      await this.documentBlocks.open(ref);
+    } catch (err) {
+      // `open` sets the state before it reads the blocks, so a state in hand is
+      // proof main answered about this book's documents and only the block layer
+      // is absent.
+      this.workingDocumentOpen.set(this.documentBlocks.state() !== null);
+      console.info('[document] no block layer for this book yet:', err);
+      return;
+    }
+    this.workingDocumentOpen.set(true);
+    this.blockLayerRead.set(true);
+    this.selectedBlockIds.set([]);
+    this.saveCurrentDocumentState();
+  }
+
+  // ── The stages, as the picker offers them ─────────────────────────────────
+
+  /**
+   * Detect. ONE confirmation, because it overwrites hand curation.
+   *
+   * Nothing here stages or previews the result: if it ran, the annotations in
+   * the PDF are the new truth, and the picker shows them because it re-reads the
+   * document afterwards.
+   */
+  async runDetect(): Promise<void> {
+    const state = this.documentBlocks.state();
+    if (state && state.blockCount > 0) {
+      const choice = await this.electronService.showConfirmDialog({
+        title: 'Detect blocks again?',
+        message:
+          `This book already has ${state.blockCount} blocks, and detecting replaces all of them `
+          + 'with a fresh reading of the pages.',
+        detail:
+          'Every label, deletion, merge and chapter title you have set by hand goes with them. '
+          + 'Everything the pages say stays — this is a re-reading, not a loss of text.',
+        confirmLabel: 'Detect blocks',
+        cancelLabel: 'Keep what is there',
+        type: 'warning',
+      });
+      if (!choice.confirmed) return;
+    }
+    await this.documentBlocks.detect();
+    // The service re-reads the document after the stage and reports a failure on
+    // `lastError` rather than throwing, so a clean run IS a block layer in hand.
+    if (!this.documentBlocks.lastError()) this.blockLayerRead.set(true);
+  }
+
+  /**
+   * Build the book. Reflow reads the working document and writes
+   * `<Original>.epub`, properly named, in one pass.
+   *
+   * There is no second exporter to fall through to and no gate in front of this:
+   * the documents on disk are the whole of the input, so a missing one is an
+   * error naming the stage that writes it rather than a reason to rebuild a
+   * different book out of the editor's block text.
+   */
+  private async reflowToEpub(): Promise<string> {
+    const epubPath = await this.documentBlocks.reflow();
+    const failure = this.documentBlocks.lastError();
+    if (failure) throw new Error(failure);
+    return epubPath;
+  }
+
+  /**
+   * Put the working document back to how it stood at the end of a stage.
+   *
+   * One truncate of an append-only file: no GPU, no re-run, and the result is
+   * not an approximation of that document but that document. Confirmed first,
+   * because everything appended after the boundary — including every hand
+   * correction — is what is being cut off.
+   */
+  async resetToStage(target: ResetTarget): Promise<void> {
+    const label = DOCUMENT_STAGE_LABELS[target];
+    const choice = await this.electronService.showConfirmDialog({
+      title: `Reset to ${label}?`,
+      message: `The working document goes back to exactly how it stood ${target === 'none'
+        ? 'before any of the pages had been read'
+        : `when ${label} finished`}.`,
+      detail: 'Everything done to it since then — labels, deletions, merges, chapter titles — is '
+        + 'discarded. The original in archive/ is untouched either way.',
+      confirmLabel: `Reset to ${label}`,
+      cancelLabel: 'Leave it alone',
+      type: 'warning',
+    });
+    if (!choice.confirmed) return;
+    await this.documentBlocks.resetTo(target);
+    // Resetting past Get Text re-copies the archive primary, so there is no
+    // block layer on the other side of it — only a document waiting to be read.
+    if (target === 'none') this.blockLayerRead.set(false);
+  }
+
+  // ── Curation, written into the document ───────────────────────────────────
+
+  /**
+   * A chapter block's annotation text IS its title, so retitling is one edit to
+   * one field — there is no chapter record beside the block to keep in step.
+   */
+  retitleChapterBlock(event: { blockId: string; title: string }): void {
+    this.documentBlocks.retitle(event.blockId, event.title);
+  }
+
+  /**
+   * Merge the selected blocks into one.
+   *
+   * The "the system thinks this is two blocks and it isn't" correction, and the
+   * service refuses the cases that are not merges — one block, or blocks on two
+   * pages — by name rather than producing something that looks merged.
+   */
+  mergeSelectedBlocks(): void {
+    try {
+      this.documentBlocks.merge(this.selectedBlockIds());
     } catch (err) {
       this.showAlert({
-        title: 'Could not read the OCR result',
+        title: 'Could not merge these blocks',
         message: err instanceof Error ? err.message : String(err),
-        type: 'error',
+        type: 'warning',
       });
+      return;
     }
-  }
-
-  /**
-   * Refuse a foundry run that is not a reading of the document on screen.
-   *
-   * The run key IS the displayed file's path (`detectBookKey`), so in every
-   * correct case this is a tautology and costs one small JSON read. It exists
-   * because the key is derived state and this is the LAST gate before
-   * `replaceTextBlocksOnPages` rewrites whole pages: a run records the file it
-   * actually rasterized (`FoundryRunState.pdfPath`), and that record — not a key
-   * somebody computed — is the proof that its blocks describe this document.
-   *
-   * Blocks are geometry plus ids. Painted onto any other file they land at
-   * coordinates measured from a different page, under ids that file's export,
-   * deletions and labels have never seen. So a disagreement THROWS, by name,
-   * rather than painting something plausible.
-   */
-  private async assertFoundryRunReadsThisDocument(): Promise<void> {
-    const key = this.foundryBookKey();
-    const displayed = this.effectivePath();
-    const { state } = await this.electronService.foundryRunAttach(key);
-    if (!state) {
-      throw new Error(
-        `No foundry run is registered under ${key}, so there is nothing to paint onto `
-        + `${displayed || 'this document'}.`
-      );
-    }
-    if (!this.samePathOnDisk(state.pdfPath, displayed)) {
-      const message =
-        `Refusing to paint a foundry run onto a document it did not read. The run keyed to `
-        + `${state.bookKey} rasterized ${state.pdfPath}, but the document on screen is `
-        + `${displayed || '(none)'}. Its blocks are measured from a different file and name `
-        + `blocks this one does not have.`;
-      console.error('[foundry]', message);
-      throw new Error(message);
-    }
-  }
-
-  /**
-   * Read the run directory and put its blocks on the pages.
-   *
-   * Blocks REPLACE whatever was on the pages the run covered, exactly as an OCR
-   * pass does, and for the same reason: the old blocks are a different reading
-   * of the same paper, and keeping both would double every sentence. Hand-set
-   * category corrections on those pages are dropped with them — an orphaned
-   * correction can never re-apply, but it would still be counted as a label.
-   *
-   * Refused outright for a corpus book, from inside rather than at each caller:
-   * replacing the corpus segmentation is precisely what must never happen, and a
-   * caller that forgets is the bug this catches.
-   */
-  private async loadFoundryRun(): Promise<void> {
-    if (this.corpusMode()) {
-      throw new Error(
-        `${this.corpusPath()} is a training-corpus book. Its blocks are the segmentation its `
-        + 'labels.json is keyed to, so a foundry run cannot be painted over them. Open the book '
-        + 'as an ordinary document to use the foundry layout.'
-      );
-    }
-    await this.assertFoundryRunReadsThisDocument();
-    const result = await this.electronService.foundryRunRead(this.foundryBookKey());
-
-    // The categories the run actually used, from the ONE colour table. Merged
-    // over what is already there so a book that was part hand-labelled keeps its
-    // palette; normalizeCategories then overwrites name and colour from the
-    // contract, because a category record persisted in an old project carries
-    // the pre-July palette.
-    const used = new Set(result.blocks.map(b => b.category_id));
-    const fresh: Record<string, Category> = {};
-    for (const def of BLOCK_CATEGORIES) {
-      if (!used.has(def.id)) continue;
-      fresh[def.id] = {
-        id: def.id, name: def.name, description: def.description, color: def.color,
-        block_count: 0, char_count: 0, font_size: def.fontSize, region: def.region,
-        sample_text: '',
-      };
-    }
-    this.editorState.categories.set(normalizeCategories({ ...this.categories(), ...fresh }));
-
-    const pages = [...new Set(result.blocks.map(b => b.page))].sort((a, b) => a - b);
-    const orphaned = this.blocks()
-      .filter(b => pages.includes(b.page) && !b.is_image)
-      .map(b => b.id)
-      .filter(id => this.editorState.categoryCorrections().has(id));
-    if (orphaned.length > 0) {
-      this.editorState.categoryCorrections.update(map => {
-        const next = new Map(map);
-        for (const id of orphaned) next.delete(id);
-        return next;
-      });
-    }
-
-    // The run's text, block by block, BEFORE anything here touches it. This is
-    // the baseline `tryFoundryExport` compares against to decide what the user
-    // actually changed — see foundryArtifactText.
-    const artifactText = new Map<string, string>();
-    const artifactPage = new Map<string, number>();
-    const artifactLines = new Map<string, readonly string[]>();
-    for (const block of result.blocks) {
-      artifactText.set(block.id, block.text);
-      artifactPage.set(block.id, block.page);
-      artifactLines.set(block.id, block.line_ids);
-    }
-
-    const painted = this.mergeFoundryMarkerBlocks(result.blocks as TextBlock[]);
-    const swallowed = painted.reduce((n, b) => n + (b.merged_foundry_ids?.length ?? 0), 0);
-
-    this.editorState.replaceTextBlocksOnPages(pages, painted);
+    // The blocks that were selected no longer exist as such — one of them now is
+    // all of them. Which one the service kept is its answer to give, so the
+    // selection is dropped rather than guessed at.
     this.selectedBlockIds.set([]);
-    this.editorState.updateCategoryStats();
-    this.setFoundryRunState(true, artifactText, artifactPage, artifactLines, result.scanId);
-    // Before the title rule and before anything can be saved: the deletions
-    // loaded from the project are keyed to whatever blocks were painted when
-    // they were made, and this run may have re-cut the page under them.
-    const reattached = this.reattachFoundryDeletions();
-    // And the rule's own ledger, which is keyed to those same block ids. BEFORE
-    // the rule runs, or it rules again on units it has already ruled on.
-    this.reattachFoundryAutoDiscarded();
-    // After the blocks are in state, because it deletes through the ordinary
-    // deletion path and that path only knows blocks the document holds.
-    this.applyFoundryTitleRule();
-    this.saveCurrentDocumentState();
-
-    // Everything worth knowing about the run, said once. A DEGRADED paragraph
-    // calibration and a skewed page are both "the book still exported, and here
-    // is what it cost" — the sanctioned degradations, reported rather than
-    // absorbed. Refused OCR outputs are the same shape of fact: those lines
-    // shipped unchanged because a guard could not prove the correction.
-    const notes: string[] = [
-      `${result.blocks.length} blocks over ${pages.length} page${pages.length === 1 ? '' : 's'}.`,
-    ];
-    const markers = painted.filter(b => FOUNDRY_MARKER_CATEGORIES.has(b.category_id)).length;
-    if (swallowed > 0) {
-      notes.push(
-        `${swallowed} adjacent chapter/title block${swallowed === 1 ? ' was' : 's were'} merged into `
-        + `${markers} marker${markers === 1 ? '' : 's'}.`
-      );
-    }
-    if (result.corrected) {
-      notes.push(`${result.correctedLines} lines corrected`
-        + (result.refusedLines ? `, ${result.refusedLines} model outputs refused by the guards` : '')
-        + '.');
-    }
-    if (result.markersRemoved) notes.push(`${result.markersRemoved} footnote markers removed.`);
-    if (reattached) {
-      // In front of the user, not in the console: a deletion that could not be
-      // proved against this run is exactly the thing they have to look at.
-      notes.push(reattached.message);
-      this.showAlert(reattached);
-    }
-    if (result.calibration?.degraded) {
-      notes.push(`Paragraphs: ${result.calibration.message}`);
-    }
-    const skewed = Object.entries(result.deskewByPage).filter(([, deg]) => Math.abs(deg) > 0.1);
-    if (skewed.length > 0) {
-      // Straightening happened INSIDE foundry, before the boxes were measured;
-      // the viewer paints them on the unrotated render, so they sit at the page's
-      // angle. Said out loud rather than quietly un-rotated — a crooked scan is a
-      // fact about the source, and hiding it hides why the boxes look off.
-      notes.push(
-        `${skewed.length} page${skewed.length === 1 ? ' was' : 's were'} straightened before reading; `
-        + 'their boxes are drawn on the unstraightened page and will look slightly tilted.'
-      );
-    }
-    console.log('[foundry]', notes.join(' '));
-  }
-
-  /**
-   * Export through foundry, or `null` when this document is not foundry-backed.
-   *
-   * Called by the two export paths (`finalizeProject`, `pipelineExportAndReview`)
-   * before their own EPUB writer runs. Returning null is how a project that has
-   * never been through foundry keeps the legacy behaviour untouched; there is no
-   * fallback in the other direction — a foundry-backed book that fails to export
-   * REPORTS it rather than quietly rebuilding from block text, because the two
-   * exporters do not produce the same book.
-   */
-  private async tryFoundryExport(projectPath: string): Promise<{ epubPath: string } | null> {
-    if (!this.foundryRunLoaded()) {
-      // Null means "this book never went through foundry" — and that has to be
-      // TRUE, not merely convenient. The 22:55 Barnett export proved why: the
-      // run existed on disk but had not re-attached, tryFoundryExport returned
-      // null, and the legacy exporter silently rebuilt a different book over
-      // foundry's.
-      //
-      // But the refusal has to be about foundry OUTPUT, not about a run object.
-      // Refusing on any state at all meant a run that produced nothing — one
-      // that failed, or one the user cancelled before it wrote a page — locked
-      // export for the rest of the book's life, and the advice it gave
-      // ("close and reopen") could not possibly help: there was nothing there
-      // to attach to, so reopening would have changed nothing.
-      //
-      // Two statuses named EXPLICITLY, never truthiness: a status added later
-      // must be decided on its own merits rather than inheriting "refuse".
-      // `cancelled` is deliberately absent — it exported nothing, and its
-      // artifacts exist to back the OCR modal's resume affordance, not to gate
-      // this. `error` cannot reach here at all: the attach below is the clearing
-      // kind and sweeps it.
-      const { state: orphan, cleared } = await this.electronService.foundryRunAttach(
-        this.foundryBookKey());
-      if (cleared) {
-        this.showAlert({
-          type: 'warning',
-          title: 'The last OCR run failed and was cleared',
-          message:
-            `The ${cleared.stage ?? 'foundry'} stage failed, so nothing from that run was kept:\n\n`
-            + `${cleared.message}\n\n`
-            + 'This export is being built from the blocks in the editor instead.',
-        });
-      }
-      if (orphan?.status === 'done') {
-        throw new Error(
-          'This book has a finished foundry OCR run that is not loaded in this window. '
-          + 'Close and reopen the book so the run attaches, then export again. '
-          + 'Refusing to rebuild the book with the legacy exporter over foundry\'s.'
-        );
-      }
-      if (orphan?.status === 'running') {
-        throw new Error(
-          'A foundry OCR run for this book is working right now, and its output is what the '
-          + 'export should be built from. Wait for it to finish — or stop it — and export again.'
-        );
-      }
-      return null;
-    }
-
-    // Everything the user removed, at both granularities the exporter takes:
-    // whole categories (Categories panel) and individual boxes. Deleted PAGES
-    // become their blocks' ids — foundry has no page-level exclusion, and a page
-    // is exactly the blocks on it.
-    //
-    // Scoped to the ids THIS run knows (foundryArtifactText is blocks.json,
-    // block by block). `deletedBlockIds` is one set across every kind of block a
-    // project can carry: a book that lived through the old in-app OCR keeps
-    // deletions named `ocr_p0_…`/`merge_…`/text-layer hex ids from a
-    // segmentation foundry never saw. Those cannot name a block in this export,
-    // so filtering here loses nothing; the persisted deletions are left alone.
-    // The foundry-shaped ids were re-attached to this run's blocks when it was
-    // painted (reattachFoundryDeletions), so they are current by construction.
-    const deletedPages = this.deletedPages();
-    const rawDeleted = this.deletedBlockIds();
-    const excludeBlockIds = new Set(
-      [...rawDeleted].filter(id => this.foundryArtifactText.has(id))
-    );
-
-    // A deleted PAGE is every run block on it — resolved against the RUN's own
-    // ledger, never the picker's. blocks() only holds what this session painted:
-    // a block the user merged away, or one dropped by an interrupted save, has
-    // no picker block left to be found on the page, and deriving the page's
-    // contents from blocks() ships it. (Working Towards The Führer: page 1 was
-    // deleted whole, yet three merged-away JSTOR blocks survived two fixes that
-    // both walked picker state.) blocks.json is the id universe the exporter
-    // reads, so its page map is the one authority on what a page contains.
-    for (const [id, page] of this.foundryArtifactPage) {
-      if (deletedPages.has(page)) excludeBlockIds.add(id);
-    }
-
-    const blocks = this.blocks();
-    for (const block of blocks) {
-      // The siblings a chapter marker swallowed. They have no block in the
-      // picker any more, but they are still in foundry's blocks.json, and the
-      // merged marker's text override already contains their words — left in,
-      // the book gets the heading once as the marker and again as fragments.
-      // Scoped to this run for the same reason the deletions above are: a marker
-      // merged in an earlier session names blocks this run may not have.
-      for (const id of block.merged_foundry_ids ?? []) {
-        if (this.foundryArtifactText.has(id)) excludeBlockIds.add(id);
-      }
-    }
-
-    // A deleted MANUAL merge is a deletion of its sources. The merged block is
-    // the picker's own object — foundry has never heard of `merge_…` — so the
-    // filter above rightly drops its id, but the content the user removed is
-    // the source foundry blocks, and those must be excluded or they ship.
-    // (Working Towards The Führer: three JSTOR front-matter blocks were merged
-    // into one, the merge was deleted, and the trio still appeared in the
-    // book.) A KEPT manual merge is deliberately untouched: it is a viewing
-    // convenience, and foundry exports its sources as they are.
-    const blocksById = new Map(blocks.map(b => [b.id, b]));
-    for (const def of this.editorState.blockMerges().values()) {
-      const merged = blocksById.get(def.mergedBlockId);
-      const gone = rawDeleted.has(def.mergedBlockId)
-        || (merged !== undefined && deletedPages.has(merged.page));
-      if (!gone) continue;
-      for (const src of def.sourceBlocks) {
-        if (this.foundryArtifactText.has(src.id)) excludeBlockIds.add(src.id);
-        for (const fid of src.merged_foundry_ids ?? []) {
-          if (this.foundryArtifactText.has(fid)) excludeBlockIds.add(fid);
-        }
-      }
-    }
-
-    // What the user CHANGED, which until now never reached the exporter at all:
-    // a relabelled block exported under foundry's original category, and an
-    // edited chapter heading exported as the scan read it.
-    //
-    //  - text: every foundry block whose text differs from the run directory's.
-    //    That covers both the retyped heading and the merged marker, whose
-    //    joined text differs from the surviving block's own text by
-    //    construction, with no separate bookkeeping for the two cases.
-    //  - category: the user's explicit relabels. `learnedCategories` is NOT
-    //    included — those are the classifier's guesses re-applied, not
-    //    decisions, and foundry's own labeller already had its turn.
-    const corrections = this.editorState.textCorrections();
-    const relabels = this.editorState.categoryCorrections();
-    const overrides = new Map<string, { id: string; text?: string; category?: string }>();
-    for (const block of blocks) {
-      const artifact = this.foundryArtifactText.get(block.id);
-      if (artifact === undefined) continue;  // not a foundry block
-      if (excludeBlockIds.has(block.id)) continue;  // it is not shipping anyway
-      const edited = corrections.get(block.id);
-      const current = edited ?? block.text;
-      if (edited !== undefined && current.trim().length === 0) {
-        // Left empty rather than deleted. Shipping the scan's text instead would
-        // quietly undo the edit, and shipping nothing would put an empty <h1> in
-        // the book — so it is a stop that says which block and how to fix it.
-        throw new Error(
-          `The block on page ${block.page + 1} was edited to empty text. Type what it should say, `
-          + 'or delete the block if it should not be in the book, then export again.'
-        );
-      }
-      if (current !== artifact) {
-        overrides.set(block.id, { id: block.id, text: current });
-      }
-    }
-    for (const [id, category] of relabels) {
-      if (!this.foundryArtifactText.has(id) || excludeBlockIds.has(id)) continue;
-      overrides.set(id, { ...overrides.get(id), id, category });
-    }
-
-    // Refused here, next to the block, rather than as a CLI exit code: `table`
-    // is BookForge's fourteenth class and foundry has no rule that renders it.
-    const unrenderable = [...overrides.values()]
-      .filter(o => o.category !== undefined && !isFoundryCategory(o.category));
-    if (unrenderable.length > 0) {
-      const names = [...new Set(unrenderable.map(o => o.category))].join(', ');
-      throw new Error(
-        `${unrenderable.length} block(s) are labelled "${names}", which foundry's exporter has no `
-        + 'rule for, so the book cannot be built with them. Relabel those blocks (list, discard '
-        + 'and caption all export) or delete them, then export again.'
-      );
-    }
-
-    // Destination and cover both come from main: the export is named after the
-    // book (manifest.metadata.title) and the cover lives under the library root,
-    // and the renderer is the authority on neither. A null cover is an ordinary
-    // book — foundry is simply not given the flag.
-    const info = await this.electronService.projectsExportInfo(projectPath);
-
-    // Handed over as LINES, not blocks. Main derives the block ids from them
-    // against blocks.json as it stands at that moment, which is the same
-    // derivation the queue's export does — one answer, not two that can drift.
-    // (The ids here are current, since the run is painted; the point is that the
-    // record written into the run directory outlives the next blocks re-run.)
-    const epubPath = await this.electronService.foundryExport({
-      bookKey: this.foundryBookKey(),
-      excludeLines: {
-        scanId: this.foundryScanId,
-        lineIds: this.foundryLineIdsOf(excludeBlockIds),
-      },
-      excludeCategories: [],
-      overrides: [...overrides.values()],
-      outputPath: info.target.absPath,
-      ...(info.coverPath ? { coverPath: info.coverPath } : {}),
-    });
-    return { epubPath };
   }
 
   onOcrCompleted(event: OcrCompletionEvent | OcrPageResult[]): void {
@@ -14863,7 +13349,6 @@ export class PdfPickerComponent implements OnInit {
             pageDimensions: this.pageDimensions(),
             totalPages: this.totalPages(),
             deletedBlockIds: this.deletedBlockIds(),
-            foundryAutoDiscardedIds: this.foundryAutoDiscarded(),
             deletedPages: this.deletedPages(),
             selectedBlockIds: this.selectedBlockIds(),
             pageOrder: this.pageOrder(),
@@ -14887,13 +13372,6 @@ export class PdfPickerComponent implements OnInit {
             createdAt: this.projectCreatedAt ?? undefined,
             sourceSha256: this.analyzedSourceSha256() ?? undefined,
             projectStateNotApplied: this.projectStateNotApplied(),
-            foundryRunLoaded: this.foundryRunLoaded(),
-            foundryArtifactText: new Map(this.foundryArtifactText),
-            foundryArtifactPage: new Map(this.foundryArtifactPage),
-            foundryArtifactLines: new Map(this.foundryArtifactLines),
-            foundryScanId: this.foundryScanId,
-            foundryDeletedLines: this.foundryDeletedLines,
-            foundryAutoDiscardedLines: this.foundryAutoDiscardedLines,
           };
         }
         return doc;
@@ -14941,7 +13419,6 @@ export class PdfPickerComponent implements OnInit {
 
     // Restore per-document component state (reset to empty defaults when the
     // document has none, so the previous tab's data doesn't leak in)
-    this.foundryAutoDiscarded.set(doc.foundryAutoDiscardedIds ?? new Set());
     this.chapters.set(doc.chapters ?? []);
     this.chaptersSource.set(doc.chaptersSource ?? 'manual');
     this.metadata.set(doc.metadata ?? {});
@@ -14955,13 +13432,10 @@ export class PdfPickerComponent implements OnInit {
     this.analyzedSourceSha256.set(doc.sourceSha256 ?? null);
     // Whether THIS tab is allowed to save project state travels with the tab.
     this.projectStateNotApplied.set(doc.projectStateNotApplied === true);
-    // So does whether a foundry run was painted onto it, and that run's ledger.
-    // A tab with no run gets the empty defaults, never the previous tab's.
-    this.setFoundryRunState(
-      doc.foundryRunLoaded === true, doc.foundryArtifactText, doc.foundryArtifactPage,
-      doc.foundryArtifactLines, doc.foundryScanId);
-    this.foundryDeletedLines = doc.foundryDeletedLines ?? null;
-    this.foundryAutoDiscardedLines = doc.foundryAutoDiscardedLines ?? null;
+    // The working document is NOT snapshotted onto the tab. It is a file, and
+    // the tab that comes forward names it: `workingDocumentEffect` sees the ref
+    // change and reads it again. Carrying a copy of a book's block layer from
+    // tab to tab is precisely the second place the run directory used to be.
 
     // Note: paragraphBreaks and categoryCorrections are now passed directly to
     // loadDocument() above, which applies corrections to blocks automatically.
