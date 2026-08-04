@@ -5691,7 +5691,19 @@ export class LLWizardComponent implements OnInit {
       return 'Drops what you deleted, repairs the OCR of what you kept, writes the book';
     }
     if (pass.kind === 'footnotes') {
-      if (this.selectedIsPdf()) return "On the working PDF's text layer";
+      if (this.selectedIsPdf()) {
+        // Which document the pass reads is POSITIONAL, mirroring the planner's
+        // footnotesModeAt: before a later Build the book it edits the text layer
+        // that reflow will read; after one it reads the book that reflow wrote.
+        const list = this.passes();
+        const index = list.findIndex(p => p.uid === pass.uid);
+        const laterReflow = list.some((p, i) => p.kind === 'reflow' && i > index);
+        const earlierReflow = list.some((p, i) => p.kind === 'reflow' && i < index);
+        if (!laterReflow && (earlierReflow || this.bookEpubPath())) {
+          return 'On the finished book';
+        }
+        return "On the working PDF's text layer";
+      }
       return pass.footnotes?.askEverything
         ? 'Note bodies and index entries too'
         : 'Note bodies and index entries left alone';

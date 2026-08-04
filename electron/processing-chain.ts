@@ -110,6 +110,10 @@ const DOCUMENT_NEEDS: Partial<Record<ProcessingPassKind, {
 }>> = {
   blocks: { done: 'getText', pass: 'get-text' },
   reflow: { done: 'blocks', pass: 'blocks' },
+  // Applies only when the pass is the PDF reading — the prerequisite lookup is
+  // gated on isDocumentPass, and the EPUB reading has the prerequisites of an
+  // EPUB pass, which is none.
+  footnotes: { done: 'getText', pass: 'get-text' },
 };
 
 async function readManifest(projectDir: string): Promise<ProjectManifest> {
@@ -218,15 +222,35 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
       + `${path.basename(sourcePath)}. Pick the PDF version of this book, or drop that pass.`
     );
   }
-  const isDocumentPass = (kind: ProcessingPassKind): boolean =>
-    DOCUMENT_ONLY_KINDS.has(kind) || (kind === 'footnotes' && sourceIsPdf);
+  // Which document a footnotes pass reads is decided by WHERE THE USER PUT IT,
+  // not by what the run's source file happens to be. Before a later Build the
+  // book it is the PDF reading — its edits to the text layer feed that reflow.
+  // After one (or when the project's book already exists and no reflow follows)
+  // it is the EPUB reading, over the book — which is the spec's default for a
+  // scanned book anyway: the adapter measures 97.0% applied / 0.5% false-fire
+  // on clean text against 90.5% / 2.1% on raw OCR text. Deciding this by source
+  // alone is what silently rewrote the working PDF AFTER the book had been
+  // built, so the book kept every marker while the pass reported success.
+  const record = await manifestService.readExportEpub(projectDir);
+  const reflowIndices = passes
+    .map((p, i) => (p.kind === 'reflow' ? i : -1))
+    .filter((i) => i >= 0);
+  const footnotesModeAt = (index: number): 'pdf' | 'epub' => {
+    if (!sourceIsPdf) return 'epub';
+    if (reflowIndices.some((r) => r > index)) return 'pdf';
+    if (reflowIndices.some((r) => r < index) || record) return 'epub';
+    return 'pdf';
+  };
+
+  const isDocumentPass = (kind: ProcessingPassKind, index: number): boolean =>
+    DOCUMENT_ONLY_KINDS.has(kind) || (kind === 'footnotes' && footnotesModeAt(index) === 'pdf');
 
   // The one option footnote removal has belongs to the EPUB reading of a book.
-  // A PDF run rewrites a text layer, where note bodies and index entries are not
-  // populations anything can name — so an option that could not be honoured is
-  // refused rather than accepted and ignored.
+  // A PDF reading rewrites a text layer, where note bodies and index entries are
+  // not populations anything can name — so an option that could not be honoured
+  // is refused rather than accepted and ignored.
   const askEverywhereOnPdf = passes.find(
-    (p) => p.kind === 'footnotes' && sourceIsPdf && p.footnotes?.askEverything
+    (p, i) => p.kind === 'footnotes' && footnotesModeAt(i) === 'pdf' && p.footnotes?.askEverything
   );
   if (askEverywhereOnPdf) {
     throw new Error(
@@ -239,8 +263,8 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
   // A document pass after an EPUB pass would rebuild the book from the working
   // document and discard everything the EPUB pass wrote. Refused, not reordered:
   // reordering would silently run something other than what the user composed.
-  const lastDocumentAt = passes.map((p) => isDocumentPass(p.kind)).lastIndexOf(true);
-  const firstEpubAt = passes.findIndex((p) => !isDocumentPass(p.kind));
+  const lastDocumentAt = passes.map((p, i) => isDocumentPass(p.kind, i)).lastIndexOf(true);
+  const firstEpubAt = passes.findIndex((p, i) => !isDocumentPass(p.kind, i));
   if (lastDocumentAt >= 0 && firstEpubAt >= 0 && firstEpubAt < lastDocumentAt) {
     throw new Error(
       `${LABEL_OF[passes[lastDocumentAt].kind]} rebuilds the book from the working document, which `
@@ -278,11 +302,25 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
     }
   }
 
+  // The same invalidation, for the text layer: a PDF-reading footnotes pass
+  // ahead of a later Get Text has its marker removals cast away with the rest
+  // of the working document, silently, by a pass the user also asked for.
+  const wipedFootnotesAt = passes.findIndex((p, i) =>
+    p.kind === 'footnotes' && footnotesModeAt(i) === 'pdf'
+    && passes.some((q, j) => q.kind === 'get-text' && j > i));
+  if (wipedFootnotesAt >= 0) {
+    throw new Error(
+      `${LABEL_OF['get-text']} reads the pages again and casts the working document fresh, which `
+      + `discards what ${LABEL_OF['footnotes']} removed from its text layer. Move the `
+      + `${LABEL_OF['footnotes']} pass below it.`
+    );
+  }
+
   const kindsSoFar = new Set<ProcessingPassKind>();
-  for (const pass of passes) {
+  for (const [i, pass] of passes.entries()) {
     // An EPUB-mode footnotes pass stands on the book, not on a working document:
     // it has the prerequisites of an EPUB pass, which is none.
-    const needs = isDocumentPass(pass.kind) ? DOCUMENT_NEEDS[pass.kind] : undefined;
+    const needs = isDocumentPass(pass.kind, i) ? DOCUMENT_NEEDS[pass.kind] : undefined;
     if (needs && !kindsSoFar.has(needs.pass) && !onDisk[needs.done]) {
       throw new Error(
         `${LABEL_OF[pass.kind]} reads what ${LABEL_OF[needs.pass]} writes, and this book's working `
@@ -310,7 +348,6 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
   // been retitled since the last export); everything else rewrites the recorded
   // file in place.
   const target = await manifestService.exportEpubTarget(projectDir);
-  const record = await manifestService.readExportEpub(projectDir);
   const bookEpubPath = producesEpub ? target.absPath : (record?.absPath ?? target.absPath);
 
   // Stage numbering. An export starts the book's provenance over — the rebuilt
@@ -320,7 +357,7 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
 
   const jobs: PlannedPassJob[] = passes.map((pass, i) => {
     const stage = manifestService.passStageRelDir(base + i + 1, pass.kind);
-    const isDocument = isDocumentPass(pass.kind);
+    const isDocument = isDocumentPass(pass.kind, i);
 
     const config: PassJobConfig = {
       kind: pass.kind,
@@ -332,7 +369,7 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
       // job type and a queue row, and only the plan knows which one this is.
       ...(pass.kind === 'footnotes'
         ? {
-          footnotesMode: (isDocument ? 'pdf' : 'epub') as 'pdf' | 'epub',
+          footnotesMode: footnotesModeAt(i),
           ...(pass.footnotes ? { footnotes: pass.footnotes } : {}),
         }
         : {}),

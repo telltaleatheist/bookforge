@@ -234,6 +234,58 @@ test('footnote removal is one name and two documents, and the plan says which', 
     'an EPUB pass reads the book, not a PDF the plan resolved');
 });
 
+test('which document footnote removal reads is positional, not source-typed', async () => {
+  // The full scan chain with footnote removal LAST — the composition the wizard
+  // builds by default. The pass runs after Build the book, so it reads the book
+  // that reflow just wrote: pdf-mode here would rewrite the working document's
+  // text layer AFTER the book was built, and the book would keep every marker
+  // while the run reported success.
+  const dir = await makeProject();
+  const plan = await chain.planProcessingChain({
+    projectDir: dir,
+    passes: [{ kind: 'get-text' }, { kind: 'blocks' }, { kind: 'reflow' }, { kind: 'footnotes' }],
+  });
+  assert.strictEqual(plan.jobs[3].config.footnotesMode, 'epub');
+  assert.strictEqual(plan.jobs[3].config.sourcePath, undefined,
+    'the EPUB reading is about the book, not the PDF the plan resolved');
+  assert.strictEqual(plan.producesEpub, true);
+
+  // The same pass ABOVE Build the book is the PDF reading: its text-layer edits
+  // are input to the reflow below it.
+  const before = await chain.planProcessingChain({
+    projectDir: dir,
+    passes: [{ kind: 'get-text' }, { kind: 'blocks' }, { kind: 'footnotes' }, { kind: 'reflow' }],
+  });
+  assert.strictEqual(before.jobs[2].config.footnotesMode, 'pdf');
+  assert.ok(before.jobs[2].config.sourcePath.endsWith(PDF_NAME));
+});
+
+test('a PDF-reading footnotes pass ahead of a later Get Text is refused', async () => {
+  const dir = await makeProject({ cast: true });
+  await refuses(
+    dir,
+    [{ kind: 'footnotes' }, { kind: 'get-text' }, { kind: 'blocks' }, { kind: 'reflow' }],
+    'casts the working document fresh', 'Footnote removal', 'below it'
+  );
+});
+
+test('the PDF reading of footnote removal needs the cast, said at plan time', async () => {
+  const dir = await makeProject();
+  const pdfPath = path.join(dir, 'archive', PDF_NAME);
+  let message = null;
+  try {
+    await chain.planProcessingChain({
+      projectDir: dir,
+      sourcePath: pdfPath,
+      passes: [{ kind: 'footnotes' }],
+    });
+  } catch (err) {
+    message = err && err.message ? err.message : String(err);
+  }
+  assert.ok(message !== null, 'expected a refusal');
+  assert.ok(message.includes('Get Text'), `should name Get Text, said: ${message}`);
+});
+
 test("the EPUB-only footnote option is refused on a PDF run rather than ignored", async () => {
   const dir = await makeProject({ cast: true });
   await refuses(
