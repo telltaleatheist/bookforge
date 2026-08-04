@@ -310,7 +310,15 @@ class OrpheusStreamServer:
         # exercise the same sampling path the real sentences will. Must come after
         # the engine exists (the registry lives on the e2a Orpheus class) and after
         # `v` is resolved (caps are keyed by the token the engine actually uses).
-        self._apply_voice_caps(v, caps)
+        # A registration failure must not leave the loaded engine serving requests
+        # with default tuning — generate/generate_batch guard only on `self.orph is
+        # None`, and a consumed `first_load` would also skip the warmup forever —
+        # so tear the engine down and let the error propagate as a load failure.
+        try:
+            self._apply_voice_caps(v, caps)
+        except Exception:
+            self._teardown_engine()
+            raise
 
         # Warm the generate path ONCE per load, so the cold-start cost is paid here
         # (absorbed by the user's "start the server and find an article" window),
@@ -506,11 +514,17 @@ class OrpheusStreamServer:
             # prompt) because the boost's start threshold is sized from each
             # sentence's own length — and, later, from each item's own voice.
             sp = [orph._vllm_sampling_params(len(cleaned[i])) for i in nonempty]
+            # lora_request must ride on BOTH arms: the fallback without it would
+            # render the base voice the moment adapter mode reaches streaming.
+            # None today (this server never sets orpheus_adapter_dir yet), which
+            # is vLLM's own default.
+            lora = orph._lora_request()
             if prompts:
                 try:
-                    outputs = orph.engine.generate(prompts, sp, use_tqdm=False)
+                    outputs = orph.engine.generate(prompts, sp, use_tqdm=False,
+                                                   lora_request=lora)
                 except TypeError:
-                    outputs = orph.engine.generate(prompts, sp)
+                    outputs = orph.engine.generate(prompts, sp, lora_request=lora)
                 # vLLM returns outputs in prompt order.
                 for i, out in zip(nonempty, outputs):
                     tokens = list(out.outputs[0].token_ids)
