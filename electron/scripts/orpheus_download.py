@@ -1,23 +1,89 @@
-"""Download an Orpheus voice model from HuggingFace into the local models dir.
+"""Download an Orpheus artifact from HuggingFace into the local models dir.
 
 Invoked by electron/orpheus-hf-catalog.ts (natively on Mac/Linux, or inside WSL
 on Windows so the files land on ext4, not the slow /mnt/c mount). Writes the repo
 snapshot into <dest> and prints a single JSON line with the result. The token, if
 any, comes from the HF_TOKEN env var so it never appears in the process args.
 
-Usage:  python orpheus_download.py <repo_id> <dest_dir>
+Three artifact KINDS exist, and each has its own post-download validation — the
+original config.json + *.safetensors check is correct for a full model but FAILS on
+a LoRA repo, which ships adapter_config.json + adapter_model.safetensors and no
+config.json at all:
+
+  merged   a full fine-tuned voice model   -> <models>/<id>/
+  base     the one shared base model       -> <models>/_base/<name>/
+  adapter  a per-voice LoRA                -> <models>/adapters/<id>/
+
+`--kind` defaults to `merged`, so an older caller that passes only the two
+positional args keeps its exact previous behaviour.
+
+Usage:  python orpheus_download.py <repo_id> <dest_dir> [--kind merged|adapter|base]
 """
 import os
 import sys
 import json
 
+KINDS = ("merged", "adapter", "base")
+
+# Docs/images are never needed. Adapter repos are the exception on README.md: their
+# card is the only place the prompt token lives, but BookForge reads that over HTTP
+# from the catalog, not off disk, so it is skipped here too.
+IGNORE_PATTERNS = ["*.md", ".gitattributes", "*.png", "*.jpg"]
+
+
+def _has_suffix(dest, suffix):
+    return any(f.endswith(suffix) for f in os.listdir(dest))
+
+
+def validate(kind, dest):
+    """Return an error string when <dest> is not a usable artifact of <kind>."""
+    if kind == "adapter":
+        # PEFT layout. Both halves are required: adapter_config.json alone is a
+        # half-finished download that would fail deep inside vLLM's engine start.
+        if not os.path.exists(os.path.join(dest, "adapter_config.json")):
+            return "downloaded repo is missing adapter_config.json (not a LoRA adapter repo)"
+        if not _has_suffix(dest, ".safetensors"):
+            return "downloaded adapter is missing adapter_model.safetensors"
+        return None
+    # merged and base are the same on-disk shape: a full model.
+    if not os.path.exists(os.path.join(dest, "config.json")):
+        return "downloaded repo is missing config.json"
+    if not _has_suffix(dest, ".safetensors"):
+        return "downloaded repo is missing *.safetensors weights"
+    return None
+
+
+def parse_args(argv):
+    positional = []
+    kind = "merged"
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--kind":
+            if i + 1 >= len(argv):
+                raise ValueError("--kind needs a value (merged|adapter|base)")
+            kind = argv[i + 1]
+            i += 2
+            continue
+        if a.startswith("--kind="):
+            kind = a.split("=", 1)[1]
+            i += 1
+            continue
+        positional.append(a)
+        i += 1
+    if len(positional) < 2:
+        raise ValueError("usage: orpheus_download.py <repo_id> <dest_dir> [--kind merged|adapter|base]")
+    if kind not in KINDS:
+        raise ValueError("--kind must be one of %s (got %r)" % ("|".join(KINDS), kind))
+    return positional[0], positional[1], kind
+
 
 def main() -> int:
-    if len(sys.argv) < 3:
-        print(json.dumps({"ok": False, "error": "usage: orpheus_download.py <repo_id> <dest_dir>"}))
+    try:
+        repo_id, dest, kind = parse_args(sys.argv[1:])
+    except ValueError as e:
+        print(json.dumps({"ok": False, "error": str(e)}))
         return 2
-    repo_id = sys.argv[1]
-    dest = sys.argv[2]
     token = os.environ.get("HF_TOKEN") or None
     try:
         from huggingface_hub import snapshot_download
@@ -28,14 +94,13 @@ def main() -> int:
             repo_id=repo_id,
             local_dir=dest,
             token=token,
-            ignore_patterns=["*.md", ".gitattributes", "*.png", "*.jpg"],
+            ignore_patterns=IGNORE_PATTERNS,
         )
-        has_config = os.path.exists(os.path.join(dest, "config.json"))
-        has_weights = any(f.endswith(".safetensors") for f in os.listdir(dest))
-        if not (has_config and has_weights):
-            print(json.dumps({"ok": False, "error": "downloaded repo is missing config.json or *.safetensors"}))
+        err = validate(kind, dest)
+        if err:
+            print(json.dumps({"ok": False, "error": err}))
             return 1
-        print(json.dumps({"ok": True, "dest": dest}))
+        print(json.dumps({"ok": True, "dest": dest, "kind": kind}))
         return 0
     except Exception as e:  # surface the real reason (auth, network, missing repo)
         print(json.dumps({"ok": False, "error": str(e)}))
