@@ -511,15 +511,104 @@ function runDownload(
   });
 }
 
-/** Two-phase install progress. Phase 'base' only ever fires on the FIRST adapter
- *  install of a machine's life — after that the base is already there and the
- *  install is a single ~0.4 GB step. */
+/** Install progress. Phase 'base' only ever fires on the FIRST adapter install of a
+ *  machine's life — after that the base is already there and the install is a single
+ *  ~0.4 GB step. Phase 'fuse' fires on macOS only, once per adapter install, and is
+ *  the CPU merge that turns base + adapter into a model MLX can load (see runFuse). */
 export interface OrpheusInstallProgress {
   repoId: string;
-  phase: 'base' | 'voice';
+  phase: 'base' | 'voice' | 'fuse';
   message: string;
 }
 export type OrpheusInstallProgressFn = (p: OrpheusInstallProgress) => void;
+
+// ── fuse (macOS only) ─────────────────────────────────────────────────────────
+
+/** Locate orpheus_fuse.py across dev (electron/scripts) and packaged (dist) layouts —
+ *  the same three candidates resolveDownloadScript walks, for the same reason. */
+function resolveFuseScript(): string {
+  const candidates = [
+    path.join(app.getAppPath(), 'electron', 'scripts', 'orpheus_fuse.py'),
+    path.join(__dirname, '..', '..', 'electron', 'scripts', 'orpheus_fuse.py'),
+    path.join(__dirname, 'scripts', 'orpheus_fuse.py'),
+  ];
+  return candidates.find((p) => fs.existsSync(p)) || candidates[candidates.length - 1];
+}
+
+/**
+ * Merge a downloaded LoRA into a full model MLX can load: `W' = W + (α/r)·B@A` for every
+ * targeted projection, written to `<models>/<id>/` in the base's own shard layout.
+ *
+ * macOS ONLY, and only because MLX has no adapter concept — `mlx_audio`'s `load_model`
+ * takes no adapter argument, and e2a's orpheus.py refuses adapter mode outright on any
+ * non-vLLM backend rather than render the bare base under the voice's name. Fusing at
+ * install time keeps the 0.4 GB-per-extra-voice download win while the MLX load path
+ * stays byte-for-byte the code it already was. Per-request voice switching on the Mac is
+ * stage B2 (resident base + LoRA layer wrappers); this is stage B1.
+ *
+ * Runs through the SAME python invocation orpheus_download.py uses natively — the
+ * per-engine Orpheus env — because that is the environment that is guaranteed to exist
+ * on a Mac that can render Orpheus at all. The script imports nothing but `safetensors`
+ * and `torch`; it deliberately does NOT need `peft`, which the runtime e2a env lacks.
+ */
+function runFuse(
+  baseDir: string,
+  adapterDir: string,
+  outDir: string,
+  onLine?: (line: string) => void,
+): Promise<{ ok: boolean; error?: string }> {
+  const scriptPath = resolveFuseScript();
+  const py = getPythonInvocation(getDefaultE2aPath(), 'orpheus');
+  const args = [
+    ...py.args,
+    '-u',
+    scriptPath,
+    '--base', baseDir,
+    '--adapter', adapterDir,
+    '--out', outDir,
+    // A re-install of a retrained voice MUST replace the previous fused copy; without
+    // --force the script refuses a non-empty output, which would strand the update.
+    '--force',
+    // Cheap next to the merge itself (a re-read plus three recomputed matrices) and it
+    // is the only thing standing between a truncated write and a voice that loads.
+    '--verify',
+  ];
+
+  return new Promise((resolve) => {
+    const child = spawn(py.command, args, { env: buildCondaSpawnEnv({}) });
+    let stdout = '';
+    let stderr = '';
+    let pending = '';
+    child.stdout.on('data', (d) => {
+      const chunk = d.toString();
+      stdout += chunk;
+      // Surface each `[FUSE] …` progress line as it arrives; the merge is minutes long
+      // and a frozen "Fusing…" with no motion reads as a hang.
+      pending += chunk;
+      const lines = pending.split('\n');
+      pending = lines.pop() ?? '';
+      for (const line of lines) {
+        const t = line.trim();
+        if (t.startsWith('[FUSE]')) onLine?.(t.slice('[FUSE]'.length).trim());
+      }
+    });
+    child.stderr.on('data', (d) => (stderr += d.toString()));
+    child.on('error', (err) => resolve({ ok: false, error: err.message }));
+    child.on('close', () => {
+      // Same contract as the downloader: the last JSON object on stdout is the result.
+      const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          const parsed = JSON.parse(lines[i]);
+          if (typeof parsed.ok === 'boolean') return resolve(parsed);
+        } catch {
+          /* not JSON */
+        }
+      }
+      resolve({ ok: false, error: stderr.trim().slice(-400) || 'fuse produced no result' });
+    });
+  });
+}
 
 /**
  * Download the ONE shared base model into `<models>/_base/<short-name>` and record a
@@ -567,6 +656,10 @@ export async function installOrpheusBase(
  * TWO PHASES for an adapter voice: ensure the shared base (~6.6 GB, once per machine)
  * and then the adapter itself (~0.4 GB). A MERGED voice takes exactly the path it
  * always took — one download into `<models>/<id>`, no base involved.
+ *
+ * A THIRD PHASE runs on macOS ONLY: fusing the adapter onto the base into a normal
+ * merged folder, because MLX cannot serve a LoRA (see runFuse). Nothing about the
+ * Windows/WSL path changes — every new branch below is `process.platform === 'darwin'`.
  *
  * THE INSTALL ID IS THE CARD'S `orpheus_token`, not the repo's short name. That single
  * rule is what keeps a voice's identity stable across repos and artifact forms, and it
@@ -638,27 +731,39 @@ export async function installOrpheusModel(
         `model record. Change the repo's orpheus_token — it must name the voice, not the base.`,
     };
   }
+  // macOS serves this adapter FUSED (see runFuse): the install writes a second folder,
+  // the merged one at `<models>/<id>/`, so on darwin an adapter install claims BOTH
+  // destinations and both have to be checked for the collision above. Without this a Mac
+  // could install `<voice>-orpheus-3b-lora` straight over a merged `<voice>-orpheus-3b`
+  // from a different card — the exact overwrite the check exists to refuse, just via the
+  // fuse output instead of the download.
+  const fuseOnDarwin = artifact === 'adapter' && process.platform === 'darwin';
   const existingRef = existing?.source?.ref;
-  const sameFormFolder = artifact === 'adapter' ? existing?.adapterDir : existing?.dir;
-  if (existing && sameFormFolder && existingRef && existingRef !== repoId) {
-    const dest = artifact === 'adapter'
-      ? path.join(getOrpheusModelsDir(), ADAPTERS_SUBDIR, sameFormFolder)
-      : path.join(getOrpheusModelsDir(), sameFormFolder);
-    let occupied = false;
-    try {
-      occupied = fs.existsSync(dest);
-    } catch {
-      occupied = false; // unreadable models dir — the download itself will report it
-    }
-    if (occupied) {
-      return {
-        success: false,
-        error:
-          `"${repoId}" and the already-installed "${existingRef}" both declare orpheus_token ` +
-          `"${id}", so both want to live in ${dest}. Installing this one would overwrite the ` +
-          `other. Give one of the two model cards a distinct orpheus_token, or uninstall ` +
-          `"${existing.label}" first.`,
-      };
+  const claimedFolders: string[] = [];
+  if (artifact === 'adapter') {
+    if (existing?.adapterDir) claimedFolders.push(path.join(getOrpheusModelsDir(), ADAPTERS_SUBDIR, existing.adapterDir));
+    if (fuseOnDarwin && existing?.dir) claimedFolders.push(path.join(getOrpheusModelsDir(), existing.dir));
+  } else if (existing?.dir) {
+    claimedFolders.push(path.join(getOrpheusModelsDir(), existing.dir));
+  }
+  if (existing && existingRef && existingRef !== repoId) {
+    for (const dest of claimedFolders) {
+      let occupied = false;
+      try {
+        occupied = fs.existsSync(dest);
+      } catch {
+        occupied = false; // unreadable models dir — the download itself will report it
+      }
+      if (occupied) {
+        return {
+          success: false,
+          error:
+            `"${repoId}" and the already-installed "${existingRef}" both declare orpheus_token ` +
+            `"${id}", so both want to live in ${dest}. Installing this one would overwrite the ` +
+            `other. Give one of the two model cards a distinct orpheus_token, or uninstall ` +
+            `"${existing.label}" first.`,
+        };
+      }
     }
   }
 
@@ -678,6 +783,42 @@ export async function installOrpheusModel(
   const result = await runDownload(repoId, id, token, artifact);
   if (!result.ok) return { success: false, error: result.error || 'download failed' };
 
+  // THIRD PHASE, macOS only: fuse the LoRA onto the base so the MLX load path — which
+  // has no adapter concept at all — gets an ordinary merged model folder. The download
+  // win survives (0.4 GB over the wire per extra voice); only the local disk pays.
+  //
+  // The manifest is written ONLY on success, and the failure is loud: a Mac left with a
+  // downloaded-but-unfused adapter has a voice e2a will refuse to render (orpheus.py
+  // hard-errors on adapter mode off vLLM) rather than one that renders in the wrong
+  // voice. Both downloads are already on disk, so retrying costs only the CPU merge.
+  if (fuseOnDarwin) {
+    const resolvedBase = resolveOrpheusBase(base!);
+    if (!resolvedBase) {
+      return {
+        success: false,
+        error:
+          `The shared base model "${base!.ref}" reported success but is not resolvable on disk, ` +
+          `so the ${label} voice cannot be fused onto it.`,
+      };
+    }
+    const fusedDir = path.join(getOrpheusModelsDir(), id);
+    const adapterPath = path.join(getOrpheusModelsDir(), ADAPTERS_SUBDIR, id);
+    onProgress?.({ repoId, phase: 'fuse', message: `Fusing the ${label} voice onto the base model…` });
+    const fused = await runFuse(resolvedBase.dir, adapterPath, fusedDir, (line) =>
+      onProgress?.({ repoId, phase: 'fuse', message: `Fusing the ${label} voice onto the base model… ${line}` }),
+    );
+    if (!fused.ok) {
+      return {
+        success: false,
+        error:
+          `The ${label} voice downloaded, but fusing it onto the shared base model failed: ` +
+          `${fused.error || 'unknown error'}. macOS cannot serve a LoRA adapter directly, so the ` +
+          `voice is not usable until this succeeds — the downloads are kept, so retrying only ` +
+          `repeats the merge.`,
+      };
+    }
+  }
+
   // Carry forward the OTHER form's folder if this voice already has one installed —
   // upsertManifestEntry replaces the record wholesale, so dropping `dir` here would
   // orphan a merged copy that is still on disk (and vice-versa). Exactly one field
@@ -696,7 +837,18 @@ export async function installOrpheusModel(
     // `artifact` is written EXPLICITLY in both cases: this install is a deliberate
     // choice of form, and when both forms are present it is the only thing that says
     // which one to serve.
-    ...(artifact === 'adapter' ? { adapterDir: id, artifact: 'adapter' as const } : { dir: id, artifact: 'merged' as const }),
+    //
+    // A FUSED (macOS) install records BOTH folders and `artifact: 'merged'`, because
+    // both are real and the merged one is what gets loaded. `adapterDir` + `base` are
+    // not decoration: they are the provenance of those weights (which LoRA over which
+    // base produced them) and they are the input stage B2 will serve directly once MLX
+    // can apply a LoRA at runtime, at which point flipping this one field switches the
+    // machine over with no re-download.
+    ...(artifact === 'adapter'
+      ? fuseOnDarwin
+        ? { adapterDir: id, dir: id, artifact: 'merged' as const }
+        : { adapterDir: id, artifact: 'adapter' as const }
+      : { dir: id, artifact: 'merged' as const }),
     ...(base ? { base } : {}),
     format: 'hf',
     sampleRate,

@@ -775,7 +775,22 @@ function resolveOrpheusInstall(
   // Both installed → the declaration decides, and only an EXPLICIT 'merged' pins the
   // merged copy; absent means adapter, because an adapter install is a deliberate act.
   // One installed → that one (see the OrpheusManifestEntry.artifact doc block).
-  const preferred: OrpheusArtifact = entry.artifact === 'merged' ? 'merged' : 'adapter';
+  //
+  // …EXCEPT on macOS, where a fused copy always wins. MLX cannot serve a LoRA at all:
+  // `mlx_audio.tts.utils.load_model` takes no adapter argument, and e2a's orpheus.py
+  // hard-refuses adapter mode on any non-vLLM backend rather than quietly rendering the
+  // bare base. So the Mac installer downloads base + adapter and FUSES them into the
+  // merged folder (orpheus_fuse.py, stage B1) — the adapter dir stays on disk as
+  // provenance and as the input stage B2 will serve directly once MLX grows LoRA layer
+  // wrappers. Until then, "an adapter is installed" is NOT a reason to serve one here:
+  // the declaration this preference overrides is the repo tuning CATALOG's
+  // `artifact: 'adapter'`, which applyTuning spreads over the runtime manifest's
+  // `artifact: 'merged'` and would otherwise pick the one form this platform cannot load.
+  // The catalog is right about the voice (it ships as a LoRA) and wrong about this
+  // machine, which is exactly the split this branch encodes.
+  const fusedWinsOnDarwin = process.platform === 'darwin' && hasMerged;
+  const preferred: OrpheusArtifact =
+    fusedWinsOnDarwin || entry.artifact === 'merged' ? 'merged' : 'adapter';
   const active: OrpheusArtifact =
     hasMerged && hasAdapter ? preferred : hasAdapter ? 'adapter' : 'merged';
 

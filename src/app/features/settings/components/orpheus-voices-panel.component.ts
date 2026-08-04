@@ -306,7 +306,9 @@ export class OrpheusVoicesPanelComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.svc.ensureLoaded();
     this.unsubscribeProgress = this.api?.onInstallProgress?.(
-      (p: { repoId: string; phase: 'base' | 'voice'; message: string }) => {
+      // 'fuse' is macOS-only (merging a downloaded LoRA onto the shared base, which is
+      // what lets MLX load it at all). The panel shows the message either way.
+      (p: { repoId: string; phase: 'base' | 'voice' | 'fuse'; message: string }) => {
         this.installMessage.update((m) => ({ ...m, [p.repoId]: p.message }));
       },
     );

@@ -80,9 +80,18 @@ monkey-patch (482–506) is load-order sensitive. Two stages, neither blocks vLL
 
 - B1 (low risk): fuse at install — download base once + adapter, fuse locally on the
   Mac into `orpheus-models/<id>/` (new `electron/scripts/orpheus_fuse.py`, darwin
-  only). NOTE: runtime e2a-env python lacks peft (per orpheus-finetune
-  MAC_INFERENCE.md) — fuse needs its own env or mlx-native fuse. Gets the download
-  win, not instant switching. Zero orpheus.py changes.
+  only). Gets the download win, not instant switching. Zero orpheus.py changes.
+  **IMPLEMENTED 2026-08-04** (branch `orpheus-mac-fuse`), with one resolution to the
+  plan's open question: the fuse needs NO extra env. The plan assumed peft (which the
+  runtime e2a env lacks per MAC_INFERENCE.md); the script instead does the arithmetic
+  itself over `safetensors` + `torch` on the CPU, never instantiating a transformers
+  model class, so it runs in the same env orpheus_download.py already uses. Install
+  gains a third progress phase (`fuse`); the manifest records `artifact: 'merged'` with
+  `adapterDir` + `base` kept as provenance/B2 input, and `resolveOrpheusInstall` prefers
+  the fused copy on darwin so the catalog's `artifact: adapter` cannot pick the one form
+  MLX can't load. VERIFIED on Windows/WSL against the deployed thirdreich merge: 12
+  differing bf16 elements out of ~3.2 B, worst |Δ| 1.22e-4 = one bf16 ulp. NOT yet
+  run on the Mac — the "identical audio" gate below is still owed.
 - B2: resident base + LoRA layer wrappers — `_apply_mlx_adapter(model, adapter_dir)`
   wrapping the 7 proj modules with W(x)+(alpha/r)·B(A(x)), ~40-line PEFT→mlx key
   remap, `_clear_mlx_adapter()` for switching. Must stay compatible with
