@@ -117,6 +117,94 @@ monkey-patch (482–506) is load-order sensitive. Two stages, neither blocks vLL
   remap, `_clear_mlx_adapter()` for switching. Must stay compatible with
   `mlx_lm.generate.BatchGenerator` (1051) batch prefill. Pre-deploy gating still on
   vLLM per MAC_INFERENCE.md (MLX/vLLM greedy ties differ).
+  **IMPLEMENTED 2026-08-04.** The Mac now serves base + adapter resident; B1's fuse
+  preference (`fusedWinsOnDarwin`) is deleted and `resolveOrpheusInstall` has NO
+  platform branch left — its boxed comment is rewritten as the canonical statement
+  that every platform can serve a LoRA. What was built:
+  - **The remap is a prefix strip and an attribute walk, not a table.** mlx_audio's
+    Orpheus model IS mlx_lm's Llama (`mlx_audio.tts.models.llama.Model` extends
+    `mlx_lm.models.llama.Model`), so dropping PEFT's `base_model.model.` prefix leaves
+    a path that walks the live object verbatim:
+    `model.model.layers[N].self_attn.q_proj` / `…mlp.gate_proj`. 196 sites = 28 layers
+    × 7 projections. Nothing per-name can fall out of date with either library; an
+    unresolvable path, a non-`nn.Linear` target, a half pair or a shape that doesn't
+    fit the base weight all raise by name.
+  - **alpha/r is read from `adapter_config.json`** (`_mlx_lora_scale`, rsLoRA
+    handled). The deployed voices are 64/64 = 1.0 — a hardcoded scale would have
+    worked today and silently mis-weighted the first voice trained at anything else.
+  - **The wrapper is a pure function of x** — `base(x) + scale·(x @ A.T) @ B.T`, no
+    state, no shape assumptions past the last dim — so BatchGenerator's (batch,
+    tokens) prefill and (batch, 1) decode both go through unchanged. A/B are cast to
+    the base's bf16 so an fp32 checkpoint can't promote the activations.
+  - **Exception safety is two-phase.** `_mlx_adapter_plan` builds every wrapper and
+    every assignment WITHOUT touching the model, so all failure modes land while the
+    previous voice is still rendering; the swap that follows is pure setattr and rolls
+    every moved site back if it ever raised. The plan also covers sites the OLD
+    adapter wrapped and the new one doesn't, so adapter→adapter is ONE atomic swap,
+    never clear-then-apply with a bare-base window in the middle.
+  - **Clearing is exact unwrapping, never arithmetic un-fusing**: `_MlxAdapterState`
+    keeps the original module object per site. Verified bit-identical (below).
+  - **MLX has ONE adapter at a time and the seams say so.** `set_voice` applies via
+    `_sync_mlx_adapter` (a no-op when the same dir AND `_adapter_fingerprint` are
+    already applied, so a re-installed retrained voice re-applies), `register_adapter`
+    / `_register_lora` stay vLLM-only, and `orpheus_stream`'s `engine_voices` is
+    REPLACED rather than added to on MLX. Per-request voice capability is untouched
+    and still vLLM-only.
+  - **`validate_adapter_dir(dir, backend=None)` is split** into universal checks
+    (peft_type, rank sanity, `modules_to_save`, `use_dora`, `bias` — each one names
+    something that would be silently dropped from the voice) and backend-specific
+    ones: vLLM keeps the `max_lora_rank` ceiling and its 0.7.3 wording, MLX refuses
+    `rank_pattern`/`alpha_pattern` (one global scale) and has no rank ceiling at all.
+    `__init__` runs the universal pass before the backend is known; `load_engine`
+    re-validates against the real backend before reading a byte of the base.
+  - Files: e2a `lib/classes/tts_engines/orpheus.py`; BookForge
+    `electron/scripts/orpheus_stream.py`, `electron/orpheus-models.ts`,
+    `electron/orpheus-hf-catalog.ts`, `electron/orpheus-worker-pool.ts` (comment only —
+    the adapter branch of `resolveLoadPlan` was already backend-independent, so
+    `engineKey` was already `|<base>` and adapter↔adapter already took the warm path).
+  - **B1's recorded debt is settled, and the answer was "no change".**
+    `removeOrpheusModel`'s base-dependant count asks which voices stop rendering if
+    the base goes away, and `artifact` — now resolved with no platform branch — is
+    exactly that: active `adapter` counted, active `merged` (downloaded or locally
+    fused; standalone weights either way) not. The darwin arm B1 expected is
+    unnecessary; the comment now says why.
+
+  **Smoke test (2026-08-04, M1 Ultra, headless `orpheus_stream.py`, tiny inputs).**
+  Load thirdreich as adapter → 5.9 s (the one 6.2 GB load). Switch to mistborn →
+  **0.071 s**. Switch back to thirdreich → **0.067 s**. No `Switching Orpheus model…`
+  status, no second `Loading Orpheus model with MLX`, no teardown: 83× faster than the
+  load it replaces. Two-sentence batches rendered in both voices. One sentence in
+  adapter-thirdreich = 3.502 s of audio vs 3.315 s from the legacy merged
+  thirdreich dir — 5.6%, inside the ±15% band this smoke test was given (both are
+  temperature-0.6 samples, so it is a plausibility check, not a comparison).
+  Then a teacher-forced logits check on one fixed frame, which is the real evidence
+  the arithmetic is right: **merged vs base+adapter max|Δ| 0.1875, mean 0.072, same
+  argmax, IDENTICAL top-10 in order**, against **bare base vs base+adapter mean |Δ|
+  10.33** — i.e. the adapter moves the model ~140× further than the merged/adapter gap,
+  which is the bf16 store rounding step 0 predicted. And **clear → max|Δ| 0.000000
+  against the bare base**, so unwrapping restores the model exactly.
+  **Env caveat on that first smoke run (resolved — production is fine):** it ran in
+  the dev conda env `ebook2audiobook`, which has **mlx-lm 0.30.5** against code
+  written for 0.31.3 (`BatchGenerator.next_generated`, `stop_tokens=[[…]]`), so its
+  batches fell back to the per-sentence resplit ladder — meaning that run never
+  exercised BatchGenerator with the wrappers. The app's PRODUCTION spawn does not use
+  that env: `getPythonInvocation(…, 'orpheus')` resolves the orpheus component's
+  `runtime/e2a-env`, which has **mlx-lm 0.31.3**. A second smoke run against the
+  production env confirmed the real batch path with the wrappers: cold adapter load
+  4.1 s, 3-sentence batch clean (no fallback in stderr), switch to mistborn 0.07 s,
+  2-sentence batch clean. The stale conda env only affects hand-driven CLI/test runs;
+  upgrade it at leisure.
+
+  Still owed by B2:
+  - **The full greedy-compare gate** vs the Mac's own fused model. The logits check
+    above is one frame, not the battery; per step 0 free-running greedy identity is
+    unachievable for this model class anyway, so the gate to run is teacher-forced
+    argmax agreement over a real chunk set plus an ear check.
+  - **Retiring the install-time fuse phase.** It still runs on darwin and still writes
+    a 6.2 GB merged copy that nothing serves unless a catalog entry explicitly pins
+    `artifact: 'merged'`. Deleting it is a separate decision (it is also the only form
+    that survives the shared base being uninstalled); until then the fused copies on
+    disk are the explicit-pin fallback, not dead weight.
 
 ## Work area C — streaming (bookforge/electron)
 
@@ -288,4 +376,8 @@ PRIVATE by default).
    NO reload in worker log, first-audio latency normal; then mixed-voice batch.
 5. Mac stage 1 fuse-at-install (B1). Gate: identical audio to current Mac path.
 6. Mac stage 2 resident adapters (B2). Gate: greedy compare vs Mac's own fused model.
+   **IMPLEMENTED 2026-08-04** (see work area B). Switch cost measured at 0.07 s
+   against a 5.9 s load. The full greedy-compare gate is still owed — what was run is
+   a one-frame teacher-forced logits check (merged vs base+adapter: same top-10;
+   clear: bit-identical to the base).
 7. Per-character casting: max_loras>1, per-sentence voices.

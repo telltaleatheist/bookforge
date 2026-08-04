@@ -695,6 +695,14 @@ function resolveLoadPlan(voice: string): LoadPlan {
   // adapter (it throws when the base is not installed), so a missing one here would
   // be a contract break — assert rather than send half an adapter, which the worker
   // would (correctly) reject anyway.
+  //
+  // BACKEND-INDEPENDENT, deliberately. Since stage B2 MLX serves an adapter too (it
+  // wraps the resident model's projections instead of taking a per-request
+  // LoRARequest), and either way the pair that decides which WEIGHTS are loaded is
+  // (modelDir, baseDir). So an adapter voice keys as `|<base>` on every platform and
+  // adapter↔adapter is a warm switch on every platform. The only thing still gated on
+  // vLLM here is the STOCK baseDir below — and canServeVoicePerRequest, which asks the
+  // different question of whether two voices can share one BATCH.
   const isAdapter = model?.artifact === 'adapter';
   if (isAdapter && !model!.baseDir) {
     throw new Error(

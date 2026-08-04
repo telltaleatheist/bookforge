@@ -800,34 +800,27 @@ function resolveOrpheusInstall(
   // merged copy; absent means adapter, because an adapter install is a deliberate act.
   // One installed → that one (see the OrpheusManifestEntry.artifact doc block).
   //
-  // …EXCEPT on macOS, where a fused copy always wins.
-  //
-  // ┌── CANONICAL: THE MAC CANNOT SERVE A LoRA ────────────────────────────────────────┐
-  // │ This is the ONE statement of the constraint; everything else that mentions the    │
-  // │ fuse (orpheus_fuse.py, runFuse + the install's third phase in                     │
-  // │ orpheus-hf-catalog.ts, the 'fuse' progress phase in preload.ts and the voices     │
-  // │ panel) points HERE instead of restating it.                                       │
+  // ┌── CANONICAL: EVERY PLATFORM CAN SERVE A LoRA (stage B2, 2026-08-04) ─────────────┐
+  // │ This is the ONE statement of how the two artifact forms relate on each platform; │
+  // │ everything else that mentions the fuse (orpheus_fuse.py, runFuse + the install's  │
+  // │ third phase in orpheus-hf-catalog.ts, the 'fuse' progress phase in preload.ts and │
+  // │ the voices panel) points HERE instead of restating it.                            │
   // │                                                                                   │
-  // │ `mlx_audio.tts.utils.load_model` takes no adapter argument, and mlx-lm's          │
-  // │ `load_adapters` expects mlx-lm's own adapter schema rather than PEFT's; e2a's     │
-  // │ orpheus.py therefore hard-refuses adapter mode on any non-vLLM backend rather     │
-  // │ than quietly render the bare base under a voice's name. So on darwin the          │
-  // │ installer downloads base + adapter and FUSES them into the merged folder          │
-  // │ (electron/scripts/orpheus_fuse.py — stage B1 of ORPHEUS_ADAPTER_MIGRATION.md      │
-  // │ work area B). The adapter dir stays on disk as the provenance of those weights    │
-  // │ and as the input stage B2 will serve directly once MLX grows LoRA layer wrappers, │
-  // │ at which point this branch is what gets deleted.                                  │
+  // │ There is no longer a darwin exception. e2a's orpheus.py applies a PEFT adapter to │
+  // │ the resident MLX model by wrapping its projection modules (_apply_mlx_adapter —   │
+  // │ stage B2 of ORPHEUS_ADAPTER_MIGRATION.md work area B), so the Mac serves base +   │
+  // │ adapter directly and a voice switch swaps wrappers instead of reloading 6.2 GB.   │
+  // │ The old preference here forced the FUSED merged copy on darwin because MLX could  │
+  // │ not load a LoRA at all; keeping it would now cost the very thing B2 bought — a    │
+  // │ fused voice is its own weights, so every switch between two of them is a full     │
+  // │ engine reload.                                                                    │
   // │                                                                                   │
-  // │ Until then, "an adapter is installed" is NOT a reason to serve one here: the      │
-  // │ declaration this preference overrides is the repo tuning CATALOG's                │
-  // │ `artifact: 'adapter'`, which applyTuning spreads over the runtime manifest's      │
-  // │ `artifact: 'merged'` and would otherwise pick the one form this platform cannot   │
-  // │ load. The catalog is right about the voice (it ships as a LoRA) and wrong about   │
-  // │ this machine, which is exactly the split this branch encodes.                     │
+  // │ The install-time fuse is NOT removed by B2 and its output is not dead: a fused    │
+  // │ copy is what an explicit `artifact: 'merged'` pin selects, and it is the only     │
+  // │ form that survives the shared base being uninstalled. Retiring the fuse phase is  │
+  // │ a separate decision, recorded as owed in the migration doc.                       │
   // └───────────────────────────────────────────────────────────────────────────────────┘
-  const fusedWinsOnDarwin = process.platform === 'darwin' && hasMerged;
-  const preferred: OrpheusArtifact =
-    fusedWinsOnDarwin || entry.artifact === 'merged' ? 'merged' : 'adapter';
+  const preferred: OrpheusArtifact = entry.artifact === 'merged' ? 'merged' : 'adapter';
   const active: OrpheusArtifact =
     hasMerged && hasAdapter ? preferred : hasAdapter ? 'adapter' : 'merged';
 

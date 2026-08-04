@@ -42,12 +42,22 @@ Four kinds of voice, distinguished by what a 'load' carries:
                                  is installed — see the key collapse below.
   MERGED       (modelDir)        a legacy full fine-tune. The voice IS the weights,
                                  so switching means a full engine reload.
-  ADAPTER  (adapterDir+baseDir)  a LoRA over the shared base. The voice is a
-                                 PER-REQUEST LoRARequest, so switching between two
-                                 adapters on the same base is a registration —
-                                 no reload, no CUDA-graph recapture — and one batch
-                                 may mix voices, each with its own prompt token,
-                                 sampling caps and adapter.
+  ADAPTER  (adapterDir+baseDir)  a LoRA over the shared base. Switching between two
+                                 adapters on the same base never reloads the base.
+                                 HOW it is attached differs by backend, and the
+                                 difference is visible from here:
+                                   vLLM — a PER-REQUEST LoRARequest. Several adapter
+                                     voices are servable at once and one batch may mix
+                                     them, each with its own prompt token, sampling
+                                     caps and adapter. A 'load' is a registration; no
+                                     CUDA-graph recapture.
+                                   MLX  — APPLIED to the resident model's projection
+                                     modules (e2a _apply_mlx_adapter). Exactly ONE
+                                     voice is servable at a time, so a 'load' swaps
+                                     the wrappers and the previous voice stops being
+                                     renderable — engine_voices is REPLACED, not
+                                     added to. Still no 6.2 GB reload, which is the
+                                     whole point.
 
 The engine is torn down and rebuilt only when the (modelDir, baseDir) pair
 changes, which is exactly e2a's own engine cache key.
@@ -342,11 +352,13 @@ class OrpheusStreamServer:
           merged  -> anything             differs    -> reload
           stock (no base) <-> adapter     differs    -> reload
 
-        The third line is the KEY COLLAPSE. An engine is built with vLLM's enable_lora
-        if and only if it was given a base_dir — which a stock load now also carries
-        whenever the base is installed — so "base_dir matches" remains a proof that
-        the live engine can serve adapters at all. It is never possible for an adapter
-        request to reach a LoRA-less engine; the last line is what that proof rejects.
+        The third line is the KEY COLLAPSE (vLLM only — the pool sends a stock load no
+        baseDir on MLX, where stock comes from a different repo). An engine can serve
+        an adapter if and only if it was given a base_dir: on vLLM because enable_lora
+        is a construction-time property keyed on it, on MLX because that dir is the
+        model the wrappers get applied to. Either way "base_dir matches" is a proof
+        that the live engine can serve this adapter; the last line is what that proof
+        rejects.
         """
         if adapter_dir and model_dir:
             send_response('error', {
@@ -445,10 +457,27 @@ class OrpheusStreamServer:
             # collapsed stock↔adapter switch safe.
             self.orph.set_voice(v, adapter_dir)
         self.current_voice = v
-        self.engine_voices[v] = adapter_dir
+        # What this engine can serve RIGHT NOW. On vLLM a load ADDS a voice: the
+        # previous one keeps its registration and stays renderable, per request, in the
+        # same batch. On MLX a load REPLACES the voice: the adapter is applied to the
+        # resident model itself, so the moment set_voice returns the previous voice
+        # cannot be rendered at all. Accumulating there would leave _row_voice accepting
+        # a token the engine no longer has weights for — and the request would then be
+        # rejected one layer deeper, by _reject_per_request_voice, with a message about
+        # per-request capability instead of the true reason.
+        if self.orph.backend == 'mlx':
+            self.engine_voices = {v: adapter_dir}
+        else:
+            self.engine_voices[v] = adapter_dir
         # Only a load that NAMES an id claims the token. A load without one (an older
         # pool build) must not overwrite an existing claim with None — that would
         # quietly disarm _check_token_owner for every load after it.
+        #
+        # This one ACCUMULATES on every backend, MLX included: it does not describe what
+        # is servable, it records which catalog id owns a prompt token for the life of
+        # the engine. Two ids claiming one token is a manifest bug whether or not the
+        # first voice is still applied, and forgetting the claim on a switch is exactly
+        # how the second one would slip through.
         if voice_id:
             self.engine_voice_ids[v] = voice_id
 
@@ -688,11 +717,12 @@ class OrpheusStreamServer:
         """Only the vLLM backend renders a per-request voice — say so instead of
         rendering the wrong one.
 
-        Adapter mode is vLLM-only by construction (e2a's load_engine refuses any other
-        backend), and MLX's batch path builds ONE sampler per bucket from the engine's
-        own caps, so even a stock per-row prompt token would carry the wrong voice's
-        sampling. On MLX/transformers a row may therefore only use the loaded voice;
-        anything else is an error.
+        MLX can now SERVE an adapter voice (e2a applies it to the resident model), but
+        only one at a time: the adapter is part of the weights the forward pass runs
+        through, so there is no per-row selection to be had. Its batch path also builds
+        ONE sampler per bucket from the engine's own caps, so even a stock per-row
+        prompt token would carry the wrong voice's sampling. On MLX/transformers a row
+        may therefore only use the loaded voice; anything else is an error.
 
         Raised PER ROW, never over a whole batch. It used to be checked for every item
         up front, before any group was built, so one stray voice failed all 16

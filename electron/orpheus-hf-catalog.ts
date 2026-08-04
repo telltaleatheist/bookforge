@@ -554,8 +554,11 @@ function resolveFuseScript(): string {
  * Merge a downloaded LoRA into a full model MLX can load: `W' = W + (α/r)·B@A` for every
  * targeted projection, written to `<models>/<id>/` in the base's own shard layout.
  *
- * macOS ONLY — see the CANONICAL constraint block on resolveOrpheusInstall's darwin
- * branch (electron/orpheus-models.ts) for why the Mac has to fuse at all.
+ * macOS ONLY — see the CANONICAL block on resolveOrpheusInstall (electron/orpheus-models.ts)
+ * for what a fused copy is FOR now that MLX can apply a LoRA at runtime (stage B2): it is
+ * no longer the only loadable form on a Mac, it is the explicit-`artifact: 'merged'` pin
+ * and the form that survives the shared base being uninstalled. Retiring this phase
+ * altogether is a separate decision, recorded as owed in ORPHEUS_ADAPTER_MIGRATION.md.
  *
  * The merge is BUILT in `<models>/.fusework/<id>/` and renamed onto `<models>/<id>/` only
  * once it verifies: the workspace is a dotted scratch dir the model scan skips, so a fuse
@@ -895,11 +898,12 @@ export async function installOrpheusModel(
     // which one to serve.
     //
     // A FUSED (macOS) install records BOTH folders and `artifact: 'merged'`, because
-    // both are real and the merged one is what gets loaded. `adapterDir` + `base` are
-    // not decoration: they are the provenance of those weights (which LoRA over which
-    // base produced them) and they are the input stage B2 will serve directly once MLX
-    // can apply a LoRA at runtime, at which point flipping this one field switches the
-    // machine over with no re-download.
+    // both are real. Since stage B2 the adapter is the one that actually gets SERVED on
+    // a Mac: this field is the runtime manifest's, and the tuning catalog's
+    // `artifact: 'adapter'` is spread over it by applyTuning (catalog wins — it is a
+    // fact about the voice, not about this machine). `artifact: 'merged'` here is what
+    // an UNCATALOGUED fused voice falls back to, and it is exactly right for one: no
+    // catalog entry means nothing declares the voice ships as a LoRA.
     ...(artifact === 'adapter'
       ? fuseOnDarwin
         ? { adapterDir: id, dir: id, artifact: 'merged' as const }
@@ -939,16 +943,23 @@ export function removeOrpheusModel(id: string): { success: boolean; error?: stri
   try {
     const entry = readManifest().models.find((e) => e.id === id);
     if (entry?.kind === 'base') {
-      // DARWIN TRADEOFF (recorded, deliberate, must be revisited by stage B2): the guard
-      // counts voices whose ACTIVE artifact is 'adapter', and a fused Mac voice reports
-      // 'merged' — its weights are standalone, so deleting the base cannot break it and
-      // this guard correctly lets the base go. What it costs is a re-download: the next
-      // adapter install on that Mac pulls the 6.6 GB base again, because the fuse needs
-      // it as an input even though nothing needs it at render time. That is the right
-      // trade while fused voices are self-contained. It stops being right at B2, where
-      // the Mac serves base + adapter resident and deleting the base breaks every voice
-      // on the machine — at which point this must count darwin adapter-provenance voices
-      // (entry.adapterDir set) as dependants too.
+      // DARWIN DEBT FROM B1, SETTLED AT B2 (2026-08-04). B1 recorded that this count
+      // would have to grow a darwin arm — every voice with an `adapterDir` — once the
+      // Mac served base + adapter resident, because until then a fused Mac voice
+      // reported 'merged' and the base was not load-bearing for it.
+      //
+      // It does not need one. The count asks "which installed voices would stop
+      // rendering if the base went away", and `artifact` — resolved by
+      // resolveOrpheusInstall, which since B2 has no platform branch — is the answer to
+      // exactly that question on every platform:
+      //   active 'adapter'  → the base IS the weights it is applied to. Counted.
+      //   active 'merged'   → standalone weights, whether they were downloaded merged or
+      //                       fused locally from this very base. Not counted, correctly:
+      //                       the voice keeps working, and all deleting the base costs is
+      //                       a re-download the next time one is installed.
+      // A darwin voice with BOTH forms on disk now resolves as 'adapter' unless its
+      // catalog entry explicitly pins 'merged', so the three deployed LoRA voices are
+      // counted on a Mac exactly as they are on Windows.
       const dependants = listOrpheusModels().filter((m) => m.artifact === 'adapter').map((m) => m.id);
       if (dependants.length > 0) {
         return {
