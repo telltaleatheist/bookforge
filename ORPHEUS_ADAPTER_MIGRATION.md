@@ -177,6 +177,16 @@ PRIVATE by default).
   (light capMB 8704 / moderate 10240 sized for one 6.6 GB model) — raise caps or
   derive max_loras from tier. Also update `computeSafeGpuUtil` (gpu-arbiter.ts:196)
   and the ORPHEUS_MIN_VRAM_MB preflight (parallel-tts-bridge.ts:5811–5971).
+  CONFIRMED EMPIRICALLY (step-1 A/B, 2026-08-03): the adapter run hit one
+  recoverable SNAC-decode CUDA OOM (freed cache + retried, output complete) at
+  GPU_MEM_UTIL=0.70 with max_loras=1 — vLLM profiles identical weights/KV budgets
+  in both modes, so the adapter + punica workspace live OUTSIDE vLLM's budget and
+  eat SNAC's slack. Adjust the tiers BEFORE shipping or first-batch OOM retries
+  become routine on tighter cards.
+- CLI renders against the WSL e2a checkout while the BookForge app is open MUST
+  set E2A_TMP_DIR (as production does): the app's session sweeper wipes
+  <wsl-e2a>/tmp of session dirs it doesn't recognize, audio included
+  (step-1 A/B lost its first completed run to this).
 - CUDA graphs × LoRA: streaming sets ORPHEUS_DISABLE_EAGER=1 for graphs
   (orpheus-worker-pool.ts:329; honoured orpheus.py:569–571). MEASURE capture time +
   steady throughput with enable_lora before committing (expect ~10–20% kernel cost).
