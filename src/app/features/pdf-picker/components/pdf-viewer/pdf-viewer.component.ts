@@ -4,6 +4,7 @@ import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrollin
 import { TextBlock, Category, PageDimension } from '../../services/pdf.service';
 import { blockCategoryColor, UNLABEL_CATEGORY } from '@shared/ocr/block-categories';
 import { CORPUS_PAGE_TYPE_NAMES, type CorpusPageType } from '@shared/ocr/page-types';
+import { mergeRefusal } from '@shared/document/block-merge';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { Chapter } from '../../../../core/services/electron.service';
 import { PageRenderService } from '../../services/page-render.service';
@@ -842,6 +843,20 @@ export interface CropRect {
           }
           @if ((hoveredBlock()!.line_count || 1) > 1 && !hoveredBlock()!.is_image) {
             <desktop-button variant="ghost" size="xs" (click)="onSplitBlock()">Split block</desktop-button>
+          }
+          <!-- Merge is offered where the blocks are, on the selection the
+               hovered block belongs to. Greyed out rather than hidden when the
+               selection is not one the merge would take: the sentence on it is
+               the whole explanation, and hiding it would leave the user hunting
+               for a control that had moved. -->
+          @if (hoveredIsInMultiSelection()) {
+            <desktop-button
+              variant="secondary"
+              size="xs"
+              [disabled]="mergeRefusal() !== null"
+              [title]="mergeTooltip()"
+              (click)="onMergeSelection()"
+            >Merge {{ selectedBlockIds().length }} blocks</desktop-button>
           }
           <!-- Marking a chapter is a relabel now — see the shell's
                onChapterFromBlocks — so it is offered wherever a block is. -->
@@ -1960,6 +1975,8 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   selectLikeThis = output<TextBlock>();
   deleteLikeThis = output<TextBlock>();
   deleteBlock = output<string>();
+  /** Merge the current multi-selection into one block. */
+  mergeSelection = output<void>();
   highlightClick = output<{ catId: string; rect: { x: number; y: number; w: number; h: number; text: string }; pageNum: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();  // Click on category highlight
   revertBlock = output<string>();  // Revert text correction
   splitBlock = output<TextBlock>();  // Request to split a multi-line block
@@ -3708,6 +3725,35 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       this.deleteLikeThis.emit(block);
       this.closeAllContextMenus();
     }
+  }
+
+  /**
+   * True when the block under the pointer is part of a multi-selection — the
+   * only state in which merging means anything, because merging is what you do
+   * to blocks you have already said belong together.
+   */
+  hoveredIsInMultiSelection(): boolean {
+    const block = this.hoveredBlock();
+    if (!block) return false;
+    const selected = this.selectedBlockIds();
+    return selected.length > 1 && selected.includes(block.id);
+  }
+
+  /** The selection, judged by the one merge rule. Null when it would be taken. */
+  readonly mergeRefusal = computed<string | null>(() => {
+    const chosen = new Set(this.selectedBlockIds());
+    return mergeRefusal(this.blocks().filter(b => chosen.has(b.id)));
+  });
+
+  mergeTooltip(): string {
+    const refusal = this.mergeRefusal();
+    if (refusal) return refusal;
+    return `Merge ${this.selectedBlockIds().length} blocks into one.`;
+  }
+
+  onMergeSelection(): void {
+    this.mergeSelection.emit();
+    this.closeAllContextMenus();
   }
 
   onRevertBlock(): void {

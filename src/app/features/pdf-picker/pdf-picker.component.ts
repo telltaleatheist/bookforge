@@ -655,6 +655,7 @@ interface AlertModal {
               (selectLikeThis)="selectLikeThis($event)"
               (deleteLikeThis)="deleteLikeThis($event)"
               (deleteBlock)="deleteBlock($event)"
+              (mergeSelection)="mergeSelectedBlocks()"
               (highlightClick)="onHighlightClick($event)"
               (revertBlock)="revertBlockText($event)"
               (splitBlock)="onSplitBlockRequest($event)"

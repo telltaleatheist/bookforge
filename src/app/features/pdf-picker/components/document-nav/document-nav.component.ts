@@ -4,6 +4,7 @@ import { CommonModule } from '@angular/common';
 import { BLOCK_CATEGORIES } from '@shared/ocr/block-categories';
 import type { TextBlock } from '@shared/ocr/text-block';
 import type { DocumentPipelineState, ResetTarget } from '@shared/document/pipeline-types';
+import { mergeRefusal } from '@shared/document/block-merge';
 
 /**
  * What each reset target is called in front of the user.
@@ -126,11 +127,12 @@ export type DocumentNavTab = 'select' | 'label' | 'chapter';
               (click)="deselectAll.emit()"
             >Deselect</button>
             <!-- Merge is the "the system thinks it's two blocks but it isn't"
-                 correction, so it is only ever offered on two or more. -->
+                 correction, so it is only ever offered on blocks the reader
+                 would have read one after the other — see mergeRefusal. -->
             <button
               type="button"
               class="action-btn"
-              [disabled]="selectedBlockIds().length < 2 || !hasDocument()"
+              [disabled]="!hasDocument() || mergeRefusal() !== null"
               [title]="mergeTooltip()"
               (click)="merge.emit()"
             >Merge {{ selectedBlockIds().length >= 2 ? selectedBlockIds().length : '' }}</button>
@@ -600,11 +602,22 @@ export class DocumentNavComponent {
     return 'Read the pages again and replace every block with what they say.';
   }
 
+  /**
+   * The selection, judged by the one merge rule. Null when it would be taken.
+   *
+   * Computed rather than a method so the disabled state and the tooltip read the
+   * same answer instead of asking twice.
+   */
+  readonly mergeRefusal = computed<string | null>(() => {
+    const chosen = new Set(this.selectedBlockIds());
+    return mergeRefusal(this.blocks().filter(b => chosen.has(b.id)));
+  });
+
   mergeTooltip(): string {
     if (!this.hasDocument()) return 'Merging is an edit to the working document, and there is none.';
-    const count = this.selectedBlockIds().length;
-    if (count < 2) return 'Select two or more blocks on one page to merge them.';
-    return `Merge ${count} blocks into one.`;
+    const refusal = this.mergeRefusal();
+    if (refusal) return refusal;
+    return `Merge ${this.selectedBlockIds().length} blocks into one.`;
   }
 
   startEditing(block: TextBlock): void {

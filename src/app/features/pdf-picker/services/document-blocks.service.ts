@@ -2,6 +2,7 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { ElectronService } from '../../../core/services/electron.service';
 import { blockCategoryDef } from '@shared/ocr/block-categories';
+import { mergeRefusal } from '@shared/document/block-merge';
 import type { TextBlock } from '@shared/ocr/text-block';
 import type {
   BlockAnnotation,
@@ -204,23 +205,17 @@ export class DocumentBlocksService {
    * texts joined in reading order, the lead keeping its id, category and place —
    * so the screen after a merge is the document after a merge, rather than an
    * approximation that a reload would silently correct.
+   *
+   * What it refuses, and why, is `mergeRefusal` — the same rule the Merge button
+   * and the block menu are greyed out by, so a refusal here is never news.
    */
   merge(blockIds: readonly string[]): void {
     const unique = [...new Set(blockIds)];
-    const members = this.blocks()
-      .filter(b => unique.includes(b.id))
-      .sort((a, b) => requireSeq(a) - requireSeq(b));
-    if (members.length < 2) {
-      throw new Error('Merging needs two blocks or more; one block is already one block.');
-    }
+    const members = this.blocks().filter(b => unique.includes(b.id));
+    const refusal = mergeRefusal(members);
+    if (refusal) throw new Error(refusal);
+    members.sort((a, b) => requireSeq(a) - requireSeq(b));
     const lead = members[0];
-    const stray = members.find(m => m.page !== lead.page);
-    if (stray) {
-      throw new Error(
-        `These blocks are on different pages (page ${lead.page + 1} and page ${stray.page + 1}). `
-        + 'One block is one box on one page, so blocks that span a page break cannot be merged.'
-      );
-    }
 
     const x0 = Math.min(...members.map(m => m.x));
     const y0 = Math.min(...members.map(m => m.y));
