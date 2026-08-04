@@ -48,6 +48,7 @@
     "test:foundry-run": "node tools/test-foundry-run.js",
     "test:block-exclusions": "npx tsc -p tsconfig.electron.json && node tools/test-block-exclusions.js",
     "test:document-binding": "npx tsc -p tsconfig.electron.json && node tools/test-document-binding.js",
+    "test:document-stages": "npx tsc -p tsconfig.electron.json && node tools/test-document-stages.js",
     "test:reset-book": "npx tsc -p tsconfig.electron.json && node tools/test-reset-book.js",
     "test:display-run-merge": "npx tsc -p tsconfig.electron.json && node tools/test-display-run-merge.js",
     "test:page-types": "npx tsc -p tsconfig.electron.json && node tools/test-page-types.js",
