@@ -60,6 +60,7 @@ const test = (name, fn) => tests.push({ name, fn });
 const liveTest = (name, fn) => tests.push({ name, fn, live: true });
 
 const projects = [];
+
 /** A project directory laid out the way a real one is. `cast` places a working PDF. */
 function makeProject({ cast = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-docstage-p-'));
@@ -73,6 +74,22 @@ function makeProject({ cast = false } = {}) {
   };
   if (cast) fs.copyFileSync(WORKING_PDF, stages.workingAbsPath(project));
   return project;
+}
+
+/**
+ * The scratch scan directory for a project's archive original.
+ *
+ * It is derived from that file's hash and lives under the user's HOME — it is
+ * machine-global, and every project in this file holds the same fixture bytes,
+ * so they all share one. Tests that care what is in it therefore have to say so
+ * rather than assume a clean machine: the live tests below FILL it, and a run of
+ * this file leaves it behind for the next one.
+ */
+function fixtureScratchDir() {
+  const bytes = fs.readFileSync(ORIGINAL_PDF);
+  return stages.documentScratchDir(
+    require('crypto').createHash('sha256').update(bytes).digest('hex')
+  );
 }
 
 async function bindCast(project) {
@@ -231,6 +248,9 @@ test('an archive original replaced under a cast book stops every stage', async (
 test('Blocks with no scan geometry names Get Text and says the scratch is machine-local', async () => {
   const project = makeProject({ cast: true });
   await bindCast(project);
+  // Said, not assumed: an earlier run of this file (or a real cast of the same
+  // fixture) leaves the scratch behind, and this test is about it being absent.
+  fs.rmSync(fixtureScratchDir(), { recursive: true, force: true });
   await assert.rejects(
     () => stages.runBlocksStage({ project }),
     (err) => /line geometry/.test(err.message) && /not synced between machines/.test(err.message)
@@ -352,7 +372,11 @@ liveTest('Reflow refuses the cast document until Blocks has labelled it', async 
       failures.push(`${name}: ${err && err.message ? err.message : err}`);
     }
   }
+  // The scratch scan directory is machine-global (see scratchOf); a live run
+  // fills it with this fixture's geometry, and leaving that behind would be this
+  // file littering a real BookForge install's cache with a test book.
   for (const dir of projects) fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(fixtureScratchDir(), { recursive: true, force: true });
   fs.rmSync(SCRATCH, { recursive: true, force: true });
 
   if (failures.length) {
