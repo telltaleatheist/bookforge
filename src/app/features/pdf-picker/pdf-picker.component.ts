@@ -952,6 +952,7 @@ interface AlertModal {
                 [includedChars]="includedChars()"
                 [excludedChars]="excludedChars()"
                 [categoryCorrections]="editorState.categoryCorrections()"
+                [categoryOverride]="detectPaintOverride()"
                 [showCategoryColors]="showCategoryColors()"
                 [uncertainCount]="uncertainBlocks().length"
                 [labelMode]="labelMode()"
@@ -4291,6 +4292,25 @@ export class PdfPickerComponent implements OnInit {
     }
     return merged;
   });
+
+  /**
+   * The category a block is CURRENTLY WEARING — the identical resolution the
+   * viewer paints with (`getCategoryColor`: override, else the stored id).
+   *
+   * Every gesture that means "this one and the ones like it" must resolve
+   * through here, because the two readings genuinely diverge: Detect mode's
+   * predictions are a preview held in memory and never written to
+   * `category_id`, and they survive until the book closes — not until the panel
+   * closes. Double-clicking a block painted `footnote` therefore used to also
+   * grab blocks the screen was showing as body text, because the gesture read
+   * the stored id while the eye read the prediction.
+   *
+   * `??` and never `||`: an empty id is the deliberate result of Unlabel, and
+   * `||` would silently promote it back to the stored category.
+   */
+  effectiveCategoryId(block: TextBlock): string {
+    return this.detectPaintOverride().get(block.id) ?? block.category_id;
+  }
   // Defaults to the BUILT-IN runtime: the downloaded GGUF on the llama-server
   // that ships with the app. It used to default to Ollama, which meant Detect
   // silently required a separate install plus a hand-built `ollama create` —
@@ -4927,7 +4947,7 @@ export class PdfPickerComponent implements OnInit {
     const missing = this.autoDetectedCategoryList()
       .filter(c => !have.has(c.id))
       .map(c => {
-        const mine = blocks.filter(b => b.category_id === c.id && !b.is_image);
+        const mine = blocks.filter(b => this.effectiveCategoryId(b) === c.id && !b.is_image);
         return {
           id: c.id, name: c.name, description: '', color: c.color,
           block_count: mine.length,
@@ -6223,10 +6243,12 @@ export class PdfPickerComponent implements OnInit {
   }
 
   selectLikeThis(block: TextBlock, additive: boolean = false): void {
-    const categoryId = block.category_id;
+    // "Like this" means like what the screen shows this one to be — see
+    // effectiveCategoryId().
+    const categoryId = this.effectiveCategoryId(block);
     const deleted = this.deletedBlockIds();
     const matching = this.blocks()
-      .filter(b => b.category_id === categoryId && !deleted.has(b.id))
+      .filter(b => this.effectiveCategoryId(b) === categoryId && !deleted.has(b.id))
       .map(b => b.id);
 
     if (additive) {
@@ -6473,36 +6495,15 @@ export class PdfPickerComponent implements OnInit {
     return true;
   }
 
-  deleteAllBlocksInCategory(categoryId: string): void {
-    if (this.reviewMode()) return;
-    const deleted = this.deletedBlockIds();
-    const toDelete = this.blocks().filter(b => b.category_id === categoryId && !deleted.has(b.id));
-    if (toDelete.length === 0) return;
-
-    const affectedPages = new Set(toDelete.map(b => b.page));
-    this.editorState.deleteBlocks(toDelete.map(b => b.id));
-    this.editorState.clearSelection();
-    for (const pageNum of affectedPages) this.rerenderPageWithEdits(pageNum);
-  }
-
-  restoreAllBlocksInCategory(categoryId: string): void {
-    if (this.reviewMode()) return;
-    const deleted = this.deletedBlockIds();
-    const toRestore = this.blocks().filter(b => b.category_id === categoryId && deleted.has(b.id));
-    if (toRestore.length === 0) return;
-
-    const affectedPages = new Set(toRestore.map(b => b.page));
-    this.editorState.restoreBlocks(toRestore.map(b => b.id));
-    this.editorState.clearSelection();
-    for (const pageNum of affectedPages) this.rerenderPageWithEdits(pageNum);
-  }
-
   deleteLikeThis(block: TextBlock): void {
     if (this.reviewMode()) return;  // read-only during EPUB review
-    const categoryId = block.category_id;
+    // The destructive twin of selectLikeThis, so it resolves the category the
+    // same way the screen paints it — a delete that reached blocks the user was
+    // looking at as body text would be far worse than a selection that did.
+    const categoryId = this.effectiveCategoryId(block);
     const deleted = this.deletedBlockIds();
     const blocksToDelete = this.blocks()
-      .filter(b => b.category_id === categoryId && !deleted.has(b.id));
+      .filter(b => this.effectiveCategoryId(b) === categoryId && !deleted.has(b.id));
 
     if (blocksToDelete.length === 0) return;
 
@@ -8427,9 +8428,12 @@ export class PdfPickerComponent implements OnInit {
     this.focusedCategoryId.set(null);
 
     // Regular categories: select ALL blocks in category (including deleted ones)
-    // User can press Delete to toggle deletion state
+    // User can press Delete to toggle deletion state.
+    // Category resolved the way the viewer paints it (effectiveCategoryId), and
+    // the row's own count resolves the same way — a row that says 12 and selects
+    // 9 would just relocate the divergence this fix exists to remove.
     const allBlocks = this.blocks();
-    const categoryBlocks = allBlocks.filter(b => b.category_id === categoryId);
+    const categoryBlocks = allBlocks.filter(b => this.effectiveCategoryId(b) === categoryId);
     const blockIds = categoryBlocks.map(b => b.id);
 
     if (blockIds.length === 0) return;
@@ -8453,7 +8457,7 @@ export class PdfPickerComponent implements OnInit {
   selectInverseOfCategory(categoryId: string): void {
     const deleted = this.deletedBlockIds();
     const blockIds = this.blocks()
-      .filter(b => b.category_id === categoryId && !deleted.has(b.id))
+      .filter(b => this.effectiveCategoryId(b) === categoryId && !deleted.has(b.id))
       .map(b => b.id);
 
     const currentSelection = new Set(this.selectedBlockIds());
