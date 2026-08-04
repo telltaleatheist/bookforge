@@ -64,11 +64,15 @@ const ORPHEUS_VOICES = ['leah', 'tara', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe
 const ORPHEUS_DEFAULT_VOICE = 'leah';
 
 /**
- * Translate a custom model dir into the path the worker process will see. The
+ * Translate a model dir into the path the worker process will see. The
  * streaming worker runs in WSL on Windows when the Orpheus WSL toggle is on, so its
  * args must be WSL paths: a \\wsl$\<distro>\… dir maps to its native /home/… path
  * (fast ext4), a C:\… dir maps to /mnt/c/…. Native (Mac/Linux) spawns are untouched.
  * Mirrors the batch bridge's isWslUncPath/uncToWslPath + windowsToWslPath.
+ *
+ * Applies to EVERY dir that crosses to the worker — a merged model dir, an adapter
+ * dir and the shared base dir alike. An untranslated base would leave the engine
+ * looking for Windows weights from inside the guest.
  */
 function translateModelDirForSpawn(dir: string): string {
   if (!(process.platform === 'win32' && shouldUseWsl2ForOrpheus())) return dir;
@@ -166,6 +170,30 @@ let mainWindow: BrowserWindow | null = null;
 let currentVoice: string | null = null;
 let lastVoice: string | null = null;
 let detectedDevice: 'cuda' | 'mlx' | 'cpu' | null = null;
+
+// ── Per-request voices ───────────────────────────────────────────────────────
+// The worker holds ONE engine but can serve several voices from it: built-ins are a
+// prompt prefix, and LoRA-adapter voices are a per-request LoRARequest over a shared
+// base. So a generate item may name a voice other than the one loaded last, and two
+// clients on different voices no longer have to evict each other.
+//
+// The engine's identity is (merged model dir, shared base dir) — exactly e2a's own
+// engine cache key. A load that keeps that pair keeps the engine (adapter↔adapter on
+// one base, built-in↔built-in); a load that changes it rebuilds. `loadedEngineKey`
+// is what the worker currently holds, so a load can tell "register a voice on a warm
+// engine" (seconds) from "construct an engine" (minutes) and time out accordingly.
+let loadedEngineKey: string | null = null;
+// Voice id -> the PROMPT TOKEN the worker knows it by (they differ whenever a
+// catalog entry declares a token), for every voice loaded against the live engine.
+// Cleared whenever the engine is (worker death, endSession, engine rebuild) — an
+// entry that outlived its engine would let a per-request voice be accepted and
+// rendered by weights that never knew it.
+const voiceTokens = new Map<string, string>();
+
+function forgetEngineVoices(): void {
+  loadedEngineKey = null;
+  voiceTokens.clear();
+}
 
 let startingSession = false;
 // True while endSession() is deliberately killing the worker, so the close
@@ -508,6 +536,7 @@ function startWorker(gpuUtil?: number): Promise<{ success: boolean; error?: stri
         // fails "Model not loaded" until the user switches voices or restarts.
         // (lastVoice is kept: it's only the default-voice hint, not load state.)
         currentVoice = null;
+        forgetEngineVoices();
       }
       drainWaiters();
       failBatchQueue('Worker died');
@@ -544,9 +573,11 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
   const v = (voice || ORPHEUS_DEFAULT_VOICE).toLowerCase();
   if (currentVoice === v) return { success: true };
 
-  // A folder-discovered custom voice loads its OWN model dir and uses its verbatim
-  // prompt token; built-ins send no model dir (stock model). Switching to/from a
-  // custom model triggers a reload in the worker — covered by the 180s timeout.
+  // A folder-discovered custom voice loads its OWN weights — a merged model dir, or
+  // an adapter dir over the shared base dir — and uses its verbatim prompt token;
+  // built-ins send no dirs at all (stock model). Changing which WEIGHTS are served
+  // triggers a reload in the worker; registering another adapter over the same base
+  // does not (see loadedEngineKey).
   // resolveOrpheusModel THROWS when the \\wsl$ models dir is unreachable (WSL down) —
   // surface that as a load failure instead of an unhandled rejection.
   let model: ReturnType<typeof resolveOrpheusModel>;
@@ -565,21 +596,22 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
       error: `Orpheus voice '${voice}' is not a built-in voice and has no valid model folder under the Orpheus models directory — refusing to silently fall back to the default voice.`,
     };
   }
-  // LoRA-ADAPTER voices are not servable by the resident streaming worker yet: it
-  // sends a single `modelDir` and orpheus_stream.py loads it as the model, so an
-  // adapter folder would either fail deep in vLLM or (worse, if it ever loaded the
-  // base instead) render in the WRONG voice with no error. Refuse loudly until the
-  // streaming per-request-voice work lands and this path learns baseDir+adapterDir.
-  if (model?.artifact === 'adapter') {
+  const loadToken = model ? model.voice : v;
+  // An ADAPTER voice sends its adapter dir AND the shared base; a MERGED voice sends
+  // the one model dir it is. resolveOrpheusModel guarantees baseDir is present for an
+  // adapter (it throws when the base is not installed), so a missing one here would
+  // be a contract break — assert rather than send half an adapter, which the worker
+  // would (correctly) reject anyway.
+  const isAdapter = model?.artifact === 'adapter';
+  if (isAdapter && !model!.baseDir) {
     return {
       success: false,
-      error:
-        `The '${model.label}' voice is served as an adapter, which streaming does not support yet; ` +
-        `audiobook rendering works. Streaming support is coming in the next update.`,
+      error: `Orpheus voice '${voice}' resolved as a LoRA adapter with no base model dir — refusing to load an adapter with nothing to apply it to.`,
     };
   }
-  const loadToken = model ? model.voice : v;
-  const modelDir = model ? translateModelDirForSpawn(model.dir) : undefined;
+  const modelDir = model && !isAdapter ? translateModelDirForSpawn(model.dir) : undefined;
+  const adapterDir = isAdapter ? translateModelDirForSpawn(model!.dir) : undefined;
+  const baseDir = isAdapter ? translateModelDirForSpawn(model!.baseDir!) : undefined;
   // Per-voice tuning caps from the SAME catalog the audiobook worker reads
   // (orpheus-models.ts). They cannot ride the spawn env: this worker is RESIDENT
   // and switches voices without respawning, so the caps travel with the load
@@ -588,6 +620,17 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
   // ~20.4 ch/s p99, catalogued at 23.5) tripped the 19.0 truncation guard on
   // healthy audio in previews while the book render did not.
   const caps = model ? orpheusVoiceCapsForModel(model) : {};
+
+  // The engine this load needs, as the worker identifies it. Matching what the worker
+  // already holds means the load only REGISTERS a voice (adapter registration or a
+  // prompt-prefix switch) — seconds, not the minutes an engine construction takes.
+  const engineKey = `${modelDir ?? ''}|${baseDir ?? ''}`;
+  const warmEngine = loadedEngineKey !== null && loadedEngineKey === engineKey;
+  // A construction pays the ~6 GB weight load, CUDA-graph capture and the warmup
+  // renders. A registration is a dict write plus a caps update; if THAT hasn't
+  // answered in 15s the worker is wedged and pretending otherwise only makes the
+  // engine look alive while every request behind it stalls.
+  const loadTimeoutMs = warmEngine ? 15000 : 180000;
 
   // The Python worker is serial: route the load through the same serialization the
   // stream path uses (priority tier) so it never clobbers an in-flight stream's
@@ -604,17 +647,22 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
           afterWorkerFree(); // let any queued read-ahead / next load flush
           resolve(result);
         };
-        // First load includes the ~12s CUDA-graph capture + weight load; later voice
-        // switches are instant (prompt-prefix only). Timeout must free the worker too.
         const timeout = setTimeout(
           () => finish({ success: false, error: 'Orpheus voice load timeout' }),
-          180000
+          loadTimeoutMs
         );
         warmupPct = 0;
         w.pendingRequest = {
           sentenceIndex: -1,
           resolve: (result) => {
             if (result.success || result.audio) {
+              // A load that changed the engine invalidated every voice registered
+              // against the old one — the worker cleared its own set on teardown, so
+              // mirror that here or a stale id would be forwarded as a per-request
+              // voice the engine cannot serve.
+              if (!warmEngine) voiceTokens.clear();
+              loadedEngineKey = engineKey;
+              voiceTokens.set(v, loadToken);
               currentVoice = v;
               lastVoice = v;
               warmupPct = 100;
@@ -622,11 +670,23 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
               broadcastServiceState();
               finish({ success: true });
             } else {
+              // A failed load leaves the worker's engine in an unknown state — a
+              // validation rejection changed nothing, but a failure DURING a switch
+              // tore the old engine down first. Forget what we thought was loaded
+              // rather than guess: the cost is one full reload, the cost of guessing
+              // wrong is a per-request voice served by an engine that no longer has
+              // it. currentVoice goes too, so the next loadVoice actually SENDS a
+              // load instead of short-circuiting on a voice we can no longer prove is
+              // there — which would otherwise fail every sentence forever, because
+              // nothing would ever re-register it.
+              forgetEngineVoices();
+              currentVoice = null;
+              broadcastServiceState();
               finish({ success: false, error: result.error });
             }
           },
         };
-        send({ action: 'load', voice: loadToken, modelDir, caps });
+        send({ action: 'load', voice: loadToken, modelDir, adapterDir, baseDir, caps });
       }),
     () => ({ success: false, error: 'No Orpheus worker' }),
     true
@@ -698,6 +758,10 @@ interface BatchItem {
   resolve: (r: GenResult) => void;
   isCancelled?: () => boolean;
   priority: boolean;
+  /** The worker-side PROMPT TOKEN this sentence must be rendered in, set only when
+   *  it differs from the loaded voice. Undefined = the loaded voice, which keeps the
+   *  wire message byte-identical to the single-voice case. */
+  voice?: string;
 }
 const batchQueue: BatchItem[] = [];
 let flushScheduled = false;
@@ -756,11 +820,15 @@ function flushBatch(): void {
   // Priority items (the playing session's lookahead) first; stable within a tier.
   batchQueue.sort((a, b) => (a.priority === b.priority ? 0 : a.priority ? -1 : 1));
 
+  // Items are NOT regrouped by voice. vLLM takes a per-prompt LoRA list, so a batch
+  // that mixes voices runs as one call with each row on its own adapter — regrouping
+  // would only break the read-ahead's reading order and shrink the batches that pay
+  // for themselves by being full.
   const picked = batchQueue.splice(0, STREAM_BATCH_WIDTH);
   const resolvers = new Map<number, (r: GenResult) => void>();
   const items = picked.map((it, i) => {
     resolvers.set(i, it.resolve);
-    return { i, text: it.text };
+    return { i, text: it.text, ...(it.voice ? { voice: it.voice } : {}) };
   });
 
   const timeout = setTimeout(() => {
@@ -806,18 +874,57 @@ function runOnWorker<T>(
 export async function generateSentence(
   text: string,
   _sentenceIndex: number,
-  _settings: PlaySettings,
+  settings: PlaySettings,
   priority = false,
   isCancelled?: () => boolean
 ): Promise<{ success: boolean; audio?: AudioChunk; error?: string }> {
   touchActivity();
   if (!worker) return { success: false, error: 'No workers available' };
+  // The sentence's OWN voice, honoured per request. `settings` used to be discarded
+  // here on the grounds that "voice is the warm prefix" — true only while one voice
+  // was loaded at a time. Now two clients (or the app plus a client) can hold
+  // different voices against one engine, and the last load would otherwise decide
+  // what everyone's in-flight sentences sound like.
+  const resolved = resolveRequestVoice(settings);
+  if (!resolved.ok) return { success: false, error: resolved.error };
   // Coalesced into a vLLM/MLX batch with sibling read-ahead sentences rather than
-  // run one-at-a-time. (Orpheus ignores per-sentence settings — voice is the warm
-  // prefix, sampling is fixed — so only the text matters here.)
+  // run one-at-a-time. (Sampling is per-voice catalog tuning applied at load, so the
+  // remaining per-sentence settings still don't apply to Orpheus.)
   return new Promise<GenResult>((resolve) => {
-    enqueueBatchItem({ text, resolve, isCancelled, priority });
+    enqueueBatchItem({ text, resolve, isCancelled, priority, voice: resolved.voice });
   });
+}
+
+type VoiceResolution = { ok: true; voice?: string } | { ok: false; error: string };
+
+/**
+ * The PROMPT TOKEN a request's `settings.voice` must render in, or a failure when the
+ * engine cannot serve it. `{ok: true, voice: undefined}` means the request named no
+ * voice and inherits the engine's default — the pre-per-request-voice behaviour.
+ *
+ * The token is resolved and SENT EXPLICITLY even when it matches the currently
+ * loaded voice, rather than being left implicit. "Currently loaded" is evaluated on
+ * the worker at RENDER time, and a concurrent load (a second client, the Listen tab)
+ * can land between a sentence being queued and its batch going out — so an implicit
+ * voice is a race whose losing side is a silently different narrator. Naming it costs
+ * a few bytes per item and removes the race entirely.
+ *
+ * Voices cross the wire as prompt tokens, which a catalog entry may declare
+ * differently from its id, and only voices registered against the LIVE engine can be
+ * served. An unknown one fails the sentence rather than rendering it in whatever is
+ * loaded: the wrong narrator delivered as a success is exactly what this prevents.
+ */
+function resolveRequestVoice(settings: PlaySettings): VoiceResolution {
+  const requested = settings?.voice?.trim().toLowerCase();
+  if (!requested) return { ok: true };
+  const token = voiceTokens.get(requested);
+  if (!token) {
+    return {
+      ok: false,
+      error: `Orpheus voice '${settings.voice}' is not loaded on the streaming engine (loaded: ${[...voiceTokens.keys()].join(', ') || 'none'}) — load it before generating in it.`,
+    };
+  }
+  return { ok: true, voice: token };
 }
 
 export async function generateSentenceStream(
@@ -838,12 +945,19 @@ export async function generateSentenceStream(
 function streamOnWorker(
   w: Worker,
   text: string,
-  _settings: PlaySettings,
+  settings: PlaySettings,
   onChunk: (chunk: StreamChunk) => void
 ): Promise<StreamResult> {
   if (w.pendingRequest) {
     return Promise.resolve({ success: false, error: 'Worker already busy (dispatch bug)' });
   }
+  // Same per-request voice contract as generateSentence. (The scheduler never
+  // streams on Orpheus — it reports getMaxConcurrentSentences, which routes
+  // everything through the batch — but the engine interface exposes this entry
+  // point, and it must not be the one place that ignores the requested voice.)
+  const resolved = resolveRequestVoice(settings);
+  if (!resolved.ok) return Promise.resolve({ success: false, error: resolved.error });
+  const voice = resolved.voice;
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
       // Still rendering — taint until the stale terminal response is discarded.
@@ -863,7 +977,7 @@ function streamOnWorker(
         resolve(result);
       },
     };
-    send({ action: 'generate', text, language: 'en', stream: true });
+    send({ action: 'generate', text, language: 'en', stream: true, ...(voice ? { voice } : {}) });
   });
 }
 
@@ -901,6 +1015,7 @@ export async function endSession(): Promise<void> {
   }
   worker = null;
   currentVoice = null;
+  forgetEngineVoices();
   serviceMode = false;
   if (hadWorker) broadcast('play:session-ended', { code: 0 });
   broadcastServiceState();
@@ -959,6 +1074,30 @@ export function getAvailableVoices(): string[] {
 
 export function getCurrentVoice(): string | null {
   return currentVoice;
+}
+
+/**
+ * Can `voice` be rendered per REQUEST, alongside whatever else the engine has
+ * loaded — or is loading it an exclusive act?
+ *
+ * Built-in voices are a prompt prefix and LoRA-adapter voices are a per-request
+ * LoRARequest over a shared base, so both coexist: a second client asking for a
+ * different one takes nothing away from the first. A MERGED custom voice IS its
+ * weights — only one can be resident — so for those "the engine is loaded with
+ * something else" remains a real conflict.
+ *
+ * Consumed by the TTS API server's post-load mismatch guard, which must not reject
+ * concurrent clients on voices that can happily share the engine.
+ *
+ * Returns false when the voice cannot be resolved at all (an unreachable \\wsl$
+ * models dir throws): unknown means the guard stays armed, never that it is waived.
+ */
+export function canServeVoicePerRequest(voice: string): boolean {
+  try {
+    return resolveOrpheusModel(voice.toLowerCase())?.artifact !== 'merged';
+  } catch {
+    return false;
+  }
 }
 
 export function getLastVoice(): string | null {
@@ -1129,6 +1268,7 @@ export const orpheusWorkerPool = {
   isSessionActive,
   getAvailableVoices,
   getCurrentVoice,
+  canServeVoicePerRequest,
   getDefaultVoice,
   getLastVoice,
   getWorkerCount,

@@ -21,8 +21,9 @@ same vLLM/CUDA-graph setup, same SNAC decode. We call its lower-level generation
 methods and keep the audio in memory (no per-sentence WAV files).
 
 Protocol (one JSON object per line):
-  stdin:  {action: 'load', voice}
-          {action: 'generate', text, stream?: bool, ...}
+  stdin:  {action: 'load', voice, modelDir?, adapterDir?, baseDir?, caps?}
+          {action: 'generate', text, voice?, stream?: bool, ...}
+          {action: 'generate_batch', items: [{i, text, voice?}], ...}
           {action: 'cancel' | 'stop' | 'quit'}
   stdout: {type: 'ready', device}
           {type: 'status' | 'loaded' | 'error' | 'stopped', ...}
@@ -30,9 +31,24 @@ Protocol (one JSON object per line):
           {type: 'chunk', seq, format:'pcm16', data, duration, sampleRate}   # stream
           {type: 'done', duration, chunks, cancelled}                        # stream end
 
-Voices: tara, leah, jess, leo, dan, mia, zac, zoe (default leah). Switching
-voices is free — Orpheus encodes the voice as a prompt prefix, so the model is
-loaded once and a 'load' for a different voice only changes the prefix.
+Three kinds of voice, distinguished by what a 'load' carries:
+
+  STOCK    (no dirs)             tara, leah, jess, leo, dan, mia, zac, zoe.
+                                 The voice is a prompt prefix; switching is free.
+  MERGED   (modelDir)            a legacy full fine-tune. The voice IS the weights,
+                                 so switching means a full engine reload.
+  ADAPTER  (adapterDir+baseDir)  a LoRA over the shared base. The voice is a
+                                 PER-REQUEST LoRARequest, so switching between two
+                                 adapters on the same base is a registration —
+                                 no reload, no CUDA-graph recapture — and one batch
+                                 may mix voices, each with its own prompt token,
+                                 sampling caps and adapter.
+
+The engine is torn down and rebuilt only when the (modelDir, baseDir) pair
+changes, which is exactly e2a's own engine cache key: two adapters over one base
+compare equal, everything else does not. A voice is servable per request only
+after a 'load' registered it against the CURRENT engine — a generate naming
+anything else is an error, never a silent render in whatever is loaded.
 """
 
 import json
@@ -240,9 +256,10 @@ def detect_device() -> str:
 
 
 # ── Orpheus streaming server ──────────────────────────────────────────────────
-# Built-in voices. Custom finetunes are NOT listed here — they arrive with a
-# model dir (the `modelDir` field on a load request) and use their token verbatim,
-# bypassing this allowlist (mirrors e2a orpheus.py's orpheus_model_dir branch).
+# Built-in voices. Custom finetunes are NOT listed here — they arrive with either a
+# merged model dir (`modelDir`) or a LoRA adapter (`adapterDir` + `baseDir`) on the
+# load request and use their token verbatim, bypassing this allowlist (mirrors e2a
+# orpheus.py's orpheus_model_dir / orpheus_adapter_dir branches).
 VALID_VOICES = {'tara', 'leah', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe'}
 DEFAULT_VOICE = 'leah'
 
@@ -251,20 +268,65 @@ class OrpheusStreamServer:
     def __init__(self):
         self.orph = None              # e2a Orpheus engine instance (lazy)
         self.current_voice = None
-        self.current_model_dir = None # None = stock model; else a custom model dir
+        self.current_model_dir = None # None = stock/adapter; else a merged model dir
+        self.current_base_dir = None  # set only in adapter mode (the shared base)
+        # Voices this engine can serve RIGHT NOW: token -> adapter dir (None for a
+        # stock or merged voice). Populated by 'load', emptied by teardown — so it
+        # can never claim a voice whose weights or adapter registration went away
+        # with a previous engine.
+        self.engine_voices = {}
         self.device = None
 
-    def _ensure_engine(self, voice: str, model_dir: str = None, caps: dict = None):
-        """Load (or reload) the Orpheus model and set the voice; on first load WARM
-        the generate path before reporting ready.
+    def _ensure_engine(self, voice: str, model_dir: str = None, caps: dict = None,
+                       adapter_dir: str = None, base_dir: str = None):
+        """Load (or reload) the Orpheus model and make `voice` the default; on first
+        load WARM the generate path before reporting ready.
 
-        A custom model (model_dir set) loads its OWN weights and uses the voice token
-        VERBATIM, bypassing the built-in allowlist (single-speaker finetunes aren't in
-        it). Switching MODELS — built-in↔custom, or between two customs — is a full
-        reload (different weights); switching between built-in voices stays a free
-        prompt-prefix change. The model stays resident across same-model switches."""
-        if model_dir:
-            v = (voice or '').strip().lower() or DEFAULT_VOICE   # custom token, verbatim
+        Three modes (see the module docstring). The engine is torn down ONLY when the
+        (model_dir, base_dir) pair changes — the same key e2a's own load_engine cache
+        uses — because that pair, and nothing else, decides which WEIGHTS are served:
+
+          adapter -> adapter, same base   same pair  -> register + switch, NO reload
+          stock   -> stock                same pair  -> prompt prefix, NO reload
+          merged  -> anything             differs    -> reload
+          stock  <-> adapter              differs    -> reload
+
+        The last line is the deliberate conservative choice: an engine is built with
+        vLLM's enable_lora if and only if the session that built it carried an
+        adapter, so "base_dir matches" is a proof that the live engine can serve
+        adapters at all. It is never possible for an adapter request to reach a
+        LoRA-less engine.
+        """
+        if adapter_dir and model_dir:
+            send_response('error', {
+                'message': f"Orpheus load for '{voice}' carried both a merged modelDir "
+                           f'({model_dir}) and an adapterDir ({adapter_dir}). They select '
+                           'different weights — pass exactly one.'
+            })
+            return False
+        if bool(adapter_dir) != bool(base_dir):
+            send_response('error', {
+                'message': f"Orpheus load for '{voice}' carried adapterDir={adapter_dir!r} "
+                           f'and baseDir={base_dir!r}. An adapter voice needs BOTH: the '
+                           'adapter is only a delta over the base that turns it into a voice.'
+            })
+            return False
+
+        if model_dir or adapter_dir:
+            # Custom token, verbatim — a single-speaker fine-tune is not in the
+            # built-in allowlist, and validating it there would drop it to the default.
+            v = (voice or '').strip().lower()
+            if not v or v == 'internal':
+                # 'internal' is e2a's "no --fine_tuned given" sentinel. For an adapter
+                # it is fatal: the token is also the adapter's registry key, and
+                # rendering under a token the adapter never saw sounds plausible and
+                # is wrong.
+                send_response('error', {
+                    'message': f"Orpheus custom voice load is missing its voice token "
+                               f'(got {voice!r}). The token the fine-tune was trained on '
+                               'is required — refusing to guess.'
+                })
+                return False
         else:
             v = (voice or DEFAULT_VOICE).lower()
             if v not in VALID_VOICES:
@@ -276,14 +338,15 @@ class OrpheusStreamServer:
                 send_response('error', {
                     'message': f"Unknown Orpheus voice '{voice}' — expected one of: "
                                f"{', '.join(sorted(VALID_VOICES))} (or a custom voice "
-                               f"with a modelDir). Refusing to substitute "
-                               f"'{DEFAULT_VOICE}'."
+                               f"with a modelDir, or an adapter voice with adapterDir "
+                               f"+ baseDir). Refusing to substitute '{DEFAULT_VOICE}'."
                 })
                 return False
 
-        # A different model (switching to/from a custom one, or between customs)
-        # means different weights → tear the engine down and reload.
-        if self.orph is not None and model_dir != self.current_model_dir:
+        # Different weights (a merged model on either side, or a different shared
+        # base) → tear the engine down and reload. Same pair → the engine stays up.
+        if self.orph is not None and (model_dir, base_dir) != (self.current_model_dir,
+                                                               self.current_base_dir):
             send_response('status', {'message': 'Switching Orpheus model...'})
             self._teardown_engine()
 
@@ -294,17 +357,30 @@ class OrpheusStreamServer:
             # so an env without these deps fails on load (surfaced) not at startup.
             from lib.classes.tts_engines.orpheus import Orpheus
             # A plain dict satisfies the class's dict-style session access. It reads
-            # ['tts_engine'], .get('fine_tuned') (voice) and .get('orpheus_model_dir').
+            # ['tts_engine'], .get('fine_tuned') (voice), .get('orpheus_model_dir')
+            # and the adapter pair .get('orpheus_adapter_dir')/.get('orpheus_base_dir').
             session = {'tts_engine': 'orpheus', 'fine_tuned': v}
             if model_dir:
                 session['orpheus_model_dir'] = model_dir
+            if adapter_dir:
+                # Both keys — e2a validates the pair and builds the vLLM engine with
+                # enable_lora, which is a CONSTRUCTION-time property. That is why the
+                # first adapter load is what makes this server adapter-capable at all.
+                session['orpheus_adapter_dir'] = adapter_dir
+                session['orpheus_base_dir'] = base_dir
             self.orph = Orpheus(session)      # __init__ → load_engine() loads model
             self.current_model_dir = model_dir
+            self.current_base_dir = base_dir
             send_response('status', {'message': 'Model loaded'})
-
-        # Voice is just the prompt prefix — switch instantly within the same model.
-        self.orph.voice = v
+        else:
+            # Warm engine, same weights. For a stock voice this is the free
+            # prompt-prefix switch it always was; for an adapter voice it registers
+            # the LoRA and re-points the engine's default voice at it in one step
+            # (set_voice keeps orph.voice and orph.adapter_dir in lockstep — setting
+            # the token alone would leave the PREVIOUS voice's adapter attached).
+            self.orph.set_voice(v, adapter_dir)
         self.current_voice = v
+        self.engine_voices[v] = adapter_dir
 
         # Register the voice's tuning BEFORE the warmup, so the warm-up renders
         # exercise the same sampling path the real sentences will. Must come after
@@ -331,7 +407,13 @@ class OrpheusStreamServer:
 
     def _teardown_engine(self):
         """Release the current Orpheus engine (and its ~6 GB of VRAM) so a different
-        custom model can take its place."""
+        model can take its place.
+
+        engine_voices is emptied with it: every entry describes what THIS engine can
+        serve — a prompt token it has weights for, or an adapter registered under a
+        lora id that only means anything inside the vLLM object being destroyed. A
+        surviving entry would let a request for a voice from the previous engine be
+        accepted and rendered in whatever is loaded now."""
         if self.orph is not None:
             try:
                 self.orph.cleanup()
@@ -340,6 +422,8 @@ class OrpheusStreamServer:
             self.orph = None
         self.current_voice = None
         self.current_model_dir = None
+        self.current_base_dir = None
+        self.engine_voices = {}
 
     def _warmup(self):
         """Pay the backend's first-generate cold-start now, at load.
@@ -400,12 +484,38 @@ class OrpheusStreamServer:
                   file=sys.stderr)
         send_response('status', {'message': 'Warmup complete'})
 
-    def load_voice(self, voice: str, model_dir: str = None, caps: dict = None) -> bool:
+    def load_voice(self, voice: str, model_dir: str = None, caps: dict = None,
+                   adapter_dir: str = None, base_dir: str = None) -> bool:
         try:
-            return self._ensure_engine(voice, model_dir, caps)
+            return self._ensure_engine(voice, model_dir, caps, adapter_dir, base_dir)
         except Exception as e:
             send_response('error', {'message': f'Failed to load Orpheus: {e}'})
             return False
+
+    def _row_voice(self, voice) -> str:
+        """The voice token one generate row must render in.
+
+        Absent/blank -> the server's current default voice, which is what every
+        request meant before per-request voices existed. Anything else must have been
+        registered against the LIVE engine by a 'load'; a voice this engine cannot
+        serve is an ERROR, never a quiet render in whatever happens to be loaded —
+        that is the wrong narrator delivered as a success.
+        """
+        if self.current_voice is None:
+            raise RuntimeError('Model not loaded')
+        if voice is None or not str(voice).strip():
+            return self.current_voice
+        v = str(voice).strip().lower()
+        if v in self.engine_voices:
+            return v
+        known = ', '.join(sorted(self.engine_voices)) or '(none)'
+        raise ValueError(
+            f"Orpheus voice '{v}' is not loaded on this stream server. Loaded: {known}. "
+            'Send a load for it first — an adapter can only be served by an engine that '
+            'was built LoRA-capable and has it registered, and a merged voice needs its '
+            'own weights, so neither can be conjured for a single request. If the engine '
+            'was rebuilt for another model, restart the stream server or re-load the voice.'
+        )
 
     def _apply_voice_caps(self, voice: str, caps: dict) -> None:
         """Register the catalog's per-voice tuning for the voice being loaded.
@@ -447,14 +557,36 @@ class OrpheusStreamServer:
         print(f'[orpheus_stream] voice caps registered for {voice}: '
               f'{applied or "none (e2a defaults)"}', file=sys.stderr)
 
-    def _generate_audio(self, text: str):
+    def _reject_per_request_voice(self, voice: str) -> None:
+        """Only the vLLM backend renders a per-request voice — say so instead of
+        rendering the wrong one.
+
+        Adapter mode is vLLM-only by construction (e2a's load_engine refuses any other
+        backend), and MLX's batch path builds ONE sampler per bucket from the engine's
+        own caps, so even a stock per-row prompt token would carry the wrong voice's
+        sampling. On MLX/transformers a row may therefore only use the loaded voice;
+        anything else is an error the caller reports as a failed sentence."""
+        if voice != self.current_voice:
+            raise ValueError(
+                f"The '{self.orph.backend}' backend cannot render '{voice}' per request — "
+                f"it serves one loaded voice at a time (currently '{self.current_voice}'). "
+                'Load the voice before generating in it.'
+            )
+
+    def _generate_audio(self, text: str, voice: str = None):
         """Generate one sentence to a float numpy waveform via the e2a Orpheus
-        engine's backend-specific path (mirrors Orpheus.convert(), but in-memory)."""
+        engine's backend-specific path (mirrors Orpheus.convert(), but in-memory).
+
+        `voice` (default: the loaded voice) selects the prompt token, the sampling
+        caps and — in adapter mode — the LoRA, all the way down through the retake
+        ladder, so a per-request voice is honoured end to end."""
         orph = self.orph
+        v = self._row_voice(voice)
         clean = orph._clean_sentence_for_tts(text)
         if not clean:
             return np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32)
         if orph.backend == 'mlx':
+            self._reject_per_request_voice(v)
             # _safe variant: render the sentence WHOLE, and only re-render it split at
             # sentence boundaries if that render hit the token cap, so a long sentence
             # is never shipped clipped (matches the audiobook path).
@@ -468,20 +600,22 @@ class OrpheusStreamServer:
                 lambda c: orph._generate_mlx_safe(c, force_split=True)
             )
         elif orph.backend == 'vllm':
-            audio = orph._generate_audio_vllm_safe(clean)
+            audio = orph._generate_audio_vllm_safe(clean, voice=v)
             # Same early-EOS backstop. force_split: a whole-chunk re-render would just
             # clean-EOS (truncated) again — the resplit must actually split.
             audio = orph._guard_truncation(
                 0, clean, audio,
-                lambda c: orph._generate_audio_vllm_safe(c, force_split=True)
+                lambda c: orph._generate_audio_vllm_safe(c, force_split=True, voice=v),
+                v
             )
         else:
+            self._reject_per_request_voice(v)   # transformers: same one-voice limit
             audio = orph._tokens_to_audio(
                 orph._generate_tokens_transformers(f"{orph.voice}: {clean}")
             )
         return finalize_audio(audio)
 
-    def _generate_audio_batch(self, texts):
+    def _generate_audio_batch(self, texts, voices=None):
         """Generate many sentences at once. On the vLLM backend this is a TRUE
         batch — one engine.generate([prompts]) call whose continuous batching runs
         the sequences concurrently on the GPU (the same path Orpheus audiobooks use
@@ -489,9 +623,16 @@ class OrpheusStreamServer:
         transformers have no batched path wired here, so they fall back to
         sequential. Returns a list of float waveforms aligned to `texts` (a tiny
         silence for empty sentences, None for a non-empty sentence that FAILED
-        to render — the caller reports those as failures)."""
+        to render — the caller reports those as failures).
+
+        `voices`, when given, is aligned to `texts` and names each row's voice; None
+        (or None entries) means the loaded voice. On vLLM every per-row property —
+        prompt token, sampling caps, LoRA — is resolved from that row's own voice, so
+        ONE batch can carry several voices."""
         orph = self.orph
         cleaned = [orph._clean_sentence_for_tts(t) for t in texts]
+        row_voices = [self._row_voice(voices[i] if voices else None)
+                      for i in range(len(texts))]
 
         if orph.backend == 'vllm':
             from vllm import TokensPrompt
@@ -503,7 +644,8 @@ class OrpheusStreamServer:
             # _format_prompt_with_special_tokens, decoded IDs back to a STRING that
             # vLLM re-tokenized with a stray second BOS (the voice-token leak); that
             # method was deleted by the BOS fix, so this path must use _format_prompt_ids.
-            prompts = [TokensPrompt(prompt_token_ids=orph._format_prompt_ids(cleaned[i])) for i in nonempty]
+            prompts = [TokensPrompt(prompt_token_ids=orph._format_prompt_ids(cleaned[i], row_voices[i]))
+                       for i in nonempty]
             # Sampling comes from e2a's _vllm_sampling_params — the ONE builder the
             # audiobook path uses (convert_batch) — instead of a SamplingParams
             # assembled here. Assembling it locally meant streaming silently
@@ -512,13 +654,17 @@ class OrpheusStreamServer:
             # streamed voice ran with eosBoost=0 no matter what the catalog
             # declared. A LIST aligned to `prompts` (vLLM accepts one params per
             # prompt) because the boost's start threshold is sized from each
-            # sentence's own length — and, later, from each item's own voice.
-            sp = [orph._vllm_sampling_params(len(cleaned[i])) for i in nonempty]
+            # sentence's own length — and from each item's own voice.
+            sp = [orph._vllm_sampling_params(len(cleaned[i]), voice=row_voices[i]) for i in nonempty]
             # lora_request must ride on BOTH arms: the fallback without it would
             # render the base voice the moment adapter mode reaches streaming.
-            # None today (this server never sets orpheus_adapter_dir yet), which
-            # is vLLM's own default.
-            lora = orph._lora_request()
+            # A LIST aligned to `prompts` so a mixed-voice batch applies each row's
+            # OWN adapter (vLLM 0.7.3 indexes a sequence per prompt in
+            # _validate_and_add_requests; a scalar fans out to all of them). Collapsed
+            # back to the scalar None when nothing in the batch uses an adapter, which
+            # keeps the stock/merged call byte-identical to what it always sent.
+            lora_rows = [orph._lora_request(row_voices[i]) for i in nonempty]
+            lora = None if all(r is None for r in lora_rows) else lora_rows
             if prompts:
                 try:
                     outputs = orph.engine.generate(prompts, sp, use_tqdm=False,
@@ -538,14 +684,19 @@ class OrpheusStreamServer:
                         # audiobook convert_batch uses) so nothing is cut off.
                         print(f'[orpheus_stream] batch sentence [{i}] hit the audio-token cap; re-rendering split',
                               file=sys.stderr)
-                        audio_np = orph._generate_audio_vllm_safe(cleaned[i])
+                        audio_np = orph._generate_audio_vllm_safe(cleaned[i], voice=row_voices[i])
                     # Backstop a SILENT early-EOS truncation (clean stop, audio too
                     # short for the text) the cap check above can't catch — mirrors
                     # the audiobook convert_batch. force_split so the resplit actually
                     # splits (a whole-chunk re-render would clean-EOS/truncate again).
+                    # The row's voice is BOUND into the retake (default arg, not the
+                    # loop variable) so a late-firing lambda can't re-render one row
+                    # in another row's voice.
                     audio_np = orph._guard_truncation(
                         i, cleaned[i], audio_np,
-                        lambda c: orph._generate_audio_vllm_safe(c, force_split=True)
+                        lambda c, rv=row_voices[i]: orph._generate_audio_vllm_safe(
+                            c, force_split=True, voice=rv),
+                        row_voices[i]
                     )
                     results[i] = finalize_audio(audio_np)
             for i, c in enumerate(cleaned):
@@ -573,6 +724,12 @@ class OrpheusStreamServer:
             # remaining caller of this branch is _warmup (uniform texts, one bucket
             # at a fixed width). It is kept general — map results straight through,
             # aligned to `texts`.
+            #
+            # One voice only: e2a builds ONE sampler per MLX bucket from the engine's
+            # own caps, so a per-row voice could get its prompt token but never its
+            # tuning. Refuse rather than render an approximation.
+            for rv in row_voices:
+                self._reject_per_request_voice(rv)
             raw = orph._generate_mlx_batch_audio(cleaned)
             out = []
             for i in range(len(cleaned)):
@@ -599,7 +756,7 @@ class OrpheusStreamServer:
             return out
 
         # transformers: no batched API — generate sequentially.
-        return [self._generate_audio(t) for t in texts]
+        return [self._generate_audio(t, row_voices[i]) for i, t in enumerate(texts)]
 
     @staticmethod
     def _emit_batch_item(it, audio):
@@ -637,6 +794,11 @@ class OrpheusStreamServer:
         width 1. mlx-lm 0.31.3 right-pads prefills and root-fixes that (see the MLX
         memory block in e2a orpheus.py), so the length gate is gone: a heading now
         rides along in its neighbours' group instead of costing a solo render.
+
+        MLX renders ONE voice — see _reject_per_request_voice — so the whole batch is
+        checked before any group is built. An item asking for anything but the loaded
+        voice fails the batch (every item reported failed, with the reason) instead of
+        being rendered in the wrong narrator.
         """
         try:
             cap = int(os.environ.get('ORPHEUS_STREAM_BATCH', '16'))
@@ -648,6 +810,8 @@ class OrpheusStreamServer:
         orph = self.orph
         emitted = set()  # positions in `items` already emitted (crash-safety)
         try:
+            for it in items:
+                self._reject_per_request_voice(self._row_voice(it.get('voice')))
             # Clean per item (normalize → e2a clean), aligned 1:1 to `items`. An
             # empty cleaned string keeps its slot and renders as tiny silence.
             cleaned = [orph._clean_sentence_for_tts(normalize_for_tts(it.get('text', ''), language))
@@ -758,7 +922,11 @@ class OrpheusStreamServer:
 
         MLX uses ordered adjacency grouping (_generate_batch_mlx_ordered) so the
         next sentence in reading order streams out first and length-mixing can't
-        corrupt short rows. vLLM/transformers keep the single-dispatch path below."""
+        corrupt short rows. vLLM/transformers keep the single-dispatch path below.
+
+        An item may carry its own `voice`; omitted means the loaded one. On vLLM the
+        batch is NOT regrouped by voice — vLLM takes a per-prompt LoRA list, so mixed
+        voices ride one call and the read-ahead window keeps its reading order."""
         if self.orph is None:
             for it in items:
                 send_response('batch_item', {'i': it.get('i'), 'message': 'Model not loaded'})
@@ -769,35 +937,59 @@ class OrpheusStreamServer:
             self._generate_batch_mlx_ordered(items, language)
             return
 
+        emitted = set()
         try:
-            texts = [normalize_for_tts(it.get('text', ''), language) for it in items]
-            audios = self._generate_audio_batch(texts)
-            for it, audio in zip(items, audios):
-                if audio is None or len(audio) == 0:
-                    send_response('batch_item', {'i': it.get('i'), 'message': 'No audio generated'})
-                else:
-                    send_response('batch_item', {
-                        'i': it.get('i'),
-                        'format': 'pcm16',
-                        'data': audio_to_pcm16_base64(audio),
-                        'duration': len(audio) / DEFAULT_SAMPLERATE,
-                        'sampleRate': DEFAULT_SAMPLERATE,
-                    })
+            # Resolve each item's voice FIRST and fail only the items that name one
+            # this engine cannot serve. A single unservable voice must not sink the
+            # batch: the rest are ordinary sentences in a voice that is right there.
+            rows = []   # (item, normalized text, voice token)
+            for it in items:
+                try:
+                    v = self._row_voice(it.get('voice'))
+                except Exception as e:
+                    send_response('batch_item', {'i': it.get('i'), 'message': str(e)})
+                    emitted.add(id(it))
+                    continue
+                rows.append((it, normalize_for_tts(it.get('text', ''), language), v))
+
+            if rows:
+                audios = self._generate_audio_batch([t for _, t, _ in rows],
+                                                    [v for _, _, v in rows])
+                for (it, _text, _v), audio in zip(rows, audios):
+                    emitted.add(id(it))
+                    if audio is None or len(audio) == 0:
+                        send_response('batch_item', {'i': it.get('i'), 'message': 'No audio generated'})
+                    else:
+                        send_response('batch_item', {
+                            'i': it.get('i'),
+                            'format': 'pcm16',
+                            'data': audio_to_pcm16_base64(audio),
+                            'duration': len(audio) / DEFAULT_SAMPLERATE,
+                            'sampleRate': DEFAULT_SAMPLERATE,
+                        })
         except Exception as e:
             import traceback
             traceback.print_exc(file=sys.stderr)
+            # Only items that never got a result — an item already reported (its own
+            # voice rejection, or a successful render before the failure) must not be
+            # emitted twice; the pool resolves by index and a second message for one
+            # index would be dropped as stale.
             for it in items:
-                send_response('batch_item', {'i': it.get('i'), 'message': f'Batch generation failed: {e}'})
+                if id(it) not in emitted:
+                    send_response('batch_item', {'i': it.get('i'), 'message': f'Batch generation failed: {e}'})
         finally:
             send_response('batch_done', {'count': len(items)})
 
-    def generate(self, text: str, language: str = 'en', stream: bool = False, **_ignored):
+    def generate(self, text: str, language: str = 'en', stream: bool = False,
+                 voice: str = None, **_ignored):
+        """Render ONE sentence. `voice` (optional) must be a voice a 'load'
+        registered against the live engine; omitted means the loaded voice."""
         if self.orph is None:
             send_response('error', {'message': 'Model not loaded'})
             return
         try:
             text = normalize_for_tts(text, language)
-            audio = self._generate_audio(text)
+            audio = self._generate_audio(text, voice)
             if audio is None or len(audio) == 0:
                 send_response('error', {'message': 'No audio generated'})
                 return
@@ -847,7 +1039,8 @@ class OrpheusStreamServer:
             action = request.get('action')
             if action == 'load':
                 if self.load_voice(request.get('voice', DEFAULT_VOICE), request.get('modelDir'),
-                                   request.get('caps')):
+                                   request.get('caps'), request.get('adapterDir'),
+                                   request.get('baseDir')):
                     send_response('loaded', {'voice': self.current_voice})
             elif action == 'generate':
                 text = request.get('text', '')
@@ -858,6 +1051,7 @@ class OrpheusStreamServer:
                     text=text,
                     language=request.get('language', 'en'),
                     stream=bool(request.get('stream', False)),
+                    voice=request.get('voice'),
                 )
             elif action == 'generate_batch':
                 self.generate_batch(

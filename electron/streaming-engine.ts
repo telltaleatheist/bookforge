@@ -62,6 +62,11 @@ export interface StreamingEngine {
   isSessionActive(): boolean;
   getAvailableVoices(): string[];
   getCurrentVoice(): string | null;
+  /** Optional. True when `voice` can be rendered per REQUEST, so a client asking
+   *  for it does not conflict with whatever else is loaded (Orpheus built-ins and
+   *  LoRA-adapter voices). Absent, or false, means loading a voice is exclusive and
+   *  a mismatch between requested and loaded is a real error. */
+  canServeVoicePerRequest?(voice: string): boolean;
   getLastVoice(): string | null;
   getDefaultVoice(): string;
   getWorkerCount(): number;

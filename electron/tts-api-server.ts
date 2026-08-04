@@ -437,10 +437,22 @@ export class TtsApiServer {
     }
     // Prove the promise rather than assume it. ensureEngine's loadVoice reports
     // success, but a concurrent load (another client, or the app's own Listen tab)
-    // can land between it and the dispatch below — and on Orpheus the loaded model
-    // IS the voice, so generating anyway would ship audio in the wrong narrator.
+    // can land between it and the dispatch below — and when the loaded model IS the
+    // voice, generating anyway would ship audio in the wrong narrator.
+    //
+    // That is only true of an EXCLUSIVE voice. Orpheus built-ins are a prompt prefix
+    // and adapter voices are a per-request LoRA over a shared base: several coexist
+    // on one engine, every sentence carries its own voice, and "loaded" is merely the
+    // default for requests that name none. Applying the guard to those would make
+    // concurrent clients on different voices reject each other for no reason — each
+    // one's load would break the other's session. So the guard now covers exactly the
+    // voices that really are exclusive (a merged Orpheus fine-tune, and every XTTS
+    // voice, whose pool does not implement the capability at all).
     const loaded = engine.getCurrentVoice();
-    if (requested.voice && loaded && loaded.toLowerCase() !== requested.voice.toLowerCase()) {
+    const perRequest = requested.voice
+      ? engine.canServeVoicePerRequest?.(requested.voice) === true
+      : false;
+    if (!perRequest && requested.voice && loaded && loaded.toLowerCase() !== requested.voice.toLowerCase()) {
       this.send(ws, {
         type: 'error',
         requestId,
