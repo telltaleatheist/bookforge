@@ -12465,14 +12465,19 @@ export class PdfPickerComponent implements OnInit {
    * mirror has already painted over, and whichever way it reads the difference
    * it does so silently.
    *
-   * Ids the document does not carry are NOT filtered out here. The picker's own
-   * image blocks are the case that produces them, and a write the document
-   * refuses is news — `lastError` says so — rather than something to quietly
-   * drop on the way.
+   * The picker's own image blocks stay out. They are extraction state — the
+   * document has never carried an annotation for one, so there is nothing there
+   * to flag, and one of their ids in a batch would have the whole batch refused
+   * alongside the text deletions it arrived with. That is a domain boundary,
+   * not a fallback: any OTHER id the document does not carry still goes
+   * through, and its refusal is news — `lastError` says so.
    */
   private landBlockDeletions(blockIds: readonly string[], deleted: boolean): void {
     if (!this.blockLayerRead()) return;
-    for (const id of blockIds) this.documentBlocks.setDeleted(id, deleted);
+    for (const id of blockIds) {
+      if (this.editorState.getBlock(id)?.is_image) continue;
+      this.documentBlocks.setDeleted(id, deleted);
+    }
   }
 
   /** A page struck out of the book, landed in the document. */
@@ -12494,9 +12499,17 @@ export class PdfPickerComponent implements OnInit {
   private reconcileDeletionsWithDocument(): void {
     if (!this.blockLayerRead()) return;
 
+    // The background toggle parks the picker's own image-block ids in
+    // `deletedBlockIds`, and the document has no annotation for those — see
+    // `landBlockDeletions` for the boundary. Without this skip, the first undo
+    // after that toggle would sweep them into a batch and poison it.
     const wanted = this.editorState.deletedBlockIds();
     const landed = this.documentBlocks.deletedBlockIds();
-    for (const id of wanted) if (!landed.has(id)) this.documentBlocks.setDeleted(id, true);
+    for (const id of wanted) {
+      if (landed.has(id)) continue;
+      if (this.editorState.getBlock(id)?.is_image) continue;
+      this.documentBlocks.setDeleted(id, true);
+    }
     for (const id of landed) if (!wanted.has(id)) this.documentBlocks.setDeleted(id, false);
 
     const wantedPages = this.editorState.deletedPages();

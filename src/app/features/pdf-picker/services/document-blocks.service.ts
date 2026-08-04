@@ -212,6 +212,17 @@ export class DocumentBlocksService {
   merge(blockIds: readonly string[]): void {
     const unique = [...new Set(blockIds)];
     const members = this.blocks().filter(b => unique.includes(b.id));
+    // A selected id this book's blocks do not carry means the selection and the
+    // block layer have come apart. Judging only the blocks that were found
+    // would merge FEWER than the user chose, silently, looking like success.
+    if (members.length !== unique.length) {
+      const found = new Set(members.map(m => m.id));
+      const missing = unique.filter(id => !found.has(id));
+      throw new Error(
+        `The selection names ${missing.length === 1 ? 'a block' : `${missing.length} blocks`} this `
+        + `book's block layer does not carry (${missing.join(', ')}). Reload the book before merging.`
+      );
+    }
     const refusal = mergeRefusal(members);
     if (refusal) throw new Error(refusal);
     members.sort((a, b) => requireSeq(a) - requireSeq(b));
