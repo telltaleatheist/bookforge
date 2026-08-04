@@ -4473,13 +4473,52 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('orpheus:catalog-install', async (_event, repoId: string) => {
+  // Status of the ONE shared base model every LoRA-adapter voice rides on. Same
+  // \\wsl$ sync-fs guard as catalog-list — resolving the base stats the models dir.
+  ipcMain.handle('orpheus:base-status', async () => {
+    try {
+      const { isWslAlive } = await import('./wsl-lifecycle.js');
+      await isWslAlive();
+      const { getOrpheusBaseStatus } = await import('./orpheus-hf-catalog.js');
+      return { success: true, data: await getOrpheusBaseStatus() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Install the shared base on its own (the "Base model" card in Settings / the
+  // first-run wizard). Installing a voice does this implicitly too; this exists so a
+  // user can pay the one-time 6.6 GB up front and then add 0.4 GB voices.
+  ipcMain.handle('orpheus:base-install', async () => {
+    try {
+      const { isWslAlive } = await import('./wsl-lifecycle.js');
+      await isWslAlive();
+      const { installOrpheusBase, getOrpheusBaseStatus } = await import('./orpheus-hf-catalog.js');
+      const status = await getOrpheusBaseStatus();
+      const result = await installOrpheusBase(status.base);
+      // A newly installed base makes previously-unusable adapter voices resolvable —
+      // refresh the live voice list for the same reason a voice install does.
+      if (result?.success) {
+        const { ttsApiServer } = await import('./tts-api-server.js');
+        await ttsApiServer.refreshInstalledVoices();
+      }
+      return result;
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('orpheus:catalog-install', async (event, repoId: string) => {
     try {
       // Same \\wsl$ sync-fs guard as catalog-list (install writes the manifest there).
       const { isWslAlive } = await import('./wsl-lifecycle.js');
       await isWslAlive();
       const { installOrpheusModel } = await import('./orpheus-hf-catalog.js');
-      const result = await installOrpheusModel(repoId);
+      // Two-phase progress (shared base, then the voice) rides its own channel, the
+      // same shape components:progress uses.
+      const result = await installOrpheusModel(repoId, (p) => {
+        if (!event.sender.isDestroyed()) event.sender.send('orpheus:install-progress', p);
+      });
       // A newly installed custom voice must surface in the live voice list (Listen
       // UI + extension clients) without an app restart — otherwise it only appears
       // on next launch / engine switch. See getAvailableVoices() (orpheus).

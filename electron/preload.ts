@@ -1247,10 +1247,20 @@ export interface ElectronAPI {
   orpheusModels: {
     /** Folder-discovered custom Orpheus models (id = voice token = folder name). */
     list: () => Promise<{ success: boolean; data?: Array<{ id: string; label: string; voice: string; dir: string }>; error?: string }>;
-    /** Downloadable voices, resolved from the user's Orpheus source repo list. */
-    catalogList: () => Promise<{ success: boolean; data?: Array<{ repoId: string; id: string; token: string; label: string; sampleRate: number; private: boolean; installed: boolean }>; error?: string }>;
-    /** Download + register a catalogue voice by its HF repo id. */
+    /** Downloadable voices, resolved from the user's Orpheus source repo list.
+     *  `artifact` is 'merged' (a full fine-tune) or 'adapter' (a LoRA needing the
+     *  shared base); `needsBase` marks an adapter whose base isn't installed yet. */
+    catalogList: () => Promise<{ success: boolean; data?: Array<{ repoId: string; id: string; token: string; label: string; sampleRate: number; private: boolean; installed: boolean; installedId?: string; artifact: 'merged' | 'adapter'; base?: { id: string; ref: string; dir?: string }; needsBase?: boolean; approxSizeBytes: number }>; error?: string }>;
+    /** Download + register a catalogue voice by its HF repo id. For an adapter voice
+     *  this also installs the shared base first if it's missing (progress arrives on
+     *  onInstallProgress). */
     install: (repoId: string) => Promise<{ success: boolean; error?: string }>;
+    /** Status of the ONE shared base model all adapter voices ride on. */
+    baseStatus: () => Promise<{ success: boolean; data?: { base: { id: string; ref: string; dir?: string }; installed: boolean; verified: boolean; dir?: string; approxSizeBytes: number; required: boolean }; error?: string }>;
+    /** Install the shared base on its own (idempotent). */
+    baseInstall: () => Promise<{ success: boolean; error?: string; alreadyInstalled?: boolean }>;
+    /** Two-phase install progress ('base' then 'voice'). Returns an unsubscribe fn. */
+    onInstallProgress: (callback: (p: { repoId: string; phase: 'base' | 'voice'; message: string }) => void) => () => void;
     /** Unregister + delete an installed custom voice by id. */
     remove: (id: string) => Promise<{ success: boolean; error?: string }>;
     /** Get the user-managed Orpheus voice source repo ids (or built-in defaults). */
@@ -2856,6 +2866,18 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('orpheus:catalog-install', repoId),
     remove: (id: string) =>
       ipcRenderer.invoke('orpheus:remove-model', id),
+    // The ONE shared base model every LoRA-adapter voice rides on.
+    baseStatus: () =>
+      ipcRenderer.invoke('orpheus:base-status'),
+    baseInstall: () =>
+      ipcRenderer.invoke('orpheus:base-install'),
+    onInstallProgress: (callback: (p: { repoId: string; phase: 'base' | 'voice'; message: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, p: { repoId: string; phase: 'base' | 'voice'; message: string }) => callback(p);
+      ipcRenderer.on('orpheus:install-progress', listener);
+      return () => {
+        ipcRenderer.removeListener('orpheus:install-progress', listener);
+      };
+    },
     // User-managed voice sources (HF repo ids).
     sourcesGet: () =>
       ipcRenderer.invoke('orpheus:sources-get'),
