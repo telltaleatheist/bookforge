@@ -15125,7 +15125,21 @@ export class PdfPickerComponent implements OnInit {
       // TRUE, not merely convenient. The 22:55 Barnett export proved why: the
       // run existed on disk but had not re-attached, tryFoundryExport returned
       // null, and the legacy exporter silently rebuilt a different book over
-      // foundry's. If a run exists for this book in ANY state, refuse loudly.
+      // foundry's.
+      //
+      // But the refusal has to be about foundry OUTPUT, not about a run object.
+      // Refusing on any state at all meant a run that produced nothing — one
+      // that failed, or one the user cancelled before it wrote a page — locked
+      // export for the rest of the book's life, and the advice it gave
+      // ("close and reopen") could not possibly help: there was nothing there
+      // to attach to, so reopening would have changed nothing.
+      //
+      // Two statuses named EXPLICITLY, never truthiness: a status added later
+      // must be decided on its own merits rather than inheriting "refuse".
+      // `cancelled` is deliberately absent — it exported nothing, and its
+      // artifacts exist to back the OCR modal's resume affordance, not to gate
+      // this. `error` cannot reach here at all: the attach below is the clearing
+      // kind and sweeps it.
       const { state: orphan, cleared } = await this.electronService.foundryRunAttach(
         this.foundryBookKey());
       if (cleared) {
@@ -15138,11 +15152,17 @@ export class PdfPickerComponent implements OnInit {
             + 'This export is being built from the blocks in the editor instead.',
         });
       }
-      if (orphan) {
+      if (orphan?.status === 'done') {
         throw new Error(
-          `This book has a foundry OCR run (${orphan.status}) that is not loaded in this window. `
+          'This book has a finished foundry OCR run that is not loaded in this window. '
           + 'Close and reopen the book so the run attaches, then export again. '
           + 'Refusing to rebuild the book with the legacy exporter over foundry\'s.'
+        );
+      }
+      if (orphan?.status === 'running') {
+        throw new Error(
+          'A foundry OCR run for this book is working right now, and its output is what the '
+          + 'export should be built from. Wait for it to finish — or stop it — and export again.'
         );
       }
       return null;
