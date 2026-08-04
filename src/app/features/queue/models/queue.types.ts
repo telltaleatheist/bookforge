@@ -31,14 +31,15 @@ export type JobType = 'tts-conversion' | 'translation' | 'rvc-enhancement' | 're
   // in the user's order against ONE project. Every one of them runs through the
   // same main-process handler; the pass kind is in the config.
   //
-  // 'foundry-ocr-correct' is the WHOLE OCR unit: scan, repair, detection, three
-  // stage bars on one row. The 'foundry-scan' type it replaced is retired — see
+  // 'foundry-ocr' reads the pages and repairs what was misread; 'foundry-detect'
+  // labels every block. They were one row ('foundry-ocr-correct') until Aug 2026,
+  // and both that type and the 'foundry-scan' before it are retired — see
   // RETIRED_JOB_TYPES.
-  | 'foundry-ocr-correct' | 'foundry-footnotes' | 'simplify' | 'translate-pass';
+  | 'foundry-ocr' | 'foundry-detect' | 'foundry-footnotes' | 'simplify' | 'translate-pass';
 
-/** The four job types that are processing passes, for a runtime membership test. */
+/** The five job types that are processing passes, for a runtime membership test. */
 export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
-  'foundry-ocr-correct', 'foundry-footnotes', 'simplify', 'translate-pass',
+  'foundry-ocr', 'foundry-detect', 'foundry-footnotes', 'simplify', 'translate-pass',
 ]);
 
 /**
@@ -51,9 +52,12 @@ export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
  */
 export const RETIRED_JOB_TYPES: ReadonlyMap<string, string> = new Map([
   ['foundry-scan', 'Tesseract is no longer a queue step of its own: reading the pages is the '
-    + 'first stage of the OCR correction pass, which now runs scan, repair and detection as one '
-    + 'job with a progress bar for each. Remove this row and start the run again from the '
-    + 'Process tab.'],
+    + 'first stage of the pass that needs a scan and cannot find one. Remove this row and start '
+    + 'the run again from the Process tab.'],
+  ['foundry-ocr-correct', 'OCR correction and Detection are separate passes now: repairing what '
+    + 'Tesseract misread and labelling the blocks are different work, and a PDF that already '
+    + 'carries text needs the second without the first. Remove this row and plan the run again '
+    + 'from the Process tab.'],
 ]);
 
 // Job status
@@ -250,7 +254,7 @@ export interface QueueJob {
  * the plan, verbatim: a pass job is not re-planned when it runs.
  */
 export type ProcessingPassJobConfig = PassJobConfig & {
-  type: 'foundry-ocr-correct' | 'foundry-footnotes' | 'simplify' | 'translate-pass';
+  type: 'foundry-ocr' | 'foundry-detect' | 'foundry-footnotes' | 'simplify' | 'translate-pass';
 };
 
 // Job configuration union type

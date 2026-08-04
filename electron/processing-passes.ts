@@ -26,8 +26,8 @@
  *
  * ── THE FOUNDRY PASSES ARE DIFFERENT, AND HOW ────────────────────────────────
  *
- * OCR correction and footnote removal do not touch an EPUB at all — they operate
- * on a foundry RUN DIRECTORY (machine-local, hundreds of MB) and
+ * OCR correction, detection and footnote removal do not touch an EPUB at all —
+ * they operate on a foundry RUN DIRECTORY (machine-local, hundreds of MB) and
  * the book is exported from it. So a chain of foundry passes ends in one
  * `foundry export`, and only then does the project have a book for those passes
  * to be recorded against. Their diffs come from foundry's own artifacts, keyed
@@ -229,18 +229,37 @@ async function ensureFoundryForJob(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The stages each foundry pass owns. `ocr-correction` is THREE of them, always.
+ * The stages each foundry pass owns.
  *
- * Reading the pages, repairing what was read and labelling the blocks are one
- * pass: none is separately useful (repair has nothing to read without the scan;
- * a scan with no layout is not a book), so they are one queue job with one row —
- * and, because they are genuinely three different pieces of work with three
- * different units, three progress bars. See FOUNDRY_STAGE_BARS.
+ * `ocr-correction` is TWO of them, always: the repair has nothing to read
+ * without a scan, and re-reading the pages IS what re-running the repair means,
+ * so the scan is part of the pass rather than a prerequisite of it. They are
+ * genuinely different pieces of work with different units, so the row draws a
+ * progress bar per stage — see FOUNDRY_STAGE_BARS.
+ *
+ * `detection` is deliberately absent: its stage list depends on where its scan
+ * comes from, which the PLANNER decided (`detectionMode`). See `foundryStagesOf`.
  */
 const FOUNDRY_STAGES: Record<'ocr-correction' | 'footnotes', FoundryWorkStage[]> = {
-  'ocr-correction': ['scan', 'ocr', 'blocks'],
+  'ocr-correction': ['scan', 'ocr'],
   footnotes: ['footnotes'],
 };
+
+/**
+ * The foundry stages THIS job runs.
+ *
+ * Detection's answer comes out of the plan, never out of the disk: the disk this
+ * job would look at is minutes older than the plan the user approved, and a pass
+ * that quietly decides to re-read a 350-page book because a stage marker moved
+ * under it is exactly the surprise `footnotesMode` exists to prevent. A job that
+ * does not say is refused in `runProcessingPass`, so by here it has said.
+ */
+function foundryStagesOf(config: PassJobConfig): FoundryWorkStage[] {
+  if (config.kind === 'detection') {
+    return config.detectionMode === 'scan-here' ? ['scan', 'blocks'] : ['blocks'];
+  }
+  return FOUNDRY_STAGES[config.kind as 'ocr-correction' | 'footnotes'];
+}
 
 /**
  * The bars a foundry pass draws, in execution order.
@@ -322,8 +341,8 @@ async function runFoundryPass(
   config: PassJobConfig,
   mainWindow: BrowserWindow | null | undefined
 ): Promise<PassJobResult> {
-  const kind = config.kind as 'ocr-correction' | 'footnotes';
-  const stages = FOUNDRY_STAGES[kind];
+  const kind = config.kind as 'ocr-correction' | 'detection' | 'footnotes';
+  const stages = foundryStagesOf(config);
   const bookKey = resolveBookKey(config);
   if (!config.pdfPath) {
     throw new Error(
@@ -337,7 +356,8 @@ async function runFoundryPass(
   if (!pages?.length) {
     throw new Error(
       `The ${kind} pass was given no pages and there is no earlier run for this book to take them `
-      + 'from. Run the OCR correction pass first.'
+      + 'from. Run the Detection pass over this book first — it is what reads the pages when '
+      + 'nothing else has.'
     );
   }
 
@@ -381,12 +401,18 @@ async function runFoundryPass(
       pdfPath: config.pdfPath,
       pages,
       stages,
-      // The OCR unit re-reads the pages, and every other artifact in the run
-      // directory is derived from that read — the footnote deletion list names
-      // scan line ids that are about to stop existing, and foundry's export
-      // refuses it. So this pass starts the directory over rather than clearing
-      // only the three stages it names. The pass that does NOT re-read the pages
-      // (footnotes) clears its own stage and leaves the scan alone.
+      // The OCR pass re-reads the pages, and every other artifact in the run
+      // directory is derived from that read — the blocks name scan line ids that
+      // are about to stop existing, the footnote deletion list too, and foundry's
+      // export refuses both. So this pass starts the directory over rather than
+      // clearing only the stages it names. The passes that do NOT re-read the
+      // pages (detection standing on someone else's scan, footnotes) clear their
+      // own stage and leave the scan alone.
+      //
+      // Detection in `scan-here` mode reads the pages too, and does NOT set this:
+      // it is in that mode precisely because there is no scan, so there is
+      // nothing derived from one to invalidate, and `clearStages` on its own two
+      // stages is the whole job.
       //
       // Unconditional, because it is not a preference: a job in the queue is
       // someone asking for this work to happen.
@@ -411,6 +437,8 @@ async function runFoundryPass(
     // draws is full — including any the run skipped without a progress line.
     tracker.completeAll();
 
+    // Detection has no diff: it labels blocks, it does not change a word of the
+    // text, so there is no before and after to show.
     const diff = diffPaths(config);
     if (kind === 'ocr-correction') await writeOcrCorrectionDiff(bookKey, diff.abs);
     if (kind === 'footnotes') await writeFootnoteDiff(bookKey, diff.abs);
@@ -459,7 +487,7 @@ async function runFoundryPass(
  * own. A stage that recorded nothing gets no params rather than an invented one.
  */
 function foundryPassParams(kind: AppliedPassKind, bookKey: string): Record<string, unknown> | undefined {
-  if (kind !== 'ocr-correction' && kind !== 'footnotes') {
+  if (kind !== 'ocr-correction' && kind !== 'detection' && kind !== 'footnotes') {
     // Tesseract has no model and no options: it is the segmenter, pinned at 200 dpi.
     return undefined;
   }
@@ -469,19 +497,25 @@ function foundryPassParams(kind: AppliedPassKind, bookKey: string): Record<strin
   const base = models?.base ? { base: models.base } : {};
 
   if (kind === 'ocr-correction') {
-    // Two stages, two adapters — the OCR-correction pass runs `ocr` and `blocks`.
-    if (!models?.ocr && !models?.blocks) {
+    if (!models?.ocr) {
       console.warn(
-        `[processing-passes] the run for ${bookKey} finished its ocr/blocks stages without recording `
-        + 'which models answered (run.json models.ocr / models.blocks), so the pass record cannot name them.'
+        `[processing-passes] the run for ${bookKey} finished its ocr stage without recording `
+        + 'which model answered (run.json models.ocr), so the pass record cannot name one.'
       );
       return undefined;
     }
-    return {
-      ...(models.ocr ? { ocrModel: models.ocr } : {}),
-      ...(models.blocks ? { blocksModel: models.blocks } : {}),
-      ...base,
-    };
+    return { ocrModel: models.ocr, ...base };
+  }
+
+  if (kind === 'detection') {
+    if (!models?.blocks) {
+      console.warn(
+        `[processing-passes] the run for ${bookKey} finished its blocks stage without recording `
+        + 'which model answered (run.json models.blocks), so the pass record cannot name one.'
+      );
+      return undefined;
+    }
+    return { blocksModel: models.blocks, ...base };
   }
 
   if (!models?.footnotes) {
@@ -681,14 +715,19 @@ async function writeFootnoteDiff(bookKey: string, diffAbsPath: string): Promise<
  * everything the run directory holds, so everything the run directory holds is
  * what the export must record.
  *
- * `ocr-correction` needs BOTH its stages: it is one pass with two halves (repair
- * the lines, then lay them out), and a run with only one of them has not had it.
+ * One stage, one kind — which is what the split bought: a run that repaired the
+ * text and one that only labelled it are different books, and this now says
+ * which. Listed in foundry's execution order, because that is the order they
+ * happened in whatever mixture of runs produced this directory.
  */
-function completedFoundryPasses(bookKey: string): Array<'tesseract' | 'ocr-correction' | 'footnotes'> {
+type CompletedFoundryPass = 'tesseract' | 'ocr-correction' | 'detection' | 'footnotes';
+
+function completedFoundryPasses(bookKey: string): CompletedFoundryPass[] {
   const done = foundryStagesDone(bookKey);
-  const passes: Array<'tesseract' | 'ocr-correction' | 'footnotes'> = [];
+  const passes: CompletedFoundryPass[] = [];
   if (done.has('scan')) passes.push('tesseract');
-  if (done.has('ocr') && done.has('blocks')) passes.push('ocr-correction');
+  if (done.has('ocr')) passes.push('ocr-correction');
+  if (done.has('blocks')) passes.push('detection');
   if (done.has('footnotes')) passes.push('footnotes');
   return passes;
 }
@@ -736,7 +775,8 @@ export async function prepareFoundryExportRecord(
   });
 
   for (const pass of planned) {
-    // Tesseract has nothing to diff against — it IS the first reading of the page.
+    // Tesseract has nothing to diff against — it IS the first reading of the
+    // page — and detection changes no text, only what each block is called.
     if (pass.kind === 'ocr-correction') await writeOcrCorrectionDiff(bookKey, pass.diffAbs);
     if (pass.kind === 'footnotes') await writeFootnoteDiff(bookKey, pass.diffAbs);
   }
@@ -750,7 +790,9 @@ export async function prepareFoundryExportRecord(
           kind: pass.kind,
           at,
           ...(params ? { params } : {}),
-          ...(pass.kind === 'tesseract' ? {} : { diff: pass.diffRel }),
+          ...(pass.kind === 'tesseract' || pass.kind === 'detection'
+            ? {}
+            : { diff: pass.diffRel }),
         });
       }
     },
@@ -1164,17 +1206,35 @@ export async function runProcessingPass(
     fs.mkdirSync(STAGING_DIR, { recursive: true });
     switch (config.kind) {
       case 'tesseract':
-        // The scan is a STAGE of OCR correction, not a job. A config that says
-        // otherwise was planned by a build from before that change and is sitting
-        // in queue.json; running it would scan the pages and then stop, leaving a
-        // run directory nothing exports and a row that claims to have done
-        // something to the book.
+        // The scan is a STAGE of the pass that needs it, not a job. A config that
+        // says otherwise was planned by a build from before that change and is
+        // sitting in queue.json; running it would scan the pages and then stop,
+        // leaving a run directory nothing exports and a row that claims to have
+        // done something to the book.
         throw new Error(
           'Tesseract is no longer a pass of its own — reading the pages is the first stage of the '
-          + 'OCR correction pass, which now runs scan, repair and detection as one job. This job '
-          + 'was queued by an older build: remove it and add OCR correction from the Process tab.'
+          + 'OCR correction pass, and of the Detection pass when nothing else in the run has read '
+          + 'them. This job was queued by an older build: remove it and plan the run again from '
+          + 'the Process tab.'
         );
       case 'ocr-correction':
+        return await runFoundryPass(jobId, config, mainWindow);
+      case 'detection':
+        // Where its scan comes from is the plan's answer, and a job that does not
+        // carry one was planned before the split. Guessing from the disk is how a
+        // pass silently re-reads a 350-page book, or silently labels blocks
+        // against a scan the run was about to replace.
+        if (
+          config.detectionMode !== 'scan-in-chain'
+          && config.detectionMode !== 'scan-on-disk'
+          && config.detectionMode !== 'scan-here'
+        ) {
+          throw new Error(
+            'This Detection job does not say where its scan comes from (detectionMode). It was '
+            + 'queued before OCR correction and Detection became separate passes; remove it and '
+            + 'plan the run again from the Process tab.'
+          );
+        }
         return await runFoundryPass(jobId, config, mainWindow);
       case 'footnotes':
         // Two implementations, one name. The plan decided which; a job that does

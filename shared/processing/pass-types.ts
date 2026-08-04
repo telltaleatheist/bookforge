@@ -13,18 +13,24 @@
  */
 
 /**
- * The five things a run can do to a book. Mirrors AppliedPassKind.
+ * The six things a run can do to a book. Mirrors AppliedPassKind.
  *
  * `tesseract` is a PROVENANCE kind and not a requestable pass: reading the pages
- * is the first stage of OCR correction, which runs scan → ocr → blocks as ONE
- * queue job with one progress row (three bars). The book still records the two
- * kinds separately — what was done to it did not change, only how many rows the
- * queue draws — so the kind survives here and a `tesseract` in a chain request is
- * refused by name.
+ * is the first stage of whichever pass needs a scan and does not have one. The
+ * book still records it separately — what was done to it is not the same fact as
+ * how many rows the queue drew — so the kind survives here and a `tesseract` in a
+ * chain request is refused by name.
+ *
+ * `ocr-correction` (repair what Tesseract misread) and `detection` (label every
+ * block) are SEPARATE passes as of Aug 2026. They were one unit while the repair
+ * was assumed necessary; a born-digital PDF does not need repairing and does need
+ * labelling, and welding them together made the user pay half an hour of GPU for
+ * a stage that had nothing to fix.
  */
 export type ProcessingPassKind =
   | 'tesseract'
   | 'ocr-correction'
+  | 'detection'
   | 'footnotes'
   | 'simplify'
   | 'translate';
@@ -32,12 +38,15 @@ export type ProcessingPassKind =
 /**
  * The queue job type each pass is persisted as. These strings live in queue.json.
  *
- * `foundry-scan` was RETIRED when the OCR unit became one job (Aug 2026). A
- * queue.json restored from before that carries rows of that type; they are failed
- * on load with a message naming the change, never run.
+ * `foundry-scan` was RETIRED when the OCR unit became one job (Aug 2026), and
+ * `foundry-ocr-correct` was retired weeks later when that unit was SPLIT into
+ * `foundry-ocr` and `foundry-detect`. A queue.json restored from before either
+ * change carries rows of the retired type; they are failed on load with a message
+ * naming the change, never run.
  */
 export type PassJobType =
-  | 'foundry-ocr-correct'
+  | 'foundry-ocr'
+  | 'foundry-detect'
   | 'foundry-footnotes'
   | 'simplify'
   | 'translate-pass';
@@ -76,6 +85,9 @@ export interface SimplifyPassParams {
 export interface FootnotesPassParams {
   askEverything?: boolean;
 }
+
+/** Where a Detection pass's scan comes from. See `PassJobConfig.detectionMode`. */
+export type DetectionMode = 'scan-in-chain' | 'scan-on-disk' | 'scan-here';
 
 export interface TranslatePassParams {
   sourceLang: string;
@@ -142,6 +154,29 @@ export interface PassJobConfig {
    *    rewriting it in place like every other EPUB pass.
    */
   footnotesMode?: 'foundry-run' | 'epub';
+  /**
+   * Detection only, and REQUIRED for it: where its scan comes from.
+   *
+   * The blocks stage reads the scan and nothing else, so a Detection pass either
+   * finds one or makes one — and WHICH is a fact about the run, decided when the
+   * chain is planned, exactly like `footnotesMode`. The executor refuses a job
+   * that does not say rather than looking at the disk at run time and guessing:
+   * the disk it would look at is minutes older than the answer the user was
+   * shown, and the two disagreeing is a pass that silently re-reads a book.
+   *
+   *  - `scan-in-chain` — an earlier foundry pass in THIS run produces the scan.
+   *    Runs `blocks` alone.
+   *  - `scan-on-disk` — the run directory already holds a finished scan, and it
+   *    is INPUT to this pass the way the book EPUB is input to a simplify pass.
+   *    Runs `blocks` alone.
+   *  - `scan-here` — nothing else provides one, so this pass reads the pages
+   *    itself. Runs `scan` then `blocks`, and records `tesseract` alongside
+   *    `detection` in the book's provenance because it genuinely did both.
+   *
+   * The `blocks` stage itself is cleared and re-run in every mode: a submitted
+   * pass runs its own stages.
+   */
+  detectionMode?: DetectionMode;
   footnotes?: FootnotesPassParams;
   simplify?: SimplifyPassParams;
   translate?: TranslatePassParams;

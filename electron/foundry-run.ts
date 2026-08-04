@@ -102,15 +102,22 @@ export type FoundryWorkStage = 'scan' | 'ocr' | 'blocks' | 'footnotes';
 
 /**
  * What each stage needs to have happened first, either earlier in the same run
- * or already on disk. `ocr` before `footnotes` is the contract in the header,
- * not a preference — foundry's export refuses a footnotes artifact derived from
- * a different text base.
+ * or already on disk.
+ *
+ * `footnotes` needs `blocks`, not `ocr`: foundry's footnotes stage reads
+ * `blocks/blocks.json` and judges BLOCK text (`runFootnotesRun` in foundry's
+ * commands.ts), and it takes the corrected line text only when an ocr artifact
+ * happens to be there — a book with no ocr stage is judged on the raw scan, and
+ * the export builds its text base the same way, so the two agree. `ocr` is still
+ * ORDERED before `footnotes` (STAGE_ORDER, and the header explains why); that is
+ * a different statement from requiring it, and requiring it is what stopped a
+ * born-digital book — which needs no repair — from having its markers removed.
  */
 const STAGE_PREREQUISITE: Record<FoundryWorkStage, FoundryWorkStage | null> = {
   scan: null,
   ocr: 'scan',
   blocks: 'scan',
-  footnotes: 'ocr',
+  footnotes: 'blocks',
 };
 
 /** Execution order. A caller's list is run in THIS order, never its own. */
@@ -130,8 +137,9 @@ export interface FoundryRunStart {
   /**
    * The stages this run executes, run in the pipeline's order rather than the
    * caller's — the processing wizard's passes (OCR correction, which owns scan +
-   * ocr + blocks, and Footnote removal) are separate queue jobs against ONE run
-   * directory, so each job asks for the stages it owns.
+   * ocr; Detection, which owns blocks and sometimes scan; Footnote removal) are
+   * separate queue jobs against ONE run directory, so each job asks for the
+   * stages it owns.
    *
    * EVERY STAGE NAMED HERE RUNS. One that `run.json` already reports as done has
    * its artifacts and its done marker cleared first, so it starts from nothing.
@@ -620,8 +628,10 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
     if (!needs || wanted.includes(needs) || doneOnDisk.has(needs)) continue;
     throw new Error(
       `foundry's ${stage} stage reads what ${needs} produced, and ${needs} has not run for this `
-      + `book (${runDir}). Run the OCR correction pass first — it is what scans the pages, repairs `
-      + `the text and labels the blocks.`
+      + `book (${runDir}). Run the ${needs === 'blocks' ? 'Detection' : 'OCR correction'} pass `
+      + `first — ${needs === 'blocks'
+        ? 'it is what labels every block of the scanned pages'
+        : 'it is what reads the pages and repairs what was misread'}.`
     );
   }
 

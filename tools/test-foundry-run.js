@@ -26,6 +26,10 @@
  *  - the OVERRIDES file is what the user retyped and relabelled — the seam that
  *    carries an edited chapter marker into the book — and a category foundry
  *    cannot render is refused here, naming the block, rather than downstream.
+ *  - Detection's three modes, which reach this module as two stage lists: the
+ *    difference between labelling a book and re-reading 350 pages first.
+ *  - `footnotes` stands on the BLOCKS, not on a repair that never ran — the rule
+ *    that lets a born-digital PDF have its markers removed without an ocr stage.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -519,8 +523,123 @@ function reset(bookKey) {
     ok('and foundry was never invoked for any of the three', calls.length === 0);
   }
 
+  console.log('\n11. Detection: the plan says where its scan comes from');
+  {
+    // The three modes of `PassJobConfig.detectionMode` reach foundry-run as two
+    // stage lists, and which one this pass got is the difference between labelling
+    // a book and re-reading 350 pages first. Asserted here because the stage list
+    // is the only place that difference is observable.
+    const key = 'detect-scan-here';
+    reset(key);
+    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0, 1], stages: ['scan', 'blocks'] });
+    await settle(key);
+    ok('scan-here reads the pages, then labels them',
+      JSON.stringify(calls) === JSON.stringify(['scan', 'blocks']), JSON.stringify(calls));
+    ok('and the pages were rasterized for it', renderedPages.length === 1,
+      JSON.stringify(renderedPages));
+  }
+  {
+    const key = 'detect-scan-on-disk';
+    reset(key);
+    const dir = run.foundryRunDir(key);
+    // A book somebody else scanned. The scan is INPUT to this pass, exactly as
+    // the book EPUB is input to a simplify pass — it is not re-run, and it is not
+    // cleared.
+    stageStatus = { scan: 'done', ocr: 'pending', blocks: 'done', footnotes: 'pending' };
+    for (const stage of ['scan', 'blocks']) {
+      fs.mkdirSync(path.join(dir, stage), { recursive: true });
+      fs.writeFileSync(path.join(dir, stage, 'artifact.json'), `{"stage":"${stage}"}`);
+    }
+    fs.writeFileSync(path.join(dir, 'run.json'), JSON.stringify({
+      formatVersion: 1,
+      stages: { scan: { status: 'done' }, blocks: { status: 'done' } },
+    }, null, 2));
+
+    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], stages: ['blocks'] });
+    await settle(key);
+    ok('blocks-only runs the blocks stage and nothing else',
+      JSON.stringify(calls) === JSON.stringify(['blocks']), JSON.stringify(calls));
+    ok('the scan it READS was left alone',
+      fs.existsSync(path.join(dir, 'scan', 'artifact.json')));
+    ok('its own previous labels were cleared first',
+      !fs.existsSync(path.join(dir, 'blocks', 'artifact.json')));
+    ok('and nothing was re-rendered', renderedPages.length === 0);
+  }
+  {
+    // The mode the planner would never emit, arriving anyway (a queue.json row
+    // whose scan was deleted underneath it). Refused by name rather than run
+    // against artifacts that are not there.
+    const key = 'detect-no-scan';
+    reset(key);
+    let stopped = null;
+    try {
+      await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], stages: ['blocks'] });
+      stopped = (await settle(key)).message;
+    } catch (err) { stopped = err.message; }
+    ok('blocks with no scan anywhere is refused',
+      /blocks stage reads what scan produced/.test(stopped || ''), stopped);
+    ok('and nothing was spawned', calls.length === 0, JSON.stringify(calls));
+  }
+
+  console.log('\n12. footnotes stands on the BLOCKS, not on a repair that never ran');
+  {
+    // foundry's footnotes stage reads blocks/blocks.json and judges block text;
+    // it takes the ocr artifact only when one is there. Requiring `ocr` used to
+    // stop a born-digital book — nothing to repair — from having its markers
+    // removed at all.
+    const key = 'footnotes-no-ocr';
+    reset(key);
+    const dir = run.foundryRunDir(key);
+    stageStatus = { scan: 'done', ocr: 'pending', blocks: 'done', footnotes: 'pending' };
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'run.json'), JSON.stringify({
+      formatVersion: 1,
+      stages: { scan: { status: 'done' }, blocks: { status: 'done' } },
+    }, null, 2));
+
+    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], stages: ['footnotes'] });
+    const state = await settle(key);
+    ok('it ran, with no ocr stage on disk',
+      JSON.stringify(calls) === JSON.stringify(['footnotes']),
+      `${JSON.stringify(calls)} — ${state.message}`);
+  }
+  {
+    const key = 'footnotes-no-blocks';
+    reset(key);
+    let stopped = null;
+    try {
+      await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], stages: ['footnotes'] });
+      stopped = (await settle(key)).message;
+    } catch (err) { stopped = err.message; }
+    ok('but not without the blocks, and the refusal names the Detection pass',
+      /footnotes stage reads what blocks produced/.test(stopped || '')
+      && /Detection/.test(stopped || ''), stopped);
+    ok('and nothing was spawned', calls.length === 0, JSON.stringify(calls));
+  }
+
+  console.log('\n13. a Detection job that does not say where its scan comes from');
+  {
+    // The executor's own refusal, mirroring `footnotesMode`. A job persisted in
+    // queue.json before the split carries no `detectionMode`, and inferring one
+    // from the disk is how a pass silently re-reads a whole book.
+    const passes = require(path.join(DIST, 'processing-passes.js'));
+    const result = await passes.runProcessingPass(
+      'stale-job',
+      { kind: 'detection', projectDir: scratch, stageRelDir: 'stages/01-detection' },
+      null
+    );
+    ok('the job fails instead of guessing', result.success === false);
+    ok('and the message names the field and the fix',
+      /detectionMode/.test(result.error || '') && /Process tab/.test(result.error || ''),
+      result.error);
+  }
+
   fs.rmSync(scratch, { recursive: true, force: true });
-  for (const key of ['order-test', 'no-footnotes', 'resume-test', 'pageset-test', 'read-test']) {
+  for (const key of [
+    'order-test', 'no-footnotes', 'resume-test', 'pageset-test', 'read-test',
+    'detect-scan-here', 'detect-scan-on-disk', 'detect-no-scan',
+    'footnotes-no-ocr', 'footnotes-no-blocks',
+  ]) {
     fs.rmSync(run.foundryRunDir(key), { recursive: true, force: true });
   }
 

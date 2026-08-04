@@ -1,6 +1,6 @@
 # Processing Pipeline v2 — the pass builder
 
-Status: COMPLETE — all six phases landed (Aug 3 2026). This document is the
+Status: COMPLETE — all eight phases landed (Aug 3 2026). This document is the
 contract the implementation works from; §Phases records what each one did.
 
 ## The idea
@@ -31,35 +31,103 @@ re-inference).
 
 | Pass (user-facing)  | Runs                                            | Input   | Diff |
 |---------------------|--------------------------------------------------|---------|------|
-| OCR correction      | foundry scan, then foundry ocr, then foundry blocks — ONE job, three bars | PDF | yes |
+| OCR correction      | foundry scan, then foundry ocr — ONE job, three bars | PDF | yes |
+| Detection           | foundry blocks, preceded by foundry scan when nothing else supplies one | PDF | no  |
 | Footnote removal    | foundry footnotes — `--run` on a PDF, `--epub` on a book | PDF run / EPUB | yes |
 | Simplify            | simplification model — de-jargon \| de-stiffen \| language-learning | EPUB | yes |
 | Translate           | user-chosen provider (Ollama, Claude, …) + source/target languages | EPUB | no  |
 
-- PDF variant selected → **OCR correction** (ONE palette item, see below), then
-  the rest. The foundry chain for a PDF implicitly ends in `foundry export`,
+- PDF variant selected → **OCR correction** and/or **Detection** (see below),
+  then the rest. The foundry chain for a PDF implicitly ends in `foundry export`,
   which PRODUCES the book EPUB (title page as its own section, cover embedded —
   see the foundry-side work in phase 1).
 - EPUB variant selected → simplify / translate / footnote removal only.
 - Passes are unlimited and reorderable: translate → OCR-correct → simplify →
   translate back is legal. Order of execution = order in the sidebar.
 
-### OCR correction is ONE pass over three foundry stages
+### OCR correction and Detection are two passes
 
-The wizard offers a single item, **OCR correction**; it puts ONE row in the
-sidebar and queues ONE job. Reading the pages, repairing what was read and
-labelling the blocks were never a choice: repair has nothing to read without the
-scan, and a scan with no layout is page text, not a book. So the pass owns all
-three foundry stages — `scan`, `ocr`, `blocks` — and the queue row shows a
-PROGRESS BAR PER STAGE instead of the queue showing a step per stage:
+Repairing what Tesseract misread and labelling the blocks were ONE pass until
+Aug 2026, on the reasoning that neither half is useful alone. That is false in
+the case that matters: a PDF carrying an embedded text layer is read accurately,
+has nothing to repair, and still needs its blocks labelled — so the welded unit
+charged the user half an hour of GPU to change nothing. They are now two palette
+items, two sidebar rows, two queue jobs (`foundry-ocr`, `foundry-detect`) and two
+provenance kinds (`ocr-correction`, `detection`).
+
+| Pass | Stages it owns | Job type | Diff |
+|---|---|---|---|
+| OCR correction | `scan` + `ocr` | `foundry-ocr` | yes |
+| Detection | `blocks`, preceded by `scan` in `scan-here` mode | `foundry-detect` | no |
+
+Detection has no diff: it changes what a block is CALLED, not a word of its text.
+
+**Reading the pages stays inside the pass that needs it.** The repair has nothing
+to read without a scan, and re-running the repair means reading the pages again,
+so `scan` is part of OCR correction rather than a prerequisite of it — that is
+why `tesseract` is still not a requestable pass and a chain naming it is refused.
+Each such job draws a PROGRESS BAR PER STAGE instead of the queue drawing a step
+per stage:
 
 ```
 OCR Correction                                       41%
   Render pages     ████████████████████████████████ 100%
   Tesseract        ████████████████████████████████ 100%
   OCR correction   ██████████░░░░░░░░░░░░░░░░░░░░░░  32%
-  Detection        ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   --
 ```
+
+A Detection job that reads the pages itself draws *Render pages / Tesseract /
+Detection*. One standing on a scan somebody else made has a SINGLE stage, so main
+sends no stage list and the row shows its overall bar alone — a single bar under
+an identical overall bar is noise, not a breakdown. Same rule, same place
+(`stagesFor`, `barsOf`).
+
+### Detection's scan is INPUT, not a cached stage
+
+`foundry blocks` reads the scan artifacts and nothing else (foundry's `runBlocks`
+→ `readScanAndForm`), so a Detection pass either finds a scan or makes one. WHICH
+is decided when the chain is PLANNED and stated in the job — `detectionMode`,
+exactly like `footnotesMode`:
+
+| Mode | When the planner picks it | Stages |
+|---|---|---|
+| `scan-in-chain` | an earlier foundry pass in this run reads the pages | `blocks` |
+| `scan-on-disk` | the run directory already holds a finished scan | `blocks` |
+| `scan-here` | neither — this pass reads the pages itself | `scan`, `blocks` |
+
+The executor REFUSES a Detection job that does not say, naming the field and the
+fix; it never looks at the disk and decides. The disk it would look at is minutes
+older than the plan the user approved, and the two disagreeing is a pass that
+silently re-reads a 350-page book. In every mode the `blocks` stage itself is
+cleared and re-run (`clearStages`) — a submitted pass runs its own stages. Only
+`scan-here` records `tesseract` in provenance beside `detection`, because only
+`scan-here` did it.
+
+**A chain containing OCR correction must contain Detection after it.** The OCR
+pass wipes the run directory and re-reads the pages, which mints a new scan with
+new line ids; every block artifact on disk names the old ones, so the previous
+layout describes a scan that no longer exists and foundry's export refuses it —
+an hour of OCR later, in the last minute of the run. The planner says it first,
+naming both passes ("OCR correction re-reads the pages, which invalidates the old
+layout … Add the Detection pass to this run, after it"), and the wizard prints it
+on the OCR correction row. Refused rather than auto-added: Detection on a full
+book is not a rounding error, and a run that grows a stage the user did not ask
+for is a run whose cost they cannot predict.
+
+**Detection alone is legal and exports.** That is the whole point of the split —
+a born-digital PDF skips the repair — so the "nothing in this run labels the
+blocks, so no EPUB comes out of it" refusal is satisfied by `detection`, not by
+`ocr-correction`.
+
+**Footnote removal stands on the BLOCKS, not on the repair.** foundry's footnotes
+stage reads `blocks/blocks.json` and judges block text (`runFootnotesRun`); it
+takes the corrected line text only when an `ocr` artifact happens to be there, and
+the export builds its text base the same way, so a book with no `ocr` stage is
+consistent end to end. `FOUNDRY_NEEDS.footnotes` and `STAGE_PREREQUISITE.footnotes`
+are therefore `blocks` / Detection. `ocr` is still ORDERED before `footnotes`
+(`STAGE_ORDER`, and foundry's export refuses a footnotes artifact derived from a
+different text base) — a different statement from requiring it, and requiring it
+was what stopped a born-digital book from having its markers removed at all.
 
 `render` earns its own bar because it is a stage of the RUN (`foundry-run` counts
 it in `stageCount`), it takes minutes on a full book, and it has its own unit —
@@ -92,18 +160,24 @@ see the new model" silently tests the old one.
 So:
 
 - **OCR correction wipes the run directory** before it starts. The pages are
-  rasterized again at 200 dpi and `scan`, `ocr` and `blocks` all run. Not the
-  whole directory out of caution: the scan is the text base every other artifact
-  stands on (line ids, blocks, the footnote deletion list), so re-reading the
-  pages invalidates all of them, and foundry's export refuses a footnotes
-  artifact derived from a text base that no longer exists.
+  rasterized again at 200 dpi and `scan` and `ocr` both run. Not the whole
+  directory out of caution: the scan is the text base every other artifact stands
+  on (line ids, blocks, the footnote deletion list), so re-reading the pages
+  invalidates all of them, and foundry's export refuses a footnotes artifact
+  derived from a text base that no longer exists. This is also why the planner
+  demands a Detection pass after it.
+- **Detection clears its own stages and nothing else.** In `scan-here` mode that
+  is `scan` + `blocks`, which is safe precisely because it is in that mode: there
+  is no scan, so nothing derived from one exists to invalidate. It never sets
+  `redo`.
 - **Footnote removal in `foundry-run` mode clears its own stage** — `footnotes/`
   and its `run.json` done marker — and leaves `scan`/`ocr`/`blocks` alone.
 - **Prerequisites the run does not name are read off disk, and that is INPUT,
-  not cache.** A footnotes-only PDF run stands on the existing `ocr` artifact
-  exactly as an EPUB pass stands on `manifest.outputs.epub`. The planner's
-  refusal is unchanged: footnotes needs `ocr` done on disk or an OCR-correction
-  pass above it in the chain.
+  not cache.** A footnotes-only PDF run stands on the existing `blocks` artifact,
+  and a `scan-on-disk` Detection pass on the existing `scan`, exactly as an EPUB
+  pass stands on `manifest.outputs.epub`. The planner's refusal names the pass
+  that produces what is missing: footnotes needs `blocks` done on disk or a
+  Detection pass above it in the chain.
 - **Within one chain, later passes read what earlier ones just produced.** The
   wipe belongs to the PASS, not to the chain, so `[OCR correction, Footnote
   removal]` wipes once — at OCR correction — and footnotes then runs against the
@@ -127,22 +201,27 @@ deletions recorded in the editor against the old scan are refused at export by
 name, telling the user to open the book in the PDF editor, where they re-attach to
 the boxes on screen and are re-recorded against the new scan.
 
-**The two KINDS are untouched.** `tesseract` and `ocr-correction` are still
-recorded separately in `outputs.epub.appliedPasses` — what was done to the book
-did not change, only how many rows the queue draws — and the planner pushes both
-onto `exportPasses` when it plans the unit. `tesseract` survives as a provenance
-kind and nothing else: it is not a `PassJobType`, not a palette item, not a
-sidebar row, and a chain request naming it is REFUSED by the planner rather than
-quietly folded in, so a caller written against the old two-pass shape is told.
+**The KINDS follow the stages, one to one.** `outputs.epub.appliedPasses` records
+`tesseract` (the pages were read), `ocr-correction` (the text was repaired) and
+`detection` (the blocks were labelled) as three separate kinds — which is what the
+split bought: a book that was repaired and a book that was only labelled are
+different books, and the record now says which. `tesseract` survives as a
+provenance kind and nothing else: it is not a `PassJobType`, not a palette item,
+not a sidebar row, and a chain request naming it is REFUSED by the planner rather
+than quietly folded in, so a caller written against the old shape is told.
 
-**`foundry-scan` is retired from queue.json.** The queue is persisted, so a queue
-written by an older build outlives the code that understood it; a row of that type
-is FAILED on load (`RETIRED_JOB_TYPES` in queue.types.ts) with the sentence that
-says what replaced it, and `runProcessingPass` throws the same way on a
-`kind: 'tesseract'` config. Neither is left pending in a queue that steps over it.
+**`foundry-scan` and `foundry-ocr-correct` are retired from queue.json.** The
+queue is persisted, so a queue written by an older build outlives the code that
+understood it; a row of either type is FAILED on load (`RETIRED_JOB_TYPES` in
+queue.types.ts) with the sentence that says what replaced it, and
+`runProcessingPass` throws the same way on a `kind: 'tesseract'` config or a
+Detection config with no `detectionMode`. None is left pending in a queue that
+steps over it.
 
-**Is it optional?** That depends on the PDF, and the app measures rather than
-assumes. `pdf:measure-text-layer` (→ `pdf-analyzer.measureTextLayer`, off the
+**Is the REPAIR optional?** That depends on the PDF, and the app measures rather
+than assumes. The measurement gates OCR correction and only OCR correction —
+Detection is needed either way, and is never auto-injected; the planner's
+refusals are what tell the user a run needs it, printed on the row they name. `pdf:measure-text-layer` (→ `pdf-analyzer.measureTextLayer`, off the
 main thread through the worker proxy) samples up to 12 pages spread evenly across
 the document, counts non-whitespace characters per page from mupdf's structured
 text, and calls the PDF born-digital when at least HALF the sampled pages carry
@@ -151,8 +230,9 @@ front matter is often blank or plate pages, and a scanned book frequently carrie
 a born-digital title page. The whole count vector comes back with the verdict, so
 a wrong answer can be argued with.
 
-- text layer → the OCR unit is optional, and the wizard says so.
-- no text layer → the unit is added automatically and its remove button is
+- text layer → the OCR correction pass is optional, and the wizard says so. Such
+  a run is Detection alone, which is the case the split exists for.
+- no text layer → OCR correction is added automatically and its remove button is
   disabled, saying "This PDF is pictures of pages — it carries no text of its
   own, so nothing can be narrated unless this pass reads it." The guard is in
   `removePass` too, not only in the `[disabled]` binding.
@@ -219,8 +299,10 @@ CHANGES come from the report, so the change count is the marker count.
   "path": "source/Working Towards the Führer.epub",
   "modifiedAt": "…",
   "appliedPasses": [
-    { "kind": "ocr-correction", "at": "…", "params": { "ocrModel": "foundry-ocr-v1-4b", "blocksModel": "foundry-blocks-v1-4b" }, "diff": "stages/01-ocr-correction/diff.json" },
-    { "kind": "footnotes",      "at": "…", "diff": "stages/02-footnotes/diff.json" },
+    { "kind": "tesseract",      "at": "…" },
+    { "kind": "ocr-correction", "at": "…", "params": { "ocrModel": "foundry-ocr-v1-4b" }, "diff": "stages/02-ocr-correction/diff.json" },
+    { "kind": "detection",      "at": "…", "params": { "blocksModel": "foundry-blocks-v1-4b" } },
+    { "kind": "footnotes",      "at": "…", "diff": "stages/04-footnotes/diff.json" },
     { "kind": "translate",      "at": "…", "params": { "from": "de", "to": "en", "provider": "ollama", "model": "…" } }
   ]
 }
@@ -246,12 +328,12 @@ CHANGES come from the report, so the change count is the marker count.
 | Piece | Where |
 |-------|-------|
 | Provenance model | `AppliedPass` in `electron/manifest-types.ts` + `src/app/core/models/manifest.types.ts`; `appendAppliedPass` / `allocatePassStage` / `listPassDiffs` in `manifest-service.ts` |
-| Pass execution | `electron/processing-passes.ts` — one `runProcessingPass(jobId, config)` for all five kinds |
+| Pass execution | `electron/processing-passes.ts` — one `runProcessingPass(jobId, config)` for every kind |
 | Planning + ordering rules | `electron/processing-chain.ts` — `planProcessingChain` |
 | Wire types (one declaration, three programs) | `shared/processing/pass-types.ts` |
 | Submission | `processing:submit-chain` (plan in main → `queue:enqueue-chain` → `QueueService.enqueueChain`) |
 | Pass diffs | `writePassDiff` / `loadDiffFileAt` in `diff-cache.ts`; `DiffService.listPassDiffs` / `loadPassDiff` |
-| Job types in queue.json | `foundry-ocr-correct`, `foundry-footnotes`, `simplify`, `translate-pass` |
+| Job types in queue.json | `foundry-ocr`, `foundry-detect`, `foundry-footnotes`, `simplify`, `translate-pass` |
 
 Ordering rules the planner enforces, both of which are silent data loss if left
 to run: an EPUB pass may not come before a foundry pass (the export rebuilds the
@@ -393,7 +475,8 @@ Deviations from the sketch above, and why:
   front door.)
 - The "footnote" checkbox in the OCR/Tesseract modal is REMOVED — footnote
   removal is a pass in the pipeline, not an OCR option.
-- Queue job types added: `foundry-scan`, `foundry-ocr-correct` (ocr+blocks),
+- Queue job types added: `foundry-scan`, `foundry-ocr-correct` (ocr+blocks) —
+  both since retired, see phases 6 and 8 — plus
   `foundry-footnotes`, `simplify`, `translate-pass` — chained in the user's
   sidebar order using the existing job-chain mechanism (see ll-jobs.ts).
   Runs stay owned by MAIN (an ng-serve reload must not kill them).
@@ -409,8 +492,10 @@ Deviations from the sketch above, and why:
 - **The picker's OCR button submits a chain.** `foundry:run-start` is DELETED,
   with its preload binding and its `ElectronService` method: a foundry run is
   started by a queue pass job and nothing else. The dialog builds
-  `[ocr-correction]` for the open project and then only watches the progress
-  events, exactly as before.
+  `[ocr-correction, detection]` for the open project and then only watches the
+  progress events, exactly as before. It asks for both because the full
+  repair-and-label chain is what this dialog IS (its step list says so); slimming
+  a run down to Detection alone is the wizard's job.
 - **A project is required, and the page-scope radios are gone** (the corpus path
   keeps them). A run directory covers ONE page set and the last foundry pass
   exports the book from it, so "current page" would have rebuilt the book out of
@@ -457,6 +542,12 @@ Deviations from the sketch above, and why:
    dialog. A submitted pass re-runs its own stages unconditionally; a
    prerequisite it does not run is read off disk as input. See §A submitted pass
    never returns a cached stage.
+8. **(done)** **The OCR unit was SPLIT.** `foundry-ocr-correct` is retired;
+   `foundry-ocr` owns `scan` + `ocr` and `foundry-detect` owns `blocks` (plus
+   `scan` when nothing else supplies one, stated as `detectionMode`). Footnote
+   removal's prerequisite became `blocks`/Detection, which is what foundry
+   actually reads. FOUNDRY NEEDED NO CHANGES. See §OCR correction and Detection
+   are two passes.
 
 Each phase lands only after the previous one's contract (manifest shapes, job
 types) is committed — phase 3 builds on 2's `outputs.epub` record; 4 builds on

@@ -134,6 +134,7 @@ interface PalettteEntry {
 const PASS_LABELS: Record<ProcessingPassKind, string> = {
   tesseract: 'Tesseract',
   'ocr-correction': 'OCR correction',
+  detection: 'Detection',
   footnotes: 'Footnote removal',
   simplify: 'Simplify',
   translate: 'Translate',
@@ -148,6 +149,7 @@ const PASS_LABELS: Record<ProcessingPassKind, string> = {
  */
 const SCAN_ONLY_PASS_KINDS: ReadonlySet<ProcessingPassKind> = new Set<ProcessingPassKind>([
   'ocr-correction',
+  'detection',
 ]);
 
 /** A queue submission as the wizard builds it, before the queue stamps its ids. */
@@ -3471,13 +3473,25 @@ export class LLWizardComponent implements OnInit {
     const noPdf = 'Reads the scanned pages — pick the PDF version of this book.';
     return [
       {
-        // ONE item, ONE pass, three foundry stages. Reading the pages, repairing
-        // what was read and labelling the blocks are not choices a user makes —
-        // repair is useless without the scan, and a scan with no layout is page
-        // text, not a book. So it is one queue row, and the row shows a progress
-        // bar per stage rather than the queue showing a step per stage.
+        // Reading the pages and repairing what was read are one pass: the repair
+        // has nothing to read without the scan, and re-running the repair means
+        // reading the pages again. So it is one queue row over two foundry
+        // stages, with a progress bar for each.
+        //
+        // What it is NOT is the whole scan chain. Labelling the blocks is its own
+        // pass below, because a PDF that already carries text is read accurately
+        // and has nothing to repair — and paying half an hour of GPU to change
+        // nothing was the reason to split them.
         kind: 'ocr-correction', label: PASS_LABELS['ocr-correction'],
-        desc: 'Read the pages with Tesseract, repair what it misread, and label every block. Produces the book EPUB.',
+        desc: 'Read the pages with Tesseract and repair what it misread. Add Detection after it to build the book.',
+        enabled: pdf, why: noPdf,
+      },
+      {
+        // The pass that makes a book out of a scan: every block labelled body,
+        // chapter opening, running head, footnote, caption… which is what decides
+        // what gets narrated and where the chapters split.
+        kind: 'detection', label: PASS_LABELS['detection'],
+        desc: 'Label every block — body, chapter, running head, footnote — and build the book EPUB. Reads the pages itself if nothing else has.',
         enabled: pdf, why: noPdf,
       },
       {
@@ -5652,7 +5666,13 @@ export class LLWizardComponent implements OnInit {
     if (pass.kind === 'ocr-correction') {
       // Said on the row because it is what the pass DOES, not an option: the run
       // directory is started over, so the pages are rasterized and read again.
-      return 'Reads the pages again: Tesseract, then the repair and layout models';
+      return 'Reads the pages again: Tesseract, then the repair model';
+    }
+    if (pass.kind === 'detection') {
+      // The plan decides where the scan comes from, so the row cannot say which
+      // of the three ways this one will get it — only that it will not go
+      // without. See `detectionMode` in shared/processing/pass-types.ts.
+      return 'Labels every block; reads the pages first if nothing else in the run does';
     }
     if (pass.kind === 'footnotes') {
       if (this.selectedIsPdf()) return 'On the scanned pages';

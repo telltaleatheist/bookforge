@@ -373,11 +373,15 @@ export interface EpubOutput {
   appliedPasses?: AppliedPass[];
 }
 
-// The five things a processing run can do to a book. One queue job type each;
-// see docs/PROCESSING_PIPELINE_V2.md for the user-facing names.
+// The six things a processing run can do to a book. One queue job type each
+// except `tesseract`; see docs/PROCESSING_PIPELINE_V2.md for the user-facing
+// names. `detection` (labelling the blocks) split away from `ocr-correction`
+// (repairing what Tesseract misread) in Aug 2026 — a born-digital PDF needs the
+// second and not the first.
 export type AppliedPassKind =
   | 'tesseract'
   | 'ocr-correction'
+  | 'detection'
   | 'footnotes'
   | 'simplify'
   | 'translate';

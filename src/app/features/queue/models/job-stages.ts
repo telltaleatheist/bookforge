@@ -116,16 +116,19 @@ export function stagesFor(job: QueueJob): JobStageProgress[] {
     case 'reassembly':
       return job.stages ?? [];
 
-    // The OCR unit is one job over several foundry stages — render the pages,
-    // read them with Tesseract, repair the text, label the blocks — and MAIN
-    // reports which of them this run is on, with that stage's own unit (pages,
-    // lines, blocks). Every bar starts empty: a submitted pass re-runs all of its
-    // stages, so there is none for this job to skip.
+    // The two scan-chain passes are each one job over several foundry stages —
+    // render the pages, read them with Tesseract, then repair the text
+    // (foundry-ocr) or label the blocks (foundry-detect) — and MAIN reports which
+    // of them this run is on, with that stage's own unit (pages, lines, blocks).
+    // Every bar starts empty: a submitted pass re-runs all of its stages, so
+    // there is none for this job to skip.
     //
-    // `foundry-footnotes` is deliberately not here. In foundry-run mode it is ONE
-    // stage, and a single bar under an identical overall bar is noise, not a
-    // breakdown — main sends no stage list for it.
-    case 'foundry-ocr-correct':
+    // A Detection job standing on a scan someone else made has ONE stage and main
+    // sends no list for it, which lands on `?? []` — a single bar under an
+    // identical overall bar is noise, not a breakdown. Same reason
+    // `foundry-footnotes` is not here at all.
+    case 'foundry-ocr':
+    case 'foundry-detect':
       return job.stages ?? [];
 
     // Bridge-reported when available (parallel-tts-bridge knows the model-load

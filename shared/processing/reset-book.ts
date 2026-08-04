@@ -25,6 +25,7 @@
 export const PASS_STAGE_KINDS: readonly string[] = [
   'tesseract',
   'ocr-correction',
+  'detection',
   'footnotes',
   'simplify',
   'translate',

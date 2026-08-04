@@ -71,6 +71,7 @@ interface FootnotesReport {
 const PASS_LABELS: Record<AppliedPassKind, string> = {
   tesseract: 'Tesseract',
   'ocr-correction': 'OCR correction',
+  detection: 'Detection',
   footnotes: 'Footnote removal',
   simplify: 'Simplify',
   translate: 'Translate',
@@ -79,6 +80,7 @@ const PASS_LABELS: Record<AppliedPassKind, string> = {
 const PASS_ICONS: Record<AppliedPassKind, string> = {
   tesseract: '\u{1F50D}',
   'ocr-correction': '\u{1F524}',
+  detection: '\u{1F5C3}\u{FE0F}',
   footnotes: '\u{1F5D1}\u{FE0F}',
   simplify: '\u{2702}\u{FE0F}',
   translate: '\u{1F310}',
@@ -899,7 +901,8 @@ export class StudioVersionsComponent {
    */
   readonly provenanceBadges = computed(() => {
     const passes = this.item()?.appliedPasses ?? [];
-    const order: AppliedPassKind[] = ['tesseract', 'ocr-correction', 'footnotes', 'simplify', 'translate'];
+    const order: AppliedPassKind[] = [
+      'tesseract', 'ocr-correction', 'detection', 'footnotes', 'simplify', 'translate'];
     // The same names the pass-diff rows below use — one pass must not be called
     // two different things in the same panel.
     const labels = PASS_LABELS;
@@ -937,7 +940,11 @@ export class StudioVersionsComponent {
       case 'simplify':
         return [str('mode'), str('model')].filter(Boolean).join(' · ');
       case 'ocr-correction':
+        // `blocksModel` is read as well as `ocrModel` because a book processed
+        // before the two passes split records both under this one kind.
         return [str('ocrModel'), str('blocksModel')].filter(Boolean).join(' · ');
+      case 'detection':
+        return str('blocksModel') ?? '';
       case 'footnotes':
         return str('model') ?? '';
       case 'tesseract':

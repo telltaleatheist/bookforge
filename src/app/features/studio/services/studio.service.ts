@@ -289,8 +289,12 @@ export class StudioService {
         // book processed by the pass pipeline.
         const appliedPasses = manifest.outputs?.epub?.appliedPasses ?? [];
         const hasSimplified = appliedPasses.some((p: AppliedPass) => p.kind === 'simplify');
-        const hasCleaned = appliedPasses.some(
-          (p: AppliedPass) => p.kind === 'simplify' || p.kind === 'ocr-correction' || p.kind === 'footnotes');
+        // `detection` counts: it is the pass that turns a run directory into a
+        // book, so a project carrying it has a processed EPUB even when the OCR
+        // repair was skipped (a born-digital PDF needs no repairing).
+        const hasCleaned = appliedPasses.some((p: AppliedPass) =>
+          p.kind === 'simplify' || p.kind === 'ocr-correction'
+          || p.kind === 'detection' || p.kind === 'footnotes');
         const hasCleanupCheckpoint = exists('cleanup-checkpoint');
         // The cleaned book IS the book. Kept as a separate field because callers
         // read it as "the processed EPUB", which is now the same file as epubPath.
@@ -544,8 +548,12 @@ export class StudioService {
 
         // Same provenance rule as books — see loadBooks.
         const appliedPasses = manifest.outputs?.epub?.appliedPasses ?? [];
-        const hasCleaned = appliedPasses.some(
-          (p: AppliedPass) => p.kind === 'simplify' || p.kind === 'ocr-correction' || p.kind === 'footnotes');
+        // `detection` counts: it is the pass that turns a run directory into a
+        // book, so a project carrying it has a processed EPUB even when the OCR
+        // repair was skipped (a born-digital PDF needs no repairing).
+        const hasCleaned = appliedPasses.some((p: AppliedPass) =>
+          p.kind === 'simplify' || p.kind === 'ocr-correction'
+          || p.kind === 'detection' || p.kind === 'footnotes');
         const hasAudiobook = !!manifest.outputs?.audiobook?.path;
         let status: StudioItem['status'] = 'draft';
         if (hasAudiobook) status = 'completed';
