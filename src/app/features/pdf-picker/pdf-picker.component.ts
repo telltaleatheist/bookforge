@@ -952,6 +952,7 @@ interface AlertModal {
                 [includedChars]="includedChars()"
                 [excludedChars]="excludedChars()"
                 [categoryCorrections]="editorState.categoryCorrections()"
+                [categoryOverride]="detectPaintOverride()"
                 [showCategoryColors]="showCategoryColors()"
                 [uncertainCount]="uncertainBlocks().length"
                 [labelMode]="labelMode()"
@@ -2825,7 +2826,21 @@ export class PdfPickerComponent implements OnInit {
     this.foundryAttachedKey = key;
     void (async () => {
       try {
-        const state = await this.electronService.foundryRunAttach(key);
+        const { state, cleared } = await this.electronService.foundryRunAttach(key);
+        // The one moment the sweep is reported. It is not an interruption about
+        // work nobody asked for — it is the answer to "where did my OCR go",
+        // and main hands it over exactly once, so not showing it here means
+        // never showing it.
+        if (cleared) {
+          this.showAlert({
+            type: 'warning',
+            title: 'The last OCR run failed and was cleared',
+            message:
+              `The ${cleared.stage ?? 'foundry'} stage failed, so nothing from that run was kept:\n\n` +
+              `${cleared.message}\n\n` +
+              'Run it again when you have dealt with the cause.',
+          });
+        }
         if (state?.status !== 'done') return;
         await this.loadFoundryRun();
       } catch (err) {
@@ -4291,6 +4306,25 @@ export class PdfPickerComponent implements OnInit {
     }
     return merged;
   });
+
+  /**
+   * The category a block is CURRENTLY WEARING — the identical resolution the
+   * viewer paints with (`getCategoryColor`: override, else the stored id).
+   *
+   * Every gesture that means "this one and the ones like it" must resolve
+   * through here, because the two readings genuinely diverge: Detect mode's
+   * predictions are a preview held in memory and never written to
+   * `category_id`, and they survive until the book closes — not until the panel
+   * closes. Double-clicking a block painted `footnote` therefore used to also
+   * grab blocks the screen was showing as body text, because the gesture read
+   * the stored id while the eye read the prediction.
+   *
+   * `??` and never `||`: an empty id is the deliberate result of Unlabel, and
+   * `||` would silently promote it back to the stored category.
+   */
+  effectiveCategoryId(block: TextBlock): string {
+    return this.detectPaintOverride().get(block.id) ?? block.category_id;
+  }
   // Defaults to the BUILT-IN runtime: the downloaded GGUF on the llama-server
   // that ships with the app. It used to default to Ollama, which meant Detect
   // silently required a separate install plus a hand-built `ollama create` —
@@ -4927,7 +4961,7 @@ export class PdfPickerComponent implements OnInit {
     const missing = this.autoDetectedCategoryList()
       .filter(c => !have.has(c.id))
       .map(c => {
-        const mine = blocks.filter(b => b.category_id === c.id && !b.is_image);
+        const mine = blocks.filter(b => this.effectiveCategoryId(b) === c.id && !b.is_image);
         return {
           id: c.id, name: c.name, description: '', color: c.color,
           block_count: mine.length,
@@ -6223,10 +6257,12 @@ export class PdfPickerComponent implements OnInit {
   }
 
   selectLikeThis(block: TextBlock, additive: boolean = false): void {
-    const categoryId = block.category_id;
+    // "Like this" means like what the screen shows this one to be — see
+    // effectiveCategoryId().
+    const categoryId = this.effectiveCategoryId(block);
     const deleted = this.deletedBlockIds();
     const matching = this.blocks()
-      .filter(b => b.category_id === categoryId && !deleted.has(b.id))
+      .filter(b => this.effectiveCategoryId(b) === categoryId && !deleted.has(b.id))
       .map(b => b.id);
 
     if (additive) {
@@ -6473,36 +6509,15 @@ export class PdfPickerComponent implements OnInit {
     return true;
   }
 
-  deleteAllBlocksInCategory(categoryId: string): void {
-    if (this.reviewMode()) return;
-    const deleted = this.deletedBlockIds();
-    const toDelete = this.blocks().filter(b => b.category_id === categoryId && !deleted.has(b.id));
-    if (toDelete.length === 0) return;
-
-    const affectedPages = new Set(toDelete.map(b => b.page));
-    this.editorState.deleteBlocks(toDelete.map(b => b.id));
-    this.editorState.clearSelection();
-    for (const pageNum of affectedPages) this.rerenderPageWithEdits(pageNum);
-  }
-
-  restoreAllBlocksInCategory(categoryId: string): void {
-    if (this.reviewMode()) return;
-    const deleted = this.deletedBlockIds();
-    const toRestore = this.blocks().filter(b => b.category_id === categoryId && deleted.has(b.id));
-    if (toRestore.length === 0) return;
-
-    const affectedPages = new Set(toRestore.map(b => b.page));
-    this.editorState.restoreBlocks(toRestore.map(b => b.id));
-    this.editorState.clearSelection();
-    for (const pageNum of affectedPages) this.rerenderPageWithEdits(pageNum);
-  }
-
   deleteLikeThis(block: TextBlock): void {
     if (this.reviewMode()) return;  // read-only during EPUB review
-    const categoryId = block.category_id;
+    // The destructive twin of selectLikeThis, so it resolves the category the
+    // same way the screen paints it — a delete that reached blocks the user was
+    // looking at as body text would be far worse than a selection that did.
+    const categoryId = this.effectiveCategoryId(block);
     const deleted = this.deletedBlockIds();
     const blocksToDelete = this.blocks()
-      .filter(b => b.category_id === categoryId && !deleted.has(b.id));
+      .filter(b => this.effectiveCategoryId(b) === categoryId && !deleted.has(b.id));
 
     if (blocksToDelete.length === 0) return;
 
@@ -8427,9 +8442,12 @@ export class PdfPickerComponent implements OnInit {
     this.focusedCategoryId.set(null);
 
     // Regular categories: select ALL blocks in category (including deleted ones)
-    // User can press Delete to toggle deletion state
+    // User can press Delete to toggle deletion state.
+    // Category resolved the way the viewer paints it (effectiveCategoryId), and
+    // the row's own count resolves the same way — a row that says 12 and selects
+    // 9 would just relocate the divergence this fix exists to remove.
     const allBlocks = this.blocks();
-    const categoryBlocks = allBlocks.filter(b => b.category_id === categoryId);
+    const categoryBlocks = allBlocks.filter(b => this.effectiveCategoryId(b) === categoryId);
     const blockIds = categoryBlocks.map(b => b.id);
 
     if (blockIds.length === 0) return;
@@ -8453,7 +8471,7 @@ export class PdfPickerComponent implements OnInit {
   selectInverseOfCategory(categoryId: string): void {
     const deleted = this.deletedBlockIds();
     const blockIds = this.blocks()
-      .filter(b => b.category_id === categoryId && !deleted.has(b.id))
+      .filter(b => this.effectiveCategoryId(b) === categoryId && !deleted.has(b.id))
       .map(b => b.id);
 
     const currentSelection = new Set(this.selectedBlockIds());
@@ -14944,7 +14962,7 @@ export class PdfPickerComponent implements OnInit {
   private async assertFoundryRunReadsThisDocument(): Promise<void> {
     const key = this.foundryBookKey();
     const displayed = this.effectivePath();
-    const state = await this.electronService.foundryRunAttach(key);
+    const { state } = await this.electronService.foundryRunAttach(key);
     if (!state) {
       throw new Error(
         `No foundry run is registered under ${key}, so there is nothing to paint onto `
@@ -15107,13 +15125,44 @@ export class PdfPickerComponent implements OnInit {
       // TRUE, not merely convenient. The 22:55 Barnett export proved why: the
       // run existed on disk but had not re-attached, tryFoundryExport returned
       // null, and the legacy exporter silently rebuilt a different book over
-      // foundry's. If a run exists for this book in ANY state, refuse loudly.
-      const orphan = await this.electronService.foundryRunAttach(this.foundryBookKey());
-      if (orphan) {
+      // foundry's.
+      //
+      // But the refusal has to be about foundry OUTPUT, not about a run object.
+      // Refusing on any state at all meant a run that produced nothing — one
+      // that failed, or one the user cancelled before it wrote a page — locked
+      // export for the rest of the book's life, and the advice it gave
+      // ("close and reopen") could not possibly help: there was nothing there
+      // to attach to, so reopening would have changed nothing.
+      //
+      // Two statuses named EXPLICITLY, never truthiness: a status added later
+      // must be decided on its own merits rather than inheriting "refuse".
+      // `cancelled` is deliberately absent — it exported nothing, and its
+      // artifacts exist to back the OCR modal's resume affordance, not to gate
+      // this. `error` cannot reach here at all: the attach below is the clearing
+      // kind and sweeps it.
+      const { state: orphan, cleared } = await this.electronService.foundryRunAttach(
+        this.foundryBookKey());
+      if (cleared) {
+        this.showAlert({
+          type: 'warning',
+          title: 'The last OCR run failed and was cleared',
+          message:
+            `The ${cleared.stage ?? 'foundry'} stage failed, so nothing from that run was kept:\n\n`
+            + `${cleared.message}\n\n`
+            + 'This export is being built from the blocks in the editor instead.',
+        });
+      }
+      if (orphan?.status === 'done') {
         throw new Error(
-          `This book has a foundry OCR run (${orphan.status}) that is not loaded in this window. `
+          'This book has a finished foundry OCR run that is not loaded in this window. '
           + 'Close and reopen the book so the run attaches, then export again. '
           + 'Refusing to rebuild the book with the legacy exporter over foundry\'s.'
+        );
+      }
+      if (orphan?.status === 'running') {
+        throw new Error(
+          'A foundry OCR run for this book is working right now, and its output is what the '
+          + 'export should be built from. Wait for it to finish — or stop it — and export again.'
         );
       }
       return null;

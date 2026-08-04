@@ -6558,10 +6558,13 @@ function setupIpcHandlers(): void {
   // nowhere else (electron/processing-passes.ts): the renderer attaches, watches
   // and reads. The handler that let a window start one directly was the picker's
   // private path around the queue.
+  // The ONE clearing attach. Opening a book is where a dead failure gets swept
+  // and named; every other caller (the passes, the reset guard) reads.
   ipcMain.handle('foundry:run-attach', async (_event, bookKey: string) => {
     try {
-      const { attachFoundryRun } = await import('./foundry-run.js');
-      return { success: true, state: attachFoundryRun(bookKey) };
+      const { attachOrClearFoundryRun } = await import('./foundry-run.js');
+      const { state, cleared } = attachOrClearFoundryRun(bookKey);
+      return { success: true, state, cleared };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

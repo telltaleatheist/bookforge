@@ -805,6 +805,62 @@ export function attachFoundryRun(bookKey: string): FoundryRunState | null {
   return { ...saved, live: false, status: saved.status === 'running' ? 'cancelled' : saved.status };
 }
 
+/** Why an attach came back empty, when it came back empty because it swept. */
+export interface FoundryRunCleared {
+  /** The stage that failed, or null when it failed before one started. */
+  stage: FoundryRunStageName | null;
+  /** foundry's own words for the failure. */
+  message: string;
+}
+
+/**
+ * Attach, except that a FAILED run is swept instead of handed over.
+ *
+ * A run that ended in error produced nothing usable, but the record of it stayed
+ * on disk and kept answering "there is a run here" — enough to trip the export
+ * gate and to make the picker act as though foundry output existed. Treating it
+ * as nothing, and saying once what went wrong, is the whole recovery model: the
+ * user re-runs the stage.
+ *
+ * Deliberately narrow:
+ * - Only `error`. A `cancelled` run's artifacts are real and back the OCR
+ *   modal's Resume affordance; resuming costs GB of model load and is the
+ *   user's decision (see `FoundryRunState.live`), so cancelling must not also
+ *   destroy. That includes a `running` run demoted to `cancelled` here because
+ *   the app died mid-run — the demotion speaks first, and a demoted run is kept.
+ * - The directory removed is `foundryRunDir(bookKey)`, DERIVED. Never the
+ *   persisted `state.runDir`: a recursive delete target must not come off disk,
+ *   where a hand-edited or collided record could aim it anywhere.
+ * - `runs.delete` is not optional. Leaving the in-memory entry means the next
+ *   attach re-finds the same failure and reports it again, so "cleared" would
+ *   fire on every book open instead of once.
+ *
+ * `attachFoundryRun` stays a pure read for everyone else — the passes read a
+ * previous run's `pages` through it and one caller is a guard.
+ */
+export function attachOrClearFoundryRun(
+  bookKey: string
+): { state: FoundryRunState | null; cleared?: FoundryRunCleared } {
+  const state = attachFoundryRun(bookKey);
+  if (!state || state.status !== 'error') return { state, cleared: undefined };
+
+  const cleared: FoundryRunCleared = {
+    stage: state.stage,
+    message: state.error || state.message || 'The foundry run failed without a message.',
+  };
+  runs.delete(bookKey);
+  const dir = foundryRunDir(bookKey);
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (err) {
+    // The reason still has to reach the user, and the in-memory entry is already
+    // gone, so a directory that refuses to go is a warning, not a failed attach.
+    console.warn(`[foundry-run] could not delete the failed run at ${dir}:`, err);
+  }
+  console.log(`[foundry-run] cleared the failed run for ${bookKey}: ${cleared.stage ?? 'no stage'} — ${cleared.message}`);
+  return { state: null, cleared };
+}
+
 /**
  * Wait for the run this process started to stop, and hand back its final state.
  *

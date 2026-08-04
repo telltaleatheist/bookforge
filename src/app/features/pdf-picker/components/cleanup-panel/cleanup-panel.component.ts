@@ -754,6 +754,14 @@ export class CleanupPanelComponent {
   readonly includedChars = input.required<number>();
   readonly excludedChars = input.required<number>();
   readonly categoryCorrections = input<Map<string, string>>(new Map());
+  /**
+   * The same block-id → category map the viewer paints with. Corrections are
+   * already in `block.category_id`; Detect's predictions never are, and they
+   * outlive the Detect panel. Counting rows without this map made a row promise
+   * a number the click could not deliver, because the shell's select/delete
+   * gestures resolve the painted category.
+   */
+  readonly categoryOverride = input<ReadonlyMap<string, string>>(new Map());
   readonly showCategoryColors = input<boolean>(false);
   readonly uncertainCount = input<number>(0);
   readonly labelMode = input<boolean>(false);
@@ -831,15 +839,27 @@ export class CleanupPanelComponent {
     this.categories().filter(c => this.thresholdCategories.has(c.id))
   );
 
+  /**
+   * The category a block is wearing on screen — `categoryOverride` first, then
+   * the stored id. Mirrors the viewer's `getCategoryColor` and the shell's
+   * `effectiveCategoryId`; `??`, never `||`, so an unlabelled block stays
+   * unlabelled instead of being promoted back to its stored category.
+   */
+  private effectiveCategoryId(block: TextBlock, override: ReadonlyMap<string, string>): string {
+    return override.get(block.id) ?? block.category_id;
+  }
+
   /** Per class: how many blocks exist, and how many of those are deleted. */
   private readonly liveCounts = computed(() => {
     const deleted = this.deletedBlockIds();
+    const override = this.categoryOverride();
     const counts = new Map<string, { total: number; deleted: number }>();
     for (const block of this.blocks()) {
-      const c = counts.get(block.category_id) ?? { total: 0, deleted: 0 };
+      const categoryId = this.effectiveCategoryId(block, override);
+      const c = counts.get(categoryId) ?? { total: 0, deleted: 0 };
       c.total++;
       if (deleted.has(block.id)) c.deleted++;
-      counts.set(block.category_id, c);
+      counts.set(categoryId, c);
     }
     return counts;
   });
@@ -857,9 +877,11 @@ export class CleanupPanelComponent {
   private readonly selectionCounts = computed(() => {
     const counts = new Map<string, number>();
     const selected = new Set(this.selectedBlockIds());
+    const override = this.categoryOverride();
     for (const block of this.blocks()) {
       if (selected.has(block.id)) {
-        counts.set(block.category_id, (counts.get(block.category_id) || 0) + 1);
+        const categoryId = this.effectiveCategoryId(block, override);
+        counts.set(categoryId, (counts.get(categoryId) || 0) + 1);
       }
     }
     return counts;

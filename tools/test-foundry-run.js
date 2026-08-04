@@ -30,6 +30,11 @@
  *    difference between labelling a book and re-reading 350 pages first.
  *  - `footnotes` stands on the BLOCKS, not on a repair that never ran — the rule
  *    that lets a born-digital PDF have its markers removed without an ocr stage.
+ *  - a FAILED run is swept by `attachOrClearFoundryRun` and reported exactly
+ *    once, while `attachFoundryRun` stays a pure read and a cancelled run keeps
+ *    its artifacts. A failure that stayed on disk went on answering "there is a
+ *    run here" — enough to lock export and to make the picker act as though
+ *    foundry output existed.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -634,11 +639,120 @@ function reset(bookKey) {
       result.error);
   }
 
+  console.log('\n14. a failed run is swept by the attach that reports it — once');
+  {
+    // The two attaches are deliberately different functions. Every main-process
+    // caller but the picker's IPC handler READS: the passes take a previous
+    // run's `pages` out of it and processing-reset uses it as a guard, so a
+    // destructive attach would demolish the callers that depend on it.
+    const persistFailed = (key, stage, message) => {
+      const dir = run.foundryRunDir(key);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'artifact-that-should-go'), 'x');
+      fs.writeFileSync(path.join(dir, 'bookforge-run.json'), JSON.stringify({
+        bookKey: key, runDir: dir, pdfPath: fakePdf, pages: [0, 1], status: 'error',
+        stage, stageIndex: 2, stageCount: 4, message, error: message,
+        done: 0, total: 0, startedAt: 1, updatedAt: 2,
+      }));
+      return dir;
+    };
+
+    const key = 'errored-persisted';
+    reset(key);
+    const dir = persistFailed(key, 'ocr', 'llama-server exited with code 1');
+
+    const read = run.attachFoundryRun(key);
+    ok('attachFoundryRun still hands back the failure and deletes nothing',
+      read !== null && read.status === 'error' && fs.existsSync(dir),
+      JSON.stringify(read));
+
+    const first = run.attachOrClearFoundryRun(key);
+    ok('attachOrClearFoundryRun answers "nothing here"', first.state === null,
+      JSON.stringify(first.state));
+    ok('and names the stage and foundry\'s own words',
+      first.cleared && first.cleared.stage === 'ocr'
+      && first.cleared.message === 'llama-server exited with code 1',
+      JSON.stringify(first.cleared));
+    ok('the run directory is gone', !fs.existsSync(dir));
+
+    const second = run.attachOrClearFoundryRun(key);
+    ok('a second attach reports an empty book, not the same failure again',
+      second.state === null && second.cleared === undefined, JSON.stringify(second));
+  }
+  {
+    // The in-memory half. Without `runs.delete` the entry outlives the swept
+    // directory and every later attach re-announces a failure the user has
+    // already been told about — "cleared" firing forever instead of once.
+    const key = 'errored-in-memory';
+    reset(key);
+    onStage = async (args) => {
+      if (args[0] === 'ocr') throw new Error('the ocr stage fell over');
+    };
+    await run.startFoundryRun({
+      bookKey: key, pdfPath: fakePdf, pages: [0], stages: ['scan', 'ocr', 'blocks'],
+    });
+    const failed = await settle(key);
+    ok('the run is registered as failed', failed.status === 'error', JSON.stringify(failed));
+
+    const swept = run.attachOrClearFoundryRun(key);
+    ok('the live entry is swept too, with foundry\'s message',
+      swept.state === null && !!swept.cleared
+      && /the ocr stage fell over/.test(swept.cleared.message),
+      JSON.stringify(swept));
+    ok('and nothing is left in memory to re-announce',
+      run.attachFoundryRun(key) === null);
+    ok('nor on disk', !fs.existsSync(run.foundryRunDir(key)));
+  }
+  {
+    // Cancelling must not also destroy. A cancelled run's artifacts are real and
+    // are what the OCR modal's stale-run affordance offers to stand on; resuming
+    // costs GB of model load and is the user's decision, not a side effect of
+    // opening the book.
+    const key = 'cancelled-survives';
+    reset(key);
+    const dir = run.foundryRunDir(key);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'artifact-worth-keeping'), 'x');
+    fs.writeFileSync(path.join(dir, 'bookforge-run.json'), JSON.stringify({
+      bookKey: key, runDir: dir, pdfPath: fakePdf, pages: [0, 1], status: 'cancelled',
+      stage: 'ocr', stageIndex: 2, stageCount: 4, message: 'Cancelled.',
+      done: 0, total: 0, startedAt: 1, updatedAt: 2,
+    }));
+
+    const attached = run.attachOrClearFoundryRun(key);
+    ok('a cancelled run is handed over, not swept',
+      attached.state !== null && attached.state.status === 'cancelled'
+      && attached.cleared === undefined, JSON.stringify(attached));
+    ok('and its artifacts are still there',
+      fs.existsSync(path.join(dir, 'artifact-worth-keeping')));
+  }
+  {
+    // A `running` record with no worker behind it means the app died mid-run.
+    // The demotion to `cancelled` speaks FIRST, and a demoted run is kept — the
+    // sweep is only ever for a run that said, in its own record, that it failed.
+    const key = 'dead-running-demotes';
+    reset(key);
+    const dir = run.foundryRunDir(key);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'bookforge-run.json'), JSON.stringify({
+      bookKey: key, runDir: dir, pdfPath: fakePdf, pages: [0], status: 'running',
+      stage: 'ocr', stageIndex: 2, stageCount: 4, message: 'ocr: 10/100',
+      done: 10, total: 100, startedAt: 1, updatedAt: 2,
+    }));
+
+    const attached = run.attachOrClearFoundryRun(key);
+    ok('it comes back cancelled and not live',
+      attached.state !== null && attached.state.status === 'cancelled'
+      && attached.state.live === false, JSON.stringify(attached.state));
+    ok('and it was not swept', attached.cleared === undefined && fs.existsSync(dir));
+  }
+
   fs.rmSync(scratch, { recursive: true, force: true });
   for (const key of [
     'order-test', 'no-footnotes', 'resume-test', 'pageset-test', 'read-test',
     'detect-scan-here', 'detect-scan-on-disk', 'detect-no-scan',
     'footnotes-no-ocr', 'footnotes-no-blocks',
+    'errored-persisted', 'errored-in-memory', 'cancelled-survives', 'dead-running-demotes',
   ]) {
     fs.rmSync(run.foundryRunDir(key), { recursive: true, force: true });
   }

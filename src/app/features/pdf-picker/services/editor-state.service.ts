@@ -687,14 +687,6 @@ export class PdfEditorStateService {
     this.selectedBlockIds.set([]);
   }
 
-  selectAllOfCategory(categoryId: string): void {
-    const deleted = this.deletedBlockIds();
-    const blocks = this.blocks()
-      .filter(b => b.category_id === categoryId && !deleted.has(b.id))
-      .map(b => b.id);
-    this.selectedBlockIds.set(blocks);
-  }
-
   selectAllOnPage(pageNum: number): void {
     const deleted = this.deletedBlockIds();
     const blocks = this.blocks()
