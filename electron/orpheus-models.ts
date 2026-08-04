@@ -171,6 +171,14 @@ export interface OrpheusModel {
    * it cannot render. `listOrpheusModels` sets it instead of throwing (a broken voice
    * must stay VISIBLE so the UI can say "install the base model"); the RENDER path,
    * `resolveOrpheusModel`, throws for the same voice. Never set for merged voices.
+   *
+   * CONSUMED BY exactly one surface: the Settings Orpheus voices panel, which reads it
+   * through `orpheusModels.list` and shows the voice as unusable ("Needs the base
+   * model") with its install action pointing at the base. EVERY OTHER surface keeps the
+   * loud throw and must not learn about this flag — starting an audiobook job
+   * (pushVoiceArgs → resolveOrpheusModel) and loading a streaming voice both fail the
+   * request with the base-missing message, which is the correct behaviour: the point of
+   * the annotation is to explain a broken voice in a list, never to let one be USED.
    */
   baseMissing?: true;
   /**
@@ -562,9 +570,49 @@ function isMergedModelFolder(dir: string): boolean {
   return isFullModelFolder(dir);
 }
 
-/** The shared BASE folder: same shape as a merged voice, different role. */
+/**
+ * The shared BASE folder — a full model, checked SHARD BY SHARD.
+ *
+ * The base is the one artifact whose download can be interrupted and leave something
+ * that still looks valid: config.json lands first and the ~6.6 GB of weights arrive in
+ * two shards, so a download killed between them satisfies "config.json + at least one
+ * .safetensors". That half-install then reads as INSTALLED everywhere — the Settings
+ * card says Installed, resolveOrpheusBase hands the path to a render, and the failure
+ * finally surfaces as an opaque vLLM error deep inside a job, with no way to retry the
+ * download from the UI because nothing thinks anything is missing.
+ *
+ * So when the model declares a shard index (`model.safetensors.index.json`, which every
+ * sharded HF checkpoint including this base ships), every shard it names must be present
+ * and non-empty. A single-file checkpoint has no index and keeps the original check, with
+ * the size test added: a 0-byte weights file is never a finished download.
+ *
+ * Note this is only reachable when the folder can actually be READ. On Windows the base
+ * is typically an untraversable `\\wsl$` symlink, which baseInstallState reports as
+ * `unverifiable` without calling this at all — see its doc block.
+ */
 function isBaseModelFolder(dir: string): boolean {
-  return isFullModelFolder(dir);
+  try {
+    if (!fs.existsSync(path.join(dir, 'config.json'))) return false;
+    const nonEmpty = (name: string): boolean => {
+      try {
+        return fs.statSync(path.join(dir, name)).size > 0;
+      } catch {
+        return false;
+      }
+    };
+    const indexPath = path.join(dir, 'model.safetensors.index.json');
+    if (fs.existsSync(indexPath)) {
+      const index = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
+      const weightMap = index?.weight_map;
+      if (!weightMap || typeof weightMap !== 'object') return false;
+      const shards = new Set<string>(Object.values(weightMap as Record<string, unknown>).filter((v): v is string => typeof v === 'string'));
+      if (shards.size === 0) return false;
+      return [...shards].every(nonEmpty);
+    }
+    return fs.readdirSync(dir).some((f) => f.endsWith('.safetensors') && nonEmpty(f));
+  } catch {
+    return false;
+  }
 }
 
 /**

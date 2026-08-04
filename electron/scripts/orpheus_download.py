@@ -20,6 +20,7 @@ positional args keeps its exact previous behaviour.
 Usage:  python orpheus_download.py <repo_id> <dest_dir> [--kind merged|adapter|base]
 """
 import os
+import shutil
 import sys
 import json
 
@@ -43,7 +44,7 @@ def validate(kind, dest):
         if not os.path.exists(os.path.join(dest, "adapter_config.json")):
             return "downloaded repo is missing adapter_config.json (not a LoRA adapter repo)"
         if not _has_suffix(dest, ".safetensors"):
-            return "downloaded adapter is missing adapter_model.safetensors"
+            return "downloaded adapter has no *.safetensors weights file"
         return None
     # merged and base are the same on-disk shape: a full model.
     if not os.path.exists(os.path.join(dest, "config.json")):
@@ -71,7 +72,10 @@ def parse_args(argv):
             continue
         positional.append(a)
         i += 1
-    if len(positional) < 2:
+    if len(positional) != 2:
+        # Exactly two, never "at least two": a stray extra argument means the caller
+        # built the command wrong, and silently ignoring it is how a download lands
+        # somewhere nobody looks.
         raise ValueError("usage: orpheus_download.py <repo_id> <dest_dir> [--kind merged|adapter|base]")
     if kind not in KINDS:
         raise ValueError("--kind must be one of %s (got %r)" % ("|".join(KINDS), kind))
@@ -98,7 +102,16 @@ def main() -> int:
         )
         err = validate(kind, dest)
         if err:
-            print(json.dumps({"ok": False, "error": err}))
+            # DELETE the failed download. What is on disk is a partial/wrong artifact,
+            # and leaving it there is worse than having nothing: the local registry's
+            # folder predicates can read a half-finished model as installed, so the UI
+            # would report success and the failure would resurface much later as an
+            # opaque engine-load error. Removing it makes "try again" actually retry.
+            shutil.rmtree(dest, ignore_errors=True)
+            print(json.dumps({
+                "ok": False,
+                "error": "%s — the incomplete download was deleted from %s; try again" % (err, dest),
+            }))
             return 1
         print(json.dumps({"ok": True, "dest": dest, "kind": kind}))
         return 0
