@@ -48,6 +48,7 @@ import {
   StreamResult,
   StreamWorkerConfig,
   EngineState,
+  LoadVoiceOptions,
 } from './xtts-worker-pool';
 import {
   resolveOrpheusModel,
@@ -115,6 +116,24 @@ function translateModelDirForSpawn(dir: string): string {
 // reported as deviceWorkers so the extension read-ahead dispatches this many blocks
 // concurrently, which is what keeps a 16-wide batch actually full.
 const STREAM_BATCH_WIDTH = 16;
+
+// The FIRST dispatch wave of a session that is being listened to right now goes out
+// this wide instead of the full width, and only that one (stream-scheduler.ts pump).
+// Everything after it — and every background read-ahead session, where full batches
+// are the entire point — uses STREAM_BATCH_WIDTH.
+//
+// The trade is cushion against how long the listener stares at a spinner. A batch's
+// wall clock is roughly flat in width but not perfectly: 8 rows land ~60s of audio in
+// ~28s, where 16 rows land ~120s in ~40s. The client's gate opens once the buffer
+// covers the projected next silence, so the narrower first burst opens it ~15s
+// sooner, and the ~60s it opens on still covers the FOLLOWING full-width batch's ~40s
+// of silence with ~20s to spare. 6 would open marginally sooner and leave that
+// second-batch cover too thin; 16 buys cushion nobody is awake to enjoy.
+//
+// Passed to the worker as ORPHEUS_STREAM_RAMP so _warmup pre-compiles this width too
+// (an unwarmed width lazily compiles ~10s, once — which is precisely the 10s this
+// ramp exists to avoid paying in front of the first sentence).
+export const STREAM_RAMP_WIDTH = 8;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Worker process state
@@ -416,7 +435,8 @@ function buildSpawnPlan(scriptPath: string, gpuUtil?: number): SpawnPlan {
     // this; without it a future vLLM bump (V1 default-on) breaks only streaming.
     const exportCmd =
       `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 ORPHEUS_DISABLE_EAGER=1 VLLM_USE_V1=0${utilExport} ` +
-      `ORPHEUS_STREAM_BATCH=${STREAM_BATCH_WIDTH} EBOOK2AUDIOBOOK_PATH=${shellQuote(wslE2a)}`;
+      `ORPHEUS_STREAM_BATCH=${STREAM_BATCH_WIDTH} ORPHEUS_STREAM_RAMP=${STREAM_RAMP_WIDTH} ` +
+      `EBOOK2AUDIOBOOK_PATH=${shellQuote(wslE2a)}`;
     const cd = `cd ${shellQuote(wslE2a)}`;
     const run =
       `${shellQuote(wslConda)} run --no-capture-output -n ${shellQuote(orpheusEnv)} ` +
@@ -439,6 +459,9 @@ function buildSpawnPlan(scriptPath: string, gpuUtil?: number): SpawnPlan {
       VLLM_USE_V1: '0',
       EBOOK2AUDIOBOOK_PATH: E2A_PATH,
       ORPHEUS_STREAM_BATCH: String(STREAM_BATCH_WIDTH),
+      // The scheduler's first-wave width for a playing session — warmed alongside
+      // the full width so the ramp doesn't pay a lazy compile it exists to avoid.
+      ORPHEUS_STREAM_RAMP: String(STREAM_RAMP_WIDTH),
       // Mac/MLX: bound the MLX freed-buffer cache for the resident stream server
       // (unbounded it balloons to tens of GB and STAYS — worse for a pinned
       // long-lived process than for a batch worker). orpheus.py reads this at
@@ -748,7 +771,21 @@ export function wouldRebuildEngine(voice: string): boolean {
   }
 }
 
-export async function loadVoice(voice: string): Promise<{ success: boolean; error?: string }> {
+/**
+ * Load `voice` on the resident worker.
+ *
+ * `opts.warm` (default true) decides whether a FIRST load may spend ~40s on the
+ * worker's discarded warm-up renders before it reports ready. Every path where no
+ * one is waiting on audio — the extension's engine.start prewarm, a settings voice
+ * change, the app's own warm-on-start — leaves it true and buys a fully compiled
+ * generate path. A load a pending SPEAK triggered passes false: the user is waiting,
+ * and the first real batch absorbs the same lazy compile (~10s, once) instead of
+ * queueing behind ~40s of audio nobody hears. See LoadVoiceOptions.
+ */
+export async function loadVoice(
+  voice: string,
+  opts: LoadVoiceOptions = {}
+): Promise<{ success: boolean; error?: string }> {
   if (!worker || !worker.isReady) return { success: false, error: 'No Orpheus worker' };
   touchActivity();
 
@@ -861,6 +898,10 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
           adapterDir: plan.adapterDir,
           baseDir: plan.baseDir,
           caps: plan.caps,
+          // Only a FIRST load has a warmup to skip; the worker ignores this on a
+          // registration. Sent explicitly on every load so the worker never has to
+          // infer intent from an absent field.
+          warm: opts.warm !== false,
         });
       }),
     () => ({ success: false, error: 'No Orpheus worker' }),

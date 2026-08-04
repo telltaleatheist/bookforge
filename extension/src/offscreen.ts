@@ -81,17 +81,27 @@ const CACHE_LIMIT_BYTES = 256 * 1024 * 1024;
 // reach it within seconds, so for them the gate is effectively "12s buffered" and
 // costs almost nothing. It is NOT sized for the slow case — that's the projection.
 //
-// The projection is what covers Orpheus/MLX. Its batches are 16 sentences wide and
-// take 30-43s of wall clock (width 16 = 2.8x realtime aggregate), and since the
-// server no longer streams solo openers, NOTHING arrives until the first batch starts
-// retiring rows. The buffer then fills in a burst — ~120s of audio within a few
-// seconds — and the gate opens once that burst covers the NEXT silence of the same
-// kind (startThresholdSeconds' gap cover), which it does immediately.
+// The projection is what covers Orpheus/MLX. It delivers in BURSTS: the server no
+// longer streams solo openers, so nothing at all arrives until a batch starts
+// retiring rows, and then the buffer fills within a few seconds.
+//
+// The server RAMPS the first burst of the block being listened to (stream-scheduler
+// STREAM_RAMP_WIDTH): the first wave is 8 sentences — ~60s of audio in ~28s of wall
+// clock — and every wave after it is the full 16 (~120s in ~40s). So the first
+// delivery lands ~15s sooner than it used to, and the ~60s it lands still covers the
+// NEXT silence, which is a full-width batch's ~40s. The gate opens on that burst
+// immediately: gapCover is maxGapSeconds (the wait for this first delivery, ~28s)
+// plus margin, and 60s clears it with room. Note the ordering this reverses — the
+// first gap is now SHORTER than the ones that follow, where it used to be the
+// longest, so maxGapSeconds is no longer a strictly conservative stand-in for the
+// next silence. The cushion is what covers it instead: a first burst is always at
+// least ~1.5x the following batch's silence.
 //
 // So the wait before the first sentence is the pipeline itself — the model load plus
-// one batch's depth — not the gate stacked on top of it. Shortening it means loading
-// the model before the user presses play (the reader prewarms on show) or making the
-// first batch shallower; there is nothing left for the gate to give back.
+// the ramped first batch's depth — not the gate stacked on top of it. Shortening it
+// further means loading the model before the user presses play (the reader prewarms
+// on show, and a speak-triggered start now skips the engine's discarded warm-up
+// renders); there is nothing left for the gate to give back.
 const START_MIN_SECONDS = 12;
 // Slack added on top of the projected deficit: the rate estimate is noisy early
 // (one batch = one sample) and a block boundary costs a blob reload.
@@ -1522,10 +1532,18 @@ function startGateOpen(fromSeconds = 0): boolean {
  *   whole batch of silence between them. Beating the average rate is not enough if
  *   the next silence is longer than the buffer, so the buffer must also cover the
  *   longest quiet interval this session has seen (Session.maxGapSeconds, which
- *   includes the wait for the very first delivery — a conservative stand-in for the
- *   next batch, which is warm and therefore shorter). This is what the old
- *   from-request rate was accidentally doing, and it is why removing it without a
- *   replacement would start playback on ~15s of buffer in front of a 40s batch.
+ *   includes the wait for the very first delivery). This is what the old from-request
+ *   rate was accidentally doing, and it is why removing it without a replacement
+ *   would start playback on ~15s of buffer in front of a 40s batch.
+ *
+ *   maxGapSeconds is a MEASUREMENT of the past, not a prediction, and since the
+ *   server ramped the first burst (see START_MIN_SECONDS) the first gap is the
+ *   SHORTEST of the session rather than the longest. What keeps that safe is not the
+ *   gap term but the size of the burst it arrives with: a ramped first wave delivers
+ *   ~60s against a following silence of ~40s, so the gate opens on a cushion that
+ *   already outruns the gap it cannot yet have seen. If the ramp is ever widened
+ *   toward the full width without the wave growing with it, this term stops covering
+ *   the second batch and the floor would have to.
  *
  * Returns Infinity while nothing has arrived (there is nothing to play anyway).
  */

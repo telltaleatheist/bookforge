@@ -346,7 +346,9 @@ export class TtsApiServer {
         return;
 
       case 'engine.start': {
-        await this.ensureEngine(typeof msg.voice === 'string' ? msg.voice : undefined);
+        // The prewarm: the client showed its reader UI and nobody is waiting on
+        // audio yet, so this is exactly the window the warm-up renders are for.
+        await this.ensureEngine(typeof msg.voice === 'string' ? msg.voice : undefined, true);
         this.send(ws, { type: 'status', ...this.statusPayload() });
         return;
       }
@@ -468,7 +470,9 @@ export class TtsApiServer {
     }
 
     // Cold engine: start it now. The client sees progress via 'state' pushes.
-    const started = await this.ensureEngine(voice);
+    // warm:false — this speak is the reason the engine is starting, so the listener
+    // is already waiting; the first batch pays the compile instead of a warmup.
+    const started = await this.ensureEngine(voice, false);
     if (!started.success) {
       this.send(ws, { type: 'error', requestId, message: started.error || 'engine failed to start' });
       return;
@@ -596,7 +600,9 @@ export class TtsApiServer {
     const voice = typeof msg.voice === 'string' && msg.voice ? msg.voice : undefined;
 
     await getActiveEngine().endSession();
-    const started = await this.ensureEngine(voice);
+    // A restart is a settings action, not a play action — no audio is pending, so
+    // the engine comes back fully warmed.
+    const started = await this.ensureEngine(voice, true);
     if (started.success && wasService) getActiveEngine().setServiceMode(true);
 
     if (!started.success) {
@@ -678,13 +684,25 @@ export class TtsApiServer {
     }
   }
 
-  /** Start the worker pool (no-op if running) and warm the voice. */
-  private async ensureEngine(voice?: string): Promise<{ success: boolean; error?: string }> {
+  /**
+   * Start the worker pool (no-op if running) and load the voice.
+   *
+   * `warm` is NOT optional, because the whole point is that every call site states
+   * whether a person is waiting. true = nobody is (the extension's engine.start
+   * prewarm while the reader UI is shown, a settings restart): pay the engine's
+   * discarded warm-up renders here, where the wait is free. false = a speak is
+   * pending: skip them, and let the first real batch absorb the one-off lazy
+   * compile instead of putting ~40s of unheard audio in front of the listener.
+   */
+  private async ensureEngine(
+    voice: string | undefined,
+    warm: boolean
+  ): Promise<{ success: boolean; error?: string }> {
     const engine = getActiveEngine();
     const result = await engine.startSession();
     if (!result.success) return { success: false, error: result.error };
     const warmVoice = voice || engine.getCurrentVoice() || engine.getLastVoice() || getDefaultStreamVoice();
-    const loaded = await engine.loadVoice(warmVoice);
+    const loaded = await engine.loadVoice(warmVoice, { warm });
     if (!loaded.success) return { success: false, error: loaded.error };
     return { success: true };
   }

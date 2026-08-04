@@ -26,6 +26,7 @@ import {
   StreamResult,
   StreamWorkerConfig,
   EngineState,
+  LoadVoiceOptions,
 } from './xtts-worker-pool';
 import {
   getDefaultE2aPath,
@@ -42,7 +43,11 @@ export type StreamEngineName = 'xtts' | 'orpheus';
 export interface StreamingEngine {
   setMainWindow(window: Electron.BrowserWindow | null): void;
   startSession(): Promise<{ success: boolean; voices?: string[]; error?: string }>;
-  loadVoice(voice: string): Promise<{ success: boolean; error?: string }>;
+  /** Load a voice. `opts.warm` (default true) allows a first load's discarded
+   *  warm-up renders; a speak-triggered load passes false so the user isn't kept
+   *  waiting on audio nobody hears. XTTS has no such warmup — its checkpoint load
+   *  IS the warm-up — so its pool accepts the option and ignores it. */
+  loadVoice(voice: string, opts?: LoadVoiceOptions): Promise<{ success: boolean; error?: string }>;
   generateSentence(
     text: string,
     sentenceIndex: number,
@@ -179,9 +184,9 @@ export function getSelectedEngineName(): StreamEngineName {
 function observable(pool: StreamingEngine): StreamingEngine {
   return {
     ...pool,
-    async loadVoice(voice: string) {
+    async loadVoice(voice: string, opts?: LoadVoiceOptions) {
       const before = pool.getCurrentVoice();
-      const result = await pool.loadVoice(voice);
+      const result = await pool.loadVoice(voice, opts);
       if (pool.getCurrentVoice() !== before) emitStreamConfigChanged();
       return result;
     },

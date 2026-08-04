@@ -220,7 +220,9 @@ export class ReaderStreamBridge {
     };
 
     // Cold engine: start it now. The client sees progress via 'state'/'status'.
-    const started = await this.ensureEngine(voice);
+    // warm:false — the reader is waiting on this speak, so the first real batch
+    // pays the compile cost rather than a wall of discarded warm-up renders.
+    const started = await this.ensureEngine(voice, false);
     if (!started.success) {
       this.send(ws, { type: 'error', requestId, message: started.error || 'engine failed to start' });
       return;
@@ -271,13 +273,24 @@ export class ReaderStreamBridge {
     }
   }
 
-  /** Start the worker pool (no-op if running) and warm the voice. */
-  private async ensureEngine(voice?: string): Promise<{ success: boolean; error?: string }> {
+  /**
+   * Start the worker pool (no-op if running) and load the voice.
+   *
+   * `warm` is NOT optional — every call site has to state whether a person is
+   * waiting on audio. true pays the engine's discarded warm-up renders; false skips
+   * them and lets the first real batch absorb the one-off lazy compile. This bridge
+   * exposes no engine.start (lifecycle stays with the app), so its ONLY caller is
+   * speak — which always has a listener waiting, hence always false.
+   */
+  private async ensureEngine(
+    voice: string | undefined,
+    warm: boolean
+  ): Promise<{ success: boolean; error?: string }> {
     const engine = getActiveEngine();
     const result = await engine.startSession();
     if (!result.success) return { success: false, error: result.error };
     const warmVoice = voice || engine.getCurrentVoice() || engine.getLastVoice() || getDefaultStreamVoice();
-    const loaded = await engine.loadVoice(warmVoice);
+    const loaded = await engine.loadVoice(warmVoice, { warm });
     if (!loaded.success) return { success: false, error: loaded.error };
     return { success: true };
   }

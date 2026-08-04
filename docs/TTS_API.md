@@ -65,6 +65,11 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 {"action": "status"}                               // poll engine status
 
 {"action": "engine.start", "voice": "RayPorter"}   // optionally pre-warm the engine (voice optional)
+// This is the ONLY path that pays the engine's warm-up renders — on Orpheus/MLX,
+// ~40s of discarded audio that compiles the generate path. Send it when your reader
+// UI appears, while the user is still choosing what to play. A `speak` that finds
+// the engine cold starts it WITHOUT them: someone is already waiting, and the first
+// real batch absorbs the same compile (~10s, once) instead of queueing behind them.
 {"action": "engine.stop"}                          // shut the engine down (frees ~20 GB RAM)
 {"action": "engine.restart", "voice": "RayPorter", "cpuWorkers": 4}
 // Bounce the pool to apply a new worker count and/or warm a voice. Both optional;

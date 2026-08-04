@@ -21,7 +21,9 @@ same vLLM/CUDA-graph setup, same SNAC decode. We call its lower-level generation
 methods and keep the audio in memory (no per-sentence WAV files).
 
 Protocol (one JSON object per line):
-  stdin:  {action: 'load', voice, id?, modelDir?, adapterDir?, baseDir?, caps?}
+  stdin:  {action: 'load', voice, id?, modelDir?, adapterDir?, baseDir?, caps?,
+                            warm?: bool}   # warm=False: skip the first-load warmup
+                                           # because a speak is already waiting
           {action: 'generate', text, voice?, stream?: bool, ...}
           {action: 'generate_batch', items: [{i, text, voice?}], ...}
           {action: 'cancel' | 'stop' | 'quit'}
@@ -325,9 +327,10 @@ class OrpheusStreamServer:
 
     def _ensure_engine(self, voice: str, model_dir: str = None, caps: dict = None,
                        adapter_dir: str = None, base_dir: str = None,
-                       voice_id: str = None):
+                       voice_id: str = None, warm: bool = True):
         """Load (or reload) the Orpheus model and make `voice` the default; on first
-        load WARM the generate path before reporting ready.
+        load WARM the generate path before reporting ready — unless the caller asked
+        for a cold ready (`warm=False`), see _warmup.
 
         Four modes (see the module docstring). The engine is torn down ONLY when the
         (model_dir, base_dir) pair changes — the same key e2a's own load_engine cache
@@ -466,7 +469,13 @@ class OrpheusStreamServer:
         # Warm the generate path ONCE per load, so the cold-start cost is paid here
         # (absorbed by the user's "start the server and find an article" window),
         # not on the first sentences they actually play.
-        if first_load:
+        #
+        # That trade only holds while NOBODY IS WAITING. A load the pool marks
+        # warm=False was triggered by a pending speak: the listener is already on a
+        # spinner, and ~40s of discarded renders in front of their first sentence
+        # costs far more than the ~10s of lazy compile the first real batch would
+        # absorb by itself. So the warmup is skipped and the batch pays it.
+        if first_load and warm:
             self._warmup()
 
         send_response('status', {'message': f'Voice loaded: {v}'})
@@ -538,15 +547,20 @@ class OrpheusStreamServer:
         Output is discarded; we only want the compile/cache side effect. Failures
         are non-fatal — a warmup hiccup must never block the voice from loading.
 
-        TWO shapes are warmed, not every width: the single-sentence path (width 1,
-        used by the audiobook-style solo render and any tail-of-one group) and ONE
-        batch at the full ORPHEUS_STREAM_BATCH width, which is the shape essentially
-        every read-ahead group uses. Warming every width 1..16 measured 176s of a
-        184s load — and load time is user-visible on EVERY server start, while an
-        unwarmed intermediate width (only a block's short tail group hits one) just
-        compiles lazily, ~10s, once, behind a buffer that is by then many sentences
-        deep. Trading a one-off hidden 10s for ~150s of visible startup is the whole
-        point.
+        THREE shapes are warmed, not every width: the single-sentence path (width 1,
+        used by the audiobook-style solo render and any tail-of-one group), the
+        scheduler's first-wave RAMP width (ORPHEUS_STREAM_RAMP — the narrower batch a
+        playing session's first dispatch goes out at, see stream-scheduler.ts), and
+        ONE batch at the full ORPHEUS_STREAM_BATCH width, which is the shape
+        essentially every read-ahead group uses. Warming every width 1..16 measured
+        176s of a 184s load — and load time is user-visible on EVERY server start,
+        while an unwarmed intermediate width (only a block's short tail group hits
+        one) just compiles lazily, ~10s, once, behind a buffer that is by then many
+        sentences deep. Trading a one-off hidden 10s for ~150s of visible startup is
+        the whole point. The ramp width is the exception that earns its place: its
+        lazy compile would land in front of the FIRST sentence of a session, which is
+        the one place nothing hides it — and shortening that wait is why the ramp
+        exists at all.
         """
         if os.environ.get('ORPHEUS_SKIP_WARMUP') == '1':
             return
@@ -556,7 +570,15 @@ class OrpheusStreamServer:
             n = 16
         if n < 1:
             n = 1
-        send_response('status', {'message': f'Warming up voice (widths 1 and {n})...'})
+        try:
+            ramp = int(os.environ.get('ORPHEUS_STREAM_RAMP', '8'))
+        except ValueError:
+            ramp = 8
+        # A ramp of 1 or of the full width is already covered by the other two shapes.
+        ramp = max(1, min(ramp, n))
+        widths = sorted({w for w in (ramp, n) if w > 1})
+        shapes = ', '.join(str(w) for w in (1, *widths))
+        send_response('status', {'message': f'Warming up voice (widths {shapes})...'})
         warm_texts = (
             'Hello.',
             'This is a brief warmup.',
@@ -570,27 +592,29 @@ class OrpheusStreamServer:
             except Exception as e:
                 print(f'[orpheus_stream] warmup generation failed (non-fatal): {e}',
                       file=sys.stderr)
-        # 2) BATCHED path (read-ahead), at the FULL width only. generate_batch forms
-        #    ordered adjacency groups capped at ORPHEUS_STREAM_BATCH, and a stream of
-        #    read-ahead sentences produces full-width groups almost exclusively — only
-        #    a block's trailing run is short, and that one lazily-compiled width is
-        #    paid once, hidden behind an already-deep buffer. UNIFORM texts on purpose:
-        #    identical sentences -> identical token lengths -> exactly one bucket at
-        #    exactly this width. (This _generate_audio_batch call is the only MLX use
-        #    of that method now that generate_batch renders groups directly.)
-        try:
-            self._generate_audio_batch([warm_texts[1]] * n)  # discard — warms the graph
-        except Exception as e:
-            print(f'[orpheus_stream] batch warmup (width {n}) failed (non-fatal): {e}',
-                  file=sys.stderr)
+        # 2) BATCHED path, at the ramp width and the FULL width. generate_batch forms
+        #    ordered adjacency groups capped at ORPHEUS_STREAM_BATCH; read-ahead
+        #    produces full-width groups almost exclusively, and a playing session's
+        #    first wave produces exactly one ramp-width group. Everything between is
+        #    a block's trailing run, and that lazily-compiled width is paid once,
+        #    hidden behind an already-deep buffer. UNIFORM texts on purpose: identical
+        #    sentences -> identical token lengths -> exactly one bucket at exactly
+        #    this width. (These _generate_audio_batch calls are the only MLX use of
+        #    that method now that generate_batch renders groups directly.)
+        for w in widths:
+            try:
+                self._generate_audio_batch([warm_texts[1]] * w)  # discard — warms the graph
+            except Exception as e:
+                print(f'[orpheus_stream] batch warmup (width {w}) failed (non-fatal): {e}',
+                      file=sys.stderr)
         send_response('status', {'message': 'Warmup complete'})
 
     def load_voice(self, voice: str, model_dir: str = None, caps: dict = None,
                    adapter_dir: str = None, base_dir: str = None,
-                   voice_id: str = None) -> bool:
+                   voice_id: str = None, warm: bool = True) -> bool:
         try:
             return self._ensure_engine(voice, model_dir, caps, adapter_dir, base_dir,
-                                       voice_id)
+                                       voice_id, warm)
         except Exception as e:
             send_response('error', {'message': f'Failed to load Orpheus: {e}'})
             return False
@@ -1188,9 +1212,15 @@ class OrpheusStreamServer:
 
             action = request.get('action')
             if action == 'load':
+                # 'warm' says whether a FIRST load may spend time on discarded
+                # warm-up renders. Read explicitly, and ABSENT MEANS TRUE: the app
+                # and this worker ship together, but a message from anything older
+                # must mean the behaviour that message was written against.
+                warm = request.get('warm')
+                warm = True if warm is None else bool(warm)
                 if self.load_voice(request.get('voice', DEFAULT_VOICE), request.get('modelDir'),
                                    request.get('caps'), request.get('adapterDir'),
-                                   request.get('baseDir'), request.get('id')):
+                                   request.get('baseDir'), request.get('id'), warm):
                     # The CONSTRUCTED engine's backend, not the pre-load probe's — same
                     # value in every normal case, but this one is ground truth, so a
                     # probe that failed at startup is corrected here rather than

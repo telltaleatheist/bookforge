@@ -32,6 +32,22 @@ export interface AudioChunk {
   sampleRate: number;
 }
 
+/** Options for a voice load, shared by both pools (declared here with the rest of
+ *  the streaming contract).
+ *
+ *  `warm` says whether the load may spend time on DISCARDED renders before it
+ *  reports ready. A prewarm (the reader UI was shown; nobody is waiting on audio)
+ *  passes true and pays it; a load triggered by a pending speak passes false,
+ *  because the user is staring at a spinner and the first REAL batch can absorb
+ *  the same lazy-compile cost itself (~10s once) instead of ~40s of throwaway
+ *  renders in front of it. Only Orpheus has such a warmup — XTTS's "warm-up" IS
+ *  the checkpoint load, with nothing discardable to skip, so its pool accepts the
+ *  option and ignores it. */
+export interface LoadVoiceOptions {
+  /** Run the engine's discarded warm-up renders on a first load. Default true. */
+  warm?: boolean;
+}
+
 interface XTTSResponse {
   type: 'ready' | 'status' | 'loaded' | 'audio' | 'chunk' | 'done' | 'error' | 'stopped';
   device?: string;
@@ -608,9 +624,18 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
 }
 
 /**
- * Load voice on all workers
+ * Load voice on all workers.
+ *
+ * `_opts.warm` is accepted and ignored ON PURPOSE, not swallowed: it asks whether to
+ * run DISCARDED warm-up renders before reporting ready, and XTTS has none. Loading
+ * the checkpoint is the whole warm-up here (the pool reports 'warming' until a voice
+ * is in memory precisely because there is nothing further to do), so there is no work
+ * for warm:false to skip — every caller gets identical behaviour either way.
  */
-export async function loadVoice(voice: string): Promise<{ success: boolean; error?: string }> {
+export async function loadVoice(
+  voice: string,
+  _opts: LoadVoiceOptions = {}
+): Promise<{ success: boolean; error?: string }> {
   if (workers.length === 0) {
     return { success: false, error: 'No workers available' };
   }

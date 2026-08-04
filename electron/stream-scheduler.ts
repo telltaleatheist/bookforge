@@ -35,6 +35,7 @@ import {
   PlaySettings,
   StreamChunk
 } from './xtts-worker-pool';
+import { STREAM_RAMP_WIDTH } from './orpheus-worker-pool';
 import { getActiveEngine } from './streaming-engine';
 
 /** Where a session's events go. Defaults to broadcasting to all windows. */
@@ -53,11 +54,11 @@ export type StreamSink = (data: Record<string, unknown>) => void;
 const DEFAULT_LOOKAHEAD_SECONDS = 2000;
 
 // Streaming batching (Orpheus): EVERY sentence — openers included — goes through
-// the fixed-width batch path (the engine's getMaxConcurrentSentences —
-// orpheus-worker-pool.ts STREAM_BATCH_WIDTH, measured 2.8x realtime at 16). The
-// client (extension offscreen.ts) gates the start of playback until the pipeline is
-// far enough ahead that the block can play through without a gap, so the thing worth
-// optimising here is how fast the whole block renders, not how fast sentence 1 does.
+// the batch path (the engine's getMaxConcurrentSentences — orpheus-worker-pool.ts
+// STREAM_BATCH_WIDTH, measured 2.8x realtime at 16). The client (extension
+// offscreen.ts) gates the start of playback until the pipeline is far enough ahead
+// that the block can play through without a gap, so the thing worth optimising here
+// is how fast the whole block renders, not how fast sentence 1 does.
 //
 // This inverts the old "stream the openers solo for fast first audio" design. Bench
 // (M1 Ultra, deathstalker, ~135-char sentences): a SOLO render is 0.73x realtime
@@ -66,14 +67,47 @@ const DEFAULT_LOOKAHEAD_SECONDS = 2000;
 // audio — under a seamless-start gate that is a pure loss, ~15-20s off the moment
 // the first block is fully rendered.
 //
-// The "MLX needs one narrow fixed warmed shape" rationale that also justified small
-// batches is obsolete: mlx-lm 0.31.3 right-pads batch prefills, so widths may vary
-// freely; an unwarmed width just compiles lazily (~10s, once), which a deep buffer
-// hides. The worker pre-warms width 1 and the full width only.
+// FIRST-BATCH RAMP: one exception to "always full width", and only for the session
+// being LISTENED to, on its FIRST wave (see the cap in pump). A batch's wall clock
+// is nearly flat in width but not quite — 8 rows land ~60s of audio in ~28s where 16
+// land ~120s in ~40s — and until the gate opens the listener is watching a spinner,
+// not banking cushion. So the first wave goes out at STREAM_RAMP_WIDTH (8): the gate
+// opens ~15s sooner, and the ~60s it opens on still covers the following full-width
+// batch's ~40s of silence with ~20s to spare. Every wave after it, and every
+// background read-ahead session, is full width — the rows retire per-row, so the
+// next pump refills to the full cap and the pool's flushBatch packs them into full
+// batches again.
+//
+// The ramp is a claim on ONE batch, so the scheduler has to hold read-ahead off that
+// batch (rampPendingOnPriority / the hold in pump). The pool batches from a SINGLE
+// queue shared by every session: flushBatch fills to STREAM_BATCH_WIDTH, priority
+// rows first. So 8 ramp rows plus any background rows sitting in that queue when the
+// flush fires go out as one width-16 batch — the same ~40s the ramp exists to avoid,
+// with the ramp's own rows no earlier than before. That is the COMMON case on a cold
+// start, not a corner: the extension fires read-ahead speaks milliseconds after the
+// playing one, all of them then wait out the same model load, and every session
+// starts within the same instant of each other.
+//
+// So a background session does not dispatch while a playing session has a ramp wave
+// out with nothing back from it yet. This costs read-ahead nothing: the hold lasts
+// exactly until the ramp batch's first row retires, by which time the worker is busy
+// with that batch and any released rows would have queued for the NEXT flush anyway.
+// The hold is on new dispatches only — rows already in flight when a playing session
+// appears are untouched (the check lives in pump, which is only ever about what to
+// send next), so the warm case, where read-ahead is already mid-batch, never stalls.
+//
+// The "MLX needs one narrow fixed warmed shape" rationale that once justified small
+// batches everywhere is obsolete: mlx-lm 0.31.3 right-pads batch prefills, so widths
+// may vary freely; an unwarmed width just compiles lazily (~10s, once). The worker
+// pre-warms width 1, the ramp width and the full width — the ramp is warmed because
+// a lazy compile in front of the first sentence is exactly what it exists to avoid,
+// while a stray intermediate width (a block's short tail group) still compiles
+// lazily behind a buffer that is by then many sentences deep.
 //
 // XTTS is the opposite physics and keeps its ONE streamed opener (see
 // shouldStreamSentence): true token streaming gives sub-3s first audio, and its
 // multi-worker pool already runs faster than realtime, so nothing downstream waits.
+// It is not a batching engine, so the ramp never applies to it.
 
 interface SchedulerSession {
   requestId: string | number;
@@ -99,6 +133,11 @@ interface SchedulerSession {
    *  a boolean cleared by the first resolver would leak an uncancelled stream if the
    *  opener policy ever widens again. */
   streamingCount: number;
+  /** Has ANY dispatched sentence come back yet — done OR failed? Not derivable from
+   *  `durations`, which only records successes: a first wave that failed every row
+   *  would leave that map empty forever and hold read-ahead behind a batch that is
+   *  already over. Set in both branches of dispatch; only ever false→true. */
+  firstResultSeen: boolean;
   /** Generate-ahead window for this session (seconds ahead of the playhead). */
   lookaheadSeconds: number;
 }
@@ -163,6 +202,7 @@ export function start(
     sink,
     priority,
     streamingCount: 0,
+    firstResultSeen: false,
     lookaheadSeconds: opts.lookaheadSeconds ?? DEFAULT_LOOKAHEAD_SECONDS
   };
   sessions.set(requestId, s);
@@ -221,6 +261,11 @@ function stopAll(): void {
 function endSession(s: SchedulerSession | undefined): void {
   if (!s || s.stopped) return;
   console.log(`[StreamScheduler] Stop req=${s.requestId}`);
+  // Was this the session read-ahead is being held behind? If it dies with its ramp
+  // wave unanswered — cancelled, preempted by a new play action, stopped by the user
+  // — nothing else will ever report that first result, so the hold has to be lifted
+  // here or background generation waits forever.
+  const heldTheRamp = s.priority && !s.firstResultSeen && s.nextToDispatch > s.startIndex;
   s.stopped = true;
   sessions.delete(s.requestId);
   // Only the playing session ever streams, so cancel streaming only when this
@@ -228,6 +273,34 @@ function endSession(s: SchedulerSession | undefined): void {
   // session's sentence (cancelStreaming hits every streaming worker).
   if (s.streamingCount > 0) getActiveEngine().cancelStreaming();
   if (!s.completeSent) s.sink({ kind: 'cancelled', requestId: s.requestId });
+  // After the session is out of the map, so rampPendingOnPriority() sees the truth.
+  // (Harmless inside stopAll: a session it has already stopped pumps to nothing, and
+  // one it is about to stop can only dispatch rows that isStale() then drops.)
+  if (heldTheRamp) pumpBackgroundSessions();
+}
+
+/** Is a playing session's first (ramped) wave out with nothing back from it yet?
+ *
+ *  That is the window in which a background row entering the pool's queue would be
+ *  packed into the ramp's own batch and widen it — see the first-batch ramp note at
+ *  the top of this file. `nextToDispatch > startIndex` is what makes it "out": a
+ *  priority session that has not dispatched anything holds nobody up (and one with
+ *  no sentences at all never would, so this cannot deadlock on it). */
+function rampPendingOnPriority(): boolean {
+  for (const s of sessions.values()) {
+    if (s.priority && !s.stopped && !s.firstResultSeen && s.nextToDispatch > s.startIndex) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The ramp window closed (its first row landed, or the session holding it died):
+ *  re-pump read-ahead. Safe to call at any time — pump re-checks the hold itself. */
+function pumpBackgroundSessions(): void {
+  for (const s of [...sessions.values()]) {
+    if (!s.priority) pump(s);
+  }
 }
 
 /** Seconds of generated-but-not-yet-played audio ahead of the playhead. */
@@ -244,14 +317,32 @@ function pump(s: SchedulerSession): void {
 
   const engine = getActiveEngine();
 
-  // In-flight cap: a batching engine (Orpheus) reports its FIXED streaming batch
-  // width here (16 — see orpheus-worker-pool.ts STREAM_BATCH_WIDTH); XTTS reports its
+  // In-flight cap: a batching engine (Orpheus) reports its streaming batch width
+  // here (16 — see orpheus-worker-pool.ts STREAM_BATCH_WIDTH); XTTS reports its
   // worker count. We dispatch a whole batch's worth at once so the engine's batch
   // goes out FULL — a partly-filled MLX batch costs the same wall clock as a full
   // one, so anything less is throughput thrown away.
-  const cap = engine.getMaxConcurrentSentences?.() ?? engine.getWorkerCount();
+  const batching = typeof engine.getMaxConcurrentSentences === 'function';
+  const fullCap = engine.getMaxConcurrentSentences?.() ?? engine.getWorkerCount();
+  // …except the FIRST wave of the session actually being listened to, which goes out
+  // at STREAM_RAMP_WIDTH so the client's start gate opens ~15s sooner (see the
+  // first-batch ramp note at the top of this file). Only ever the first wave: after
+  // this, nextToDispatch has moved off startIndex and the cap is full again.
+  // Background read-ahead never ramps — full batches are the entire point there.
+  const cap = batching && s.priority && s.nextToDispatch === s.startIndex
+    ? Math.min(STREAM_RAMP_WIDTH, fullCap)
+    : fullCap;
+
+  // …and read-ahead sends NOTHING NEW while that ramp wave is unanswered, or the
+  // pool would pack these rows into the ramp's own batch and widen it back to 16.
+  // Guards the dispatch loop rather than returning, so a background session that has
+  // already delivered everything still reports 'complete' below — withholding a
+  // terminal event would leave the client's read-ahead slot occupied by a block that
+  // is actually finished. Rows already in flight are unaffected either way.
+  const holdForRamp = batching && !s.priority && rampPendingOnPriority();
 
   while (
+    !holdForRamp &&
     s.inFlight.size < cap &&
     s.nextToDispatch < s.sentences.length &&
     bufferedSecondsAhead(s) < s.lookaheadSeconds
@@ -259,7 +350,9 @@ function pump(s: SchedulerSession): void {
     dispatch(s, s.nextToDispatch++);
   }
 
-  // Everything generated and delivered?
+  // Everything generated and delivered? (No ramp release needed on this path: to get
+  // here a session either dispatched nothing — never a hold — or had every dispatched
+  // row come back, which set firstResultSeen; and it leaves the map either way.)
   if (
     !s.completeSent &&
     s.nextToDispatch >= s.sentences.length &&
@@ -288,6 +381,15 @@ function shouldStreamSentence(s: SchedulerSession, sentenceIndex: number): boole
   if (!s.priority || typeof engine.generateSentenceStream !== 'function') return false;
   if (typeof engine.getMaxConcurrentSentences === 'function') return false; // batching engine
   return sentenceIndex < s.startIndex + 1;
+}
+
+/** A dispatched sentence came back — done or failed, the distinction doesn't matter
+ *  here. The FIRST one on a playing session closes the ramp window: the pool is now
+ *  demonstrably working on that batch, so read-ahead can queue for the next flush. */
+function noteResult(s: SchedulerSession): void {
+  if (s.firstResultSeen) return;
+  s.firstResultSeen = true;
+  if (s.priority) pumpBackgroundSessions();
 }
 
 function dispatch(s: SchedulerSession, sentenceIndex: number): void {
@@ -323,6 +425,7 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
           console.error(`[StreamScheduler] Stream sentence ${sentenceIndex} failed:`, result.error);
           s.sink({ kind: 'failed', requestId, sentenceIndex, error: result.error });
         }
+        noteResult(s);
         pump(s);
       });
     return;
@@ -349,6 +452,9 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
         console.error(`[StreamScheduler] Sentence ${sentenceIndex} failed:`, result.error);
         s.sink({ kind: 'failed', requestId, sentenceIndex, error: result.error });
       }
+      // Before pump(s): a first result on a playing session releases read-ahead, and
+      // it must be released whether this row succeeded or failed.
+      noteResult(s);
       pump(s);
     });
 }
