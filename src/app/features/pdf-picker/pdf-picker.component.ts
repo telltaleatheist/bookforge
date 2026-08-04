@@ -2826,7 +2826,21 @@ export class PdfPickerComponent implements OnInit {
     this.foundryAttachedKey = key;
     void (async () => {
       try {
-        const state = await this.electronService.foundryRunAttach(key);
+        const { state, cleared } = await this.electronService.foundryRunAttach(key);
+        // The one moment the sweep is reported. It is not an interruption about
+        // work nobody asked for — it is the answer to "where did my OCR go",
+        // and main hands it over exactly once, so not showing it here means
+        // never showing it.
+        if (cleared) {
+          this.showAlert({
+            type: 'warning',
+            title: 'The last OCR run failed and was cleared',
+            message:
+              `The ${cleared.stage ?? 'foundry'} stage failed, so nothing from that run was kept:\n\n` +
+              `${cleared.message}\n\n` +
+              'Run it again when you have dealt with the cause.',
+          });
+        }
         if (state?.status !== 'done') return;
         await this.loadFoundryRun();
       } catch (err) {
@@ -14948,7 +14962,7 @@ export class PdfPickerComponent implements OnInit {
   private async assertFoundryRunReadsThisDocument(): Promise<void> {
     const key = this.foundryBookKey();
     const displayed = this.effectivePath();
-    const state = await this.electronService.foundryRunAttach(key);
+    const { state } = await this.electronService.foundryRunAttach(key);
     if (!state) {
       throw new Error(
         `No foundry run is registered under ${key}, so there is nothing to paint onto `
@@ -15112,7 +15126,18 @@ export class PdfPickerComponent implements OnInit {
       // run existed on disk but had not re-attached, tryFoundryExport returned
       // null, and the legacy exporter silently rebuilt a different book over
       // foundry's. If a run exists for this book in ANY state, refuse loudly.
-      const orphan = await this.electronService.foundryRunAttach(this.foundryBookKey());
+      const { state: orphan, cleared } = await this.electronService.foundryRunAttach(
+        this.foundryBookKey());
+      if (cleared) {
+        this.showAlert({
+          type: 'warning',
+          title: 'The last OCR run failed and was cleared',
+          message:
+            `The ${cleared.stage ?? 'foundry'} stage failed, so nothing from that run was kept:\n\n`
+            + `${cleared.message}\n\n`
+            + 'This export is being built from the blocks in the editor instead.',
+        });
+      }
       if (orphan) {
         throw new Error(
           `This book has a foundry OCR run (${orphan.status}) that is not loaded in this window. `

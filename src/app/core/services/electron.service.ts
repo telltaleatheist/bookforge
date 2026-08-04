@@ -753,6 +753,27 @@ export interface FoundryRunState {
   updatedAt: number;
 }
 
+/** Why an attach came back empty, when it came back empty because it swept. */
+export interface FoundryRunCleared {
+  /** The stage that failed, or null when it failed before one started. */
+  stage: FoundryRunStageName | null;
+  /** foundry's own words for the failure. */
+  message: string;
+}
+
+/**
+ * What attaching answers: the run, and — when there was a failed one — the
+ * reason it was thrown away instead of handed over.
+ *
+ * `cleared` arrives EXACTLY ONCE, on the attach that swept it. Anything that
+ * wants the user to see it must show it on that attach; a later attach reports
+ * an empty book with no explanation, because that is now the truth.
+ */
+export interface FoundryRunAttachment {
+  state: FoundryRunState | null;
+  cleared?: FoundryRunCleared;
+}
+
 /**
  * A foundry block in the picker's coordinate space.
  *
@@ -2572,14 +2593,20 @@ export class ElectronService {
   // and they are the product — nothing here summarizes them, and there is no
   // fallback to the legacy OCR engines.
 
-  /** The run for this book, if there is one — including a finished or failed one. */
-  async foundryRunAttach(bookKey: string): Promise<FoundryRunState | null> {
-    if (!this.isElectron) return null;
+  /**
+   * The run for this book, if there is one — including a finished or cancelled
+   * one. A FAILED run is not one: main sweeps it and hands back `cleared`
+   * instead, once, naming the stage and quoting foundry. Callers that drop
+   * `cleared` on the floor are choosing to say nothing about a failure the user
+   * will otherwise experience as a book that silently forgot its OCR.
+   */
+  async foundryRunAttach(bookKey: string): Promise<FoundryRunAttachment> {
+    if (!this.isElectron) return { state: null, cleared: undefined };
     const result = await (window as any).electron.foundry.runAttach(bookKey);
     if (!result.success) {
       throw new Error(result.error || 'Reading the OCR run state failed with no message.');
     }
-    return result.state ?? null;
+    return { state: result.state ?? null, cleared: result.cleared };
   }
 
   async foundryRunCancel(bookKey: string): Promise<void> {

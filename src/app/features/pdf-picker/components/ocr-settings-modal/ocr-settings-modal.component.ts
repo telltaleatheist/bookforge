@@ -677,7 +677,18 @@ export class OcrSettingsModalComponent implements OnDestroy {
       const key = this.bookKey();
       if (!key) return;
       void this.electronService.foundryRunAttach(key)
-        .then(state => { if (state) this.applyFoundryRunState(state); })
+        .then(({ state, cleared }) => {
+          // A failed run is swept by the attach, and the reason comes back
+          // exactly once. This panel is where somebody opened to ask what
+          // happened, so it says so in its own error line rather than showing
+          // the blank "nothing has been read yet" face that the sweep leaves.
+          if (cleared) {
+            this.error.set(
+              `The last run failed at the ${cleared.stage ?? 'foundry'} stage and was cleared, `
+              + `so nothing from it was kept: ${cleared.message}`);
+          }
+          if (state) this.applyFoundryRunState(state);
+        })
         .catch(err => console.error('[OCR] Could not read the foundry run state:', err));
     }, { allowSignalWrites: true });
   }
