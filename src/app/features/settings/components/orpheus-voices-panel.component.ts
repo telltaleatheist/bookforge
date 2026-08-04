@@ -1,4 +1,4 @@
-import { Component, inject, computed, signal, ChangeDetectionStrategy, OnInit } from '@angular/core';
+import { Component, inject, computed, signal, ChangeDetectionStrategy, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ComponentService } from '../../../core/services/component.service';
@@ -8,6 +8,22 @@ interface OrpheusCatalogEntry {
   sampleRate: number; private: boolean; installed: boolean;
   /** Local folder/manifest id when installed (may differ from `id`). Uninstall target. */
   installedId?: string;
+  /** 'merged' = a full ~6.6 GB fine-tune; 'adapter' = a ~0.4 GB LoRA on the shared base. */
+  artifact: 'merged' | 'adapter';
+  base?: { id: string; ref: string; dir?: string };
+  /** Adapter voice whose shared base isn't installed — Download is blocked until it is. */
+  needsBase?: boolean;
+  approxSizeBytes: number;
+}
+
+interface OrpheusBaseStatus {
+  base: { id: string; ref: string; dir?: string };
+  installed: boolean;
+  verified: boolean;
+  dir?: string;
+  approxSizeBytes: number;
+  /** True when at least one catalogued voice is an adapter, i.e. the base is needed. */
+  required: boolean;
 }
 
 /**
@@ -31,9 +47,11 @@ interface OrpheusCatalogEntry {
       <div class="explainer">
         <p>
           <strong>Orpheus</strong> is a more natural, GPU-heavy narration engine. Install the engine,
-          then download voice models — each is a full fine-tune, so they're large but sound great.
-          Voices come from the sources below; add more HuggingFace repos (tagged with an
-          <code>orpheus_token</code>) to grow the list.
+          then the shared base model, then the voices you want. Most voices are small
+          <strong>voice packs</strong> (about 0.4&nbsp;GB each) that run on top of the one shared base
+          model, so after the first download every extra voice is quick. A few older voices are full
+          standalone models and are correspondingly large. Voices come from the sources below; add more
+          HuggingFace repos (tagged with an <code>orpheus_token</code>) to grow the list.
         </p>
       </div>
 
@@ -72,6 +90,46 @@ interface OrpheusCatalogEntry {
         </div>
       }
 
+      <!-- Shared base model: downloaded ONCE, reused by every voice pack. Hidden when
+           no catalogued voice needs it (an all-merged source list). -->
+      @if (base(); as b) {
+        @if (b.required) {
+          <h3 class="group-title">Base model</h3>
+          <div class="component-card">
+            <div class="component-head">
+              <div class="component-meta">
+                <h4 class="component-name">Orpheus base model</h4>
+                <p class="component-desc">
+                  {{ b.base.ref }} · shared by every voice pack — downloaded once, then each voice is
+                  only about 0.4&nbsp;GB.
+                </p>
+              </div>
+              <div class="component-badge">
+                <span class="status-badge" [ngClass]="b.installed ? 'installed' : (baseBusy() ? 'installing' : 'available')">
+                  {{ b.installed ? 'Installed' : (baseBusy() ? 'Installing' : 'Available') }}
+                </span>
+                <span class="component-size">{{ formatBytes(b.approxSizeBytes) }}</span>
+              </div>
+            </div>
+            @if (baseBusy()) {
+              <div class="install-progress">
+                <div class="progress-bar indeterminate"><div class="progress-fill"></div></div>
+                <span class="progress-label">Downloading shared base model (one time)…</span>
+              </div>
+            }
+            <div class="component-actions">
+              @if (b.installed) {
+                <span class="action-note">Ready — voice packs will use this.</span>
+              } @else {
+                <desktop-button variant="primary" size="sm" (click)="installBase()" [disabled]="baseBusy()">
+                  {{ baseBusy() ? 'Downloading…' : 'Download & Install' }}
+                </desktop-button>
+              }
+            </div>
+          </div>
+        }
+      }
+
       <!-- Voices -->
       <h3 class="group-title">Voice models</h3>
       @if (loading()) {
@@ -84,19 +142,31 @@ interface OrpheusCatalogEntry {
             <div class="component-head">
               <div class="component-meta">
                 <h4 class="component-name">{{ v.label }} @if (v.private) { <span class="lock" title="Private repo — needs your HuggingFace token">🔒</span> }</h4>
-                <p class="component-desc">{{ v.repoId }} · token “{{ v.token }}”</p>
+                <p class="component-desc">
+                  {{ v.repoId }} · token “{{ v.token }}” ·
+                  {{ v.artifact === 'adapter' ? 'voice pack (uses the shared base model)' : 'full standalone model' }}
+                </p>
               </div>
               <div class="component-badge">
                 <span class="status-badge" [ngClass]="v.installed ? 'installed' : (busy().has(v.repoId) ? 'installing' : 'available')">
                   {{ v.installed ? 'Installed' : (busy().has(v.repoId) ? 'Installing' : 'Available') }}
                 </span>
+                <span class="component-size">{{ formatBytes(v.approxSizeBytes) }}</span>
               </div>
             </div>
+            @if (busy().has(v.repoId) && installMessage()[v.repoId]; as msg) {
+              <div class="install-progress">
+                <div class="progress-bar indeterminate"><div class="progress-fill"></div></div>
+                <span class="progress-label">{{ msg }}</span>
+              </div>
+            }
             <div class="component-actions">
               @if (v.installed) {
                 <desktop-button variant="ghost" size="sm" (click)="removeVoice(v)" [disabled]="busy().has(v.repoId)">Uninstall</desktop-button>
               } @else {
-                <desktop-button variant="primary" size="sm" (click)="installVoice(v)" [disabled]="busy().has(v.repoId)">
+                @if (v.needsBase && !baseInstalled()) { <span class="action-note">Requires the Orpheus base model</span> }
+                <desktop-button variant="primary" size="sm" (click)="installVoice(v)"
+                                [disabled]="busy().has(v.repoId) || (!!v.needsBase && !baseInstalled())">
                   {{ busy().has(v.repoId) ? 'Downloading…' : 'Download & Install' }}
                 </desktop-button>
               }
@@ -161,12 +231,16 @@ interface OrpheusCatalogEntry {
     .source-input:focus { border-color: var(--accent); }
   `],
 })
-export class OrpheusVoicesPanelComponent implements OnInit {
+export class OrpheusVoicesPanelComponent implements OnInit, OnDestroy {
   readonly svc = inject(ComponentService);
 
   readonly catalog = signal<OrpheusCatalogEntry[]>([]);
+  readonly base = signal<OrpheusBaseStatus | null>(null);
   readonly sources = signal<string[]>([]);
   readonly busy = signal<Set<string>>(new Set());
+  readonly baseBusy = signal(false);
+  /** repoId → the current two-phase install message ("Downloading shared base model…"). */
+  readonly installMessage = signal<Record<string, string>>({});
   readonly loading = signal(true);
   readonly error = signal<string | null>(null);
   readonly newSource = signal('');
@@ -176,21 +250,41 @@ export class OrpheusVoicesPanelComponent implements OnInit {
     this.svc.components().find((s) => s.component.id === 'orpheus') ?? null,
   );
 
+  /** True once the shared base is on disk — gates every adapter voice's Download. */
+  readonly baseInstalled = computed(() => this.base()?.installed === true);
+
+  private unsubscribeProgress?: () => void;
+
   private get api(): any { return (window as any).electron?.orpheusModels; }
 
   ngOnInit(): void {
     this.svc.ensureLoaded();
+    this.unsubscribeProgress = this.api?.onInstallProgress?.(
+      (p: { repoId: string; phase: 'base' | 'voice'; message: string }) => {
+        this.installMessage.update((m) => ({ ...m, [p.repoId]: p.message }));
+      },
+    );
     void this.refresh();
+  }
+
+  ngOnDestroy(): void {
+    this.unsubscribeProgress?.();
   }
 
   async refresh(): Promise<void> {
     if (!this.api) { this.loading.set(false); return; }
     this.loading.set(true);
     try {
-      const [cat, src] = await Promise.all([this.api.catalogList?.(), this.api.sourcesGet?.()]);
+      const [cat, src, base] = await Promise.all([
+        this.api.catalogList?.(),
+        this.api.sourcesGet?.(),
+        this.api.baseStatus?.(),
+      ]);
       if (cat?.success) this.catalog.set(cat.data ?? []);
       else if (cat && !cat.success) this.error.set(cat.error ?? null);
       if (src?.success) this.sources.set(src.data ?? []);
+      if (base?.success) this.base.set(base.data ?? null);
+      else if (base && !base.success) this.error.set(base.error ?? null);
     } catch (e) {
       this.error.set(e instanceof Error ? e.message : String(e));
     } finally {
@@ -202,14 +296,35 @@ export class OrpheusVoicesPanelComponent implements OnInit {
     this.busy.update((s) => { const n = new Set(s); if (on) n.add(key); else n.delete(key); return n; });
   }
 
+  /** Install the shared base on its own. Installing an adapter voice does this
+   *  implicitly too; this button exists so the one-time cost can be paid up front. */
+  async installBase(): Promise<void> {
+    this.error.set(null);
+    this.baseBusy.set(true);
+    try {
+      const res = await this.api?.baseInstall?.();
+      if (res && !res.success) this.error.set(res.error ?? 'Base model install failed.');
+    } finally {
+      this.baseBusy.set(false);
+      await this.refresh();
+    }
+  }
+
   async installVoice(v: OrpheusCatalogEntry): Promise<void> {
     this.error.set(null);
     this.setBusy(v.repoId, true);
+    this.installMessage.update((m) => ({
+      ...m,
+      [v.repoId]: v.artifact === 'adapter' && !this.baseInstalled()
+        ? 'Downloading shared base model (one time)…'
+        : `Downloading the ${v.label} voice…`,
+    }));
     try {
       const res = await this.api?.install?.(v.repoId);
       if (res && !res.success) this.error.set(res.error ?? 'Install failed.');
     } finally {
       this.setBusy(v.repoId, false);
+      this.installMessage.update((m) => { const n = { ...m }; delete n[v.repoId]; return n; });
       await this.refresh();
     }
   }
