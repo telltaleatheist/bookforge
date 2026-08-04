@@ -39,35 +39,103 @@ export const STATION_LABELS: Record<StationId, string> = {
 };
 
 /**
+ * A book's documents, as the ladder needs to know them.
+ *
+ * Three facts, kept apart because they are answered by three different things
+ * and conflating any two of them produced a bug this file now exists to prevent.
+ */
+export interface BookDocuments {
+  /**
+   * This book has a PDF original, so a working document is possible AT ALL.
+   *
+   * A project that arrived as an EPUB has none: the document pipeline casts a
+   * working PDF from the book's ORIGINAL, and main refuses an EPUB there by
+   * name. For such a book the Working station is not "not yet", it is **not
+   * applicable** — and the difference matters, because "not yet" points at a
+   * button and that button would refuse the user.
+   */
+  readonly hasPdfOriginal: boolean;
+  /**
+   * The measured stages of the working document, or null when none has been
+   * read. For a book with no PDF original this is always null and never
+   * consulted.
+   */
+  readonly workingStages: DocumentPipelineStages | null;
+  /**
+   * The project's book EPUB is on disk.
+   *
+   * ONE measure for both kinds of book — main's existence-checked manifest
+   * record (`readExportEpub`) — rather than the binding's `stages.reflow`, which
+   * only a book with a PDF ancestor has. A book with no binding at all still has
+   * a book once it has been exported, and a station that could not see it would
+   * strand it.
+   */
+  readonly bookEpubExists: boolean;
+}
+
+/**
+ * What a station IS for this book.
+ *
+ * `absent` is "not yet, and here is the button". `not-applicable` is "this book
+ * never has one" — the distinction the Working station needs, and the reason
+ * this is three values rather than a boolean.
+ */
+export type StationPresence = 'present' | 'absent' | 'not-applicable';
+
+export function stationPresence(id: StationId, book: BookDocuments): StationPresence {
+  switch (id) {
+    case 'archive':
+      // A book on screen has an original by construction — it is what was
+      // imported, and it is what every other document is bound to.
+      return 'present';
+    case 'working':
+      if (!book.hasPdfOriginal) return 'not-applicable';
+      return book.workingStages?.getText === true ? 'present' : 'absent';
+    case 'epub':
+      return book.bookEpubExists ? 'present' : 'absent';
+    case 'tts':
+      // Not an artifact this pipeline mints: it is where the finished book is
+      // handed on, so it is reachable exactly when there is a book to hand.
+      return book.bookEpubExists ? 'present' : 'absent';
+  }
+}
+
+/**
  * Which stations a book HAS, measured.
  *
- * Archive is always among them — a project is its archive original, and a book
- * with no primary is not a book this function is ever asked about. Working
- * exists once the cast has run; the EPUB exists once reflow has written one the
- * binding still vouches for. TTS is never in this set: it is a station you go
- * to, not an artifact this pipeline mints.
+ * TTS is never in this list even when it is reachable: the list is what the
+ * ladder can STAND on, and narration is a hand-off rather than a document the
+ * picker shows.
  */
-export function existingStations(stages: DocumentPipelineStages): StationId[] {
-  const present: StationId[] = ['archive'];
-  if (stages.getText) present.push('working');
-  if (stages.reflow) present.push('epub');
+export function existingStations(book: BookDocuments): StationId[] {
+  const present: StationId[] = [];
+  for (const id of STATIONS) {
+    if (id === 'tts') continue;
+    if (stationPresence(id, book) === 'present') present.push(id);
+  }
   return present;
 }
 
 /**
- * The sentence that names what is missing between a station and the next one.
+ * The sentence for a station that is MISSING — keyed to the missing thing, not
+ * to where the user is standing.
  *
- * Each one names the BUTTON that makes the missing thing, because "you cannot go
- * on" is not information — the user already knows that from the disabled
- * control. Which button is on which station is the thing they cannot see.
+ * Each one names the BUTTON that makes it, because "you cannot go on" is not
+ * information: the user already knows that from the disabled control. Which
+ * button is on which station is the thing they cannot see. Keying it to the
+ * missing station rather than the current one is what lets a book with no PDF
+ * original be told about the book, having skipped a working copy it will never
+ * have.
  */
-const LOCKED_REASONS: Record<StationId, string> = {
-  archive: 'Next needs a working copy — press OCR / Cast.',
-  working: 'Next needs the book built — press Build the book.',
+const MISSING_REASONS: Record<StationId, string> = {
+  // A book on screen always has its original, so this is unreachable. Declared
+  // so that adding a station cannot silently leave one unexplained.
+  archive: 'This book has no archived original, which should be impossible.',
+  working: 'Next needs a working copy — press OCR / Cast.',
   epub: 'Next needs the book built — press Build the book.',
-  // The ladder stops here, so this is never read through `nextStation`. It is
-  // declared so that adding a station cannot silently leave one unexplained.
-  tts: 'Narration is the last station of the picker.',
+  // Narration needs the book and nothing else, so a walk that reached here
+  // already passed a present EPUB station. Declared for the same reason.
+  tts: 'Narration needs the book built — press Build the book.',
 };
 
 export interface NextStep {
@@ -84,29 +152,31 @@ export interface NextStep {
 /**
  * Where Next goes from `from`, and why it will not go there.
  *
- * `present` is what `existingStations` measured. A station that is not itself
- * present cannot be stood on, and asking about it is a bug in the caller rather
- * than a state to smooth over — it throws.
+ * A station that is not itself present cannot be stood on, and asking about it
+ * is a bug in the caller rather than a state to smooth over — it throws.
+ *
+ * A **not-applicable** station is walked straight past. For a book that arrived
+ * as an EPUB, Next at the archive goes to the book, because a working copy is
+ * not a rung it has not climbed yet — it is a rung that does not exist for it,
+ * and stopping there would offer a button that refuses.
  */
-export function nextStation(from: StationId, present: readonly StationId[]): NextStep {
-  if (!present.includes(from)) {
+export function nextStation(from: StationId, book: BookDocuments): NextStep {
+  if (stationPresence(from, book) !== 'present') {
     throw new Error(
       `The picker is showing the ${from} station, and this book does not have one. `
       + 'The station list is measured off the documents, so the window is looking at '
       + 'something the project no longer carries — reopen the book.'
     );
   }
-  const at = STATIONS.indexOf(from);
-  if (at === STATIONS.length - 1) {
-    return { next: null, lockedReason: null };
+  for (let at = STATIONS.indexOf(from) + 1; at < STATIONS.length; at += 1) {
+    const candidate = STATIONS[at];
+    const presence = stationPresence(candidate, book);
+    if (presence === 'not-applicable') continue;
+    return presence === 'present'
+      ? { next: candidate, lockedReason: null }
+      : { next: candidate, lockedReason: MISSING_REASONS[candidate] };
   }
-  const next = STATIONS[at + 1];
-  // TTS is not an artifact — it is where the picker hands the finished book on —
-  // so it is reachable exactly when the EPUB it needs exists.
-  const reachable = next === 'tts' ? present.includes('epub') : present.includes(next);
-  return reachable
-    ? { next, lockedReason: null }
-    : { next, lockedReason: LOCKED_REASONS[from] };
+  return { next: null, lockedReason: null };
 }
 
 /**

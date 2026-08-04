@@ -41,6 +41,8 @@ import {
   existingStations,
   nextStation,
   stationMintedBy,
+  stationPresence,
+  type BookDocuments,
   type StationId,
 } from '@shared/document/stations';
 import type { ChainPassRequest } from '@shared/processing/pass-types';
@@ -818,10 +820,15 @@ interface AlertModal {
             whether this window follows the artifact it makes.
           -->
           <div class="long-run-options">
-            <label class="long-run-option">
+            <label
+              class="long-run-option"
+              [class.refused]="runInBackgroundRefusal() !== null"
+              [title]="runInBackgroundRefusal() ?? 'Hand the run to the queue and stop watching it.'"
+            >
               <input
                 type="checkbox"
-                [checked]="runInBackground()"
+                [disabled]="runInBackgroundRefusal() !== null"
+                [checked]="effectiveRunInBackground()"
                 (change)="setRunInBackground($any($event.target).checked)"
               />
               <span>Run in background</span>
@@ -1392,6 +1399,12 @@ interface AlertModal {
       cursor: pointer;
 
       input { accent-color: var(--accent); }
+    }
+
+    /* Refused for this book, and hovering says why. */
+    .long-run-option.refused {
+      color: var(--text-tertiary);
+      cursor: not-allowed;
     }
 
     /* The sentence saying why the artifact on screen is not curated here */
@@ -2652,6 +2665,21 @@ export class PdfPickerComponent implements OnInit {
     void this.loadWorkingDocument();
   });
 
+  /**
+   * Ask main where this project's book is, whenever the project changes.
+   *
+   * Keyed on the project directory rather than on the document on screen: the
+   * book belongs to the project, and switching between the archive and the book
+   * inside one project does not change where it is.
+   */
+  private askedBookEpubFor = '';
+  private readonly bookEpubEffect = effect(() => {
+    const dir = this.projectPath() ?? '';
+    if (this.askedBookEpubFor === dir) return;
+    this.askedBookEpubFor = dir;
+    void this.refreshBookEpub();
+  });
+
   // Tab persistence - localStorage keys
   private readonly OPEN_TABS_KEY = 'bookforge-open-tabs';
   private readonly ACTIVE_TAB_KEY = 'bookforge-active-tab';
@@ -3315,6 +3343,33 @@ export class PdfPickerComponent implements OnInit {
   readonly runInBackground = signal(false);
   readonly openWhenFinished = signal(true);
 
+  /**
+   * Why this book cannot be built in the background, or null.
+   *
+   * The queue runs PASSES, and its pass kinds are get-text, blocks, reflow,
+   * footnotes, simplify and translate. There is no pass for the
+   * markup-preserving export: it aligns the editor's own view of the book
+   * against the source, and that view lives in this window. So for a book that
+   * arrived as an EPUB the checkbox is refused BY NAME rather than accepted and
+   * quietly ignored — a "run in background" that silently runs in the foreground
+   * is exactly the kind of lie this phase exists to remove.
+   */
+  readonly runInBackgroundRefusal = computed<string | null>(() => {
+    if (!this.buildsByPreservingMarkup()) return null;
+    return 'This book keeps its own markup, and that export aligns against the editor\'s view of '
+      + 'it — there is no queue pass that can carry it. Building it happens here, with the book '
+      + 'on screen.';
+  });
+
+  /**
+   * Whether the NEXT build actually goes to the queue.
+   *
+   * One value drives the checkbox and the branch, so the box cannot show ticked
+   * for a book that will build in the foreground regardless.
+   */
+  readonly effectiveRunInBackground = computed(() =>
+    this.runInBackgroundRefusal() === null && this.runInBackground());
+
   setRunInBackground(on: boolean): void {
     this.runInBackground.set(on);
     this.persistLongRunOptions();
@@ -3370,15 +3425,96 @@ export class PdfPickerComponent implements OnInit {
   readonly stationBusy = computed(() =>
     this.documentBlocks.stageRunning() !== null || this.loading());
 
-  /** The stations this book HAS, measured off the binding record. */
-  readonly presentStations = computed<StationId[]>(() => {
-    const state = this.documentBlocks.state();
-    // No state means main has not answered about this book's documents — a
-    // corpus book, a loose file, a project still opening. The archive original
-    // is the one thing that always exists for a book that is on screen at all.
-    if (!state) return ['archive'];
-    return existingStations(state.stages);
-  });
+  /**
+   * The project's book EPUB, absolute, or null when it has never been exported.
+   *
+   * MAIN'S ANSWER, asked for (`projects:export-info`) and never composed here.
+   * The export is named after the book — the manifest owns that name — and it is
+   * located by its manifest record rather than by scanning `source/`, so an
+   * unrecorded stray is not adopted as a project's book. Existence is checked on
+   * that side too, so a record pointing at a deleted file reads as null.
+   *
+   * This, not the binding's `stages.reflow`, is what the EPUB station's presence
+   * is measured by: a book that arrived as an EPUB has no binding record at all,
+   * and it still has a book once it has been built.
+   */
+  private readonly bookEpubPath = signal<string | null>(null);
+
+  /**
+   * Main's refusal when it could not answer where the book is, or null.
+   *
+   * Kept apart from `bookEpubPath` because "we could not ask" and "there is
+   * none" are different states, and collapsing them would tell somebody with a
+   * damaged manifest to press Build the book — which fails the same way, without
+   * saying so.
+   */
+  private readonly bookEpubError = signal<string | null>(null);
+
+  /**
+   * Ask main where this project's book is. Called when the project changes and
+   * after anything that could have written one.
+   */
+  private async refreshBookEpub(): Promise<void> {
+    const dir = this.projectPath();
+    if (!dir) {
+      // No project, no book of its own. Not a failure: a loose file has none.
+      this.bookEpubPath.set(null);
+      this.bookEpubError.set(null);
+      return;
+    }
+    try {
+      const info = await this.electronService.projectsExportInfo(dir);
+      this.bookEpubError.set(null);
+      this.bookEpubPath.set(info.exported ? info.exported.absPath : null);
+    } catch (err) {
+      // Main's own sentence, kept and shown on the EPUB tab. The path is left
+      // alone rather than cleared: whatever was last measured is still the last
+      // thing anybody actually proved.
+      const message = err instanceof Error ? err.message : String(err);
+      this.bookEpubError.set(message);
+      console.error('[picker] could not resolve this project\'s book EPUB:', message);
+    }
+  }
+
+  /**
+   * This book's documents, as the ladder needs them: three facts from three
+   * different authorities, deliberately not conflated.
+   *
+   * `hasPdfOriginal` is the one that makes an EPUB-native book work. The
+   * document pipeline casts a working PDF from the book's ORIGINAL, and main
+   * refuses an EPUB there by name — so such a book has no binding record at all,
+   * `documentBlocks.state()` is null forever, and its Working station is NOT
+   * APPLICABLE rather than not-yet. Reading that as "not yet" is what left those
+   * books standing at a locked Next pointing to a button that would refuse them.
+   */
+  readonly bookDocuments = computed<BookDocuments>(() => ({
+    hasPdfOriginal: this.curatedPdfPath() !== null,
+    workingStages: this.documentBlocks.state()?.stages ?? null,
+    // Main's existence-checked manifest record, never the binding's
+    // `stages.reflow`: a book with no PDF ancestor has no binding to ask, and it
+    // still has a book once it has been exported.
+    bookEpubExists: this.bookEpubPath() !== null,
+  }));
+
+  /** The stations this book HAS, measured. */
+  readonly presentStations = computed<StationId[]>(() =>
+    existingStations(this.bookDocuments()));
+
+  /**
+   * This BOOK is built by preserving its own markup rather than by reflow.
+   *
+   * Deliberately not `useEpubPreservingExport()`, which asks whether the file
+   * ON SCREEN is an EPUB. That is the right question for Save As and for the
+   * legacy export paths — they act on what you are looking at — and the wrong
+   * one for the station bar, which is about the book: at the EPUB station of a
+   * reflowed PDF book the file on screen is an EPUB too, and asking there would
+   * put a markup-preserving build on a book that has no markup to preserve.
+   *
+   * The book-level fact is whether it has a PDF ancestor. It does not change
+   * when the viewer does.
+   */
+  readonly buildsByPreservingMarkup = computed(() =>
+    !!this.projectPath() && !this.bookDocuments().hasPdfOriginal);
 
   /**
    * What is missing between the station on screen and the next one, or null.
@@ -3387,27 +3523,25 @@ export class PdfPickerComponent implements OnInit {
    * explained with one sentence rather than two that can drift.
    */
   readonly stationNextStep = computed(() => {
-    const present = this.presentStations();
+    const book = this.bookDocuments();
     const at = this.viewedStation();
     // A window showing a station the book no longer has is a real state — a
     // reset removed the working copy while it was open — and the ladder throws
     // on it by name. Here it means "you are back at the archive", which is
     // exactly where a reset leaves the book.
-    if (!present.includes(at)) return nextStation('archive', present);
-    return nextStation(at, present);
+    if (stationPresence(at, book) !== 'present') return nextStation('archive', book);
+    return nextStation(at, book);
   });
 
   readonly stationTabs = computed<StationTab[]>(() => {
-    const present = this.presentStations();
+    const book = this.bookDocuments();
     const at = this.viewedStation();
     return STATIONS.map(id => ({
       id,
       label: STATION_LABELS[id],
-      // Narration is not an artifact — it is where the picker hands the book on
-      // — so it is reachable exactly when the EPUB it needs exists.
-      present: id === 'tts' ? present.includes('epub') : present.includes(id),
+      presence: stationPresence(id, book),
       current: id === at,
-      reason: this.stationAbsenceReason(id, present),
+      reason: this.stationAbsenceReason(id, book),
     }));
   });
 
@@ -3415,7 +3549,13 @@ export class PdfPickerComponent implements OnInit {
   readonly stationContext = computed(() => {
     switch (this.viewedStation()) {
       case 'archive':
-        return 'The archived original, exactly as it was imported. Nothing is ever written to it.';
+        // Still never written to, either way. What changes is where the edits go
+        // in the meantime: into a working copy's annotations for a cast book,
+        // into the project for one that is applied at build time.
+        return this.hasWorkingCopy()
+          ? 'The archived original, exactly as it was imported. Nothing is ever written to it.'
+          : 'The archived original — read-only on disk, and where this book is curated. '
+            + 'What you delete here is applied when the book is built.';
       case 'working':
         return 'The working copy: the cast text and the block annotations. Curate here, then build the book.';
       case 'epub':
@@ -3433,7 +3573,7 @@ export class PdfPickerComponent implements OnInit {
    * button that vanishes teaches nothing about how to get it back.
    */
   readonly stationActions = computed<StationAction[]>(() => {
-    const present = this.presentStations();
+    const book = this.bookDocuments();
     const noProject = this.projectPath() ? null
       : 'This document does not belong to a BookForge project, and every station writes into one.';
     // Said here rather than discovered when the stage refuses: the document
@@ -3444,21 +3584,30 @@ export class PdfPickerComponent implements OnInit {
       : 'This book arrived as an EPUB, so there is no PDF to cast a working copy from. '
         + 'Curate it here and the text passes run on the book itself.';
     switch (this.viewedStation()) {
-      case 'archive':
-        return [
-          { id: 'cast', label: 'OCR / Cast', reason: noProject ?? noPdf, primary: true },
+      case 'archive': {
+        const actions: StationAction[] = [
+          { id: 'cast', label: 'OCR / Cast', reason: noProject ?? noPdf, primary: noPdf === null },
           // Detect implies the cast when there is none — the OCR dialog submits
           // both passes, in that order, and the planner refuses them the other
           // way round by name.
           { id: 'detect-from-archive', label: 'Detect', reason: noProject ?? noPdf },
         ];
+        // A book with no working copy to build FROM is built HERE, because here
+        // is where it is curated. Cast and Detect stay beside it, refused by
+        // name: they are what this station offers a book that has a PDF, and a
+        // control that vanishes teaches nothing about why.
+        if (this.buildsByPreservingMarkup()) {
+          actions.push({ id: 'reflow', label: 'Build the book', reason: noProject, primary: true });
+        }
+        return actions;
+      }
       case 'working':
         return [
           { id: 'detect', label: 'Detect', reason: noProject },
           {
             id: 'reflow',
             label: 'Build the book',
-            reason: noProject ?? (present.includes('working') ? null
+            reason: noProject ?? (stationPresence('working', book) === 'present' ? null
               : 'There is no working copy to build from — press OCR / Cast.'),
             primary: true,
           },
@@ -3512,7 +3661,12 @@ export class PdfPickerComponent implements OnInit {
           ? 'This is the archived original — switch to the Working copy to edit.'
           : null;
       case 'epub':
-        return 'This is the built book. Curation happens on the working copy; the text passes happen here.';
+        // The built book is derived either way, so curation belongs upstream of
+        // it — and where upstream IS differs by the kind of book.
+        return this.hasWorkingCopy()
+          ? 'This is the built book. Curation happens on the working copy; the text passes happen here.'
+          : 'This is the built book. Curation happens on the original at the Archive station; '
+            + 'the text passes happen here.';
       case 'tts':
         return 'The book has been handed to narration.';
       case 'working':
@@ -9000,7 +9154,20 @@ export class PdfPickerComponent implements OnInit {
 
     // The measurement first, always: the tabs are what the documents say, and a
     // stage that landed changed them whether or not anybody is following it.
-    await this.documentBlocks.refreshState();
+    // Both measurements, because a reflow moves the second one and a cast the
+    // first, and this handler does not know which stage it is being told about
+    // until the line below.
+    //
+    // `refreshState` throws for a project with no PDF original — main refuses to
+    // resolve a working document for a book — and that is an ordinary state for
+    // exactly the books whose stages this handler cannot be about. So it is
+    // asked for separately and its refusal does not stop the book measurement.
+    try {
+      await this.documentBlocks.refreshState();
+    } catch (err) {
+      console.info('[document] this project has no working document to re-measure:', err);
+    }
+    await this.refreshBookEpub();
 
     const minted = stationMintedBy(stage);
     if (minted === null || !this.openWhenFinished()) return;
@@ -9011,25 +9178,39 @@ export class PdfPickerComponent implements OnInit {
     await this.openStation(minted);
   }
 
-  /** Why a station cannot be opened, or null. The tab's tooltip IS this. */
-  private stationAbsenceReason(id: StationId, present: readonly StationId[]): string | null {
+  /**
+   * Why a station cannot be opened, or null. The tab's tooltip IS this.
+   *
+   * Every sentence names where the button is, and never names a button that
+   * would refuse the user when they got there — which is the whole reason the
+   * Working station distinguishes "not yet" from "this book never has one".
+   */
+  private stationAbsenceReason(id: StationId, book: BookDocuments): string | null {
+    if (stationPresence(id, book) === 'present') return null;
+    // "Build the book" is on the Working station for a cast book and on the
+    // Archive station for one that has no working copy to build FROM. Said once,
+    // here, so no sentence can point at the wrong tab.
+    const buildStation = book.hasPdfOriginal ? 'Working' : 'Archive';
     switch (id) {
       case 'archive':
         return null;  // A book on screen has an original, by construction.
       case 'working':
-        if (present.includes('working')) return null;
-        // A book with no PDF ancestor never gets this station at all, so the
-        // sentence says why rather than sending the user to a button that
-        // refuses them.
-        return this.curatedPdfPath()
+        return book.hasPdfOriginal
           ? 'There is no working copy yet — press OCR / Cast on the Archive station.'
-          : 'This book arrived as an EPUB, so it has no working PDF — it is curated on the book itself.';
-      case 'epub':
-        return present.includes('epub') ? null
-          : 'This book has not been built yet — press Build the book on the Working station.';
+          : 'This book arrived as an EPUB, so it has no working PDF to curate through. '
+            + 'It is curated on the book itself, at the Archive station.';
+      case 'epub': {
+        const failure = this.bookEpubError();
+        // "We could not ask" beats "it is not there": one is a fault in the
+        // project, the other is an ordinary book before its first build, and
+        // reporting the second for the first would send the user to press a
+        // button that fails the same way.
+        if (failure) return failure;
+        return `This book has not been built yet — press Build the book on the ${buildStation} station.`;
+      }
       case 'tts':
-        return present.includes('epub') ? null
-          : 'Narration reads the book, and there is not one yet — press Build the book.';
+        return 'Narration reads the book, and there is not one yet — press Build the book on the '
+          + `${buildStation} station.`;
     }
   }
 
@@ -9132,12 +9313,14 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  /** The project's book, absolute, or null when reflow has never written one. */
+  /**
+   * The project's book, absolute, or null when it has never been built.
+   *
+   * The same signal the EPUB station's presence is measured by, so the tab
+   * cannot be live while the file it would open is unknown.
+   */
   private stationEpubPath(): string | null {
-    const state = this.documentBlocks.state();
-    const dir = this.projectPath();
-    if (!state || !dir || !state.epubRelPath) return null;
-    return `${dir}/${state.epubRelPath}`;
+    return this.bookEpubPath();
   }
 
   /**
@@ -9213,7 +9396,14 @@ export class PdfPickerComponent implements OnInit {
   private requestBuildTheBook(): void {
     if (this.stationBusy()) return;
 
-    const count = this.documentBlocks.chapterBlocks().length;
+    // Two kinds of book, two authorities, and neither stands in for the other. A
+    // cast book's chapters ARE its `chapter` blocks, read off the working
+    // document. A book that arrived as an EPUB has no block layer at all — its
+    // chapters are the ones read out of its own navigation, and those are what
+    // the markup-preserving export carries through.
+    const count = this.buildsByPreservingMarkup()
+      ? this.chapters().length
+      : this.documentBlocks.chapterBlocks().length;
     if (count >= CHAPTERS_EXPORT_MINIMUM) {
       void this.buildTheBook();
       return;
@@ -9236,16 +9426,25 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
-   * Reflow: the working document in, `<Original>.epub` out.
+   * Build the book. TWO exporters, and which one runs is a fact about the
+   * SOURCE rather than a preference.
    *
-   * Two checkboxes on the bar decide how it is watched, and neither decides
-   * anything about the WORK — the stage runs in main either way:
+   *  - A book that arrived as an EPUB keeps its own markup. The
+   *    markup-preserving export aligns the editor's view against
+   *    `archive/<Original>.epub` and writes `source/<stem>.epub` with the
+   *    deletions applied — which is how a table of contents, an index or a
+   *    notes section is dropped from a book nobody ever wants narrated. Rebuilding
+   *    such a book from block text would flatten every `<sup>`, `<em>` and list
+   *    the file shipped with.
+   *  - Everything else is Reflow: the working document in, the book out.
    *
-   *  - **Run in background** submits it to the queue, where it serializes
-   *    against everything else that wants the GPU, and returns immediately.
-   *  - **Open when finished** switches this window to the EPUB station once the
-   *    stage lands — see `stageFinishedSubscription`, which checks the window is
-   *    still looking at the same project before it moves anything.
+   * Neither is a fallback for the other. The question they answer is what the
+   * source is, and the source cannot be both.
+   *
+   * Two checkboxes decide how it is WATCHED and never what it does — except that
+   * "run in background" has no meaning for the preserving export, which no queue
+   * pass covers; that is said on the checkbox rather than silently ignored (see
+   * `runInBackgroundRefusal`).
    */
   private async buildTheBook(): Promise<void> {
     const projectDir = this.projectPath();
@@ -9267,7 +9466,12 @@ export class PdfPickerComponent implements OnInit {
     // two options promise not to do.
     this.autoMergeForPipeline();
 
-    if (this.runInBackground()) {
+    if (this.buildsByPreservingMarkup()) {
+      await this.buildPreservedBook(projectDir);
+      return;
+    }
+
+    if (this.effectiveRunInBackground()) {
       // The batched edits are landed BEFORE the job is submitted. `reflow()`
       // flushes for the foreground route; nothing flushes for this one, and a
       // queue that reached the stage inside the batching window would reflow a
@@ -9283,8 +9487,64 @@ export class PdfPickerComponent implements OnInit {
     this.loadingText.set('Building the book...');
     try {
       const epubPath = await this.reflowToEpub();
+      await this.refreshBookEpub();
       if (this.openWhenFinished()) {
         await this.showEpubStation(epubPath);
+      }
+    } catch (error) {
+      this.showAlert({
+        title: 'The book was not built',
+        message: error instanceof Error ? error.message : String(error),
+        type: 'error',
+      });
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  /**
+   * The markup-preserving export: `archive/<Original>.epub` in, the deletions
+   * applied, `source/<stem>.epub` out.
+   *
+   * The project is SAVED first, and that is not tidiness. An EPUB-native book's
+   * deletions live in the project file — the editor's `deletedBlockIds` and
+   * `deletedPages`, autosaved into the manifest — and the exporter re-applies
+   * them against the archive original. Exporting before the save would export
+   * the previous session's set: the book would come out missing the wrong
+   * things, and look like a success.
+   *
+   * The archive original is READ and never written; the export lands in
+   * `source/`, and main refuses outright to write onto the file the edits were
+   * aligned against.
+   *
+   * An unaligned block that carries a deletion makes the exporter THROW rather
+   * than quietly leave that block in the book. That property is the whole reason
+   * this export can be trusted, and nothing here softens it — main's message
+   * names the offending block and is passed through verbatim.
+   */
+  private async buildPreservedBook(projectDir: string): Promise<void> {
+    this.loading.set(true);
+    this.loadingText.set('Building the book...');
+    try {
+      await this.saveProjectToPath(projectDir, true);
+
+      const result = await this.runEpubPreservingExport(projectDir, null);
+      if (!result.success || !result.epubPath) {
+        this.showAlert({
+          title: 'The book was not built',
+          message: result.message || 'The export did not report where the book was written.',
+          type: 'error',
+        });
+        return;
+      }
+
+      // Main registered it in the manifest; this is asking main where it is,
+      // which is what the EPUB station's presence is measured by.
+      await this.refreshBookEpub();
+      if (this.openWhenFinished()) {
+        await this.showEpubStation(result.epubPath);
+      } else {
+        this.showAlert({ title: 'Built', message: result.message, type: 'success' });
       }
     } catch (error) {
       this.showAlert({

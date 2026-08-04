@@ -5,14 +5,16 @@
  *   npx tsc -p tsconfig.electron.json && node tools/test-station-ladder.js
  *
  * The whole point of this module is that a station EXISTS when its artifact
- * exists, measured off the binding record, and never because a run reported
- * success. So the tests are written the way the pipeline is: feed in the four
- * measured stage booleans, and check that the ladder says what the files say.
+ * exists, measured off the documents, and never because a run reported success.
+ * So the tests are written the way the pipeline is: feed in what the documents
+ * say, and check that the ladder says what the files say.
  *
  * The second thing under test is the sentence. A locked Next that cannot name
  * the button which would unlock it is a dead end, and "disabled" is not
- * information — the user can see that. Every locked answer here is asserted to
- * name a button by name.
+ * information — the user can see that. Worse than a dead end is a sentence that
+ * names a button which would REFUSE the user, which is what a book with no PDF
+ * ancestor got when its Working station read as "not yet" instead of "never".
+ * Both are asserted here.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -28,6 +30,7 @@ const {
   STATIONS,
   STATION_LABELS,
   existingStations,
+  stationPresence,
   nextStation,
   stationMintedBy,
 } = require(MODULE);
@@ -42,88 +45,177 @@ const stages = (over = {}) => ({
   getText: false, blocks: false, footnotes: false, reflow: false, ...over,
 });
 
+/** A book imported as a PDF: it has an original a working copy can be cast from. */
+const pdfBook = (over = {}) => ({
+  hasPdfOriginal: true,
+  workingStages: stages(),
+  bookEpubExists: false,
+  ...over,
+});
+
+/**
+ * A book imported as an EPUB. It has NO PDF to cast from — main refuses one by
+ * name — so it never has a binding record and `workingStages` is null forever.
+ */
+const epubBook = (over = {}) => ({
+  hasPdfOriginal: false,
+  workingStages: null,
+  bookEpubExists: false,
+  ...over,
+});
+
 // ── What a book HAS ─────────────────────────────────────────────────────────
 
 test('an untouched book has only its archive', () => {
-  assert.deepStrictEqual(existingStations(stages()), ['archive']);
+  assert.deepStrictEqual(existingStations(pdfBook()), ['archive']);
 });
 
 test('a cast book has a working copy', () => {
   assert.deepStrictEqual(
-    existingStations(stages({ getText: true })), ['archive', 'working']);
+    existingStations(pdfBook({ workingStages: stages({ getText: true }) })),
+    ['archive', 'working']);
 });
 
 test('detecting blocks mints no new station — it writes into the working copy', () => {
   assert.deepStrictEqual(
-    existingStations(stages({ getText: true, blocks: true })),
+    existingStations(pdfBook({ workingStages: stages({ getText: true, blocks: true }) })),
     ['archive', 'working']);
 });
 
 test('a built book has an EPUB station', () => {
   assert.deepStrictEqual(
-    existingStations(stages({ getText: true, blocks: true, reflow: true })),
+    existingStations(pdfBook({
+      workingStages: stages({ getText: true, blocks: true }),
+      bookEpubExists: true,
+    })),
     ['archive', 'working', 'epub']);
 });
 
 test('TTS is never an artifact this pipeline mints', () => {
-  const all = existingStations(stages({
-    getText: true, blocks: true, footnotes: true, reflow: true,
+  const all = existingStations(pdfBook({
+    workingStages: stages({ getText: true, blocks: true, footnotes: true, reflow: true }),
+    bookEpubExists: true,
   }));
   assert.ok(!all.includes('tts'), 'TTS must not appear in the measured station list');
+});
+
+test('the book EPUB is measured by the export record, not by the binding', () => {
+  // A binding that says reflow ran is not the question — the question is whether
+  // the project HAS a book, and a book with no PDF ancestor has no binding at
+  // all. One measure for both kinds, so neither can be stranded.
+  assert.ok(existingStations(pdfBook({
+    workingStages: stages({ getText: true, reflow: true }),
+    bookEpubExists: false,
+  })).includes('epub') === false);
+  assert.ok(existingStations(epubBook({ bookEpubExists: true })).includes('epub'));
+});
+
+// ── A book with no PDF ancestor ─────────────────────────────────────────────
+
+test('a book that arrived as an EPUB has an archive and nothing else, at first', () => {
+  assert.deepStrictEqual(existingStations(epubBook()), ['archive']);
+});
+
+test('its Working station is NOT APPLICABLE, not absent', () => {
+  // The distinction is the whole fix: "absent" points at OCR / Cast, and that
+  // button refuses this book by name.
+  assert.strictEqual(stationPresence('working', epubBook()), 'not-applicable');
+  assert.strictEqual(stationPresence('working', pdfBook()), 'absent');
+  assert.strictEqual(
+    stationPresence('working', pdfBook({ workingStages: stages({ getText: true }) })),
+    'present');
+});
+
+test('Next at its archive skips the working copy and asks for the book', () => {
+  const step = nextStation('archive', epubBook());
+  assert.strictEqual(step.next, 'epub');
+  assert.match(step.lockedReason, /Build the book/);
+});
+
+test('and never sends it to OCR / Cast, which would refuse it', () => {
+  const step = nextStation('archive', epubBook());
+  assert.doesNotMatch(step.lockedReason, /Cast/,
+    'a book with no PDF must never be pointed at the cast button');
+});
+
+test('once built, Next walks archive → epub → narration with no working rung', () => {
+  const built = epubBook({ bookEpubExists: true });
+  assert.deepStrictEqual(nextStation('archive', built), { next: 'epub', lockedReason: null });
+  assert.deepStrictEqual(nextStation('epub', built), { next: 'tts', lockedReason: null });
+});
+
+test('its narration station is reachable exactly when the book is', () => {
+  assert.strictEqual(stationPresence('tts', epubBook()), 'absent');
+  assert.strictEqual(stationPresence('tts', epubBook({ bookEpubExists: true })), 'present');
+});
+
+test('standing on its Working station is refused — it does not have one', () => {
+  assert.throws(() => nextStation('working', epubBook()), /does not have one/);
 });
 
 // ── Where Next goes ─────────────────────────────────────────────────────────
 
 test('from the archive with nothing cast, Next is locked and names Cast', () => {
-  const step = nextStation('archive', existingStations(stages()));
+  const step = nextStation('archive', pdfBook());
   assert.strictEqual(step.next, 'working');
   assert.ok(step.lockedReason, 'must be locked');
   assert.match(step.lockedReason, /OCR \/ Cast/);
 });
 
 test('from the archive with a working copy, Next is live', () => {
-  const step = nextStation('archive', existingStations(stages({ getText: true })));
+  const step = nextStation('archive', pdfBook({ workingStages: stages({ getText: true }) }));
   assert.deepStrictEqual(step, { next: 'working', lockedReason: null });
 });
 
 test('from the working copy with no book, Next is locked and names Build the book', () => {
-  const step = nextStation('working', existingStations(stages({ getText: true, blocks: true })));
+  const step = nextStation('working',
+    pdfBook({ workingStages: stages({ getText: true, blocks: true }) }));
   assert.strictEqual(step.next, 'epub');
   assert.match(step.lockedReason, /Build the book/);
 });
 
 test('from the working copy with a book, Next is live', () => {
-  const present = existingStations(stages({ getText: true, blocks: true, reflow: true }));
-  assert.deepStrictEqual(nextStation('working', present), { next: 'epub', lockedReason: null });
+  const book = pdfBook({
+    workingStages: stages({ getText: true, blocks: true }),
+    bookEpubExists: true,
+  });
+  assert.deepStrictEqual(nextStation('working', book), { next: 'epub', lockedReason: null });
 });
 
 test('from the EPUB, Next goes to narration', () => {
-  const present = existingStations(stages({ getText: true, blocks: true, reflow: true }));
-  assert.deepStrictEqual(nextStation('epub', present), { next: 'tts', lockedReason: null });
+  const book = pdfBook({
+    workingStages: stages({ getText: true, blocks: true }),
+    bookEpubExists: true,
+  });
+  assert.deepStrictEqual(nextStation('epub', book), { next: 'tts', lockedReason: null });
 });
 
 test('the top of the ladder has no next and no complaint', () => {
-  const present = existingStations(stages({ getText: true, blocks: true, reflow: true }));
-  assert.deepStrictEqual(nextStation('tts', [...present, 'tts']),
-    { next: null, lockedReason: null });
+  const book = pdfBook({
+    workingStages: stages({ getText: true, blocks: true }),
+    bookEpubExists: true,
+  });
+  assert.deepStrictEqual(nextStation('tts', book), { next: null, lockedReason: null });
 });
 
 test('standing on a station the book does not have is refused by name', () => {
   assert.throws(
-    () => nextStation('epub', existingStations(stages({ getText: true }))),
+    () => nextStation('epub', pdfBook({ workingStages: stages({ getText: true }) })),
     /does not have one/,
   );
 });
 
-test('every station the ladder can lock at names a button', () => {
+test('every locked sentence names a button, for both kinds of book', () => {
   // Walked rather than listed, so a station added later cannot be left with a
   // sentence that says only "you cannot go on".
-  for (const from of STATIONS) {
-    if (from === 'tts') continue;
-    const step = nextStation(from, [from]);
-    if (step.lockedReason === null) continue;
-    assert.match(step.lockedReason, /press /,
-      `${from}'s locked sentence must name the button that unlocks it`);
+  for (const book of [pdfBook(), epubBook(), pdfBook({ workingStages: stages({ getText: true }) })]) {
+    for (const from of STATIONS) {
+      if (stationPresence(from, book) !== 'present') continue;
+      const step = nextStation(from, book);
+      if (step.lockedReason === null) continue;
+      assert.match(step.lockedReason, /press /,
+        `${from}'s locked sentence must name the button that unlocks it`);
+    }
   }
 });
 

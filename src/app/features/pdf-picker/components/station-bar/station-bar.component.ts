@@ -1,23 +1,28 @@
 import { ChangeDetectionStrategy, Component, input, output } from '@angular/core';
 import { CommonModule } from '@angular/common';
 
-import type { StationId } from '@shared/document/stations';
+import type { StationId, StationPresence } from '@shared/document/stations';
 
 /**
- * One station's tab. Every field is DERIVED by the shell from the binding
- * record — nothing here is remembered between renders, because a tab that could
- * remember would be a second answer to "does this book have an EPUB".
+ * One station's tab. Every field is DERIVED by the shell from the documents —
+ * nothing here is remembered between renders, because a tab that could remember
+ * would be a second answer to "does this book have an EPUB".
  */
 export interface StationTab {
   readonly id: StationId;
   readonly label: string;
-  /** The artifact is on disk. A tab that is not present is shown, and refuses. */
-  readonly present: boolean;
+  /**
+   * `present` — the artifact is on disk. `absent` — not yet, and the reason
+   * names the button that makes it. `not-applicable` — this book never has one,
+   * which is a different thing and is drawn differently.
+   */
+  readonly presence: StationPresence;
   readonly current: boolean;
   /**
-   * Why this station cannot be opened, or null when it can. Missing stations are
-   * SHOWN rather than hidden: the ladder is what the user is walking, and a rung
-   * that appears only once you have climbed it teaches nothing.
+   * Why this station cannot be opened, or null when it can. Stations that are
+   * not present are SHOWN rather than hidden: the ladder is what the user is
+   * walking, and a rung that appears only once you have climbed it teaches
+   * nothing about where they are.
    */
   readonly reason: string | null;
 }
@@ -64,14 +69,25 @@ export interface StationAction {
             role="tab"
             class="station-tab"
             [class.current]="tab.current"
-            [class.absent]="!tab.present"
+            [class.absent]="tab.presence === 'absent'"
+            [class.not-applicable]="tab.presence === 'not-applicable'"
             [attr.aria-selected]="tab.current"
-            [disabled]="!tab.present || busy()"
+            [attr.aria-disabled]="tab.presence !== 'present'"
+            [disabled]="tab.presence !== 'present' || busy()"
             [title]="tab.reason ?? tab.label"
             (click)="stationClick.emit(tab.id)"
           >
             <span class="station-name">{{ tab.label }}</span>
-            @if (!tab.present) { <span class="station-absent-mark">—</span> }
+            <!--
+              Two different marks for two different facts. "—" is a rung this
+              book has not climbed yet; "n/a" is a rung it does not have, and
+              drawing them the same would leave a user waiting for a station
+              that is never coming.
+            -->
+            @switch (tab.presence) {
+              @case ('absent') { <span class="station-mark">—</span> }
+              @case ('not-applicable') { <span class="station-mark">n/a</span> }
+            }
           </button>
         }
       </div>
@@ -160,7 +176,16 @@ export interface StationAction {
       cursor: not-allowed;
     }
 
-    .station-absent-mark { font-size: var(--ui-font-xs); }
+    /* A rung this book does not have. Struck through rather than merely dim, so
+       it does not read as one more thing left to do. */
+    .station-tab.not-applicable {
+      color: var(--text-tertiary);
+      cursor: not-allowed;
+      text-decoration: line-through;
+      opacity: 0.6;
+    }
+
+    .station-mark { font-size: var(--ui-font-xs); }
 
     .station-row {
       display: flex;

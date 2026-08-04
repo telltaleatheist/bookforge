@@ -141,15 +141,12 @@ export interface DocumentPipelineState {
    * how the picker opens the Archive station without deriving a path of its own.
    */
   primaryRelPath: string;
-  /**
-   * The book EPUB the binding names, project-relative with forward slashes.
-   *
-   * Null is a REAL state — reflow has never run for this book, so there is no
-   * EPUB to name — and not a missing value standing in for one. Whether the file
-   * is actually there is `stages.reflow`, which is measured; this is only where
-   * to look when it is.
-   */
-  epubRelPath: string | null;
+  // There is deliberately no book-EPUB path here. The binding names one only for
+  // a book with a PDF ancestor, and a project that arrived as an EPUB has no
+  // binding at all while still having a book once it has been built — so the
+  // picker would have had two answers to "where is this project's book", one of
+  // which is blind to half the library. `projects:export-info` (the manifest's
+  // own record, existence-checked) is the single answer, and it covers both.
 }
 
 /** A stage's own most recent line, as it runs. */
