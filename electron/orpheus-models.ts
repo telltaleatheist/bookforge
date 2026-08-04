@@ -714,6 +714,43 @@ export function isOrpheusBaseInstalled(base: OrpheusBaseRef): boolean {
 }
 
 /**
+ * The base model the STOCK Orpheus voices are, as a base ref.
+ *
+ * `ref` mirrors e2a `Orpheus.TRANSFORMERS_MODEL` — the repo the stock vLLM path
+ * loads when no local dir is given. A `_base/` install of that repo therefore holds
+ * BYTE-IDENTICAL weights to what a stock load would fetch from the HuggingFace cache;
+ * the only difference is where they are read from.
+ *
+ * `id` matches the base every adapter voice in the catalog declares, which is what
+ * makes the two resolve to the same folder — and that identity is the whole point:
+ * see resolveOrpheusStockBase.
+ */
+export const ORPHEUS_STOCK_BASE: OrpheusBaseRef = {
+  id: 'orpheus-3b-base',
+  ref: 'unsloth/orpheus-3b-0.1-ft',
+};
+
+/**
+ * Where a stock Orpheus voice should be served from, or null when the shared base
+ * isn't installed and it must come from the HuggingFace cache as before.
+ *
+ * This exists for the streaming server's engine cache key. That key is the pair
+ * (merged dir, base dir), so a stock voice loaded WITHOUT a base dir keys as
+ * (null, null) while an adapter voice keys as (null, `_base/…`) — two different
+ * engines for weights that are the same file. Every stock↔adapter switch then tore
+ * down a 6 GB engine for nothing, and worse, the stock half loaded by HF repo NAME,
+ * so on a cold cache it could start a multi-GB download in the middle of a listening
+ * session. Pointing stock at the installed base collapses both keys into one.
+ *
+ * Only meaningful on vLLM: MLX loads a DIFFERENT repo for stock
+ * (`mlx-community/orpheus-3b-0.1-ft-bf16`, e2a `Orpheus.MLX_MODEL`), so handing it
+ * this folder would be handing it the wrong artifact. Callers gate on the backend.
+ */
+export function resolveOrpheusStockBase(): { dir: string; verified: boolean } | null {
+  return resolveOrpheusBase(ORPHEUS_STOCK_BASE);
+}
+
+/**
  * Which artifact form of a voice is installed, and where.
  *
  * Returns null when NEITHER form is on disk (i.e. "not an installed custom voice" —

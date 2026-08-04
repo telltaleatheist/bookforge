@@ -117,6 +117,34 @@ monkey-patch (482–506) is load-order sensitive. Two stages, neither blocks vLL
 - C4 `stream-scheduler.ts`: expected no-change; confirm settings.voice populated per
   session (~240–260).
 
+### C — post-review amendments (implemented)
+
+The plan above said the engine key stays `(modelDir, baseDir)` with stock as
+`(null, null)`. Review found that makes stock↔adapter a full teardown **for
+byte-identical weights** — and, because the stock half loads by HF repo NAME, a cold
+cache can turn it into a multi-GB download mid-session. Resolved by the **key
+collapse**:
+
+- The pool sends `baseDir` on EVERY load, including stock, whenever a base is
+  installed AND the worker reports the vLLM backend (`resolveOrpheusStockBase`).
+- e2a accepts `orpheus_base_dir` WITHOUT `orpheus_adapter_dir` as an explicit
+  **stock-from-local-base** mode: base weights from the local dir, engine built with
+  `enable_lora`, stock voices allowlist-validated as normal, `lora_request=None`.
+  `enable_lora` now keys on `base_dir`, not `adapter_dir`.
+- Machines with no base installed keep the old `(null, null)` stock key exactly.
+  Darwin/MLX likewise — MLX serves stock from a different repo
+  (`mlx-community/…-bf16`), so the baseDir is gated off there.
+- The AUDIOBOOK path is untouched: `parallel-tts-bridge.pushVoiceArgs` only ever
+  emits `--orpheus_base_dir` together with `--orpheus_adapter_dir`.
+
+Other review outcomes worth carrying: the worker's `ready`/`loaded` lines now report
+e2a's detected `backend`, and every per-request-voice capability is gated on it
+(unknown ⇒ not capable); adapter identity is a CONTENT fingerprint
+(mtime_ns + size of `adapter_model.safetensors`), not a path, so a retrained voice
+re-installed to the same folder gets a fresh lora id; `register_adapter` runs the same
+validation engine construction does; `tts-api-server` refuses (409) a speak whose
+voice would REBUILD the engine while another session is streaming on it.
+
 ## Work area D — catalog + download (bookforge)
 
 - D1 `electron/data/orpheus-models.json`: two NEW inventory fields per voice —

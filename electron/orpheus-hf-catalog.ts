@@ -591,7 +591,7 @@ export async function installOrpheusBase(
 export async function installOrpheusModel(
   repoId: string,
   onProgress?: OrpheusInstallProgressFn,
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; id?: string }> {
   const token = getHfToken();
   const headers: Record<string, string> = { 'User-Agent': 'BookForge' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -703,7 +703,11 @@ export async function installOrpheusModel(
     source: { type: 'hf', ref: repoId },
     addedAt: new Date().toISOString().slice(0, 10),
   });
-  return { success: true };
+  // The local voice id comes back so callers can act on THIS voice specifically —
+  // above all, tell a running streaming engine to forget it. Re-installing a
+  // retrained voice writes new weights to the same folder, and an engine that already
+  // has the old ones registered would go on serving them for the rest of the session.
+  return { success: true, id };
 }
 
 /**

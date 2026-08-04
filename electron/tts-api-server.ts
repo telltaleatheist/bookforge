@@ -43,7 +43,12 @@
  *     {type:'failed',   requestId, sentenceIndex, error}
  *     {type:'complete', requestId}
  *     {type:'cancelled',requestId}                     // stopped or preempted
- *     {type:'error',    requestId?, message}
+ *     {type:'error',    requestId?, code?, message}
+ *
+ *   `code` is present only where a client can usefully branch on it. Today that is
+ *   409: the requested voice needs a different model than the one loaded, and another
+ *   session is streaming on it — a CONFLICT, not a bad request. Retrying later works;
+ *   retrying immediately does not.
  *
  * Playback control (pause/seek/rewind) is entirely client-side: the client
  * keeps the PCM it receives, so the only transport verbs here are speak and
@@ -429,6 +434,39 @@ export class TtsApiServer {
       repetitionPenalty: requested.repetitionPenalty
     };
 
+    // BEFORE the engine is touched: refuse a voice that would EVICT an engine another
+    // session is streaming on right now.
+    //
+    // Voice loading is otherwise unrestricted, which is the point of per-request
+    // voices — but only voices that share an engine are actually free. A merged
+    // fine-tune (or a voice on a different base) forces a full rebuild: ~6 GB of
+    // weights and a CUDA-graph recapture, during which the other session's engine
+    // simply does not exist. Two clients alternating such voices would reload the
+    // engine on every block, forever, each destroying the other's progress. Since
+    // ensureEngine does the load, the check has to happen here, before it.
+    //
+    // Deliberately narrow: this is a brake, not a queue. Same-engine switches
+    // (adapter or stock over the shared base) stay unrestricted, and a client is never
+    // blocked by its OWN sessions. Nothing is deferred or retried — the client is told
+    // no, with both voices named, and decides what to do.
+    if (engine.wouldRebuildEngine?.(voice) === true) {
+      const others = streamScheduler.activeIds().filter((id) => !state.activeRequestIds.has(id));
+      if (others.length > 0) {
+        const loaded = engine.getCurrentVoice();
+        this.send(ws, {
+          type: 'error',
+          requestId,
+          code: 409,
+          message:
+            `'${voice}' needs a different model than the one loaded${loaded ? ` ('${loaded}')` : ''}, ` +
+            `and ${others.length} other session${others.length === 1 ? ' is' : 's are'} streaming on it right now. ` +
+            `Loading '${voice}' would tear that engine down mid-sentence. Retry when the other session finishes, ` +
+            `or use a voice that shares the loaded model.`,
+        });
+        return;
+      }
+    }
+
     // Cold engine: start it now. The client sees progress via 'state' pushes.
     const started = await this.ensureEngine(voice);
     if (!started.success) {
@@ -437,10 +475,22 @@ export class TtsApiServer {
     }
     // Prove the promise rather than assume it. ensureEngine's loadVoice reports
     // success, but a concurrent load (another client, or the app's own Listen tab)
-    // can land between it and the dispatch below — and on Orpheus the loaded model
-    // IS the voice, so generating anyway would ship audio in the wrong narrator.
+    // can land between it and the dispatch below — and when the loaded model IS the
+    // voice, generating anyway would ship audio in the wrong narrator.
+    //
+    // That is only true of an EXCLUSIVE voice. Orpheus built-ins are a prompt prefix
+    // and adapter voices are a per-request LoRA over a shared base: several coexist
+    // on one engine, every sentence carries its own voice, and "loaded" is merely the
+    // default for requests that name none. Applying the guard to those would make
+    // concurrent clients on different voices reject each other for no reason — each
+    // one's load would break the other's session. So the guard now covers exactly the
+    // voices that really are exclusive (a merged Orpheus fine-tune, and every XTTS
+    // voice, whose pool does not implement the capability at all).
     const loaded = engine.getCurrentVoice();
-    if (requested.voice && loaded && loaded.toLowerCase() !== requested.voice.toLowerCase()) {
+    const perRequest = requested.voice
+      ? engine.canServeVoicePerRequest?.(requested.voice) === true
+      : false;
+    if (!perRequest && requested.voice && loaded && loaded.toLowerCase() !== requested.voice.toLowerCase()) {
       this.send(ws, {
         type: 'error',
         requestId,

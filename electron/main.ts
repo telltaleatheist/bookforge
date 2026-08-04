@@ -4536,6 +4536,16 @@ function setupIpcHandlers(): void {
       if (result?.success) {
         const { ttsApiServer } = await import('./tts-api-server.js');
         await ttsApiServer.refreshInstalledVoices();
+        // …and a RESIDENT streaming engine must forget what it knows about this
+        // voice. The install just replaced the files under a path the engine has
+        // already registered, so without this a retrained voice keeps rendering from
+        // the previous training run — the engine's own cached copy — until the
+        // session is torn down. Forgetting it forces a fresh load, which is what
+        // makes the worker re-fingerprint the adapter.
+        if (result.id) {
+          const { orpheusWorkerPool } = await import('./orpheus-worker-pool.js');
+          orpheusWorkerPool.forgetVoice(result.id);
+        }
       }
       return result;
     } catch (err) {
@@ -4551,10 +4561,15 @@ function setupIpcHandlers(): void {
       await isWslAlive();
       const { removeOrpheusModel } = await import('./orpheus-hf-catalog.js');
       const result = removeOrpheusModel(id);
-      // Drop the removed voice from the live list too (same reasoning as install).
+      // Drop the removed voice from the live list too (same reasoning as install),
+      // and from a resident streaming engine's registration set — its files are gone,
+      // so any future request naming it must fail loudly at the load rather than be
+      // accepted on the strength of stale bookkeeping.
       if (result?.success) {
         const { ttsApiServer } = await import('./tts-api-server.js');
         await ttsApiServer.refreshInstalledVoices();
+        const { orpheusWorkerPool } = await import('./orpheus-worker-pool.js');
+        orpheusWorkerPool.forgetVoice(id);
       }
       return result;
     } catch (err) {
