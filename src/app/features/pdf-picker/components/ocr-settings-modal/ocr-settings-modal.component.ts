@@ -25,25 +25,25 @@ import { OcrTextLine } from '../../services/ocr-job.service';
  * they have never seen, which produces a book that is quietly worse rather than
  * an error. So there is one button, and it runs the one pipeline.
  *
- * There are no options at all. Footnote-marker removal used to be a checkbox
- * here; it is the `foundry-footnotes` PASS now — a thing the user puts in a
- * processing run, ordered against the other passes, with a diff and a provenance
- * record. A second way to ask for it would be a second answer to "has this book
- * had its markers removed".
+ * The only options are the two about WATCHING — run in background, open when
+ * finished — and neither changes the work. Footnote-marker removal used to be a
+ * checkbox here; it is a pass on the EPUB station now, with a diff and a
+ * provenance record, and a second way to ask for it would be a second answer to
+ * "has this book had its markers removed".
  *
  * ── THE RUN IS QUEUE WORK ────────────────────────────────────────────────────
  *
- * This dialog does not start a foundry run. It SUBMITS the same processing chain
- * the wizard submits — one OCR-correction pass over this project, which reads the
- * pages, repairs what it read and labels the blocks — through
- * `processing:submit-chain`, and then only watches. There is
- * one way to run OCR and it is visible on the Queue tab, where it serializes
- * against everything else that wants the GPU; a private direct-run path here was
- * a second way to spend half an hour that no queue row knew about.
+ * This dialog runs nothing itself. It SUBMITS two document passes over this
+ * project — `get-text`, which casts the working PDF and puts the words in it,
+ * then `blocks`, which labels them — through `processing:submit-chain`, and then
+ * only watches. There is one way to read a book and it is visible on the Queue
+ * tab, where it serializes against everything else that wants the GPU; a private
+ * direct-run path here was a second way to spend half an hour that no queue row
+ * knew about.
  *
- * The run itself still belongs to MAIN (`electron/foundry-run.ts`), so closing
- * this dialog, reloading the window or switching tabs touches nothing. "Run in
- * Background" is literally "close this dialog".
+ * The stages belong to MAIN, so closing this dialog, reloading the window or
+ * switching tabs touches nothing. "Run in background" is literally "stop
+ * watching".
  *
  * ── THE CORPUS PATH IS NOT THIS PATH ─────────────────────────────────────────
  *
@@ -173,9 +173,9 @@ export interface OcrCompletionEvent {
                 }
               </div>
             } @else {
-              <!-- Stated, not chosen. A run directory covers ONE page set and the
-                   book is exported from it, so a part of the document would build
-                   a book out of a part of the document. -->
+              <!-- Stated, not chosen. Get Text REPLACES the working document, so
+                   reading part of the book would leave a working copy that is
+                   part of the book, and everything after it would build one. -->
               <p class="estimate">
                 The whole document — {{ totalPages() }} pages, in the order this editor has them.
               </p>
@@ -270,9 +270,9 @@ export interface OcrCompletionEvent {
                 Starting again picks up from the stage it reached; nothing already
                 done is repeated.
               } @else {
-                Starting again reads the book from the beginning: an OCR
-                correction pass always rasterizes the pages and re-runs every
-                stage, so nothing half-finished is carried into it.
+                Starting again reads the book from the beginning: Get Text
+                rasterizes every page and casts the working copy afresh, so
+                nothing half-finished is carried into it.
               }
             </div>
           }
@@ -296,8 +296,8 @@ export interface OcrCompletionEvent {
             </desktop-button>
           } @else {
             <desktop-button variant="ghost" (click)="close.emit()"
-              title="The run continues in the main process — closing this changes nothing about it">
-              Run in Background
+              title="The stage continues in the main process — closing this changes nothing about it">
+              Stop watching
             </desktop-button>
             <desktop-button variant="danger" (click)="cancelRun()">Cancel</desktop-button>
           }
@@ -895,22 +895,20 @@ export class OcrSettingsModalComponent implements OnDestroy {
       // manifest, and there is nothing here to write them into — say so and name
       // where a project comes from, rather than making one on the way past.
       this.error.set(
-        'This document does not belong to a BookForge project, and an OCR run writes its '
-        + 'result into one. Import it from Studio, then run the passes from the Process tab.'
+        'This document does not belong to a BookForge project, and reading a book writes the '
+        + 'working copy into one. Import it from Studio first.'
       );
       return;
     }
 
-    // The SAME submission the wizard uses — the document passes over this
-    // project's PDF, planned in main and queued as one run. This dialog's whole
-    // purpose is to take a book from an untouched PDF to a curatable one, so it
-    // asks for both rather than making the user compose them; the wizard is where
-    // a run is slimmed down to one pass.
+    // Both passes, always. This dialog's whole purpose is to take a book from an
+    // untouched PDF to a curatable one, and that is the cast plus the detect —
+    // asking the user to compose the pair would be offering them the chance to
+    // ask for half of it.
     //
     // There is no run identity to pass. A document pass is about the PROJECT and
     // the PDF the plan resolved, and its output is the working document beside
-    // them — so there is no run directory for a key to name, and no window
-    // watching one.
+    // them — so there is nothing for a key to name and no window watching one.
     //
     // NO FALLBACK. If foundry is not installed, or a GGUF is missing, or the
     // ordering cannot work, main says exactly which and this dialog prints it.

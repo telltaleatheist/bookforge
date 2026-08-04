@@ -12340,8 +12340,30 @@ export class PdfPickerComponent implements OnInit {
     if (this.corpusMode()) return null;
     const projectDir = this.projectPath();
     if (!projectDir) return null;
-    const sourcePath = this.effectivePath();
+    // The PDF, never whatever artifact is on screen. The EPUB station puts this
+    // project's book in the viewer, and main refuses an EPUB here BY NAME ("the
+    // document pipeline casts a working PDF from the book's original") — so a
+    // ref built from the displayed file would tear the block layer down every
+    // time the user looked at the book they had just built.
+    const sourcePath = this.curatedPdfPath();
     return sourcePath ? { projectDir, sourcePath } : { projectDir };
+  });
+
+  /**
+   * The project PDF this window curates.
+   *
+   * Tracked rather than read off the viewer because the two are different
+   * questions — "which file am I looking at" and "which file are the documents
+   * cast from" — and they stopped having the same answer the moment the EPUB
+   * became a station you can stand on. Null is a real state: a project that
+   * arrived as a book has no PDF, and main says exactly that when asked.
+   */
+  private readonly curatedPdfPath = signal<string | null>(null);
+
+  private readonly curatedPdfEffect = effect(() => {
+    const path = this.effectivePath();
+    if (!path || !path.toLowerCase().endsWith('.pdf')) return;
+    untracked(() => this.curatedPdfPath.set(path));
   });
 
   /**
@@ -12554,13 +12576,32 @@ export class PdfPickerComponent implements OnInit {
       // proof main answered about this book's documents and only the block layer
       // is absent.
       this.workingDocumentOpen.set(this.documentBlocks.state() !== null);
+      this.landOnFurthestStation();
       console.info('[document] no block layer for this book yet:', err);
       return;
     }
     this.workingDocumentOpen.set(true);
     this.blockLayerRead.set(true);
     this.selectedBlockIds.set([]);
+    this.landOnFurthestStation();
     this.saveCurrentDocumentState();
+  }
+
+  /**
+   * Stand at the furthest PDF station this book has reached.
+   *
+   * Derived at open time and never stored: a book with a working copy opens on
+   * it, a book with nothing opens on its archive, and that is read off the
+   * documents rather than remembered from last session. It stops at Working
+   * deliberately — a book that has an EPUB is still curated on the working copy,
+   * and dropping the user on the finished book would hide the rail behind a
+   * station they did not ask for.
+   *
+   * A station swap is this window changing artifacts, and it decides for itself.
+   */
+  private landOnFurthestStation(): void {
+    if (this.stationSwapping) return;
+    this.viewedStation.set(this.presentStations().includes('working') ? 'working' : 'archive');
   }
 
   // ── The stages, as the picker offers them ─────────────────────────────────
@@ -13323,6 +13364,10 @@ export class PdfPickerComponent implements OnInit {
 
   private clearDocumentState(): void {
     this.activeDocumentId.set(null);
+    // Per-document: a PDF remembered across a close would name the previous
+    // book's original inside the next book's project directory, which main
+    // refuses by name — correctly, and confusingly.
+    this.curatedPdfPath.set(null);
     // Per-document, like the category record that used to carry it. Without this
     // the set is global to the component, which outlives the document.
     this.hiddenCategoryIds.set(new Set());
