@@ -3438,17 +3438,44 @@ export class PdfPickerComponent implements OnInit {
    * is measured by: a book that arrived as an EPUB has no binding record at all,
    * and it still has a book once it has been built.
    */
-  private readonly bookEpubPath = signal<string | null>(null);
+  /**
+   * Main's last answer, STAMPED with the project it was about.
+   *
+   * The stamp is the whole point. A window moves between books, the ask is a
+   * round trip, and an answer that did not say which project it concerned would
+   * be read as the current one — so a failed ask about book B would leave book
+   * A's EPUB standing as B's, with a live tab that opens the wrong book. An
+   * answer is only ever read back for the project it names (`bookEpubPath`).
+   */
+  private readonly bookEpubAnswer = signal<{ dir: string; path: string | null } | null>(null);
 
   /**
-   * Main's refusal when it could not answer where the book is, or null.
+   * Main's refusal when it could not answer where the book is, stamped the same
+   * way and for the same reason.
    *
-   * Kept apart from `bookEpubPath` because "we could not ask" and "there is
-   * none" are different states, and collapsing them would tell somebody with a
-   * damaged manifest to press Build the book — which fails the same way, without
-   * saying so.
+   * Kept apart from the path because "we could not ask" and "there is none" are
+   * different states, and collapsing them would tell somebody with a damaged
+   * manifest to press Build the book — which fails the same way, without saying
+   * so.
    */
-  private readonly bookEpubError = signal<string | null>(null);
+  private readonly bookEpubErrorAnswer = signal<{ dir: string; message: string } | null>(null);
+
+  /**
+   * The project's book, absolute, or null when there is none — and null, too,
+   * while the answer in hand is about a different project.
+   */
+  private readonly bookEpubPath = computed<string | null>(() => {
+    const answer = this.bookEpubAnswer();
+    const dir = this.projectPath();
+    return answer && dir && answer.dir === dir ? answer.path : null;
+  });
+
+  /** Main's refusal about THIS project, or null. */
+  private readonly bookEpubError = computed<string | null>(() => {
+    const answer = this.bookEpubErrorAnswer();
+    const dir = this.projectPath();
+    return answer && dir && answer.dir === dir ? answer.message : null;
+  });
 
   /**
    * Ask main where this project's book is. Called when the project changes and
@@ -3458,20 +3485,21 @@ export class PdfPickerComponent implements OnInit {
     const dir = this.projectPath();
     if (!dir) {
       // No project, no book of its own. Not a failure: a loose file has none.
-      this.bookEpubPath.set(null);
-      this.bookEpubError.set(null);
+      this.bookEpubAnswer.set(null);
+      this.bookEpubErrorAnswer.set(null);
       return;
     }
     try {
       const info = await this.electronService.projectsExportInfo(dir);
-      this.bookEpubError.set(null);
-      this.bookEpubPath.set(info.exported ? info.exported.absPath : null);
+      this.bookEpubErrorAnswer.set(null);
+      this.bookEpubAnswer.set({ dir, path: info.exported ? info.exported.absPath : null });
     } catch (err) {
-      // Main's own sentence, kept and shown on the EPUB tab. The path is left
-      // alone rather than cleared: whatever was last measured is still the last
-      // thing anybody actually proved.
+      // Main's own sentence, kept and shown on the EPUB tab. The last proved
+      // path for THIS project is left alone — a round trip that failed is not
+      // evidence the book stopped existing — and it is stamped, so it can never
+      // be read as another project's answer.
       const message = err instanceof Error ? err.message : String(err);
-      this.bookEpubError.set(message);
+      this.bookEpubErrorAnswer.set({ dir, message });
       console.error('[picker] could not resolve this project\'s book EPUB:', message);
     }
   }
