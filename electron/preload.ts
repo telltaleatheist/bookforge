@@ -1296,8 +1296,9 @@ export interface ElectronAPI {
     /** Install the shared base on its own (idempotent). Takes the already-fetched
      *  catalogue for the same reason `baseStatus` does. */
     baseInstall: (catalog?: OrpheusCatalogEntryDto[]) => Promise<{ success: boolean; error?: string; alreadyInstalled?: boolean }>;
-    /** Two-phase install progress ('base' then 'voice'). Returns an unsubscribe fn. */
-    onInstallProgress: (callback: (p: { repoId: string; phase: 'base' | 'voice'; message: string }) => void) => () => void;
+    /** Install progress: 'base' then 'voice', plus a macOS-only 'fuse' phase (see
+     *  orpheus-hf-catalog runFuse). Returns an unsubscribe fn. */
+    onInstallProgress: (callback: (p: { repoId: string; phase: 'base' | 'voice' | 'fuse'; message: string }) => void) => () => void;
     /** Unregister + delete an installed custom voice by id. */
     remove: (id: string) => Promise<{ success: boolean; error?: string }>;
     /** Get the user-managed Orpheus voice source repo ids (or built-in defaults). */
@@ -2909,8 +2910,9 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('orpheus:base-status', catalog),
     baseInstall: (catalog?: OrpheusCatalogEntryDto[]) =>
       ipcRenderer.invoke('orpheus:base-install', catalog),
-    onInstallProgress: (callback: (p: { repoId: string; phase: 'base' | 'voice'; message: string }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, p: { repoId: string; phase: 'base' | 'voice'; message: string }) => callback(p);
+    // 'fuse' is the macOS-only third phase — see orpheus-hf-catalog runFuse.
+    onInstallProgress: (callback: (p: { repoId: string; phase: 'base' | 'voice' | 'fuse'; message: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, p: { repoId: string; phase: 'base' | 'voice' | 'fuse'; message: string }) => callback(p);
       ipcRenderer.on('orpheus:install-progress', listener);
       return () => {
         ipcRenderer.removeListener('orpheus:install-progress', listener);

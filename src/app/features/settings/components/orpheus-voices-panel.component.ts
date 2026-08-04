@@ -306,7 +306,9 @@ export class OrpheusVoicesPanelComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.svc.ensureLoaded();
     this.unsubscribeProgress = this.api?.onInstallProgress?.(
-      (p: { repoId: string; phase: 'base' | 'voice'; message: string }) => {
+      // 'fuse' is macOS-only (see orpheus-hf-catalog runFuse); the panel shows the
+      // message whatever the phase.
+      (p: { repoId: string; phase: 'base' | 'voice' | 'fuse'; message: string }) => {
         this.installMessage.update((m) => ({ ...m, [p.repoId]: p.message }));
       },
     );
