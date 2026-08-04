@@ -708,15 +708,21 @@ export class PdfEditorStateService {
     );
   }
 
-  // Deletion methods with undo support
-  deleteBlocks(blockIds: string[]): void {
-    if (blockIds.length === 0) return;
+  // Deletion methods with undo support.
+  //
+  // These return the ids they ACTED ON rather than void, because a caller that
+  // also has to write the deletion into a working document must name the same
+  // ids this did. Re-deriving them at the call site would be a second answer to
+  // the question of what was deleted, and the two would part company over the
+  // filtering below the moment either changed.
+  deleteBlocks(blockIds: string[]): string[] {
+    if (blockIds.length === 0) return [];
 
     // Allow deletion of any block (OCR blocks are now deletable - user has undo if needed)
     const blocksById = new Map(this.blocks().map(b => [b.id, b]));
     const deletableIds = blockIds.filter(id => !!blocksById.get(id));
 
-    if (deletableIds.length === 0) return;
+    if (deletableIds.length === 0) return [];
 
     const selectionBefore = [...this.selectedBlockIds()];
     const deleted = new Set(this.deletedBlockIds());
@@ -737,14 +743,15 @@ export class PdfEditorStateService {
     });
 
     this.markChanged();
+    return deletableIds;
   }
 
-  deleteSelectedBlocks(): void {
-    this.deleteBlocks(this.selectedBlockIds());
+  deleteSelectedBlocks(): string[] {
+    return this.deleteBlocks(this.selectedBlockIds());
   }
 
-  restoreBlocks(blockIds: string[]): void {
-    if (blockIds.length === 0) return;
+  restoreBlocks(blockIds: string[]): string[] {
+    if (blockIds.length === 0) return [];
 
     const selectionBefore = [...this.selectedBlockIds()];
     const deleted = new Set(this.deletedBlockIds());
@@ -760,11 +767,12 @@ export class PdfEditorStateService {
     });
 
     this.markChanged();
+    return [...blockIds];
   }
 
   // Page deletion with history
-  deletePages(pageNumbers: number[]): void {
-    if (pageNumbers.length === 0) return;
+  deletePages(pageNumbers: number[]): number[] {
+    if (pageNumbers.length === 0) return [];
 
     const deleted = new Set(this.deletedPages());
     pageNumbers.forEach(p => deleted.add(p));
@@ -779,10 +787,11 @@ export class PdfEditorStateService {
     });
 
     this.markChanged();
+    return [...pageNumbers];
   }
 
-  restorePages(pageNumbers: number[]): void {
-    if (pageNumbers.length === 0) return;
+  restorePages(pageNumbers: number[]): number[] {
+    if (pageNumbers.length === 0) return [];
 
     const deleted = new Set(this.deletedPages());
     pageNumbers.forEach(p => deleted.delete(p));
@@ -797,22 +806,28 @@ export class PdfEditorStateService {
     });
 
     this.markChanged();
+    return [...pageNumbers];
   }
 
-  // Toggle page deletion (delete if not deleted, restore if deleted)
-  togglePageDeletion(pageNumbers: number[]): void {
-    if (pageNumbers.length === 0) return;
+  /**
+   * Toggle page deletion (delete if not deleted, restore if deleted).
+   *
+   * Reports which way it went and over which pages: the direction is decided
+   * here, from the current set, so a caller that must write the same decision
+   * into a working document has no way to work it out for itself afterwards.
+   */
+  togglePageDeletion(pageNumbers: number[]): { deleted: number[]; restored: number[] } {
+    if (pageNumbers.length === 0) return { deleted: [], restored: [] };
 
     const deleted = this.deletedPages();
     const allDeleted = pageNumbers.every(p => deleted.has(p));
 
     if (allDeleted) {
-      this.restorePages(pageNumbers);
-    } else {
-      // Delete only the non-deleted pages
-      const toDelete = pageNumbers.filter(p => !deleted.has(p));
-      this.deletePages(toDelete);
+      return { deleted: [], restored: this.restorePages(pageNumbers) };
     }
+    // Delete only the non-deleted pages
+    const toDelete = pageNumbers.filter(p => !deleted.has(p));
+    return { deleted: this.deletePages(toDelete), restored: [] };
   }
 
   // Page reordering with history
@@ -1205,9 +1220,10 @@ export class PdfEditorStateService {
    *                   fully outside their page's rect. Already-deleted or
    *                   non-existent IDs are ignored. Each surviving ID is
    *                   attributed to its page's CropRegion for exact reversal.
+   * @returns the IDs this call actually deleted.
    */
-  applyCrop(entries: Map<number, CropGeometryRect>, blockIdsToDelete: string[]): void {
-    if (entries.size === 0) return;
+  applyCrop(entries: Map<number, CropGeometryRect>, blockIdsToDelete: string[]): string[] {
+    if (entries.size === 0) return [];
 
     const selectionBefore = [...this.selectedBlockIds()];
     const blocksById = new Map(this.blocks().map(b => [b.id, b]));
@@ -1263,17 +1279,20 @@ export class PdfEditorStateService {
     });
 
     this.markChanged();
+    return toDelete;
   }
 
   /**
    * Clear the crop on the given pages (composite inverse of applyCrop): removes
    * each page's region entry and restores the blocks that region deleted,
    * skipping any IDs that no longer exist. One undoable action.
+   *
+   * @returns the IDs this call actually restored.
    */
-  clearCrop(pages: number[]): void {
+  clearCrop(pages: number[]): string[] {
     const regions = this.cropRegions();
     const targetPages = pages.filter(p => regions.has(p));
-    if (targetPages.length === 0) return;
+    if (targetPages.length === 0) return [];
 
     const selectionBefore = [...this.selectedBlockIds()];
     const existingIds = new Set(this.blocks().map(b => b.id));
@@ -1307,6 +1326,7 @@ export class PdfEditorStateService {
     });
 
     this.markChanged();
+    return toRestore;
   }
 
   /** Replay a crop action's region record onto cropRegions (null = delete entry). */

@@ -4738,9 +4738,16 @@ export class PdfPickerComponent implements OnInit {
       if (layerId === 'pdf' && !b.is_ocr) idsToRemove.push(b.id);
       if (layerId === 'ocr' && b.is_ocr) idsToRemove.push(b.id);
     }
-    if (idsToRemove.length > 0) {
-      this.editorState.removeBlocks(idsToRemove);
+    if (idsToRemove.length === 0) return;
+
+    // With a working document, removal is a FLAG on the annotation and not an
+    // erasure: the mirror paints what the document says, so blocks struck out
+    // of the editor's own list would be painted straight back at the next read.
+    if (this.blockLayerRead()) {
+      this.landBlockDeletions(this.editorState.deleteBlocks(idsToRemove), true);
+      return;
     }
+    this.editorState.removeBlocks(idsToRemove);
   }
 
   /**
@@ -5884,7 +5891,7 @@ export class PdfPickerComponent implements OnInit {
         if (block) affectedPages.add(block.page);
       }
 
-      this.editorState.restoreBlocks(selected);
+      this.landBlockDeletions(this.editorState.restoreBlocks(selected), false);
       this.editorState.clearSelection();
 
       // Re-render affected pages to restore original content
@@ -5901,7 +5908,7 @@ export class PdfPickerComponent implements OnInit {
       }
 
       // Delete the non-deleted selected blocks
-      this.editorState.deleteSelectedBlocks();
+      this.landBlockDeletions(this.editorState.deleteSelectedBlocks(), true);
 
       // Re-render affected pages to remove deleted content
       for (const pageNum of affectedPages) {
@@ -6002,7 +6009,8 @@ export class PdfPickerComponent implements OnInit {
     // Get affected pages before deletion
     const affectedPages = new Set(blocksToDelete.map(b => b.page));
 
-    this.editorState.deleteBlocks(blocksToDelete.map(b => b.id));
+    this.landBlockDeletions(
+      this.editorState.deleteBlocks(blocksToDelete.map(b => b.id)), true);
     this.editorState.clearSelection();
 
     // Re-render affected pages to remove deleted content
@@ -6349,7 +6357,7 @@ export class PdfPickerComponent implements OnInit {
     const block = this.editorState.getBlock(blockId);
     const pageNum = block?.page;
 
-    this.editorState.deleteBlocks([blockId]);
+    this.landBlockDeletions(this.editorState.deleteBlocks([blockId]), true);
 
     // Re-render the page to remove deleted content
     if (pageNum !== undefined) {
@@ -7204,6 +7212,10 @@ export class PdfPickerComponent implements OnInit {
   async undo(): Promise<void> {
     const action = this.editorState.undo();
     if (!action) return;
+    // One history entry can restore a crop's worth of blocks, a class of them
+    // and a page at once, so what an undo means to the document is the
+    // difference it just made — taken here, before anything else writes.
+    this.reconcileDeletionsWithDocument();
 
     // Handle visual changes based on action type
     if (action.type === 'toggleBackgrounds') {
@@ -7225,6 +7237,7 @@ export class PdfPickerComponent implements OnInit {
   async redo(): Promise<void> {
     const action = this.editorState.redo();
     if (!action) return;
+    this.reconcileDeletionsWithDocument();
 
     // Handle visual changes based on action type
     if (action.type === 'toggleBackgrounds') {
@@ -11646,7 +11659,7 @@ export class PdfPickerComponent implements OnInit {
 
   /** Panel "Clear crop" — remove crop on the targeted pages and restore blocks. */
   clearCropFromPanel(pages: number[]): void {
-    this.editorState.clearCrop(pages);
+    this.landBlockDeletions(this.editorState.clearCrop(pages), false);
   }
 
   /**
@@ -11704,7 +11717,10 @@ export class PdfPickerComponent implements OnInit {
     }
 
     if (entries.size === 0) return;
-    this.editorState.applyCrop(entries, allToDelete);
+    // A crop is a bulk deletion with a rectangle for a reason, so it lands in
+    // the document as the deletions it made and nothing else — the rectangle
+    // itself is the editor's record of how to reverse them.
+    this.landBlockDeletions(this.editorState.applyCrop(entries, allToDelete), true);
   }
 
   // Split mode methods
@@ -12230,7 +12246,13 @@ export class PdfPickerComponent implements OnInit {
   // Page deletion methods (with undo/redo support via editor state)
   togglePageDeleted(pageNum: number): void {
     if (this.reviewMode()) return;  // read-only during EPUB review
-    this.editorState.togglePageDeletion([pageNum]);
+    this.landPageToggle(this.editorState.togglePageDeletion([pageNum]));
+  }
+
+  /** Both arms of a page toggle, landed in the document as the toggle decided. */
+  private landPageToggle(toggled: { deleted: number[]; restored: number[] }): void {
+    this.landPageDeletions(toggled.deleted, true);
+    this.landPageDeletions(toggled.restored, false);
   }
 
   isPageDeleted(pageNum: number): boolean {
@@ -12245,7 +12267,7 @@ export class PdfPickerComponent implements OnInit {
     // Restore all deleted pages (with undo support)
     const deletedArray = [...this.deletedPages()];
     if (deletedArray.length > 0) {
-      this.editorState.restorePages(deletedArray);
+      this.landPageDeletions(this.editorState.restorePages(deletedArray), false);
     }
   }
 
@@ -12295,7 +12317,7 @@ export class PdfPickerComponent implements OnInit {
 
     // Toggle page deletion (delete if not deleted, restore if all are deleted)
     const pageArray = [...pages];
-    this.editorState.togglePageDeletion(pageArray);
+    this.landPageToggle(this.editorState.togglePageDeletion(pageArray));
 
     // Clear selection after action
     this.selectedPageNumbers.set(new Set());
@@ -12576,38 +12598,58 @@ export class PdfPickerComponent implements OnInit {
   });
 
   /**
-   * Deletions, landed in the document.
+   * A deletion, landed in the document, at the gesture that made it.
    *
-   * Deleting a block is not one gesture — it is a box's context menu, a
-   * category's "delete all like this", a crop that removes what falls outside
-   * it, a page struck out, and every one of them reversible through the editor's
-   * undo stack. So this watches the RESULT rather than intercepting the acts:
-   * whatever the editor now says is dropped from the book, the annotations are
-   * made to say too.
+   * Deletion is written the way a relabel is: the ids the user acted on, named,
+   * the moment they acted. Nothing infers deletions by comparing the editor's
+   * set against the document's afterwards — a comparison has no record of
+   * intent, so it cannot tell a deletion the user has just made from one the
+   * mirror has already painted over, and whichever way it reads the difference
+   * it does so silently.
    *
-   * It cannot chase its own tail. The service applies each flag to its own copy
-   * as it takes it, so the next pass sees two identical sets and writes nothing;
-   * and the mirror above, running the other way, writes the same set the
-   * document already has.
+   * Ids the document does not carry are NOT filtered out here. The picker's own
+   * image blocks are the case that produces them, and a write the document
+   * refuses is news — `lastError` says so — rather than something to quietly
+   * drop on the way.
    */
-  private readonly documentDeletionsSync = effect(() => {
+  private landBlockDeletions(blockIds: readonly string[], deleted: boolean): void {
     if (!this.blockLayerRead()) return;
-    const wanted = this.editorState.deletedBlockIds();
-    const wantedPages = this.editorState.deletedPages();
-    untracked(() => {
-      const landed = this.documentBlocks.deletedBlockIds();
-      for (const id of wanted) if (!landed.has(id)) this.documentBlocks.setDeleted(id, true);
-      for (const id of landed) if (!wanted.has(id)) this.documentBlocks.setDeleted(id, false);
+    for (const id of blockIds) this.documentBlocks.setDeleted(id, deleted);
+  }
 
-      const landedPages = this.documentBlocks.deletedPages();
-      for (const p of wantedPages) {
-        if (!landedPages.has(p)) this.documentBlocks.setPageDeleted(p, true);
-      }
-      for (const p of landedPages) {
-        if (!wantedPages.has(p)) this.documentBlocks.setPageDeleted(p, false);
-      }
-    });
-  });
+  /** A page struck out of the book, landed in the document. */
+  private landPageDeletions(pages: readonly number[], deleted: boolean): void {
+    if (!this.blockLayerRead()) return;
+    for (const p of pages) this.documentBlocks.setPageDeleted(p, deleted);
+  }
+
+  /**
+   * Bring the document's deletion flags back in line with the editor's, as one
+   * delta.
+   *
+   * For undo and redo only, and called explicitly by them. An undo does not say
+   * what it undid in terms the document understands — one entry can restore a
+   * whole crop, a class of blocks and a page at once — so the honest reading is
+   * the difference between the two sets, taken immediately, in the same handler,
+   * before anything else can write to either.
+   */
+  private reconcileDeletionsWithDocument(): void {
+    if (!this.blockLayerRead()) return;
+
+    const wanted = this.editorState.deletedBlockIds();
+    const landed = this.documentBlocks.deletedBlockIds();
+    for (const id of wanted) if (!landed.has(id)) this.documentBlocks.setDeleted(id, true);
+    for (const id of landed) if (!wanted.has(id)) this.documentBlocks.setDeleted(id, false);
+
+    const wantedPages = this.editorState.deletedPages();
+    const landedPages = this.documentBlocks.deletedPages();
+    for (const p of wantedPages) {
+      if (!landedPages.has(p)) this.documentBlocks.setPageDeleted(p, true);
+    }
+    for (const p of landedPages) {
+      if (!wantedPages.has(p)) this.documentBlocks.setPageDeleted(p, false);
+    }
+  }
 
   /**
    * The chapters of a book with a working document ARE its `chapter` blocks.
