@@ -134,7 +134,22 @@ export interface DocumentPipelineState {
   resetTargets: DocumentStage[];
   /** For diagnostics and the reset dialog's wording. Never a user-facing listing. */
   workingPath: string;
+  /**
+   * The archive original, project-relative with forward slashes.
+   *
+   * This is the ONE name the renderer is given for a book's primary, and it is
+   * how the picker opens the Archive station without deriving a path of its own.
+   */
   primaryRelPath: string;
+  /**
+   * The book EPUB the binding names, project-relative with forward slashes.
+   *
+   * Null is a REAL state — reflow has never run for this book, so there is no
+   * EPUB to name — and not a missing value standing in for one. Whether the file
+   * is actually there is `stages.reflow`, which is measured; this is only where
+   * to look when it is.
+   */
+  epubRelPath: string | null;
 }
 
 /** A stage's own most recent line, as it runs. */

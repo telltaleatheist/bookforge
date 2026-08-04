@@ -58,7 +58,8 @@
     "download:mupdf": "node scripts/download-mupdf.js",
     "download:llama": "node scripts/download-llama-cpp.js",
     "postinstall": "npm run download:mupdf || echo 'MuPDF download skipped (run npm run download:mupdf manually if needed)'",
-    "migrate:sidecars": "node scripts/run-sidecar-migration.cjs"
+    "migrate:sidecars": "node scripts/run-sidecar-migration.cjs",
+    "test:station-ladder": "npx tsc -p tsconfig.electron.json && node tools/test-station-ladder.js"
   },
   "prettier": {
     "printWidth": 100,

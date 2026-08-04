@@ -133,6 +133,10 @@ export function registerDocumentIpc(): void {
           resetTargets: state.binding ? state.binding.boundaries.map((b) => b.stage) : [],
           workingPath: workingDocumentPath(project.projectDir, project.primaryRelPath),
           primaryRelPath: project.primaryRelPath,
+          // Null means reflow has never written a book for this project — an
+          // ordinary state on every book before its first build, not a value
+          // that went missing. `stages.reflow` is what says the file is there.
+          epubRelPath: state.binding?.epub ? state.binding.epub.path : null,
         },
       };
     } catch (err) {
