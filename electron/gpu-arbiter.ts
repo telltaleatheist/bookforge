@@ -203,12 +203,25 @@ export type OrpheusServeArtifact = 'merged' | 'adapter';
 export const ORPHEUS_ADAPTER_HEADROOM_MB = 1024;
 
 /**
- * vLLM's OWN weights+KV floor in adapter mode. The base (`unsloth/orpheus-3b-0.1-ft`,
- * ~6.2 GiB) is what vLLM loads — the merged 6.6 GiB figure includes the fine-tune
- * delta, which in adapter mode lives in the headroom above, not in the reservation.
- * Same minimum KV allowance as merged (~1.4 GiB).
+ * vLLM's OWN weights+KV floor in adapter mode — HIGHER than merged, never lower.
+ *
+ * There is no "the base is smaller than a merged fine-tune" saving to bank: the base
+ * and every deployed merge ship the SAME two bf16 shards, byte-for-byte identical in
+ * size (4,991,037,968 + 1,610,725,592). A LoRA merge changes weight VALUES, not the
+ * tensor shapes, so adapter mode loads exactly the weights merged mode loads. The
+ * merged floor (ORPHEUS_MIN_VRAM_MB, weights + a minimum working KV) therefore applies
+ * unchanged, and adapter mode needs MORE on top of it.
+ *
+ * 8824 = 8200 (merged floor) + 624, the measured out-of-budget slack an adapter spawn
+ * consumes inside the reservation: vLLM 0.7.3 profiles identical weights/KV budgets in
+ * both modes, so the resident LoRA + punica workspace + the extra SNAC-decode pressure
+ * come out of whatever slack is left — and in the step-1 A/B (2026-08-03) that slack
+ * ran out, producing a recoverable SNAC-decode CUDA OOM at GPU_MEM_UTIL = 0.70 with
+ * max_loras = 1. The 1.0 GiB carved off the reservation (ORPHEUS_ADAPTER_HEADROOM_MB)
+ * covers the allocations that live wholly outside the budget; this 624 MB covers the
+ * part that does not.
  */
-export const ORPHEUS_ADAPTER_MIN_VRAM_MB = 7800;
+export const ORPHEUS_ADAPTER_MIN_VRAM_MB = 8824;
 
 /** The floor vLLM's own reservation must clear, per artifact form. */
 export function orpheusMinVllmVramMB(artifact: OrpheusServeArtifact = 'merged'): number {

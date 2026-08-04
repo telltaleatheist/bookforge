@@ -98,12 +98,14 @@ export interface OrpheusMemoryProfile {
 // long-sentence batch (a small speed cost, never OOM). Mirrors the Mac/MLX widths.
 //
 // The numbers below are the MERGED-mode tiers and are unchanged. ADAPTER-mode spawns
-// do not get their own table — they take these and shrink the RESERVATION by
+// do not get their own table — they take these, shrink the RESERVATION by
 // ORPHEUS_ADAPTER_HEADROOM_MB (see artifactHeadroomMB below and the identical
 // subtraction in gpu-arbiter's computeSafeGpuUtil), because the resident LoRA
 // and the punica workspace are allocated OUTSIDE vLLM's `gpu_memory_utilization`
 // budget and would otherwise eat SNAC decode's slack (measured: a recoverable
-// SNAC-decode OOM at util 0.70 with max_loras=1, step-1 A/B 2026-08-03).
+// SNAC-decode OOM at util 0.70 with max_loras=1, step-1 A/B 2026-08-03) — and lift
+// the CAP to ADAPTER_MIN_CAP_MB where the table value is below what that subtraction
+// leaves servable (only 'light' is; see the arithmetic there).
 const VLLM_TIERS: Record<ConcreteOrpheusTier, { capMB: number; marginMB: number; ceiling: number; vllmBatch: number }> = {
   extreme: { capMB: 18432, marginMB: 1024, ceiling: 0.95, vllmBatch: 96 }, // 18 GiB — KV ~10 GiB
   fast: { capMB: 13312, marginMB: 2048, ceiling: 0.88, vllmBatch: 64 },    // 13 GiB — KV ~5 GiB
@@ -125,6 +127,35 @@ const VLLM_TIERS: Record<ConcreteOrpheusTier, { capMB: number; marginMB: number;
  */
 function artifactHeadroomMB(artifact: OrpheusServeArtifact): number {
   return artifact === 'adapter' ? ORPHEUS_ADAPTER_HEADROOM_MB : 0;
+}
+
+/**
+ * The SMALLEST total slice an adapter spawn can be given, and hence the floor under
+ * every tier cap in adapter mode. The arithmetic is forced, not chosen:
+ *
+ *   reservation = min(capMB, free − marginMB) − ORPHEUS_ADAPTER_HEADROOM_MB
+ *   fits ⟺ reservation ≥ orpheusMinVllmVramMB('adapter') = 8824
+ *   ⇒ capMB ≥ 8824 + 1024 = 9848
+ *
+ * 'light' is capped at 8704 MB for merged, which is BELOW that — so with the merged
+ * table alone `fits('light', …, 'adapter')` is unsatisfiable at ANY amount of free
+ * VRAM and the lightest tier could never run an adapter voice. 9984 MB (9.75 GiB)
+ * clears the bound with 136 MB to spare and is the only cap this raises; moderate
+ * (10240), fast (13312) and extreme (18432) already clear it.
+ *
+ * MERGED SPAWNS ARE UNTOUCHED — this floor is applied only when artifact==='adapter',
+ * so 'light' still reserves at most 8704 MB for a merged voice exactly as before.
+ */
+const ADAPTER_MIN_CAP_MB = 9984;
+
+/**
+ * A tier's absolute VRAM cap for the artifact form being served. Merged returns the
+ * table value verbatim; adapter lifts it to ADAPTER_MIN_CAP_MB when the table value
+ * is below the satisfiability bound (only 'light' is).
+ */
+function tierCapMB(t: ConcreteOrpheusTier, artifact: OrpheusServeArtifact): number {
+  const cap = VLLM_TIERS[t].capMB;
+  return artifact === 'adapter' ? Math.max(cap, ADAPTER_MIN_CAP_MB) : cap;
 }
 
 // How much VRAM to leave FREE for the rest of the machine. This must cover the PEAK
@@ -295,11 +326,17 @@ export function noteOrpheusOom(usedTier: ConcreteOrpheusTier): void {
 
 /** Full profile for a CONCRETE tier. vLLM callers read capMB + marginMB + ceiling;
  *  MLX callers read batchSize. */
-export function orpheusMemoryProfile(tier: ConcreteOrpheusTier): OrpheusMemoryProfile {
+export function orpheusMemoryProfile(
+  tier: ConcreteOrpheusTier,
+  artifact: OrpheusServeArtifact = 'merged',
+): OrpheusMemoryProfile {
   const t = isConcrete(tier) ? tier : 'moderate';
   const mlx = MLX_TIERS[t];
   return {
     tier: t, ...VLLM_TIERS[t],
+    // Adapter mode lifts 'light' to the satisfiability floor (see ADAPTER_MIN_CAP_MB);
+    // every other tier and every merged spawn gets the table value unchanged.
+    capMB: tierCapMB(t, artifact),
     batchSize: mlx.batchSize,
     mlxCacheLimitGB: mlx.cacheLimitGB,
     mlxMemBudgetGB: mlx.memBudgetGB,
@@ -320,7 +357,7 @@ export function orpheusMemoryProfile(tier: ConcreteOrpheusTier): OrpheusMemoryPr
  *  cover weights+KV. Merged subtracts 0 and compares against the same 8200 MB floor
  *  as before. */
 function reservationMB(t: ConcreteOrpheusTier, freeMB: number, artifact: OrpheusServeArtifact = 'merged'): number {
-  return Math.min(VLLM_TIERS[t].capMB, freeMB - VLLM_TIERS[t].marginMB) - artifactHeadroomMB(artifact);
+  return Math.min(tierCapMB(t, artifact), freeMB - VLLM_TIERS[t].marginMB) - artifactHeadroomMB(artifact);
 }
 function fits(t: ConcreteOrpheusTier, freeMB: number, artifact: OrpheusServeArtifact = 'merged'): boolean {
   return reservationMB(t, freeMB, artifact) >= orpheusMinVllmVramMB(artifact);
@@ -372,7 +409,7 @@ export function orpheusAutoSuggestion(
   // ratchets the autoCeiling down like any other auto pick. Daytime/loaded runs fall
   // through to the headroom-guaranteed tiers.
   const EXTREME_IDLE_SLACK_MB = 4096;
-  if (freeMB >= VLLM_TIERS.extreme.capMB + EXTREME_IDLE_SLACK_MB && fits('extreme', freeMB, artifact)) {
+  if (freeMB >= tierCapMB('extreme', artifact) + EXTREME_IDLE_SLACK_MB && fits('extreme', freeMB, artifact)) {
     return { tier: 'extreme', viable: true, freeMB, usedMB, reserveMB: Math.max(0, reservationMB('extreme', freeMB, artifact)) };
   }
   // Largest tier whose cap leaves DESKTOP_HEADROOM_MB free AND still holds the floor.
@@ -383,7 +420,7 @@ export function orpheusAutoSuggestion(
   const AUTO_TIERS: ConcreteOrpheusTier[] = ['fast', 'moderate', 'light'];
   let tier: ConcreteOrpheusTier = 'light';
   for (const t of AUTO_TIERS) {
-    const cap = VLLM_TIERS[t].capMB;
+    const cap = tierCapMB(t, artifact);
     // (a) TOTAL − cap ≥ headroom: because vLLM never takes more than `cap`, this much of
     //     the card ALWAYS stays free for the desktop — a hard guarantee against overflow.
     // (b) free ≥ cap: enough is free RIGHT NOW to grab the whole cap (else we'd reserve

@@ -2343,6 +2343,12 @@ interface ConversionSession {
   // The concrete Orpheus memory tier this job resolved to (from the user's choice,
   // or auto-sized to free VRAM). Used to lower the auto ceiling if the job OOMs.
   orpheusTier?: ConcreteOrpheusTier;
+  // Which artifact form this job's Orpheus voice is served from ('merged' or
+  // 'adapter'), resolved ONCE in the GPU preflight (acquireGpuForJob) and reused by
+  // the OOM-retry VRAM wait so the retry can't ask for a smaller floor than the
+  // preflight required — an adapter spawn needs ~1.8 GiB more than a merged one.
+  // Absent on a job whose preflight never ran (CPU / non-Orpheus engines).
+  orpheusServeArtifact?: OrpheusServeArtifact;
   // Display label for the resolved tier (e.g. 'Light') — shown as a queue badge.
   orpheusMemLevel?: string;
   // vLLM submission batch matched to the level's KV cache (win/linux), so it doesn't
@@ -4398,7 +4404,17 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
     // blind immediate respawns were the 3-attempt OOM cascade. Async on purpose:
     // worker.status is already 'pending', so checkAllWorkersComplete keeps the
     // session open while we wait.
-    void waitForFreeVram(ORPHEUS_MIN_VRAM_MB, {
+    //
+    // The floor must be the one THIS job's preflight enforced. An adapter spawn needs
+    // the LoRA + punica workspace on top of vLLM's (higher) reservation floor, so
+    // waiting on the merged number would respawn ~1.8 GiB short of what acquireGpuForJob
+    // demanded — i.e. straight back into the OOM cascade this wait exists to break.
+    // A job with no recorded artifact never went through the Orpheus GPU preflight
+    // (XTTS, or Orpheus pinned to CPU) and keeps the floor it has always waited on.
+    const retryFloorMB = engine === 'orpheus' && session.orpheusServeArtifact
+      ? orpheusMinFreeVramMB(session.orpheusServeArtifact)
+      : ORPHEUS_MIN_VRAM_MB;
+    void waitForFreeVram(retryFloorMB, {
       timeoutMs: 90_000,
       onWait: (freeMB, neededMB) =>
         console.log(`[PARALLEL-TTS] Retry of worker ${worker.id} waiting for VRAM: ${freeMB} MB free, need ~${neededMB} MB`),
@@ -5856,15 +5872,15 @@ function emitGpuWaitProgress(session: ConversionSession, message: string): void 
  *  external-process preflight. Orpheus (vLLM) pre-reserves gpu_memory_utilization ×
  *  TOTAL VRAM, so that much must actually be free; other engines need roughly a
  *  model + CUDA context + working set. Returns 0 when there's no NVIDIA GPU. */
-async function requiredVramMB(ttsEngine: string, artifact: OrpheusServeArtifact = 'merged'): Promise<number> {
+async function requiredVramMB(ttsEngine: string): Promise<number> {
   const mem = await getGpuMemMB();
   if (!mem) return 0; // no NVIDIA GPU → nothing to gate on
   if (ttsEngine === 'orpheus') {
-    // Orpheus now takes a BOUNDED slice (the tier cap), not a fraction of total, so the
-    // gate only needs the weights+KV floor free — computeSafeGpuUtil then sizes the
-    // reservation within whatever is actually free at spawn. An adapter spawn also
-    // needs the LoRA + punica workspace, which vLLM does NOT count in its reservation.
-    return orpheusMinFreeVramMB(artifact);
+    // NOT REACHED from acquireGpuForJob: the Orpheus branch there does its own
+    // artifact-aware floor gate + tier sizing and returns before this call. Kept as the
+    // correct answer for any other caller, and deliberately NOT artifact-parameterised —
+    // a second, uninformed sizing path is exactly how the two halves drift apart.
+    return ORPHEUS_MIN_VRAM_MB;
   }
   return 4500; // XTTS / F5 / Voxtral conservative floor
 }
@@ -5910,6 +5926,9 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
     console.error(`[PARALLEL-TTS] Job ${jobId}: ${session.gpuPreflightError}`);
     return;
   }
+  // Remembered for the whole job: a worker that dies OOM re-waits for VRAM before
+  // respawning, and that wait must ask for the SAME floor this preflight enforced.
+  session.orpheusServeArtifact = serveArtifact;
 
   // Never spawn into a wedged VM — it can only deepen the wedge. Fail loudly instead.
   if (orpheusViaWsl && isWslWedged()) {
@@ -6026,7 +6045,7 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
     const tier = fit.tier;
     session.orpheusTier = tier; // remembered so an OOM can lower the auto ceiling
     session.orpheusMemLevel = orpheusTierLabel(tier);
-    const profile = orpheusMemoryProfile(tier);
+    const profile = orpheusMemoryProfile(tier, serveArtifact);
     session.orpheusVllmBatch = profile.vllmBatch; // match submission batch to KV cache
     const ceiling = Number(process.env.ORPHEUS_GPU_MEM_UTIL) || profile.ceiling;
     const sized = await computeSafeGpuUtil(profile.capMB, profile.marginMB, ceiling, serveArtifact);
@@ -6072,7 +6091,7 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
 
   // Other engines (XTTS / F5 / Voxtral): best-effort preflight against a conservative
   // floor, to ride out GPU users outside this process. Never fails the job.
-  const requiredMB = await requiredVramMB(engine, serveArtifact);
+  const requiredMB = await requiredVramMB(engine);
   if (requiredMB > 0) {
     const r = await waitForFreeVram(requiredMB, {
       timeoutMs: 180_000,
