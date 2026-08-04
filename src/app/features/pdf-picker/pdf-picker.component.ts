@@ -3348,7 +3348,17 @@ export class PdfPickerComponent implements OnInit {
     }
     // Nothing stored is the ordinary first-run state, not a failure.
     if (!raw) return;
-    const stored = JSON.parse(raw) as { runInBackground?: unknown; openWhenFinished?: unknown };
+    let stored: { runInBackground?: unknown; openWhenFinished?: unknown };
+    try {
+      stored = JSON.parse(raw) as typeof stored;
+    } catch (err) {
+      // Unreadable storage is a storage failure, exactly like the read above,
+      // and it is handled the same way. This is not a pipeline value standing in
+      // for a missing one — it is a habit about two checkboxes, and letting it
+      // throw here would take the whole picker down on startup over them.
+      console.warn('[picker] the stored long-run options were unreadable:', err);
+      return;
+    }
     if (typeof stored.runInBackground === 'boolean') this.runInBackground.set(stored.runInBackground);
     if (typeof stored.openWhenFinished === 'boolean') this.openWhenFinished.set(stored.openWhenFinished);
   }
@@ -3426,14 +3436,21 @@ export class PdfPickerComponent implements OnInit {
     const present = this.presentStations();
     const noProject = this.projectPath() ? null
       : 'This document does not belong to a BookForge project, and every station writes into one.';
+    // Said here rather than discovered when the stage refuses: the document
+    // pipeline casts a working PDF from the book's original, so a project that
+    // arrived as an EPUB has nothing to cast FROM. Main refuses it by name; a
+    // button that has to be pressed to find that out is a worse way to hear it.
+    const noPdf = this.curatedPdfPath() ? null
+      : 'This book arrived as an EPUB, so there is no PDF to cast a working copy from. '
+        + 'Curate it here and the text passes run on the book itself.';
     switch (this.viewedStation()) {
       case 'archive':
         return [
-          { id: 'cast', label: 'OCR / Cast', reason: noProject, primary: true },
+          { id: 'cast', label: 'OCR / Cast', reason: noProject ?? noPdf, primary: true },
           // Detect implies the cast when there is none — the OCR dialog submits
           // both passes, in that order, and the planner refuses them the other
           // way round by name.
-          { id: 'detect-from-archive', label: 'Detect', reason: noProject },
+          { id: 'detect-from-archive', label: 'Detect', reason: noProject ?? noPdf },
         ];
       case 'working':
         return [
@@ -3464,17 +3481,36 @@ export class PdfPickerComponent implements OnInit {
   });
 
   /**
+   * This book has a working copy, so there is a station that is not the archive.
+   *
+   * The whole of the archive-is-read-only rule hangs on this. A book that HAS a
+   * working copy has somewhere else to be edited, so editing the original is
+   * both forbidden and unnecessary. A book that has none — one that arrived as
+   * an EPUB (main refuses to cast a working PDF from a book, by name), a loose
+   * file, a PDF nobody has cast yet — has nowhere else, and its curation is the
+   * editor's own block list: recorded in the manifest and applied by the
+   * markup-preserving EPUB export. Locking those books would leave them with no
+   * editable station at all.
+   */
+  private readonly hasWorkingCopy = computed(() => this.presentStations().includes('working'));
+
+  /**
    * Why curation is refused on the artifact currently on screen, or null.
    *
-   * Curation is an edit to the WORKING copy's annotations, so it is offered at
-   * exactly one station. The other two are said rather than hidden: an archive
-   * whose gestures silently do nothing is indistinguishable from a broken
-   * picker, and the sentence names the button that makes an editable copy.
+   * For a cast book, curation is an edit to the WORKING copy's annotations, so
+   * it is offered at exactly one station and the others say so rather than
+   * silently doing nothing — an archive whose gestures vanish is
+   * indistinguishable from a broken picker.
+   *
+   * For a book with no working copy there is no such division: the station on
+   * screen is the only one it has, and it is edited the way it always was.
    */
   readonly curationReadOnlyReason = computed<string | null>(() => {
     switch (this.viewedStation()) {
       case 'archive':
-        return 'This is the archived original — cast a working copy to edit.';
+        return this.hasWorkingCopy()
+          ? 'This is the archived original — switch to the Working copy to edit.'
+          : null;
       case 'epub':
         return 'This is the built book. Curation happens on the working copy; the text passes happen here.';
       case 'tts':
@@ -3501,9 +3537,14 @@ export class PdfPickerComponent implements OnInit {
    * It also keeps `<Original>.working.pdf` out of the tab strip, which
    * docs/DOCUMENT_PIPELINE.md requires — it is a system file and gets no
    * user-facing listing.
+   *
+   * The blank archive is what the archive means only when there is a working
+   * copy to mean it against. A book with none — an EPUB, a loose file — is
+   * being read at its one and only station, and painting nothing there would
+   * hide the blocks it is curated through.
    */
   readonly stationBlocks = computed(() =>
-    this.viewedStation() === 'archive' ? [] : this.blocks());
+    this.viewedStation() === 'archive' && this.hasWorkingCopy() ? [] : this.blocks());
 
   // Search state
   readonly showSearch = signal(false);
@@ -4216,11 +4257,12 @@ export class PdfPickerComponent implements OnInit {
   readonly viewerEditorMode = computed<string>(() =>
     this.activePanel() === 'crop' ? 'crop' : 'select');
 
-  // The rail is hidden only while reviewing the exported EPUB; it is fully
-  // usable at both editable stations (select AND chapters) in embedded mode.
-  // The rail curates the working copy, so it is shown at the station where
-  // curation happens and nowhere else.
-  readonly showToolbox = computed(() => this.viewedStation() === 'working');
+  // The rail is the curation tools, so it is shown exactly where curation is
+  // possible and nowhere else — asked as one question rather than two, so a
+  // rail full of tools can never appear over an artifact that refuses them.
+  // That is the working copy for a cast book, and the book itself for one that
+  // has no working copy (an EPUB, a loose file: see `curationReadOnlyReason`).
+  readonly showToolbox = computed(() => !this.curationLocked());
 
   // Crop mode state (derived from activePanel)
   readonly cropMode = computed(() => this.activePanel() === 'crop');
@@ -8975,8 +9017,13 @@ export class PdfPickerComponent implements OnInit {
       case 'archive':
         return null;  // A book on screen has an original, by construction.
       case 'working':
-        return present.includes('working') ? null
-          : 'There is no working copy yet — press OCR / Cast on the Archive station.';
+        if (present.includes('working')) return null;
+        // A book with no PDF ancestor never gets this station at all, so the
+        // sentence says why rather than sending the user to a button that
+        // refuses them.
+        return this.curatedPdfPath()
+          ? 'There is no working copy yet — press OCR / Cast on the Archive station.'
+          : 'This book arrived as an EPUB, so it has no working PDF — it is curated on the book itself.';
       case 'epub':
         return present.includes('epub') ? null
           : 'This book has not been built yet — press Build the book on the Working station.';
@@ -9212,14 +9259,26 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
+    // Before EITHER route, and for the same reason: reflow reads the working
+    // document, so the paragraph consolidation has to be IN it before the stage
+    // starts. Running it only on the foreground route would make "run in
+    // background" a checkbox that changes the book — one line per paragraph in
+    // the queued EPUB, none in the watched one — which is precisely what these
+    // two options promise not to do.
+    this.autoMergeForPipeline();
+
     if (this.runInBackground()) {
+      // The batched edits are landed BEFORE the job is submitted. `reflow()`
+      // flushes for the foreground route; nothing flushes for this one, and a
+      // queue that reached the stage inside the batching window would reflow a
+      // document that is missing the last few seconds of curation.
+      await this.documentBlocks.flush();
       // Queued rather than run here: the same submission the wizard makes, one
       // reflow pass over this project's working document.
       await this.submitPassRun(projectDir, [{ kind: 'reflow' }]);
       return;
     }
 
-    this.autoMergeForPipeline();
     this.loading.set(true);
     this.loadingText.set('Building the book...');
     try {

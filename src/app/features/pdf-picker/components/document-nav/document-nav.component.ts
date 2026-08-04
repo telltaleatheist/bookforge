@@ -135,7 +135,7 @@ export type DocumentNavTab = 'select' | 'label' | 'chapter';
               [disabled]="!hasDocument() || mergeRefusal() !== null"
               [title]="mergeTooltip()"
               (click)="merge.emit()"
-            >Merge {{ selectedBlockIds().length >= 2 ? selectedBlockIds().length : '' }}</button>
+            >{{ selectedBlockIds().length >= 2 ? 'Merge ' + selectedBlockIds().length : 'Merge' }}</button>
           </div>
         }
 
@@ -226,7 +226,7 @@ export type DocumentNavTab = 'select' | 'label' | 'chapter';
               [disabled]="!hasDocument() || mergeRefusal() !== null"
               [title]="mergeTooltip()"
               (click)="merge.emit()"
-            >Merge {{ selectedBlockIds().length >= 2 ? selectedBlockIds().length : '' }}</button>
+            >{{ selectedBlockIds().length >= 2 ? 'Merge ' + selectedBlockIds().length : 'Merge' }}</button>
           </div>
         }
       }
