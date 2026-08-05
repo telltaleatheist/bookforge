@@ -7,6 +7,7 @@ import type {
   EnvDiagnosticResult,
 } from './components/component-types';
 import type { ComponentUpdateStatus } from './update/component-updater';
+import type { StartupUpgradeReport } from './components/startup-upgrade-check';
 import type { StarterStatus } from './update/starter-library';
 import type { OrpheusBatchConfig } from './orpheus-batch';
 import type { EpubPreservingEdits } from './epub-processor';
@@ -1633,6 +1634,9 @@ export interface ElectronAPI {
     uninstall: (id: string) => Promise<void>;
     testEnv: (id: string) => Promise<EnvDiagnosticResult>;
     onProgress: (callback: (p: InstallProgress) => void) => () => void;
+    /** The startup upgrade sweep: null until it has finished. */
+    upgrades: () => Promise<StartupUpgradeReport | null>;
+    onUpgradesAvailable: (callback: (report: StartupUpgradeReport) => void) => () => void;
   };
   whisper: {
     listModels: () => Promise<{ success: boolean; data?: WhisperModelStatus[]; error?: string }>;
@@ -3351,6 +3355,19 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('components:progress', listener);
       return () => {
         ipcRenderer.removeListener('components:progress', listener);
+      };
+    },
+    // The startup upgrade sweep. Both halves are exposed because there is no
+    // ordering guarantee between the sweep finishing and the renderer
+    // subscribing: subscribe for the push, then pull once in case it already
+    // went out.
+    upgrades: () =>
+      ipcRenderer.invoke('components:upgrades') as Promise<StartupUpgradeReport | null>,
+    onUpgradesAvailable: (callback: (report: StartupUpgradeReport) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, report: StartupUpgradeReport) => callback(report);
+      ipcRenderer.on('components:upgrades-available', listener);
+      return () => {
+        ipcRenderer.removeListener('components:upgrades-available', listener);
       };
     },
   },

@@ -71,8 +71,9 @@ import type { InstallProgress } from './components/component-types';
 import {
   FOUNDRY_CLI_COMPONENT_ID,
   FOUNDRY_CLI_ENV_VAR,
-  FOUNDRY_CLI_VERSION,
+  effectiveFoundryVersion,
 } from './components/foundry-cli-components';
+import { planUpgrade } from './components/component-upgrades';
 
 /** The artifact format versions this build of BookForge can read. */
 const SUPPORTED_FORMATS = {
@@ -239,10 +240,11 @@ async function downloadFoundry(
     }
   }
 
+  const wanted = effectiveFoundryVersion();
   console.log(
     upgradeFrom
-      ? `[foundry] managed install is ${upgradeFrom}; upgrading to ${FOUNDRY_CLI_VERSION}…`
-      : `[foundry] no foundry on this machine; downloading ${FOUNDRY_CLI_VERSION}…`
+      ? `[foundry] managed install is ${upgradeFrom}; upgrading to ${wanted}…`
+      : `[foundry] no foundry on this machine; downloading ${wanted}…`
   );
   const result = await componentManager.install(FOUNDRY_CLI_COMPONENT_ID, (p) => {
     broadcastInstallProgress(p);
@@ -266,12 +268,12 @@ async function downloadFoundry(
     // result.error is component-manager's own text: the URL and HTTP status for a
     // failed fetch, both hashes for a checksum mismatch, the verify output for a
     // binary that would not run. Passed through, never summarized.
-    throw new Error(`Could not download the foundry CLI ${FOUNDRY_CLI_VERSION}: ${result.error}`);
+    throw new Error(`Could not download the foundry CLI ${wanted}: ${result.error}`);
   }
 
   const installed = resolveFoundryPath();
   if (installed) {
-    console.log(`[foundry] downloaded ${FOUNDRY_CLI_VERSION} to ${installed}`);
+    console.log(`[foundry] downloaded ${wanted} to ${installed}`);
     return installed;
   }
   throw new Error(
@@ -298,7 +300,7 @@ async function downloadFoundry(
  * whatever version it is.
  *
  * A MANAGED install is different: BookForge put it there, so BookForge keeps it
- * at the version the catalog names. When FOUNDRY_CLI_VERSION moves, the stale
+ * at the version the catalog names. When the wanted version moves, the stale
  * copy is replaced HERE, on the next pass that needs foundry — the record's
  * `version` field exists precisely "to detect upgrades" (component-types.ts),
  * and without this check a catalog bump reaches only fresh machines, while
@@ -306,6 +308,14 @@ async function downloadFoundry(
  * forever (the documented uninstall-reinstall limitation in rvc-env.ts, which
  * is livable for a 2 GiB env and wrong for a 38 MB CLI the app versions in
  * lockstep with its own document-stage contract).
+ *
+ * That verdict is now `planUpgrade` (electron/components/component-upgrades.ts),
+ * the same pure rule the startup sweep applies to every component — so the two
+ * cannot come to different conclusions about this one. It also decides against
+ * two cases the old inline `record.version !== FOUNDRY_CLI_VERSION` got wrong:
+ * a version DISCOVERED on GitHub is what `effectiveFoundryVersion()` names, and
+ * an installed copy newer than the wanted one is left alone (a launch that
+ * starts offline can only see the pin, and must not drag a newer install back).
  */
 export async function ensureFoundryPath(
   onProgress?: (p: InstallProgress) => void
@@ -332,13 +342,31 @@ export async function ensureFoundryPath(
   if (entry) {
     const status = await componentManager.getStatus(FOUNDRY_CLI_COMPONENT_ID);
     const record = status?.installed;
-    if (record?.source !== 'managed' || record.version === FOUNDRY_CLI_VERSION) {
+    const verdict = planUpgrade({
+      id: FOUNDRY_CLI_COMPONENT_ID,
+      name: status?.component.name ?? FOUNDRY_CLI_COMPONENT_ID,
+      targetVersion: effectiveFoundryVersion(),
+      supportsManaged: true,
+      installed: record ? { source: record.source, version: record.version } : null,
+      // $FOUNDRY_CLI_PATH was already handled (and rejected) above; reaching here
+      // means it is unset, so nothing pins this to a build of the user's own.
+      envPinned: false,
+      // Always false HERE. The startup sweep uses this flag to stay out of the
+      // way of an install it did not start; this function is the other side of
+      // that — it must reach the shared-promise join below, where a concurrent
+      // install is awaited rather than raced or answered with the stale binary.
+      installing: false,
+      // Foundry's version can come from a release discovered at runtime, so an
+      // install NEWER than what this launch can see is a real state, not staleness.
+      mayBeAheadOfCatalog: true,
+    });
+    if (verdict.verdict === 'keep') {
       return entry;
     }
     // A stale managed install. Replacing it can fail if the old exe is mid-run
     // (Windows locks a running binary) — that failure is loud and the retry is
     // the next pass, which is the right shape for an event this rare.
-    staleManagedVersion = record.version;
+    staleManagedVersion = verdict.fromVersion ?? undefined;
   }
 
   if (foundryInstall) {

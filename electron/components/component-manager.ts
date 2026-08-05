@@ -2083,6 +2083,19 @@ export function installerNote(id: string): string | null {
   return getExternalInstaller(id)?.note ?? null;
 }
 
+/**
+ * Is a managed install for this id running right now?
+ *
+ * A standalone export rather than a method on IComponentManager, which
+ * component-types.ts declares a LOCKED CONTRACT — same shape as `runInstaller`
+ * and `listInstallableIds` above. The startup upgrade sweep asks so it does not
+ * queue an upgrade on top of a transfer somebody else already started into the
+ * same directory.
+ */
+export function isInstalling(id: string): boolean {
+  return inFlight.has(id);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Export
 // ─────────────────────────────────────────────────────────────────────────────

@@ -114,6 +114,55 @@ let runtimeSetupInFlight: Promise<void> | null = null;
 let runtimeSetupDone = false;
 let ttsApiStarted = false;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Startup upgrade check — installed components that are behind the catalog, and
+// a foundry release newer than the pin. See
+// electron/components/startup-upgrade-check.ts for the rules; the renderer runs
+// the result through SetupDownloadService and the existing download shelf.
+// ─────────────────────────────────────────────────────────────────────────────
+
+let upgradeCheckStarted = false;
+
+/**
+ * Run the sweep once per launch and push the result to the window.
+ *
+ * Once, because `did-finish-load` fires again on every reload — routine in
+ * `electron:dev`, where a hot reload would otherwise re-queue an upgrade that is
+ * already downloading. The renderer subscribes before this can fire (the
+ * listener is registered in App.ngOnInit, and the check is started from
+ * did-finish-load), but the result is also cached for a subscriber that asks
+ * late — see the `components:upgrades` handler.
+ *
+ * Fully non-fatal: nothing here can prevent the window from opening, and a
+ * rejected promise is logged rather than surfaced as an unhandled rejection.
+ */
+async function runStartupUpgradeCheck(): Promise<void> {
+  if (upgradeCheckStarted) {
+    // A reload after the first check: replay what we found rather than sweeping
+    // again, so the shelf repopulates without a second round of detection.
+    if (lastUpgradeReport) {
+      mainWindow?.webContents.send('components:upgrades-available', lastUpgradeReport);
+    }
+    return;
+  }
+  upgradeCheckStarted = true;
+  try {
+    const { checkForComponentUpgrades } = await import('./components/startup-upgrade-check.js');
+    const report = await checkForComponentUpgrades();
+    lastUpgradeReport = report;
+    if (report.upgrades.length > 0 || report.problems.length > 0) {
+      mainWindow?.webContents.send('components:upgrades-available', report);
+    }
+  } catch (err) {
+    // checkForComponentUpgrades catches its own failures and reports them in
+    // `problems`, so reaching here means the module itself would not load.
+    console.error('[updates] the startup upgrade check could not run:', err);
+    upgradeCheckStarted = false; // a later reload may succeed
+  }
+}
+
+let lastUpgradeReport: import('./components/startup-upgrade-check').StartupUpgradeReport | null = null;
+
 async function startTtsApiServerOnce(): Promise<void> {
   if (ttsApiStarted) return;
   ttsApiStarted = true;
@@ -813,6 +862,17 @@ function createWindow(): void {
         })
         .catch((err) => console.warn('[update] component update check failed:', err));
     }
+
+    // Are any INSTALLED optional components behind what the catalog names — and
+    // has foundry published a release newer than the pin? The renderer feeds the
+    // answer to SetupDownloadService, which runs the upgrades through the same
+    // queue and the same bottom-right shelf as every other download.
+    //
+    // NOT gated on app.isPackaged, unlike the managed-binary check above: a dev
+    // build resolves components out of the same <userData>/components directory a
+    // packaged one does, so a stale install is equally stale there — and gating it
+    // would mean the path could only ever be exercised by shipping it.
+    void runStartupUpgradeCheck();
   });
 
   mainWindow.on('closed', () => {
@@ -5211,6 +5271,12 @@ function setupIpcHandlers(): void {
   ipcMain.handle('components:get', async (_event, id: string) => {
     return componentManager.getStatus(id);
   });
+
+  // What the startup sweep found. Pull, for a renderer that subscribed after the
+  // push already went out (a reload, or a window opened late) — the sweep is
+  // async and there is no ordering guarantee worth relying on. Null until it has
+  // finished; the renderer treats that as "nothing yet", not "nothing to do".
+  ipcMain.handle('components:upgrades', async () => lastUpgradeReport);
 
   ipcMain.handle('components:probe', async (_event, force?: boolean) => {
     return systemProbe.profile(force);
