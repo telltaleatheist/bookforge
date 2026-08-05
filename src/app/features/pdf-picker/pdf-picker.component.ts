@@ -39,10 +39,13 @@ import {
   STATIONS,
   STATION_LABELS,
   existingStations,
-  nextStation,
+  nextStationFromViewed,
+  stationForArtifact,
   stationPresence,
+  viewedArtifactOf,
   type BookDocuments,
   type StationId,
+  type ViewedArtifact,
 } from '@shared/document/stations';
 import { decideArrival } from '@shared/document/arrival';
 import type { DocumentClass } from '@shared/document/pipeline-types';
@@ -3420,8 +3423,42 @@ export class PdfPickerComponent implements OnInit {
     if (typeof stored.openWhenFinished === 'boolean') this.openWhenFinished.set(stored.openWhenFinished);
   }
 
-  /** The artifact in the viewer. Which FILE is on screen, and nothing more. */
-  readonly viewedStation = signal<StationId>('archive');
+  /**
+   * The station this window has ASKED to stand on.
+   *
+   * Not the answer. Every path that shows an artifact writes here, and the
+   * artifact that actually arrives has the last word (`viewedStation` below) —
+   * because a window asks and a file loads in whichever order the round trips
+   * happen to complete, and the one that can be MEASURED is the file.
+   */
+  private readonly requestedStation = signal<StationId>('archive');
+
+  /**
+   * Which artifact is in the viewer, measured from the paths.
+   *
+   * The whole of the rule is in `shared/document/stations.ts`; this is the three
+   * facts it needs, and all three are already answers this window holds.
+   */
+  readonly viewedArtifact = computed<ViewedArtifact>(() => viewedArtifactOf({
+    displayedPath: this.effectivePath(),
+    curatedPdfPath: this.curatedPdfPath(),
+    bookEpubPath: this.bookEpubPath(),
+  }));
+
+  /**
+   * The station in the viewer. Which FILE is on screen, and nothing more.
+   *
+   * DERIVED, as of the second real session (2026-08-04). It used to be a plain
+   * signal every load path set, and the two could disagree: `showEpubStation`
+   * put the book on screen through `loadPdf`, which sets the station home unless
+   * a swap flag happens to be up, and a window opened straight onto the book
+   * from the versions page set no station at all. A window showing the book
+   * while its station said "Working" then offered Next: Working, unlocked
+   * curation over an EPUB, and painted the working PDF's blocks onto the book.
+   * One fact, derived once, and none of those can recur.
+   */
+  readonly viewedStation = computed<StationId>(() =>
+    stationForArtifact(this.requestedStation(), this.viewedArtifact()));
 
   /** A stage is running for this book, so nothing on the bar should be pressable. */
   readonly stationBusy = computed(() =>
@@ -3518,7 +3555,16 @@ export class PdfPickerComponent implements OnInit {
    * books standing at a locked Next pointing to a button that would refuse them.
    */
   readonly bookDocuments = computed<BookDocuments>(() => ({
-    hasPdfOriginal: this.curatedPdfPath() !== null,
+    // TWO proofs of one fact, and either is enough — not a value standing in for
+    // a missing one. `curatedPdfPath` is a PDF this window has DISPLAYED; a
+    // document state is main having RESOLVED this project's PDF primary, which
+    // it refuses to do for a book that arrived as an EPUB, by name
+    // (`resolveDocumentProject`). A window opened straight onto the built book
+    // has only the second, and reading that as "no PDF ancestor" made a reflowed
+    // PDF book report itself as EPUB-native: its Working tab went dead and its
+    // Build button switched to the markup-preserving exporter, which has no
+    // markup to preserve.
+    hasPdfOriginal: this.curatedPdfPath() !== null || this.documentBlocks.state() !== null,
     workingStages: this.documentBlocks.state()?.stages ?? null,
     // Main's existence-checked manifest record, never the binding's
     // `stages.reflow`: a book with no PDF ancestor has no binding to ask, and it
@@ -3552,16 +3598,14 @@ export class PdfPickerComponent implements OnInit {
    * Read by BOTH the Next button and the disabled action buttons, so a lock is
    * explained with one sentence rather than two that can drift.
    */
-  readonly stationNextStep = computed(() => {
-    const book = this.bookDocuments();
-    const at = this.viewedStation();
-    // A window showing a station the book no longer has is a real state — a
-    // reset removed the working copy while it was open — and the ladder throws
-    // on it by name. Here it means "you are back at the archive", which is
-    // exactly where a reset leaves the book.
-    if (stationPresence(at, book) !== 'present') return nextStation('archive', book);
-    return nextStation(at, book);
-  });
+  readonly stationNextStep = computed(() =>
+    // Forward from where the viewer is, always. A window showing a station the
+    // book does not currently measure as present is a real state — a reset
+    // removed the working copy while it was open, main has not answered yet
+    // about the book — and it is not a reason to point back down the ladder.
+    // Asking `nextStation('archive', book)` in that case is what put "Next:
+    // Working" on the screen while the built book was on it.
+    nextStationFromViewed(this.viewedStation(), this.bookDocuments()));
 
   readonly stationTabs = computed<StationTab[]>(() => {
     const book = this.bookDocuments();
@@ -5115,7 +5159,7 @@ export class PdfPickerComponent implements OnInit {
     // With a working document, removal is a FLAG on the annotation and not an
     // erasure: the mirror paints what the document says, so blocks struck out
     // of the editor's own list would be painted straight back at the next read.
-    if (this.blockLayerRead()) {
+    if (this.documentLayerLive()) {
       this.landBlockDeletions(this.editorState.deleteBlocks(idsToRemove), true);
       return;
     }
@@ -5465,7 +5509,16 @@ export class PdfPickerComponent implements OnInit {
     this.editorState.reset();
     this.pageRenderService.closeDocument(); // Also frees the backend cached render doc
     this.electronService.closePdf(); // Free the main analysis document WASM memory
-    this.projectService.reset();
+    // The PROJECT survives a station swap. A swap changes which of this book's
+    // artifacts is in the viewer; it does not change which book the window is
+    // on, and dropping the project here is what left the EPUB station with no
+    // project at all — Footnotes, Simplify and Translate greyed out reading
+    // "this document does not belong to a BookForge project", and the book's own
+    // station measured as absent so Next pointed back at the working copy
+    // (second real session, 2026-08-04). `loadPdf` cannot put it back either:
+    // `autoCreateProject` is skipped during a swap, precisely so the window
+    // stays bound to the manifest project rather than rebinding to the artifact.
+    if (!this.stationSwapping) this.projectService.reset();
 
     // Clear blanked pages tracking
     this.blankedPages.set(new Set());
@@ -5491,7 +5544,7 @@ export class PdfPickerComponent implements OnInit {
     this.showFilePicker.set(false);
     // A station swap is this window changing which artifact it shows, not the
     // user opening a different book, so it does not send the ladder home.
-    if (!this.stationSwapping) this.viewedStation.set('archive');
+    if (!this.stationSwapping) this.requestedStation.set('archive');
 
     const lowerPath = path.toLowerCase();
     let effectivePath = path;
@@ -5643,7 +5696,10 @@ export class PdfPickerComponent implements OnInit {
         fileHash: fileHash
       });
       this.pageRenderService.clear();
-      this.projectService.reset();
+      // Same rule as closePdf: a station swap keeps the book's project. Every
+      // other caller of loadPdf really is opening a different document, and for
+      // those the binding is rebuilt below by autoCreateProject.
+      if (!this.stationSwapping) this.projectService.reset();
       this.blankedPages.set(new Set());  // Clear blanked pages for new document
       this.metadata.set({});  // Clear metadata for new document
       // Clear remaining per-document component state so the previous tab's
@@ -6210,7 +6266,7 @@ export class PdfPickerComponent implements OnInit {
     // relabel goes into the PDF and the mirror paints what came back. The
     // corrections map is not written alongside it: a second record of the same
     // fact is the override layer this pipeline deleted.
-    if (this.blockLayerRead()) {
+    if (this.documentLayerLive()) {
       for (const id of event.blockIds) this.documentBlocks.relabel(id, event.categoryId);
       return;
     }
@@ -9298,6 +9354,15 @@ export class PdfPickerComponent implements OnInit {
     if (id === at) return;
 
     if (id === 'tts') {
+      const bookPath = this.stationEpubPath();
+      // Unreachable through the tab, which is disabled without a book, and
+      // stated by `handOffToNarration` rather than guessed if it is reached.
+      if (bookPath === null) return;
+      // Narration is handed the BOOK, so the book is what the window is showing
+      // when it hands it over. Jumping straight here from a PDF station used to
+      // leave the viewer on the PDF with the station claiming Narration — the
+      // exact disagreement `viewedStation` is now derived to prevent.
+      if (this.viewedArtifact() !== 'book') await this.showEpubStation(bookPath);
       this.handOffToNarration();
       return;
     }
@@ -9324,7 +9389,7 @@ export class PdfPickerComponent implements OnInit {
     if (at === 'epub' || at === 'tts') {
       await this.reloadProjectDocument();
     }
-    this.viewedStation.set(id);
+    this.requestedStation.set(id);
   }
 
   /** Load the project's book and stand at the EPUB station. */
@@ -9343,7 +9408,7 @@ export class PdfPickerComponent implements OnInit {
       this.closePdf();
       await this.loadPdf(epubPath);
       this.activatePanel(null);
-      this.viewedStation.set('epub');
+      this.requestedStation.set('epub');
     } catch (error) {
       this.showAlert({
         title: 'Could not open the book',
@@ -9420,7 +9485,7 @@ export class PdfPickerComponent implements OnInit {
     // incremental update in the working document, and the EPUB on disk is what
     // reflow wrote.
     this.editorState.hasUnsavedChanges.set(false);
-    this.viewedStation.set('tts');
+    this.requestedStation.set('tts');
     this.finalized.emit({ success: true, epubPath });
   }
 
@@ -10726,7 +10791,7 @@ export class PdfPickerComponent implements OnInit {
     this.sourceFilePath.set(null);
     // A station swap is this window changing which artifact it shows, not the
     // user opening a different book, so it does not send the ladder home.
-    if (!this.stationSwapping) this.viewedStation.set('archive');
+    if (!this.stationSwapping) this.requestedStation.set('archive');
 
     // Check if this project is already open
     const existingDoc = this.openDocuments().find(d => d.projectPath === filePath);
@@ -10795,8 +10860,24 @@ export class PdfPickerComponent implements OnInit {
     let pdfPathToLoad: string | undefined;
     let usingExportedEpub = false;
 
-    // First, check if an override source path was provided (from version picker)
-    const overridePath = this.overrideSourcePath();
+    // First, check if an override source path was provided (from version picker).
+    //
+    // With ONE exception, and it is a station move rather than an open: a window
+    // opened straight onto the built book (versions page → EPUB row → the
+    // editor's `?source=`) carries that book in `overrideSourcePath` for its
+    // whole life. Re-resolving it when the user presses the Working tab would
+    // reload the book they are already looking at and call it going back — the
+    // tab would look broken, and the ladder's one way back down would be gone.
+    // So a swap away from the book resolves the project's SOURCE instead.
+    //
+    // Narrowed to the project's own EXPORT on purpose: an EPUB-native book is
+    // opened on `archive/<Book>.epub`, which is not an export but its original,
+    // and the markup-preserving build aligns against exactly that file.
+    const chosenPath = this.overrideSourcePath();
+    const overridePath =
+      chosenPath && this.stationSwapping && this.isProjectOwnExport(chosenPath, project)
+        ? null
+        : chosenPath;
     if (overridePath) {
       const exists = await this.electronService.fsExists(overridePath);
       if (exists) {
@@ -10879,7 +10960,7 @@ export class PdfPickerComponent implements OnInit {
       // Determine if we're loading the original source or a derived version (exported/cleaned)
       const resolvedOriginalPath = project.library_path || project.source_path;
       const isLoadingOriginal = !usingExportedEpub && (
-        !this.overrideSourcePath() ||  // No override = loading original
+        !overridePath ||  // No override in force = loading original
         pdfPathToLoad === resolvedOriginalPath ||  // Override matches original
         pdfPathToLoad === project.library_path  // Override is the library copy
       );
@@ -12318,7 +12399,7 @@ export class PdfPickerComponent implements OnInit {
     // With a working document the chapter IS the block, so removing it removes
     // the block — anything else would put the list and the page into
     // disagreement, and the derived list would win back on the next read anyway.
-    if (this.blockLayerRead() && this.blocks().some(b => b.id === chapterId)) {
+    if (this.documentLayerLive() && this.blocks().some(b => b.id === chapterId)) {
       this.deleteBlock(chapterId);
       if (this.selectedChapterId() === chapterId) this.selectedChapterId.set(null);
       return;
@@ -12333,7 +12414,7 @@ export class PdfPickerComponent implements OnInit {
   renameChapter(event: { chapterId: string; newTitle: string }): void {
     // Same rule: renaming a chapter edits the block's annotation text, which IS
     // the title the book is built with. There is no second copy to update.
-    if (this.blockLayerRead()) {
+    if (this.documentLayerLive()) {
       const block = this.blocks().find(b => b.id === event.chapterId);
       if (block) {
         const title = event.newTitle.trim();
@@ -12832,6 +12913,47 @@ export class PdfPickerComponent implements OnInit {
   private readonly blockLayerRead = signal(false);
 
   /**
+   * The artifact in the viewer IS the document the block layer belongs to.
+   *
+   * The working document is a copy of the project's PDF original with an
+   * invisible text layer and the block annotations added, and the picker renders
+   * that original and paints the annotations over it — so "is the working
+   * document on screen" is exactly "is the project's PDF on screen".
+   *
+   * Measured from the path rather than from the station, deliberately: this is
+   * what the station is DERIVED from, and a gate that read the station back
+   * would be answering with its own answer. It is also synchronous — no round
+   * trip to main can leave a window painting one book's blocks over another's
+   * while it waits.
+   *
+   * WHAT IT IS FOR (second real session, 2026-08-04). Phase B keeps the block
+   * layer OPEN at the EPUB station on purpose: `workingDocumentRef` tracks the
+   * PROJECT's PDF rather than the file on screen, because building it from the
+   * displayed file tore the layer down every time the user looked at the book
+   * they had just built (commit acd6eaa2). But an open layer was also a MIRRORED
+   * one, so standing on the book painted the working PDF's blocks, deletions and
+   * categories over the EPUB's own analysis — Owen: "it shouldnt be overlaying
+   * changes/blocks from the pdf on top of the epub. this is a separate entity
+   * now". The layer stays open; the mirroring, and every write that rides it,
+   * stops at the artifact boundary.
+   */
+  private readonly viewerShowsWorkingDocument = computed(() => {
+    const pdf = this.curatedPdfPath();
+    // Null is a real state, not a missing value: a project that arrived as an
+    // EPUB has no PDF to cast a working document from, and main refuses one by
+    // name. Such a book has no block layer for anything to show.
+    if (pdf === null) return false;
+    return this.effectivePath() === pdf;
+  });
+
+  /**
+   * A block layer has been read AND the artifact on screen is the one it
+   * describes. The single condition every paint and every document write asks.
+   */
+  private readonly documentLayerLive = computed(() =>
+    this.blockLayerRead() && this.viewerShowsWorkingDocument());
+
+  /**
    * The annotations, painted.
    *
    * One-way, and deliberately so: the document is the authority, the editor's
@@ -12847,7 +12969,11 @@ export class PdfPickerComponent implements OnInit {
    * the correction map are all built around.
    */
   private readonly documentBlocksMirror = effect(() => {
-    if (!this.blockLayerRead()) return;
+    // Suspended, not torn down, for any artifact that is not the working PDF —
+    // see `viewerShowsWorkingDocument`. Reading the gate first and returning
+    // means nothing is painted while the book is on screen, and the effect
+    // re-runs (and repaints the document's blocks) the moment the PDF is back.
+    if (!this.documentLayerLive()) return;
     const blocks = this.documentBlocks.blocks();
     const deleted = this.documentBlocks.deletedBlockIds();
     const deletedPages = this.documentBlocks.deletedPages();
@@ -12878,7 +13004,10 @@ export class PdfPickerComponent implements OnInit {
    * through, and its refusal is news — `lastError` says so.
    */
   private landBlockDeletions(blockIds: readonly string[], deleted: boolean): void {
-    if (!this.blockLayerRead()) return;
+    // The artifact boundary, on the WRITE side: nothing done to the book may
+    // reach the working document. `curationLocked` refuses those gestures at the
+    // front door too, and this is the same statement said where the write is.
+    if (!this.documentLayerLive()) return;
     for (const id of blockIds) {
       if (this.editorState.getBlock(id)?.is_image) continue;
       this.documentBlocks.setDeleted(id, deleted);
@@ -12887,7 +13016,7 @@ export class PdfPickerComponent implements OnInit {
 
   /** A page struck out of the book, landed in the document. */
   private landPageDeletions(pages: readonly number[], deleted: boolean): void {
-    if (!this.blockLayerRead()) return;
+    if (!this.documentLayerLive()) return;
     for (const p of pages) this.documentBlocks.setPageDeleted(p, deleted);
   }
 
@@ -12902,7 +13031,7 @@ export class PdfPickerComponent implements OnInit {
    * before anything else can write to either.
    */
   private reconcileDeletionsWithDocument(): void {
-    if (!this.blockLayerRead()) return;
+    if (!this.documentLayerLive()) return;
 
     // The background toggle parks the picker's own image-block ids in
     // `deletedBlockIds`, and the document has no annotation for those — see
@@ -12942,7 +13071,11 @@ export class PdfPickerComponent implements OnInit {
    * `hasUnsavedChanges`.
    */
   private readonly documentChaptersEffect = effect(() => {
-    if (!this.blockLayerRead()) return;
+    // Same artifact boundary as the block mirror, and for the same reason: the
+    // book on screen has its own chapters (read out of its navigation), and the
+    // working PDF's chapter blocks overwriting them is the overlay wearing a
+    // different hat.
+    if (!this.documentLayerLive()) return;
     const derived: Chapter[] = this.documentBlocks.chapterBlocks()
       .slice()
       .sort((a, b) => a.page - b.page || a.y - b.y)
@@ -13091,11 +13224,11 @@ export class PdfPickerComponent implements OnInit {
     // measurement at all, and asking for one on every open would put a
     // page-sampling read in front of every book in the library.
     if (this.presentStations().includes('working')) {
-      this.viewedStation.set('working');
+      this.requestedStation.set('working');
       await this.payOpenWhenFinished();
       return;
     }
-    this.viewedStation.set('archive');
+    this.requestedStation.set('archive');
 
     const projectDir = this.projectPath();
     if (projectDir && this.autoCastAttemptedFor === projectDir) return;
@@ -13173,7 +13306,7 @@ export class PdfPickerComponent implements OnInit {
     // station list is read off the documents `getText()` just re-read.
     if (this.presentStations().includes('working')) {
       this.blockLayerRead.set(true);
-      this.viewedStation.set('working');
+      this.requestedStation.set('working');
     }
   }
 
@@ -13303,6 +13436,10 @@ export class PdfPickerComponent implements OnInit {
    * one field — there is no chapter record beside the block to keep in step.
    */
   retitleChapterBlock(event: { blockId: string; title: string }): void {
+    // The Chapter tab is on screen for the book too, and its rows are then the
+    // BOOK's chapters — a retitle from there must not reach back into the
+    // working PDF's annotations. Same boundary as every other document write.
+    if (!this.documentLayerLive()) return;
     this.documentBlocks.retitle(event.blockId, event.title);
   }
 
@@ -13345,6 +13482,8 @@ export class PdfPickerComponent implements OnInit {
    * pages — by name rather than producing something that looks merged.
    */
   mergeSelectedBlocks(): void {
+    if (this.curationLocked()) return;  // the artifact on screen is not curated here
+    if (!this.documentLayerLive()) return;
     let survivor: string;
     try {
       survivor = this.documentBlocks.merge(this.selectedBlockIds());
