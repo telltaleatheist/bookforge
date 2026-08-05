@@ -35,6 +35,18 @@
  *  5. No managed acquisition mode → keep. There is nothing to download.
  *  6. The catalog does not version it (version: '') → keep. Calibre and Tesseract
  *     are detected, not versioned; "'' !== '6.29.0'" is not staleness.
+ *  6b. The RECORD does not carry a version → keep. This is rule 6 from the other
+ *     side and it is the one that got away: on 2026-08-05 the first Mac launch
+ *     re-downloaded the US Female 1 RVC voice. Its record said `version: ''`
+ *     (every voice record is written that way — see `installed-voices.ts` and
+ *     `rvc-voice-components.ts`), the catalog names `2026.06.25`, and
+ *     `'' !== '2026.06.25'` read as stale. It is not stale; it is UNKNOWN. An
+ *     absent version is not version zero, and the difference matters because
+ *     the remedy is a multi-gigabyte transfer of something already on disk.
+ *     Windows escaped it only by not having that voice installed.
+ *     Re-downloading on a guess is precisely what a NO FALLBACK rule forbids:
+ *     when the fact needed to decide is missing, the answer is to do nothing and
+ *     say so, not to assume the worse of the two possibilities.
  *  7. Versions equal → keep.
  *  8. The component can be legitimately AHEAD of the catalog, both versions are
  *     semver, and the installed one is newer → keep. A downgrade is not an
@@ -163,6 +175,17 @@ export function planUpgrade(c: UpgradeCandidate): UpgradePlanItem {
   }
   if (c.targetVersion === '') {
     return keep('the catalog does not version this component');
+  }
+  if (!c.installed.version) {
+    // Rule 6b. The record carries no version, so there is nothing to compare —
+    // and an unrecorded version is UNKNOWN, not old. Every voice record is
+    // written with `version: ''`, so treating that as stale re-downloads
+    // gigabytes of model weights that are already on disk (measured: a Mac's
+    // first launch fetched the US Female 1 RVC voice for exactly this reason).
+    return keep(
+      'installed, but no version was recorded for it — nothing to compare against '
+      + `the catalog's ${c.targetVersion}, and an absent version is not an old one`
+    );
   }
   if (c.installed.version === c.targetVersion) {
     return keep(`up to date at ${c.targetVersion}`);

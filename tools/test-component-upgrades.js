@@ -114,6 +114,31 @@ test('an unversioned component (Calibre, Tesseract) is never stale', () => {
   assert.match(v.reason, /does not version/);
 });
 
+// Regression, 2026-08-05: a Mac's first launch re-downloaded the US Female 1 RVC
+// voice. Its record said `version: ''` — every voice record is written that way —
+// the catalog names `2026.06.25`, and the mismatch read as staleness. An absent
+// version is UNKNOWN, not old, and the remedy for guessing was gigabytes of
+// already-present model weights over the wire.
+test('a record with NO recorded version is unknown, not stale', () => {
+  const v = planUpgrade(candidate({
+    id: 'rvc-voice-us-female-1', name: 'US Female 1',
+    targetVersion: '2026.06.25',
+    installed: { source: 'managed', version: '' },
+  }));
+  assert.strictEqual(v.verdict, 'keep');
+  assert.match(v.reason, /no version was recorded/);
+});
+
+test('an unrecorded version is not rescued by the version being undefined either', () => {
+  // installed.json has carried records without the key at all.
+  const v = planUpgrade(candidate({
+    targetVersion: '2026.06.25',
+    installed: { source: 'managed' },
+  }));
+  assert.strictEqual(v.verdict, 'keep');
+  assert.match(v.reason, /no version was recorded/);
+});
+
 test('a component with no managed download is never queued', () => {
   const v = planUpgrade(candidate({ supportsManaged: false }));
   assert.strictEqual(v.verdict, 'keep');
