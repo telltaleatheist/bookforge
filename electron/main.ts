@@ -2317,6 +2317,51 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * Export = give the user a copy of a file, somewhere they chose.
+   *
+   * The EPUB export (`epub:export-book`) is not a copy: it re-packages the book
+   * with the project's metadata and cover, which is only a meaningful act on an
+   * EPUB. Every other document the versions page lists is a PDF — the archive
+   * original and the working copy — and the honest export of a PDF is its bytes,
+   * unchanged. That is the same act `exportM4b` already performs (a save dialog
+   * and `fs.copyFile`); it is one handler here rather than two renderer calls so
+   * there is no half-done state between choosing a location and writing to it.
+   *
+   * The source extension drives the filter, so the dialog offers the file's own
+   * kind. There is no default extension: a file whose type we cannot name is
+   * offered as All Files rather than silently saved as something it is not.
+   *
+   * archive/ is READ here. Nothing writes into it — `result.filePath` is a
+   * location the user picked in a native dialog, and the copy goes there.
+   */
+  ipcMain.handle('dialog:save-file-copy', async (_event, sourcePath: string, defaultName?: string) => {
+    if (!mainWindow) return { success: false, error: 'No window' };
+    const source = normalizeFsPath(sourcePath);
+    if (!fsSync.existsSync(source)) {
+      return {
+        success: false,
+        error: `There is nothing to export: ${source} is not on disk. It may have been moved, `
+          + 'deleted, or not yet synced to this machine.',
+      };
+    }
+    const ext = path.extname(defaultName || source).replace('.', '').toLowerCase();
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Export a copy',
+      defaultPath: defaultName || path.basename(source),
+      filters: ext
+        ? [{ name: ext.toUpperCase(), extensions: [ext] }, { name: 'All Files', extensions: ['*'] }]
+        : [{ name: 'All Files', extensions: ['*'] }],
+    });
+    if (result.canceled || !result.filePath) return { success: false, canceled: true };
+    try {
+      await fs.copyFile(source, result.filePath);
+      return { success: true, filePath: result.filePath };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('audiobook:copy-to-path', async (_event, source: string, dest: string) => {
     try {
       await fs.copyFile(source, dest);
@@ -9949,6 +9994,18 @@ function setupIpcHandlers(): void {
         // gesture. The project's PDF primary opens the PROJECT, and the picker
         // lands on the furthest station it has (which is the working copy).
         openPath?: string;
+        // Present only on the 'archive' row: the manifest variant that IS this
+        // file, so Delete can go through `variant:delete` — the one code path
+        // that removes a version of a book (record first, file only after the
+        // write is confirmed). Without it the row would have to identify the
+        // variant by path, which is the guess that handler exists to avoid.
+        variantId?: string;
+        // Present only on the 'working' and 'archive' rows: the archive original
+        // this family is bound to. It is what a delete of either one has to be
+        // pointed at — the working document is DERIVED from it, so the pipeline
+        // identifies the document by naming its original, never by naming the
+        // working file (see document-ipc.ts, "why the renderer never holds a path").
+        primaryPath?: string;
         // Present only on the 'working' row: the binding's recorded stage
         // boundaries, so the row can say which stages have landed and when.
         stageBoundaries?: Array<{ stage: string; finishedAt: string }>;
@@ -9983,6 +10040,8 @@ function setupIpcHandlers(): void {
         language?: string,
         extra?: {
           openPath?: string;
+          variantId?: string;
+          primaryPath?: string;
           stageBoundaries?: Array<{ stage: string; finishedAt: string }>;
           builtAt?: string;
         }
@@ -10040,6 +10099,8 @@ function setupIpcHandlers(): void {
             diffRecordPath,
             diffOriginalPath,
             ...(extra?.openPath ? { openPath: extra.openPath } : {}),
+            ...(extra?.variantId ? { variantId: extra.variantId } : {}),
+            ...(extra?.primaryPath ? { primaryPath: extra.primaryPath } : {}),
             ...(extra?.stageBoundaries ? { stageBoundaries: extra.stageBoundaries } : {}),
             ...(extra?.builtAt ? { builtAt: extra.builtAt } : {}),
           });
@@ -10108,8 +10169,12 @@ function setupIpcHandlers(): void {
             // statement rather than a limitation: opening a book puts the user on
             // its working copy (RULED 2026-08-04 — you never start on a read-only
             // book), so an Open here would be a second button doing exactly what
-            // the working copy's does. Export still hands over the file itself.
-            false
+            // the working copy's does. The row still SAYS so — the versions page
+            // renders a disabled Open carrying that sentence rather than nothing
+            // at all. Export and Delete both act on this file directly.
+            false,
+            undefined,
+            { variantId: doc.primaryVariantId, primaryPath: doc.primaryAbsPath }
           );
         }
         await addVersion(
@@ -10124,6 +10189,7 @@ function setupIpcHandlers(): void {
           {
             // The PROJECT's primary, never the working file itself — see openPath.
             openPath: doc.primaryAbsPath,
+            primaryPath: doc.primaryAbsPath,
             stageBoundaries: doc.binding.boundaries.map((b) => ({
               stage: b.stage, finishedAt: b.finishedAt,
             })),

@@ -32,6 +32,7 @@ import type {
   AppliedPass,
   AppliedPassKind,
 } from './manifest-types.js';
+import { passesAfterEpubEvent } from '../shared/document/pass-lifecycle';
 
 // Generate UUID v4 without external dependency
 function uuidv4(): string {
@@ -855,12 +856,66 @@ export async function readExportEpub(projectDir: string): Promise<ExportEpubLoca
 }
 
 /**
+ * Remove what a set of superseded passes left on disk.
+ *
+ * The paths come from `passesAfterEpubEvent` and from nowhere else — this
+ * function does not decide what a pass owns, it carries out a decision already
+ * made and tested (`shared/document/pass-lifecycle.ts`,
+ * `tools/test-pass-lifecycle.js`). Each is re-checked to be inside the project
+ * before anything is removed, because a manifest is a file on a synced drive and
+ * a `diff` field that had walked out of the project would otherwise aim an `rm`
+ * at whatever it named.
+ *
+ * A path that is already gone is not an error: the record and the file are two
+ * things, and the record outliving the file is the ordinary way a half-finished
+ * delete or a half-synced folder shows up.
+ */
+async function removePassArtifacts(projectDir: string, relPaths: readonly string[]): Promise<string[]> {
+  const removed: string[] = [];
+  for (const relPath of relPaths) {
+    const abs = path.resolve(projectDir, relPath.split('/').join(path.sep));
+    const inside = path.relative(path.resolve(projectDir), abs);
+    if (!inside || inside.startsWith('..') || path.isAbsolute(inside)) {
+      throw new Error(
+        `${projectDir}'s manifest records a pass diff at "${relPath}", which resolves outside the `
+        + 'project. Nothing was removed. Fix the record — a diff belongs to the book it was applied '
+        + 'to, and a book cannot own a file in another folder.'
+      );
+    }
+    if (!fs.existsSync(abs)) continue;
+    await fs.promises.rm(abs, { recursive: true, force: true });
+    removed.push(relPath);
+  }
+  return removed;
+}
+
+/**
  * Record a written export as `outputs.epub`.
  *
- * Writes the record and NOTHING else. A file the record used to point at — the
- * old-title EPUB after a retitle, a pre-rename `exported.epub` — stops being the
- * project's book the moment this returns, and stays on disk until its owner
- * deletes it. This code does not delete a user's books.
+ * ── This is a REBUILD, and a rebuild ends the old book's provenance ─────────
+ *
+ * Every caller of this has just written the book: Reflow from the picker, Reflow
+ * from the queue, the markup-preserving exporter. So the file `outputs.epub`
+ * named a moment ago either no longer exists or no longer holds those bytes, and
+ * the passes recorded against it did not happen to what is there now
+ * (docs/PIPELINE_V2_PLAN.md: "Rebuilding regenerates a clean EPUB, which
+ * discards the EPUB passes done to the old one — their stars clear, honestly").
+ * Replacing `m.outputs.epub` wholesale has always dropped `appliedPasses` with
+ * it; what is new here is that the diffs those passes left on disk go too, so a
+ * `stages/NN-<kind>/` that no record can name is never left behind for the next
+ * pass at the same index to overwrite.
+ *
+ * WHICH passes and WHICH files is not decided here — `passesAfterEpubEvent`
+ * decides, and it is tested without a project.
+ *
+ * The record still goes first: if it is written and the cleanup then fails, the
+ * project has a correct record and some stale directories. The other order would
+ * delete a user's diffs and then leave the record pointing at them.
+ *
+ * A file the record used to point at — the old-title EPUB after a retitle, a
+ * pre-rename `exported.epub` — stops being the project's book the moment this
+ * returns, and stays on disk until its owner deletes it. This code does not
+ * delete a user's books.
  */
 export async function registerEpubExport(projectDir: string, epubAbsPath: string): Promise<void> {
   const manifest = await readManifestAt(projectDir);
@@ -872,6 +927,9 @@ export async function registerEpubExport(projectDir: string, epubAbsPath: string
   }
   const relPath = rel.split(path.sep).join('/');
 
+  const superseded = passesAfterEpubEvent(
+    'epub-rebuilt', manifest.outputs?.epub?.appliedPasses ?? []);
+
   const saved = await modifyManifest(projectId, (m) => {
     if (!m.outputs) m.outputs = {};
     m.outputs.epub = { path: relPath, modifiedAt: new Date().toISOString() };
@@ -879,6 +937,75 @@ export async function registerEpubExport(projectDir: string, epubAbsPath: string
   if (!saved.success) {
     throw new Error(`Exported to ${epubAbsPath}, but recording it in the manifest failed: ${saved.error}`);
   }
+
+  const removed = await removePassArtifacts(projectDir, superseded.removePaths);
+  if (removed.length > 0) {
+    console.log(`[manifest-service] the rebuilt book supersedes ${superseded.dropped.length} pass`
+      + `(es); removed ${removed.join(', ')}`);
+  }
+}
+
+/** What `forgetEpubExport` found and did, so the caller can say it. */
+export interface EpubForgetSummary {
+  /** The book the record named, project-relative. */
+  relPath: string;
+  absPath: string;
+  /** The passes whose record went with it. */
+  droppedPasses: number;
+  /** What came off disk with them, project-relative. */
+  removedPaths: string[];
+}
+
+/**
+ * Forget the project's book EPUB: the record, its provenance, and the diffs that
+ * provenance pointed at.
+ *
+ * Owen, third session: "if that file is removed, so is the diff and its viewing
+ * button." This is the record half of removing the book. The FILE is the
+ * caller's act, done after this returns, in that order — a failure part-way
+ * leaves an unrecorded stray (invisible to every consumer, per the export
+ * contract) rather than a record vouching for a file that is gone.
+ *
+ * Deliberately NOT `clearProcessingRecords`: that one also clears the
+ * scan-stamped keys under `manifest.source` — the user's block deletions — which
+ * belong to the working PDF and have nothing to do with the book being deleted.
+ * "Start over" is the act that takes those.
+ *
+ * Refuses a project with no `outputs.epub`, naming it: the caller believed there
+ * was a book to delete, and there is not.
+ */
+export async function forgetEpubExport(projectDir: string): Promise<EpubForgetSummary> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  const record = manifest.outputs?.epub;
+  if (!record?.path) {
+    throw new Error(
+      `${projectDir} has no outputs.epub, so there is no book EPUB to delete. The record is the `
+      + 'only thing that says where a project\'s book is; a file in the folder that nothing records '
+      + 'is not this project\'s book.'
+    );
+  }
+  const relPath = record.path;
+  const lifecycle = passesAfterEpubEvent('epub-deleted', record.appliedPasses ?? []);
+
+  const saved = await modifyManifest(projectId, (m) => {
+    if (m.outputs) delete m.outputs.epub;
+  });
+  if (!saved.success) {
+    throw new Error(
+      `Could not forget ${relPath} in ${projectDir}'s manifest: ${saved.error}. Nothing was `
+      + 'deleted — the book and its diffs are still there.'
+    );
+  }
+
+  const removedPaths = await removePassArtifacts(projectDir, lifecycle.removePaths);
+  return {
+    relPath,
+    absPath: toAbs(projectDir, relPath),
+    droppedPasses: lifecycle.dropped.length,
+    removedPaths,
+  };
 }
 
 /**

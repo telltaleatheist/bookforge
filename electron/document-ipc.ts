@@ -48,7 +48,11 @@ import { readWorkingDocumentBlocks } from './working-document';
 import { applyWorkingDocumentEdits, type WorkingDocumentEdit } from './working-document-writer';
 import { abortStageFor, beginStage } from './document-stage-registry';
 import { noteDocumentStageFinished } from './document-open-when-finished';
-import { workingDocumentPath } from './document-binding';
+import {
+  documentBindingPath,
+  workingDocumentPath,
+  writeDocumentBinding,
+} from './document-binding';
 import type {
   DocumentBlocksPayload,
   DocumentRef,
@@ -59,6 +63,30 @@ function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
   }
+}
+
+/**
+ * Stop every one of this project's bindings from vouching for a book EPUB.
+ *
+ * Matched by the RECORDED path, not by "has an epub": a project can hold two
+ * PDFs and therefore two working documents, and only the one whose reflow wrote
+ * this file should forget it. Returns how many were cleared so the caller can
+ * say it; zero is an ordinary answer (the book was written by an exporter that
+ * does not go through a binding at all).
+ */
+async function forgetBoundEpub(projectDir: string, epubRelPath: string): Promise<number> {
+  const { listWorkingDocuments } = await import('./document-project.js');
+  const target = epubRelPath.toLowerCase();
+  let cleared = 0;
+  for (const doc of await listWorkingDocuments(projectDir)) {
+    if (doc.binding.epub?.path.toLowerCase() !== target) continue;
+    const { epub: _gone, ...rest } = doc.binding;
+    await writeDocumentBinding(
+      documentBindingPath(projectDir, doc.primaryRelPath),
+      { ...rest, updatedAt: new Date().toISOString() });
+    cleared++;
+  }
+  return cleared;
 }
 
 async function projectOf(ref: DocumentRef): Promise<DocumentProject> {
@@ -314,6 +342,55 @@ export function registerDocumentIpc(): void {
       await resetDocumentTo(project, target);
       broadcast('project:files-changed', project.projectDir);
       return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Delete the project's book EPUB — the file, its record, and its diffs.
+   *
+   * Owen, third real session: "if that file is removed, so is the diff and its
+   * viewing button." So this is one act, not a file delete with tidying bolted
+   * on: the record goes, the passes recorded against the file go, the
+   * `stages/NN-<kind>/` directories those passes wrote go, the binding stops
+   * vouching for a book that is not there, and only then is the file unlinked.
+   *
+   * ORDERING, and it is the same ordering "Start over" uses (processing-reset.ts)
+   * for the same reason: records first, file last. A failure part-way leaves an
+   * unrecorded stray — invisible to every consumer, and overwritten by the next
+   * export — rather than a record pointing at a file that is gone, which is the
+   * state that makes a versions page offer a review of nothing.
+   *
+   * `document:discard` is NOT what this is. That one removes the working PDF and
+   * its binding; the book is a separate artifact and survives it.
+   */
+  ipcMain.handle('document:delete-book', async (_event, projectDir: string) => {
+    try {
+      const manifestService = await import('./manifest-service.js');
+      const forgotten = await manifestService.forgetEpubExport(projectDir);
+
+      // The binding records the book too (`binding.epub`), and it is what the
+      // versions page reads `builtAt` from. A binding still naming a deleted
+      // book would report a build time for a file nobody has.
+      const bindingsCleared = await forgetBoundEpub(projectDir, forgotten.relPath);
+
+      let fileRemoved = false;
+      if (fs.existsSync(forgotten.absPath)) {
+        await fs.promises.unlink(forgotten.absPath);
+        fileRemoved = true;
+      }
+      broadcast('project:files-changed', projectDir);
+      return {
+        success: true,
+        removed: {
+          relPath: forgotten.relPath,
+          fileRemoved,
+          droppedPasses: forgotten.droppedPasses,
+          removedPaths: forgotten.removedPaths,
+          bindingsCleared,
+        },
+      };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

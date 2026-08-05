@@ -162,6 +162,16 @@ export interface WorkingDocumentEntry {
   /** The archive original, project-relative and slash-separated. */
   primaryRelPath: string;
   primaryAbsPath: string;
+  /**
+   * The manifest VARIANT id of that original.
+   *
+   * Carried because the original is a variant like any other version of the
+   * book, and `variant:delete` is the one code path that removes one — record
+   * first, file only after the write is confirmed. The versions page needs the
+   * id to reach it; deriving it there from the path would be a second, weaker
+   * answer to "which variant is this file".
+   */
+  primaryVariantId: string;
   /** The original is on disk. False is a real state — a project can be half-synced. */
   primaryExists: boolean;
   workingRelPath: string;
@@ -222,6 +232,7 @@ export async function listWorkingDocuments(
     entries.push({
       primaryRelPath: binding.primary.path,
       primaryAbsPath,
+      primaryVariantId: candidate.id,
       primaryExists: fs.existsSync(primaryAbsPath),
       workingRelPath: binding.working.path,
       workingAbsPath,

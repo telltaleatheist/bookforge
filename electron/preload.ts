@@ -915,6 +915,8 @@ export interface ElectronAPI {
     saveText: (defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     saveM4b: (defaultName?: string, defaultDir?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     saveWav: (bytesBase64: string, defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
+    /** Choose a location and copy this file's bytes there, unchanged. */
+    saveFileCopy: (sourcePath: string, defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     confirm: (options: {
       title: string;
       message: string;
@@ -1352,6 +1354,21 @@ export interface ElectronAPI {
     resetTo: (ref: DocumentRef, target: ResetTarget) =>
       Promise<{ success: boolean; error?: string }>;
     discard: (ref: DocumentRef) => Promise<{ success: boolean; error?: string }>;
+    /**
+     * Delete the project's book EPUB, its provenance and the diffs that
+     * provenance pointed at. One act — see `document:delete-book`.
+     */
+    deleteBook: (projectDir: string) => Promise<{
+      success: boolean;
+      error?: string;
+      removed?: {
+        relPath: string;
+        fileRemoved: boolean;
+        droppedPasses: number;
+        removedPaths: string[];
+        bindingsCleared: number;
+      };
+    }>;
     onStageProgress: (callback: (event: DocumentStageProgressEvent) => void) => () => void;
     onStageStarted: (callback: (event: { projectDir: string; stage: string }) => void) => () => void;
     onStageFinished: (callback: (event: { projectDir: string; stage: string }) => void) => () => void;
@@ -2571,6 +2588,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('dialog:save-m4b', defaultName, defaultDir),
     saveWav: (bytesBase64: string, defaultName?: string) =>
       ipcRenderer.invoke('dialog:save-wav', bytesBase64, defaultName),
+    saveFileCopy: (sourcePath: string, defaultName?: string) =>
+      ipcRenderer.invoke('dialog:save-file-copy', sourcePath, defaultName),
     confirm: (options: {
       title: string;
       message: string;
@@ -3008,6 +3027,7 @@ const electronAPI: ElectronAPI = {
     resetTo: (ref: DocumentRef, target: ResetTarget) =>
       ipcRenderer.invoke('document:reset-to', ref, target),
     discard: (ref: DocumentRef) => ipcRenderer.invoke('document:discard', ref),
+    deleteBook: (projectDir: string) => ipcRenderer.invoke('document:delete-book', projectDir),
     onStageProgress: (callback: (event: DocumentStageProgressEvent) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, event: DocumentStageProgressEvent) =>
         callback(event);
