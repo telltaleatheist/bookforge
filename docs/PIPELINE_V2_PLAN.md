@@ -134,6 +134,50 @@ timestamps vs the EPUB's writtenAt — already recorded). Rebuilding regenerates
 a clean EPUB, which **discards** the EPUB passes done to the old one — their
 stars clear, honestly.
 
+### The third real session, 2026-08-04 — the rows had no buttons
+
+"the archive and working pdf are missing their buttons on the version page.
+export, open, delete." Not removed on purpose: the archive original is a
+manifest VARIANT and carried Open/Export/Delete for as long as it was listed
+under Book versions, and moving it into the family took them with it.
+
+- **Export is on every document row**, through one entry point that branches on
+  what the file IS — an EPUB through the packer that applies the project's
+  metadata and cover, a PDF through save-a-copy. archive/ is READ; the copy
+  goes where the user pointed the dialog. (The working copy's old "no Export"
+  rule was a judgement about what the user should want.)
+- **Delete is three acts.** Working copy → `document:discard` (PDF + binding +
+  scratch, as one). Archive original → `variant:delete` (the precedent: record
+  first, file only once the write is confirmed), with the working copy removed
+  FIRST because it is bound to those bytes by hash, and the original left
+  untouched if that half fails. Book EPUB → `document:delete-book`, which takes
+  its provenance and its diffs with it.
+- **RULED: Open lives on the working row alone.** Open on the archive row would
+  open the PROJECT, and opening a project lands on the working copy — the row
+  below it. The archive row renders Open **disabled**, carrying the sentence
+  that says so, rather than shipping two buttons doing one thing.
+
+**RULED: the lit star IS the way in to the diff.** "im not sure a button on the
+version is the best way to do that now… but viewing the diff should definitely
+be possible. and it should be linked to the file it was applied to." A star is
+already the record that a pass ran, so pressing it opens what that pass changed.
+It is a real button — the page's pill shape, an underlined "see changes",
+hover/focus states, an accessible name that says the action — plus a line in
+words under the row, shown only when a star there is actually pressable. A star
+with no diff behind it stays an inert span. The provenance badges keep "Review
+changes" only for kinds with no star column (the retired `tesseract` and
+`detection`) and take them all back when the book's row is absent, so a diff is
+never stranded and never behind two controls.
+
+**RULED: a diff's lifetime is its artifact's lifetime.** Deleting the book takes
+its `appliedPasses` and their `stages/NN-<kind>/` directories; so does
+**rebuilding** it, which is the same event (the passes did not happen to the new
+bytes). Written once as a pure function — `shared/document/pass-lifecycle.ts`,
+tested in `tools/test-pass-lifecycle.js` — and carried out in
+`registerEpubExport` / `forgetEpubExport`, proved on files in
+`tools/test-epub-provenance-lifecycle.js`. Nothing else takes a diff: there is
+no orphan sweep, so a stage directory no record names stays exactly where it is.
+
 ## Picker modes and rail
 
 Two pointer modes (RULED 2026-08-04: Edit mode is deleted outright — see

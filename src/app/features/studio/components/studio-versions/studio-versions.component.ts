@@ -2618,6 +2618,16 @@ export class StudioVersionsComponent {
       });
       return;
     }
+    // The whole-file diff sidecar (`<name>.diff.json`) an older pipeline wrote
+    // beside this book, if the versions scan found one. It is not in the
+    // manifest's provenance, so main cannot see it — but it is a diff OF THIS
+    // FILE, and the file has just gone.
+    if (v.diffRecordPath) {
+      const delDiff = await this.electron.deleteFile(v.diffRecordPath);
+      if (!delDiff.success) {
+        console.warn('[studio-versions] the book was deleted but its diff sidecar survived:', delDiff.error);
+      }
+    }
     await this.load();
     this.changed.emit();
   }
