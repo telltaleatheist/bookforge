@@ -192,13 +192,30 @@ the queue — binding record shows both stages landed, working copy intact at
   the Versions ruling above.
 - **A pass was still a row.** A footnote run from an earlier session was still
   listed as its own version line item.
-- **Detect was queued unasked.** The OCR dialog submits `get-text` AND
-  `blocks` as one run, so casting always enqueued a detect. They separate.
-- **The queue lied about a stage.** The `Detect blocks` job reported complete
-  while it was still running — job completion is being reported off something
-  other than the stage actually ending. Needs diagnosis, not a guess.
+- **Detect was queued unasked.** The OCR dialog submitted `get-text` AND
+  `blocks` as one run, so casting always enqueued a detect. **FIXED, Phase B2:**
+  the dialog submits the cast alone, and `planProcessingChain`'s blanket "a cast
+  must be followed by a detect" refusal is replaced by the honest rule — a cast
+  INVALIDATES what came before it, so a pass's prerequisite must have been
+  written at or after the last cast (on disk or in the chain). `[get-text]`
+  alone plans; `[get-text, reflow]` still refuses, naming Detect.
+- **The queue lied about a stage.** `Detect blocks` reported 100% from the first
+  page. **DIAGNOSED AND FIXED, Phase B2** — it was `parseProgress` taking the
+  LAST `n/total` on a foundry line. foundry's blocks stage prints
+  `page 7/300: 31/31 blocks labelled` per page (foundry `src/commands.ts:1307`);
+  the first pair is the run and the second is that page's own tally, which is
+  always n/n. StageTracker is monotonic, so one page pinned the bar at 100% for
+  the rest of the stage. The row's STATUS was honest throughout, and nothing
+  completes a row off `document:stage-finished` — both candidates were checked
+  and refuted before anything was changed.
 - **"Open when finished" paid out nothing** for a queued run, because the
-  picker was closed by then — the promise has to be the app's. See above.
+  picker was closed by then — the promise has to be the app's. **FIXED, Phase
+  B2:** the request lives in main (`electron/document-open-when-finished.ts`)
+  keyed by project AND station, is consumed once, and is paid in two halves —
+  main opens the book's editor window when the stage that mints that station
+  ends, and the window that arrives takes the request and checks the station
+  actually exists before showing it (`document:stage-finished` fires from a
+  `finally`, so a failed or cancelled stage reaches the same code).
 
 ## Foundry work
 
@@ -226,11 +243,28 @@ the queue — binding record shows both stages landed, working copy intact at
   from the rail; chapter-title editing moves into the Chapter tab
   (double-click to edit, merge adjacent chapter blocks there).
   **A and B are MERGED (main ed3f1685).**
-- **B2: what the first real session found.** The five bugs listed under "Bugs
-  folded in", plus the two flow rulings above: open a book onto its working
-  copy (cast on open for text PDFs, offered inline for scans), cast and detect
+- **B2: what the first real session found.** Open a book onto its working copy
+  (cast on open for text PDFs, offered inline for scans), cast and detect
   unbundled, OCR progress inline in its modal, "run in background" moving the
-  user to the Queue, and "open when finished" honoured app-wide.
+  user to the Queue, and "open when finished" honoured app-wide. **BUILT** —
+  see the four bugs above and the notes below. The versions-page half (an
+  openable working-copy row, pass-shaped rows removed, star columns) is Phase C
+  and was deliberately not touched here.
+
+  Two facts B2 had to build around, worth writing down:
+
+  - **The picker is always its own BrowserWindow** (`openEditorWindow` in
+    main.ts, route `/editor`). `EditorTabComponent` still exists but nothing
+    renders `app-editor-tab` — it is dead code. So "move the user to the Queue"
+    is a main-process action: raise the MAIN window and route it (`app:show-queue`).
+    That is also the only place the queue lives — `processing:submit-chain` sends
+    the plan to `mainWindow` and nowhere else — which is why the OCR dialog's
+    `queued()` can never be true in the window it actually runs in.
+  - **The cast is measured, not assumed.** `document:state` reports the class
+    recorded in the working document's marker, which does not exist before the
+    cast. `document:measure-class` (new) measures the archive original, and its
+    two answers are seconds versus minutes — so a refusal leaves the class
+    UNKNOWN and the book stands still rather than being guessed either way.
 - **C: versions + retirement.** Grouped versions page with derived stars and
   staleness, the working copy given an openable row, pass-shaped rows removed,
   per-row Process button, Processing/TTS/Reassembly tabs replaced by ladder +
