@@ -32,7 +32,9 @@ import { ProjectVersion } from './models/project-version.types';
 import { ElectronService } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
 import { SettingsService } from '../../core/services/settings.service';
+import { NarrationHandoffService } from '../../core/services/narration-handoff.service';
 import { looseMatch } from '../../shared/search';
+import { samePath } from '@shared/document/same-path';
 
 /**
  * StudioComponent - Unified workspace for books and articles
@@ -394,6 +396,7 @@ import { looseMatch } from '../../shared/search';
                     [outputFilename]="selectedMetadata()?.outputFilename || ''"
                     [refreshTrigger]="filesRefreshTrigger()"
                     [continueRequest]="continueRequest()"
+                    [narrationRequest]="narrationRequest()"
                     (queued)="onProcessQueued()"
                   />
                 } @else {
@@ -1453,6 +1456,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   private readonly electronService = inject(ElectronService);
   private readonly libraryService = inject(LibraryService);
   private readonly settingsService = inject(SettingsService);
+  private readonly narrationHandoff = inject(NarrationHandoffService);
 
   @ViewChild(ContentEditorComponent) contentEditor?: ContentEditorComponent;
 
@@ -1635,6 +1639,39 @@ export class StudioComponent implements OnInit, OnDestroy {
   // wizard watches this to jump to the TTS step with the original run's settings.
   readonly continueRequest = signal(0);
 
+  // Bumped when narration is asked for — by a document row's Process button, or
+  // by the picker's Next arriving through `app:show-narration`. The wizard
+  // watches this to stand on the TTS step. Distinct from continueRequest, which
+  // resumes an interrupted render and refuses when there is nothing to resume.
+  readonly narrationRequest = signal(0);
+
+  /**
+   * The project list has been read at least once.
+   *
+   * The narration hand-off needs it: the request can arrive before this window
+   * has any projects loaded (the shell navigates here the moment main sends the
+   * event), and looking a book up in an empty list would report it missing when
+   * nothing is missing. This is not a copy of anything — it is this component's
+   * own lifecycle, which nothing else can answer.
+   */
+  private readonly itemsLoaded = signal(false);
+
+  /**
+   * Narration was asked for elsewhere — the picker's Next, via the shell.
+   *
+   * Consumed here rather than delivered by a listener because this component is
+   * lazily routed and is usually NOT mounted when the request is made; see
+   * NarrationHandoffService. Taking it empties it, which is what lets the same
+   * book be handed over twice.
+   */
+  private readonly narrationHandoffEffect = effect(() => {
+    if (!this.itemsLoaded()) return;
+    const dir = this.narrationHandoff.pending();
+    if (dir === null) return;
+    this.narrationHandoff.take();
+    void this.openNarrationFor(dir);
+  }, { allowSignalWrites: true });
+
   // Watch selectedItem changes to check for cached sessions
   private readonly cachedSessionEffect = effect(() => {
     const item = this.selectedItem();
@@ -1807,6 +1844,8 @@ export class StudioComponent implements OnInit, OnDestroy {
   async ngOnInit(): Promise<void> {
     await this.libraryService.whenReady();
     await this.studioService.loadAll();
+    // Only now can a project be looked up by name — see itemsLoaded.
+    this.itemsLoaded.set(true);
     this.loadAllTags();
     document.addEventListener('click', () => this.hideContextMenu());
 
@@ -1925,6 +1964,55 @@ export class StudioComponent implements OnInit, OnDestroy {
   startCorrectSentences(): void {
     this.goToProcessing();
     this.correctSentencesActive.set(true);
+  }
+
+  /**
+   * Narration: the Process tab, with the wizard standing on the TTS step.
+   *
+   * The one destination both doors go to — a document row's Process button and
+   * the picker's Next (docs/PIPELINE_V2_PLAN.md, Phase C). Written once here so
+   * "Process" cannot come to mean two slightly different places depending on
+   * which button was pressed. It reuses goToProcessing exactly as Continue and
+   * Assemble do; the bump is what the wizard listens for.
+   */
+  goToNarration(): void {
+    this.goToProcessing();
+    this.narrationRequest.update(n => n + 1);
+  }
+
+  /**
+   * The picker handed a finished book over and the shell brought us here.
+   *
+   * Selecting the project is the whole reason this is not just a route: the
+   * Process tab shows the wizard for the SELECTED book, so a hand-off that only
+   * switched tabs would narrate whichever book happened to be open.
+   *
+   * The list is re-read before the project is declared missing. The book may
+   * have been created, or its export recorded, since this window last loaded —
+   * measuring again is cheap and is the difference between "we looked and it is
+   * not there" and "we were holding an old list".
+   */
+  private async openNarrationFor(projectDir: string): Promise<void> {
+    const find = (): StudioItem | undefined =>
+      this.studioService.books().find(b => !!b.projectDir && samePath(b.projectDir, projectDir));
+
+    let item = find();
+    if (!item) {
+      await this.studioService.loadAll();
+      item = find();
+    }
+    if (!item) {
+      void this.electronService.showMessageDialog({
+        title: 'Could not open narration',
+        message: `BookForge has no project at ${projectDir}, so there is no book to narrate. `
+          + 'It may have been deleted or moved since the editor window was opened.',
+        type: 'error',
+      });
+      return;
+    }
+
+    this.openInWorkspace(item);
+    this.goToNarration();
   }
 
   /** Versions "Continue": open the Processing tab AND tell the wizard to enter Continue

@@ -3372,6 +3372,23 @@ export class LLWizardComponent implements OnInit {
   readonly initialSourceLang = input<string>('en');
   readonly refreshTrigger = input<number>(0);  // bump to re-scan stages after a delete/reset
   readonly continueRequest = input<number>(0);  // bump to enter Continue mode (land on TTS, pre-fill last run's settings)
+  /**
+   * Bump to stand on the TTS step — the narration hand-off.
+   *
+   * Two doors arrive here (docs/PIPELINE_V2_PLAN.md, Phase C): the picker's Next
+   * at the top of its ladder, and the Process button on a document row. Both
+   * mean "narrate this book", and narration is this wizard's TTS step.
+   *
+   * NOT `continueRequest`, which is a different request that only looks similar:
+   * Continue resumes an INTERRUPTED render — it refuses outright when there is
+   * no partial session, and it disables the earlier steps because there is
+   * nothing to re-run. A book arriving from the picker has no partial session
+   * and is not resuming anything.
+   *
+   * A counter rather than a flag, exactly like `continueRequest`, so asking a
+   * second time for the same book is a second event and not a no-op.
+   */
+  readonly narrationRequest = input<number>(0);
 
   // Mono-pipeline inputs (whole-book mode)
   readonly contributors = input<Array<{ first: string; last: string }> | undefined>(undefined);
@@ -3574,6 +3591,8 @@ export class LLWizardComponent implements OnInit {
   // controls stay visible while continuing.
   readonly continueMode = signal(false);
   private continueRequestHandled = 0;
+  /** The last `narrationRequest` acted on, so one bump moves the user once. */
+  private narrationRequestHandled = 0;
   /** Show the editable TTS setting controls in both New and Continue modes. */
   readonly showTtsSettings = computed(() => !this.continueTts() || this.continueMode());
 
@@ -4408,6 +4427,17 @@ export class LLWizardComponent implements OnInit {
       if (req > 0 && req !== untracked(() => this.continueRequestHandled)) {
         this.continueRequestHandled = req;
         void this.enterContinueMode();
+      }
+    });
+
+    // Host (the picker's Next, or a document row's Process) bumps
+    // narrationRequest → stand on the TTS step. Untracked so that walking the
+    // steps, which reads `currentStep`, cannot make this effect its own trigger.
+    effect(() => {
+      const req = this.narrationRequest();
+      if (req > 0 && req !== untracked(() => this.narrationRequestHandled)) {
+        this.narrationRequestHandled = req;
+        untracked(() => this.landOnNarration());
       }
     });
 
@@ -5337,6 +5367,35 @@ export class LLWizardComponent implements OnInit {
     this._skippedSteps.add('cleanup');
     this._skippedSteps.add('translate');
     this.currentStep.set('tts');
+  }
+
+  /**
+   * Stand on the TTS step, because the book has been handed over to be narrated.
+   *
+   * The pass step is SKIPPED rather than answered, and that is the honest word
+   * for it: the picker's ladder is where this book's passes were composed and
+   * run, so the wizard's pass page has nothing left to ask. `skipStep` is the
+   * wizard's own mover — it settles the skip marks and enters TTS through
+   * `advanceFrom`, which re-scans the project's EPUBs and its partial sessions —
+   * so nothing here reimplements the step change.
+   *
+   * From past narration, `goBack` walks one rung at a time for the same reason.
+   * That case is rare (the Process tab destroys this component when the user
+   * leaves it, so a fresh arrival is always on the pass step) but it is real:
+   * the picker is a separate window, and Next can be pressed while the wizard
+   * sits on Review. The equality check makes the walk terminate on a Back that
+   * refuses instead of spinning.
+   */
+  landOnNarration(): void {
+    if (this.currentStep() === 'passes') {
+      this.skipStep();
+      return;
+    }
+    while (this.currentStep() !== 'tts') {
+      const before = this.currentStep();
+      this.goBack();
+      if (this.currentStep() === before) return;
+    }
   }
 
   /** In-wizard TTS-page "Continue" toggle: same pre-fill + disable behavior, but the
