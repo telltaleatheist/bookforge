@@ -30,7 +30,12 @@ import * as path from 'path';
 
 import * as manifestService from './manifest-service';
 import type { ProjectManifest } from './manifest-types';
-import { toProjectRelative } from './document-binding';
+import {
+  documentBindingPath,
+  readDocumentBinding,
+  toProjectRelative,
+  type DocumentBinding,
+} from './document-binding';
 import type { DocumentProject } from './document-stages';
 
 export interface DocumentProjectRequest {
@@ -150,6 +155,83 @@ export async function resolveDocumentProject(
     );
   }
   return { projectId, projectDir, primaryRelPath: candidates[0].relPath };
+}
+
+/** One of a project's PDFs that HAS a working copy, and everything about it. */
+export interface WorkingDocumentEntry {
+  /** The archive original, project-relative and slash-separated. */
+  primaryRelPath: string;
+  primaryAbsPath: string;
+  /** The original is on disk. False is a real state — a project can be half-synced. */
+  primaryExists: boolean;
+  workingRelPath: string;
+  workingAbsPath: string;
+  /** The working document's own mtime — when it was last curated. */
+  workingModifiedAt: string;
+  workingBytes: number;
+  binding: DocumentBinding;
+}
+
+/**
+ * Every PDF of this project that has a working copy ON DISK, with its binding.
+ *
+ * The versions page's reason for existing, as of the ruling in
+ * docs/PIPELINE_V2_PLAN.md: the working copy gets a row. It was previously
+ * unreachable not because anything filtered it but because nothing ever listed
+ * it — `editor:get-versions` is an allowlist of known filenames and the project
+ * root was never in it.
+ *
+ * Deliberately NOT `resolveDocumentProject`. That one CHOOSES the single
+ * document a stage will write, and refuses a project holding two PDFs rather
+ * than guessing — the right answer when the next move spends hours of GPU on
+ * somebody's book. A listing has no such stake: it says what is there, and a
+ * project with two working copies has two of them. So this enumerates instead
+ * of choosing, and never throws for a project with none.
+ *
+ * A binding that is PRESENT AND UNREADABLE still throws, from
+ * `readDocumentBinding`. That is not a listing failing to find something: it is
+ * a record that binds a working document to an original, sitting right there,
+ * refusing to parse — and answering "this book has no working copy" would send
+ * the user off to re-cast a document that already exists.
+ */
+export async function listWorkingDocuments(
+  projectDir: string
+): Promise<WorkingDocumentEntry[]> {
+  const manifest = await readManifest(projectDir);
+  const entries: WorkingDocumentEntry[] = [];
+
+  for (const candidate of pdfVariants(projectDir, manifest)) {
+    const binding = readDocumentBinding(documentBindingPath(projectDir, candidate.relPath));
+    // No binding means Get Text has never cast a working document for this PDF.
+    // An ordinary state, and the whole of what "no working copy row" means.
+    if (!binding) continue;
+
+    const workingAbsPath = path.join(
+      projectDir, binding.working.path.split('/').join(path.sep));
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(workingAbsPath);
+    } catch {
+      // The record says there is a working document and the file is not there.
+      // No row: a row is a door onto a file, and there is no file to open.
+      continue;
+    }
+
+    const primaryAbsPath = path.join(
+      projectDir, binding.primary.path.split('/').join(path.sep));
+    entries.push({
+      primaryRelPath: binding.primary.path,
+      primaryAbsPath,
+      primaryExists: fs.existsSync(primaryAbsPath),
+      workingRelPath: binding.working.path,
+      workingAbsPath,
+      workingModifiedAt: stat.mtime.toISOString(),
+      workingBytes: stat.size,
+      binding,
+    });
+  }
+
+  return entries;
 }
 
 /**

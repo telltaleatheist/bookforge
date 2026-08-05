@@ -1632,6 +1632,12 @@ export class ElectronService {
       fileSize?: number;
       editable: boolean;
       icon: string;
+      /** The file the editor opens for this row, when it is not the row's own. */
+      openPath?: string;
+      /** The 'working' row only: the binding's recorded stage boundaries. */
+      stageBoundaries?: Array<{ stage: string; finishedAt: string }>;
+      /** The 'exported' row only: when Reflow wrote this book, if it was recorded. */
+      builtAt?: string;
       analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
       analysisFlagCount?: number;
       analysisIsCheckpoint?: boolean;

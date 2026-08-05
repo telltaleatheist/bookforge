@@ -16,6 +16,7 @@ import { initializeLoggers, getMainLogger, getTTSLogger, closeLoggers } from './
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import { registerClipforgeIpc } from './clipforge-bridge';
 import { registerDocumentIpc } from './document-ipc';
+import { listWorkingDocuments } from './document-project';
 import * as manifestService from './manifest-service';
 import * as manifestMigration from './manifest-migration';
 import * as archiveMigration from './archive-migration';
@@ -9909,6 +9910,20 @@ function setupIpcHandlers(): void {
         icon: string;
         diffRecordPath?: string;   // <name>.diff.json sitting next to this version (if any)
         diffOriginalPath?: string; // the original this diff was computed against (resolved, if it exists locally)
+        // The file the EDITOR is pointed at when this row is opened, when that is
+        // not the row's own file. Set on the working-copy row: opening
+        // `<Original>.working.pdf` standalone would give it no project, no binding
+        // and no annotations — a window that looks like the book and answers no
+        // gesture. The project's PDF primary opens the PROJECT, and the picker
+        // lands on the furthest station it has (which is the working copy).
+        openPath?: string;
+        // Present only on the 'working' row: the binding's recorded stage
+        // boundaries, so the row can say which stages have landed and when.
+        stageBoundaries?: Array<{ stage: string; finishedAt: string }>;
+        // Present only on the 'exported' row, and only when the binding recorded a
+        // build: when REFLOW wrote this book. Deliberately not the file's mtime —
+        // a footnote pass rewrites the book in place and moves that.
+        builtAt?: string;
         // Present only on the synthetic 'analysis' entry:
         analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
         analysisFlagCount?: number;
@@ -9933,7 +9948,12 @@ function setupIpcHandlers(): void {
         filePath: string,
         icon: string,
         editable: boolean,
-        language?: string
+        language?: string,
+        extra?: {
+          openPath?: string;
+          stageBoundaries?: Array<{ stage: string; finishedAt: string }>;
+          builtAt?: string;
+        }
       ) => {
         const resolvedFilePath = resolvePath(filePath);
         if (resolvedFilePath) {
@@ -9986,7 +10006,10 @@ function setupIpcHandlers(): void {
             editable: editable && (ext === 'epub' || ext === 'pdf'),
             icon,
             diffRecordPath,
-            diffOriginalPath
+            diffOriginalPath,
+            ...(extra?.openPath ? { openPath: extra.openPath } : {}),
+            ...(extra?.stageBoundaries ? { stageBoundaries: extra.stageBoundaries } : {}),
+            ...(extra?.builtAt ? { builtAt: extra.builtAt } : {}),
           });
         }
       };
@@ -10028,6 +10051,63 @@ function setupIpcHandlers(): void {
         }
       }
 
+      // ── The family: the archive original and the working copy it minted ─────
+      //
+      // RULED 2026-08-04 (docs/PIPELINE_V2_PLAN.md), reversing the old rule that
+      // the working copy is a system file with no line item: a book was cast and
+      // detected from the queue and afterwards the versions page listed only the
+      // archive. The work existed on disk and had no door.
+      //
+      // Both rows are DERIVED from the binding record plus the files' existence.
+      // Nothing here scans a directory for something that looks like a working
+      // copy, and nothing invents a row from a filename guess: no binding, or no
+      // file, means no row.
+      const workingDocs = await listWorkingDocuments(projectDir);
+      for (const doc of workingDocs) {
+        if (doc.primaryExists) {
+          await addVersion(
+            `archive:${doc.primaryRelPath}`,
+            'archive',
+            path.basename(doc.primaryAbsPath, path.extname(doc.primaryAbsPath)),
+            'The book exactly as you imported it. Nothing is ever written to it.',
+            doc.primaryAbsPath,
+            '📕',
+            // Not openable, deliberately, and this is the ONE row where that is a
+            // statement rather than a limitation: opening a book puts the user on
+            // its working copy (RULED 2026-08-04 — you never start on a read-only
+            // book), so an Open here would be a second button doing exactly what
+            // the working copy's does. Export still hands over the file itself.
+            false
+          );
+        }
+        await addVersion(
+          `working:${doc.workingRelPath}`,
+          'working',
+          'Working copy',
+          'Your copy of the original: the cast text and your block curation.',
+          doc.workingAbsPath,
+          '✏️',
+          true,
+          undefined,
+          {
+            // The PROJECT's primary, never the working file itself — see openPath.
+            openPath: doc.primaryAbsPath,
+            stageBoundaries: doc.binding.boundaries.map((b) => ({
+              stage: b.stage, finishedAt: b.finishedAt,
+            })),
+          }
+        );
+      }
+
+      // When REFLOW wrote this project's book, per the binding that recorded it.
+      // Matched by the recorded path so a project with two working documents
+      // cannot attribute one's build time to the other's book.
+      const recordedEpubBuilds = new Map<string, string>();
+      for (const doc of workingDocs) {
+        const epub = doc.binding.epub;
+        if (epub) recordedEpubBuilds.set(epub.path.toLowerCase(), epub.writtenAt);
+      }
+
       // The export is named after the book, so it is located by its manifest
       // record — a scan of source/ cannot tell it from any other file there.
       //
@@ -10046,7 +10126,9 @@ function setupIpcHandlers(): void {
           'The EPUB with your edits applied',
           exportRecord.absPath,
           '✅',
-          true
+          true,
+          undefined,
+          { builtAt: recordedEpubBuilds.get(exportRecord.relPath.toLowerCase()) }
         );
       }
 
