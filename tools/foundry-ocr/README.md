@@ -151,6 +151,66 @@ unit-for-unit identical to `sft-sent/`**, 62.8% of train units carrying a
 typographic mark on the source side, 16,815 gold joins. Neither has been
 trained.
 
+#### v1.2 — the same fix, moved upstream where it belonged
+
+v1.1's typography rung could only reach ALREADY-CORRECT rows, because an edit
+row's target is the EPUB's text and its marks had been folded away at read time.
+That asymmetry is gone: **`align-epub.py` and `align-pdftext.py` now emit the
+book's own characters and fold only for matching**, which is what `PUNCT_MAP`'s
+comment claimed all along.
+
+**The alignment did not move, and that is asserted, not argued.** Re-aligned all
+16 books to `scores/epub-align-pairs-v2.json` (the aligners now REFUSE to
+overwrite an existing pairs file — `--suffix` or nothing): **311,207 pairs in,
+311,207 out, delta 0 on every book, identical `sim` and identical `cer`**, and
+311,195 of 311,207 fold back to their v1 pair byte for byte. The 12 that do not
+are all the vulgar-fraction slice — NFKC used to rewrite `½` as `1⁄2`, so a truth
+span that started mid-fraction emitted `2 cup of vinegar` where the page reads
+`½ cup of vinegar`. v2 is right where v1 was truncated.
+
+What NFKC was doing beyond punctuation, measured over 73,725 truth blocks and
+329,098 OCR lines before anything was changed: `…`→`...` 4,991 · `½ ¼ ⅜ ⅔ ⅓` 111
+· `™`→`TM` 165 · `´ ˚`→ space+combining 2 · `ﬀ`→`ff` **1**. So the compatibility
+fold is kept for exactly one class — **ligatures**, expanded deliberately because
+an emitted `ﬁ` in a TARGET teaches the model to produce a glyph Tesseract cannot
+read (the `ligatureDefect` argument, one class over) — and dropped for the rest.
+**NFC** is applied, because canonically equivalent sequences are the same text.
+
+**`--ocr-typography keep` is the rung that makes v2 safe.** Emitting real marks
+creates a class v1 could not have: half the lab's EPUBs are themselves
+OCR-derived and set every quote straight (`deathstalker-legacy`'s truth carries
+**zero** typographic characters against 7,103 lines of them in the scan), so
+without it 5,182 train units — 26.8% of every edit unit — would teach `“`→`"`
+while fixing a letter. The rung keeps the scanner's mark wherever the two sides
+differ only in how it is SET: **44,581 rows, 58,924 characters**. It fires **0
+times on a folded v1 pairs file**, which is how the non-regression claim is
+checked rather than stated. What survives it is meant to: `”?`→`29` and `”°`→`95`
+are Tesseract reading digits as quote marks, `‘`→`` is a speck read as a quote,
+``→`”` is a quote the scanner missed — recognition errors that happen to involve
+a mark, and repairing those is the job.
+
+**`--identity-share-mode balance`** makes `--identity-share` hold exactly by
+downsampling whichever side is in surplus. v1.1 landed at 44.8% because
+`--gold-join` converts identity units into edit units; v1.2 lands at **50.0%**,
+and the 4,338 edit units that were dropped to get there are printed, because
+spending repair supervision on a ratio is a trade.
+
+⚠️ **`--eval-parity report`, and the invariant it retires.** v1 and v1.1 assert
+that the sentence eval covers exactly the characters `sft-line/eval.jsonl`
+covers. v1.2 CANNOT: `…` is one character where `...` is three, and a curly quote
+the truth kept is a character the line eval never had. So v1.2's eval is a **new
+eval**, not a comparable one — same pages, same two holdout books, the characters
+the books actually print, 680,639 + 427,602 non-whitespace characters against the
+older 681,282 + 427,601. **Scoring a v1.2-trained model on the older eval
+measures the character distribution v1.2 exists to leave behind**, and scoring an
+older model on the newer one asks it for marks it was never shown. Report which.
+
+Built 2026-08-05 into `sft-sent-v1_2/` and `sft-sent-v1_2-promptb/`: train
+39,510 at **50.0%** identity, eval 4,983, eval-german 772, **69.5% of train units
+carrying a mark on the source side and 14,534 of 19,755 EDIT units carrying one
+on the GOLD side** (v1.1: 0 on the gold side of any eval, and only the
+side-effect of restored identity lines in train). Neither has been trained.
+
 ### 2. `line-training-profiles.json`
 
 `ocr_line_v1_06b` — Qwen3-0.6B, 16-bit LoRA, derived from `dagger_v1`.

@@ -145,6 +145,23 @@ BREAK_TAGS = BLOCK_TAGS | {"br", "hr", "img", "tr", "table", "ul", "ol", "dl"}
 
 # Typographic -> ASCII, for MATCHING only. The extracted truth text keeps its
 # real apostrophes, quotes and diacritics; these maps never touch what we print.
+#
+# ⚠️ THAT SENTENCE WAS FALSE FROM 2026-08-05 UNTIL THIS COMMIT, and it cost a
+# model. `norm_text` (fold + NFKC + collapse) was applied to the EPUB paragraph
+# at `leaf_blocks` and to the Tesseract line at `build_ocr`, which are the two
+# places the EMITTED text comes from — so every pair this file has ever written
+# carried ASCII punctuation on both sides. Measured across all 16 corpus books
+# and 311,207 pairs: zero curly quotes, zero em dashes, zero ellipses, either
+# side. Tesseract had read 104,467 lines' worth of them and the aligner threw
+# them away. foundry-ocr-sent-v1-4b was trained on that and does what it was
+# taught — 13 of the 15 edits it makes on a real Kershaw EPUB are `—` -> `-` or
+# curly -> straight (tools/foundry-ocr/results-sent-v1/kershaw-sent-report.json).
+#
+# The comment is now true of the code. Emission goes through `emit_text`; the
+# fold survives, unchanged, everywhere a MATCH is decided — the same keys, the
+# same shingles, the same `sim` and `cer`, so the alignment this file produces is
+# byte-for-byte the alignment it produced before. That is asserted rather than
+# claimed: `norm_text` of every v2 pair equals the v1 pair it replaces.
 PUNCT_MAP = {
     "‘": "'", "’": "'", "‚": "'", "‛": "'", "′": "'",
     "ʼ": "'", "ʹ": "'", "´": "'", "`": "'",
@@ -171,10 +188,91 @@ def ascii_punct(s):
     return _PUNCT_RE.sub(lambda m: PUNCT_MAP[m.group(0)], s)
 
 
+# ── what is EMITTED ─────────────────────────────────────────────────────────
+#
+# The book's own characters, with two deliberate exceptions and no others.
+# MEASURED before it was chosen, over all 19 gold EPUBs (73,725 blocks) and every
+# Tesseract band in the lab (329,098 lines) — what NFKC was doing BEYOND the
+# punctuation fold, in full:
+#
+#     …  -> ...    4,991   the ellipsis, which is exactly what must survive
+#     ½ ¼ ⅜ ⅔ ⅓    111     NFKC rewrites these to `1⁄2` with U+2044; the page
+#                          shows one glyph and Tesseract reads one glyph
+#     ™  -> TM     165     (OCR side) same argument
+#     ´ ˚          2       NFKC turns a spacing accent into space + combining
+#     ﬀ  -> ff     1       the ONLY ligature in the entire truth corpus
+#
+# So NFKC's compatibility half is kept for exactly one class — LIGATURES — and
+# dropped for the rest. The ligature case is doctrine, not taste: an emitted `ﬁ`
+# in the TARGET teaches the model to produce a glyph Tesseract cannot read, which
+# is the same family as build-dataset.py's `ligatureDefect` drop and the `ﬁ`/`ﬂ`
+# fold in its `fold_typographic`. It costs one row in this corpus and buys
+# immunity from a class that has already damaged one model.
+#
+# NFC — canonical composition — IS applied. Canonically equivalent sequences are
+# the same text, and emitting a decomposed `e` + U+0301 where Tesseract reads a
+# precomposed `é` would manufacture an edit row out of nothing. Measured: 3
+# combining marks in the truth, 0 in the OCR, so this is insurance, not a fix.
+LIGATURES = {'ﬀ': 'ff', 'ﬁ': 'fi', 'ﬂ': 'fl', 'ﬃ': 'ffi', 'ﬄ': 'ffl',
+             'ﬅ': 'st', 'ﬆ': 'st'}
+_LIG_RE = re.compile("|".join(map(re.escape, LIGATURES)))
+
+
+def emit_text(s):
+    """The text a training pair will carry: the book's own characters."""
+    s = _LIG_RE.sub(lambda m: LIGATURES[m.group(0)], unicodedata.normalize("NFC", s))
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def fold_mapped(s):
+    """(folded, idx) - the MATCHING form of `s`, and where each of its characters
+    came from in `s`.
+
+    The index is the whole point. `paras[..]["text"]` now holds emitted text, and
+    a truth span is rendered by slicing it, so every offset this file records has
+    to be an offset into THAT string while every comparison is made on the folded
+    one. `tools/ocr-lab/score.py`'s `normalize_mapped` is the same instrument for
+    the same reason.
+
+    Folding per character rather than per string is safe here and checked: NFKC
+    differs between the two only across a combining sequence, and `emit_text` has
+    already composed those (3 combining marks in the truth corpus, 0 in the OCR).
+    """
+    out, idx = [], []
+    for i, ch in enumerate(s):
+        for x in ascii_punct(unicodedata.normalize("NFKC", ch)):
+            if x.isspace():
+                if out and out[-1] == " ":
+                    continue
+                x = " "
+            out.append(x)
+            idx.append(i)
+    a, b = 0, len(out)
+    while a < b and out[a] == " ":
+        a += 1
+    while b > a and out[b - 1] == " ":
+        b -= 1
+    return "".join(out[a:b]), idx[a:b]
+
+
 def norm_text(s):
     """Light normalisation: NFKC, ASCII punctuation, collapsed whitespace.
     CASE IS KEPT - this is what CER and similarity are measured on."""
-    return re.sub(r"\s+", " ", ascii_punct(unicodedata.normalize("NFKC", s))).strip()
+    return fold_mapped(s)[0]
+
+
+def fold_offset_back(word, n):
+    """A character count in the FOLDED word -> the same point in `word` itself.
+
+    `build_splits` decides where a wrap broke by comparing the OCR's stub against
+    the truth word, and both of those are folded, lowercased keys. The number it
+    produces therefore counts FOLDED characters, and `span_text` has to slice
+    emitted ones. They differ only where the fold changed a length — a fraction,
+    an ellipsis — which never happens inside a hyphenated word, but "never
+    happens" is not a reason to record the wrong number.
+    """
+    folded, idx = fold_mapped(word)
+    return len(word) if n >= len(folded) else idx[n]
 
 
 def norm_word(w):
@@ -186,11 +284,14 @@ def norm_word(w):
 
 
 def tokenize(s):
-    """[(word, char_start, char_end)] over the ORIGINAL string, so a span of
-    words can always be rendered back with its real punctuation."""
+    """[(folded word, char_start, char_end)] with the offsets over the ORIGINAL
+    string, so a span of words can always be rendered back with its real
+    punctuation. The WORD is folded because it becomes a match key; the OFFSETS
+    are not, because they become emitted text."""
+    folded, idx = fold_mapped(s)
     out = []
-    for m in _WORD_RE.finditer(ascii_punct(unicodedata.normalize("NFKC", s))):
-        out.append((m.group(0), m.start(), m.end()))
+    for m in _WORD_RE.finditer(folded):
+        out.append((m.group(0), idx[m.start()], idx[m.end() - 1] + 1))
     return out
 
 
@@ -299,7 +400,7 @@ def leaf_blocks(doc_bytes, href="?"):
         if any(isinstance(c.tag, str) and c.tag.lower() in BLOCK_TAGS
                for c in el.iterdescendants()):
             continue
-        txt = norm_text(el.text_content())
+        txt = emit_text(el.text_content())
         if txt:
             out.append(txt)
     return out
@@ -432,7 +533,7 @@ def build_ocr(lab, vocab):
         j = json.loads(data.decode("utf-8"))
         for li, ln in enumerate(j.get("lines", [])):
             lines.append({"id": len(lines), "page": p, "line": li,
-                          "text": norm_text(ln.get("text") or ""),
+                          "text": emit_text(ln.get("text") or ""),
                           "bbox": ln.get("bbox"), "conf": ln.get("conf")})
 
     words, pending = [], None          # pending = hyphen stub from the line above
@@ -455,7 +556,7 @@ def build_ocr(lab, vocab):
         elif pending is not None:
             words.append({"k": pending[0], "line": pending[1], "joined": False})
             pending = None
-        tail = HYPHEN_END.search(ln["text"]) is not None
+        tail = HYPHEN_END.search(norm_text(ln["text"])) is not None
         end = len(keys) - 1 if tail and len(keys) > start else len(keys)
         for k, w in keys[start:end]:
             words.append({"k": k, "line": ln["id"], "joined": False})
@@ -796,10 +897,14 @@ def build_splits(t2o, owords, twords, paras):
         n = len(stub)
         tw = twords[t]
         word = paras[tw["para"]]["text"][tw["cs"]:tw["ce"]]
-        if n and n < len(word) and \
-                Levenshtein.distance(word[:n].lower(), stub.lower()) <= 1:
-            splits[t] = {"n": n, "hyphenLine": w["line"],
-                         "contLine": w["contLine"]}
+        # `stub` is a folded, lowercased match key, so the gate is decided on the
+        # folded word — bit for bit the decision this made when the paragraph
+        # itself was folded. Only the offset that comes OUT of it is emitted-side.
+        wfold = norm_text(word)
+        if n and n < len(wfold) and \
+                Levenshtein.distance(wfold[:n].lower(), stub.lower()) <= 1:
+            splits[t] = {"n": n, "nEmit": fold_offset_back(word, n),
+                         "hyphenLine": w["line"], "contLine": w["contLine"]}
         else:
             unresolved.append((t, w["line"], w["contLine"]))
     return splits, unresolved
@@ -817,6 +922,13 @@ def main(argv=None):
     ap.add_argument("lab")
     ap.add_argument("epub")
     ap.add_argument("--out", default=None, help="default <lab>/scores")
+    ap.add_argument("--suffix", default="",
+                    help="written into every output filename: epub-align-pairs"
+                         "<suffix>.json and friends. USE IT. The existing files "
+                         "are the provenance of sft-line, sft-sent and "
+                         "sft-sent-v1_1, and a re-alignment is not reproducible "
+                         "(deathstalker-rebellion's pre-deskew snapshot is the "
+                         "proof). This tool refuses to overwrite them.")
     ap.add_argument("--no-page-markers", action="store_true",
                     help="measurement only: leave a 'page N' series in the "
                          "truth text, so the cost of not handling it is visible")
@@ -962,14 +1074,14 @@ def main(argv=None):
         ocr_t = lines[lid]["text"]
         # a broken word gives this line only the half it printed
         sp_hi = splits.get(hi)
-        tail_keep = sp_hi["n"] if sp_hi and sp_hi["hyphenLine"] == lid else None
+        tail_keep = sp_hi["nEmit"] if sp_hi and sp_hi["hyphenLine"] == lid else None
         head_skip = None
         t = cont_of.get(lid)
         if t is not None and lo in (t, t + 1):
             if lo == t + 1:
                 extended += 1
             lo = t
-            head_skip = splits[t]["n"]
+            head_skip = splits[t]["nEmit"]
         truth_t = span_text(paras, twords, lo, hi, head_skip, tail_keep)
         if not truth_t or not ocr_t:
             continue
@@ -1058,7 +1170,7 @@ def main(argv=None):
         repeated = len(sig_pages.get(sig, ())) >= FURNITURE_PAGES
         rec = {"page": ln["page"], "line": ln["line"], "text": ln["text"],
                "words": nw, "repeatedOnPages": len(sig_pages.get(sig, ()))}
-        if nw == 0 or roman_or_number(ln["text"]) or nw <= FURNITURE_WORDS \
+        if nw == 0 or roman_or_number(norm_text(ln["text"])) or nw <= FURNITURE_WORDS \
                 or repeated:
             orphans_furniture.append(rec)
         else:
@@ -1159,11 +1271,21 @@ def main(argv=None):
         },
     }
 
-    with open(os.path.join(out_dir, "epub-align.json"), "w") as fh:
+    sfx = args.suffix
+    targets = {name: os.path.join(out_dir, name % sfx) for name in
+               ("epub-align%s.json", "epub-align-pairs%s.json", "epub-align-report%s.md")}
+    existing = sorted(p for p in targets.values() if os.path.exists(p))
+    if existing:
+        sys.exit("align-epub: REFUSING TO OVERWRITE %s.\n"
+                 "  A re-alignment is not reproducible and these files are the "
+                 "provenance of every corpus built from this book. Pass --suffix "
+                 "to write beside them." % ", ".join(os.path.basename(p) for p in existing))
+
+    with open(targets["epub-align%s.json"], "w") as fh:
         json.dump(result, fh, indent=1)
-    with open(os.path.join(out_dir, "epub-align-pairs.json"), "w") as fh:
+    with open(targets["epub-align-pairs%s.json"], "w") as fh:
         json.dump(pairs, fh)
-    write_report(os.path.join(out_dir, "epub-align-report.md"), result, pairs)
+    write_report(targets["epub-align-report%s.md"], result, pairs)
     print(json.dumps({k: v for k, v in result.items()
                       if k not in ("missing", "orphans", "driftRegions",
                                    "transposed")}, indent=1))

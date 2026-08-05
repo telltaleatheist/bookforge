@@ -362,6 +362,198 @@
           "enable_thinking": false
         }
       }
+    },
+    "ocr_sent_v1_1_4b": {
+      "kind": "text_sft",
+      "description": "ocr SENTENCE corrector v1.1, Qwen3-4B. Corpus: rubric/galley/sft-sent-v1_1 — 43,886 train / 4,979 eval / 770 eval-german. TRAIN ONLY differs from sft-sent; eval and eval-german are asserted unit-for-unit IDENTICAL, so this is directly comparable with ocr_sent_v1_4b's scores. Two changes, both answering what results-sent-v1 measured. (1) TYPOGRAPHY: the v1 corpus contained zero curly quotes, em dashes or ellipses on either side — align-epub.py folded them to ASCII before a pair was written — and 13 of the 15 edits ocr_sent_v1_4b makes on a real Kershaw EPUB are that fold played back. 63,623 already-correct train lines get the marks Tesseract actually read; 62.8% of train units now carry one. (2) GOLD-JOIN: gold said `ad-mit` wherever a word wrapped; 17,334 wraps are now closed in TRAIN gold where the book's own vocabulary says the fragments are one word (954 kept as real compounds, 3,126 as ambiguous). ⚠️ THE JOIN CONTRADICTS THIS PROFILE'S SYSTEM PROMPT, which still says 'keep a hyphen at the end of the line exactly as it is' — that is ocr_sent_v1_1b_4b's question. Train identity is 44.8%, 4,526 short of 50%, because the join converted 9,115 identity units into edit units. STAGE TO REMOTE_DIR=$HOME/ocr-sent-v1_1. train max 615 tokens. RECIPE IS ocr_sent_v1_4b UNCHANGED — same base, same LoRA, same schedule, max_seq_length 768. Token lengths RE-MEASURED with the real Qwen3 tokenizer (enable_thinking=false) on the corpus this profile names; 0 rows exceed 768. Judge by tools/foundry-ocr/eval-guard.py under per-run against ocr_sent_v1_4b, degraded first, do-nothing baseline alongside — never by loss.",
+      "model": {
+        "id": "Qwen/Qwen3-4B",
+        "max_seq_length": 768,
+        "load_in_4bit": false
+      },
+      "lora": {
+        "r": 32,
+        "alpha": 32,
+        "dropout": 0.0,
+        "target_modules": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj",
+          "gate_proj",
+          "up_proj",
+          "down_proj"
+        ]
+      },
+      "training": {
+        "learning_rate": 0.0001,
+        "optimizer": "adamw_8bit",
+        "per_device_train_batch_size": 2,
+        "gradient_accumulation_steps": 8,
+        "max_epochs": 3,
+        "early_stopping_patience": 2,
+        "save_total_limit": 4,
+        "warmup_ratio": 0.05,
+        "weight_decay": 0.01,
+        "lr_scheduler_type": "cosine",
+        "seed": 3407
+      },
+      "output": {
+        "lora_dir_template": "{run_name}_lora",
+        "merged_dir_template": "{run_name}_merged"
+      },
+      "dataset": {
+        "format": "chat_jsonl",
+        "messages_field": "messages",
+        "assistant_only_loss": true,
+        "template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    },
+    "ocr_sent_v1_1b_4b": {
+      "kind": "text_sft",
+      "description": "ocr SENTENCE corrector v1.1 under PROMPT VARIANT B, Qwen3-4B. Corpus: rubric/galley/sft-sent-v1_1-promptb — byte-identical to sft-sent-v1_1 except the system prompt, which is SYSTEM_B: 'a passage of text' rather than 'a single line', a typography-preservation rule, and the trailing-hyphen rule split so an interior wrap is closed and only the passage's LAST hyphen is kept. It is a DRAFT — foundry src/ocr/prompt.ts is untouched and nothing serves this text, so a win here is an argument for changing prompt.ts, not permission to. Run it ONLY as the paired B of ocr_sent_v1_1_4b: same corpus, same seed, one variable. STAGE TO REMOTE_DIR=$HOME/ocr-sent-v1_1b. train max 683 tokens, 113 rows over 512. RECIPE IS ocr_sent_v1_4b UNCHANGED — same base, same LoRA, same schedule, max_seq_length 768. Token lengths RE-MEASURED with the real Qwen3 tokenizer (enable_thinking=false) on the corpus this profile names; 0 rows exceed 768. Judge by tools/foundry-ocr/eval-guard.py under per-run against ocr_sent_v1_4b, degraded first, do-nothing baseline alongside — never by loss.",
+      "model": {
+        "id": "Qwen/Qwen3-4B",
+        "max_seq_length": 768,
+        "load_in_4bit": false
+      },
+      "lora": {
+        "r": 32,
+        "alpha": 32,
+        "dropout": 0.0,
+        "target_modules": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj",
+          "gate_proj",
+          "up_proj",
+          "down_proj"
+        ]
+      },
+      "training": {
+        "learning_rate": 0.0001,
+        "optimizer": "adamw_8bit",
+        "per_device_train_batch_size": 2,
+        "gradient_accumulation_steps": 8,
+        "max_epochs": 3,
+        "early_stopping_patience": 2,
+        "save_total_limit": 4,
+        "warmup_ratio": 0.05,
+        "weight_decay": 0.01,
+        "lr_scheduler_type": "cosine",
+        "seed": 3407
+      },
+      "output": {
+        "lora_dir_template": "{run_name}_lora",
+        "merged_dir_template": "{run_name}_merged"
+      },
+      "dataset": {
+        "format": "chat_jsonl",
+        "messages_field": "messages",
+        "assistant_only_loss": true,
+        "template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    },
+    "ocr_sent_v1_2_4b": {
+      "kind": "text_sft",
+      "description": "ocr SENTENCE corrector v1.2, Qwen3-4B — v1.1's fix moved UPSTREAM. Corpus: rubric/galley/sft-sent-v1_2 — 39,510 train / 4,983 eval / 772 eval-german, built from the v2 alignment (epub-align-pairs-v2.json), where align-epub.py and align-pdftext.py emit the book's own characters and fold only for MATCHING. The alignment is provably unmoved: 311,207 of 311,207 pairs, delta 0 on every book, same sim, same cer. So EDIT targets carry typography too, not just the identity rows v1.1 could reach — 14,534 of 19,755 edit units. --ocr-typography keep is what stops the new rows teaching normalisation: 44,581 rows where the two sides differ only in how a mark is SET keep the scanner's, because half the lab's EPUBs are themselves OCR-derived and set every quote straight. Train identity is EXACTLY 50.0% (--identity-share-mode balance dropped 4,338 edit units to get there). ⚠️ ITS EVAL IS A NEW EVAL. sft-sent-v1_2/eval.jsonl covers the same pages of the same two holdout books with the characters the books print, and is 643 + -1 non-whitespace characters off sft-sent/eval.jsonl. Scoring this model on the OLD eval measures the old character distribution; scoring ocr_sent_v1_4b on the NEW one asks it for marks it was never shown. Report both, and say which. STAGE TO REMOTE_DIR=$HOME/ocr-sent-v1_2. train max 615 tokens. RECIPE IS ocr_sent_v1_4b UNCHANGED — same base, same LoRA, same schedule, max_seq_length 768. Token lengths RE-MEASURED with the real Qwen3 tokenizer (enable_thinking=false) on the corpus this profile names; 0 rows exceed 768. Judge by tools/foundry-ocr/eval-guard.py under per-run against ocr_sent_v1_4b, degraded first, do-nothing baseline alongside — never by loss.",
+      "model": {
+        "id": "Qwen/Qwen3-4B",
+        "max_seq_length": 768,
+        "load_in_4bit": false
+      },
+      "lora": {
+        "r": 32,
+        "alpha": 32,
+        "dropout": 0.0,
+        "target_modules": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj",
+          "gate_proj",
+          "up_proj",
+          "down_proj"
+        ]
+      },
+      "training": {
+        "learning_rate": 0.0001,
+        "optimizer": "adamw_8bit",
+        "per_device_train_batch_size": 2,
+        "gradient_accumulation_steps": 8,
+        "max_epochs": 3,
+        "early_stopping_patience": 2,
+        "save_total_limit": 4,
+        "warmup_ratio": 0.05,
+        "weight_decay": 0.01,
+        "lr_scheduler_type": "cosine",
+        "seed": 3407
+      },
+      "output": {
+        "lora_dir_template": "{run_name}_lora",
+        "merged_dir_template": "{run_name}_merged"
+      },
+      "dataset": {
+        "format": "chat_jsonl",
+        "messages_field": "messages",
+        "assistant_only_loss": true,
+        "template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    },
+    "ocr_sent_v1_2b_4b": {
+      "kind": "text_sft",
+      "description": "ocr SENTENCE corrector v1.2 under PROMPT VARIANT B, Qwen3-4B. Corpus: rubric/galley/sft-sent-v1_2-promptb — sft-sent-v1_2 with SYSTEM_B, a DRAFT sentence-unit prompt whose typography rule now matches what the corpus actually carries on both sides. The paired B of ocr_sent_v1_2_4b; one variable. STAGE TO REMOTE_DIR=$HOME/ocr-sent-v1_2b. train max 683 tokens, 113 rows over 512. RECIPE IS ocr_sent_v1_4b UNCHANGED — same base, same LoRA, same schedule, max_seq_length 768. Token lengths RE-MEASURED with the real Qwen3 tokenizer (enable_thinking=false) on the corpus this profile names; 0 rows exceed 768. Judge by tools/foundry-ocr/eval-guard.py under per-run against ocr_sent_v1_4b, degraded first, do-nothing baseline alongside — never by loss.",
+      "model": {
+        "id": "Qwen/Qwen3-4B",
+        "max_seq_length": 768,
+        "load_in_4bit": false
+      },
+      "lora": {
+        "r": 32,
+        "alpha": 32,
+        "dropout": 0.0,
+        "target_modules": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj",
+          "gate_proj",
+          "up_proj",
+          "down_proj"
+        ]
+      },
+      "training": {
+        "learning_rate": 0.0001,
+        "optimizer": "adamw_8bit",
+        "per_device_train_batch_size": 2,
+        "gradient_accumulation_steps": 8,
+        "max_epochs": 3,
+        "early_stopping_patience": 2,
+        "save_total_limit": 4,
+        "warmup_ratio": 0.05,
+        "weight_decay": 0.01,
+        "lr_scheduler_type": "cosine",
+        "seed": 3407
+      },
+      "output": {
+        "lora_dir_template": "{run_name}_lora",
+        "merged_dir_template": "{run_name}_merged"
+      },
+      "dataset": {
+        "format": "chat_jsonl",
+        "messages_field": "messages",
+        "assistant_only_loss": true,
+        "template_kwargs": {
+          "enable_thinking": false
+        }
+      }
     }
   }
 }

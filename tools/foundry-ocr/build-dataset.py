@@ -647,6 +647,92 @@ def undo_truth_glyph_lies(ocr, truth, counts):
     return ' '.join(tw)
 
 
+# One typographic class, one canonical member. Used ONLY to ask "are these two
+# characters the same character, set differently?" — never to rewrite anything.
+TYPO_CANON = {'‘': "'", '’': "'", '‚': "'", '‛': "'", '′': "'", 'ʼ': "'", 'ʹ': "'",
+              '“': '"', '”': '"', '„': '"', '‟': '"', '″': '"', '«': '"', '»': '"',
+              '‐': '-', '‑': '-', '‒': '-', '–': '-', '—': '-', '―': '-', '−': '-'}
+
+
+def keep_ocr_typography(ocr, truth, counts):
+    """Where the two sides differ ONLY in how a mark is set, the OCR's mark wins.
+
+    The whole-line version of this is `invert_lies`' typography rung, and it has
+    a hole that only opens once the corpus stops being folded: it fires when the
+    two sides differ in NOTHING but typography, so a line carrying a real OCR
+    error AND a quote set differently keeps both, and the row teaches the model
+    to convert the quote while it fixes the letter. MEASURED on the v2 pairs
+    before this existed: 5,182 train units, 26.8% of every edit unit in the
+    corpus, each one a lesson in exactly the normalisation this rebuild exists to
+    stop teaching.
+
+    This is `restore_lost_edge_punct`'s argument one class over — that rung is
+    fuzzy on purpose because "424 rows have a lost opening quote on a word that
+    ALSO carries a real OCR error", and an exact rule would have skipped precisely
+    those. Same shape, same reason, at character scale.
+
+    THE DIRECTION IS THE DOCTRINE: the scanner is looking at the page. Half the
+    lab's EPUBs are themselves OCR-derived and set every quote straight
+    (deathstalker-legacy's truth carries ZERO typographic characters against
+    7,103 lines of them in the scan), so the truth is not evidence about the
+    page's typography and the OCR is.
+
+    It cannot move a letter. On a FOLDED pairs file it can never fire at all,
+    which is how the no-regression claim is checked rather than argued.
+
+    TWO STAGES, and the first one is `fold_typographic`'s own contract applied to
+    a RUN rather than to a whole line. `okay... .` against `okay…` is one
+    differing run whose two sides fold equal, and it is 1,700 rows of exactly the
+    ellipsis re-spacing `fold_typographic`'s docstring was written about. The
+    second stage is the character rule, for a run that folds UNequal because a
+    letter inside it really is wrong.
+
+    What survives both is measured and is meant to survive: `”?` -> `29` and
+    `”°` -> `95` are Tesseract reading digits as quote marks, `‘` -> `` is a
+    speck read as a quote, `` -> `”` is a quote the scanner missed. Those are
+    recognition errors that happen to involve a mark, and repairing them is the
+    job.
+    """
+    if ocr == truth:
+        return truth
+    import difflib
+    ops = difflib.SequenceMatcher(None, ocr, truth, autojunk=False).get_opcodes()
+    pieces, runs, chars = [], 0, 0
+    for op, i1, i2, j1, j2 in ops:
+        o_run, t_run = ocr[i1:i2], truth[j1:j2]
+        if op == 'equal':
+            pieces.append(t_run)
+            continue
+        # stage 1 — the whole run is the same text, set differently.
+        if o_run and t_run and fold_typographic(o_run) == fold_typographic(t_run):
+            pieces.append(o_run)
+            runs += 1
+            chars += sum(1 for a, b in zip(o_run, t_run) if a != b) or abs(len(o_run) - len(t_run))
+            continue
+        # stage 2 — a run that also carries a real error: take back only the
+        # characters that are the same character in the same position.
+        if op == 'replace' and (i2 - i1) == (j2 - j1):
+            got = list(t_run)
+            hit = 0
+            for k in range(i2 - i1):
+                o, t = o_run[k], t_run[k]
+                if o != t and TYPO_CANON.get(o, o) == TYPO_CANON.get(t, t):
+                    got[k] = o
+                    hit += 1
+            if hit:
+                pieces.append(''.join(got))
+                runs += 1
+                chars += hit
+                continue
+        pieces.append(t_run)
+    if not runs:
+        return truth
+    counts['ocrTypographyKept'] += 1
+    counts['ocrTypographyRuns'] += runs
+    counts['ocrTypographyChars'] += chars
+    return ''.join(pieces)
+
+
 def case_diff_chars(a, b):
     return sum(1 for x, y in zip(a, b) if x != y) if len(a) == len(b) else 10 ** 6
 
@@ -822,6 +908,11 @@ def unfold_typography(raw, folded, table):
     identical to the text the corpus holds. Then the ONLY difference between the
     two strings is the mark, which is the whole point — nothing else rides along.
     """
+    if any(c in TYPOGRAPHY_RESTORED for c in folded):
+        # The pairs file already carries the book's own marks — this is a v2
+        # alignment and the rung is subsumed by the fix upstream. Counted, not
+        # silently skipped: "0 restored" and "0 needed" are different sentences.
+        return None, 'alreadyCarriesMarks'
     t = strip_band_edge(norm_ws(unicodedata.normalize('NFKC', raw)))
     if not any(c in TYPOGRAPHY_RESTORED for c in t):
         return None, 'noMarks'            # nothing to restore; leave the row alone
@@ -872,12 +963,12 @@ def restore_typography(rows, lab, lab_tools, counts):
 
 
 # ── load ────────────────────────────────────────────────────────────────────
-def load_books(lab):
+def load_books(lab, pairs_name='epub-align-pairs.json'):
     books = {}
     if not os.path.isdir(lab):
         sys.exit(f'build-dataset: no such lab dir: {lab}')
     for name in sorted(os.listdir(lab)):
-        p = os.path.join(lab, name, 'scores', 'epub-align-pairs.json')
+        p = os.path.join(lab, name, 'scores', pairs_name)
         if not os.path.isfile(p):
             continue
         # ~/Documents is iCloud: a fresh read can come back empty rather than
@@ -922,7 +1013,7 @@ def resolve_caps(args):
     return caps
 
 
-def downsample_identity(train_all, share, caps, rnd):
+def downsample_identity(train_all, share, caps, rnd, mode='fill'):
     """Hold train at `share` identity rows, drawing them subject to the per-book
     caps. ONE description, used at both units — a sentence unit is identity only
     when every line in it was, which changes the population and nothing else.
@@ -957,7 +1048,31 @@ def downsample_identity(train_all, share, caps, rnd):
     rest = [r for rs in ident_by_book.values() for r in rs]
     _shuffle(rest, rnd)
     used_ident += rest[:max(0, want - len(used_ident))]
-    return edit, ident, want, used_ident, cap_report, want - len(used_ident)
+    shortfall = want - len(used_ident)
+
+    # ── mode 'balance': the share is a TARGET, and either side may be the
+    # surplus one ──────────────────────────────────────────────────────────
+    #
+    # `fill` is the original semantics and reports a shortfall it cannot fix:
+    # it only ever removes identity rows, so when identity is the SCARCE side
+    # the corpus simply lands below the target and says so. That was fine while
+    # the only thing that moved was how many identity rows existed. --gold-join
+    # changes the other side — it converts 8,896 already-correct units into edit
+    # units — and a corpus that silently drifts to 44.8% restraint because a
+    # different flag was passed is a corpus whose identity share is an accident.
+    #
+    # So `balance` applies the same downsample to whichever side is in surplus.
+    # It costs real edit supervision and the count is printed, because dropping
+    # supervision to hit a ratio is a trade and not a tidy-up.
+    trimmed_edit = 0
+    if mode == 'balance' and shortfall > 0 and used_ident:
+        keep = int(round(len(used_ident) * (1 - share) / share))
+        if keep < len(edit):
+            _shuffle(edit, rnd)
+            trimmed_edit = len(edit) - keep
+            edit = edit[:keep]
+        shortfall = 0
+    return edit, ident, want, used_ident, cap_report, shortfall, trimmed_edit
 
 
 def collect_pairs(args, books, tiers, holdouts, quarantined):
@@ -1046,6 +1161,8 @@ def collect_pairs(args, books, tiers, holdouts, quarantined):
                 truth = restore_edge_punct_runs(ocr, truth, counts)
                 truth = undo_truth_space_loss(ocr, truth, counts)
                 truth = undo_truth_glyph_lies(ocr, truth, counts)
+                if args.ocr_typography == 'keep':
+                    truth = keep_ocr_typography(ocr, truth, counts)
                 if truth != before and args.truth_edges == 'drop':
                     drops['truthEdgeArtefact'] += 1
                     per_book[book]['edgeDropped'] += 1
@@ -1102,6 +1219,11 @@ def collect_pairs(args, books, tiers, holdouts, quarantined):
 def main():
     ap = argparse.ArgumentParser(add_help=True)
     ap.add_argument('--lab', default='/Volumes/Callisto/training/ocr-lab')
+    ap.add_argument('--pairs-name', default='epub-align-pairs.json',
+                    help='the aligner output to read, per book, under <lab>/<book>/scores/. '
+                         'epub-align-pairs-v2.json is the SAME alignment with the book\'s own '
+                         'punctuation emitted instead of an ASCII fold of it — proved pair for '
+                         'pair, 311,207 of 311,207, same sim and same cer.')
     ap.add_argument('--unit', choices=['line', 'sentence'], default='line',
                     help='the training unit. line = one Tesseract --psm 7 band (the shipped '
                          'foundry-ocr-v1-4b). sentence = consecutive lines packed to --cap.')
@@ -1117,6 +1239,12 @@ def main():
                     help='--unit sentence: override the derived unit length gate')
     ap.add_argument('--parity-rows', type=int, default=1000,
                     help='--unit sentence: rows in eval-parity-1k.jsonl, half identity')
+    ap.add_argument('--eval-parity', choices=['require', 'report'], default='require',
+                    help='require = refuse to write an eval whose characters differ from the '
+                         'line eval\'s (v1 behaviour, and the reason v1.1 is comparable with '
+                         'v1). report = print the difference and write anyway — legitimate '
+                         'ONLY when the pairs file itself changed what it emits, which makes '
+                         'this eval a NEW eval rather than a comparable one.')
     ap.add_argument('--parity-against', default=None,
                     help='--unit sentence: the line eval whose characters the sentence eval '
                          'must cover exactly (default <out>/../sft-line/eval.jsonl)')
@@ -1142,6 +1270,19 @@ def main():
     ap.add_argument('--min-len-for-cer', type=int, default=40)
     ap.add_argument('--min-len', type=int, default=8)
     ap.add_argument('--identity-share', type=float, default=0.5)
+    ap.add_argument('--ocr-typography', choices=['off', 'keep'], default='off',
+                    help="keep = where the two sides differ only in how a mark is SET, the "
+                         "scanner's mark wins and the row stops teaching normalisation. "
+                         "Default off, because its run-level stage also folds ellipsis "
+                         "SPACING and would move the v1 corpora it must not move. Meant for "
+                         "--pairs-name epub-align-pairs-v2.json, where it is the difference "
+                         "between a corpus that carries the book's marks and one that "
+                         "teaches a model to change them.")
+    ap.add_argument('--identity-share-mode', choices=['fill', 'balance'], default='fill',
+                    help='fill = take every identity row available and report a shortfall '
+                         '(the original semantics). balance = also downsample the EDIT side '
+                         'when identity is the scarce one, so --identity-share holds exactly. '
+                         'balance discards real supervision and prints how much.')
     ap.add_argument('--truth-edges', choices=['restore', 'drop', 'keep'], default='restore')
     ap.add_argument('--edge-extensions', choices=['clamp', 'keep'], default='clamp')
     ap.add_argument('--hyphen-policy', choices=['repair', 'drop', 'keep'], default='repair')
@@ -1168,7 +1309,7 @@ def main():
     holdouts = {slug(b) for b in HOLDOUT_BOOKS}
     quarantined = {slug(b) for b in QUARANTINED_BOOKS}
 
-    books = load_books(lab)
+    books = load_books(lab, args.pairs_name)
     tiers = load_tiers(lab)
     if not books:
         sys.exit(f'build-dataset: no <book>/scores/epub-align-pairs.json under {lab}')
@@ -1225,8 +1366,8 @@ def main():
             train_all, ev, german, german_pages)
 
     caps = resolve_caps(args)
-    edit, ident, want, used_ident, cap_report, shortfall = downsample_identity(
-        train_all, args.identity_share, caps, rnd)
+    edit, ident, want, used_ident, cap_report, shortfall, trimmed_edit = downsample_identity(
+        train_all, args.identity_share, caps, rnd, args.identity_share_mode)
 
     train = edit + used_ident
     _shuffle(train, rnd)
@@ -1255,6 +1396,7 @@ def main():
     print(f'  rows with edge punctuation restored   {counts["edgePunctRestored"]:6d}')
     print(f'  small caps inverted to identity       {counts["smallCapsInverted"]:6d}')
     print(f'  typography inverted to identity       {counts["typographyInverted"]:6d}')
+    print(f'  OCR typography kept, rows / chars     {counts["ocrTypographyKept"]:6d} / {counts["ocrTypographyChars"]}')
     print(f'  wrap-hyphen joins undone              {counts["hyphenRepaired"]:6d}')
     print(f'  edge punctuation RUNS restored        {counts["edgePunctRunsRestored"]:6d}')
     print(f'  truth-side welded words separated     {counts["truthSpaceLoss"]:6d}')
@@ -1359,6 +1501,7 @@ def main():
             'rawPairs': n_in, 'repairs': dict(counts), 'dropped': dict(drops),
             'editRows': len(edit), 'identityRows': len(used_ident),
             'identityAvailable': len(ident), 'identityShortfall': shortfall,
+            'editRowsTrimmedForShare': trimmed_edit, 'pairsName': args.pairs_name,
             'cerHistogram': dict(hist),
             'books': {b: dict(c) for b, c in per_book.items()},
             'truthTiers': {b: tiers.get(b) for b in per_book},
@@ -1669,7 +1812,13 @@ def apply_gold_joins(units, rows, mod, tally, vocab_of=None):
         drops = set()
         for k in range(len(part) - 1):
             left, right = part[k], part[k + 1]
-            if not (left['truth'] and left['truth'][-1] in HYPHENS):
+            # THE PACKER'S predicate, not this file's `HYPHENS`. The two agree on
+            # a folded corpus and stop agreeing the moment the em dash survives
+            # emission: `HYPHENS` contains `–` and `—`, sentences.py's
+            # WRAP_HYPHEN deliberately does not, so a line ending in an em dash
+            # is joined with a SPACE and there is no hyphen here to close. Asking
+            # the packer is the only way this stays true of whatever it decides.
+            if not mod.ends_wrap_hyphen(left['truth']):
                 continue
             tally['wrapHyphensInUnits'] += 1
             # ONE record is enough and A's is the one that carries the whole
@@ -1833,7 +1982,7 @@ def gate_units(units, th, tally, mark):
     return out
 
 
-def verify_eval_parity(units, line_eval_path):
+def verify_eval_parity(units, line_eval_path, mode='require'):
     """sft-sent/eval.jsonl must cover EXACTLY the characters sft-line/eval.jsonl
     covers, or the line-vs-sentence comparison is between two different books.
 
@@ -1874,11 +2023,29 @@ def verify_eval_parity(units, line_eval_path):
     for book, c in report.items():
         print(f'  {book:26s}{c["lineRowsInLineEval"]:>11d}{c["linesCoveredBySentenceEval"]:>15d}'
               f'{c["nonWhitespaceCharsLine"]:>14d}{c["nonWhitespaceCharsSentence"]:>14d}')
-    if bad:
+    if bad and mode == 'require':
         sys.exit(f'build-dataset: REFUSING TO WRITE — the sentence eval does not cover the same '
                  f'characters as the line eval for {bad}. The two evals would score different books.')
+    if bad:
+        # --eval-parity report. THE ONLY LEGITIMATE REASON is a pairs file whose
+        # emitted characters changed, which is the entire point of a v2
+        # alignment: `…` is one character where `...` is three, and a curly quote
+        # the truth kept is a character the line eval never had. The invariant
+        # does not bend, it RETIRES for this eval — and the consequence has to be
+        # said out loud rather than recorded as a passing check.
+        print('  !! NOT IDENTICAL, and --eval-parity report says that is expected here.')
+        for book in bad:
+            c = report[book]
+            print(f'     {book:26s} lines {c["lineRowsInLineEval"]} -> {c["linesCoveredBySentenceEval"]}'
+                  f'   non-whitespace chars {c["nonWhitespaceCharsLine"]} -> {c["nonWhitespaceCharsSentence"]}'
+                  f'  ({c["nonWhitespaceCharsSentence"] - c["nonWhitespaceCharsLine"]:+d})')
+        print('     THIS EVAL IS NOT COMPARABLE WITH sft-line/eval.jsonl OR sft-sent/eval.jsonl.')
+        print('     It covers the same PAGES in the same books, with the characters the book')
+        print('     actually prints. A model scored on the older eval is scored on the older')
+        print('     character distribution, which is the one this build exists to leave behind.')
+        return dict(report, identical=False, mode=mode)
     print('  identical line sets and identical non-whitespace character counts, per book.')
-    return report
+    return dict(report, identical=True, mode=mode)
 
 
 def verify_eval_unchanged(ref_dir, groups):
@@ -1999,6 +2166,20 @@ MEASURED_TOKENS = {
                                          'over512': 0, 'over768': 0},
     'sft-sent-v1_1-promptb/eval-german.jsonl': {'p50': 425, 'p90': 502, 'p99': 577, 'max': 647,
                                                 'over512': 57, 'over768': 0},
+    # v1.2 — the same units off the v2 pairs, which carry the book's own
+    # punctuation. The marks are one token where the ASCII fold was one token, so
+    # nothing moved: the maximum is still 615 (variant A) / 683 (variant B) and
+    # 768 still holds with 85 tokens to spare.
+    'sft-sent-v1_2/train.jsonl': {'p50': 277, 'p90': 315, 'p99': 385, 'max': 615,
+                                  'over512': 16, 'over768': 0},
+    'sft-sent-v1_2/eval.jsonl': {'p50': 275, 'p90': 315, 'p99': 344, 'max': 432,
+                                 'over512': 0, 'over768': 0},
+    'sft-sent-v1_2/eval-german.jsonl': {'p50': 357, 'p90': 434, 'p99': 509, 'max': 579,
+                                        'over512': 8, 'over768': 0},
+    'sft-sent-v1_2-promptb/train.jsonl': {'p50': 345, 'p90': 383, 'p99': 453, 'max': 683,
+                                          'over512': 113, 'over768': 0},
+    'sft-sent-v1_2-promptb/eval-german.jsonl': {'p50': 425, 'p90': 502, 'p99': 577, 'max': 647,
+                                                'over512': 58, 'over768': 0},
 }
 
 
@@ -2071,12 +2252,19 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
         n_typo_ident = sum(1 for u in u_train
                            if u['identity'] and any(c in TYPOGRAPHY_RESTORED for c in u['ocr']))
         print('\nTYPOGRAPHY RESTORED (TRAIN ONLY — eval owes sft-line/eval.jsonl its characters)')
-        print('  The corpus had NONE. All 16 books, all 311,207 aligner pairs: zero curly quotes,')
-        print('  em dashes, en dashes or ellipses on either side. align-epub.py folds them to')
-        print('  ASCII before a pair is written; Tesseract read them correctly all along.')
+        if counts['typography_alreadyCarriesMarks']:
+            print(f'  SUBSUMED on {counts["typography_alreadyCarriesMarks"]} lines: this pairs file already carries the')
+            print('  book\'s own marks, so the aligner was fixed and this rung has nothing to undo.')
+            print('  It stays because a v1 pairs file still needs it — and because 0 restored on a')
+            print('  v2 build is a MEASUREMENT that the fix reached the corpus, not a no-op.')
+        else:
+            print('  The pairs file has NONE. align-epub.py folded them to ASCII before a pair was')
+            print('  written; Tesseract read them correctly all along. Re-align with --suffix and')
+            print('  build with --pairs-name to fix this at the source instead.')
         print(f'  already-correct lines given their marks back {counts["typographyRestored"]:7d}')
         print(f'  marks restored                               {counts["typographyMarks"]:7d}')
-        for k in ('typography_roundTripFailed', 'typography_unsafeMark',
+        for k in ('typography_alreadyCarriesMarks', 'typography_roundTripFailed',
+                  'typography_unsafeMark',
                   'typographySkippedHyphenLine', 'typographyNoRawLine', 'typographyBookNoBands'):
             if counts[k]:
                 print(f'  {k:44s} {counts[k]:7d}')
@@ -2174,8 +2362,8 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
     print('  the corpus carries more damaged characters per token at the same percentage.')
 
     caps = resolve_caps(args)
-    edit, ident, want, used_ident, cap_report, shortfall = downsample_identity(
-        u_train, args.identity_share, caps, rnd)
+    edit, ident, want, used_ident, cap_report, shortfall, trimmed_edit = downsample_identity(
+        u_train, args.identity_share, caps, rnd, args.identity_share_mode)
 
     train = edit + used_ident
     _shuffle(train, rnd)
@@ -2195,7 +2383,8 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
         sys.exit(f'build-dataset: REFUSING TO WRITE — book(s) {cross} are in both train and eval.')
 
     parity = verify_eval_parity(u_eval, args.parity_against or
-                                os.path.join(os.path.dirname(out.rstrip('/')), 'sft-line', 'eval.jsonl'))
+                                os.path.join(os.path.dirname(out.rstrip('/')), 'sft-line', 'eval.jsonl'),
+                                args.eval_parity)
     same_as = verify_eval_unchanged(args.eval_identical_to,
                                     (('eval.jsonl', u_eval), ('eval-german.jsonl', u_german)))
 
@@ -2237,6 +2426,11 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
     if shortfall > 0:
         print(f'  !! {shortfall} short of --identity-share {args.identity_share}. Restraint is undertrained;')
         print('     more clean books is the fix, not a lower target.')
+    if trimmed_edit:
+        print(f'  --identity-share-mode balance: {trimmed_edit} EDIT units dropped so the share holds')
+        print(f'     exactly at {len(used_ident) / max(1, len(train)) * 100:.1f}%. That is real repair supervision spent on a')
+        print('     ratio; the alternative was a corpus whose restraint share moved because a')
+        print('     different flag was passed.')
 
     tok = token_bound(train, system)
     tok_all = token_bound(all_units, system)
@@ -2248,7 +2442,8 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
     print(f'  MEASURED with the real Qwen3 tokenizer on {MEASURED_TOKENS["measuredOn"]}:')
     for k in ('sft-line/train.jsonl', 'sft-sent/train.jsonl', 'sft-sent/eval-german.jsonl',
               'sft-sent-v1_1/train.jsonl', 'sft-sent-v1_1-promptb/train.jsonl',
-              'sft-sent-v1_1-promptb/eval-german.jsonl'):
+              'sft-sent-v1_2/train.jsonl', 'sft-sent-v1_2-promptb/train.jsonl',
+              'sft-sent-v1_2-promptb/eval-german.jsonl'):
         m = MEASURED_TOKENS[k]
         print(f'    {k:38s} p50 {m["p50"]:4d}  p90 {m["p90"]:4d}  p99 {m["p99"]:4d}  '
               f'max {m["max"]:4d}   {m["over512"]:4d} over 512')
@@ -2256,7 +2451,7 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
     print('  text_sft refuses to truncate, so that is a hard failure mid-run.')
     print('  768 STILL HOLDS: the longest sequence this builder produces is 683 tokens')
     print('  (v1.1 variant B, the longer system prompt on the longest German unit), so')
-    print('  0 of 99,272 rows across both v1.1 corpora exceed it.')
+    print('  0 of 187,568 rows across all four v1.1/v1.2 corpora exceed it.')
     print('  Re-measure with train-line.sh --preflight if --cap or the prompt moves.')
 
     # ── the final table ─────────────────────────────────────────────────────
@@ -2331,6 +2526,10 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
                               'trainTarget': args.identity_share},
             'editUnits': len(edit), 'identityUnits': len(used_ident),
             'identityAvailable': len(ident), 'identityShortfall': shortfall,
+            'identityShareMode': args.identity_share_mode,
+            'ocrTypography': args.ocr_typography,
+            'editUnitsTrimmedForShare': trimmed_edit,
+            'pairsName': args.pairs_name,
             'books': {b: dict(c) for b, c in per_book.items()},
             'unitsPerBook': {b: sum(1 for u in all_units if u['book'] == b)
                              for b in sorted({u['book'] for u in all_units})},

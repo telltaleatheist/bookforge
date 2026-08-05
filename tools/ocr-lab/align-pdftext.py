@@ -95,6 +95,10 @@ def _load(name, filename):
 
 _epub = _load("align_epub", "align-epub.py")
 norm_text = _epub.norm_text
+# The pairs carry the page's own characters; the fold survives only where a
+# NUMBER is computed. Matching here is geometric — box overlap — so nothing in
+# this file's alignment can move when the emitted text stops being folded.
+emit_text = _epub.emit_text
 
 OVERLAP_FRAC = 0.5       # of the SMALLER box, in both axes, to call it an edge
 PAIR_MIN_SIM = _epub.PAIR_MIN_SIM
@@ -181,7 +185,7 @@ def page_pairs(ref, ocr, first_line_id, align=True):
 
     refs = []
     for i, ln in enumerate(ref.get("lines", [])):
-        text = norm_text(ln.get("text", ""))
+        text = emit_text(ln.get("text", ""))
         if not text:
             continue                       # a run of spaces is not a line
         x0, y0, x1, y1 = ln["bbox"]
@@ -193,7 +197,7 @@ def page_pairs(ref, ocr, first_line_id, align=True):
     bands = []
     for bi, ln in enumerate(ocr.get("lines", [])):
         bands.append({"id": first_line_id + bi, "band": bi,
-                      "text": norm_text(ln.get("text", "")),
+                      "text": emit_text(ln.get("text", "")),
                       "bbox": [float(v) for v in ln["bbox"]],
                       "conf": ln.get("conf"), "psm": ln.get("psm")})
 
@@ -275,9 +279,13 @@ def page_pairs(ref, ocr, first_line_id, align=True):
                     "psm": band["psm"]})
                 continue
             a, b = band["text"], truth
-            sim = Levenshtein.ratio(a, b)
-            cer = Levenshtein.distance(a, b) / max(1, len(b))
-            cer_ci = Levenshtein.distance(a.lower(), b.lower()) / max(1, len(b))
+            # sim/cer stay on the FOLDED forms. They are the gate
+            # build-dataset.py reads and the number every earlier corpus was
+            # measured with; a quote that changed shape must not move them.
+            fa, fb = norm_text(a), norm_text(b)
+            sim = Levenshtein.ratio(fa, fb)
+            cer = Levenshtein.distance(fa, fb) / max(1, len(fb))
+            cer_ci = Levenshtein.distance(fa.lower(), fb.lower()) / max(1, len(fb))
             pairs.append({"line": band["id"], "page": ocr["page"],
                           "ocr": a, "truth": b,
                           "sim": round(sim, 4), "cer": round(cer, 4),
@@ -430,6 +438,11 @@ def main(argv=None):
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("lab")
     ap.add_argument("--out", default=None, help="default <lab>/scores")
+    ap.add_argument("--suffix", default="",
+                    help="written into every output filename. USE IT: the "
+                         "existing files are the provenance of every corpus "
+                         "built from this book and a re-run is not "
+                         "reproducible. This tool refuses to overwrite them.")
     ap.add_argument("--pages", default=None, help="comma list or a-b ranges")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--no-align", action="store_true",
@@ -567,11 +580,22 @@ def main(argv=None):
         "elapsedSeconds": round(time.time() - t0, 1),
     }
 
-    with open(os.path.join(out_dir, "pdftext-align.json"), "w") as fh:
+    sfx = args.suffix
+    targets = [os.path.join(out_dir, n % sfx) for n in
+               ("pdftext-align%s.json", "epub-align-pairs%s.json",
+                "pdftext-align-report%s.md")]
+    existing = [t for t in targets if os.path.exists(t)]
+    if existing:
+        sys.exit("align-pdftext: REFUSING TO OVERWRITE %s.\n"
+                 "  A re-run is not reproducible and these files are the "
+                 "provenance of every corpus built from this book. Pass "
+                 "--suffix to write beside them."
+                 % ", ".join(os.path.basename(t) for t in existing))
+    with open(targets[0], "w") as fh:
         json.dump(result, fh, indent=1, ensure_ascii=False)
-    with open(os.path.join(out_dir, "epub-align-pairs.json"), "w") as fh:
+    with open(targets[1], "w") as fh:
         json.dump(pairs, fh, ensure_ascii=False)
-    write_report(os.path.join(out_dir, "pdftext-align-report.md"), result, pairs)
+    write_report(targets[2], result, pairs)
 
     slim = {k: v for k, v in result.items()
             if not k.endswith("Detail") and k not in ("perPage", "worstPairs")}
