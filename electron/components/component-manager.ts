@@ -2096,6 +2096,26 @@ export function isInstalling(id: string): boolean {
   return inFlight.has(id);
 }
 
+/**
+ * Every recorded install, read straight off installed.json.
+ *
+ * For callers that want the RECORD and nothing else. `listStatus` answers a
+ * bigger question and pays for it: it runs every component's detect spec, which
+ * spawns `which`, probes candidate paths and runs python imports — ~35 s on a
+ * machine with the engines installed — and it RECORDS what it finds. The startup
+ * upgrade sweep wants none of that. It only ever acts on managed records, so
+ * external detection could not change its answer, and quietly recording new
+ * external installs is not something a background check should be doing.
+ */
+export function listInstalledRecords(): InstalledRecord[] {
+  return Object.values(readManifest().components);
+}
+
+/** Does this component's recorded entry still exist on disk? */
+export function recordedEntryExists(id: string): boolean {
+  return resolveEntry(id) !== null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Export
 // ─────────────────────────────────────────────────────────────────────────────

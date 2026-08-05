@@ -1,6 +1,7 @@
 /**
- * The startup sweep: which installed components are out of date, and (for the
- * foundry CLI) whether a release newer than the pin has been published.
+ * The startup sweep: which installed components are behind what the catalog
+ * names, and (for the foundry CLI) whether a release newer than the pin has been
+ * published.
  *
  * Runs once per launch, after the window has loaded, and its result is a LIST —
  * it downloads nothing itself. The renderer feeds that list to
@@ -9,7 +10,7 @@
  * bottom-right download shelf as every other download in the app. Nothing here
  * is a second installer or a second widget.
  *
- * Three properties this module is responsible for:
+ * Four properties this module is responsible for:
  *
  *  - **It never blocks startup.** Everything is async and every failure is
  *    caught and REPORTED rather than thrown. The app opens whether or not the
@@ -21,13 +22,22 @@
  *    fetching one the user had deliberately skipped would be a bug.
  *  - **It never touches an external or env-pinned component.** Also `planUpgrade`
  *    rules, applied to every component rather than remembered per call site.
+ *  - **It is cheap, and it has no side effects.** It reads installed.json and the
+ *    catalog and compares them. It deliberately does NOT call `listStatus()`,
+ *    which runs every component's detect spec — `which` lookups, candidate-path
+ *    probes and python imports, ~35 s on a machine with the engines installed —
+ *    and RECORDS what it finds. None of that could change this answer, because
+ *    an externally-detected install is one this sweep would refuse to touch.
+ *    Making a background check quietly record new external installs would be a
+ *    side effect nobody asked it for.
  */
 
-import { componentManager, isInstalling } from './component-manager';
+import { isInstalling, listInstalledRecords, recordedEntryExists } from './component-manager';
+import { getCatalog } from './component-catalog';
 import { planUpgrades, upgradesFrom, type UpgradeCandidate } from './component-upgrades';
 import { FOUNDRY_CLI_COMPONENT_ID, setDiscoveredFoundryRelease } from './foundry-cli-components';
 import { checkFoundryRelease } from './foundry-release-check';
-import type { ComponentStatus } from './component-types';
+import type { InstalledRecord, OptionalComponent } from './component-types';
 
 /** One component to move, as the renderer receives it. */
 export interface ComponentUpgrade {
@@ -52,8 +62,8 @@ export interface StartupUpgradeReport {
 }
 
 /** Is this component's detect-spec env var set to something on this machine? */
-function envPinned(status: ComponentStatus): boolean {
-  const name = status.component.detect?.envVar;
+function envPinned(component: OptionalComponent): boolean {
+  const name = component.detect?.envVar;
   if (!name) return false;
   return (process.env[name] ?? '').trim() !== '';
 }
@@ -69,11 +79,15 @@ function envPinned(status: ComponentStatus): boolean {
  * tarball with no hash, no artifact for this platform) are exactly what belongs
  * in front of a user, and none of them should take the rest of the sweep down.
  */
-async function adoptNewerFoundryRelease(statuses: ComponentStatus[]): Promise<string | null> {
-  const foundry = statuses.find((s) => s.component.id === FOUNDRY_CLI_COMPONENT_ID);
-  if (!foundry) return null;
-  if (foundry.installed?.source !== 'managed') return null;
-  if (envPinned(foundry)) return null;
+async function adoptNewerFoundryRelease(
+  records: Map<string, InstalledRecord>,
+  component: OptionalComponent | undefined
+): Promise<string | null> {
+  if (!component) return null;
+  const record = records.get(FOUNDRY_CLI_COMPONENT_ID);
+  if (record?.source !== 'managed') return null;
+  if (envPinned(component)) return null;
+  if (!recordedEntryExists(FOUNDRY_CLI_COMPONENT_ID)) return null;
 
   try {
     const release = await checkFoundryRelease();
@@ -91,51 +105,54 @@ async function adoptNewerFoundryRelease(statuses: ComponentStatus[]): Promise<st
 /**
  * Everything installed that the catalog now names a different version for.
  *
- * The foundry release check runs FIRST and re-lists afterwards, because adopting
- * a release changes what the catalog says foundry's version is — and the whole
- * point of the sweep is to compare the record against the catalog. Re-listing is
- * how the discovery reaches the comparison without this function knowing
- * anything special about foundry.
+ * The foundry release check runs FIRST and the catalog is read AFTERWARDS,
+ * because adopting a release changes what the catalog says foundry's version is
+ * — and the whole point of the sweep is to compare the record against the
+ * catalog. That ordering is how the discovery reaches the comparison without
+ * this function knowing anything special about foundry.
  */
 export async function checkForComponentUpgrades(): Promise<StartupUpgradeReport> {
   const problems: string[] = [];
 
-  let statuses: ComponentStatus[];
+  let records: Map<string, InstalledRecord>;
   try {
-    statuses = await componentManager.listStatus();
+    records = new Map(listInstalledRecords().map((r) => [r.id, r]));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.warn(`[updates] could not read the component list: ${message}`);
+    console.warn(`[updates] could not read installed.json: ${message}`);
     return { upgrades: [], problems: [`Could not check installed add-ons for updates: ${message}`] };
   }
 
-  const foundryProblem = await adoptNewerFoundryRelease(statuses);
+  const foundryProblem = await adoptNewerFoundryRelease(
+    records,
+    getCatalog().find((c) => c.id === FOUNDRY_CLI_COMPONENT_ID)
+  );
   if (foundryProblem) problems.push(foundryProblem);
-  if (!foundryProblem) {
-    // Only re-read when the check ran to completion — a failed check changed
-    // nothing, and a second full listStatus() is detection work for no answer.
-    try {
-      statuses = await componentManager.listStatus();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      problems.push(`Could not re-read installed add-ons after the Foundry check: ${message}`);
-    }
-  }
 
-  const candidates: UpgradeCandidate[] = statuses.map((s) => ({
-    id: s.component.id,
-    name: s.component.name,
-    targetVersion: s.component.version,
-    supportsManaged: s.component.acquisition.includes('managed'),
-    installed: s.installed ? { source: s.installed.source, version: s.installed.version } : null,
-    envPinned: envPinned(s),
-    installing: isInstalling(s.component.id),
-    // Foundry alone can be ahead of the catalog: it is the one component whose
-    // version can come from a release discovered at runtime, so a launch that
-    // starts offline sees only the pin and must not drag it backwards. Every
-    // other component's version comes from the catalog and nowhere else.
-    mayBeAheadOfCatalog: s.component.id === FOUNDRY_CLI_COMPONENT_ID,
-  }));
+  const candidates: UpgradeCandidate[] = getCatalog().map((component) => {
+    const record = records.get(component.id);
+    return {
+      id: component.id,
+      name: component.name,
+      targetVersion: component.version,
+      supportsManaged: component.acquisition.includes('managed'),
+      // A record whose files are gone is not an install to upgrade — it is an
+      // install to make from nothing, which this sweep never does. (`listStatus`
+      // drops such a record; here it is simply not counted as installed, and the
+      // dropping stays where it was rather than becoming a side effect of a
+      // background check.)
+      installed: record && recordedEntryExists(component.id)
+        ? { source: record.source, version: record.version }
+        : null,
+      envPinned: envPinned(component),
+      installing: isInstalling(component.id),
+      // Foundry alone can be ahead of the catalog: it is the one component whose
+      // version can come from a release discovered at runtime, so a launch that
+      // starts offline sees only the pin and must not drag it backwards. Every
+      // other component's version comes from the catalog and nowhere else.
+      mayBeAheadOfCatalog: component.id === FOUNDRY_CLI_COMPONENT_ID,
+    };
+  });
 
   const plan = planUpgrades(candidates);
   const upgrades = upgradesFrom(plan).map((p) => ({
