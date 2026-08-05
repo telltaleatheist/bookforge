@@ -123,6 +123,102 @@
         }
       }
     },
+    "ocr_sent_v1_4b": {
+      "kind": "text_sft",
+      "description": "ocr SENTENCE corrector v1, Qwen3-4B — the retrain the 2026-08-05 guard measurement asked for. The shipped line model served sentence units repairs LESS and false-edits 12-25% (vs 0.6-7% on lines): a distribution mismatch, and this profile closes it by training on the unit serving actually produces. Corpus: rubric/galley/sft-sent (bookforge 5afef2e) — 31,600 train / 4,979 eval / 770 eval-german sentence units packed from the SAME raw line pairs, holdouts and repair ladder as the line corpus, 50.0% train identity at UNIT level, units p50 331 chars at 4.66 lines each, character-exact eval parity with sft-line asserted by the build. The units were cut by the mirror of foundry src/ocr/sentences.ts (fa4c221: send-more-through boundaries — abbreviation guard incl. German, footnote-reference digits, decimal guard), and serving judges per-run (foundry ab8d303), so training unit == serving unit is a build invariant, not a hope. RECIPE IS ocr_line_v1_1_4b UNCHANGED except max_seq_length 512 -> 768, MEASURED with the real Qwen3 tokenizer, enable_thinking=false: train p50 283 / p90 319 / p99 405 / max 573, eval-german max 579. 23 rows exceed 512 (the tail is German at ~2.2 chars/token — an average-case estimate says 512 holds and is wrong); ZERO exceed 768, and text_sft refuses to truncate, so 512 kills the run partway. STAGE TO REMOTE_DIR=$HOME/ocr-sent-v1. Judge by tools/foundry-ocr/eval-guard.py under per-run against ocr_line_v1_1_4b on the same holdout books, degraded first, do-nothing baseline printed alongside — never by loss. Identity-share sweep variants (0.65/0.8) re-derive from sft-sent/units.jsonl without remining.",
+      "model": {
+        "id": "Qwen/Qwen3-4B",
+        "max_seq_length": 768,
+        "load_in_4bit": false
+      },
+      "lora": {
+        "r": 32,
+        "alpha": 32,
+        "dropout": 0.0,
+        "target_modules": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj",
+          "gate_proj",
+          "up_proj",
+          "down_proj"
+        ]
+      },
+      "training": {
+        "learning_rate": 0.0001,
+        "optimizer": "adamw_8bit",
+        "per_device_train_batch_size": 2,
+        "gradient_accumulation_steps": 8,
+        "max_epochs": 3,
+        "early_stopping_patience": 2,
+        "save_total_limit": 4,
+        "warmup_ratio": 0.05,
+        "weight_decay": 0.01,
+        "lr_scheduler_type": "cosine",
+        "seed": 3407
+      },
+      "output": {
+        "lora_dir_template": "{run_name}_lora",
+        "merged_dir_template": "{run_name}_merged"
+      },
+      "dataset": {
+        "format": "chat_jsonl",
+        "messages_field": "messages",
+        "assistant_only_loss": true,
+        "template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    },
+    "ocr_sent_v1_4b_safe": {
+      "kind": "text_sft",
+      "description": "FALLBACK for ocr_sent_v1_4b: identical except batch 1 x accum 16, the shape every profile on this box has survived. Same effective batch of 16 so the recipe stays comparable. Exists for the same reason the other _safe profiles do, with the multiplier stated: the OOM ceiling is the lm_head logits tensor (batch x seq x 151936 vocab), and 768 is 1.5x the sequence width the 4B line profile proved at batch 2 — an untested width on a box that measured 11 GB free with a job in it.",
+      "model": {
+        "id": "Qwen/Qwen3-4B",
+        "max_seq_length": 768,
+        "load_in_4bit": false
+      },
+      "lora": {
+        "r": 32,
+        "alpha": 32,
+        "dropout": 0.0,
+        "target_modules": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj",
+          "gate_proj",
+          "up_proj",
+          "down_proj"
+        ]
+      },
+      "training": {
+        "learning_rate": 0.0001,
+        "optimizer": "adamw_8bit",
+        "per_device_train_batch_size": 1,
+        "gradient_accumulation_steps": 16,
+        "max_epochs": 3,
+        "early_stopping_patience": 2,
+        "save_total_limit": 4,
+        "warmup_ratio": 0.05,
+        "weight_decay": 0.01,
+        "lr_scheduler_type": "cosine",
+        "seed": 3407
+      },
+      "output": {
+        "lora_dir_template": "{run_name}_lora",
+        "merged_dir_template": "{run_name}_merged"
+      },
+      "dataset": {
+        "format": "chat_jsonl",
+        "messages_field": "messages",
+        "assistant_only_loss": true,
+        "template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    },
     "ocr_line_v1_06b": {
       "kind": "text_sft",
       "description": "ocr v1 LINE corrector, Qwen3-0.6B, 16-bit LoRA. Input = one OCR'd line from the band pipeline (render 200dpi -> projection-profile bands -> one tesseract --psm 7 per line); output = the corrected line, or the line unchanged. Sits between recognition and block grouping in docs/OCR_LAB.md's pipeline, which is why the unit is a line and not a block: at this point in the pipeline blocks do not exist yet. Corpus: tools/foundry-ocr/build-dataset.py over <lab>/<book>/scores/epub-align-pairs.json, held out on deathstalker-coda (fiction) + michelle-remembers (nonfiction), train held at 50% identity rows because restraint is the whole game. The holdouts are chosen for what they MEASURE: michelle-remembers is tier-1 publisher truth over a bad IA scan, so its error density is high and informative, and it is the only large book the band pipeline was never tuned against — deathstalker 1 was the calibration book and therefore has to stay in TRAIN, or the score measures the pipeline's own tuning instead of the model. THE MODEL CANNOT SEE THE NEXT LINE, so it is trained to leave a wrap hyphen alone and never to extend the first or last word of a line; the dataset builder enforces both. CHANGED FROM dagger_v1: max_epochs 4 -> 3. dagger took 4 because its corpus was 2,598 rows with one book carrying 98% of the positives; this corpus is ~25k rows across 7+ books, and BLOCKS_TRAINING.md section 5 records that three runs out of three peaked at epoch 1. early_stopping_patience 2 and best-checkpoint selection make 3 a ceiling, not a target. max_seq_length 512 is MEASURED, not assumed: 46,726 train rows through the Qwen3 tokenizer with enable_thinking=false give p50 163, p95 181, p99 201, max 246. Zero rows exceed 512. This matters because text_sft refuses to truncate -- one unmeasured long row kills the run partway through.",
