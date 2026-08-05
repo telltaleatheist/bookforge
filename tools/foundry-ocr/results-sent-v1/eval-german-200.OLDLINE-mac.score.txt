@@ -1,0 +1,141 @@
+eval-guard — 200 units from /Volumes/Callisto/Projects/BookForgeApp/tools/foundry-ocr/results-sent-v1/dumps/eval-german-200.units.jsonl
+  generated 2026-08-05T12:38:02-0400 in 202.9s on http://127.0.0.1:8771
+  server args: llama-server (b7482, macos-arm64, Metal) -m foundry-4b-f16.gguf -c 16384 -np 8 -ngl 99 --no-webui --lora-scaled foundry-ocr-v1-4b.gguf:0.0  [LINE model, Checkpoint 5910 — Mac-paired control for the Aug 5 CUDA baseline]
+
+================================================================================================
+THE NUMBER THAT DECIDES: units the model made WORSE (`degraded`), and what it repaired
+================================================================================================
+
+policy        CER before  CER after  degraded  deg/100k  rep/100k  falseEdit  corrections   exact
+  do nothing     1.096%     1.096%         0       0.0       0.0      0.00%            0   20.5%
+  no-guard       1.096%     0.336%        12      27.5     788.3     19.51%          163   54.5%
+  whole-unit     1.096%     0.583%         9      18.9     531.8     14.63%          121   50.0%
+  per-run        1.096%     0.398%        11      22.4     721.2     14.63%          157   51.5%
+
+  200 units, 58100 gold characters, 41 already correct (20.5%)
+  model /Users/telltale/Library/Application Support/foundry/models/foundry-4b-f16.gguf
+
+  A model only beats "do nothing" by moving CER down without moving degraded
+  and falseEdit up. `degraded` counts UNITS — compare it only within one unit
+  size; deg/100k and rep/100k are characters and compare across sizes.
+
+WHERE THE WORK IS — already-correct units vs damaged units
+  policy      population      units  CER before  CER after   impr  WORSE  deg/100k  rep/100k
+  no-guard    already-correct     41      0.000%     0.089%      0      8      88.6       0.0
+  no-guard    damaged           159      1.329%     0.388%    139      4      14.6     955.3
+  whole-unit  already-correct     41      0.000%     0.069%      0      6      68.9       0.0
+  whole-unit  damaged           159      1.329%     0.693%    105      3       8.3     644.5
+  per-run     already-correct     41      0.000%     0.069%      0      6      68.9       0.0
+  per-run     damaged           159      1.329%     0.467%    138      5      12.5     874.0
+
+GENERATION HEALTH — the RAW answer, before any guard
+  answers under 90% of the input length        0  (0.00%)
+  answers over 110% of the input length        0  (0.00%)
+  empty answers                                0
+  answers spanning more than one line          0   (only the first is kept)
+  answers near the n_predict ceiling           0
+
+WHAT THE GUARD REFUSED
+  units with at least one illegal run   42
+  illegal runs                          52
+  legal runs in those same units        78   <- what whole-unit throws away and per-run keeps
+
+WHERE THE TWO POLICIES DISAGREE (same generation, different blast radius)
+  units where the shipped text differs  36
+    per-run CLOSER to the truth         33   (110 characters recovered)
+    per-run FURTHER from the truth      2   (2 characters lost)
+    same distance, different text       1
+
+  PER-RUN DEGRADED A UNIT THAT WHOLE-UNIT DID NOT: 2
+    [himmler-a-life p1005 l37344] dist 9 -> 10
+      SRC       "-- 'Die KPD in Bayern 1919-1945. Vorgeschichte, Verfolgung und Widerstand', inid., Anton Grossmann, und Klaus Schoenhoven (eds), Bayern in der NS-Zeit, vol. 5: Die Parteien KPD, SPD, BVP in Verfolgung und Widerstand (Munich, 1983), 1-286. Meyer, Ahlrich, '\"...da franzésische Verhiltnisse anders sind als polnische\"."
+      MODEL     "--- 'Die KPD in Bayern 1919-1945. Vorgeschichte, Verfolgung und Widerstand', in id., Anton Grossmann, und Klaus Schoenhoven (eds), Bayern in der NS-Zeit, vol. 5: Die Parteien KPD, SPD, BVP in Verfolgung und Widerstand (Munich, 1983), 1-286. Meyer, Ahlrich, '\" . . . da französische Verhältnisse anders sind als polnische\"."
+      PER-RUN   "--- 'Die KPD in Bayern 1919-1945. Vorgeschichte, Verfolgung und Widerstand', inid., Anton Grossmann, und Klaus Schoenhoven (eds), Bayern in der NS-Zeit, vol. 5: Die Parteien KPD, SPD, BVP in Verfolgung und Widerstand (Munich, 1983), 1-286. Meyer, Ahlrich, '\"...da franzésische Verhiltnisse anders sind als polnische\"."
+      GOLD      "-- 'Die KPD in Bayern 1919-1945. Vorgeschichte, Verfolgung und Widerstand', id., Anton Grossmann, und Klaus Schoenhoven (eds), Bayern in der NS-Zeit, vol. 5: Die Parteien KPD, SPD, BVP in Verfolgung und Widerstand (Munich, 1983), 1-286. Meyer, Ahlrich, '\" . . . daß französische Verhältnisse anders sind als polnische\"."
+      refused   unbalanced change: [inid.,] -> [in id.,] (1 word -> 2)
+    [himmler-a-life p985 l36491] dist 3 -> 4
+      SRC       "Hohmann, Joachim S., Robert Ritter und die Erben der Kriminalbiologie. 'Zigeuner-forschung' im Nationalsozialismus und in Westdeutschland im Zeichen des Rassismus (Frankfurt a. M., etc.,1991). Hohne, Heinz, Mordsache Rohm. Hitlers Durchbruch zur Alleinherrschaft 1933-1934 (Reinbek b. Hamburg, 1984)."
+      MODEL     "Höhmann, Joachim S., Robert Ritter und die Erben der Kriminalbiologie. 'Zigeuner-forschung' im Nationalsozialismus und in Westdeutschland im Zeichen des Rassismus (Frankfurt a. M., etc., 1991). Höhne, Heinz, Mordsache Rohm. Hitlers Durchbruch zur Alleinherrschaft 1933-1934 (Reinbek b. Hamburg, 1984)."
+      PER-RUN   "Höhmann, Joachim S., Robert Ritter und die Erben der Kriminalbiologie. 'Zigeuner-forschung' im Nationalsozialismus und in Westdeutschland im Zeichen des Rassismus (Frankfurt a. M., etc.,1991). Hohne, Heinz, Mordsache Rohm. Hitlers Durchbruch zur Alleinherrschaft 1933-1934 (Reinbek b. Hamburg, 1984)."
+      GOLD      "Hohmann, Joachim S., Robert Ritter und die Erben der Kriminalbiologie. 'Zigeuner-forschung' im Nationalsozialismus und in Westdeutschland im Zeichen des Rassismus (Frankfurt a. M., etc., 1991). Höhne, Heinz, Mordsache Röhm. Hitlers Durchbruch zur Alleinherrschaft 1933-1934 (Reinbek b. Hamburg, 1984)."
+      refused   unbalanced change: [etc.,1991). Hohne,] -> [etc., 1991). Höhne,] (2 words -> 3)
+
+WORST DAMAGE UNDER no-guard (6 of 12) — read these, do not average them
+  [himmler-a-life p1006 l37422] dist 6 -> 9
+    IN   "Riiss, Hartmut, 'Wer war verantwortlich fiir das Massaker von Babij Jar?', Mili-targeschichtlicheMitteilungen, 57/2 (1998), 483-508. Sauer, Wolfgang, 'Die Mobilmachung der Gewalt', in Karl Dietrich Bracher et al., Die nationalsozialistische Machtergreifung. Studien zur Geschichte des totalitdren Herrschafissystems in Deutschland 1933/34 (Cologne and Opladen, 1960), 685-972."
+    OUT  "Rüüß, Hartmut, 'Wer war verantwortlich für das Massaker von Babij Jar?', Mili-tär-geschichtliche Mitteilungen, 57/2 (1998), 483-508. Sauer, Wolfgang, 'Die Mobilmachung der Gewalt', in Karl Dietrich Bracher et al., Die nationalsozialistische Machtergreifung. Studien zur Geschichte des totalitären Herrschsystems in Deutschland 1933/34 (Cologne and Opladen, 1960), 685-972."
+    GOLD "Rüss, Hartmut, 'Wer war verantwortlich für das Massaker von Babij Jar?', Mili-targeschichtlicheMitteilungen, 57/2 (1998), 483-508. Sauer, Wolfgang, 'Die Mobilmachung der Gewalt', in Karl Dietrich Bracher et al., Die nationalsozialistische Machtergreifung. Studien zur Geschichte des totalitären Herrschaftssystems in Deutschland 1933/34 (Cologne and Opladen, 1960), 685-972."
+  [himmler-a-life p948 l34914] dist 3 -> 5
+    IN   "58. BAB, NS 19/4010, 4 October 1943, also published as doc. PS-rg19, in IMT, vol. 29, pp. 110 ff., quotation 117 f. 59. Ibid. 122 f. 60. Peter Black, Ernst Kaltenbrunner. Vasall Himmlers. Eine SS-Karriere (Paderborn, etc., 1991), 143 ff. and 1095 ff. 61. Thierack to Bormann, 16 November 1941, according to Herbert, Fremdarbei-ter, 285; Broszat, Polenpolitik, 153."
+    OUT  "58. BAB, NS 19/4010, 4 October 1943, also published as doc. PS-219, in IMT, vol. 29, pp. 110 ff., quotation 117 f. 59. Ibid. 122 f. 60. Peter Black, Ernst Kaltenbrunner. Vasall Himmlers. Eine SS-Karriere (Paderborn, etc., 1991), 143 ff. and 1095 ff. 61. Thierack to Bormann, 16 November 1941, according to Herbert, Fremdarbeit-er, 285; Broszat, Polenpolitik, 153."
+    GOLD "58. BAB, NS 19/4010, 4 October 1943, also published as doc. PS-1919, in IMT, vol. 29, pp. 110 ff., quotation 117 f. 59. Ibid. 122 f. 60. Peter Black, Ernst Kaltenbrunner. Vasall Himmlers. Eine SS-Karriere (Paderborn, etc., 1991), 143 ff. and 195 ff. 61. Thierack to Bormann, 16 November 1941, according to Herbert, Fremdarbei-ter, 285; Broszat, Polenpolitik, 153."
+  [himmler-a-life p944 l34728] dist 0 -> 2  (was already correct)
+    IN   "61. On the course of the operations see Gerlach, Morde, 930 ff. Little is known about 'Wisent'. 62. BAB, NS 19/1671, von dem Bach-Zelewski to Himmler, 5 September 1942. 63. Dienstkalender 22 September 1942: 'task for von d. Bach.' Himmler had met von dem Bach-Zelewski on 9 September 1942 (ibid.). 64. BAB, NS 19/1671, contains all five edicts, which are dated 23 October 1942."
+    OUT  "61. On the course of the operations see Gerlach, Morde, 930 ff. Little is known about 'Wisent'. 62. BAB, NS 19/1671, von dem Bach-Zelewski to Himmler, 5 September 1942. 63. Dienstkalender 22 September 1942: 'task for von dem Bach.' Himmler had met von dem Bach-Zelewski on 9 September 1942 (ibid.). 64. BAB, NS 19/1671, contains all five edicts, which are dated 23 October 1942."
+    GOLD "61. On the course of the operations see Gerlach, Morde, 930 ff. Little is known about 'Wisent'. 62. BAB, NS 19/1671, von dem Bach-Zelewski to Himmler, 5 September 1942. 63. Dienstkalender 22 September 1942: 'task for von d. Bach.' Himmler had met von dem Bach-Zelewski on 9 September 1942 (ibid.). 64. BAB, NS 19/1671, contains all five edicts, which are dated 23 October 1942."
+  [himmler-a-life p978 l36192] dist 0 -> 1  (was already correct)
+    IN   "Wiligut, Karl Maria, 'Seyfrieds Runen (Rabensteinsage)' (Vienna, 1903), published in Winfried Katholing, Die Sage von Ritter Seyfried und der Rabenstein bei Znaim (Aschaffenburg, 2003), 73-115. Zahlen zur Geldentwertung in Deutschland 1914 bis 1923, ed. Statistisches Reichsamt (Berlin, 1925)."
+    OUT  "Wiligut, Karl Maria, 'Seyfrieds Runen (Rabensteinsage)' (Vienna, 1903), published in Winfried Kätholing, Die Sage von Ritter Seyfried und der Rabenstein bei Znaim (Aschaffenburg, 2003), 73-115. Zahlen zur Geldentwertung in Deutschland 1914 bis 1923, ed. Statistisches Reichsamt (Berlin, 1925)."
+    GOLD "Wiligut, Karl Maria, 'Seyfrieds Runen (Rabensteinsage)' (Vienna, 1903), published in Winfried Katholing, Die Sage von Ritter Seyfried und der Rabenstein bei Znaim (Aschaffenburg, 2003), 73-115. Zahlen zur Geldentwertung in Deutschland 1914 bis 1923, ed. Statistisches Reichsamt (Berlin, 1925)."
+  [himmler-a-life p931 l34166] dist 0 -> 1  (was already correct)
+    IN   "2. On the details see Stefan Karner, 'Die Aussiedlungen der Slowenen in der"
+    OUT  "2. On the details see Stefan Kärner, 'Die Aussiedlungen der Slowenen in der"
+    GOLD "2. On the details see Stefan Karner, 'Die Aussiedlungen der Slowenen in der"
+  [himmler-a-life p937 l34441] dist 0 -> 1  (was already correct)
+    IN   "34. On Rost von Tonningen's withdrawal see Hirschfeld, Fremdherrschaft, 193. 35. Warmbrunn, German Occupation, 132 f.; on Himmler's support see his state-ments on 12 July 1944 (BAB, R 43 II/678a). 36. Warmbrunn, German Occupation, 135; Wagner, Belgien, 248. In total the SS was to recruit some 20,000 volunteers in Flanders and Wallonia up to the end of the war (Stein, Geschichte, 124 f.)."
+    OUT  "34. On Röst von Tonningen's withdrawal see Hirschfeld, Fremdherrschaft, 193. 35. Warmbrunn, German Occupation, 132 f.; on Himmler's support see his state-ments on 12 July 1944 (BAB, R 43 II/678a). 36. Warmbrunn, German Occupation, 135; Wagner, Belgien, 248. In total the SS was to recruit some 20,000 volunteers in Flanders and Wallonia up to the end of the war (Stein, Geschichte, 124 f.)."
+    GOLD "34. On Rost von Tonningen's withdrawal see Hirschfeld, Fremdherrschaft, 193. 35. Warmbrunn, German Occupation, 132 f.; on Himmler's support see his state-ments on 12 July 1944 (BAB, R 43 II/678a). 36. Warmbrunn, German Occupation, 135; Wagner, Belgien, 248. In total the SS was to recruit some 20,000 volunteers in Flanders and Wallonia up to the end of the war (Stein, Geschichte, 124 f.)."
+
+WORST DAMAGE UNDER whole-unit (6 of 9) — read these, do not average them
+  [himmler-a-life p948 l34914] dist 3 -> 5
+    IN   "58. BAB, NS 19/4010, 4 October 1943, also published as doc. PS-rg19, in IMT, vol. 29, pp. 110 ff., quotation 117 f. 59. Ibid. 122 f. 60. Peter Black, Ernst Kaltenbrunner. Vasall Himmlers. Eine SS-Karriere (Paderborn, etc., 1991), 143 ff. and 1095 ff. 61. Thierack to Bormann, 16 November 1941, according to Herbert, Fremdarbei-ter, 285; Broszat, Polenpolitik, 153."
+    OUT  "58. BAB, NS 19/4010, 4 October 1943, also published as doc. PS-219, in IMT, vol. 29, pp. 110 ff., quotation 117 f. 59. Ibid. 122 f. 60. Peter Black, Ernst Kaltenbrunner. Vasall Himmlers. Eine SS-Karriere (Paderborn, etc., 1991), 143 ff. and 1095 ff. 61. Thierack to Bormann, 16 November 1941, according to Herbert, Fremdarbeit-er, 285; Broszat, Polenpolitik, 153."
+    GOLD "58. BAB, NS 19/4010, 4 October 1943, also published as doc. PS-1919, in IMT, vol. 29, pp. 110 ff., quotation 117 f. 59. Ibid. 122 f. 60. Peter Black, Ernst Kaltenbrunner. Vasall Himmlers. Eine SS-Karriere (Paderborn, etc., 1991), 143 ff. and 195 ff. 61. Thierack to Bormann, 16 November 1941, according to Herbert, Fremdarbei-ter, 285; Broszat, Polenpolitik, 153."
+  [himmler-a-life p944 l34728] dist 0 -> 2  (was already correct)
+    IN   "61. On the course of the operations see Gerlach, Morde, 930 ff. Little is known about 'Wisent'. 62. BAB, NS 19/1671, von dem Bach-Zelewski to Himmler, 5 September 1942. 63. Dienstkalender 22 September 1942: 'task for von d. Bach.' Himmler had met von dem Bach-Zelewski on 9 September 1942 (ibid.). 64. BAB, NS 19/1671, contains all five edicts, which are dated 23 October 1942."
+    OUT  "61. On the course of the operations see Gerlach, Morde, 930 ff. Little is known about 'Wisent'. 62. BAB, NS 19/1671, von dem Bach-Zelewski to Himmler, 5 September 1942. 63. Dienstkalender 22 September 1942: 'task for von dem Bach.' Himmler had met von dem Bach-Zelewski on 9 September 1942 (ibid.). 64. BAB, NS 19/1671, contains all five edicts, which are dated 23 October 1942."
+    GOLD "61. On the course of the operations see Gerlach, Morde, 930 ff. Little is known about 'Wisent'. 62. BAB, NS 19/1671, von dem Bach-Zelewski to Himmler, 5 September 1942. 63. Dienstkalender 22 September 1942: 'task for von d. Bach.' Himmler had met von dem Bach-Zelewski on 9 September 1942 (ibid.). 64. BAB, NS 19/1671, contains all five edicts, which are dated 23 October 1942."
+  [himmler-a-life p978 l36192] dist 0 -> 1  (was already correct)
+    IN   "Wiligut, Karl Maria, 'Seyfrieds Runen (Rabensteinsage)' (Vienna, 1903), published in Winfried Katholing, Die Sage von Ritter Seyfried und der Rabenstein bei Znaim (Aschaffenburg, 2003), 73-115. Zahlen zur Geldentwertung in Deutschland 1914 bis 1923, ed. Statistisches Reichsamt (Berlin, 1925)."
+    OUT  "Wiligut, Karl Maria, 'Seyfrieds Runen (Rabensteinsage)' (Vienna, 1903), published in Winfried Kätholing, Die Sage von Ritter Seyfried und der Rabenstein bei Znaim (Aschaffenburg, 2003), 73-115. Zahlen zur Geldentwertung in Deutschland 1914 bis 1923, ed. Statistisches Reichsamt (Berlin, 1925)."
+    GOLD "Wiligut, Karl Maria, 'Seyfrieds Runen (Rabensteinsage)' (Vienna, 1903), published in Winfried Katholing, Die Sage von Ritter Seyfried und der Rabenstein bei Znaim (Aschaffenburg, 2003), 73-115. Zahlen zur Geldentwertung in Deutschland 1914 bis 1923, ed. Statistisches Reichsamt (Berlin, 1925)."
+  [himmler-a-life p931 l34166] dist 0 -> 1  (was already correct)
+    IN   "2. On the details see Stefan Karner, 'Die Aussiedlungen der Slowenen in der"
+    OUT  "2. On the details see Stefan Kärner, 'Die Aussiedlungen der Slowenen in der"
+    GOLD "2. On the details see Stefan Karner, 'Die Aussiedlungen der Slowenen in der"
+  [himmler-a-life p937 l34441] dist 0 -> 1  (was already correct)
+    IN   "34. On Rost von Tonningen's withdrawal see Hirschfeld, Fremdherrschaft, 193. 35. Warmbrunn, German Occupation, 132 f.; on Himmler's support see his state-ments on 12 July 1944 (BAB, R 43 II/678a). 36. Warmbrunn, German Occupation, 135; Wagner, Belgien, 248. In total the SS was to recruit some 20,000 volunteers in Flanders and Wallonia up to the end of the war (Stein, Geschichte, 124 f.)."
+    OUT  "34. On Röst von Tonningen's withdrawal see Hirschfeld, Fremdherrschaft, 193. 35. Warmbrunn, German Occupation, 132 f.; on Himmler's support see his state-ments on 12 July 1944 (BAB, R 43 II/678a). 36. Warmbrunn, German Occupation, 135; Wagner, Belgien, 248. In total the SS was to recruit some 20,000 volunteers in Flanders and Wallonia up to the end of the war (Stein, Geschichte, 124 f.)."
+    GOLD "34. On Rost von Tonningen's withdrawal see Hirschfeld, Fremdherrschaft, 193. 35. Warmbrunn, German Occupation, 132 f.; on Himmler's support see his state-ments on 12 July 1944 (BAB, R 43 II/678a). 36. Warmbrunn, German Occupation, 135; Wagner, Belgien, 248. In total the SS was to recruit some 20,000 volunteers in Flanders and Wallonia up to the end of the war (Stein, Geschichte, 124 f.)."
+  [himmler-a-life p942 l34647] dist 0 -> 1  (was already correct)
+    IN   "22. See Dienstkalender, 22 September 1942, Interview with Hitler: 'Jewish emigra-tion-how should we proceed further?' The next topic in Himmler's notes for the interview was: 'Settlement of Lublin-Lorrainers, Germans from Bosnia, Bessarabia' and 'Conditions in the Gen.Gov.-Globus [Globocnik's nick-name]'. The fact that the 'emigration', that is, the murder, of the Jews from"
+    OUT  "22. See Dienstkalender, 22 September 1942, Interview with Hitler: 'Jewish emigration-how should we proceed further?' The next topic in Himmler's notes for the interview was: 'Settlement of Lublin-Lorrainers, Germans from Bosnia, Bessarabia' and 'Conditions in the Gen.Gov.-Globus [Globocnik's nick-name]'. The fact that the 'emigration', that is, the murder, of the Jews from"
+    GOLD "22. See Dienstkalender, 22 September 1942, Interview with Hitler: 'Jewish emigra-tion-how should we proceed further?' The next topic in Himmler's notes for the interview was: 'Settlement of Lublin-Lorrainers, Germans from Bosnia, Bessarabia' and 'Conditions in the Gen.Gov.-Globus [Globocnik's nick-name]'. The fact that the 'emigration', that is, the murder, of the Jews from"
+
+WORST DAMAGE UNDER per-run (6 of 11) — read these, do not average them
+  [himmler-a-life p948 l34914] dist 3 -> 5
+    IN   "58. BAB, NS 19/4010, 4 October 1943, also published as doc. PS-rg19, in IMT, vol. 29, pp. 110 ff., quotation 117 f. 59. Ibid. 122 f. 60. Peter Black, Ernst Kaltenbrunner. Vasall Himmlers. Eine SS-Karriere (Paderborn, etc., 1991), 143 ff. and 1095 ff. 61. Thierack to Bormann, 16 November 1941, according to Herbert, Fremdarbei-ter, 285; Broszat, Polenpolitik, 153."
+    OUT  "58. BAB, NS 19/4010, 4 October 1943, also published as doc. PS-219, in IMT, vol. 29, pp. 110 ff., quotation 117 f. 59. Ibid. 122 f. 60. Peter Black, Ernst Kaltenbrunner. Vasall Himmlers. Eine SS-Karriere (Paderborn, etc., 1991), 143 ff. and 1095 ff. 61. Thierack to Bormann, 16 November 1941, according to Herbert, Fremdarbeit-er, 285; Broszat, Polenpolitik, 153."
+    GOLD "58. BAB, NS 19/4010, 4 October 1943, also published as doc. PS-1919, in IMT, vol. 29, pp. 110 ff., quotation 117 f. 59. Ibid. 122 f. 60. Peter Black, Ernst Kaltenbrunner. Vasall Himmlers. Eine SS-Karriere (Paderborn, etc., 1991), 143 ff. and 195 ff. 61. Thierack to Bormann, 16 November 1941, according to Herbert, Fremdarbei-ter, 285; Broszat, Polenpolitik, 153."
+  [himmler-a-life p944 l34728] dist 0 -> 2  (was already correct)
+    IN   "61. On the course of the operations see Gerlach, Morde, 930 ff. Little is known about 'Wisent'. 62. BAB, NS 19/1671, von dem Bach-Zelewski to Himmler, 5 September 1942. 63. Dienstkalender 22 September 1942: 'task for von d. Bach.' Himmler had met von dem Bach-Zelewski on 9 September 1942 (ibid.). 64. BAB, NS 19/1671, contains all five edicts, which are dated 23 October 1942."
+    OUT  "61. On the course of the operations see Gerlach, Morde, 930 ff. Little is known about 'Wisent'. 62. BAB, NS 19/1671, von dem Bach-Zelewski to Himmler, 5 September 1942. 63. Dienstkalender 22 September 1942: 'task for von dem Bach.' Himmler had met von dem Bach-Zelewski on 9 September 1942 (ibid.). 64. BAB, NS 19/1671, contains all five edicts, which are dated 23 October 1942."
+    GOLD "61. On the course of the operations see Gerlach, Morde, 930 ff. Little is known about 'Wisent'. 62. BAB, NS 19/1671, von dem Bach-Zelewski to Himmler, 5 September 1942. 63. Dienstkalender 22 September 1942: 'task for von d. Bach.' Himmler had met von dem Bach-Zelewski on 9 September 1942 (ibid.). 64. BAB, NS 19/1671, contains all five edicts, which are dated 23 October 1942."
+  [himmler-a-life p978 l36192] dist 0 -> 1  (was already correct)
+    IN   "Wiligut, Karl Maria, 'Seyfrieds Runen (Rabensteinsage)' (Vienna, 1903), published in Winfried Katholing, Die Sage von Ritter Seyfried und der Rabenstein bei Znaim (Aschaffenburg, 2003), 73-115. Zahlen zur Geldentwertung in Deutschland 1914 bis 1923, ed. Statistisches Reichsamt (Berlin, 1925)."
+    OUT  "Wiligut, Karl Maria, 'Seyfrieds Runen (Rabensteinsage)' (Vienna, 1903), published in Winfried Kätholing, Die Sage von Ritter Seyfried und der Rabenstein bei Znaim (Aschaffenburg, 2003), 73-115. Zahlen zur Geldentwertung in Deutschland 1914 bis 1923, ed. Statistisches Reichsamt (Berlin, 1925)."
+    GOLD "Wiligut, Karl Maria, 'Seyfrieds Runen (Rabensteinsage)' (Vienna, 1903), published in Winfried Katholing, Die Sage von Ritter Seyfried und der Rabenstein bei Znaim (Aschaffenburg, 2003), 73-115. Zahlen zur Geldentwertung in Deutschland 1914 bis 1923, ed. Statistisches Reichsamt (Berlin, 1925)."
+  [himmler-a-life p931 l34166] dist 0 -> 1  (was already correct)
+    IN   "2. On the details see Stefan Karner, 'Die Aussiedlungen der Slowenen in der"
+    OUT  "2. On the details see Stefan Kärner, 'Die Aussiedlungen der Slowenen in der"
+    GOLD "2. On the details see Stefan Karner, 'Die Aussiedlungen der Slowenen in der"
+  [himmler-a-life p937 l34441] dist 0 -> 1  (was already correct)
+    IN   "34. On Rost von Tonningen's withdrawal see Hirschfeld, Fremdherrschaft, 193. 35. Warmbrunn, German Occupation, 132 f.; on Himmler's support see his state-ments on 12 July 1944 (BAB, R 43 II/678a). 36. Warmbrunn, German Occupation, 135; Wagner, Belgien, 248. In total the SS was to recruit some 20,000 volunteers in Flanders and Wallonia up to the end of the war (Stein, Geschichte, 124 f.)."
+    OUT  "34. On Röst von Tonningen's withdrawal see Hirschfeld, Fremdherrschaft, 193. 35. Warmbrunn, German Occupation, 132 f.; on Himmler's support see his state-ments on 12 July 1944 (BAB, R 43 II/678a). 36. Warmbrunn, German Occupation, 135; Wagner, Belgien, 248. In total the SS was to recruit some 20,000 volunteers in Flanders and Wallonia up to the end of the war (Stein, Geschichte, 124 f.)."
+    GOLD "34. On Rost von Tonningen's withdrawal see Hirschfeld, Fremdherrschaft, 193. 35. Warmbrunn, German Occupation, 132 f.; on Himmler's support see his state-ments on 12 July 1944 (BAB, R 43 II/678a). 36. Warmbrunn, German Occupation, 135; Wagner, Belgien, 248. In total the SS was to recruit some 20,000 volunteers in Flanders and Wallonia up to the end of the war (Stein, Geschichte, 124 f.)."
+  [himmler-a-life p942 l34647] dist 0 -> 1  (was already correct)
+    IN   "22. See Dienstkalender, 22 September 1942, Interview with Hitler: 'Jewish emigra-tion-how should we proceed further?' The next topic in Himmler's notes for the interview was: 'Settlement of Lublin-Lorrainers, Germans from Bosnia, Bessarabia' and 'Conditions in the Gen.Gov.-Globus [Globocnik's nick-name]'. The fact that the 'emigration', that is, the murder, of the Jews from"
+    OUT  "22. See Dienstkalender, 22 September 1942, Interview with Hitler: 'Jewish emigration-how should we proceed further?' The next topic in Himmler's notes for the interview was: 'Settlement of Lublin-Lorrainers, Germans from Bosnia, Bessarabia' and 'Conditions in the Gen.Gov.-Globus [Globocnik's nick-name]'. The fact that the 'emigration', that is, the murder, of the Jews from"
+    GOLD "22. See Dienstkalender, 22 September 1942, Interview with Hitler: 'Jewish emigra-tion-how should we proceed further?' The next topic in Himmler's notes for the interview was: 'Settlement of Lublin-Lorrainers, Germans from Bosnia, Bessarabia' and 'Conditions in the Gen.Gov.-Globus [Globocnik's nick-name]'. The fact that the 'emigration', that is, the murder, of the Jews from"
+
+wrote eval-german-200.OLDLINE-mac.stats.json

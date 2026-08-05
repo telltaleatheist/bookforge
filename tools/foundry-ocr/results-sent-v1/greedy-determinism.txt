@@ -1,0 +1,39 @@
+==============================================================================
+GREEDY IS NOT BYTE-REPRODUCIBLE ON THIS BUILD — measured, Aug 5 2026
+==============================================================================
+eval-guard.py's header says "Decoding is greedy (temperature 0, top_k 1), so
+the dump is reproducible rather than merely recorded." On llama-server b7482
+macos-arm64 (Metal) that is NOT true, and the size of the gap is what decides
+whether a difference between two dumps is a finding or an artefact.
+
+Same model, same units, same sampling — only the run differs:
+103 units, scale=0.0
+  run A vs run B (both -np 8 concurrent)   identical on 92/103
+  run A vs run C (C is serial, 1 request at a time)  identical on 80/103
+  run B vs run C                                     identical on 88/103
+
+  first divergence, unit 3 [deathstalker-coda p14 l251]
+    A "Jesamine gave him a hard look. \"Why don't you do something? You're one of the original Maze people, like Owen. Weren't you all supposed to have some mental link? The legends said-\" \"The legends said a lot of things,' said Silence. \"And Owen and I were never that close.\""
+    B "Jesamine gave him a hard look. \"Why don't you do something? You're one of the original Maze people, like Owen. Weren't you all supposed to have some mental link? The legends said-\" \"The legends said a lot of things,\" said Silence. \"And Owen and I were never that close.\""
+
+Almost certainly batch-shape dependence: llama.cpp's fused kernels reduce in an
+order that depends on how many sequences share the batch, and `cache_prompt`
+means a slot's prefix may or may not be recomputed. Nothing here is sampling —
+top_k is 1 throughout. It shows up as a near-tie flipping, e.g. a straight
+apostrophe vs a curly one at the end of a quotation.
+
+WHAT THIS COSTS THE COMPARISON, and why the conclusions survive it:
+
+  two runs, IDENTICAL config, 284 corpus-slice units   280/284 same  (noise floor)
+  Aug 5 CUDA baseline vs the SAME model re-run here    283/284 same
+  merged Q8_0 fused vs f16 base + f16 adapter          281/284 same
+  ------------------------------------------------------------------------
+  NEW sentence model vs OLD line model, same units     201/284 same  (83 differ)
+  NEW vs OLD on the German slice, 200 units            120/200 same  (80 differ)
+
+The signal is 20x the noise, and the headline metrics move by less than the gap
+they are being asked to measure: whole-unit CER-after 0.220% vs 0.224% across
+two runs of the same model, against 0.286% for the model being compared to.
+
+NOTE ALSO: the CUDA baseline and the Mac agree 283/284 on the same model. The
+platform is not a confound for anything in this directory.

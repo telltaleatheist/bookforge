@@ -1,0 +1,174 @@
+eval-guard — 284 units from /Volumes/Callisto/Projects/BookForgeApp/tools/foundry-ocr/results-sent-v1/dumps/corpus-slice.units.jsonl
+  generated 2026-08-05T12:34:39-0400 in 177.1s on http://127.0.0.1:8771
+  server args: llama-server (b7482, macos-arm64, Metal) -m foundry-4b-f16.gguf -c 16384 -np 8 -ngl 99 --no-webui --lora-scaled foundry-ocr-v1-4b.gguf:0.0  [LINE model, Checkpoint 5910 — Mac-paired control for the Aug 5 CUDA baseline]
+
+================================================================================================
+THE NUMBER THAT DECIDES: units the model made WORSE (`degraded`), and what it repaired
+================================================================================================
+
+policy        CER before  CER after  degraded  deg/100k  rep/100k  falseEdit  corrections   exact
+  do nothing     0.327%     0.327%         0       0.0       0.0      0.00%            0   63.7%
+  no-guard       0.327%     0.344%        51     130.2     113.5     17.13%          125   66.5%
+  whole-unit     0.327%     0.286%        29      43.8      85.1     11.60%           89   68.7%
+  per-run        0.327%     0.276%        36      52.9     104.4     13.26%          109   68.3%
+
+  284 units, 77565 gold characters, 181 already correct (63.7%)
+  model /Users/telltale/Library/Application Support/foundry/models/foundry-4b-f16.gguf
+
+  A model only beats "do nothing" by moving CER down without moving degraded
+  and falseEdit up. `degraded` counts UNITS — compare it only within one unit
+  size; deg/100k and rep/100k are characters and compare across sizes.
+
+PER BOOK
+  policy      book                    units  CER before  CER after  WORSE  deg/100k  falseEdit
+  no-guard    deathstalker-coda         145      0.282%     0.279%     28     124.3     21.98%
+  no-guard    michelle-remembers        139      0.375%     0.412%     23     136.3     12.22%
+  whole-unit  deathstalker-coda         145      0.282%     0.249%     21      63.4     16.48%
+  whole-unit  michelle-remembers        139      0.375%     0.325%      8      23.6      6.67%
+  per-run     deathstalker-coda         145      0.282%     0.236%     24      71.0     18.68%
+  per-run     michelle-remembers        139      0.375%     0.317%     12      34.1      7.78%
+
+WHERE THE WORK IS — already-correct units vs damaged units
+  policy      population      units  CER before  CER after   impr  WORSE  deg/100k  rep/100k
+  no-guard    already-correct    181      0.000%     0.105%      0     31     105.5       0.0
+  no-guard    damaged           103      0.793%     0.683%     59     20     165.4     274.6
+  whole-unit  already-correct    181      0.000%     0.051%      0     21      50.5       0.0
+  whole-unit  damaged           103      0.793%     0.621%     48      8      34.3     205.9
+  per-run     already-correct    181      0.000%     0.057%      0     24      57.1       0.0
+  per-run     damaged           103      0.793%     0.587%     58     12      46.8     252.8
+
+GENERATION HEALTH — the RAW answer, before any guard
+  answers under 90% of the input length        0  (0.00%)
+  answers over 110% of the input length        0  (0.00%)
+  empty answers                                0
+  answers spanning more than one line          0   (only the first is kept)
+  answers near the n_predict ceiling           0
+
+WHAT THE GUARD REFUSED
+  units with at least one illegal run   36
+  illegal runs                          39
+  legal runs in those same units        29   <- what whole-unit throws away and per-run keeps
+
+WHERE THE TWO POLICIES DISAGREE (same generation, different blast radius)
+  units where the shipped text differs  20
+    per-run CLOSER to the truth         10   (15 characters recovered)
+    per-run FURTHER from the truth      7   (7 characters lost)
+    same distance, different text       3
+
+  PER-RUN DEGRADED A UNIT THAT WHOLE-UNIT DID NOT: 7
+    [deathstalker-coda p42 l1244] dist 0 -> 1  (was already correct)
+      SRC       "\"Help is on its way,\" said Owen. \"But I'm. . . just visiting. I wanted to see this marvelous new city, before I left to stop the Terror. But you'd bet-ter get going, Sister. The ungodly know I'm here now, and they're bound to send reinforcements. So, off you go. Nice to see the Sisters of Mercy are still around. Hop like a bunny, as Beatrice used to say.\""
+      MODEL     "\"Help is on its way,\" said Owen. \"But I'm... just visiting. I wanted to see this marvelous new city, before I left to stop the Terror. But you'd better get going, Sister. The ungodly know I'm here now, and they're bound to send reinforcements. So, off you go. Nice to see the Sisters of Mercy are still around. Hop like a bunny, as Beatrice used to say.\""
+      PER-RUN   "\"Help is on its way,\" said Owen. \"But I'm. . . just visiting. I wanted to see this marvelous new city, before I left to stop the Terror. But you'd better get going, Sister. The ungodly know I'm here now, and they're bound to send reinforcements. So, off you go. Nice to see the Sisters of Mercy are still around. Hop like a bunny, as Beatrice used to say.\""
+      GOLD      "\"Help is on its way,\" said Owen. \"But I'm. . . just visiting. I wanted to see this marvelous new city, before I left to stop the Terror. But you'd bet-ter get going, Sister. The ungodly know I'm here now, and they're bound to send reinforcements. So, off you go. Nice to see the Sisters of Mercy are still around. Hop like a bunny, as Beatrice used to say.\""
+      refused   unbalanced change: [I'm. . .] -> [I'm...] (3 words -> 1)
+    [deathstalker-coda p182 l6146] dist 0 -> 1  (was already correct)
+      SRC       "\"Two hundred years since Silence was last here,\" Lewis said thought-fully. \"You tend to forget just how old he is, really. All the things he saw, and all the things he did . . . For him, our legends are memories. He's probably the only man left alive who actually talked with the Iron Bitch"
+      MODEL     "\"Two hundred years since Silence was last here,\" Lewis said thoughtfully. \"You tend to forget just how old he is, really. All the things he saw, and all the things he did... For him, our legends are memories. He's probably the only man left alive who actually talked with the Iron Bitch"
+      PER-RUN   "\"Two hundred years since Silence was last here,\" Lewis said thoughtfully. \"You tend to forget just how old he is, really. All the things he saw, and all the things he did . . . For him, our legends are memories. He's probably the only man left alive who actually talked with the Iron Bitch"
+      GOLD      "\"Two hundred years since Silence was last here,\" Lewis said thought-fully. \"You tend to forget just how old he is, really. All the things he saw, and all the things he did . . . For him, our legends are memories. He's probably the only man left alive who actually talked with the Iron Bitch"
+      refused   unbalanced change: [did . . .] -> [did...] (4 words -> 1)
+    [deathstalker-coda p266 l9107] dist 8 -> 9
+      SRC       "combined fleet should mean Finn hasn't got anything big enough or pow-erful enough to put up against it. All he's got left are the transmutation engines ... We have got to find a way to knock them off line...\" \"What do you think Finn will do, when he hears the news?\" said Nina. Douglas smiled grimly. \"Knowing him, something extreme. Youd bet-ter call everybody back, Nina. We need another meeting.\""
+      MODEL     "combined fleet should mean Finn hasn't got anything big enough or powerful enough to put up against it. All he's got left are the transmutation engines . . . We have got to find a way to knock them off line...\" \"What do you think Finn will do, when he hears the news?\" said Nina. Douglas smiled grimly. \"Knowing him, something extreme. You'd better call everybody back, Nina. We need another meeting.\""
+      PER-RUN   "combined fleet should mean Finn hasn't got anything big enough or powerful enough to put up against it. All he's got left are the transmutation engines ... We have got to find a way to knock them off line...\" \"What do you think Finn will do, when he hears the news?\" said Nina. Douglas smiled grimly. \"Knowing him, something extreme. You'd better call everybody back, Nina. We need another meeting.\""
+      GOLD      "combined fleet should mean Finn hasn't got anything big enough or pow-erful enough to put up against it. All he's got left are the transmutation engines... We have got to find a way to knock them offline What \"What do you think Finn will do, when he hears the news?\" said Nina. Douglas smiled grimly. \"Knowing him, something extreme. You'd bet-ter call everybody back, Nina. We need another meeting.\""
+      refused   unbalanced change: [...] -> [. . .] (1 word -> 3)
+    [michelle-remembers p54 l1137] dist 7 -> 8
+      SRC       "As Michelle began to grow calmer, Dr. Pazder asked for more details of the experience. \"How many people were there?\" Michelle thought, wrinkling her brow. She closed her eyes to visual-ize the scene. \"There was the lady in the cape .. . and then one ...two... three... I can't be certain, but possibly thirteen. . . . I don't know. I can't swear to it.\""
+      MODEL     "As Michelle began to grow calmer, Dr. Pazder asked for more details of the experience. \"How many people were there?\" Michelle thought, wrinkling her brow. She closed her eyes to visualize the scene. \"There was the lady in the cape .. . and then one . . . two . . . three . . . I can't be certain, but possibly thirteen. . . . I don't know. I can't swear to it.\""
+      PER-RUN   "As Michelle began to grow calmer, Dr. Pazder asked for more details of the experience. \"How many people were there?\" Michelle thought, wrinkling her brow. She closed her eyes to visualize the scene. \"There was the lady in the cape .. . and then one ...two... three... I can't be certain, but possibly thirteen. . . . I don't know. I can't swear to it.\""
+      GOLD      "As Michelle began to grow calmer, Dr. Pazder asked for more details of the experience. \"How many people were there?\" Michelle thought, wrinkling her brow. She closed her eyes to visual-ize the scene. \"There was the lady in the cape .. . and then one two ... three ... I can't be certain, but possibly thirteen. ... I don't know. I can't swear to it.\""
+      refused   unbalanced change: [...two... three...] -> [. . . two . . . three . . .] (2 words -> 11)
+    [michelle-remembers p240 l6478] dist 2 -> 3
+      SRC       "V T was September 6 and everything was worse. Mi-chelle's rashes were worse. She had a rash on the inside of her left elbow now, another under her left armpit, one spreading across her chest. And there was a very sore, raw, new rash on the right side of her neck. It was dark red-ugly and painful-looking. Different from the other rashes."
+      MODEL     "I was September 6 and everything was worse. Michelle's rashes were worse. She had a rash on the inside of her left elbow now, another under her left armpit, one spreading across her chest. And there was a very sore, raw, new rash on the right side of her neck. It was dark red-ugly and painful-looking. Different from the other rashes."
+      PER-RUN   "V T was September 6 and everything was worse. Michelle's rashes were worse. She had a rash on the inside of her left elbow now, another under her left armpit, one spreading across her chest. And there was a very sore, raw, new rash on the right side of her neck. It was dark red-ugly and painful-looking. Different from the other rashes."
+      GOLD      "IT was September 6 and everything was worse. Mi-chelle's rashes were worse. She had a rash on the inside of her left elbow now, another under her left armpit, one spreading across her chest. And there was a very sore, raw, new rash on the right side of her neck. It was dark red-ugly and painful-looking. Different from the other rashes."
+      refused   unbalanced change: [V T] -> [I] (2 words -> 1)
+    [michelle-remembers p240 l6496] dist 5 -> 6
+      SRC       "\"Please... ah, ah... I'm not supposed to know. . . .\" Her voice trailed off. She was deep in that place now.*"
+      MODEL     "\"Please... ah, ah... I'm not supposed to know... .\" Her voice trailed off. She was deep in that place now.∗"
+      PER-RUN   "\"Please... ah, ah... I'm not supposed to know. . . .\" Her voice trailed off. She was deep in that place now.∗"
+      GOLD      "Please ... ah, ah ... I'm not supposed to know... .\" Her voice trailed off. She was deep in that place now.*"
+      refused   unbalanced change: [know. . .] -> [know...] (3 words -> 1)
+
+WORST DAMAGE UNDER no-guard (6 of 51) — read these, do not average them
+  [michelle-remembers p180 l5056] dist 9 -> 17
+    IN   "chapter 18 Mi coors remembering had become re-lentless. She and Dr. Pazder were working daily without respite, and he was beginning to worry about her. There was little time to integrate her experiences before she was flooded with new ones. One day, while she was remembering, the five-year-old Michelle told him, \"I don't think there's a sun anymore. I haven't seen any for so long. Maybe it's"
+    OUT  "chapter 18 memories had become re-lentless. She and Dr. Pazder were working daily without respite, and he was beginning to worry about her. There was little time to integrate her experiences before she was flooded with new ones. One day, while she was remembering, the five-year-old Michelle told him, \"I don't think there's a sun anymore. I haven't seen any for so long. Maybe it's"
+    GOLD "chapter 18 MICHELLE'S remembering had become re-lentless. She and Dr. Pazder were working daily without respite, and he was beginning to worry about her. There was little time to integrate her experiences before she was flooded with new ones. One day, while she was remembering, the five-year-old Michelle told him, \"I don't think there's a sun anymore. I haven't seen any for so long. Maybe it's"
+  [deathstalker-coda p57 l1774] dist 6 -> 12
+    IN   "some of the guards. Finn had only just started to come down when re-ports came im that his supposed allies, the Als of Shub, had also betrayed him and setved control of the Madness Maze, and that had set him off again. The purges that followed had been particularly vicious and far-reaching. and neat morning all over the city there were men and women hanging from lampposts."
+    OUT  "some of the guards. Finn had only just started to come down when reports came in that his supposed allies, the AIs of Shub, had also betrayed him and set up control of the Madness Maze, and that had set him off again. The purges that followed had been particularly vicious and far-reaching, and by the next morning all over the city there were men and women hanging from lampposts."
+    GOLD "some of the guards. Finn had only just started to come down when re-ports came in that his supposed allies, the AIs of Shub, had also betrayed him and seized control of the Madness Maze, and that had set him off again. The purges that followed had been particularly vicious and far-reaching, and next morning all over the city there were men and women hanging from lampposts."
+  [michelle-remembers p54 l1137] dist 7 -> 13
+    IN   "As Michelle began to grow calmer, Dr. Pazder asked for more details of the experience. \"How many people were there?\" Michelle thought, wrinkling her brow. She closed her eyes to visual-ize the scene. \"There was the lady in the cape .. . and then one ...two... three... I can't be certain, but possibly thirteen. . . . I don't know. I can't swear to it.\""
+    OUT  "As Michelle began to grow calmer, Dr. Pazder asked for more details of the experience. \"How many people were there?\" Michelle thought, wrinkling her brow. She closed her eyes to visualize the scene. \"There was the lady in the cape .. . and then one . . . two . . . three . . . I can't be certain, but possibly thirteen. . . . I don't know. I can't swear to it.\""
+    GOLD "As Michelle began to grow calmer, Dr. Pazder asked for more details of the experience. \"How many people were there?\" Michelle thought, wrinkling her brow. She closed her eyes to visual-ize the scene. \"There was the lady in the cape .. . and then one two ... three ... I can't be certain, but possibly thirteen. ... I don't know. I can't swear to it.\""
+  [michelle-remembers p78 l1890] dist 2 -> 7
+    IN   "she said, Don't... go... in... there! And I knew I could never go in there. I didn't want to look in her eyes anymore. I just wanted to be a good girl. Yes . . . yes, Mom, I just want to be a good girl. Michelle went back to her room. In what seemed to be the middle of the night she was awakened. Her mother and Malachi were dressed up and were getting ready to go somewhere."
+    OUT  "she said, Don't . . . go . . . in . . . there! And I knew I could never go in there. I didn't want to look in her eyes anymore. I just wanted to be a good girl. Yes . . . yes, Mom, I just want to be a good girl. Michelle went back to her room. In what seemed to be the middle of the night she was awakened. Her mother and Malachi were dressed up and were getting ready to go somewhere."
+    GOLD "she said, Don't... go ... in ... there! And I knew I could never go in there. I didn't want to look in her eyes anymore. I just wanted to be a good girl. Yes . . . yes, Mom, I just want to be a good girl. Michelle went back to her room. In what seemed to be the middle of the night she was awakened. Her mother and Malachi were dressed up and were getting ready to go somewhere."
+  [deathstalker-coda p182 l6146] dist 0 -> 4  (was already correct)
+    IN   "\"Two hundred years since Silence was last here,\" Lewis said thought-fully. \"You tend to forget just how old he is, really. All the things he saw, and all the things he did . . . For him, our legends are memories. He's probably the only man left alive who actually talked with the Iron Bitch"
+    OUT  "\"Two hundred years since Silence was last here,\" Lewis said thoughtfully. \"You tend to forget just how old he is, really. All the things he saw, and all the things he did... For him, our legends are memories. He's probably the only man left alive who actually talked with the Iron Bitch"
+    GOLD "\"Two hundred years since Silence was last here,\" Lewis said thought-fully. \"You tend to forget just how old he is, really. All the things he saw, and all the things he did . . . For him, our legends are memories. He's probably the only man left alive who actually talked with the Iron Bitch"
+  [deathstalker-coda p42 l1242] dist 0 -> 3  (was already correct)
+    IN   "\"No, just round the corner... My lord! Are the dark times over? Have you come back to save us?\""
+    OUT  "\"No, just round the corner . . . My lord! Are the dark times over? Have you come back to save us?\""
+    GOLD "\"No, just round the corner... My lord! Are the dark times over? Have you come back to save us?\""
+
+WORST DAMAGE UNDER whole-unit (6 of 29) — read these, do not average them
+  [deathstalker-coda p57 l1769] dist 1 -> 3
+    IN   "Joseph was surprised to hear Finn discuss the matter so calmly. When the Emperor first learned that the fleet hed sent to Haden to kill Lewis and his companions had not only failed to do so, but had actually gone over to the rebels' side en masse, people could hear the Emperor scream-ing his rage all over the palace. Servants had run for their lives, and even"
+    OUT  "Joseph was surprised to hear Finn discuss the matter so calmly. When the Emperor first learned that the fleet had sent to Haden to kill Lewis and his companions had not only failed to do so, but had actually gone over to the rebels' side en masse, people could hear the Emperor screaming his rage all over the palace. Servants had run for their lives, and even"
+    GOLD "Joseph was surprised to hear Finn discuss the matter so calmly. When the Emperor first learned that the fleet he'd sent to Haden to kill Lewis and his companions had not only failed to do so, but had actually gone over to the rebels' side en masse, people could hear the Emperor scream-ing his rage all over the palace. Servants had run for their lives, and even"
+  [deathstalker-coda p120 l3999] dist 0 -> 2  (was already correct)
+    IN   "The elevator went down a long, long way, before the doors finally opened on an entirely prosaic reception area. Dominic and Glory indi-cated for Owen to go ahead of them, so he took his energy cage for a ca-sual stroll round the reception area. All four walls were covered with"
+    OUT  "The elevator went down a long, long way, before the doors finally opened on an entirely prosaic reception area. Dominic and Glory indicated for Owen to go ahead of them, so he took his energy cage for a casual stroll round the reception area. All four walls were covered with"
+    GOLD "The elevator went down a long, long way, before the doors finally opened on an entirely prosaic reception area. Dominic and Glory indi-cated for Owen to go ahead of them, so he took his energy cage for a ca-sual stroll round the reception area. All four walls were covered with"
+  [deathstalker-coda p268 l9152] dist 0 -> 2  (was already correct)
+    IN   "It felt good to be back in her body again, after so many years of exist-ing only as a thought in the mass-mind of the oversoul; even if this wasn't, strictly speaking, her own body. The Psycho Sluts believed Diana had manifested herself again through an act of will, and she had done noth-ing to dissuade them. It all helped her reputation. She didn't tell them the"
+    OUT  "It felt good to be back in her body again, after so many years of existing only as a thought in the mass-mind of the oversoul; even if this wasn't, strictly speaking, her own body. The Psycho Sluts believed Diana had manifested herself again through an act of will, and she had done nothing to dissuade them. It all helped her reputation. She didn't tell them the"
+    GOLD "It felt good to be back in her body again, after so many years of exist-ing only as a thought in the mass-mind of the oversoul; even if this wasn't, strictly speaking, her own body. The Psycho Sluts believed Diana had manifested herself again through an act of will, and she had done noth-ing to dissuade them. It all helped her reputation. She didn't tell them the"
+  [deathstalker-coda p324 l11138] dist 1 -> 3
+    IN   "\"Dear Sirs and Madam, it is a pleasure and an honor to be here, in such august company. Douglas Campbell-legendary King of Thieves and hero in exile. Stuart Lennox-brave and canny Paragon from Viri-monde. Finn sends his best wishes. Nina Malapert-beautiful star and vi-brant personality of the rogue news sites.\" Mr. Sylvester raised a painted"
+    OUT  "\"Dear Sirs and Madam, it is a pleasure and an honor to be here, in such august company. Douglas Campbell-legendary King of Thieves and hero in exile. Stuart Lennox-brave and canny Paragon from Virimonde. Finn sends his best wishes. Nina Malapert-beautiful star and vibrant personality of the rogue news sites.\" Mr. Sylvester raised a painted"
+    GOLD "\"Dear Sirs and Madam, it is a pleasure and an honor to be here, in such august company. Douglas Campbell- legendary King of Thieves and hero in exile. Stuart Lennox-brave and canny Paragon from Viri-monde. Finn sends his best wishes. Nina Malapert-beautiful star and vi-brant personality of the rogue news sites.\" Mr. Sylvester raised a painted"
+  [michelle-remembers p336 l9391] dist 2 -> 4
+    IN   "To both Michelle and Dr. Pazder, the friendship of Bishop De Roo has meant much. From their first meeting with him they have found him acute and compassionate. When Michelle's remembering was finished, he asked a priest and scholar, Father Amédée Dupas, to make a thorough investigation. Working eighteen hours a day for a week,"
+    OUT  "To both Michelle and Dr. Pazder, the friendship of Bishop De Roo has meant much. From their first meeting with him they have found him acute and compassionate. When Michelle's remembering was finished, he asked a priest and scholar, Father Améthée Dupas, to make a thorough investigation. Working eighteen hours a day for a week,"
+    GOLD "To both Michelle and Dr. Pazder, the friendship of Bishop De Roo has meant much. From their first meeting with him they have found him acute and compassionate. When Michelle's remembering was finished, he asked a priest and scholar, Father Amedee Dupas, to make a thorough investigation. Working eighteen hours a day for a week,"
+  [deathstalker-coda p57 l1755] dist 0 -> 1  (was already correct)
+    IN   "\"Not anymore,\" said Finn. \"Two of my Paragons have been killed, right here in the city. And the word is, a Deathstalker did it.\" \"Impossible,\" Joseph said quickly. \"My people have this planet sewn up tight. There isn't a ship that even passes by that we don't know every-thing about. Can't you ask the ELFs controlling the Paragons who did it?\""
+    OUT  "\"Not anymore,\" said Finn. \"Two of my Paragons have been killed, right here in the city. And the word is, a Deathstalker did it.\" \"Impossible,\" Joseph said quickly. \"My people have this planet sewn up tight. There isn't a ship that even passes by that we don't know everything about. Can't you ask the ELFs controlling the Paragons who did it?\""
+    GOLD "\"Not anymore,\" said Finn. \"Two of my Paragons have been killed, right here in the city. And the word is, a Deathstalker did it.\" \"Impossible,\" Joseph said quickly. \"My people have this planet sewn up tight. There isn't a ship that even passes by that we don't know every-thing about. Can't you ask the ELFs controlling the Paragons who did it?\""
+
+WORST DAMAGE UNDER per-run (6 of 36) — read these, do not average them
+  [deathstalker-coda p57 l1769] dist 1 -> 3
+    IN   "Joseph was surprised to hear Finn discuss the matter so calmly. When the Emperor first learned that the fleet hed sent to Haden to kill Lewis and his companions had not only failed to do so, but had actually gone over to the rebels' side en masse, people could hear the Emperor scream-ing his rage all over the palace. Servants had run for their lives, and even"
+    OUT  "Joseph was surprised to hear Finn discuss the matter so calmly. When the Emperor first learned that the fleet had sent to Haden to kill Lewis and his companions had not only failed to do so, but had actually gone over to the rebels' side en masse, people could hear the Emperor screaming his rage all over the palace. Servants had run for their lives, and even"
+    GOLD "Joseph was surprised to hear Finn discuss the matter so calmly. When the Emperor first learned that the fleet he'd sent to Haden to kill Lewis and his companions had not only failed to do so, but had actually gone over to the rebels' side en masse, people could hear the Emperor scream-ing his rage all over the palace. Servants had run for their lives, and even"
+  [deathstalker-coda p120 l3999] dist 0 -> 2  (was already correct)
+    IN   "The elevator went down a long, long way, before the doors finally opened on an entirely prosaic reception area. Dominic and Glory indi-cated for Owen to go ahead of them, so he took his energy cage for a ca-sual stroll round the reception area. All four walls were covered with"
+    OUT  "The elevator went down a long, long way, before the doors finally opened on an entirely prosaic reception area. Dominic and Glory indicated for Owen to go ahead of them, so he took his energy cage for a casual stroll round the reception area. All four walls were covered with"
+    GOLD "The elevator went down a long, long way, before the doors finally opened on an entirely prosaic reception area. Dominic and Glory indi-cated for Owen to go ahead of them, so he took his energy cage for a ca-sual stroll round the reception area. All four walls were covered with"
+  [deathstalker-coda p268 l9152] dist 0 -> 2  (was already correct)
+    IN   "It felt good to be back in her body again, after so many years of exist-ing only as a thought in the mass-mind of the oversoul; even if this wasn't, strictly speaking, her own body. The Psycho Sluts believed Diana had manifested herself again through an act of will, and she had done noth-ing to dissuade them. It all helped her reputation. She didn't tell them the"
+    OUT  "It felt good to be back in her body again, after so many years of existing only as a thought in the mass-mind of the oversoul; even if this wasn't, strictly speaking, her own body. The Psycho Sluts believed Diana had manifested herself again through an act of will, and she had done nothing to dissuade them. It all helped her reputation. She didn't tell them the"
+    GOLD "It felt good to be back in her body again, after so many years of exist-ing only as a thought in the mass-mind of the oversoul; even if this wasn't, strictly speaking, her own body. The Psycho Sluts believed Diana had manifested herself again through an act of will, and she had done noth-ing to dissuade them. It all helped her reputation. She didn't tell them the"
+  [deathstalker-coda p324 l11138] dist 1 -> 3
+    IN   "\"Dear Sirs and Madam, it is a pleasure and an honor to be here, in such august company. Douglas Campbell-legendary King of Thieves and hero in exile. Stuart Lennox-brave and canny Paragon from Viri-monde. Finn sends his best wishes. Nina Malapert-beautiful star and vi-brant personality of the rogue news sites.\" Mr. Sylvester raised a painted"
+    OUT  "\"Dear Sirs and Madam, it is a pleasure and an honor to be here, in such august company. Douglas Campbell-legendary King of Thieves and hero in exile. Stuart Lennox-brave and canny Paragon from Virimonde. Finn sends his best wishes. Nina Malapert-beautiful star and vibrant personality of the rogue news sites.\" Mr. Sylvester raised a painted"
+    GOLD "\"Dear Sirs and Madam, it is a pleasure and an honor to be here, in such august company. Douglas Campbell- legendary King of Thieves and hero in exile. Stuart Lennox-brave and canny Paragon from Viri-monde. Finn sends his best wishes. Nina Malapert-beautiful star and vi-brant personality of the rogue news sites.\" Mr. Sylvester raised a painted"
+  [michelle-remembers p336 l9391] dist 2 -> 4
+    IN   "To both Michelle and Dr. Pazder, the friendship of Bishop De Roo has meant much. From their first meeting with him they have found him acute and compassionate. When Michelle's remembering was finished, he asked a priest and scholar, Father Amédée Dupas, to make a thorough investigation. Working eighteen hours a day for a week,"
+    OUT  "To both Michelle and Dr. Pazder, the friendship of Bishop De Roo has meant much. From their first meeting with him they have found him acute and compassionate. When Michelle's remembering was finished, he asked a priest and scholar, Father Améthée Dupas, to make a thorough investigation. Working eighteen hours a day for a week,"
+    GOLD "To both Michelle and Dr. Pazder, the friendship of Bishop De Roo has meant much. From their first meeting with him they have found him acute and compassionate. When Michelle's remembering was finished, he asked a priest and scholar, Father Amedee Dupas, to make a thorough investigation. Working eighteen hours a day for a week,"
+  [deathstalker-coda p42 l1244] dist 0 -> 1  (was already correct)
+    IN   "\"Help is on its way,\" said Owen. \"But I'm. . . just visiting. I wanted to see this marvelous new city, before I left to stop the Terror. But you'd bet-ter get going, Sister. The ungodly know I'm here now, and they're bound to send reinforcements. So, off you go. Nice to see the Sisters of Mercy are still around. Hop like a bunny, as Beatrice used to say.\""
+    OUT  "\"Help is on its way,\" said Owen. \"But I'm. . . just visiting. I wanted to see this marvelous new city, before I left to stop the Terror. But you'd better get going, Sister. The ungodly know I'm here now, and they're bound to send reinforcements. So, off you go. Nice to see the Sisters of Mercy are still around. Hop like a bunny, as Beatrice used to say.\""
+    GOLD "\"Help is on its way,\" said Owen. \"But I'm. . . just visiting. I wanted to see this marvelous new city, before I left to stop the Terror. But you'd bet-ter get going, Sister. The ungodly know I'm here now, and they're bound to send reinforcements. So, off you go. Nice to see the Sisters of Mercy are still around. Hop like a bunny, as Beatrice used to say.\""
+
+wrote corpus-slice.sent.OLDLINE-mac.stats.json

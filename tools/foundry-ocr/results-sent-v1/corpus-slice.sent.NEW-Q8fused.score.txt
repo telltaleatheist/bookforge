@@ -1,0 +1,140 @@
+eval-guard — 284 units from /Volumes/Callisto/Projects/BookForgeApp/tools/foundry-ocr/results-sent-v1/dumps/corpus-slice.units.jsonl
+  generated 2026-08-05T12:40:57-0400 in 102.8s on http://127.0.0.1:8771
+  server args: llama-server (b7482, macos-arm64, Metal) -m foundry-ocr-sent-v1-4b-Q8_0.gguf -c 16384 -np 8 -ngl 99 --no-webui  [MERGED+QUANTIZED fused model, no adapter — the delivered artifact]
+
+================================================================================================
+THE NUMBER THAT DECIDES: units the model made WORSE (`degraded`), and what it repaired
+================================================================================================
+
+policy        CER before  CER after  degraded  deg/100k  rep/100k  falseEdit  corrections   exact
+  do nothing     0.327%     0.327%         0       0.0       0.0      0.00%            0   63.7%
+  no-guard       0.327%     0.226%        11      24.5     126.3      1.66%           87   78.9%
+  whole-unit     0.327%     0.223%         5       6.4     110.9      1.10%           73   77.8%
+  per-run        0.327%     0.213%         6       7.7     122.5      1.10%           78   78.2%
+
+  284 units, 77565 gold characters, 181 already correct (63.7%)
+  model /Volumes/Callisto/ocr-sent-export/foundry-ocr-sent-v1-4b-Q8_0.gguf
+
+  A model only beats "do nothing" by moving CER down without moving degraded
+  and falseEdit up. `degraded` counts UNITS — compare it only within one unit
+  size; deg/100k and rep/100k are characters and compare across sizes.
+
+PER BOOK
+  policy      book                    units  CER before  CER after  WORSE  deg/100k  falseEdit
+  no-guard    deathstalker-coda         145      0.282%     0.147%      3      10.1      0.00%
+  no-guard    michelle-remembers        139      0.375%     0.307%      8      39.3      3.33%
+  whole-unit  deathstalker-coda         145      0.282%     0.157%      1       2.5      0.00%
+  whole-unit  michelle-remembers        139      0.375%     0.291%      4      10.5      2.22%
+  per-run     deathstalker-coda         145      0.282%     0.140%      2       5.1      0.00%
+  per-run     michelle-remembers        139      0.375%     0.288%      4      10.5      2.22%
+
+WHERE THE WORK IS — already-correct units vs damaged units
+  policy      population      units  CER before  CER after   impr  WORSE  deg/100k  rep/100k
+  no-guard    already-correct    181      0.000%     0.009%      0      3       8.8       0.0
+  no-guard    damaged           103      0.793%     0.534%     70      8      46.8     305.8
+  whole-unit  already-correct    181      0.000%     0.004%      0      2       4.4       0.0
+  whole-unit  damaged           103      0.793%     0.534%     63      3       9.4     268.4
+  per-run     already-correct    181      0.000%     0.004%      0      2       4.4       0.0
+  per-run     damaged           103      0.793%     0.509%     67      4      12.5     296.4
+
+GENERATION HEALTH — the RAW answer, before any guard
+  answers under 90% of the input length        0  (0.00%)
+  answers over 110% of the input length        0  (0.00%)
+  empty answers                                0
+  answers spanning more than one line          0   (only the first is kept)
+  answers near the n_predict ceiling           0
+
+WHAT THE GUARD REFUSED
+  units with at least one illegal run   14
+  illegal runs                          14
+  legal runs in those same units        9   <- what whole-unit throws away and per-run keeps
+
+WHERE THE TWO POLICIES DISAGREE (same generation, different blast radius)
+  units where the shipped text differs  5
+    per-run CLOSER to the truth         4   (9 characters recovered)
+    per-run FURTHER from the truth      1   (1 characters lost)
+    same distance, different text       0
+
+  PER-RUN DEGRADED A UNIT THAT WHOLE-UNIT DID NOT: 1
+    [deathstalker-coda p268 l9159] dist 1 -> 2
+      SRC       "Diana Vertue's original body had been very thoroughly destroyed in a battle with the uber-espers, over a hundred years ago. She'd been led into an ambush by someone shed had every reason to trust, and her old tired body and mind had been no match for all the uber-espers at once. Her body was utterly consumed in mental fires, but at the last moment her"
+      MODEL     "Diana Vertue's original body had been very thoroughly destroyed in a battle with the uber-espers, over a hundred years ago. She'd been led into an ambush by someone she had had every reason to trust, and her old tired body and mind had been no match for all the uber-espers at once. Her body was utterly consumed in mental fires, but at the last moment her"
+      PER-RUN   "Diana Vertue's original body had been very thoroughly destroyed in a battle with the uber-espers, over a hundred years ago. She'd been led into an ambush by someone she had every reason to trust, and her old tired body and mind had been no match for all the uber-espers at once. Her body was utterly consumed in mental fires, but at the last moment her"
+      GOLD      "Diana Vertue's original body had been very thoroughly destroyed in a battle with the uber-espers, over a hundred years ago. She'd been led into an ambush by someone she'd had every reason to trust, and her old tired body and mind had been no match for all the uber-espers at once. Her body was utterly consumed in mental fires, but at the last moment her"
+      refused   unbalanced change: [] -> [had] (0 words -> 1)
+
+WORST DAMAGE UNDER no-guard (6 of 11) — read these, do not average them
+  [michelle-remembers p66 l1471] dist 6 -> 11
+    IN   "(4 DIDN'T want to tell anybody, ever. . . .\" But Michelle had told, and now, as she began to surface, to rise back up from her place of reliving, Dr. Pazder was intensely aware of the crucial obligation he faced: to help her integrate the unspeakably horrible facts she had unearthed, to understand them, somehow, so that what had happened twenty-two years before would not destroy her sanity today."
+    OUT  "I didn't want to tell anybody, ever. . . .\" But Michelle had told, and now, as she began to surface, to rise back up from her place of reliving, Dr. Pazder was intensely aware of the crucial obligation he faced: to help her integrate the unspeakably horrible facts she had unearthed, to understand them, somehow, so that what had happened twenty-two years before would not destroy her sanity today."
+    GOLD "(I DIDN'T want to tell anybody, ever... But Michelle had told, and now, as she began to surface, to rise back up from her place of reliving, Dr. Pazder was intensely aware of the crucial obligation he faced: to help her integrate the unspeakably horrible facts she had unearthed, to understand them, somehow, so that what had happened twenty-two years before would not destroy her sanity today."
+  [michelle-remembers p58 l1222] dist 1 -> 4
+    IN   "kitchen, and over there was the doorway into the other room. Oh, no! Something's wrong. They got knives! The men have got knives and they are Aurting each other. I don't understand. I'm scared!"
+    OUT  "kitchen, and over there was the doorway into the other room. Oh, no! Something's wrong. They got knives! The men have got knives and they are fighting each other. I don't understand. I'm scared!"
+    GOLD "kitchen, and over there was the doorway into the other room. Oh, no! Something's wrong. They got knives! The men have got knives and they are hurting each other. I don't understand. I'm scared!"
+  [deathstalker-coda p268 l9159] dist 1 -> 3
+    IN   "Diana Vertue's original body had been very thoroughly destroyed in a battle with the uber-espers, over a hundred years ago. She'd been led into an ambush by someone shed had every reason to trust, and her old tired body and mind had been no match for all the uber-espers at once. Her body was utterly consumed in mental fires, but at the last moment her"
+    OUT  "Diana Vertue's original body had been very thoroughly destroyed in a battle with the uber-espers, over a hundred years ago. She'd been led into an ambush by someone she had had every reason to trust, and her old tired body and mind had been no match for all the uber-espers at once. Her body was utterly consumed in mental fires, but at the last moment her"
+    GOLD "Diana Vertue's original body had been very thoroughly destroyed in a battle with the uber-espers, over a hundred years ago. She'd been led into an ambush by someone she'd had every reason to trust, and her old tired body and mind had been no match for all the uber-espers at once. Her body was utterly consumed in mental fires, but at the last moment her"
+  [michelle-remembers p58 l1226] dist 0 -> 2  (was already correct)
+    IN   "As Michelle, struggling for every sentence, pushed out her account, Dr. Pazder listened intently, trying to understand the horror so that he could help her deal with it later.* It was clear that after the men and women had abruptly turned and strode from the room in which the strange ceremony had taken place, Michelle was left alone and lying"
+    OUT  "As Michelle, struggling for every sentence, pushed out her account, Dr. Pazder listened intently, trying to understand the horror so that he could help her deal with it later.∗It was clear that after the men and women had abruptly turned and strode from the room in which the strange ceremony had taken place, Michelle was left alone and lying"
+    GOLD "As Michelle, struggling for every sentence, pushed out her account, Dr. Pazder listened intently, trying to understand the horror so that he could help her deal with it later.* It was clear that after the men and women had abruptly turned and strode from the room in which the strange ceremony had taken place, Michelle was left alone and lying"
+  [deathstalker-coda p57 l1769] dist 1 -> 2
+    IN   "Joseph was surprised to hear Finn discuss the matter so calmly. When the Emperor first learned that the fleet hed sent to Haden to kill Lewis and his companions had not only failed to do so, but had actually gone over to the rebels' side en masse, people could hear the Emperor scream-ing his rage all over the palace. Servants had run for their lives, and even"
+    OUT  "Joseph was surprised to hear Finn discuss the matter so calmly. When the Emperor first learned that the fleet had sent to Haden to kill Lewis and his companions had not only failed to do so, but had actually gone over to the rebels' side en masse, people could hear the Emperor scream-ing his rage all over the palace. Servants had run for their lives, and even"
+    GOLD "Joseph was surprised to hear Finn discuss the matter so calmly. When the Emperor first learned that the fleet he'd sent to Haden to kill Lewis and his companions had not only failed to do so, but had actually gone over to the rebels' side en masse, people could hear the Emperor scream-ing his rage all over the palace. Servants had run for their lives, and even"
+  [deathstalker-coda p57 l1774] dist 6 -> 7
+    IN   "some of the guards. Finn had only just started to come down when re-ports came im that his supposed allies, the Als of Shub, had also betrayed him and setved control of the Madness Maze, and that had set him off again. The purges that followed had been particularly vicious and far-reaching. and neat morning all over the city there were men and women hanging from lampposts."
+    OUT  "some of the guards. Finn had only just started to come down when re-ports came in that his supposed allies, the AIs of Shub, had also betrayed him and seized control of the Madness Maze, and that had set him off again. The purges that followed had been particularly vicious and far-reaching, and by the next morning all over the city there were men and women hanging from lampposts."
+    GOLD "some of the guards. Finn had only just started to come down when re-ports came in that his supposed allies, the AIs of Shub, had also betrayed him and seized control of the Madness Maze, and that had set him off again. The purges that followed had been particularly vicious and far-reaching, and next morning all over the city there were men and women hanging from lampposts."
+
+WORST DAMAGE UNDER whole-unit (5 of 5) — read these, do not average them
+  [deathstalker-coda p57 l1769] dist 1 -> 2
+    IN   "Joseph was surprised to hear Finn discuss the matter so calmly. When the Emperor first learned that the fleet hed sent to Haden to kill Lewis and his companions had not only failed to do so, but had actually gone over to the rebels' side en masse, people could hear the Emperor scream-ing his rage all over the palace. Servants had run for their lives, and even"
+    OUT  "Joseph was surprised to hear Finn discuss the matter so calmly. When the Emperor first learned that the fleet had sent to Haden to kill Lewis and his companions had not only failed to do so, but had actually gone over to the rebels' side en masse, people could hear the Emperor scream-ing his rage all over the palace. Servants had run for their lives, and even"
+    GOLD "Joseph was surprised to hear Finn discuss the matter so calmly. When the Emperor first learned that the fleet he'd sent to Haden to kill Lewis and his companions had not only failed to do so, but had actually gone over to the rebels' side en masse, people could hear the Emperor scream-ing his rage all over the palace. Servants had run for their lives, and even"
+  [michelle-remembers p78 l1890] dist 2 -> 3
+    IN   "she said, Don't... go... in... there! And I knew I could never go in there. I didn't want to look in her eyes anymore. I just wanted to be a good girl. Yes . . . yes, Mom, I just want to be a good girl. Michelle went back to her room. In what seemed to be the middle of the night she was awakened. Her mother and Malachi were dressed up and were getting ready to go somewhere."
+    OUT  "she said. Don't... go... in... there! And I knew I could never go in there. I didn't want to look in her eyes anymore. I just wanted to be a good girl. Yes . . . yes, Mom, I just want to be a good girl. Michelle went back to her room. In what seemed to be the middle of the night she was awakened. Her mother and Malachi were dressed up and were getting ready to go somewhere."
+    GOLD "she said, Don't... go ... in ... there! And I knew I could never go in there. I didn't want to look in her eyes anymore. I just wanted to be a good girl. Yes . . . yes, Mom, I just want to be a good girl. Michelle went back to her room. In what seemed to be the middle of the night she was awakened. Her mother and Malachi were dressed up and were getting ready to go somewhere."
+  [michelle-remembers p240 l6496] dist 5 -> 6
+    IN   "\"Please... ah, ah... I'm not supposed to know. . . .\" Her voice trailed off. She was deep in that place now.*"
+    OUT  "\"Please... ah, ah... I'm not supposed to know. . . .\" Her voice trailed off. She was deep in that place now.3"
+    GOLD "Please ... ah, ah ... I'm not supposed to know... .\" Her voice trailed off. She was deep in that place now.*"
+  [michelle-remembers p315 l8728] dist 0 -> 1  (was already correct)
+    IN   "One by one, the other initiates came to the altar and severed the same finger. The pile of fingers grew on the ground below, and when the last was done, the others picked up the fingers, carefully, as if they were precious. Satan, counted them, and put them in a leather box."
+    OUT  "One by one, the other initiates came to the altar and severed the same finger. The pile of fingers grew on the ground below, and when the last was done, the others picked up the fingers, carefully, as if they were precious. Satan counted them, and put them in a leather box."
+    GOLD "One by one, the other initiates came to the altar and severed the same finger. The pile of fingers grew on the ground below, and when the last was done, the others picked up the fingers, carefully, as if they were precious. Satan, counted them, and put them in a leather box."
+  [michelle-remembers p315 l8732] dist 0 -> 1  (was already correct)
+    IN   "Michelle suddenly realized that the Beast was looking at her in-tently, glaring at her from somewhere within his empty black hole of a face. He shouted at her with thunderous contempt. ] want that bone! How dare you take my bone!"
+    OUT  "Michelle suddenly realized that the Beast was looking at her in-tently, glaring at her from somewhere within his empty black hole of a face. He shouted at her with thunderous contempt. I want that bone! How dare you take my bone!"
+    GOLD "Michelle suddenly realized that the Beast was looking at her in-tently, glaring at her from somewhere within his empty black hole of a face. He shouted at her with thunderous contempt. ] want that bone! How dare you take my bone!"
+
+WORST DAMAGE UNDER per-run (6 of 6) — read these, do not average them
+  [deathstalker-coda p57 l1769] dist 1 -> 2
+    IN   "Joseph was surprised to hear Finn discuss the matter so calmly. When the Emperor first learned that the fleet hed sent to Haden to kill Lewis and his companions had not only failed to do so, but had actually gone over to the rebels' side en masse, people could hear the Emperor scream-ing his rage all over the palace. Servants had run for their lives, and even"
+    OUT  "Joseph was surprised to hear Finn discuss the matter so calmly. When the Emperor first learned that the fleet had sent to Haden to kill Lewis and his companions had not only failed to do so, but had actually gone over to the rebels' side en masse, people could hear the Emperor scream-ing his rage all over the palace. Servants had run for their lives, and even"
+    GOLD "Joseph was surprised to hear Finn discuss the matter so calmly. When the Emperor first learned that the fleet he'd sent to Haden to kill Lewis and his companions had not only failed to do so, but had actually gone over to the rebels' side en masse, people could hear the Emperor scream-ing his rage all over the palace. Servants had run for their lives, and even"
+  [deathstalker-coda p268 l9159] dist 1 -> 2
+    IN   "Diana Vertue's original body had been very thoroughly destroyed in a battle with the uber-espers, over a hundred years ago. She'd been led into an ambush by someone shed had every reason to trust, and her old tired body and mind had been no match for all the uber-espers at once. Her body was utterly consumed in mental fires, but at the last moment her"
+    OUT  "Diana Vertue's original body had been very thoroughly destroyed in a battle with the uber-espers, over a hundred years ago. She'd been led into an ambush by someone she had every reason to trust, and her old tired body and mind had been no match for all the uber-espers at once. Her body was utterly consumed in mental fires, but at the last moment her"
+    GOLD "Diana Vertue's original body had been very thoroughly destroyed in a battle with the uber-espers, over a hundred years ago. She'd been led into an ambush by someone she'd had every reason to trust, and her old tired body and mind had been no match for all the uber-espers at once. Her body was utterly consumed in mental fires, but at the last moment her"
+  [michelle-remembers p78 l1890] dist 2 -> 3
+    IN   "she said, Don't... go... in... there! And I knew I could never go in there. I didn't want to look in her eyes anymore. I just wanted to be a good girl. Yes . . . yes, Mom, I just want to be a good girl. Michelle went back to her room. In what seemed to be the middle of the night she was awakened. Her mother and Malachi were dressed up and were getting ready to go somewhere."
+    OUT  "she said. Don't... go... in... there! And I knew I could never go in there. I didn't want to look in her eyes anymore. I just wanted to be a good girl. Yes . . . yes, Mom, I just want to be a good girl. Michelle went back to her room. In what seemed to be the middle of the night she was awakened. Her mother and Malachi were dressed up and were getting ready to go somewhere."
+    GOLD "she said, Don't... go ... in ... there! And I knew I could never go in there. I didn't want to look in her eyes anymore. I just wanted to be a good girl. Yes . . . yes, Mom, I just want to be a good girl. Michelle went back to her room. In what seemed to be the middle of the night she was awakened. Her mother and Malachi were dressed up and were getting ready to go somewhere."
+  [michelle-remembers p240 l6496] dist 5 -> 6
+    IN   "\"Please... ah, ah... I'm not supposed to know. . . .\" Her voice trailed off. She was deep in that place now.*"
+    OUT  "\"Please... ah, ah... I'm not supposed to know. . . .\" Her voice trailed off. She was deep in that place now.3"
+    GOLD "Please ... ah, ah ... I'm not supposed to know... .\" Her voice trailed off. She was deep in that place now.*"
+  [michelle-remembers p315 l8728] dist 0 -> 1  (was already correct)
+    IN   "One by one, the other initiates came to the altar and severed the same finger. The pile of fingers grew on the ground below, and when the last was done, the others picked up the fingers, carefully, as if they were precious. Satan, counted them, and put them in a leather box."
+    OUT  "One by one, the other initiates came to the altar and severed the same finger. The pile of fingers grew on the ground below, and when the last was done, the others picked up the fingers, carefully, as if they were precious. Satan counted them, and put them in a leather box."
+    GOLD "One by one, the other initiates came to the altar and severed the same finger. The pile of fingers grew on the ground below, and when the last was done, the others picked up the fingers, carefully, as if they were precious. Satan, counted them, and put them in a leather box."
+  [michelle-remembers p315 l8732] dist 0 -> 1  (was already correct)
+    IN   "Michelle suddenly realized that the Beast was looking at her in-tently, glaring at her from somewhere within his empty black hole of a face. He shouted at her with thunderous contempt. ] want that bone! How dare you take my bone!"
+    OUT  "Michelle suddenly realized that the Beast was looking at her in-tently, glaring at her from somewhere within his empty black hole of a face. He shouted at her with thunderous contempt. I want that bone! How dare you take my bone!"
+    GOLD "Michelle suddenly realized that the Beast was looking at her in-tently, glaring at her from somewhere within his empty black hole of a face. He shouted at her with thunderous contempt. ] want that bone! How dare you take my bone!"
+
+wrote corpus-slice.sent.NEW-Q8fused.stats.json

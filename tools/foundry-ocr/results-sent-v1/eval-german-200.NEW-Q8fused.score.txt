@@ -1,0 +1,61 @@
+eval-guard — 200 units from /Volumes/Callisto/Projects/BookForgeApp/tools/foundry-ocr/results-sent-v1/dumps/eval-german-200.units.jsonl
+  generated 2026-08-05T12:42:53-0400 in 115.4s on http://127.0.0.1:8771
+  server args: llama-server (b7482, macos-arm64, Metal) -m foundry-ocr-sent-v1-4b-Q8_0.gguf -c 16384 -np 8 -ngl 99 --no-webui  [MERGED+QUANTIZED fused model, no adapter — the delivered artifact]
+
+================================================================================================
+THE NUMBER THAT DECIDES: units the model made WORSE (`degraded`), and what it repaired
+================================================================================================
+
+policy        CER before  CER after  degraded  deg/100k  rep/100k  falseEdit  corrections   exact
+  do nothing     1.096%     1.096%         0       0.0       0.0      0.00%            0   20.5%
+  no-guard       1.096%     0.353%         2      10.3     753.9      0.00%          150   58.0%
+  whole-unit     1.096%     0.515%         0       0.0     581.8      0.00%          120   55.0%
+  per-run        1.096%     0.391%         0       0.0     705.7      0.00%          144   56.0%
+
+  200 units, 58100 gold characters, 41 already correct (20.5%)
+  model /Volumes/Callisto/ocr-sent-export/foundry-ocr-sent-v1-4b-Q8_0.gguf
+
+  A model only beats "do nothing" by moving CER down without moving degraded
+  and falseEdit up. `degraded` counts UNITS — compare it only within one unit
+  size; deg/100k and rep/100k are characters and compare across sizes.
+
+WHERE THE WORK IS — already-correct units vs damaged units
+  policy      population      units  CER before  CER after   impr  WORSE  deg/100k  rep/100k
+  no-guard    already-correct     41      0.000%     0.000%      0      0       0.0       0.0
+  no-guard    damaged           159      1.329%     0.428%    140      2      12.5     913.6
+  whole-unit  already-correct     41      0.000%     0.000%      0      0       0.0       0.0
+  whole-unit  damaged           159      1.329%     0.624%    114      0       0.0     705.0
+  per-run     already-correct     41      0.000%     0.000%      0      0       0.0       0.0
+  per-run     damaged           159      1.329%     0.473%    137      0       0.0     855.2
+
+GENERATION HEALTH — the RAW answer, before any guard
+  answers under 90% of the input length        0  (0.00%)
+  answers over 110% of the input length        0  (0.00%)
+  empty answers                                0
+  answers spanning more than one line          0   (only the first is kept)
+  answers near the n_predict ceiling           0
+
+WHAT THE GUARD REFUSED
+  units with at least one illegal run   30
+  illegal runs                          36
+  legal runs in those same units        56   <- what whole-unit throws away and per-run keeps
+
+WHERE THE TWO POLICIES DISAGREE (same generation, different blast radius)
+  units where the shipped text differs  24
+    per-run CLOSER to the truth         23   (72 characters recovered)
+    per-run FURTHER from the truth      0   (0 characters lost)
+    same distance, different text       1
+
+  PER-RUN DEGRADED A UNIT THAT WHOLE-UNIT DID NOT: 0
+
+WORST DAMAGE UNDER no-guard (2 of 2) — read these, do not average them
+  [himmler-a-life p926 l33971] dist 5 -> 9
+    IN   "1938-1945. Das System des Terrors (Berlin, 1994), 88 £ For further details see Schulte, Zwangsarbeit, 197 ff. and 357. 20. Schulte, Zwangsarbeit,344 f£.; 1f£Z, NO 3795, Himmler to Pohl, 31 January 1942; BAB, NS 19/2065, Kammler's extended proposal of 10 February 1942, forwarded on 5 March 1942 to Himmler."
+    OUT  "1938-1945. Das System des Terrors (Berlin, 1994), 88 £ For further details see Schulte, Zwangsarbeit, 197 ff. and 357. 20. Schulte, Zwangsarbeit, 344 ff.; 111.12, NO 3795, Himmler to Pohl, 31 January 1942; BAB, NS 19/2065, Kammler's extended proposal of 10 February 1942, forwarded on 5 March 1942 to Himmler."
+    GOLD "1938-1945. Das System des Terrors (Berlin, 1994), 88 f. For further details see Schulte, Zwangsarbeit, 197 ff. and 357. 20. Schulte, Zwangsarbeit,344 ff.; IfZ, NO 3795, Himmler to Pohl, 31 January 1942; BAB, NS 19/2065, Kammler's extended proposal of 10 February 1942, forwarded on 5 March 1942 to Himmler."
+  [himmler-a-life p974 l36027] dist 4 -> 6
+    IN   "Fustiz und NS-Verbrechen. Sammlung deutscher Strafurteile wegen nationalsozialistischer Totungsverbrechen 1945-1966, 39 vols. (Amsterdam, 1968-2007). Klarsfeld, Serge, and Maxime Steinberg (eds), Die Endlésung der Fudenfrage in Belgien. Dokumente (New York, 1980)."
+    OUT  "Justiz und NS-Verbrechen. Sammlung deutscher Strafgerichte wegen nationalsozialistischer Tötungsverbrechen 1945-1966, 39 vols. (Amsterdam, 1968-2007). Klarsfeld, Serge, and Maxime Steinberg (eds), Die Endlösung der Judenfrage in Belgien. Dokumente (New York, 1980)."
+    GOLD "Justiz und NS-Verbrechen. Sammlung deutscher Strafurteile wegen nationalsozialistischer Tötungsverbrechen 1945-1966, 39 vols. (Amsterdam, 1968-2007). Klarsfeld, Serge, and Maxime Steinberg (eds), Die Endlösung der Judenfrage in Belgien. Dokumente (New York, 1980)."
+
+wrote eval-german-200.NEW-Q8fused.stats.json
