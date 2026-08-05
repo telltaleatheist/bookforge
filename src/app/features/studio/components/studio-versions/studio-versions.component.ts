@@ -195,6 +195,16 @@ const AUDIO_EXTS = new Set([
         @if (passDiffError(); as e) {
           <div class="pass-err">{{ e }}</div>
         }
+        <!--
+          Said, never only logged. The list below is kept when a read fails —
+          right for a transient lock on a synced drive — but a permanent failure
+          (a binding record that will not parse) would otherwise leave a stale or
+          empty list on screen with no explanation, which is the exact experience
+          of work that has no door.
+        -->
+        @if (versionsError(); as e) {
+          <div class="pass-err">{{ e }}</div>
+        }
 
         <!-- Book versions (variants) -->
         <div class="section-head">
@@ -944,8 +954,29 @@ export class StudioVersionsComponent {
 
   readonly variants = computed(() => this.variantList());
 
-  /** Book versions section: the reading editions only (ebooks). */
-  readonly ebookVariants = computed(() => this.variantList().filter(v => v.kind === 'ebook'));
+  /**
+   * Book versions section: the reading editions only (ebooks), and only the ones
+   * the family above is not already showing.
+   *
+   * A project's archive original is BOTH a manifest variant and the family's
+   * parent, so listing it in each put the same file on screen twice under two
+   * different names — which reads as two files, and invites the user to wonder
+   * which one their edits went to. The family is the authority for the
+   * documents this pipeline produces; this section is what is left, which is
+   * what "other editions of this book" always meant.
+   *
+   * Compared by absolute path because that is the only thing the two lists
+   * share: one is built from the manifest's variant records, the other from the
+   * binding record and the files on disk, and neither carries the other's ids.
+   */
+  readonly ebookVariants = computed(() => {
+    const shown = new Set(
+      this.documents()
+        .map(d => d.path?.toLowerCase())
+        .filter((p): p is string => !!p));
+    return this.variantList().filter(v =>
+      v.kind === 'ebook' && !shown.has(v.absPath.toLowerCase()));
+  });
 
   /** Audio section: the audiobook editions — the single home for every M4B,
    *  whether uploaded via "+ Add version" or produced by TTS. */
@@ -1249,6 +1280,18 @@ export class StudioVersionsComponent {
   /** The passes of this book that left a diff, newest last. From the manifest. */
   readonly passDiffs = signal<PassDiffEntry[]>([]);
   readonly passDiffError = signal<string | null>(null);
+
+  /**
+   * Why the version list on screen may not be what is on disk, or null.
+   *
+   * A failed read deliberately KEEPS the rows (a transient manifest lock on a
+   * synced drive must not make a book's versions appear to vanish), which means
+   * the failure has to be said somewhere or it is invisible. It is now reachable
+   * from a new source: a binding record that is present and will not parse
+   * refuses the whole listing rather than answering "this book has no working
+   * copy" — which would send the user to re-cast a document that already exists.
+   */
+  readonly versionsError = signal<string | null>(null);
   /** Footnote removal's own review report, when the open pass diff has one. */
   readonly passReport = signal<{ summary: string; detail: string } | null>(null);
 
@@ -1861,6 +1904,8 @@ export class StudioVersionsComponent {
       this.editorMetaCache.set({});
       this.passDiffs.set([]);
       this.passDiffError.set(null);
+      // Another book's read failure says nothing about this one's.
+      this.versionsError.set(null);
       // The reset plan names another book's files; a Start over enabled by it
       // would offer to delete them under this book's name.
       this.resetPlan.set(null);
@@ -1875,17 +1920,27 @@ export class StudioVersionsComponent {
       if (superseded()) return;
       if (res.success && res.versions) {
         this.versions.set(res.versions as VersionRow[]);
+        this.versionsError.set(null);
       } else {
         // A FAILED read (e.g. a transient manifest lock on a synced drive) is NOT
         // "this book has no documents" — do not wipe the list, or every version
         // appears to vanish. Keep what's shown and log; the next refresh retries.
         // Safe because the clear above already guaranteed anything still shown was
         // loaded for THIS book. (Mirrors loadVariants below.)
+        //
+        // Kept, but no longer kept QUIETLY: a failure that persists leaves a
+        // stale or empty list with nothing on screen to explain it.
         console.warn('[studio-versions] editorGetVersions failed; keeping current list:', res.error);
+        this.versionsError.set(
+          `This book's versions could not be read, so what's below may be out of date: `
+          + `${res.error || 'no reason given'}`);
       }
     } catch (err) {
       if (superseded()) return;
       console.warn('[studio-versions] editorGetVersions threw; keeping current list:', err);
+      this.versionsError.set(
+        `This book's versions could not be read, so what's below may be out of date: `
+        + `${err instanceof Error ? err.message : String(err)}`);
     } finally {
       // Only the load that still owns the UI may clear the spinner — otherwise this
       // one's exit would say "done" about a newer book that is still loading.
