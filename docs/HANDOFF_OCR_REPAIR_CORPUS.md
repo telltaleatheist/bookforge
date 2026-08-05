@@ -67,6 +67,72 @@ the CLI; a stale `dist/` there has bitten before.
 
 ---
 
+## MEASURED 2026-08-05 — read this before planning anything
+
+The guard/sentence experiment finished. Raw generations are kept in
+`tools/foundry-ocr/results-guard-experiment/dumps/` so any claim below can be
+re-scored rather than re-argued. Branches: foundry
+`experiment/ocr-guard-and-sentences`, bookforge `experiment/ocr-sentence-eval`.
+The adapter was proved active first (71/120 exact with it, 22/120 without).
+
+**Sentences catch FEWER errors than lines, not more.** On identical text, lines
+repaired more per 100k characters in every paired cell, at a false-edit rate of
+0.6–7% against 12–25% for sentences. Extra context does help when a line is
+unreadable (heavy damage, no guard: 7.070% → 4.789%) but the model expresses it
+as REWRITING and the guard discards it. This is the opposite of what the
+architecture assumed. It does not invalidate the architecture — it means one of
+two things must be true:
+
+- **Path A, available today, no retrain:** correct the EPUB in LINE-shaped units
+  rather than sentences. v0.5.0 stamps every element with `data-bf-blocks`, the
+  source block ids, so the line structure is *recoverable on the book*. Serve
+  the model the shape it was trained on, on the artifact the user can read.
+- **Path B, Owen's plan, needs this corpus:** train on sentences, then serve
+  sentences. The measurement says the CURRENT model is worse on sentences, which
+  is exactly what training on them would fix. This is the reason to build the
+  corpus, not a reason to abandon the plan.
+
+**The guard: keep whole-unit for lines; per-run only when units grow.** On lines
+the two are indistinguishable — the differences rest on 2 of 390 and 6 of 1,232
+units. On long units it is decisive: at 400 chars and 7% CER whole-unit becomes
+an off switch (6 corrections in 102 units) where per-run keeps 96. No guard
+never ships: on real Kershaw sentences it more than doubles CER over doing
+nothing.
+
+**An argument FOR whole-unit that nobody anticipated.** One line held both
+`Anton Hoch` → `Anton Höch` (legal at d≤2, and WRONG) and `Biirgerbraukeller` →
+`Bürgerbräukeller` (illegal at d=3, and RIGHT). Whole-unit refuses both; per-run
+keeps the wrong one and reverts the right one. **An illegal run is evidence
+about the whole answer.** Per-run is not strictly better.
+
+**The join exemption is confirmed necessary, not optional.** On Owen's book the
+model gets the `totali tarianism` family RIGHT, and every one is 2 words → 1, so
+**both** policies refuse them structurally. The balance rule cannot say yes to a
+merge. 22 further legal runs were stranded by whole-unit.
+
+**What a retrain should target — typography, not size.** The dominant residual
+damage that PASSES the guard is typography normalisation (curly quotes to
+straight, em dash to hyphen); the corpus README predicted exactly this — "train
+on that and you get a Unicode normaliser". The d≤2 threshold also splits one
+German repair class arbitrarily: `Miinchner`→`Münchner` accepted at d=2,
+`Biirgerbraukeller`→`Bürgerbräukeller` refused at d=3. **The numbers argue for a
+retrain, not a bigger model.**
+
+**On Owen's book the model did well:** `mid-i92os`→`mid-1920s` and
+`mid-i93os`→`mid-1930s` both fixed under every policy; `Führer` 33/33, `Hitler`
+89/89, `Lammers` 5/5, `Reich` 16/16 intact; `Son-derweg).` correctly healed.
+
+**CORRECTION — Kershaw is NOT publisher truth, contrary to what this document
+said above.** Its archive PDF is a **JBIG2 scan with an OCR text layer**.
+foundry classified it `text` because it HAS a text layer, and
+`measureDocumentClass` cannot tell a typesetter's layer from an OCR'd one — so
+**correction was skipped on a book that needed it**, and `mid-i92os` is an OCR
+error baked into the "text". That is a real gap, it is why Owen's ruling that
+correction must be offered on every book is right, and it means scoring against
+Kershaw's own text layer scores against an earlier OCR pass rather than truth.
+The corpus-slice rows carry real tier-1/2 truth and agreed with Kershaw on every
+direction, which is the only reason the Kershaw numbers can be read at all.
+
 ## Facts already established — do not re-derive these
 
 **1. Truth is PDF text layers, not EPUBs.** `tools/foundry-ocr/mine-book.mjs`:
@@ -141,7 +207,8 @@ our own dropped hyphens target a distribution that no longer exists. Books where
 the typesetter left no hyphen at all are the durable case; the model is the only
 recourse there. Check the survey's recommendation before mining.
 
-**3. Sentence splitting is not `split('.')`.** Abbreviations (`Dr.`, `Hrsg.`,
+**3. Sentence splitting is not `split('.')`** — and see the measurement above
+before assuming sentences are the unit at all. Abbreviations (`Dr.`, `Hrsg.`,
 `Bd.`, `S. 123`, `ibid.`), initials (`J. P. Taylor`), decimals and ellipses must
 not end a unit. A history book's endnotes are full of them and a naive split
 manufactures the fragments this design exists to escape. Owen's rule: **when in

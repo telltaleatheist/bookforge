@@ -571,7 +571,17 @@ repair.** Consequences, each of which settles something already measured:
   validated. Repair on the working PDF was always invisible and un-re-runnable;
   under this architecture it is also redundant. Reflow becomes structural only,
   which is what "the working PDF is structural only" already said.
-- **The unit is the sentence** — split at `.`, `!`, `?` and the other
+- **The unit: MEASURED 2026-08-05, and sentences LOST.** On identical text,
+  line-shaped units repaired more per 100k characters than sentences in every
+  paired cell, at a false-edit rate of 0.6-7% against 12-25%. The extra context
+  helps a model read an unreadable line, but it expresses that help as
+  REWRITING, which the guard then throws away. Two ways forward, both honest:
+  correct the EPUB in line-shaped units recovered from the v0.5.0
+  `data-bf-blocks` stamps (available today, no retrain), or train on sentences
+  and then serve them (Owen's plan — the measurement is the argument FOR that
+  corpus, not against it). Everything below about splitting still applies to
+  whichever unit is chosen.
+- **If the unit is the sentence** — split at `.`, `!`, `?` and the other
   terminators. **"When in doubt, send more":** an abbreviation (`Dr.`, `Hrsg.`,
   `Bd.`, `S. 123`, `ibid.`), an initial (`J. P. Taylor`), a decimal or an
   ellipsis must NOT end a unit. A history book's endnotes are full of these, and
