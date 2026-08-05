@@ -344,6 +344,7 @@ import { samePath } from '@shared/document/same-path';
                       (skipped)="versionsPanel.set('skipped')"
                       (continueJob)="onContinueJob()"
                       (assemble)="goToProcessing()"
+                      (process)="goToNarration()"
                       (correctSentences)="startCorrectSentences()"
                       (changed)="onFileChanged()"
                       (compareActive)="versionsComparing.set($event)"

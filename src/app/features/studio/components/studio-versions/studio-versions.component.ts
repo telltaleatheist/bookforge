@@ -23,9 +23,11 @@ import {
   starForPassKind,
   starSlotsFor,
   versionFamily,
+  type FamilyRowKind,
   type VersionFamilyInput,
   type VersionStar,
 } from '@shared/document/version-family';
+import { narrationRefusal } from '@shared/document/stations';
 
 interface VersionRow {
   id: string; type: string; label: string; description: string;
@@ -95,6 +97,16 @@ interface DocumentFamilyRow {
   v: VersionRow;
   /** 0 for the archive parent (and for rows outside the family), 1 for a child. */
   depth: 0 | 1;
+  /**
+   * Which member of the family this row IS, or null for a row outside it (the
+   * legacy stage outputs, the old source/original).
+   *
+   * Depth cannot answer that question — a row outside the family is depth 0 too
+   * — and Process needs it: the button means "take this BOOK to narration", and
+   * the book is the family. A Process on the cleaned/simplified/translated rows
+   * would appear to promise narration of THAT file, which is not what it does.
+   */
+  family: FamilyRowKind | null;
   slots: StarSlot[];
   staleness: string | null;
 }
@@ -380,6 +392,20 @@ const AUDIO_EXTS = new Set([
                 }
                 @if (isEpub(row.v) && !docIsAnalysisTarget(row.v)) {
                   <button class="act" (click)="emitGenerateAnalysisDoc(row.v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
+                }
+                @if (row.family) {
+                  <!-- Process: this book, narrated (docs/PIPELINE_V2_PLAN.md —
+                       "every document row has a Process button"). On the FAMILY
+                       rows only: it takes the book to narration, and a Process on
+                       a cleaned/simplified/translated row would look like a promise
+                       to narrate that file instead.
+
+                       Shown DISABLED with the reason rather than hidden, exactly
+                       as the archive row's Open is, and the reason is the ladder's
+                       own sentence — the picker's Next refuses the same books with
+                       the same words. -->
+                  <button class="act" [disabled]="narrationRefusalReason() !== null"
+                          [title]="narrationTitle()" (click)="process.emit()">Process</button>
                 }
                 @if (row.v.editable) {
                   <button class="act" (click)="openDoc(row.v)" [title]="openTitle(row.v)">Open</button>
@@ -949,6 +975,15 @@ export class StudioVersionsComponent {
   readonly skipped = output<void>();
   readonly continueJob = output<void>();    // resume the partial render (routes to the Processing wizard)
   readonly assemble = output<void>();       // assemble the cached sentences (routes to the Processing wizard)
+  /**
+   * Narrate this book — the per-row Process button (docs/PIPELINE_V2_PLAN.md).
+   *
+   * Carries nothing, deliberately: it is the BOOK that gets narrated, and this
+   * component already shows exactly one book. The host answers it the same way
+   * it answers the picker's Next, which is the point — one destination, however
+   * you asked for it.
+   */
+  readonly process = output<void>();
   readonly correctSentences = output<void>(); // regenerate individual bad sentences, then rebuild
   readonly changed = output<void>();        // after delete/edit -> tell Studio to refresh
   readonly compareActive = output<boolean>(); // Studio goes full-height while comparing
@@ -1109,6 +1144,26 @@ export class StudioVersionsComponent {
   });
 
   /**
+   * Why this book cannot be narrated, or null when it can.
+   *
+   * Measured off the family — its EPUB member is `manifestService.readExportEpub`
+   * having found the book on disk, which is the SAME measure the picker's ladder
+   * calls `bookEpubExists`. So Process refuses exactly the books the picker's
+   * Next refuses, in the same words (`narrationRefusal`, shared/document/stations.ts),
+   * and there is no second notion of "this project has a book" anywhere.
+   */
+  readonly narrationRefusalReason = computed<string | null>(() =>
+    narrationRefusal({ bookEpubExists: this.familyInput().epub !== null }));
+
+  /** What Process says on hover: why it is locked, or what pressing it does. */
+  readonly narrationTitle = computed<string>(() => {
+    const refusal = this.narrationRefusalReason();
+    return refusal === null
+      ? 'Narrate this book — opens the Process tab with narration ready to configure'
+      : refusal;
+  });
+
+  /**
    * The rows as the page shows them: the family first, in ladder order, then
    * whatever else this project carries.
    *
@@ -1134,11 +1189,12 @@ export class StudioVersionsComponent {
       .sort((a, b) => (rank(a.v) - rank(b.v)) || (a.index - b.index))
       .map(({ v }) => {
         const member = family.get(v.id);
-        if (!member) return { v, depth: 0 as const, slots: [], staleness: null };
+        if (!member) return { v, depth: 0 as const, family: null, slots: [], staleness: null };
         const lit = new Set<VersionStar>(member.stars);
         return {
           v,
           depth: member.depth,
+          family: member.kind,
           slots: starSlotsFor(member.kind).map(id => {
             // A review only ever hangs off a LIT star: the diff is the record of
             // a run, and an unlit star is the absence of one. A lit star with no
