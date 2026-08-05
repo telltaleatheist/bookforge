@@ -198,6 +198,16 @@ properly named, immediately. In one pass:
 4. Chapters come from the chapter blocks; their annotation text is the
    definitive title.
 
+Every element the emitter writes carries `data-bf-category`, `data-bf-group` and
+`data-bf-blocks` — the category it was rendered from, the paragraph group, and
+the working PDF's own block ids — on the OUTERMOST element of the group (the
+`<ul>`, not each `<li>`). That is what makes the EPUB's block categories
+IDENTICAL to the working PDF's instead of guessed back from type size: the picker
+reads the stamps rather than re-classifying (`readEpubBlockProvenance`, which
+maps blocks to elements with the export aligner). A book with no stamps is a
+different input class and keeps the font/geometry classifier; the analysis result
+says which one it read.
+
 ### 5. Footnotes
 
 A text transformation on whichever document it is given:

@@ -258,6 +258,31 @@ paragraphs at ingestion (mupdf reflows an EPUB and drops its `<p>` structure),
 and the categories are the EPUB analyzer's. That is what the EPUB station should
 paint, and now does.
 
+**REVISED, third session: the categories were the analyzer's, and they should
+never have been.** Owen: "the chapter header is still being marked as a title
+instead of a chapter header in the epub… we should be able to get the categories
+to match identically, down to the paragraph blocks, since we're the ones
+reflowing the pdf to the epub." Right — the book is not a stranger. foundry's
+EPUB emitter now stamps `data-bf-category`, `data-bf-group` and `data-bf-blocks`
+on the outermost element of every group it writes, and `readEpubBlockProvenance`
+(electron/epub-processor.ts) reads them back by mapping the laid-out blocks onto
+the source elements with `alignBlocksToEpub` — the same aligner the preserving
+exporter uses, reused rather than re-written. Where an element states a category,
+that value IS the block's category, used verbatim; a value outside the one
+palette throws naming it. `bf_group`/`bf_blocks` ride on the block as the link
+back to the working PDF, and several blocks sharing a group is the truth (mupdf
+re-lays the book out; one authored paragraph becomes one block a line).
+
+An EPUB with NO stamps is a different **input class**, not a missing value: a
+book from elsewhere was never written by our reflow, so the font/geometry
+classifier stays exactly as it is and the analysis says which of the two it read
+(`AnalyzeResult.categoryProvenance`). A stamped book whose blocks fail to align
+reports the count and raises an analysis warning — it may not degrade to guessing
+in silence. Measured on the Kershaw working copy reflowed with that foundry
+build: the heading comes back `chapter` where the byte-identical unstamped copy
+gives `title`. Cost, on a 1,331-page EPUB: 12–42 ms for the class test, 363 ms
+for the full alignment, inside the cached analysis — paid once per file.
+
 **The greyed-out passes and "Next: Working" are ONE root cause. FIXED.**
 `projectPath()` is null while the book is on screen: `showEpubStation` →
 `closePdf()` → `projectService.reset()`, and `loadPdf` resets it again and then
