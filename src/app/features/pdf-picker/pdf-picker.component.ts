@@ -9594,14 +9594,15 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    // Before EITHER route, and for the same reason: reflow reads the working
-    // document, so the paragraph consolidation has to be IN it before the stage
-    // starts. Running it only on the foreground route would make "run in
-    // background" a checkbox that changes the book — one line per paragraph in
-    // the queued EPUB, none in the watched one — which is precisely what these
-    // two options promise not to do.
-    this.autoMergeForPipeline();
-
+    // Nothing consolidates paragraphs here any more. `autoMergeForPipeline()`
+    // was written for the client-side exporter, which built the book out of the
+    // editor's block TEXT and therefore needed one block per paragraph before it
+    // ran. Reflow forms paragraphs itself, from the working document's
+    // lines-with-geometry (docs/DOCUMENT_PIPELINE.md §Reflow step 3), and the
+    // markup-preserving export carries the source book's own <p> structure —
+    // neither reads a merge the picker made on its behalf. Owen, 2026-08-04:
+    // "that logic was designed to solve a problem that doesnt exist anymore."
+    // Merge as a USER gesture (Select mode, the Chapter tab) is untouched.
     if (this.buildsByPreservingMarkup()) {
       await this.buildPreservedBook(projectDir);
       return;
@@ -9826,51 +9827,6 @@ export class PdfPickerComponent implements OnInit {
         ? { kind: 'simplify', simplify: result.simplify }
         : { kind: 'translate', translate: result.translate });
   }
-
-  /**
-   * Silent, paragraph-aware merge run just before the EPUB is generated. No
-   * dialog — for a clean EPUB (already segmented at ingestion) it finds nothing
-   * and no-ops; for a fragmented PDF it consolidates single-line blocks into one
-   * block per paragraph.
-   *
-   * Blocks bound to a chapter marker are left out of every group. The export
-   * suppresses a chapter's title in the body by matching the marker's block id,
-   * so folding that block into a merged paragraph (which gets a NEW id) would
-   * make the title lose its binding and be voiced twice — once as the heading,
-   * once inside the paragraph that swallowed it.
-   */
-  private autoMergeForPipeline(): void {
-    if (this.editorState.paragraphBreaks().size === 0) {
-      this.detectParagraphs();
-    }
-    const groups = detectMergeableGroups(
-      this.blocks(),
-      this.deletedBlockIds(),
-      this.editorState.paragraphBreaks()
-    );
-
-    const chapterBlockIds = new Set<string>();
-    for (const ch of this.chapters()) {
-      if (ch.blockId) chapterBlockIds.add(ch.blockId);
-      for (const id of ch.mergedBlockIds ?? []) chapterBlockIds.add(id);
-    }
-
-    // Drop the whole group rather than the offending block: the remaining lines
-    // are a title's neighbours, and re-merging around a removed member would
-    // join text across the heading it sits under.
-    const safe = chapterBlockIds.size === 0
-      ? groups
-      : groups.filter(g => !g.blockIds.some(id => chapterBlockIds.has(id)));
-
-    const held = groups.length - safe.length;
-    if (held > 0) {
-      console.log(`[autoMergeForPipeline] Left ${held} group(s) unmerged — they contain chapter-title blocks`);
-    }
-    if (safe.length === 0) return;
-    console.log(`[autoMergeForPipeline] Consolidating into ${safe.length} paragraphs`);
-    this.applyMergeGroups(safe);
-  }
-
 
   /**
    * Save changes back to the source EPUB file.
