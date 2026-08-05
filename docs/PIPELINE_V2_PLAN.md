@@ -235,28 +235,72 @@ working PDF.** Owen, standing at the EPUB station:
   reflow the epub, we dont need to go back to the working copy once its
   reflowed"
 
-**Leading hypothesis, to be PROVED before anything is changed:** the block
-layer is deliberately kept open at the EPUB station (Phase B fixed a bug where
-looking at the book tore it down), and `documentBlocksMirror` then paints the
-WORKING PDF's blocks, deletions and categories into `editorState` no matter
-which artifact is on screen. The EPUB's own analysis is overwritten by the
-PDF's — which would produce the overlaid deletions, the wrong categories, and
-the merged-looking blocks in one stroke. The block layer must stay OPEN (so the
-station does not tear down) while its MIRRORING is suspended for any artifact
-that is not the working PDF.
+**The overlay: hypothesis CONFIRMED, FIXED.** `documentBlocksMirror` was gated
+only on `blockLayerRead()`, and the block layer is deliberately kept open at the
+EPUB station (Phase B; `workingDocumentRef` tracks the project's PDF rather than
+the file on screen, because building it from the displayed file tore the layer
+down on every visit to the book — acd6eaa2). One correction to the hypothesis:
+the route that actually fires it is **opening the book from the versions page's
+EPUB row**, which mints a NEW window with `?source=<book>`. `curatedPdfPath` is
+set only from a DISPLAYED pdf, so it is null there and `workingDocumentRef` is
+`{ projectDir }` with no sourcePath; `resolveDocumentProject` then picks the
+project's single PDF variant and hands back the WORKING document's blocks, which
+the mirror paints over the EPUB's own `analyzePdfQuick` analysis.
+`documentChaptersEffect` and the right-nav's Chapter tab did the same to the
+book's chapters. The layer stays OPEN; the MIRRORING and every write that rides
+it now stop at "is the project's PDF the file on screen" — measured from the
+path, and therefore synchronous.
 
-**The ladder does not go backwards.** Reflow is the gate into the EPUB world;
-once the book exists, Next from the book is narration. It is never "back to
-the working copy" — that is a step already taken.
+**Not a bug, and not touched:** the merged-looking blocks and the different
+categories on the EPUB are the EPUB's OWN reading of itself.
+`autoSegmentEpubParagraphs` consolidates mupdf's per-line blocks back into
+paragraphs at ingestion (mupdf reflows an EPUB and drops its `<p>` structure),
+and the categories are the EPUB analyzer's. That is what the EPUB station should
+paint, and now does.
 
-**Auto-merge before reflow is retired.** `autoMergeForPipeline()` predates
+**The greyed-out passes and "Next: Working" are ONE root cause. FIXED.**
+`projectPath()` is null while the book is on screen: `showEpubStation` →
+`closePdf()` → `projectService.reset()`, and `loadPdf` resets it again and then
+skips `autoCreateProject` because a station swap is in progress. Nothing put it
+back. No project means `stationActions` gives Footnotes/Simplify/Translate
+`reason: noProject`, AND `bookEpubPath()` reads null — so the book's own station
+measured as ABSENT and `stationNextStep` fell back to `nextStation('archive')`,
+walking the whole ladder from the bottom. A station swap now keeps the project:
+it changes which of a book's artifacts is in the viewer, not which book the
+window is on.
+
+**The ladder does not go backwards. FIXED.** Reflow is the gate into the EPUB
+world; once the book exists, Next from the book is narration. It is never "back
+to the working copy" — that is a step already taken. `nextStationFromViewed`
+walks forward from where the viewer IS, and the property is tested for every
+book shape and every rung.
+
+**The station is DERIVED from the artifact.** It was a signal every load path
+set and none of them agreed on: a window opened straight onto the book set no
+station at all and read as "Working", which also left curation UNLOCKED over an
+EPUB. Now `viewedStation = stationForArtifact(requestedStation, viewedArtifact)`,
+with `viewedArtifact` measured from three paths (`shared/document/stations.ts`).
+
+**Auto-merge before reflow is retired. DONE.** `autoMergeForPipeline()` predates
 foundry's reflow, which does its own paragraph joining. Owen: "that logic was
-designed to solve a problem that doesnt exist anymore."
+designed to solve a problem that doesnt exist anymore." Its helpers
+(`detectMergeableGroups`, `applyMergeGroups`, `detectParagraphs`,
+`paragraphBreaks`) all STAY — checked, not assumed: the merge panel's own button
+and `autoSegmentEpubParagraphs` still use every one of them.
 
-**A new artifact appears the moment it exists.** "i reflowed the file but i
-dont see it listed in versions… there — it appeared. it should appear
-immediately." The versions page must re-measure when a stage lands, not when
-something else happens to make it reload.
+**A new artifact appears the moment it exists. FIXED.** "i reflowed the file but
+i dont see it listed in versions… there — it appeared. it should appear
+immediately." Measured: the versions page re-read only on
+`project:files-changed`, bumped by its Studio parent, and the QUEUE path never
+sends that event — `withDocumentStage` (electron/processing-passes.ts)
+broadcasts stage-started/progress/finished and nothing else, so a backgrounded
+reflow was invisible to it. It now subscribes to `document:stage-finished`,
+which BOTH producers broadcast to every window from a `finally`, and re-runs the
+same `load()`.
+
+**Still owed here:** none of this has been run in the app. Every claim above is
+established from the code and from the pure tests; the smoke pass on a real book
+is outstanding.
 
 ## Foundry work
 
