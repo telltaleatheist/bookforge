@@ -92,7 +92,64 @@ tokenizer: line corpus max 246 tokens (the number 512 was set against), sentence
 corpus max 573 on train and 579 on eval-german, 23 rows over 512. The tail is
 German — umlauts and compounds tokenize at ~2.2 characters a token where English
 prose runs ~3.5, so an average-case estimate says it fits and the tokenizer says
-it does not. Use 768; `text_sft` refuses to truncate.
+it does not. Use 768; `text_sft` refuses to truncate. **768 still holds at v1.1**
+— the longest sequence this builder can now produce is 683 tokens (prompt variant
+B on the longest German unit), 0 rows over 768 across both v1.1 corpora.
+
+#### v1.1 — three flags, all default OFF, all TRAIN-only
+
+`--unit sentence` with no other flag reproduces `sft-sent/` row for row; that
+was checked against the previous builder and only the `truthTier` line moved.
+Each flag below is a separate answer to something `results-sent-v1/` measured,
+and each is opt-in because a corpus that changes when you rebuild it is not a
+corpus.
+
+**`--typography restore-identity` — the marks the corpus never had.** The
+sentence model's residual failure is typographic: 13 of the 15 edits it made on
+the real Kershaw EPUB are `—` → `-` or `‘…’` → `'…'`
+(`results-sent-v1/kershaw-sent-report.json`). The cause is not subtle. **There
+is not one curly quote, em dash, en dash or ellipsis anywhere in this corpus, on
+either side, in any of 311,207 pairs.** Tesseract read them perfectly well —
+104,467 of those lines carry at least one in the raw band JSON, 33.6% — and
+`tools/ocr-lab/align-epub.py`'s `norm_text` folds them to ASCII before a pair is
+written, on the OCR line at `build_ocr` and on the EPUB paragraph at read time.
+Its `PUNCT_MAP` comment says the fold is "for MATCHING only" and that is no
+longer true of the code beneath it. So the model was trained on a quarter of a
+million examples that all say "punctuation is ASCII", and it does what it was
+taught. The flag re-reads the raw band JSON (the `line` field is its index; the
+mapping round-trips 311,207/311,207 with zero mismatches) and gives ALREADY-
+CORRECT train lines their marks back as their own target. Identity lines only —
+an edit row's target is the EPUB's text and its marks were folded at read time,
+unrecoverable from anything on disk. **The real fix is upstream**: emit the marks
+and fold only for matching. Until then this is supervision for preservation
+rather than a hole where it should be.
+
+**`--gold-join wrap-hyphen` — the word that wrapped.** `repair_hyphen` puts the
+OCR's own fragment back on both sides of a wrap, which is right for a line model
+and leaves sentence gold reading `ad-mit`: 23,381 of 23,387 wrap pairs whose
+continuation survived. At the unit both halves are present, so the question is
+answerable. The evidence is layered and never a guess: first the publisher's own
+word where the aligner still had it whole (only ~2% of cases — since the Aug 2026
+continuation rule `span_text` splits the truth word itself and *appends* a
+hyphen, so `pervert-` and `twenty-` are byte-identical in the file), then the
+book's own attested vocabulary read from `<lab>/gold/<book>/source.epub` — the
+same standard `src/export/linejoin.ts` applies. Hyphenated form attested → real
+compound, hyphen stays. Joined form attested → join. Neither → ambiguous, hyphen
+stays. **It contradicts `SYSTEM`'s "keep a hyphen at the end of the line exactly
+as it is"**, which is why `SYSTEM_B` rewrites that rule, and why this is a
+decision rather than a default.
+
+**`--prompt-variant b` — a DRAFT.** `SYSTEM_B` is written for a sentence unit.
+foundry `src/ocr/prompt.ts` is not touched, `sentences.py` still crosschecks
+against variant A, and nothing serves it. The flag exists so an A/B pair of
+corpora is buildable from one builder.
+
+Built 2026-08-05 into `sft-sent-v1_1/` and `sft-sent-v1_1-promptb/`: train
+43,886 at **44.8%** identity (4,526 short of the 50% target — the joins turned
+9,115 identity units into edit units), eval 4,979 and eval-german 770 **asserted
+unit-for-unit identical to `sft-sent/`**, 62.8% of train units carrying a
+typographic mark on the source side, 16,815 gold joins. Neither has been
+trained.
 
 ### 2. `line-training-profiles.json`
 

@@ -270,6 +270,54 @@ SYSTEM = '\n'.join([
     '- If the line has no OCR errors, reply with it unchanged.',
 ])
 
+# ── prompt variant B — A DRAFT, AND OWEN DECIDES THE WORDS ──────────────────
+#
+# ⚠️ DRAFT FOR OWEN. Nothing serves this yet. foundry `src/ocr/prompt.ts` is NOT
+# touched by this file or by this variant, and `sentences.py`'s OCR_SYSTEM_PROMPT
+# still crosschecks against SYSTEM (variant A) in both directions. The flag
+# exists so that an A/B pair of corpora is BUILDABLE from one builder; shipping
+# variant B means moving prompt.ts, sentences.py, both crosschecks and a retrain
+# together, in one commit, and that is a decision, not a build.
+#
+# It is a MINIMAL edit of A, and every difference answers something measured:
+#
+#   * "a single line of text" -> "a passage of text". The v1 sentence model was
+#     trained on ~320-character units under a prompt that says "line", and
+#     results-sent-v1/README.md's own open list opens with that mismatch.
+#   * The trailing-hyphen rule split in two. On a LINE the rule is the whole
+#     story: the word finishes on a line the model cannot see. Inside a ~320
+#     character unit the model CAN see the rest of the word — 23,387 wrap-hyphen
+#     pairs in this corpus have both halves inside one unit — and v1.1's gold
+#     joins them (--gold-join wrap-hyphen). A prompt still saying "keep it
+#     exactly as it is" would contradict its own targets. The unit's LAST
+#     character keeps the old rule, because there the old reason still holds.
+#   * A typography rule, because typography is the measured residual failure
+#     (results-sent-v1/kershaw-sent-report.json: 13 of 15 edits on a real book
+#     were em dash -> hyphen or curly -> straight) and because v1.1 is the first
+#     corpus whose train side contains a curly quote at all. SEPARABLE: if Owen
+#     wants the smallest possible edit, this bullet is the one to drop — the
+#     corpus teaches it either way.
+SYSTEM_B = '\n'.join([
+    'You correct OCR errors in a passage of text from a scanned book.',
+    '',
+    'Reply with the corrected passage and nothing else.',
+    '',
+    'Rules:',
+    '- Reply with the whole passage, not just the part you changed.',
+    '- Correct only what the scanner misread. Do not reword, translate, modernise',
+    '  spelling, or change punctuation that is merely old-fashioned.',
+    '- Keep the quotation marks, dashes and ellipses the book prints exactly as',
+    '  they are. Typography is not a scanning error.',
+    '- A hyphen inside the passage that splits one word across a line break is a',
+    '  wrap: close the word up. A hyphen the book really prints, as in a compound',
+    '  word, stays.',
+    '- Keep a hyphen at the very end of the passage exactly as it is. That word',
+    '  finishes in text you cannot see.',
+    '- If the passage has no OCR errors, reply with it unchanged.',
+])
+
+PROMPTS = {'a': SYSTEM, 'b': SYSTEM_B}
+
 # Where each unit's corpus lives. sft-line/ is the provenance of the shipped
 # foundry-ocr-v1-4b and the only thing that lets a sentence model be compared
 # against a line model on the same books, so the two never share a directory and
@@ -282,6 +330,24 @@ DEFAULT_OUT = {
 TRAILING_PUNCT = '.,!?;:\'"“”‘’)]}…'
 LEADING_PUNCT = '\'"“”‘’([{—–'
 HYPHENS = '-‐‑‒–—'
+
+# ── the lab directory is not always the manifest key ────────────────────────
+#
+# `truthTier` is per book and lives in <lab>/gold/manifest.json, keyed by title.
+# `slug()` reconciles the two spellings for every book but one:
+#
+#     lab dir  rise-and-fall                      -> slug rise-and-fall
+#     manifest "rise and fall of the third reich" -> slug rise-and-fall-of-the-third-reich
+#
+# so the lookup missed, `truthTier` came back None on 4,727 train rows, and the
+# tier-3-not-in-eval refusal was blind to the one book it most needed to see —
+# docs/OCR_SENTENCE_CORPUS_SURVEY.md open decision 9. The manifest has ALWAYS
+# carried the answer (`truthTier: 1`, "born-digital (Calibre 7.19 render of an
+# ebook…), NOT a scan" / "epub: matching, likely the render source"); nothing was
+# unknown, the two names simply did not meet. An alias is the surgical fix: the
+# lab directory is a path a hundred artefacts already point at, and renaming it
+# to tidy up a lookup is the expensive way to change a dictionary.
+LAB_DIR_ALIASES = {'rise-and-fall': 'rise and fall of the third reich'}
 
 
 # ── metrics ─────────────────────────────────────────────────────────────────
@@ -608,7 +674,7 @@ def invert_lies(ocr, truth, counts):
     return truth, None
 
 
-def repair_hyphen(ocr, truth, position, counts):
+def repair_hyphen(ocr, truth, position, counts, record=None):
     """Undo the aligner's wrap-hyphen join for one side of the pair.
 
     position 'A' = this line ENDS in the hyphen, so the truth's last word was
@@ -619,6 +685,13 @@ def repair_hyphen(ocr, truth, position, counts):
     the OCR's own fragment is literal evidence for it (the joined word starts
     with, or ends with, the fragment). No evidence, no guess — the row is
     dropped. Case-insensitive because the fragment may begin a sentence.
+
+    `record` receives the word the EPUB actually printed, before this repair
+    threw it away. That word is the ONLY unguessable half of the sentence-mode
+    join (--gold-join): whether `extraordi-` + `nary` is one word or two is a
+    fact about the book, and the publisher's own file has just answered it. It is
+    kept rather than re-derived because re-deriving it later would mean a
+    vocabulary heuristic standing where a publisher's answer used to be.
     """
     o_words, t_words = ocr.split(), truth.split()
     if not o_words or not t_words:
@@ -632,6 +705,8 @@ def repair_hyphen(ocr, truth, position, counts):
         if not joined.casefold().startswith(frag.casefold()) or not frag:
             counts['hyphenNoEvidence'] += 1
             return None
+        if record is not None:
+            record.update(position='A', epubWord=joined, fragment=o_words[-1])
         return ' '.join(t_words[:-1] + [o_words[-1]])
 
     frag = o_words[0]
@@ -641,7 +716,159 @@ def repair_hyphen(ocr, truth, position, counts):
     if not joined.casefold().endswith(frag.casefold()) or not frag:
         counts['hyphenNoEvidence'] += 1
         return None
+    if record is not None:
+        record.update(position='B', epubWord=joined, fragment=o_words[0])
     return ' '.join([o_words[0]] + t_words[1:])
+
+
+# ── typography: the corpus has none, and the aligner is where it went ───────
+#
+# MEASURED 2026-08-05, and it is the root cause of the sentence model's one
+# remaining failure. Across all 16 books and all 311,207 aligner pairs there is
+# not ONE curly quote, em dash, en dash or ellipsis character — on either side.
+# Tesseract read them perfectly well: the same books' raw band JSON carries
+# 104,467 lines with at least one of them (33.6% of every line the scanner read).
+# They are destroyed one step before the corpus, in tools/ocr-lab/align-epub.py,
+# whose `norm_text` = collapse(ascii_punct(NFKC(s))) is applied to the OCR line at
+# build_ocr (line 435) and to the EPUB paragraph at read time (line 302) — not
+# only to the matching keys, which is what its PUNCT_MAP comment claims.
+#
+# So the model was fine-tuned on a quarter of a million examples whose every
+# target uses ASCII punctuation, and it does at inference exactly what it was
+# taught: results-sent-v1/kershaw-sent-report.json, 13 of 15 edits on a real book
+# are `—` -> `-` or `‘…’` -> `'…'`. The corpus predicted a Unicode normaliser and
+# built one, by omission rather than by inclusion.
+#
+# THE REAL FIX IS UPSTREAM — emit the marks and fold only for matching, which is
+# what align-epub.py's own comment says it does. That is a re-alignment of 16
+# books and it is not this file's to make. What IS available without re-mining:
+# the raw band JSON is still on disk, `line` in the pairs file is its index, and
+# the mapping is exact (verified 311,207/311,207 with zero mismatches). So an
+# ALREADY-CORRECT line can be re-read with its real marks and used as its own
+# target — natural supervision, from the scanner's own reading of a real page,
+# saying "these are the book's marks and they are already right".
+#
+# IDENTITY LINES ONLY, and that is forced by the data rather than chosen. On an
+# EDIT line the target is the EPUB's text, whose marks were folded at read time
+# and cannot be recovered from anything on this disk; restoring only the SOURCE
+# side would hand the model a pair whose lesson is "normalise the typography",
+# which is the failure being repaired.
+#
+# The set of marks is closed and small on purpose. PUNCT_MAP also folds ` and ´
+# onto the apostrophe and the soft hyphen onto `-`; a backtick where the page
+# prints an apostrophe is a RECOGNITION error and restoring it would teach the
+# model to keep one, and a restored soft hyphen would change what a wrap hyphen
+# is. A line carrying any folded character outside this set is left alone.
+TYPOGRAPHY_RESTORED = '‘’“”—–…'
+
+
+def align_epub_punct_map(lab_tools):
+    """align-epub.py's PUNCT_MAP, READ from align-epub.py.
+
+    One implementation, the same discipline sentences.py's prompt crosscheck
+    uses. A local copy of a 24-entry table is a copy that drifts, and it would
+    drift in the one direction that matters: a mark this file thought was folded
+    but is not would fail the round-trip check silently, as "no natural
+    typography found".
+    """
+    p = os.path.join(lab_tools, 'align-epub.py')
+    if not os.path.isfile(p):
+        sys.exit(f'build-dataset: --typography restore-identity needs align-epub.py at {p} '
+                 'to read its PUNCT_MAP. It will not guess at the fold it is undoing.')
+    src = open(p, encoding='utf-8').read()
+    m = re.search(r'^PUNCT_MAP = \{(.*?)^\}', src, re.S | re.M)
+    if not m:
+        sys.exit(f'build-dataset: could not find PUNCT_MAP in {p} — refusing to undo a fold '
+                 'this file cannot read.')
+    import ast
+    table = ast.literal_eval('{' + m.group(1) + '}')
+    missing = [c for c in TYPOGRAPHY_RESTORED if c not in table]
+    if missing:
+        sys.exit(f'build-dataset: align-epub.py no longer folds {missing!r}. '
+                 'TYPOGRAPHY_RESTORED describes a fold that has moved; re-read it.')
+    return table
+
+
+def raw_band_lines(lab, book):
+    """{line id -> the scanner's own text, unfolded} for one book.
+
+    The id is `len(lines)` over pages sorted numerically and lines in file order
+    — align-epub.py `build_ocr`, and the pairs file's `line` is exactly it. The
+    correspondence is checked per row by round-tripping the fold, so this
+    reconstruction can never quietly attach one line's marks to another's text.
+    """
+    for name in sorted(os.listdir(lab)):
+        if slug(name) != book:
+            continue
+        bdir = os.path.join(lab, name, 'ocr-bands')
+        if not os.path.isdir(bdir):
+            return None
+        pages = sorted(int(m.group(1)) for m in
+                       (re.fullmatch(r'page-(\d+)\.json', n) for n in os.listdir(bdir)) if m)
+        out, lid = {}, 0
+        for p in pages:
+            j = json.loads(open(os.path.join(bdir, 'page-%d.json' % p), 'rb').read().decode('utf-8'))
+            for ln in j.get('lines', []):
+                out[lid] = ln.get('text') or ''
+                lid += 1
+        return out
+    return None
+
+
+def unfold_typography(raw, folded, table):
+    """The scanner's line with its marks, or None if anything is not certain.
+
+    Certainty is a round trip: fold what was read and it must come back byte-
+    identical to the text the corpus holds. Then the ONLY difference between the
+    two strings is the mark, which is the whole point — nothing else rides along.
+    """
+    t = strip_band_edge(norm_ws(unicodedata.normalize('NFKC', raw)))
+    if not any(c in TYPOGRAPHY_RESTORED for c in t):
+        return None, 'noMarks'            # nothing to restore; leave the row alone
+    if any(c in table and c not in TYPOGRAPHY_RESTORED for c in t):
+        return None, 'unsafeMark'         # a backtick, a soft hyphen: not ours to restore
+    if ''.join(table.get(c, c) for c in t) != folded:
+        return None, 'roundTripFailed'    # say nothing rather than guess
+    return t, 'restored'
+
+
+def restore_typography(rows, lab, lab_tools, counts):
+    """Give already-correct TRAIN lines their real marks back, in place.
+
+    TRAIN ONLY, and the caller enforces it: sft-sent/eval.jsonl must cover
+    exactly the characters sft-line/eval.jsonl covers, and `…` is one character
+    where `...` is three. The eval sets are the comparison and they do not move.
+    """
+    table = align_epub_punct_map(lab_tools)
+    by_book = defaultdict(list)
+    for r in rows:
+        if r['identity']:
+            by_book[r['book']].append(r)
+    for book in sorted(by_book):
+        raw = raw_band_lines(lab, book)
+        if raw is None:
+            counts['typographyBookNoBands'] += 1
+            continue
+        for r in by_book[book]:
+            # A line that ENDS in a hyphen is a wrap-hyphen line, and its trailing
+            # character decides both the repair ladder's A/B pairing and where a
+            # unit may be cut. Restoring `-` to `—` there would move a unit
+            # boundary, so those lines keep the fold and are counted.
+            if r['ocr'] and r['ocr'][-1] in HYPHENS:
+                counts['typographySkippedHyphenLine'] += 1
+                continue
+            src = raw.get(r['line'])
+            if src is None:
+                counts['typographyNoRawLine'] += 1
+                continue
+            out, why = unfold_typography(src, r['ocr'], table)
+            if out is None:
+                counts['typography_' + why] += 1
+                continue
+            r['ocr'] = r['truth'] = out
+            r['typography'] = 'restored'
+            counts['typographyRestored'] += 1
+            counts['typographyMarks'] += sum(1 for c in out if c in TYPOGRAPHY_RESTORED)
 
 
 # ── load ────────────────────────────────────────────────────────────────────
@@ -675,7 +902,15 @@ def load_tiers(lab):
     if not os.path.isfile(p):
         return {}
     m = json.load(open(p))
-    return {slug(k): v.get('truthTier') for k, v in m.get('books', {}).items()}
+    tiers = {slug(k): v.get('truthTier') for k, v in m.get('books', {}).items()}
+    for lab_dir, manifest_key in LAB_DIR_ALIASES.items():
+        key = slug(manifest_key)
+        if key not in tiers:
+            sys.exit(f'build-dataset: LAB_DIR_ALIASES maps {lab_dir!r} onto {manifest_key!r}, '
+                     f'which is not a book in {p}. An alias pointing at nothing is worse '
+                     'than no alias: it reads as "the tier is unknown" when it is a typo.')
+        tiers[slug(lab_dir)] = tiers[key]
+    return tiers
 
 
 # ── the per-LINE half of the build ──────────────────────────────────────────
@@ -779,13 +1014,15 @@ def collect_pairs(args, books, tiers, holdouts, quarantined):
 
             # hyphen family first: its repair changes what "identity" means.
             hyph = pos.get(i)
+            hyphen_join = None
             if hyph:
                 if args.hyphen_policy == 'drop':
                     drops['hyphen'] += 1
                     per_book[book]['hyphenDropped'] += 1
                     continue
                 if args.hyphen_policy == 'repair':
-                    fixed = repair_hyphen(ocr, truth, hyph, counts)
+                    rec = {}
+                    fixed = repair_hyphen(ocr, truth, hyph, counts, rec)
                     if fixed is None and truth != ocr:
                         # No literal evidence for the join. A guess here is an
                         # invented word in a finished audiobook.
@@ -795,6 +1032,7 @@ def collect_pairs(args, books, tiers, holdouts, quarantined):
                             continue
                     elif fixed is not None:
                         truth = fixed
+                        hyphen_join = rec or None
                         counts['hyphenRepaired'] += 1
 
             # The edge ladder. `--truth-edges keep` trains on the artifact as
@@ -852,6 +1090,7 @@ def collect_pairs(args, books, tiers, holdouts, quarantined):
                 'ocr': ocr, 'truth': truth, 'cer': round(c, 5),
                 'sim': sim, 'identity': identity,
                 'repair': reason or (hyph and 'hyphen') or None,
+                'hyphenJoin': hyphen_join,
                 'truthTier': tiers.get(book),
             })
             per_book[book]['kept'] += 1
@@ -881,6 +1120,23 @@ def main():
     ap.add_argument('--parity-against', default=None,
                     help='--unit sentence: the line eval whose characters the sentence eval '
                          'must cover exactly (default <out>/../sft-line/eval.jsonl)')
+    ap.add_argument('--eval-identical-to', default=None, metavar='DIR',
+                    help='--unit sentence: a built sentence corpus whose eval.jsonl and '
+                         'eval-german.jsonl this build\'s must reproduce unit for unit. The '
+                         'point of a v1.1 is that only TRAIN moved.')
+    ap.add_argument('--typography', choices=['fold', 'restore-identity'], default='fold',
+                    help='--unit sentence: restore-identity gives already-correct TRAIN lines '
+                         'the curly quotes, dashes and ellipses the scanner actually read and '
+                         'align-epub.py folded to ASCII. Train only — eval must stay '
+                         'character-comparable. Default fold = v1 behaviour.')
+    ap.add_argument('--gold-join', choices=['off', 'wrap-hyphen'], default='off',
+                    help='--unit sentence: wrap-hyphen closes a wrap hyphen in the GOLD when '
+                         'both halves are inside one unit and the publisher\'s own word says '
+                         'they are one word. Train only. Default off = v1 behaviour.')
+    ap.add_argument('--prompt-variant', choices=['a', 'b'], default='a',
+                    help='a = the shipped SYSTEM (line wording). b = SYSTEM_B, a DRAFT written '
+                         'for sentence units. Nothing serves b; the flag exists so an A/B pair '
+                         'of corpora is buildable from one builder.')
     ap.add_argument('--sim-floor', type=float, default=0.75)
     ap.add_argument('--max-cer', type=float, default=0.30)
     ap.add_argument('--min-len-for-cer', type=int, default=40)
@@ -904,6 +1160,11 @@ def main():
     lab = os.path.expanduser(args.lab)
     out = os.path.expanduser(args.out or DEFAULT_OUT[args.unit])
     args.out = out                      # so build-stats records where it landed
+    if args.unit == 'line' and (args.typography != 'fold' or args.gold_join != 'off'
+                                or args.prompt_variant != 'a'):
+        sys.exit('build-dataset: --typography / --gold-join / --prompt-variant are --unit '
+                 'sentence flags. sft-line/ is the shipped model\'s provenance and this '
+                 'builder will not quietly rebuild it into something else.')
     holdouts = {slug(b) for b in HOLDOUT_BOOKS}
     quarantined = {slug(b) for b in QUARANTINED_BOOKS}
 
@@ -1085,7 +1346,11 @@ def main():
                 }, ensure_ascii=False) + '\n')
     with open(os.path.join(out, 'pairs-repaired.jsonl'), 'w') as fh:
         for r in corpus:
-            fh.write(json.dumps(r, ensure_ascii=False) + '\n')
+            # `hyphenJoin` is scaffolding for --unit sentence's --gold-join and
+            # says nothing about a line pair; keep this file's schema where the
+            # survey documented it.
+            fh.write(json.dumps({k: v for k, v in r.items() if k != 'hyphenJoin'},
+                                ensure_ascii=False) + '\n')
     with open(os.path.join(out, 'build-stats.json'), 'w') as fh:
         json.dump({
             'generated': __import__('datetime').datetime.now().isoformat(timespec='seconds'),
@@ -1220,6 +1485,234 @@ def assert_units_sound(units, rows, mod, label):
            mod.join_all([r['truth'] for r in part]) != u['truth']:
             sys.exit(f'build-dataset: {label} unit {u["book"]} lines {a}-{b} is not its lines '
                      'joined. The packer invented or lost characters.')
+
+
+# ── --gold-join: the wrap hyphen, once both halves are in the same unit ─────
+#
+# MEASURED on this corpus: 24,387 kept lines end in a wrap hyphen and 23,387 of
+# them still have their continuation line (1,000 lost it to a drop). For every
+# one of those 23,387, `repair_hyphen` put the OCR's own fragment back on each
+# side — that is the LINE model's lesson and it is right, because a line model
+# cannot see the other half and completing it would be invention. So gold reads
+# `ad-` on one line and `mit` on the next, `sentences.join()` closes the gap
+# keeping the hyphen, and the sentence corpus's gold says `ad-mit`: a spelling
+# that appears in no book, produced by a rule written for a unit that could not
+# see this far. 23,381 of 23,387 read that way (the other 6 are rows where the
+# hyphen is itself the scanner's error).
+#
+# At the sentence unit BOTH halves are inside the same string, so the question is
+# answerable — and it was already answered, by the publisher, in the word this
+# builder threw away one step earlier. `hyphenJoin.epubWord` is what the EPUB
+# printed:
+#
+#     epubWord `extraordinary`   fragments `extraordi-` + `nary`   -> JOIN
+#     epubWord `well-known`      fragments `well-`      + `known`  -> KEEP
+#
+# and the discrimination costs nothing, invents nothing, and needs no vocabulary.
+#
+# THE LETTERS MUST BE IDENTICAL. The join is allowed to delete one hyphen and
+# nothing else: the alphanumeric characters of the two fragments, concatenated,
+# must be exactly the alphanumeric characters of the word the book printed. Any
+# other outcome — a fragment that is not a prefix, a truth word that moved, the
+# two sides disagreeing about which word this even is — is AMBIGUOUS and the
+# hyphen stays. When in doubt, do nothing.
+#
+# ⚠️ IT CONTRADICTS THE SHIPPED PROMPT, and that is Owen's decision, not this
+# file's. SYSTEM (variant A) says "Keep a hyphen at the end of the line exactly
+# as it is", which was true of a line and is false of an interior wrap inside a
+# 320-character unit. SYSTEM_B says the new thing. `--gold-join off` is the
+# default and reproduces v1's gold exactly.
+#
+# ── WHAT THE EVIDENCE ACTUALLY IS, measured before this was written ─────────
+#
+# The obvious instrument is `hyphenJoin.epubWord`, and it is nearly always the
+# wrong shape. Since align-epub.py's Aug 2026 continuation rule, the aligner
+# SPLITS a wrap-hyphenated truth word itself — `span_text` renders the printed
+# prefix and appends a hyphen (`txt[start:end] + "-"`) — so the truth word this
+# builder reads back is `pervert-`, not `perverting`. A real compound breaking at
+# its own hyphen arrives as `twenty-` by a different route (`close_punct` pulls
+# the hyphen onto the span). The two are byte-identical and the file cannot tell
+# them apart. Only 7 of michelle-remembers' 348 wrap pairs (2%) still carry a
+# JOINED truth word, and those 7 are decidable outright.
+#
+# So the second rung is the book's own attested vocabulary, read from the
+# publisher EPUB the aligner took its truth from (<lab>/gold/<book>/source.epub —
+# present for all 16 corpus books). That is not a general dictionary and not a
+# heuristic about English: it is the same standard foundry `src/export/
+# linejoin.ts` already applies, and the same one align-epub.py's `build_ocr`
+# applies when it decides whether to join the OCR halves for matching.
+# sentences.py declines this decision because "this file has no vocabulary and
+# therefore no right to an opinion" — the vocabulary is what is being supplied.
+#
+# Unattested either way is AMBIGUOUS and the hyphen stays.
+def _alnum(s):
+    return ''.join(c for c in s if c.isalnum())
+
+
+def _core(word):
+    """A fragment with its surrounding punctuation removed, hyphen kept."""
+    return word.strip(TRAILING_PUNCT + LEADING_PUNCT + ' ')
+
+
+def book_vocabulary(lab, book, mod, table):
+    """Every word form the book itself prints, lowercased, hyphens kept.
+
+    Folded through align-epub.py's own PUNCT_MAP so the forms compare against a
+    truth side that was folded the same way — an EPUB `don’t` and a corpus
+    `don't` are the same attestation.
+    """
+    gold = os.path.join(lab, 'gold')
+    if not os.path.isdir(gold):
+        return None
+    name = LAB_DIR_ALIASES.get(book)
+    hit = None
+    for d in sorted(os.listdir(gold)):
+        if slug(d) == book or (name and d == name):
+            hit = os.path.join(gold, d, 'source.epub')
+            break
+    if not hit or not os.path.isfile(hit):
+        return None
+    vocab = set()
+    for b in mod.epub_blocks(hit):
+        folded = ''.join(table.get(c, c) for c in unicodedata.normalize('NFKC', b['text']))
+        for w in folded.split():
+            w = _core(w).lower()
+            if w:
+                vocab.add(w)
+    return vocab
+
+
+def join_lines_with_drops(texts, drops, mod):
+    """mod.join_all, except that the wrap hyphen of the lines in `drops` is
+    removed as the gap closes.
+
+    Proved against mod.join_all on every unit with an empty `drops`, rather than
+    argued: this is the one function that can silently invent or lose a
+    character, and the packer's soundness assertion has already run by the time
+    it is called.
+    """
+    out, prev_wrap = '', False
+    for i, text in enumerate(texts):
+        t = text.strip()
+        if not t:
+            continue
+        if not out:
+            out = t
+        elif prev_wrap:
+            out = out + t
+        else:
+            out = out + ' ' + t
+        prev_wrap = mod.ends_wrap_hyphen(t)
+        if prev_wrap and i in drops:
+            out = out[:-1]              # the hyphen is the last character
+    return out
+
+
+def decide_wrap(frag_a, frag_b, word, vocab, tally):
+    """JOIN, or a named reason to leave the hyphen alone.
+
+    THE LETTERS MUST BE IDENTICAL either way: the only character this is ever
+    allowed to remove is the wrap hyphen itself.
+    """
+    a, b = _core(frag_a).rstrip(HYPHENS), _core(frag_b)
+    if not a or not b:
+        tally['keptAmbiguous'] += 1
+        return False
+    if _alnum(frag_a) + _alnum(frag_b) != _alnum(a + b):
+        tally['keptAmbiguous'] += 1
+        return False
+
+    # rung 1 — the publisher's own word for THIS occurrence, where the aligner
+    # still had it whole. Exact, and it needs no vocabulary.
+    if word and not (word[-1] in HYPHENS) and _alnum(frag_a) + _alnum(frag_b) == _alnum(word):
+        if (frag_a + frag_b).casefold() == word.casefold():
+            tally['keptRealCompound'] += 1
+            tally['decidedByPublisherWord'] += 1
+            return False
+        if (a + b).casefold() == _core(word).casefold():
+            tally['joined'] += 1
+            tally['decidedByPublisherWord'] += 1
+            return True
+
+    # rung 2 — the book's own attested vocabulary.
+    if vocab is None:
+        tally['keptNoVocabulary'] += 1
+        return False
+    joined, hyphenated = (a + b).lower(), (a + '-' + b).lower()
+    if hyphenated in vocab:
+        # The book prints this hyphen elsewhere: `well-known` is a compound that
+        # happened to break at its own hyphen. Nothing to close. Checked FIRST,
+        # because a compound whose halves are also words on their own would
+        # otherwise be joined into something the book never prints.
+        tally['keptRealCompound'] += 1
+        tally['decidedByVocabulary'] += 1
+        return False
+    if joined in vocab:
+        tally['joined'] += 1
+        tally['decidedByVocabulary'] += 1
+        return True
+    tally['keptAmbiguous'] += 1
+    return False
+
+
+def apply_gold_joins(units, rows, mod, tally, vocab_of=None):
+    """Close the wrap hyphens INSIDE each unit's gold. Returns the units.
+
+    The source side is not touched: `src` keeps exactly what the pipeline
+    produces, hyphen and all, because that is what the model will be handed.
+    """
+    vocab_of = vocab_of or {}
+    index = {(r['book'], r['line']): r for r in rows}
+    for u in units:
+        a, b = u['lineRange']
+        part = [index[(u['book'], ln)] for ln in range(a, b + 1)]
+        drops = set()
+        for k in range(len(part) - 1):
+            left, right = part[k], part[k + 1]
+            if not (left['truth'] and left['truth'][-1] in HYPHENS):
+                continue
+            tally['wrapHyphensInUnits'] += 1
+            # ONE record is enough and A's is the one that carries the whole
+            # word. B's is usually absent, and that is the fixed aligner working:
+            # since align-epub.py's continuation change it already gives the
+            # second line only the half that line printed, so `repair_hyphen`
+            # position B finds nothing joined and has nothing to record. Where
+            # both exist they must agree — the same EPUB word seen from two truth
+            # windows — or neither is evidence.
+            ra, rb = left.get('hyphenJoin'), right.get('hyphenJoin')
+            if ra and ra.get('position') != 'A':
+                ra = None
+            if rb and rb.get('position') != 'B':
+                rb = None
+            if ra and rb and ra['epubWord'] != rb['epubWord']:
+                tally['keptSidesDisagree'] += 1
+                continue
+            word = (ra or rb or {}).get('epubWord')
+            if not right['truth'].split() or not left['truth'].split():
+                tally['keptAmbiguous'] += 1
+                continue
+            if decide_wrap(left['truth'].split()[-1], right['truth'].split()[0],
+                           word, vocab_of.get(u['book']), tally):
+                drops.add(k)
+        if not drops:
+            continue
+        golds = [r['truth'] for r in part]
+        if join_lines_with_drops(golds, set(), mod) != u['truth']:
+            sys.exit(f'build-dataset: --gold-join cannot reproduce {u["book"]} lines {a}-{b} '
+                     'without any join. Its joiner and sentences.py\'s have diverged; refusing '
+                     'to edit a gold it does not agree with.')
+        rebuilt = join_lines_with_drops(golds, drops, mod)
+        if len(rebuilt) != len(u['truth']) - len(drops):
+            sys.exit(f'build-dataset: --gold-join changed {u["book"]} lines {a}-{b} by more than '
+                     f'the {len(drops)} hyphen(s) it removed. Refusing to write a gold this file '
+                     'cannot account for character by character.')
+        u['truth'] = rebuilt
+        u['goldJoins'] = len(drops)
+        tally['unitsChanged'] += 1
+        if u['identity']:
+            tally['identityUnitsLost'] += 1
+        u['identity'] = u['ocr'] == u['truth']
+    return units
 
 
 def _percentile(sorted_vals, q):
@@ -1388,6 +1881,46 @@ def verify_eval_parity(units, line_eval_path):
     return report
 
 
+def verify_eval_unchanged(ref_dir, groups):
+    """This build's eval must be the reference build's eval, unit for unit.
+
+    A v1.1 whose eval moved is not a v1.1 — it is a second experiment wearing the
+    first one's scores. The comparison is on the UNIT, not on the file: the row
+    ORDER is a shuffle whose stream position depends on how many identity units
+    train drew, so a train-side change moves it and means nothing. The system
+    prompt is excluded because --prompt-variant is allowed to move it and that is
+    the one thing an A/B pair is for.
+    """
+    if not ref_dir:
+        return None
+    ref_dir = os.path.expanduser(ref_dir)
+    report = {}
+    print(f'\nEVAL UNCHANGED vs {ref_dir}  (only TRAIN may move)')
+    for name, units in groups:
+        p = os.path.join(ref_dir, name)
+        if not os.path.isfile(p):
+            print(f'\n!! NO EVAL-UNCHANGED CHECK for {name}: {p} is not there.')
+            report[name] = None
+            continue
+        want = Counter()
+        for line in open(p, encoding='utf-8'):
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            m = {x['role']: x['content'] for x in r['messages']}
+            want[(r['book'], tuple(r['lineRange']), m['user'], m['assistant'])] += 1
+        got = Counter((u['book'], tuple(u['lineRange']), u['ocr'], u['truth']) for u in units)
+        if want != got:
+            only_ref = sum((want - got).values())
+            only_new = sum((got - want).values())
+            sys.exit(f'build-dataset: REFUSING TO WRITE — {name} is not the same set of units as '
+                     f'{p}. {only_ref} unit(s) only in the reference, {only_new} only here. '
+                     'Only TRAIN may move between v1 and v1.1.')
+        report[name] = {'reference': p, 'units': len(units), 'identical': True}
+        print(f'  {name:20s} {len(units):6d} units identical to {p}')
+    return report
+
+
 def _hist(vals, edges):
     """(label, count) buckets over ascending upper edges."""
     counts = Counter()
@@ -1448,12 +1981,30 @@ MEASURED_TOKENS = {
     'sft-sent/train.jsonl': {'p50': 283, 'p90': 319, 'p99': 405, 'max': 573, 'over512': 15},
     'sft-sent/eval.jsonl': {'p50': 275, 'p90': 314, 'p99': 343, 'max': 432, 'over512': 0},
     'sft-sent/eval-german.jsonl': {'p50': 357, 'p90': 434, 'p99': 509, 'max': 579, 'over512': 8},
+    # v1.1, measured the same way on the same tokenizer. The longest sequence
+    # this builder can now produce is variant B's 683, so 768 still holds — with
+    # 85 tokens of headroom on the corpus's own maximum rather than on an
+    # estimate of it. Variant B costs ~64 tokens on every row (a longer system
+    # prompt on every example), which is why its over-512 count jumps from 17 to
+    # 128 while its maximum moves by less.
+    'sft-sent-v1_1/train.jsonl': {'p50': 279, 'p90': 315, 'p99': 388, 'max': 615,
+                                  'over512': 17, 'over768': 0},
+    'sft-sent-v1_1/eval.jsonl': {'p50': 275, 'p90': 314, 'p99': 343, 'max': 432,
+                                 'over512': 0, 'over768': 0},
+    'sft-sent-v1_1/eval-german.jsonl': {'p50': 357, 'p90': 434, 'p99': 509, 'max': 579,
+                                        'over512': 8, 'over768': 0},
+    'sft-sent-v1_1-promptb/train.jsonl': {'p50': 347, 'p90': 383, 'p99': 456, 'max': 683,
+                                          'over512': 128, 'over768': 0},
+    'sft-sent-v1_1-promptb/eval.jsonl': {'p50': 343, 'p90': 382, 'p99': 411, 'max': 500,
+                                         'over512': 0, 'over768': 0},
+    'sft-sent-v1_1-promptb/eval-german.jsonl': {'p50': 425, 'p90': 502, 'p99': 577, 'max': 647,
+                                                'over512': 57, 'over768': 0},
 }
 
 
-def token_bound(units):
+def token_bound(units, system=SYSTEM):
     """An UPPER BOUND on the sequence length, not an estimate of it."""
-    return _quantiles([(len(SYSTEM) + len(u['ocr']) + len(u['truth'])) / CHARS_PER_TOKEN_WORST
+    return _quantiles([(len(system) + len(u['ocr']) + len(u['truth'])) / CHARS_PER_TOKEN_WORST
                        + TEMPLATE_TOKENS for u in units])
 
 
@@ -1463,6 +2014,18 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
     """The sentence half. Everything above the branch was per-line and shared."""
     mod = _sentences_module()
     lv = _levenshtein()
+    system = PROMPTS[args.prompt_variant]
+
+    # ── typography, BEFORE the pack, TRAIN only ─────────────────────────────
+    #
+    # It runs on line rows so that the packer's soundness assertion still means
+    # what it means: a unit is exactly its own lines joined, restored or not.
+    # And it runs on train_all alone, because `…` is one character where `...` is
+    # three and eval owes sft-line/eval.jsonl an identical character count.
+    if args.typography == 'restore-identity':
+        lab_tools = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 'ocr-lab')
+        restore_typography(train_all, lab, lab_tools, counts)
 
     # ── pack ────────────────────────────────────────────────────────────────
     u_train = pack_units(train_all, args.cap, mod, tiers, 'train')
@@ -1471,6 +2034,29 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
     assert_units_sound(u_train, train_all, mod, 'train')
     assert_units_sound(u_eval, ev, mod, 'eval')
     assert_units_sound(u_german, german, mod, 'eval-german')
+
+    # ── the gold-side join, AFTER the assertion, TRAIN only ─────────────────
+    #
+    # After, because the assertion's whole job is to prove the pack faithful
+    # before anything is allowed to edit it. Train only, for eval's sake again.
+    joins = Counter()
+    vocab_of = {}
+    if args.gold_join == 'wrap-hyphen':
+        lab_tools = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 'ocr-lab')
+        table = align_epub_punct_map(lab_tools)
+        for book in sorted({u['book'] for u in u_train + u_eval + u_german}):
+            vocab_of[book] = book_vocabulary(lab, book, mod, table)
+            if vocab_of[book] is None:
+                print(f'  !! no <lab>/gold/<{book}>/source.epub — every wrap hyphen in that '
+                      'book stays, for want of the vocabulary that would decide it.')
+        apply_gold_joins(u_train, train_all, mod, joins, vocab_of)
+        would_join = Counter()
+        apply_gold_joins([dict(u) for u in u_eval + u_german], ev + german, mod,
+                         would_join, vocab_of)
+        joins['evalUnitsNotJoined'] = would_join['unitsChanged']
+        joins['evalJoinsNotApplied'] = would_join['joined']
+
     for group in (u_train, u_eval, u_german):
         measure_units(group, lv)
     all_units = u_train + u_eval + u_german
@@ -1479,6 +2065,38 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
     n_lines = len(train_all) + len(ev) + len(german)
     print(f'\nREAD  {n_in} raw pairs -> {n_lines} kept lines -> {len(all_units)} packed units')
     print(f'      (a unit is {n_lines / len(all_units):.2f} lines on average, cap {args.cap})')
+
+    if args.typography == 'restore-identity':
+        n_typo_units = sum(1 for u in u_train if any(c in TYPOGRAPHY_RESTORED for c in u['ocr']))
+        n_typo_ident = sum(1 for u in u_train
+                           if u['identity'] and any(c in TYPOGRAPHY_RESTORED for c in u['ocr']))
+        print('\nTYPOGRAPHY RESTORED (TRAIN ONLY — eval owes sft-line/eval.jsonl its characters)')
+        print('  The corpus had NONE. All 16 books, all 311,207 aligner pairs: zero curly quotes,')
+        print('  em dashes, en dashes or ellipses on either side. align-epub.py folds them to')
+        print('  ASCII before a pair is written; Tesseract read them correctly all along.')
+        print(f'  already-correct lines given their marks back {counts["typographyRestored"]:7d}')
+        print(f'  marks restored                               {counts["typographyMarks"]:7d}')
+        for k in ('typography_roundTripFailed', 'typography_unsafeMark',
+                  'typographySkippedHyphenLine', 'typographyNoRawLine', 'typographyBookNoBands'):
+            if counts[k]:
+                print(f'  {k:44s} {counts[k]:7d}')
+        print(f'  packed TRAIN units carrying a mark on the source side {n_typo_units} '
+              f'({n_typo_units / max(1, len(u_train)) * 100:.1f}%), {n_typo_ident} already-correct')
+        print('  (before the unit gates and the identity downsample; the emitted share is in')
+        print('   build-stats.json and in the FINAL table\'s note)')
+
+    if args.gold_join == 'wrap-hyphen':
+        print('\nGOLD-SIDE WRAP-HYPHEN JOINS (TRAIN ONLY)')
+        print('  Gold said `ad-mit` because repair_hyphen wrote the OCR fragment back on both')
+        print('  sides — right for a line model, which cannot see the other half. At the unit')
+        print('  both halves are here, and the publisher\'s own word decides.')
+        for k in ('wrapHyphensInUnits', 'joined', 'keptRealCompound', 'keptAmbiguous',
+                  'keptSidesDisagree', 'keptNoVocabulary', 'decidedByPublisherWord',
+                  'decidedByVocabulary', 'unitsChanged',
+                  'identityUnitsLost', 'evalUnitsNotJoined', 'evalJoinsNotApplied'):
+            print(f'  {k:24s} {joins[k]:7d}')
+        print('  evalUnitsNotJoined / evalJoinsNotApplied are what this would have done to eval')
+        print('  and deliberately did not: character parity with sft-line/eval.jsonl is law.')
 
     # ── the histograms the thresholds are read off ──────────────────────────
     lens = [len(u['ocr']) for u in all_units]
@@ -1578,6 +2196,8 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
 
     parity = verify_eval_parity(u_eval, args.parity_against or
                                 os.path.join(os.path.dirname(out.rstrip('/')), 'sft-line', 'eval.jsonl'))
+    same_as = verify_eval_unchanged(args.eval_identical_to,
+                                    (('eval.jsonl', u_eval), ('eval-german.jsonl', u_german)))
 
     # ── the balanced slice ──────────────────────────────────────────────────
     #
@@ -1618,21 +2238,26 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
         print(f'  !! {shortfall} short of --identity-share {args.identity_share}. Restraint is undertrained;')
         print('     more clean books is the fix, not a lower target.')
 
-    tok = token_bound(train)
-    tok_all = token_bound(all_units)
+    tok = token_bound(train, system)
+    tok_all = token_bound(all_units, system)
     print(f'\nTOKEN BUDGET — a BOUND, from chars/{CHARS_PER_TOKEN_WORST} (the worst measured '
           f'ratio, German) + {TEMPLATE_TOKENS}')
     print(f'  train  p50 {tok["p50"]:.0f}  p90 {tok["p90"]:.0f}  p99 {tok["p99"]:.0f}  max {tok["max"]:.0f}')
     print(f'  all    p50 {tok_all["p50"]:.0f}  p90 {tok_all["p90"]:.0f}  p99 {tok_all["p99"]:.0f}  '
           f'max {tok_all["max"]:.0f}')
     print(f'  MEASURED with the real Qwen3 tokenizer on {MEASURED_TOKENS["measuredOn"]}:')
-    for k in ('sft-line/train.jsonl', 'sft-sent/train.jsonl', 'sft-sent/eval-german.jsonl'):
+    for k in ('sft-line/train.jsonl', 'sft-sent/train.jsonl', 'sft-sent/eval-german.jsonl',
+              'sft-sent-v1_1/train.jsonl', 'sft-sent-v1_1-promptb/train.jsonl',
+              'sft-sent-v1_1-promptb/eval-german.jsonl'):
         m = MEASURED_TOKENS[k]
-        print(f'    {k:28s} p50 {m["p50"]:4d}  p90 {m["p90"]:4d}  p99 {m["p99"]:4d}  '
-              f'max {m["max"]:4d}   {m["over512"]:3d} over 512')
-    print('  max_seq_length 512 OVERFLOWS this corpus at cap 400 (23 rows, the tail German).')
-    print('  text_sft refuses to truncate, so that is a hard failure mid-run. 768 holds.')
-    print('  Re-measure with train-line.sh --preflight if --cap moves.')
+        print(f'    {k:38s} p50 {m["p50"]:4d}  p90 {m["p90"]:4d}  p99 {m["p99"]:4d}  '
+              f'max {m["max"]:4d}   {m["over512"]:4d} over 512')
+    print('  max_seq_length 512 OVERFLOWS this corpus at cap 400 and always did.')
+    print('  text_sft refuses to truncate, so that is a hard failure mid-run.')
+    print('  768 STILL HOLDS: the longest sequence this builder produces is 683 tokens')
+    print('  (v1.1 variant B, the longer system prompt on the longest German unit), so')
+    print('  0 of 99,272 rows across both v1.1 corpora exceed it.')
+    print('  Re-measure with train-line.sh --preflight if --cap or the prompt moves.')
 
     # ── the final table ─────────────────────────────────────────────────────
     files = [('train.jsonl', train), ('eval.jsonl', u_eval), ('eval-german.jsonl', u_german),
@@ -1666,13 +2291,14 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
             for u in rows_:
                 fh.write(json.dumps({
                     'messages': [
-                        {'role': 'system', 'content': SYSTEM},
+                        {'role': 'system', 'content': system},
                         {'role': 'user', 'content': u['ocr']},
                         {'role': 'assistant', 'content': u['truth']},
                     ],
                     'book': u['book'], 'page': u['page'], 'line': u['line'],
                     'lineRange': u['lineRange'], 'lines': u['lines'],
                     'cer': u['cer'], 'identity': u['identity'], 'truthTier': u['truthTier'],
+                    'goldJoins': u.get('goldJoins', 0),
                 }, ensure_ascii=False) + '\n')
     # Every packed unit, gated or not, downsampled or not — the base an
     # identity-share sweep (0.5 / 0.65 / 0.8) re-derives from without re-packing,
@@ -1715,11 +2341,82 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
                              'lines': len(german), 'units': len(u_german)} if german else None),
             'cappedBooks': cap_report,
             'evalCharacterParity': parity,
+            'evalUnchangedVersus': same_as,
+            'typography': ({
+                'mode': args.typography,
+                'restoredChars': TYPOGRAPHY_RESTORED,
+                'note': 'The aligner folds all of these to ASCII before a pair is written '
+                        '(tools/ocr-lab/align-epub.py norm_text, applied to the OCR line at '
+                        'build_ocr and to the EPUB paragraph at read time), so the corpus '
+                        'contained ZERO of them on either side. Tesseract read them: 104,467 '
+                        'of the 311,207 lines carry at least one in the raw band JSON. '
+                        'restore-identity gives them back to ALREADY-CORRECT TRAIN lines only '
+                        '— an edit row\'s target is the EPUB\'s text and its marks are not '
+                        'recoverable from anything on this disk. THE REAL FIX IS UPSTREAM: '
+                        'emit the marks and fold only for matching, which is what '
+                        'align-epub.py\'s own PUNCT_MAP comment already claims it does.',
+                'restoredLines': counts['typographyRestored'],
+                'restoredMarks': counts['typographyMarks'],
+                'skipped': {k: counts[k] for k in
+                            ('typography_roundTripFailed', 'typography_unsafeMark',
+                             'typography_noMarks', 'typographySkippedHyphenLine',
+                             'typographyNoRawLine', 'typographyBookNoBands') if counts[k]},
+                'emittedTrainUnitsWithMarkOnSource': sum(
+                    1 for u in train if any(c in TYPOGRAPHY_RESTORED for c in u['ocr'])),
+                'emittedTrainIdentityUnitsWithMarkOnSource': sum(
+                    1 for u in train if u['identity']
+                    and any(c in TYPOGRAPHY_RESTORED for c in u['ocr'])),
+                'emittedTrainUnits': len(train),
+                'synthesizedIdentityRows': 0,
+                'synthesizedNote': 'NONE WERE NEEDED. The natural population is large enough '
+                                   'that synthesis would have been the weaker source: every '
+                                   'restored line is a real scanner reading of a real page '
+                                   'whose truth agrees with it, drawn from TRAIN books only by '
+                                   'construction (the holdout split and the German window are '
+                                   'carved at line level one step earlier).',
+            } if args.typography != 'fold' else {'mode': 'fold'}),
+            'goldJoin': ({
+                'mode': args.gold_join,
+                'decisions': dict(joins),
+                'emittedTrainUnitsWithAJoin': sum(1 for u in train if u.get('goldJoins')),
+                'emittedTrainJoins': sum(u.get('goldJoins', 0) for u in train),
+                'emittedTrainEditUnits': sum(1 for u in train if not u['identity']),
+                'rule': 'A wrap hyphen inside a unit is closed in the GOLD when, and only '
+                        'when, the word the publisher printed (repair_hyphen\'s discarded '
+                        'joined truth word) says the two fragments are one word AND their '
+                        'alphanumeric characters concatenate to exactly that word\'s. '
+                        '`well-` + `known` = `well-known` in the EPUB, so the hyphen stays. '
+                        'Anything else is ambiguous and the hyphen stays. The SOURCE side is '
+                        'never touched.',
+                'servingDependency':
+                    'The join teaches a ONE-word -> ONE-word change at edit distance 1 '
+                    '(`extraordi-nary` -> `extraordinary`), which the shipped per-run / '
+                    'whole-unit guard already accepts — the balance rule counts '
+                    'whitespace-separated words and the distance budget is 2. So this corpus '
+                    'does NOT depend on a new guard exemption. A letters-identical join/split '
+                    'exemption is needed only for the SPACE-split class (`momen tum` -> '
+                    '`momentum`, 2 words -> 1), which this corpus does not teach and which is '
+                    'absent from it: 0 rows in 268,599 have the source splitting a word on '
+                    'whitespace where the truth does not.',
+                'contradictsPromptVariantA':
+                    'SYSTEM (variant A) says "Keep a hyphen at the end of the line exactly as '
+                    'it is." With --gold-join wrap-hyphen the targets disagree with that '
+                    'sentence for every interior wrap. SYSTEM_B rewrites the rule. Building '
+                    'variant A with --gold-join on is a deliberate mismatch and Owen\'s call.',
+            } if args.gold_join != 'off' else {'mode': 'off'}),
             'tokenBudget': {'bound': f'chars/{CHARS_PER_TOKEN_WORST} + {TEMPLATE_TOKENS}',
                             'boundTrain': tok, 'boundAll': tok_all,
                             'measured': MEASURED_TOKENS,
                             'maxSeqLength512': 'OVERFLOWS — 23 rows measured over 512; use 768'},
-            'system': SYSTEM,
+            'promptVariant': args.prompt_variant,
+            'promptVariantBIsADraft':
+                (None if args.prompt_variant == 'a' else
+                 'DRAFT FOR OWEN. foundry src/ocr/prompt.ts is NOT touched and nothing serves '
+                 'this text. sentences.py still crosschecks OCR_SYSTEM_PROMPT against variant '
+                 'A. Shipping variant B means moving prompt.ts, sentences.py, both crosschecks '
+                 'and a retrain together, in one commit.'),
+            'system': system,
+            'systemVariantA': SYSTEM,
         }, fh, indent=1)
     print(f'\nwrote {out}/{{train,eval,eval-german,eval-parity-1k}}.jsonl + units.jsonl + build-stats.json')
 
