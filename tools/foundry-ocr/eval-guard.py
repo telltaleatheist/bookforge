@@ -44,11 +44,26 @@ Generation is the expensive half and the noisy half. Re-running it to try a
 different guard costs GPU time AND lets sampling noise wear the costume of a
 policy difference — two runs of the same policy would differ too, and nothing
 in the output would say so. So `generate` writes every raw answer to a dump and
-`score` never talks to a server. Decoding is greedy (temperature 0, top_k 1),
-so the dump is reproducible rather than merely recorded.
+`score` never talks to a server.
 
 Every policy is scored on the SAME dump, which is what makes the comparison a
-comparison.
+comparison. Every guard RULE change in foundry since Aug 5 2026 was decided
+this way, on dumps that were already on disk, at zero GPU cost.
+
+GREEDY IS NOT BYTE-REPRODUCIBLE, AND A DUMP IS RECORDED RATHER THAN REPRODUCIBLE.
+Decoding is greedy (temperature 0, top_k 1) and this header used to claim that
+made a dump reproducible. Measured on llama-server b7482 macos-arm64 (Metal) it
+does not: two runs of an IDENTICAL config agree on **280 of 284** units
+(`results-sent-v1/greedy-determinism.txt`, which also has the first divergence
+in full). The cause is batch-shape dependence in llama.cpp's fused kernels plus
+`cache_prompt`, not sampling — top_k is 1 throughout, and it shows up as a
+near-tie flipping, a straight apostrophe for a curly one.
+
+280/284 is the FLOOR every claim from a re-generation has to clear. A difference
+between two dumps smaller than 4 units in 284 is an artefact and must be
+reported as one. It costs the conclusions in this directory nothing, because
+they were measured at 20x it — but it is why a guard change is scored on ONE
+dump rather than re-generated.
 
 ────────────────────────────────────────────────────────────────────────────────
 THE THREE POLICIES
@@ -60,12 +75,23 @@ THE THREE POLICIES
               whole answer for the unit.
   per-run     keep the legal runs, revert only the illegal ones.
 
-`whole-unit` and `per-run` enforce the IDENTICAL rule — a changed run is legal
-only if it replaces N words with N words, each pair within Levenshtein 2. They
-differ only in the blast radius of one violation. The Python below is a PORT of
-foundry `src/ocr/guard.ts`; `guard-crosscheck.mjs` runs a dump through both
-implementations and fails on any disagreement, because a scorer that guards
-differently from the shipped stage measures nothing.
+`whole-unit` and `per-run` enforce the IDENTICAL rule and differ only in the
+blast radius of one violation. The rule, in the order it is applied:
+
+  1. A JOIN OR SPLIT IS LEGAL — the run's non-whitespace characters are the same
+     on both sides and every token on both sides carries a letter or a digit.
+     `Memoran dum` -> `Memorandum`, `ofJuly` -> `of July`. NOT `...` -> `. . .`
+     (no token in it is a word) and NOT `inhu manity` -> `humanity` (the letters
+     differ, and so does the meaning).
+  2. A TYPOGRAPHY SUBSTITUTION IS ILLEGAL — every changed pair is the same mark
+     in a different font. `—` -> `-`, `'action'` with curly quotes -> straight.
+  3. Otherwise: N words for N words, each pair within Levenshtein 2.
+
+The Python below is a PORT of foundry `src/ocr/guard.ts`; `guard-crosscheck.mjs`
+runs a dump through both implementations and fails on any disagreement, because
+a scorer that guards differently from the shipped stage measures nothing. The
+crosscheck's inputs must exercise every branch above — a rule no dump reaches is
+a rule the crosscheck is blind to.
 
 ────────────────────────────────────────────────────────────────────────────────
 COMPARING TWO UNIT SIZES
@@ -157,7 +183,56 @@ def _tokenize(s):
     return lead, tokens, s[at:]
 
 
+# Marks that are the same mark in a different font — foundry's PUNCT_FOLD,
+# member for member. Guillemets are deliberately absent (a language's
+# convention, not a font's) and so is the space class (`\s` already covers NBSP
+# and the Unicode spaces, so a space swap never reaches a run).
+_PUNCT_FOLD = {}
+for _c in '-‐‑‒–—―−':
+    _PUNCT_FOLD[_c] = '-'
+for _c in '\'‘’‚‛`´′':
+    _PUNCT_FOLD[_c] = "'"
+for _c in '"“”„‟″':
+    _PUNCT_FOLD[_c] = '"'
+
+
+def _punct_fold(word):
+    return ''.join('...' if ch == '…' else _PUNCT_FOLD.get(ch, ch) for ch in word)
+
+
+def _is_word(token):
+    """A word is a token with a letter or a digit in it. `...` is not a word."""
+    return any(ch.isalnum() for ch in token)
+
+
+def _is_join_or_split(delw, insw):
+    """Only the space between two WORDS moved — see foundry's header."""
+    if ''.join(delw) != ''.join(insw):
+        return False
+    return all(_is_word(w) for w in delw) and all(_is_word(w) for w in insw)
+
+
+def _is_typography_only(delw, insw):
+    if len(delw) != len(insw):
+        return False
+    changed = False
+    for d, i in zip(delw, insw):
+        if d == i:
+            continue
+        changed = True
+        if _punct_fold(d) != _punct_fold(i):
+            return False
+    return changed
+
+
 def _judge(delw, insw, max_dist):
+    # Neither shape is a substitution, so both are decided first.
+    if _is_join_or_split(delw, insw):
+        return True, None
+    if _is_typography_only(delw, insw):
+        return False, (f'typography substitution: [{" ".join(delw)}] -> [{" ".join(insw)}] '
+                       "(the same mark in a different font, which is a typesetter's choice "
+                       'and not a misreading)')
     if len(delw) != len(insw):
         return False, (f'unbalanced change: [{" ".join(delw)}] -> [{" ".join(insw)}] '
                        f'({len(delw)} word{"" if len(delw) == 1 else "s"} -> {len(insw)})')
