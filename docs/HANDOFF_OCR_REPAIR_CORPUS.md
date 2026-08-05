@@ -13,11 +13,14 @@ architecture" and "Phase D" first. This document is the runbook, not the reasoni
 
 A book reaches the EPUB in the fewest steps that can answer "what stays"
 (get-text → blocks → curate → reflow), and **every repair happens on the book
-after that**: OCR correction first, then footnote removal. The corrector must
-therefore run on **sentences from a completed EPUB**, which is not what it was
-trained on — it is line-trained on PDF text. The job is to rebuild its corpus at
-sentence granularity from real pipeline output, and to include the split-word
-("`totali tarianism`") cases that the pipeline currently produces.
+after that**: OCR correction first, then footnote removal. The corrector is
+line-trained on PDF text, so the unit it should be served — and therefore
+trained on — is the open question this corpus answers. **Measured 2026-08-05:
+sentences do WORSE than lines with the current model** (see below), so either
+serve line-shaped units recovered from the v0.5.0 `data-bf-blocks` stamps, or
+train on sentences so serving them stops costing accuracy. The split-word
+("`totali tarianism`") cases are NOT part of this job — they are an extraction
+bug with a chosen fix; see landmine 2.
 
 ---
 
@@ -201,11 +204,52 @@ Consequence: `totali tarianism`, `modernis ing`, `compar ing`, `commit tees`.
 BookForge's `electron/epub-processor.ts` already strips U+00AD on the EPUB path,
 so this bites PDF-sourced books only.
 
-**2. Do not mine hyphen examples from damage we are about to stop causing** —
-unless we decide not to fix extraction. If extraction is fixed, pairs mined from
-our own dropped hyphens target a distribution that no longer exists. Books where
-the typesetter left no hyphen at all are the durable case; the model is the only
-recourse there. Check the survey's recommendation before mining.
+**2. DO NOT mine hyphen examples from our own dropped hyphens — SETTLED
+2026-08-05 by `docs/PDF_SOFT_HYPHEN_SURVEY.md`.** The survey read all 160
+archive PDFs (50,581 pages, 1,790,536 lines) with foundry's own pinned
+pdfjs-dist, patched so the drop is switchable, and read every book twice in one
+process. **The extraction fix is going in**, so pairs mined from this damage
+would target a distribution that is about to disappear. Books where the
+typesetter left no hyphen at all remain the durable case, and the model is the
+only recourse there — mine THOSE.
+
+The numbers, because they also size the prize: 43 of 160 books actually draw a
+soft hyphen; **54,305 assembled lines change, 53,103 of them line-final — that
+is 53,103 words currently split by a space.** Median damage in an affected book
+is 82 per 1,000 lines and the worst is 251. In affected books **89.1% of every
+wrap hyphen is a soft hyphen** — those books have no other kind, which is why
+the ASCII-only rule never saw a thing. Only U+00AD matters: 55,126 of 55,130
+drawn Cf glyphs, with U+200B/200C/200D/2060/FEFF drawn ZERO times in 50,581
+pages. The fix is as narrow as it could possibly be.
+
+**The repair, costed and chosen: patch pdf.js.** `bun patch` on pdfjs-dist
+(a plain dependency, not vendored; `release-build.sh` compiles from
+node_modules) deleting the one `isInvisibleFormatMark` line — 100% of the
+damage, about half a day, one patch file. Operator-list reconciliation was
+measured at 99.8% for 12x the extraction cost and a standing bet on pdf.js
+internals; geometry helps 7 of 36 books at 22% median precision; attestation
+over the bare join reaches only **34%**, not the 90% the brief guessed.
+
+**The pairing is already in place.** The survey warns that fixing the reader
+ALONE makes output worse — `linejoin.ts` would take the `!halves` branch and
+emit `totali<AD> tarianism`, the same wrong space plus an invisible character.
+It concluded foundry has no soft-hyphen rule; **it grepped a stale branch.**
+foundry `main` HAS the rule (`SOFT_HYPHEN`, `SOFT_HYPHEN_END`,
+`SOFT_HYPHEN_SPLIT` in `src/paragraphs/hyphen.ts`, merged with Phase D). So the
+foundry half is done and only the reader patch remains.
+
+**One more thing the survey measured:** 1.2% of true soft-hyphen joins (629)
+have `head-tail` attested as a real compound elsewhere in the book. So
+BookForge's unconditional `electron/epub-processor.ts`
+`replace(/­\s*/g, '')` is slightly wrong — a restored mark should go
+through `proveHyphenVerdict` rather than weld unconditionally.
+
+**And the attestation rule as originally briefed is INERT**: "joined attested
+and neither fragment attested" fired ONCE in 161 books with 0 true positives,
+because `totali` stands alone at a line edge and attests itself. Built from
+INTERIOR tokens only it reaches 34.4% recall at 98.9% precision (74 fires in
+685,233 joins on hyphen-free books; all 74 inspected, one genuine error).
+Dropping either fragment guard admits `to`+`ofter`->`too` and `a`+`loud`->`aloud`.
 
 **3. Sentence splitting is not `split('.')`** — and see the measurement above
 before assuming sentences are the unit at all. Abbreviations (`Dr.`, `Hrsg.`,
