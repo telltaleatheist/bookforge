@@ -83,6 +83,52 @@ shows the sentence naming what is missing ("Next needs the book built — press
 Build the book"). From the EPUB station, Next flows into TTS options, then
 Assembly.
 
+### The hand-off — BUILT 2026-08-05
+
+Next at the top of the ladder took the user nowhere: it emitted `finalized`, the
+editor window toasted "Project finalized successfully!" and closed after 1.5s.
+Both listeners treated a narration hand-off as a finalize because there was no
+way to tell them apart. What it does now, and why each part is the way it is:
+
+- **A narration hand-off is its OWN event.** `handedOffToNarration` on the
+  picker, distinct from `finalized`. Finalizing means the book has been written,
+  and toast-then-close is a correct answer to that; a hand-off has already moved
+  the user to another window, so the toast is addressed to nobody.
+- **Main routes it, because the picker is its own BrowserWindow.**
+  `app:show-narration` is `app:show-queue`'s shape exactly — raise, show, focus
+  the main window, then send it an event. The picker never reaches for the main
+  window's Angular router.
+- **It carries the PROJECT.** Narration is Studio's Process tab and not a route,
+  so the main window has to know which book to select; a bare event would
+  narrate whichever book happened to be open.
+- **Order is the design: nothing closes until the hand-off is ACCEPTED.** Main
+  refuses when there is no main window (as `app:show-queue` already does), the
+  picker says the refusal and stays open. Closing first would leave the user with
+  no window, no narration and no account of where their book went.
+- **It survives not being caught.** `NarrationHandoffService` holds the request
+  until Studio consumes it, because Studio is lazily routed and is usually NOT
+  mounted at the moment the event lands — the user was in the picker. A query
+  parameter cannot do this job: the router does not re-emit an unchanged URL, so
+  a second Next for the same book would produce no event at all.
+- **The wizard gains one door and no new steps.** `narrationRequest` (a bumped
+  counter, mirroring `continueRequest`) stands it on the TTS step by walking its
+  OWN `skipStep`/`goBack`. `continueRequest` could not serve: it resumes an
+  interrupted render, refuses outright when there is no partial session, and
+  disables the earlier steps — a book arriving from the picker is not resuming
+  anything. Skipping the pass step is the honest word for it: the picker's ladder
+  is where this book's passes were composed and run.
+
+**The per-row Process button goes to the same place**, through the same
+`goToNarration()`, and is gated by the same rule in the same words: the family's
+EPUB member is `readExportEpub` having found the book, which IS the picker's
+`bookEpubExists`, and `narrationRefusal` (shared/document/stations.ts) supplies
+`MISSING_REASONS.tts` for both. It is on the FAMILY rows only — a Process on a
+cleaned/simplified/translated row would read as a promise to narrate that file.
+
+**Not run in the app.** Everything above is established from the code, the
+compiler and the pure tests (`tools/test-station-ladder.js` walks the refusal
+against every shape of book). The first press of Next on a real book is owed.
+
 ## Tabs in the picker
 
 Yes. A tab per open artifact (archive / working / EPUB), PDFElement-style.
@@ -260,10 +306,22 @@ Chapter titles below):
 
 ## What is retired
 
-- The Processing, TTS, and Reassembly tabs. Replaced by the per-row Process
-  button → this document's ladder, plus a small **global jobs monitor**
-  (launch is per-document; watching/cancelling is global — jobs from many
-  documents run concurrently and must stay visible).
+- **CORRECTED 2026-08-05, on measurement: there are no Processing, TTS and
+  Reassembly TABS to retire.** They are STEPS of one wizard
+  (`ll-wizard.component.ts`, `LLWizardStep = passes | cleanup | translate | tts |
+  assembly | review`), rendered inside Studio's single **Process** tab. Only the
+  first step — pass composition — has a picker equivalent: all six passes already
+  ride the same door the picker uses (`queueService.submitProcessingRun` →
+  `processing:submit-chain`). **TTS and Assembly have no picker equivalent at
+  all** — engine, device, Orpheus tier, voice, sampling, presets and resume live
+  on the TTS step; denoise, de-ring, RVC, reassemble-from-cache and the audition
+  player live on the Assembly step. So the ladder replaces the pass-composition
+  step and nothing else, and the wizard STAYS. What the per-row Process button
+  and the picker's Next do is **navigate into it**, at the TTS step (see "The
+  hand-off" below).
+- The chain-composition step's role as the place processing STARTS: launching is
+  per-document now, plus a small **global jobs monitor** (watching/cancelling is
+  global — jobs from many documents run concurrently and must stay visible).
 - The chain wizard and its planner-side chain composition (the positional
   footnotes logic just built becomes moot — the ladder makes position
   explicit).
@@ -673,10 +731,12 @@ want different sizes. Do not assume one answer serves both.
     cast. `document:measure-class` (new) measures the archive original, and its
     two answers are seconds versus minutes — so a refusal leaves the class
     UNKNOWN and the book stands still rather than being guessed either way.
-- **C: versions + retirement.** Grouped versions page with derived stars and
-  staleness, the working copy given an openable row, pass-shaped rows removed,
-  per-row Process button, Processing/TTS/Reassembly tabs replaced by ladder +
-  global jobs monitor, chain wizard deleted.
+- **C: versions + the way into narration.** Grouped versions page with derived
+  stars and staleness, the working copy given an openable row, pass-shaped rows
+  removed, per-row Process button, and the picker's Next actually delivering the
+  user to narration. The wizard is NOT deleted — see "What is retired", corrected
+  2026-08-05: its TTS and Assembly steps have no picker equivalent. The global
+  jobs monitor is still owed.
 - **D: foundry epub correction.** `ocr-correct --epub`, the EPUB-station
   button, the validation run against per-line correction.
 
