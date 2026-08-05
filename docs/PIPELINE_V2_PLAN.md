@@ -497,6 +497,32 @@ hyphenation point, invisible unless the line breaks there. So it joins
 unconditionally — no attestation, no hyphen kept — and a soft hyphen anywhere
 else is invisible formatting that must never reach a TTS engine.
 
+**THE HYPHEN NEVER ARRIVES — measured 2026-08-05, and the fix above is inert
+until this is solved.** The join rule now handles U+00AD unconditionally and
+still changes nothing on Kershaw, because the character is discarded before it
+reaches the joiner. 34 of that PDF's 42 fonts carry a ToUnicode entry mapping a
+glyph to U+00AD and page 2 draws two of them — but pdf.js's `getTextContent`
+runs `if (category.isInvisibleFormatMark) { continue; }` against
+`/^(\s)|(\p{Mn})|(\p{Cf})$/u`, so **every Unicode Cf character is dropped, glyph
+and advance both**, with no option to keep it. The line ends `…views on ‘totali`
+and the next opens `tarianism’` with no mark of any kind between them.
+
+Recovering it means reconciling `getOperatorList()` (which keeps the glyphs)
+against `getTextContent()` (which synthesizes whitespace from geometry) — a diff
+between two streams, under the input distribution of every model in the repo.
+It is a subsystem, not a patch, and it wants measuring across books first.
+Recorded in `src/pdf/extract.ts`'s header so nobody re-derives it.
+
+**Training the rejoin into the next model (Owen, 2026-08-05) — yes, but not on
+this.** A model can learn `totali tarianism` → `totalitarianism`: neither
+fragment is a word and the join is, which is a strong and safe signal. And
+Phase D makes it reachable, because correction is offered on every book rather
+than only on scanned ones. But mine that training data from books where the
+hyphen is GENUINELY absent in the source, never from books where we dropped it
+ourselves — teaching the model to clean up after our own extraction bug aims it
+at a distribution that disappears the day the bug is fixed. Fix extraction
+first; train on whatever residue remains.
+
 Owen's framing, which is the general lesson: this whole class of damage "is an
 artifact of joining two lines from a pdf instead of just doing it from an epub
 from the start." A book that arrives as an EPUB has the publisher's own
