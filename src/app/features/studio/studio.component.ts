@@ -1994,8 +1994,14 @@ export class StudioComponent implements OnInit, OnDestroy {
    * not there" and "we were holding an old list".
    */
   private async openNarrationFor(projectDir: string): Promise<void> {
+    // Archived books are searched too: being archived is not being gone, and a
+    // book the picker had open is one the user is plainly still working on.
+    // Matched with samePath because the two spellings come from different hands
+    // — main resolves with backslashes on Windows, the studio list joins with
+    // forward slashes — and two spellings of one directory are not two books.
     const find = (): StudioItem | undefined =>
-      this.studioService.books().find(b => !!b.projectDir && samePath(b.projectDir, projectDir));
+      [...this.studioService.books(), ...this.studioService.archived()]
+        .find(b => !!b.projectDir && samePath(b.projectDir, projectDir));
 
     let item = find();
     if (!item) {
