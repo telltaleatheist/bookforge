@@ -336,7 +336,7 @@ import { looseMatch } from '../../shared/search';
                       [refreshTrigger]="filesRefreshTrigger()"
                       (edit)="openEditorWithFile($event)"
                       (open)="openVariantInEditor($event)"
-                      (exportDoc)="exportEpub($event)"
+                      (exportDoc)="exportDocument($event)"
                       (exportAudio)="exportM4b($event)"
                       (listen)="openListen($event)"
                       (skipped)="versionsPanel.set('skipped')"
@@ -554,7 +554,7 @@ import { looseMatch } from '../../shared/search';
         <div class="epub-picker" (click)="$event.stopPropagation()">
           <div class="epub-picker-title">Export EPUB</div>
           @for (opt of epubPickerOptions(); track opt.path) {
-            <button class="epub-picker-item" (click)="exportEpub(opt.path)">
+            <button class="epub-picker-item" (click)="exportDocument(opt.path)">
               <span class="epub-picker-label">{{ opt.label }}</span>
               <span class="epub-picker-desc">{{ opt.description }}</span>
             </button>
@@ -2276,7 +2276,7 @@ export class StudioComponent implements OnInit, OnDestroy {
     // If only one version, skip the picker and go straight to save
     if (options.length === 1) {
       this.epubExportItem = item;
-      this.exportEpub(options[0].path);
+      this.exportDocument(options[0].path);
       return;
     }
 
@@ -2285,10 +2285,56 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.epubPickerVisible.set(true);
   }
 
-  async exportEpub(selectedPath: string): Promise<void> {
+  /**
+   * Export a document: give the user a copy, somewhere they chose.
+   *
+   * ONE entry point, two mechanisms, chosen by what the file IS.
+   *
+   * An EPUB export is not a copy — `pipeline.exportEpub` re-packages the book
+   * with this project's title, author and cover, which is the whole point of
+   * exporting a book and is only meaningful on an EPUB. Every other document
+   * the versions page lists is a PDF (the archive original, the working copy),
+   * and re-packaging one as an EPUB is not a thing: its export is its bytes,
+   * unchanged, through the same save-a-copy path the M4B export uses.
+   *
+   * The branch lives here rather than in two callers so there is still exactly
+   * one Export in the app. Before this, an Export on a PDF row would have been
+   * handed to the EPUB packer, which opens it as a zip.
+   */
+  async exportDocument(selectedPath: string): Promise<void> {
     this.epubPickerVisible.set(false);
-    const item = this.epubExportItem;
-    if (!item || !selectedPath) return;
+    if (!selectedPath) return;
+
+    const isEpub = selectedPath.toLowerCase().endsWith('.epub');
+    if (!isEpub) {
+      const name = selectedPath.split(/[\\/]/).pop();
+      if (!name) {
+        this.exportStatus.set('Export failed: that path names no file');
+        setTimeout(() => this.exportStatus.set(null), 3000);
+        return;
+      }
+      const copied = await this.electronService.saveFileCopy(selectedPath, name);
+      if (copied.canceled) return;
+      this.exportStatus.set(copied.success
+        ? 'Exported a copy successfully'
+        : `Export failed: ${copied.error || 'Unknown error'}`);
+      setTimeout(() => this.exportStatus.set(null), 3000);
+      return;
+    }
+
+    // Whose metadata the exported book carries. TWO callers, two sources, not a
+    // fallback: the context menu PINS an item because it can act on a row that
+    // is not the selected one, while an Export pressed on the Versions tab is
+    // always about the book on screen. Reading only the pinned one made the
+    // versions-page Export do nothing at all until the context-menu picker had
+    // been used once in the same session.
+    const item = this.epubExportItem ? this.epubExportItem : this.selectedItem();
+    this.epubExportItem = null;
+    if (!item) {
+      this.exportStatus.set('Export failed: no book is selected');
+      setTimeout(() => this.exportStatus.set(null), 3000);
+      return;
+    }
 
     const metadata: any = {};
     if (item.title) metadata.title = item.title;

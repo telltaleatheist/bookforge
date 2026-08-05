@@ -3365,6 +3365,57 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /**
+   * Give the user a copy of a file, somewhere they choose. The bytes are
+   * unchanged — this is the export of anything that is not an EPUB (the EPUB
+   * export re-packages the book with the project's metadata, which is not a
+   * meaningful act on a PDF).
+   */
+  async saveFileCopy(sourcePath: string, defaultName?: string): Promise<{
+    success: boolean; canceled?: boolean; filePath?: string; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.dialog.saveFileCopy(sourcePath, defaultName);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Remove a project's working PDF, its binding record and the machine-local
+   * scan scratch — one act, because the three only mean anything together.
+   * The archive original is untouched and the book EPUB survives.
+   */
+  async discardWorkingDocument(projectDir: string, sourcePath: string): Promise<{
+    success: boolean; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.document.discard({ projectDir, sourcePath });
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Delete the project's book EPUB together with everything that describes it:
+   * the manifest record, the passes applied to it, and the diffs those passes
+   * left on disk. A diff belongs to the file it was applied to.
+   */
+  async deleteBookEpub(projectDir: string): Promise<{
+    success: boolean;
+    error?: string;
+    removed?: {
+      relPath: string;
+      fileRemoved: boolean;
+      droppedPasses: number;
+      removedPaths: string[];
+      bindingsCleared: number;
+    };
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.document.deleteBook(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   /** Delete a project's content-analysis report (report + in-progress checkpoint). */
   // ─── Training-data sessions ───────────────────────────────────────────────
   // Archived hand-labelling work under /Volumes/Callisto/training/rubric/. Read to

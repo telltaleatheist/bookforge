@@ -64,7 +64,7 @@ export const STAR_MEANINGS: Record<VersionStar, string> = {
  * landed in it. A book whose manifest remembers a `get-text` pass whose working
  * copy has since been reset must not show a Cast star.
  */
-const PASS_STARS: Record<string, VersionStar> = {
+export const PASS_STARS: Record<string, VersionStar> = {
   // The retired kind is the only one that has ever recorded a correction pass;
   // `ocr-correct --epub` (Phase D) records the same kind.
   'ocr-correction': 'corrected',
@@ -78,6 +78,23 @@ const BOUNDARY_STARS: Record<string, VersionStar> = {
   'get-text': 'cast',
   blocks: 'detect',
 };
+
+/**
+ * The star a pass kind lights, or null when it lights none.
+ *
+ * Null is a real answer: `get-text`, `blocks` and `reflow` are recorded against
+ * the book as the passes that PRODUCED it, and the retired `tesseract` /
+ * `detection` kinds belong to books processed before Aug 2026. None of them has
+ * a column on the EPUB row.
+ *
+ * This is exported because the star is now the way IN to a pass's diff (Owen,
+ * third session: a diff "should be linked to the file it was applied to"), and
+ * the provenance badges have to know which kinds the stars are already carrying
+ * so the two do not both offer the same review.
+ */
+export function starForPassKind(kind: string): VersionStar | null {
+  return PASS_STARS[kind] ?? null;
+}
 
 export type FamilyRowKind = 'archive' | 'working' | 'epub';
 

@@ -20,6 +20,7 @@ import {
   STAR_LABELS,
   STAR_MEANINGS,
   latestPassByKind,
+  starForPassKind,
   starSlotsFor,
   versionFamily,
   type VersionFamilyInput,
@@ -34,6 +35,10 @@ interface VersionRow {
   diffOriginalPath?: string; // the original it was computed against (resolved locally, if it exists)
   /** The file the editor is pointed at for this row, when it is not this row's own. */
   openPath?: string;
+  /** The 'archive' row only: the manifest variant that IS this file. */
+  variantId?: string;
+  /** The 'archive' and 'working' rows: the archive original this family is bound to. */
+  primaryPath?: string;
   /** The 'working' row only: the binding's recorded stage boundaries. */
   stageBoundaries?: Array<{ stage: string; finishedAt: string }>;
   /** The 'exported' row only: when Reflow wrote this book, if it was recorded. */
@@ -62,12 +67,27 @@ interface SentenceCacheInfo {
  * — but "Review changes" is the only way to see what a pass did, so it moved
  * onto the badge rather than out of the app.
  */
-/** One star column on a document row: what it is, and whether it is lit. */
+/**
+ * One star column on a document row: what it is, whether it is lit, and — when
+ * the pass behind it recorded one — the review of what it changed.
+ *
+ * Owen, third real session: "any time a process is run on a file, there should
+ * be a diff with a 'review changes' button on that file… and it should be linked
+ * to the file it was applied to." The star IS the record that the pass ran, so
+ * the star is the way in to what it did. `review` is null for a star that is
+ * unlit AND for a lit one whose pass left no diff (a job that died before it
+ * wrote one) — and a star with no review must never look pressable, or two
+ * identical-looking stars would behave differently.
+ */
 interface StarSlot {
   id: VersionStar;
   label: string;
   lit: boolean;
   tooltip: string;
+  /** The latest run of this pass's recorded diff, or null. */
+  review: { diffPath: string; reportPath: string; kind: AppliedPassKind; when: string } | null;
+  /** What pressing it does, in words. Null exactly when `review` is. */
+  action: string | null;
 }
 
 /** One document row, arranged into the family and carrying its derived state. */
@@ -320,13 +340,28 @@ const AUDIO_EXTS = new Set([
                 <div class="rlabel">{{ row.v.label }} <span class="ext">.{{ row.v.extension }}</span></div>
                 <div class="rdesc">{{ rowDescription(row) }}</div>
                 @if (row.slots.length > 0) {
+                  <!-- The stars are the record that a pass ran, so a star whose
+                       pass left a diff IS the way in to what it changed. One that
+                       did not is a plain span: two identical-looking stars where
+                       only one does something is worse than no affordance. -->
                   <div class="stars">
                     @for (s of row.slots; track s.id) {
-                      <span class="star" [class.lit]="s.lit" [title]="s.tooltip">
-                        <span class="sglyph">{{ s.lit ? '★' : '☆' }}</span>{{ s.label }}
-                      </span>
+                      @if (s.review) {
+                        <button type="button" class="star lit review" [title]="s.action"
+                                [attr.aria-label]="s.action"
+                                (click)="$event.stopPropagation(); openStarReview(s)">
+                          <span class="sglyph">★</span>{{ s.label }}<span class="sgo">see changes</span>
+                        </button>
+                      } @else {
+                        <span class="star" [class.lit]="s.lit" [title]="s.tooltip">
+                          <span class="sglyph">{{ s.lit ? '★' : '☆' }}</span>{{ s.label }}
+                        </span>
+                      }
                     }
                   </div>
+                  @if (rowHasReviewableStar(row)) {
+                    <div class="stars-hint">Click a ★ pass to see the changes it made to this file.</div>
+                  }
                 }
                 @if (row.staleness; as stale) {
                   <div class="stale">{{ stale }}</div>
@@ -348,12 +383,19 @@ const AUDIO_EXTS = new Set([
                 }
                 @if (row.v.editable) {
                   <button class="act" (click)="openDoc(row.v)" [title]="openTitle(row.v)">Open</button>
+                } @else if (row.v.type === 'archive') {
+                  <!-- Shown DISABLED rather than omitted. Opening this book lands
+                       on the working copy (RULED 2026-08-04 — you never start on a
+                       read-only book), so an Open here would be a second button
+                       doing exactly what the row below it does. The button that
+                       says why beats a gap the user has to interpret. -->
+                  <button class="act" disabled [title]="openTitle(row.v)">Open</button>
                 }
                 @if (exportable(row.v)) {
-                  <button class="act" (click)="exportDoc.emit(row.v.path)" title="Save a copy to your computer">Export</button>
+                  <button class="act" (click)="exportDoc.emit(row.v.path)" [title]="exportTitle(row.v)">Export</button>
                 }
                 @if (deletable(row.v)) {
-                  <button class="act danger" (click)="removeDoc(row.v)" title="Delete this version">Delete</button>
+                  <button class="act danger" (click)="removeDoc(row.v)" [title]="deleteTitle(row.v)">Delete</button>
                 }
                 @if (row.v.type === 'original') {
                   <button class="act danger" (click)="resetEdits()"
@@ -660,6 +702,39 @@ const AUDIO_EXTS = new Set([
     .star.lit { opacity: 1; color: var(--text-primary); font-weight: 600; }
     .star .sglyph { font-size: 0.78rem; color: var(--text-secondary); }
     .star.lit .sglyph { color: var(--accent-primary, #06b6d4); }
+
+    /* A star with a diff behind it is a control, and looks like one: it carries
+       the page's existing pill shape (see .pbadge) so it reads as pressable
+       WITHOUT hovering, and it says what pressing it gets you. A lit star with no
+       diff keeps the plain <span> above — the difference has to be visible, or
+       the user learns that stars sometimes do nothing. */
+    button.star.review {
+      font-family: inherit; cursor: pointer;
+      padding: 2px 8px; border-radius: 999px;
+      border: 1px solid var(--border-default, rgba(255,255,255,0.12));
+      background: var(--bg-base);
+      color: var(--text-primary); font-size: 0.68rem; font-weight: 600;
+    }
+    button.star.review .sgo {
+      margin-left: 5px; padding-left: 6px;
+      border-left: 1px solid var(--border-default, rgba(255,255,255,0.12));
+      color: var(--accent-primary, #06b6d4); text-decoration: underline;
+      font-weight: 600;
+    }
+    button.star.review:hover {
+      border-color: var(--accent-primary, #06b6d4);
+      background: color-mix(in srgb, var(--accent-primary, #06b6d4) 12%, var(--bg-base));
+    }
+    button.star.review:hover .sgo { color: var(--text-primary); }
+    button.star.review:focus-visible {
+      outline: 2px solid var(--accent-primary, #06b6d4); outline-offset: 2px;
+    }
+
+    /* Said in words, where the eye lands — a tooltip is only found by someone who
+       already suspected the star did something. Rendered only when at least one
+       star on THIS row is pressable, so the page never advertises an affordance
+       that isn't there. */
+    .stars-hint { margin-top: 4px; font-size: 0.68rem; color: var(--text-secondary); }
 
     /* Said, not locked: the book is older than the curation, and Rebuild is
        right there. Nothing is disabled by it. */
@@ -1045,6 +1120,7 @@ export class StudioVersionsComponent {
   readonly documentRows = computed<DocumentFamilyRow[]>(() => {
     const input = this.familyInput();
     const family = new Map(versionFamily(input).map(r => [r.id, r]));
+    const reviews = this.reviewByStar();
     const ladder = ['archive', 'working', 'exported'];
     const rank = (v: VersionRow): number => {
       const at = ladder.indexOf(v.type);
@@ -1063,18 +1139,98 @@ export class StudioVersionsComponent {
         return {
           v,
           depth: member.depth,
-          slots: starSlotsFor(member.kind).map(id => ({
-            id,
-            label: STAR_LABELS[id],
-            lit: lit.has(id),
-            tooltip: lit.has(id)
-              ? STAR_MEANINGS[id]
-              : `Not done: ${STAR_MEANINGS[id].charAt(0).toLowerCase()}${STAR_MEANINGS[id].slice(1)}`,
-          })),
+          slots: starSlotsFor(member.kind).map(id => {
+            // A review only ever hangs off a LIT star: the diff is the record of
+            // a run, and an unlit star is the absence of one. A lit star with no
+            // diff (the pass ran, its job died before recording, or it predates
+            // diffs) keeps `review: null` and stays inert.
+            const review = lit.has(id) ? reviews.get(id) ?? null : null;
+            return {
+              id,
+              label: STAR_LABELS[id],
+              lit: lit.has(id),
+              tooltip: lit.has(id)
+                ? STAR_MEANINGS[id]
+                : `Not done: ${STAR_MEANINGS[id].charAt(0).toLowerCase()}${STAR_MEANINGS[id].slice(1)}`,
+              review,
+              action: review
+                ? `See what ${STAR_LABELS[id].toLowerCase()} changed in this file — ${review.when}`
+                : null,
+            };
+          }),
           staleness: member.staleness,
         };
       });
   });
+
+  /**
+   * The latest recorded diff for each star, keyed by the star it lights.
+   *
+   * `passDiffs()` is the manifest's own index of the passes that left a diff, in
+   * execution order, so the LAST of a kind is the one that describes the book —
+   * the same latest-wins the badges use. `starForPassKind` is the one mapping
+   * from a pass kind to a star (@shared/document/version-family), so a kind with
+   * no star column (get-text, blocks, reflow, and the retired kinds) simply does
+   * not appear here and its review stays on its badge.
+   */
+  private readonly reviewByStar = computed(() => {
+    const byStar = new Map<VersionStar, { diffPath: string; reportPath: string; kind: AppliedPassKind; when: string }>();
+    for (const diff of this.passDiffs()) {
+      const star = starForPassKind(diff.kind);
+      if (!star) continue;
+      const at = new Date(diff.at);
+      byStar.set(star, {
+        diffPath: diff.absPath,
+        // Footnote removal writes foundry's own review report beside its diff.
+        // Other passes have none, and a missing file shows no header.
+        reportPath: diff.absPath.replace(/diff\.json$/, 'report.json'),
+        kind: diff.kind,
+        when: isNaN(+at) ? 'date unknown' : at.toLocaleString(),
+      });
+    }
+    return byStar;
+  });
+
+  /**
+   * Is the book's own row on screen?
+   *
+   * Measured from the family, which mints an EPUB row exactly when the file is
+   * on disk. False is a real state — a record naming a book somebody removed by
+   * hand — and it is what decides whether the stars can carry the reviews.
+   */
+  private readonly epubRowPresent = computed(() =>
+    this.documents().some(v => v.type === 'exported'));
+
+  /** True when at least one star on this row can be pressed. Drives the hint. */
+  rowHasReviewableStar(row: DocumentFamilyRow): boolean {
+    return row.slots.some(s => !!s.review);
+  }
+
+  /**
+   * Open what a pass changed, from its star.
+   *
+   * The SAME viewer and the same report loading as the provenance badge's
+   * "Review changes" — one way to show a pass diff, reached from wherever the
+   * record of that pass is shown.
+   */
+  openStarReview(slot: StarSlot): void {
+    const review = slot.review;
+    if (!review) {
+      console.error(`[studio-versions] the ${slot.id} star was pressed with no recorded diff behind `
+        + 'it. Only a star carrying a review is rendered as a button.');
+      return;
+    }
+    this.passReport.set(null);
+    this.comparing.set({
+      mode: 'pass',
+      diffPath: review.diffPath,
+      reportPath: review.reportPath,
+      title: `${STAR_LABELS[slot.id]} — what changed`,
+      when: review.when,
+    });
+    this.compareActive.emit(true);
+    if (review.kind === 'footnotes') void this.loadPassReport(review.reportPath);
+  }
 
   /** What a stage boundary is called on the working copy's line. */
   private readonly BOUNDARY_LABELS: Record<string, string> = {
@@ -1128,19 +1284,37 @@ export class StudioVersionsComponent {
   openDoc(v: VersionRow): void { this.edit.emit(this.editorTargetFor(v)); }
 
   openTitle(v: VersionRow): string {
-    return v.type === 'working'
-      ? 'Open this book in the picker, on your working copy'
-      : 'Open this file in the editor';
+    if (v.type === 'working') return 'Open this book in the picker, on your working copy';
+    if (v.type === 'archive') {
+      return 'Opening this book lands on your working copy — the row below. You never start on a '
+        + 'read-only original, so there is nothing separate to open here.';
+    }
+    return 'Open this file in the editor';
   }
 
   /**
-   * The working copy is the one row with no Export.
+   * Every document row exports. What differs is what an export IS.
    *
-   * It is the system's document, not a deliverable: it is shown in exactly one
-   * place, deliberately (docs/DOCUMENT_PIPELINE.md), and a copy of it outside
-   * the project would be a PDF bound to an original it can no longer name.
+   * Owen, third session: "the archive and working pdf are missing their buttons
+   * on the version page. export, open, delete." The working copy used to be the
+   * one row without an Export, on the reasoning that it is the system's document
+   * rather than a deliverable. That was a judgement about what the user should
+   * want; the file is theirs, it is the only artifact carrying their curation as
+   * a readable PDF, and "give me a copy of it" is a request the app has no
+   * standing to refuse.
+   *
+   * Export never writes into the project — least of all into archive/, which is
+   * only ever READ here. The copy goes where the user pointed the save dialog.
    */
-  exportable(v: VersionRow): boolean { return v.type !== 'working'; }
+  exportable(_v: VersionRow): boolean { return true; }
+
+  exportTitle(v: VersionRow): string {
+    if (v.type === 'archive') return 'Save a copy of the untouched original to your computer';
+    if (v.type === 'working') {
+      return 'Save a copy of your working PDF — the cast text and your block curation — to your computer';
+    }
+    return 'Save a copy to your computer';
+  }
 
   // ── Rebuild (staleness is said, never locked) ──────────────────────────────
 
@@ -1223,7 +1397,19 @@ export class StudioVersionsComponent {
       // The diffs for this kind, in execution order — so the last is the latest.
       // A pass whose job died halfway recorded nothing, so a kind with runs but
       // no diff is a real state and the badge simply carries no review.
-      const ofKind = diffs.filter(d => d.kind === kind);
+      // Which door this pass's diff is behind.
+      //
+      // The STAR on the book's row is the way in (Owen, third session: the diff
+      // "should be linked to the file it was applied to"), so a kind that has a
+      // star column does not also offer "Review changes" here — two controls
+      // opening one diff is the duplication the stars exist to remove. Two kinds
+      // have no star column and would otherwise be unreachable: the retired
+      // `tesseract` and `detection` of books processed before Aug 2026. And when
+      // the book row is NOT on screen at all — its file removed from under the
+      // record — there is no star to carry any of them, so the badge takes them
+      // all back rather than stranding a diff the user can still read.
+      const carriedByStar = !!starForPassKind(kind) && this.epubRowPresent();
+      const ofKind = carriedByStar ? [] : diffs.filter(d => d.kind === kind);
       const latestDiff = ofKind.length > 0 ? ofKind[ofKind.length - 1] : null;
       const many = entry.count > 1
         ? ` (ran ${entry.count} times; this is the last${ofKind.length > 1 ? ', and Review changes opens its diff' : ''})`
@@ -1874,18 +2060,42 @@ export class StudioVersionsComponent {
     return !!this.item()?.skippedChunksPath && (v.type === 'cleaned' || v.type === 'simplified');
   }
 
-  // 'exported' is deletable: it's the editor's working EPUB (the book-named
-  // export recorded in manifest.outputs.epub); removing it just makes the
-  // pipeline fall back to the read-only archive source.
-  //
-  // 'archive' is the immutable primary every other document is BOUND to — a
-  // delete would orphan the working copy and the book at once, and archive/ is
-  // never written to. 'working' is undone by "Reset to [stage]" in the picker,
-  // which truncates it to a recorded boundary; deleting the file outright would
-  // leave the binding vouching for a document that is gone.
-  // 'original'/'analysis' stay protected as before.
+  /**
+   * Which rows can be deleted, and by what.
+   *
+   * Three different acts, each routed to the code that already owns it — see
+   * `removeDoc`. What is NOT here is a fourth: 'original' (the pre-archive
+   * `source/original.*` of an old project) and 'analysis' (deleted by its own
+   * button, which also removes the checkpoint) keep their existing protection.
+   *
+   * 'archive' is deletable, and it was until yesterday: the archive original is
+   * a manifest VARIANT, and every variant row in "Book versions" has always had
+   * a Delete that routes through `variant:delete`. Moving the original into the
+   * document family took its buttons away without deciding it should be
+   * undeletable. Restoring it is not a new capability.
+   */
   deletable(v: VersionRow): boolean {
-    return !['original', 'analysis', 'archive', 'working'].includes(v.type);
+    if (v.type === 'archive') {
+      // No variant id means main could not say which record this file is, and
+      // `variant:delete` is the only safe remover (record first, file after).
+      // Deleting by path instead is the guess that handler exists to avoid.
+      return !!v.variantId;
+    }
+    if (v.type === 'working') return !!v.primaryPath;
+    return !['original', 'analysis'].includes(v.type);
+  }
+
+  deleteTitle(v: VersionRow): string {
+    switch (v.type) {
+      case 'archive':
+        return 'Delete the original this book was imported from — and everything cast from it';
+      case 'working':
+        return 'Delete your working copy: the cast text and your block curation. The original is untouched.';
+      case 'exported':
+        return 'Delete the book EPUB, and the record of every pass applied to it';
+      default:
+        return 'Delete this version';
+    }
   }
 
   async load(): Promise<void> {
@@ -2193,7 +2403,233 @@ export class StudioVersionsComponent {
     this.compareActive.emit(false);
   }
 
+  /**
+   * Delete the working copy: the PDF, its binding record and the machine-local
+   * scan scratch — the three files `document:discard` removes as ONE act.
+   *
+   * That handler, not a `deleteFile` on the PDF. The binding is what says a
+   * working document exists and which original it was cast from; deleting the
+   * file alone would leave a record vouching for a document that is gone, which
+   * is the state `listWorkingDocuments` has to skip rows for and the picker
+   * would then try to re-open. Whatever cannot be removed together is not
+   * removed at all: the handler fails as a whole and this says so by name.
+   *
+   * The archive original is untouched — it is what the next Cast reads — and the
+   * book EPUB, if one was built, survives: it is a separate artifact, and
+   * nothing about deleting the PDF says the user is finished with their book.
+   */
+  private async removeWorkingCopy(v: VersionRow): Promise<void> {
+    const dir = this.projectDir();
+    const primary = v.primaryPath;
+    if (!dir || !primary) {
+      // Both are set by main on every working row it emits. Missing means IPC
+      // shape drift, not a state — refuse rather than guess a path to delete.
+      await this.electron.showMessageDialog({
+        title: 'Could not delete the working copy',
+        message: 'BookForge cannot tell which original this working copy was cast from, so it '
+          + 'cannot name the document to remove. Reopen the book, and report this if it happens again.',
+        type: 'error',
+      });
+      return;
+    }
+
+    const boundaries = v.stageBoundaries ?? [];
+    const detail = [
+      `This deletes ${v.path.split(/[\\/]/).pop()} and the record that binds it to your original:`,
+      '  • the cast text layer — the words you can select and search',
+      '  • your block curation: labels, deletions, merges and chapter titles',
+      ...(boundaries.length > 0
+        ? ['  • the stages recorded on it: '
+          + boundaries.map(b => this.BOUNDARY_LABELS[b.stage] ?? b.stage).join(', ')]
+        : []),
+      '',
+      'KEPT: the archive original (untouched — Cast reads it again to start over), and the book '
+      + 'EPUB if one has been built.',
+    ].join('\n');
+
+    const { confirmed } = await this.electron.showConfirmDialog({
+      title: 'Delete the working copy',
+      message: 'Delete your working copy of this book?',
+      detail,
+      confirmLabel: 'Delete', cancelLabel: 'Cancel', type: 'warning',
+    });
+    if (!confirmed) return;
+
+    const res = await this.electron.discardWorkingDocument(dir, primary);
+    if (!res.success) {
+      await this.electron.showMessageDialog({
+        title: 'Delete failed',
+        message: res.error || 'The working copy could not be deleted, and gave no reason. '
+          + 'Nothing was removed.',
+        type: 'error',
+      });
+      return;
+    }
+    await this.load();
+    this.changed.emit();
+  }
+
+  /**
+   * Delete the archive original — the source everything else was derived from.
+   *
+   * Routed through `variant:delete`, which is what every row in "Book versions"
+   * has always used: it removes the manifest record FIRST and only unlinks the
+   * file once that write is confirmed, so a failure can never leave a file gone
+   * while the project still lists it. The archive original is a variant like any
+   * other version of the book (`arch:archive/<name>.pdf`), and that handler
+   * already knows an `arch:` variant's file IS its archive file.
+   *
+   * The working copy goes FIRST, and must: it is a copy of these bytes, stamped
+   * with their hash, and its binding names this file. Leaving it would leave a
+   * record vouching for an original that is gone — and every stage re-proves
+   * that hash, so it could never be worked on again either. If the working copy
+   * cannot be removed, the original is not touched: that is the recoverable
+   * direction, and the user is told which half stopped it.
+   *
+   * The book EPUB is NOT deleted. It is a finished artifact the user may still
+   * want, and nothing about it depends on the original being present. The
+   * confirmation says so rather than leaving them to find out.
+   */
+  private async removeArchiveOriginal(v: VersionRow): Promise<void> {
+    const pid = this.projectId();
+    const dir = this.projectDir();
+    const variantId = v.variantId;
+    if (!pid || !variantId) {
+      await this.electron.showMessageDialog({
+        title: 'Could not delete the original',
+        message: 'BookForge has no manifest record for this file, so there is no version to '
+          + 'delete — only bytes it cannot vouch for. Reopen the book, and report this if it '
+          + 'happens again.',
+        type: 'error',
+      });
+      return;
+    }
+
+    const working = this.documents().find(d => d.type === 'working') ?? null;
+    const book = this.documents().find(d => d.type === 'exported') ?? null;
+    const detail = [
+      `This deletes ${v.path}`,
+      '',
+      'It is the book exactly as you imported it, and everything else here was made from it. '
+      + 'BookForge keeps no other copy.',
+      '',
+      ...(working
+        ? [
+          'GOES WITH IT — your working copy was cast from this file and is bound to it by hash:',
+          `  • ${working.path.split(/[\\/]/).pop()}`,
+          '  • the cast text layer, and your block labels, deletions, merges and chapter titles',
+          '',
+        ]
+        : []),
+      ...(book
+        ? [
+          `KEPT: the book you built from it — ${book.path.split(/[\\/]/).pop()} — with everything `
+          + 'applied to it. It cannot be rebuilt once the original is gone.',
+          '',
+        ]
+        : []),
+      'KEPT: your finished audiobooks, the rendered sentence cache, the cover and all metadata.',
+      '',
+      'This cannot be undone.',
+    ].join('\n');
+
+    const { confirmed } = await this.electron.showConfirmDialog({
+      title: 'Delete the original',
+      message: `Delete "${v.label}" — the original this book was imported from?`,
+      detail,
+      confirmLabel: 'Delete the original', cancelLabel: 'Cancel', type: 'warning',
+    });
+    if (!confirmed) return;
+
+    if (working && dir && working.primaryPath) {
+      const discarded = await this.electron.discardWorkingDocument(dir, working.primaryPath);
+      if (!discarded.success) {
+        await this.electron.showMessageDialog({
+          title: 'Delete stopped — the original is still here',
+          message: 'The working copy cast from this original could not be removed: '
+            + `${discarded.error || 'no reason given'}.\n\nNothing was deleted. The original is `
+            + 'untouched, because leaving a working copy bound to an original that is gone would '
+            + 'leave a document nothing can verify or reopen.',
+          type: 'error',
+        });
+        return;
+      }
+    }
+
+    const res = await this.electron.variantDelete(pid, variantId);
+    if (!res.success) {
+      await this.electron.showMessageDialog({
+        title: 'Delete failed',
+        message: res.error || 'Could not delete the original. The file was left in place — try again.',
+        type: 'error',
+      });
+    }
+    await this.load();
+    await this.loadVariants();
+    this.changed.emit();
+  }
+
+  /**
+   * Delete the book EPUB — and, with it, the diffs of every pass applied to it.
+   *
+   * Owen, third session: "if that file is removed, so is the diff and its
+   * viewing button." So this is `document:delete-book`, one act in main, rather
+   * than a `deleteFile` with tidying bolted on: the manifest record, the
+   * `appliedPasses` provenance, the `stages/NN-<kind>/` directories those passes
+   * wrote, the binding's own note of the book, and last of all the file.
+   */
+  private async removeBookEpub(v: VersionRow): Promise<void> {
+    const dir = this.projectDir();
+    if (!dir) return;
+    const withDiffs = this.passDiffs();
+    const passes = this.item()?.appliedPasses ?? [];
+    const detail = [
+      `This deletes ${v.path.split(/[\\/]/).pop()}.`,
+      '',
+      ...(passes.length > 0
+        ? [
+          `GOES WITH IT: the record of the ${passes.length} pass${passes.length === 1 ? '' : 'es'} `
+          + 'applied to this book, and their stars'
+          + (withDiffs.length > 0
+            ? `, including the ${withDiffs.length} you can still review — once the book is gone `
+            + 'there is no file for those changes to be changes TO.'
+            : '.'),
+          '',
+        ]
+        : []),
+      'KEPT: the archive original and your working copy. Build the book again from them whenever '
+      + 'you like — the passes are re-runnable.',
+    ].join('\n');
+
+    const { confirmed } = await this.electron.showConfirmDialog({
+      title: 'Delete the book',
+      message: `Delete "${v.label}"?`,
+      detail,
+      confirmLabel: 'Delete', cancelLabel: 'Cancel', type: 'warning',
+    });
+    if (!confirmed) return;
+
+    const res = await this.electron.deleteBookEpub(dir);
+    if (!res.success) {
+      await this.electron.showMessageDialog({
+        title: 'Delete failed',
+        message: res.error || 'Could not delete the book. Try again.',
+        type: 'error',
+      });
+      return;
+    }
+    await this.load();
+    this.changed.emit();
+  }
+
   async removeDoc(v: VersionRow): Promise<void> {
+    // The family's three rows are three different acts, each owned by the code
+    // that already knows how to undo that artifact. Only the rows below them —
+    // the legacy stage outputs — take the generic file delete.
+    if (v.type === 'working') { await this.removeWorkingCopy(v); return; }
+    if (v.type === 'archive') { await this.removeArchiveOriginal(v); return; }
+    if (v.type === 'exported') { await this.removeBookEpub(v); return; }
+
     const { confirmed } = await this.electron.showConfirmDialog({
       title: 'Delete version',
       message: `Delete "${v.label}"? The original archived copy is not affected.`,
@@ -2243,9 +2679,11 @@ export class StudioVersionsComponent {
         res = await del(projectDir, epubName);
       }
     } else {
-      // Other version types (the exported working EPUB, or a legacy
-      // cleaned/simplified/translated file) own no shared stage directory. Delete
-      // the file plus the pre-computed diff sidecar the versions scan found next to it.
+      // A legacy cleaned/simplified/translated file that owns no shared stage
+      // directory. (The book EPUB never reaches here — `removeBookEpub` above
+      // owns it, because its provenance and its diffs have to go with it.)
+      // Delete the file plus the pre-computed diff sidecar the versions scan
+      // found next to it.
       res = await this.electron.deleteFile(v.path);
       if (res.success && v.diffRecordPath) {
         const delDiff = await this.electron.deleteFile(v.diffRecordPath);
@@ -2320,7 +2758,11 @@ export class StudioVersionsComponent {
     }
 
     if (checkboxChecked && exported && exportedName) {
-      const del = await this.electron.deleteFile(exported.path);
+      // The SAME delete the book's own row performs — the record, the passes
+      // applied to it and their diffs go with the file. A plain unlink here
+      // would leave `outputs.epub` naming a file that is gone and a "Review
+      // changes" star for a book nobody has.
+      const del = await this.electron.deleteBookEpub(dir);
       if (!del.success) {
         // Edits were reset, but the stale export survived (e.g. a transient
         // lock on the synced drive) — say so instead of implying it's gone.
