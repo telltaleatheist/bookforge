@@ -9284,7 +9284,16 @@ export class PdfPickerComponent implements OnInit {
    * the project, because the picker curates the PDF and not the book.
    */
   async openStation(id: StationId): Promise<void> {
+    // The guard is on the GESTURE, not on the move. A user switching tabs while
+    // a stage writes into the document would be reading a file that is changing
+    // under them; the app following a run it was asked to follow happens after
+    // the stage has stopped, and has its own way in (`goToStation`).
     if (this.stationBusy()) return;
+    await this.goToStation(id);
+  }
+
+  /** Show a station, whether or not the window is otherwise busy. */
+  private async goToStation(id: StationId): Promise<void> {
     const at = this.viewedStation();
     if (id === at) return;
 
@@ -13096,7 +13105,15 @@ export class PdfPickerComponent implements OnInit {
       isCorpusBook: this.corpusMode(),
       book: this.bookDocuments(),
       documentClass: this.originalClass(),
-      stageRunning: this.stationBusy(),
+      // The DOCUMENT stage, not `stationBusy()`. `stationBusy` also counts
+      // `loading()` — the picker rendering pages — and this runs while a book is
+      // still opening, so reading it here would skip the cast on the ordinary
+      // path and leave every text PDF standing on its archive.
+      //
+      // A stage the QUEUE started is not visible from here, and it does not need
+      // to be: `beginStage` refuses a second writer on one project BY NAME, and
+      // that refusal lands on `lastError` where the nav shows it verbatim.
+      stageRunning: this.documentBlocks.stageRunning() !== null,
     });
 
     switch (action) {
@@ -13188,7 +13205,11 @@ export class PdfPickerComponent implements OnInit {
       );
       return;
     }
-    await this.openStation(target);
+    // `goToStation`, not `openStation`: this is the app keeping a promise the
+    // user made, and the busy guard is there to stop a user changing artifacts
+    // mid-stage. A window that is still painting its first page would otherwise
+    // swallow the payout it was opened to deliver.
+    await this.goToStation(target);
   }
 
   // ── The stages, as the picker offers them ─────────────────────────────────

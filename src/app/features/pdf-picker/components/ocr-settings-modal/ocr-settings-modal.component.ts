@@ -254,7 +254,7 @@ export interface OcrCompletionEvent {
             </div>
           }
 
-          @if (queued() && !running() && !completed()) {
+          @if (waiting() && !running() && !completed()) {
             <div class="section">
               <h3 class="section-title">Queued</h3>
               <p class="result-line">
@@ -687,6 +687,13 @@ export class OcrSettingsModalComponent implements OnDestroy {
    * Read from the queue rather than remembered locally: this component is
    * destroyed every time the dialog closes, so a flag of its own would forget a
    * run that is still waiting its turn and offer to queue a second one.
+   *
+   * It can only ever answer in the MAIN window. `processing:submit-chain` sends
+   * the plan to the main window and nowhere else, so the QueueService in a
+   * detached editor window — which is where the picker actually lives — never
+   * hears about the run and holds no job for it. That is what `submitted` below
+   * is for, and why the two are read together rather than one standing in for
+   * the other.
    */
   readonly queued = computed(() =>
     this.queueService.jobs().some((job) =>
@@ -694,6 +701,22 @@ export class OcrSettingsModalComponent implements OnDestroy {
         || job.type === 'document-reflow')
       && (job.config as { projectDir?: string } | undefined)?.projectDir === this.projectDir()
       && (job.status === 'pending' || job.status === 'processing')));
+
+  /**
+   * THIS dialog submitted a run and no stage has reported starting yet.
+   *
+   * The gap is short and real: the plan travels to main, comes back as a queue
+   * message to another window, and the row starts when the queue reaches it.
+   * Without this the button would still read "Read this book" in that gap and a
+   * second press would queue a second cast of the same book.
+   *
+   * Deliberately not persisted and not a status. It is cleared the moment a
+   * stage says it started, which is when `running` takes over.
+   */
+  readonly submitted = signal(false);
+
+  /** A run for this book exists and has not begun reporting. */
+  readonly waiting = computed(() => this.queued() || this.submitted());
   readonly running = signal(false);
   readonly completed = signal(false);
   readonly error = signal<string | null>(null);
@@ -765,6 +788,10 @@ export class OcrSettingsModalComponent implements OnDestroy {
       if (event.projectDir !== this.projectDir()) return;
       this.error.set(null);
       this.completed.set(false);
+      // The wait is over the moment a stage says it started; `running` is the
+      // truth from here on, and two ways of saying "something is happening"
+      // would eventually disagree.
+      this.submitted.set(false);
       this.running.set(true);
       this.runState.set({ stage: event.stage, message: '', done: 0, total: 0 });
       if (!this.elapsedTimer) this.startElapsedTimer(Date.now());
@@ -879,7 +906,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
   // ── Starting ──────────────────────────────────────────────────────────────
 
   canStart(): boolean {
-    if (this.running() || this.queued()) return false;
+    if (this.running() || this.waiting()) return false;
     if (this.totalPages() <= 0) return false;
     if (this.corpusMode()) return true;
     return !!this.pdfPath() && !!this.projectDir();
@@ -960,6 +987,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
         await this.electronService.documentCancelOpenWhenFinished(this.projectDir());
         return;
       }
+      this.submitted.set(true);
       // Inline is the default: this dialog stays and the progress above IS the
       // run. "Run in background" hands it over in front of the user — the window
       // leaves the picker and lands on the Queue, so the hand-off is witnessed
