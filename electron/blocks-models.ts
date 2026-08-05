@@ -38,7 +38,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { downloadFile } from './components/downloader';
+import { downloadFile, sha256File } from './components/downloader';
 import { getSharedDir } from './shared-paths';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -346,11 +346,28 @@ export function downloadBlocksModel(
         for (const l of listeners) l(progress);
       }, controller.signal);
 
-      // Size is the cheap integrity check; the sha256 in the catalog is checked
-      // by the component path, which has a verify phase to report it in.
+      // Size first, because it is instant and catches the common failure — a
+      // truncated transfer — before spending minutes hashing eight gigabytes.
       const got = fs.statSync(tmp).size;
       if (got !== def.bytes) {
         throw new Error(`downloaded ${got} bytes, expected ${def.bytes} — the file is incomplete`);
+      }
+
+      // Then the hash, which is the actual check. This comment used to say the
+      // sha256 was "checked by the component path, which has a verify phase to
+      // report it in" — it is not: `fetchBlocksModel` in component-manager.ts IS
+      // that path, and it verifies nothing either. So a right-sized file from
+      // anywhere was adopted as the model. The digest is declared in the catalog
+      // above, was verified two ways when it was published, and is the only
+      // thing that distinguishes these bytes from any other bytes of the same
+      // length.
+      console.log(`[blocks-models] ${id}: verifying sha256 of ${got} bytes…`);
+      const digest = await sha256File(tmp);
+      if (digest.toLowerCase() !== def.sha256.toLowerCase()) {
+        throw new Error(
+          `the downloaded model is not the published one: expected sha256 ${def.sha256}, `
+          + `got ${digest}. Nothing was installed.`
+        );
       }
       fs.renameSync(tmp, dest);
       return { ok: true };

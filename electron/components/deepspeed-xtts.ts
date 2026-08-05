@@ -26,7 +26,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 
-import { downloadFile, osTarBin } from './downloader';
+import { downloadFile, osTarBin, sha256File } from './downloader';
 import { getActiveBundledEnvPath } from '../e2a-env-bootstrap';
 import type { OptionalComponent, InstallProgress } from './component-types';
 
@@ -133,6 +133,22 @@ export async function installDeepspeedXtts(
       });
     }, signal);
     if (signal.aborted) throw new Error('Install cancelled');
+
+    // The hash is declared right above and was, until now, never compared to
+    // anything: `downloadFile` does not verify (its `downloadAndExtract` sibling
+    // does, and this overlay does not go through it — it installs wheels into
+    // the runtime env rather than unpacking a component directory). So these
+    // bytes were extracted and pip-installed on the strength of the URL alone.
+    // A checksum nobody checks is worse than none, because it reads as proof.
+    emit({ id: DEEPSPEED_XTTS_ID, phase: 'verify', pct: 0, message: 'Verifying download…' });
+    const digest = await sha256File(tarball);
+    if (digest.toLowerCase() !== ARTIFACT_SHA256.toLowerCase()) {
+      throw new Error(
+        `The DeepSpeed overlay downloaded from ${ARTIFACT_URL} is not the published artifact: `
+        + `expected sha256 ${ARTIFACT_SHA256}, got ${digest}. Nothing was installed.`
+      );
+    }
+    emit({ id: DEEPSPEED_XTTS_ID, phase: 'verify', pct: 100, message: 'Checksum OK' });
 
     // Extract the wheels.
     const ex = spawnSync(osTarBin(), ['-xzf', tarball, '-C', wheelsDir], {
