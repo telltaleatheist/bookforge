@@ -35,8 +35,29 @@ way. Two consequences, both load-bearing:
     correspond exactly, and CER means what it means at line level.
   * Where the unit boundaries land cannot bias the measurement. A sentence-end
     detector that misfires makes a slightly differently-shaped unit; it never
-    makes the truth wrong. So the detector below is deliberately simple and its
-    imperfection is not a caveat on any number.
+    makes the truth wrong. So its imperfection is not a caveat on any number.
+
+────────────────────────────────────────────────────────────────────────────────
+FOUNDRY OWNS THE BOUNDARY RULES
+────────────────────────────────────────────────────────────────────────────────
+
+`ends_sentence` and `split_sentences` MIRROR foundry `src/ocr/sentences.ts`, and
+follow it rather than leading: the harness exists to measure what the pipeline
+does, so a rule that lived here first would be a number about nothing.
+
+Both guards there guess AGAINST cutting (Owen, 2026-08-05: the unit boundary is
+arbitrary — it could be the paragraph — so a missed boundary is a longer unit
+and costs nothing, while a wrong one manufactures the fragment the sentence unit
+exists to escape):
+
+  * An abbreviation is not a sentence end. English scholarly apparatus and its
+    German equivalents, plus a lone letter in EITHER case (`J. R. R.`, `z. B.`).
+  * A footnote reference rides on the sentence it marks: `…the war.12 The next`
+    cuts AFTER the digits, where before it did not cut at all — the stop is
+    followed by a digit rather than whitespace, so nothing matched.
+  * A stop behind a digit is a decimal and no boundary: `3.14` is one number.
+    The guard is on the digit-suffix form only, so `in 1945. The next` still
+    ends a sentence.
 
 Lines are the atoms the pipeline actually has (bands -> per-line tesseract ->
 [ocr] -> grouping), so this is also the only re-unitisation the pipeline could
@@ -114,30 +135,49 @@ OCR_SYSTEM_PROMPT = '\n'.join([
 WRAP_HYPHEN = re.compile(r'[-‐‑­]$')
 
 # Sentence end at a LINE end: terminal punctuation, optionally behind closing
-# quotes or brackets. See the header — this only shapes units, it cannot make a
-# truth wrong, so it is allowed to be this simple.
-SENTENCE_END = re.compile(r'[.!?…][\'"’”»)\]]*$')
+# quotes or brackets, optionally carrying the footnote reference that marks the
+# sentence. Foundry's SENTENCE_END with the line anchor in place of its
+# whitespace lookahead.
+SENTENCE_END = re.compile(r'[.!?…][\'"’”»)\]]*(?:[0-9]{1,3}|[¹²³⁰⁴-⁹]{1,3})?$')
 
-# The abbreviations that end a line often enough to matter, plus a lone initial
-# ("J. R. R." wrapping after "J."). A missed one costs a slightly longer unit.
+# The same, mid-paragraph: whitespace has to follow rather than the line ending.
+PROSE_SENTENCE_END = re.compile(r'[.!?…][\'"’”»)\]]*(?:[0-9]{1,3}|[¹²³⁰⁴-⁹]{1,3})?(?=\s)')
+
+# Did a candidate consume a footnote reference? Then the decimal guard applies.
+REFERENCE_TAIL = re.compile(r'[0-9¹²³⁰⁴-⁹]$')
+
+# Abbreviations that end in a full stop and are not sentence ends, plus a lone
+# letter ("J. R. R." wrapping after "J."; "z. B." after "z."). A missed one costs
+# one longer unit, which is the cheap direction — see the header.
 ABBREVIATIONS = {
     'mr', 'mrs', 'ms', 'dr', 'prof', 'st', 'rev', 'hon', 'sr', 'jr',
+    # `no` is numero, which also means the WORD "no." never closes a unit.
     'vs', 'etc', 'ca', 'cf', 'ed', 'eds', 'vol', 'no', 'pp', 'op', 'cit',
     'ibid', 'al', 'inc', 'ltd', 'co', 'jan', 'feb', 'mar', 'apr', 'jun',
     'jul', 'aug', 'sep', 'sept', 'oct', 'nov', 'dec',
+    # German apparatus: herausgegeben, Band, vergleiche, beziehungsweise, Nummer.
+    'hrsg', 'bd', 'vgl', 'bzw', 'nr',
 }
 
 
 def ends_sentence(text: str) -> bool:
     s = text.rstrip()
-    if not SENTENCE_END.search(s):
+    m = SENTENCE_END.search(s)
+    if not m:
         return False
-    word = re.search(r'([A-Za-zÀ-ɏ]+)\.$', s)
+    # A stop riding on digits is a decimal — `3.14 dollars` is one number. Only
+    # the digit-suffix form is at risk: `in 1945.` consumed no reference and is
+    # an ordinary sentence end.
+    if REFERENCE_TAIL.search(m.group(0)) and m.start() > 0 and s[m.start() - 1] in '0123456789':
+        return False
+    if s[m.start()] != '.':
+        return True
+    word = re.search(r'([A-Za-zÀ-ɏ]+)$', s[:m.start()])
     if word:
         w = word.group(1)
         if w.lower() in ABBREVIATIONS:
             return False
-        if len(w) == 1 and w.isupper():        # a lone initial
+        if len(w) == 1:        # a lone initial, upper or lower case
             return False
     return True
 
@@ -265,11 +305,13 @@ def build(rows, cap: int):
 
 def split_sentences(text):
     """A paragraph -> its sentences, cutting after terminal punctuation that is
-    followed by whitespace. Uses the same abbreviation guard as `ends_sentence`,
-    so `Mr. Hitler` and `J. R. R.` do not become boundaries."""
+    followed by whitespace. Uses the same guards as `ends_sentence`, so
+    `Mr. Hitler`, `J. R. R.` and `z. B.` do not become boundaries, `3.14` is one
+    number, and `…the war.12 The next` cuts after the reference rather than not
+    at all."""
     out = []
     start = 0
-    for m in re.finditer(r'[.!?…][\'"’”»)\]]*(?=\s)', text):
+    for m in PROSE_SENTENCE_END.finditer(text):
         end = m.end()
         if not ends_sentence(text[start:end]):
             continue
@@ -376,6 +418,17 @@ def self_test():
     check('quote after the stop is still a sentence end', ends_sentence('"Go away."'), True)
     check('no terminal punctuation', ends_sentence('and then he'), False)
 
+    # The boundary guesses against cutting — foundry src/ocr/sentences.ts.
+    check('a German abbreviation is not a sentence end', ends_sentence('siehe Hrsg.'), False)
+    check('vgl. is not a sentence end', ends_sentence('dazu Vgl.'), False)
+    check('a lone LOWERCASE initial is not a sentence end', ends_sentence('das gilt z.'), False)
+    check('a footnote reference ends the sentence it marks',
+          ends_sentence('they lost the war.12'), True)
+    check('a superscript reference does too', ends_sentence('they lost the war.¹²'), True)
+    check('behind the closing quote too', ends_sentence('he said "stop."12'), True)
+    check('a decimal is not a sentence end', ends_sentence('it cost 3.14'), False)
+    check('a year still is', ends_sentence('it ended in 1945.'), True)
+
     # Packing: cuts at the last sentence end that fits.
     # Two sentences fit in 30 chars, three do not: [0,1] then [2,3].
     lines = ['One two three.', 'Four five six.', 'Seven eight nine.', 'Ten.']
@@ -417,6 +470,23 @@ def self_test():
     check('splits a paragraph into sentences',
           split_sentences('He went home. She did not. Then Mr. Smith left.'),
           ['He went home.', 'She did not.', 'Then Mr. Smith left.'])
+    check('a German abbreviation is not a boundary mid-paragraph',
+          split_sentences('Vgl. dazu Bd. 2 der Reihe. Er kam.'),
+          ['Vgl. dazu Bd. 2 der Reihe.', 'Er kam.'])
+    check('a lone initial is not a boundary mid-paragraph',
+          split_sentences('Written by J. P. Taylor. He knew.'),
+          ['Written by J. P. Taylor.', 'He knew.'])
+    check('the cut falls after a footnote reference, not before it',
+          split_sentences('They lost the war.12 The next morning was quiet.'),
+          ['They lost the war.12', 'The next morning was quiet.'])
+    check('a superscript reference cuts the same way',
+          split_sentences('They lost the war.¹² The next morning.'),
+          ['They lost the war.¹²', 'The next morning.'])
+    check('a decimal is not a boundary',
+          split_sentences('It cost 3.14 dollars and no more. Then he left.'),
+          ['It cost 3.14 dollars and no more.', 'Then he left.'])
+    check('a year is', split_sentences('It ended in 1945. The next year was worse.'),
+          ['It ended in 1945.', 'The next year was worse.'])
     check('packs sentences to the cap',
           pack_sentences(['One two three.', 'Four five.', 'Six.'], 26),
           ['One two three. Four five.', 'Six.'])
