@@ -38,6 +38,8 @@ fs.mkdirSync(process.env.BOOKFORGE_USERDATA_DIR, { recursive: true });
 const chain = require(path.join(DIST, 'processing-chain.js'));
 const binding = require(path.join(DIST, 'document-binding.js'));
 const stages = require(path.join(DIST, 'document-stages.js'));
+const pdfLib = require(path.join(REPO, 'node_modules', '@cantoo', 'pdf-lib'));
+const { PDFDocument, PDFHexString, PDFName, PDFNumber } = pdfLib;
 
 const FIXTURE = path.join(REPO, 'tools', 'fixtures', 'document-pipeline');
 const ORIGINAL_PDF = path.join(FIXTURE, 'original.pdf');
@@ -59,7 +61,44 @@ const PDF_NAME = 'A Test Book.pdf';
  * document alone is not this book's until the binding says the original it names
  * is this project's original.
  */
-async function makeProject({ cast = false, pdf = true, exported = false } = {}) {
+/**
+ * Put a block layer on a cast working document, the way `foundry blocks` does —
+ * one Square annotation per block, appended as an incremental update.
+ *
+ * The fixture working.pdf carries a marker and no annotations, because that is
+ * what `foundry scan --pdf` leaves behind. `readDocumentPipelineState` reads
+ * Blocks as done when the document carries annotations, so a project that has
+ * been DETECTED can only be built by writing them.
+ */
+async function seedBlocks(file) {
+  const bytes = new Uint8Array(fs.readFileSync(file));
+  const doc = await PDFDocument.load(bytes, { forIncrementalUpdate: true, updateMetadata: false });
+  const snapshot = doc.takeSnapshot();
+  const page = doc.getPages()[0].node;
+  const created = doc.context.obj([]);
+  page.set(PDFName.of('Annots'), created);
+  const dict = doc.context.obj({
+    Type: 'Annot',
+    Subtype: 'Square',
+    Rect: [72, 200, 360, 500],
+    F: 4,
+    C: [0.2, 0.4, 0.9],
+    BS: { W: 1, S: 'S' },
+    NM: PDFHexString.fromText('b1'),
+    T: PDFHexString.fromText('b1 body'),
+    Contents: PDFHexString.fromText('It was a dark night.'),
+  });
+  dict.set(PDFName.of('FoundryCategory'), PDFName.of('body'));
+  dict.set(PDFName.of('FoundrySeq'), PDFNumber.of(0));
+  created.push(doc.context.register(dict));
+  snapshot.markObjForSave(page);
+  const diff = await doc.saveIncremental(snapshot);
+  const fd = fs.openSync(file, 'r+');
+  fs.writeSync(fd, diff, 0, diff.length, bytes.length);
+  fs.closeSync(fd);
+}
+
+async function makeProject({ cast = false, blocks = false, pdf = true, exported = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-chain-p-'));
   dirs.push(dir);
   fs.mkdirSync(path.join(dir, 'archive'), { recursive: true });
@@ -89,6 +128,10 @@ async function makeProject({ cast = false, pdf = true, exported = false } = {}) 
   };
   if (cast) {
     fs.copyFileSync(WORKING_PDF, stages.workingAbsPath(project));
+    // Before the binding is created: it records the working document's byte
+    // length, and a layer appended afterwards would read as an unreconciled
+    // boundary rather than as a detect that landed.
+    if (blocks) await seedBlocks(stages.workingAbsPath(project));
     const record = await binding.createDocumentBinding({
       projectId: project.projectId,
       projectDir: dir,
@@ -182,12 +225,38 @@ test('Reflow with no block layer names Detect blocks', async () => {
   await refuses(dir, [{ kind: 'reflow' }], 'Build the book', 'Detect blocks', 'above it');
 });
 
-test('Get Text without a Detect after it is refused — the cast leaves no blocks', async () => {
+test('Get Text ALONE is a legal run — the cast does not imply a detect', async () => {
+  // RULED 2026-08-04 (Owen's first real session): "detect is a separate step
+  // that shouldnt be grouped with ocr correction. it added detect to the queue
+  // even though i hadnt chosen to detect yet." Casting and detecting are two
+  // presses and two queue jobs.
   const dir = await makeProject();
+  const plan = await chain.planProcessingChain({ projectDir: dir, passes: [{ kind: 'get-text' }] });
+  assert.deepStrictEqual(plan.jobs.map(j => j.jobType), ['document-get-text']);
+  assert.strictEqual(plan.producesEpub, false);
+});
+
+test('Build the book behind a cast still names Detect blocks', async () => {
+  // The cast REPLACES the working document, so the annotations reflow would have
+  // read are the ones it threw away — even on a book that carries them today.
+  const dir = await makeProject({ cast: true, blocks: true });
+  // Proof the fixture really is detected: reflow alone plans against it.
+  const alone = await chain.planProcessingChain({ projectDir: dir, passes: [{ kind: 'reflow' }] });
+  assert.deepStrictEqual(alone.jobs.map(j => j.jobType), ['document-reflow']);
+  // Put a cast above it and the same book no longer satisfies it.
   await refuses(
     dir,
     [{ kind: 'get-text' }, { kind: 'reflow' }],
-    'casts the working document fresh', 'Detect blocks'
+    'Build the book', 'Detect blocks', 'above it'
+  );
+});
+
+test('Detect ABOVE a cast that wipes it is refused, and says which way round', async () => {
+  const dir = await makeProject({ cast: true });
+  await refuses(
+    dir,
+    [{ kind: 'blocks' }, { kind: 'get-text' }],
+    'casts the working document fresh', 'Move the Detect blocks pass below it'
   );
 });
 

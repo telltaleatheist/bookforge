@@ -40,11 +40,12 @@ import {
   STATION_LABELS,
   existingStations,
   nextStation,
-  stationMintedBy,
   stationPresence,
   type BookDocuments,
   type StationId,
 } from '@shared/document/stations';
+import { decideArrival } from '@shared/document/arrival';
+import type { DocumentClass } from '@shared/document/pipeline-types';
 import type { ChainPassRequest } from '@shared/processing/pass-types';
 import { QueueService } from '../queue/services/queue.service';
 import { SettingsService } from '../../core/services/settings.service';
@@ -1087,6 +1088,7 @@ interface AlertModal {
         (openWhenFinishedChange)="setOpenWhenFinished($event)"
         (ocrCompleted)="onOcrCompleted($event)"
         (documentReadyToPaint)="onDocumentReadyToPaint()"
+        (handOffToQueue)="handOffToQueue()"
         (backgroundJobStarted)="onBackgroundOcrStarted($event)"
       />
     }
@@ -3575,17 +3577,30 @@ export class PdfPickerComponent implements OnInit {
 
   /** One line saying what the station on screen IS. */
   readonly stationContext = computed(() => {
+    const book = this.bookDocuments();
     switch (this.viewedStation()) {
       case 'archive':
         // Still never written to, either way. What changes is where the edits go
         // in the meantime: into a working copy's annotations for a cast book,
         // into the project for one that is applied at build time.
-        return this.hasWorkingCopy()
-          ? 'The archived original, exactly as it was imported. Nothing is ever written to it.'
-          : 'The archived original — read-only on disk, and where this book is curated. '
-            + 'What you delete here is applied when the book is built.';
+        if (this.hasWorkingCopy()) {
+          return 'The archived original, exactly as it was imported. Nothing is ever written to it.';
+        }
+        // A book that COULD have a working copy and does not is standing here
+        // because making one costs minutes — say that, rather than leaving a
+        // read-only page with no explanation for why curation is refused.
+        if (book.hasPdfOriginal && this.originalClass() === 'scanned') {
+          return 'The archived original. This book is a scan, so it has to be read before it can be '
+            + 'curated — press OCR / Cast. Until then nothing here can be edited, and the original '
+            + 'is never written to.';
+        }
+        return 'The archived original — read-only on disk, and where this book is curated. '
+          + 'What you delete here is applied when the book is built.';
       case 'working':
-        return 'The working copy: the cast text and the block annotations. Curate here, then build the book.';
+        return book.workingStages?.blocks === false
+          ? 'The working copy: the book has been read, and nothing is labelled yet. '
+            + 'Press Detect — it is what turns the text into blocks you can curate.'
+          : 'The working copy: the cast text and the block annotations. Curate here, then build the book.';
       case 'epub':
         return 'The book. Every text transformation happens here, on screen, where you can read the result.';
       case 'tts':
@@ -3615,10 +3630,17 @@ export class PdfPickerComponent implements OnInit {
       case 'archive': {
         const actions: StationAction[] = [
           { id: 'cast', label: 'OCR / Cast', reason: noProject ?? noPdf, primary: noPdf === null },
-          // Detect implies the cast when there is none — the OCR dialog submits
-          // both passes, in that order, and the planner refuses them the other
-          // way round by name.
-          { id: 'detect-from-archive', label: 'Detect', reason: noProject ?? noPdf },
+          // Detect no longer implies the cast. The OCR dialog submits the cast
+          // and ONLY the cast (Owen's ruling, 2026-08-04), so a book with no
+          // working copy has nothing here to detect — said by name rather than
+          // discovered by pressing it.
+          {
+            id: 'detect-from-archive',
+            label: 'Detect',
+            reason: noProject ?? noPdf ?? (stationPresence('working', book) === 'present' ? null
+              : 'Detect labels the blocks in the working copy, and this book has not been read '
+                + 'yet — press OCR / Cast first.'),
+          },
         ];
         // A book with no working copy to build FROM is built HERE, because here
         // is where it is curated. Cast and Detect stay beside it, refused by
@@ -3629,17 +3651,28 @@ export class PdfPickerComponent implements OnInit {
         }
         return actions;
       }
-      case 'working':
+      case 'working': {
+        // A cast leaves the working document carrying no annotations at all —
+        // that is what a cast IS — so a book that has been read and not yet
+        // detected has exactly one next move, and Detect is it. Making that the
+        // primary action is what replaces the OCR dialog quietly buying a Detect
+        // nobody asked for (Owen's ruling, 2026-08-04).
+        const undetected = book.workingStages?.blocks === false;
         return [
-          { id: 'detect', label: 'Detect', reason: noProject },
+          { id: 'detect', label: 'Detect', reason: noProject, primary: undetected },
           {
             id: 'reflow',
             label: 'Build the book',
-            reason: noProject ?? (stationPresence('working', book) === 'present' ? null
-              : 'There is no working copy to build from — press OCR / Cast.'),
-            primary: true,
+            reason: noProject
+              ?? (stationPresence('working', book) === 'present' ? null
+                : 'There is no working copy to build from — press OCR / Cast.')
+              ?? (undetected
+                ? 'Build the book reads the block labels, and nothing is labelled yet — press Detect.'
+                : null),
+            primary: !undetected,
           },
         ];
+      }
       case 'epub':
         return [
           { id: 'footnotes', label: 'Remove footnotes', reason: noProject },
@@ -9171,10 +9204,13 @@ export class PdfPickerComponent implements OnInit {
   /**
    * A stage for this project finished — anywhere. Re-measure, then maybe follow.
    *
-   * "Open when finished" is honoured only if this window is still looking at the
-   * project the stage was about, which `projectPath()` was already checked
-   * against. It is deliberately not honoured for a stage that mints no artifact:
-   * moving the user somewhere on a guess is worse than leaving them be.
+   * "Open when finished" is no longer this component's promise to keep: it is
+   * held in main, keyed by project and station, and taken here once the
+   * documents have been re-measured (`payOpenWhenFinished`). The old version
+   * lived entirely in this handler, which meant the checkbox paid out only for a
+   * user who had stayed in the picker and watched — the one case where it was
+   * not needed. `stage` is still what re-measures, because a stage that landed
+   * changed this book whether or not anybody is following it.
    */
   private async onProjectStageFinished(stage: string): Promise<void> {
     const projectDir = this.projectPath();
@@ -9197,13 +9233,10 @@ export class PdfPickerComponent implements OnInit {
     }
     await this.refreshBookEpub();
 
-    const minted = stationMintedBy(stage);
-    if (minted === null || !this.openWhenFinished()) return;
-    // Re-read the project directory: a station switch is an await away, and the
-    // window may have been pointed at another book in the meantime.
+    // Re-read the project directory: two awaits have passed, and the window may
+    // have been pointed at another book in the meantime.
     if (this.projectPath() !== projectDir) return;
-    if (!this.presentStations().includes(minted)) return;
-    await this.openStation(minted);
+    await this.payOpenWhenFinished();
   }
 
   /**
@@ -9385,14 +9418,15 @@ export class PdfPickerComponent implements OnInit {
   /** A station button was pressed. Each one belongs to the artifact on screen. */
   onStationAction(actionId: string): void {
     switch (actionId) {
-      // The OCR dialog submits `get-text` then `blocks` as one run, which is
-      // both of these: casting is what it does, and detecting is what it does
-      // next. Detect from the Archive station therefore opens the same dialog —
-      // the cast it implies is the first pass of the run.
       case 'cast':
-      case 'detect-from-archive':
         this.showOcrSettings.set(true);
         return;
+      // Detect from the Archive station is the SAME detect. It is offered here
+      // because a user standing on the original may want to re-read the labels
+      // without walking to the Working tab first — and it is disabled by name
+      // when the book has no working copy, because the dialog no longer buys one
+      // on the way past.
+      case 'detect-from-archive':
       case 'detect':
         void this.runDetect();
         return;
@@ -9505,9 +9539,19 @@ export class PdfPickerComponent implements OnInit {
       // queue that reached the stage inside the batching window would reflow a
       // document that is missing the last few seconds of curation.
       await this.documentBlocks.flush();
-      // Queued rather than run here: the same submission the wizard makes, one
-      // reflow pass over this project's working document.
-      await this.submitPassRun(projectDir, [{ kind: 'reflow' }]);
+      // Asked for before the run is submitted and held in MAIN, so it pays out
+      // even after this window has been closed. Reflow mints the EPUB station.
+      if (this.openWhenFinished()) {
+        await this.electronService.documentRequestOpenWhenFinished(projectDir, 'epub');
+      }
+      // Queued rather than run here: one reflow pass over this project's
+      // working document.
+      const queued = await this.submitPassRun(projectDir, [{ kind: 'reflow' }]);
+      // A refused run will never finish, so the promise it staged comes back off
+      // the shelf rather than being cashed by whatever runs over this book next.
+      if (!queued) await this.electronService.documentCancelOpenWhenFinished(projectDir);
+      // The user asked to stop watching, so the window goes where the work went.
+      if (queued) await this.handOffToQueue();
       return;
     }
 
@@ -9602,11 +9646,23 @@ export class PdfPickerComponent implements OnInit {
       });
       return;
     }
-    await this.submitPassRun(projectDir, [pass]);
+    if (!await this.submitPassRun(projectDir, [pass])) return;
+    this.showAlert({
+      title: 'Queued',
+      message: 'It runs when the queue reaches it. Watch it on the Queue tab.',
+      type: 'success',
+    });
   }
 
-  /** Submit passes to the queue, surfacing main's own refusal verbatim. */
-  private async submitPassRun(projectDir: string, passes: ChainPassRequest[]): Promise<void> {
+  /**
+   * Submit passes to the queue, surfacing main's own refusal verbatim.
+   *
+   * Answers whether the run was QUEUED, because the caller has a promise to
+   * withdraw if it was not — a refused run never finishes, and an
+   * "open when finished" left standing would be cashed by whatever ran over this
+   * book next.
+   */
+  private async submitPassRun(projectDir: string, passes: ChainPassRequest[]): Promise<boolean> {
     try {
       const result = await this.queueService.submitProcessingRun({ projectDir, passes });
       if (!result.success) {
@@ -9615,18 +9671,50 @@ export class PdfPickerComponent implements OnInit {
           message: result.error || 'The run was refused and no reason was given.',
           type: 'error',
         });
-        return;
+        return false;
       }
-      this.showAlert({
-        title: 'Queued',
-        message: 'It runs when the queue reaches it. Watch it on the Queue tab.',
-        type: 'success',
-      });
+      return true;
     } catch (err) {
       this.showAlert({
         title: 'That run was refused',
         message: err instanceof Error ? err.message : String(err),
         type: 'error',
+      });
+      return false;
+    }
+  }
+
+  /**
+   * The run went to the queue, and so does the user.
+   *
+   * RULED 2026-08-04: "if the user hits the process in background button, it
+   * should move it to the queue and move focus from the current page (pdf
+   * picker) to the main page and jump to the queue so they can see it was moved
+   * there." A job that silently vanishes from one place and silently appears in
+   * another is how work gets lost, so the hand-off is witnessed.
+   *
+   * The picker is its own BrowserWindow (`openEditorWindow` in main), and the
+   * queue only ever lives in the MAIN window — `processing:submit-chain` sends
+   * the plan there and nowhere else. So this raises that window and routes it,
+   * which is the same action whether the picker is detached or embedded: main
+   * knows which window is the main one, and this component does not have to.
+   * The book is left open behind the user; they asked to stop watching a run,
+   * not to shut the book.
+   */
+  async handOffToQueue(): Promise<void> {
+    this.showOcrSettings.set(false);
+    try {
+      await this.electronService.showQueue();
+    } catch (err) {
+      // Said, never swallowed: the whole point of the hand-off is that the user
+      // sees where the work went, so a hand-off that did not happen has to be
+      // the one thing they are told about.
+      this.showAlert({
+        title: 'The run is queued, but this window could not follow it',
+        message: (err instanceof Error ? err.message : String(err))
+          + '\n\nThe run is in the queue and continues either way — open the main window\'s Queue '
+          + 'tab to watch it.',
+        type: 'warning',
       });
     }
   }
@@ -12923,32 +13011,184 @@ export class PdfPickerComponent implements OnInit {
       // proof main answered about this book's documents and only the block layer
       // is absent.
       this.workingDocumentOpen.set(this.documentBlocks.state() !== null);
-      this.landOnFurthestStation();
+      void this.landOnArrival();
       console.info('[document] no block layer for this book yet:', err);
       return;
     }
     this.workingDocumentOpen.set(true);
     this.blockLayerRead.set(true);
     this.selectedBlockIds.set([]);
-    this.landOnFurthestStation();
+    void this.landOnArrival();
     this.saveCurrentDocumentState();
   }
 
   /**
-   * Stand at the furthest PDF station this book has reached.
+   * The ARCHIVE ORIGINAL's measured class, or null until main has answered.
    *
-   * Derived at open time and never stored: a book with a working copy opens on
-   * it, a book with nothing opens on its archive, and that is read off the
-   * documents rather than remembered from last session. It stops at Working
-   * deliberately — a book that has an EPUB is still curated on the working copy,
-   * and dropping the user on the finished book would hide the rail behind a
-   * station they did not ask for.
+   * Stamped with the project it was measured for, like every other main answer
+   * this window holds: a window moves between books and the ask is a round trip,
+   * so an unstamped answer about book B would be read as book A's — and this one
+   * decides whether a book is cast without asking.
+   */
+  private readonly originalClassAnswer =
+    signal<{ dir: string; documentClass: DocumentClass } | null>(null);
+
+  /** The measured class for THIS project, or null. */
+  private readonly originalClass = computed<DocumentClass | null>(() => {
+    const answer = this.originalClassAnswer();
+    const dir = this.projectPath();
+    return answer && dir && answer.dir === dir ? answer.documentClass : null;
+  });
+
+  /**
+   * Ask main which pipeline this book's original belongs to.
+   *
+   * Only for a book that has not been cast — once there is a working document
+   * its marker is the authority, and re-measuring the original would be a second
+   * answer to a settled question. A refusal leaves the class UNKNOWN, which
+   * `decideArrival` reads as "stand still": there is no safe guess here, because
+   * both wrong answers cost the user real time.
+   */
+  private async measureOriginalClass(): Promise<void> {
+    const ref = this.workingDocumentRef();
+    const dir = this.projectPath();
+    if (!ref || !dir) return;
+    try {
+      const documentClass = await this.electronService.documentMeasureClass(ref);
+      this.originalClassAnswer.set({ dir, documentClass });
+    } catch (err) {
+      // Ordinary for a book with no PDF original — main refuses that by name —
+      // and a real fault for a damaged one. Either way nothing is assumed.
+      this.originalClassAnswer.set(null);
+      console.info('[document] could not measure this book\'s original:', (err as Error).message);
+    }
+  }
+
+  /**
+   * Stand where this book actually is — and, for a book that has nowhere to
+   * stand yet, make somewhere.
+   *
+   * RULED 2026-08-04: you never START on a read-only book
+   * (`shared/document/arrival.ts` holds the whole rule and why). This is the
+   * window's half — measure, decide, act — and every branch is derived from the
+   * documents rather than remembered from last session.
    *
    * A station swap is this window changing artifacts, and it decides for itself.
    */
-  private landOnFurthestStation(): void {
+  private async landOnArrival(): Promise<void> {
     if (this.stationSwapping) return;
-    this.viewedStation.set(this.presentStations().includes('working') ? 'working' : 'archive');
+
+    // The cheap answer first: a book that already has a working copy needs no
+    // measurement at all, and asking for one on every open would put a
+    // page-sampling read in front of every book in the library.
+    if (this.presentStations().includes('working')) {
+      this.viewedStation.set('working');
+      await this.payOpenWhenFinished();
+      return;
+    }
+    this.viewedStation.set('archive');
+
+    if (this.autoCastAttempted) return;
+    await this.measureOriginalClass();
+
+    const action = decideArrival({
+      hasProject: !!this.projectPath(),
+      isCorpusBook: this.corpusMode(),
+      book: this.bookDocuments(),
+      documentClass: this.originalClass(),
+      stageRunning: this.stationBusy(),
+    });
+
+    switch (action) {
+      case 'stand-on-working':
+      case 'stand-on-archive':
+        return;
+      case 'offer-cast':
+        // A scan costs minutes and 1.4 GB of page renders, so it is OFFERED and
+        // never taken: the dialog opens with the run one press away and its
+        // progress inline, and the archive stays on screen until it lands.
+        this.autoCastAttempted = true;
+        this.showOcrSettings.set(true);
+        return;
+      case 'cast-now':
+        // Seconds, on the publisher's own text layer. Nothing is asked because
+        // there is nothing worth interrupting somebody about.
+        this.autoCastAttempted = true;
+        await this.castOnArrival();
+        return;
+    }
+  }
+
+  /**
+   * Once per book per window. Not idempotence for its own sake: `open()` runs
+   * again after every stage and after every reload, and a cast that FAILED —
+   * foundry missing, a damaged original — would otherwise be retried on every
+   * one of them, forever, with the window unusable in between.
+   */
+  private autoCastAttempted = false;
+
+  /**
+   * Mint the working copy and stand on it. The text-PDF path, on open.
+   *
+   * `documentBlocks.getText()` and not a queue submission: this run is seconds
+   * long, the window is right here to show it, and a queue row for it would be
+   * gone before anyone looked. Its failure lands on `lastError`, which the
+   * document nav shows verbatim — the same place every other stage's failure is
+   * said.
+   */
+  private async castOnArrival(): Promise<void> {
+    console.log('[document] casting the working copy on open (text PDF — seconds, not minutes)');
+    await this.documentBlocks.getText();
+    const failure = this.documentBlocks.lastError();
+    if (failure) {
+      console.error('[document] the cast on open did not land:', failure);
+      return;
+    }
+    // Measured, not assumed: the cast is what makes the station exist, and the
+    // station list is read off the documents `getText()` just re-read.
+    if (this.presentStations().includes('working')) {
+      this.blockLayerRead.set(true);
+      this.viewedStation.set('working');
+    }
+  }
+
+  /**
+   * Pay out an "open when finished" promise, if this book is carrying one.
+   *
+   * The promise lives in MAIN (`electron/document-open-when-finished.ts`) so it
+   * outlives the window that made it — the old version was a listener on this
+   * component filtered to the project it happened to be showing, which meant it
+   * only ever paid out for a user who had stayed and watched. Taking it is
+   * atomic, so a book open in two windows is opened by one of them.
+   *
+   * Whether the station is actually THERE is answered here, from the measurement
+   * already in hand: `document:stage-finished` fires from a `finally`, so a
+   * stage that failed or was cancelled reaches this point too, and opening a
+   * station that does not exist would show the user a document the run never
+   * wrote.
+   */
+  private async payOpenWhenFinished(): Promise<void> {
+    const projectDir = this.projectPath();
+    if (!projectDir) return;
+    const station = await this.electronService.documentTakeOpenWhenFinished(projectDir);
+    if (station === null) return;
+    // The window may have been pointed at another book across the round trip.
+    if (this.projectPath() !== projectDir) return;
+    if (!STATIONS.includes(station as StationId)) {
+      throw new Error(
+        `Main handed back "${station}" as a station to open, and this pipeline has no such `
+        + 'station. Nothing is opened rather than guessing which one was meant.'
+      );
+    }
+    const target = station as StationId;
+    if (!this.presentStations().includes(target)) {
+      console.log(
+        `[open-when-finished] not opening the ${target} station for ${projectDir}: the run ended `
+        + 'without writing it.'
+      );
+      return;
+    }
+    await this.openStation(target);
   }
 
   // ── The stages, as the picker offers them ─────────────────────────────────

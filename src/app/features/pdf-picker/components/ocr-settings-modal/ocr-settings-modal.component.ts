@@ -31,19 +31,27 @@ import { OcrTextLine } from '../../services/ocr-job.service';
  * provenance record, and a second way to ask for it would be a second answer to
  * "has this book had its markers removed".
  *
- * ── THE RUN IS QUEUE WORK ────────────────────────────────────────────────────
+ * ── IT SUBMITS THE CAST, AND ONLY THE CAST ───────────────────────────────────
  *
- * This dialog runs nothing itself. It SUBMITS two document passes over this
- * project — `get-text`, which casts the working PDF and puts the words in it,
- * then `blocks`, which labels them — through `processing:submit-chain`, and then
- * only watches. There is one way to read a book and it is visible on the Queue
- * tab, where it serializes against everything else that wants the GPU; a private
- * direct-run path here was a second way to spend half an hour that no queue row
- * knew about.
+ * RULED 2026-08-04 (docs/PIPELINE_V2_PLAN.md, Owen's first real session):
+ * "detect is a separate step that shouldnt be grouped with ocr correction. it
+ * added detect to the queue even though i hadnt chosen to detect yet."
+ *
+ * So this dialog submits ONE document pass — `get-text`, which casts the working
+ * PDF and puts the words in it — through `processing:submit-chain`, and then
+ * only watches. Detect is a press of its own, offered as the primary action at
+ * the Working station the moment a book has been read and not yet detected.
+ * (The cast really does leave the document with no annotations at all; that is
+ * why the Working station SAYS so, rather than why this dialog quietly bought a
+ * second stage.)
+ *
+ * There is one way to read a book and it is visible on the Queue tab, where it
+ * serializes against everything else that wants the GPU; a private direct-run
+ * path here was a second way to spend half an hour that no queue row knew about.
  *
  * The stages belong to MAIN, so closing this dialog, reloading the window or
- * switching tabs touches nothing. "Run in background" is literally "stop
- * watching".
+ * switching tabs touches nothing. Progress is reported INLINE here by default;
+ * "run in background" hands the run to the queue and takes the user with it.
  *
  * ── THE CORPUS PATH IS NOT THIS PATH ─────────────────────────────────────────
  *
@@ -203,8 +211,9 @@ export interface OcrCompletionEvent {
                 <span class="checkbox-label">
                   <strong>Run in background</strong>
                   <span class="checkbox-hint">
-                    Close this dialog as soon as it is queued. Progress lives on the Queue tab,
-                    where it serializes against everything else that wants the GPU.
+                    Hand it to the queue and go there, so you can see where it went. It
+                    serializes on the Queue tab against everything else that wants the GPU.
+                    Leave this off and the progress below is the run.
                   </span>
                 </span>
               </label>
@@ -217,8 +226,8 @@ export interface OcrCompletionEvent {
                 <span class="checkbox-label">
                   <strong>Open when finished</strong>
                   <span class="checkbox-hint">
-                    Show the working copy the moment the run lands — unless the window has
-                    moved on to another book by then.
+                    Show the working copy the moment the run lands, wherever you are by then —
+                    the app opens this book's editor even if you closed it.
                   </span>
                 </span>
               </label>
@@ -646,6 +655,15 @@ export class OcrSettingsModalComponent implements OnDestroy {
   ocrCompleted = output<OcrCompletionEvent>();
   backgroundJobStarted = output<string>();
   /**
+   * The run was handed to the queue and the user goes with it.
+   *
+   * The dialog says WHEN; the window it lives in says how, because "leave the
+   * picker and land on the Queue" is a different action from a detached editor
+   * window than from an embedded tab, and this component knows which it is in
+   * about as well as it knows what the queue is doing.
+   */
+  handOffToQueue = output<void>();
+  /**
    * The working document now carries a block layer — the window should read it
    * and paint it.
    *
@@ -696,18 +714,22 @@ export class OcrSettingsModalComponent implements OnDestroy {
   readonly corpusMode = computed(() => this.corpusBookDir().length > 0);
 
   /**
-   * Fixed: this dialog runs Get Text then Detect blocks, and nothing else.
+   * Fixed: this dialog runs the CAST, and nothing else.
    *
-   * There is no "repair the text" step, and its absence is the point. Repairing
-   * what Tesseract misread happens inside Build the book, on the blocks that
-   * survived curation — so the running heads and footnotes deleted on the next
-   * screen cost no GPU at all. Naming it here would promise work this run does
-   * not do.
+   * Labelling the blocks is not here, and neither is repairing what Tesseract
+   * misread — and both absences are the point. Detect is its own press at the
+   * Working station (Owen's ruling, 2026-08-04); repair happens inside Build the
+   * book, on the blocks that survived curation, so the running heads and
+   * footnotes deleted on the next screen cost no GPU at all. Naming either here
+   * would promise work this run does not do.
+   *
+   * `render` only happens for a scanned book — a PDF that carries the
+   * publisher's own text layer is read straight out of it in one pass — so the
+   * step draws only when the run reports it.
    */
   readonly pipelineSteps = [
-    { id: 'render', name: 'Render pages', note: '200 dpi grayscale' },
-    { id: 'get-text', name: 'Read the pages', note: 'pinned Tesseract, written into the working PDF' },
-    { id: 'blocks', name: 'Label the blocks', note: 'body, chapter, footnote, running head…' },
+    { id: 'render', name: 'Render pages', note: '200 dpi grayscale — scans only' },
+    { id: 'get-text', name: 'Read the pages', note: 'written into the working PDF' },
   ];
 
   constructor() {
@@ -791,9 +813,14 @@ export class OcrSettingsModalComponent implements OnDestroy {
    * What this book's documents say has happened to them.
    *
    * The whole of "has this book been read yet", measured off the files: a marker
-   * means Get Text has run, annotations mean Blocks has. A book whose working
-   * document was never cast simply reports neither, which is an ordinary state
-   * and not an error — so nothing is said about it.
+   * means Get Text has run. A book whose working document was never cast simply
+   * reports nothing, which is an ordinary state and not an error — so nothing is
+   * said about it.
+   *
+   * The question is `stages.getText` and NOT `stages.blocks`, because this
+   * dialog submits the cast and only the cast: keyed to the block layer, it
+   * would report a finished cast as unfinished forever on a book nobody had
+   * detected yet, which is now every book the moment it lands.
    */
   private async readDocumentState(): Promise<void> {
     try {
@@ -801,14 +828,16 @@ export class OcrSettingsModalComponent implements OnDestroy {
         projectDir: this.projectDir(),
         sourcePath: this.pdfPath(),
       });
-      this.documentReady.set(state.stages.blocks);
-      this.completed.set(state.stages.blocks);
-      if (state.stages.blocks) {
+      this.documentReady.set(state.stages.getText);
+      this.completed.set(state.stages.getText);
+      if (state.stages.getText) {
         this.resultLine.set(
-          `${state.blockCount} block${state.blockCount === 1 ? '' : 's'} labelled across `
-          + `${this.totalPages()} page${this.totalPages() === 1 ? '' : 's'}. The text and the block `
-          + 'labels are in the working PDF now — scan through them, delete anything that should not '
-          + 'be in the book, then build it.'
+          `The pages are read: ${this.totalPages()} page${this.totalPages() === 1 ? '' : 's'} of `
+          + 'text are in the working copy now. '
+          + (state.stages.blocks
+            ? `It carries ${state.blockCount} labelled block${state.blockCount === 1 ? '' : 's'} — `
+              + 'curate them and build the book.'
+            : 'Nothing is labelled yet — press Detect on the Working station, which is the next step.')
         );
         // Announced once per document state. The window re-reads the working
         // document and paints it; this component deliberately never holds the
@@ -901,10 +930,9 @@ export class OcrSettingsModalComponent implements OnDestroy {
       return;
     }
 
-    // Both passes, always. This dialog's whole purpose is to take a book from an
-    // untouched PDF to a curatable one, and that is the cast plus the detect —
-    // asking the user to compose the pair would be offering them the chance to
-    // ask for half of it.
+    // THE CAST, and only the cast. Detect is a separate step and a separate
+    // queue job (Owen's ruling, 2026-08-04) — bundling it here is what put a
+    // Detect in the queue that nobody had asked for.
     //
     // There is no run identity to pass. A document pass is about the PROJECT and
     // the PDF the plan resolved, and its output is the working document beside
@@ -913,22 +941,30 @@ export class OcrSettingsModalComponent implements OnDestroy {
     // NO FALLBACK. If foundry is not installed, or a GGUF is missing, or the
     // ordering cannot work, main says exactly which and this dialog prints it.
     try {
+      // Asked for BEFORE the run is submitted, and asked for whether or not this
+      // dialog stays: the promise belongs to the app, and a run started with the
+      // box ticked pays out even after this window is gone.
+      if (this.openWhenFinished()) {
+        await this.electronService.documentRequestOpenWhenFinished(this.projectDir(), 'working');
+      }
       const result = await this.queueService.submitProcessingRun({
         projectDir: this.projectDir(),
         sourcePath: this.pdfPath(),
-        // Detect AFTER the cast, and not optional here: Get Text replaces the
-        // working document, which leaves it carrying no annotations at all. The
-        // planner refuses the pair the other way round, by name.
-        passes: [{ kind: 'get-text' }, { kind: 'blocks' }],
+        passes: [{ kind: 'get-text' }],
       });
       if (!result.success) {
         this.error.set(result.error || 'The run was refused and no reason was given.');
+        // A refused run will never finish, so the promise it staged has to come
+        // back off the shelf — otherwise the NEXT stage over this book, whatever
+        // it is, would pay out a request the user never got.
+        await this.electronService.documentCancelOpenWhenFinished(this.projectDir());
         return;
       }
-      // "Run in background" is literally "stop watching": the run belongs to
-      // main, so closing this dialog changes nothing about it, and the queue is
-      // where a long job is watched and cancelled.
-      if (this.runInBackground()) this.close.emit();
+      // Inline is the default: this dialog stays and the progress above IS the
+      // run. "Run in background" hands it over in front of the user — the window
+      // leaves the picker and lands on the Queue, so the hand-off is witnessed
+      // rather than inferred.
+      if (this.runInBackground()) this.handOffToQueue.emit();
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
     }
@@ -995,7 +1031,9 @@ export class OcrSettingsModalComponent implements OnDestroy {
       : minutes < 60 ? `about ${minutes} minute${minutes === 1 ? '' : 's'}`
       : `about ${(minutes / 60).toFixed(1)} hours`;
     return `${pages} page${pages === 1 ? '' : 's'} — ${shape}. `
-      + 'It keeps going if you close this dialog, and picks up where it stopped if you cancel.';
+      + 'It runs in the main process, so it keeps going if you close this dialog. Cancelling '
+      + 'stops it where it stands and leaves the book exactly as it was — the cast is all or '
+      + 'nothing, and starting again reads the whole book again.';
   }
 
   elapsedTimeText(): string {

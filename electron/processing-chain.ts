@@ -283,21 +283,28 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
     : { getText: false, blocks: false, footnotes: false, reflow: false };
 
   // Re-reading the pages invalidates the layout: the cast REPLACES the working
-  // document, and the annotations described the one it replaced. Said here,
-  // before anything is queued, rather than by an export an hour later. Refused
-  // rather than added silently — a run that quietly grows a stage the user did
-  // not ask for is a run whose cost they cannot predict.
+  // document, and the annotations described the one it replaced.
+  //
+  // RULED 2026-08-04 (docs/PIPELINE_V2_PLAN.md, Owen's first real session):
+  // **the cast does not imply a detect.** This used to refuse a run that cast
+  // without detecting, on the reasoning that a cast leaves the document with no
+  // blocks — true, but it made every press of OCR / Cast enqueue a Detect the
+  // user had not asked for ("it added detect to the queue even though i hadnt
+  // chosen to detect yet"). The invalidation is real and is handled where it
+  // belongs: at the Working station, a book with no blocks offers Detect as its
+  // primary action and says so in its own words. A run may cast and stop.
+  //
+  // What is still refused is the ORDERING — a detect ABOVE the cast that would
+  // wipe it — because that one is a chain that cannot work rather than a chain
+  // that does less than the user expected.
   const getTextAt = passes.map((p) => p.kind === 'get-text').lastIndexOf(true);
   if (getTextAt >= 0) {
-    const blocksAt = passes.findIndex((p, i) => p.kind === 'blocks' && i > getTextAt);
-    if (blocksAt < 0) {
-      const above = passes.some((p) => p.kind === 'blocks');
+    const wipedBlocksAt = passes.findIndex((p, i) => p.kind === 'blocks' && i < getTextAt);
+    if (wipedBlocksAt >= 0 && !passes.some((p, i) => p.kind === 'blocks' && i > getTextAt)) {
       throw new Error(
         `${LABEL_OF['get-text']} reads the pages again and casts the working document fresh, which `
-        + 'leaves it with no blocks at all — the annotations belonged to the document it replaced. '
-        + (above
-          ? `Move the ${LABEL_OF['blocks']} pass below it.`
-          : `Add the ${LABEL_OF['blocks']} pass to this run, after it.`)
+        + `throws away the annotations ${LABEL_OF['blocks']} wrote before it. Move the `
+        + `${LABEL_OF['blocks']} pass below it.`
       );
     }
   }
@@ -316,20 +323,34 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
     );
   }
 
-  const kindsSoFar = new Set<ProcessingPassKind>();
   for (const [i, pass] of passes.entries()) {
     // An EPUB-mode footnotes pass stands on the book, not on a working document:
     // it has the prerequisites of an EPUB pass, which is none.
     const needs = isDocumentPass(pass.kind, i) ? DOCUMENT_NEEDS[pass.kind] : undefined;
-    if (needs && !kindsSoFar.has(needs.pass) && !onDisk[needs.done]) {
+    if (!needs) continue;
+
+    // A cast EARLIER IN THIS RUN replaces the working document, so everything
+    // the documents carry today stops counting from that point on, and so does
+    // any pass that ran before it. This is what stands in for the old blanket
+    // "a cast must be followed by a detect" refusal now that casting alone is a
+    // legal run (Owen's ruling, docs/PIPELINE_V2_PLAN.md): a bare cast is fine,
+    // and a Build the book behind one still names the Detect it needs, because
+    // the annotations it would have read are the ones the cast threw away.
+    //
+    // The LAST cast above this pass, not the first — a run may cast twice, and
+    // it is the most recent one that decides what the document carries.
+    let castAt = -1;
+    for (let j = 0; j < i; j += 1) if (passes[j].kind === 'get-text') castAt = j;
+    // `>=` and not `>`: when the prerequisite IS the cast, the cast satisfies it.
+    const writtenInChain = passes.some(
+      (p, j) => p.kind === needs.pass && j < i && j >= castAt);
+    const writtenOnDisk = castAt < 0 && onDisk[needs.done];
+    if (!writtenInChain && !writtenOnDisk) {
       throw new Error(
         `${LABEL_OF[pass.kind]} reads what ${LABEL_OF[needs.pass]} writes, and this book's working `
         + `document does not carry it. Add ${LABEL_OF[needs.pass]} to the run, above it.`
       );
     }
-    // Recorded AFTER the check — a pass cannot be its own prerequisite — and on
-    // every iteration, which is what makes "earlier in the chain" mean anything.
-    kindsSoFar.add(pass.kind);
   }
 
   // Reflow is the one exporter, so a chain produces a book exactly when it
