@@ -2626,6 +2626,21 @@ export class PdfPickerComponent implements OnInit {
   readonly finalized = output<{ success: boolean; epubPath?: string; error?: string }>();
 
   /**
+   * The book has been handed to narration and the main window has ACCEPTED it —
+   * this window's work here is over.
+   *
+   * Deliberately not `finalized`. That event means "the book has been written",
+   * and the host answers it with a success toast and a delayed close; both are
+   * wrong for a hand-off, where the user is already looking at another window.
+   * They were the same event until Phase C, which is why Next used to toast
+   * "Project finalized successfully!" over a navigation that never happened.
+   *
+   * Emitted only after `app:show-narration` has succeeded, so a host that closes
+   * on it is closing onto somewhere the user has actually been taken.
+   */
+  readonly handedOffToNarration = output<{ projectDir: string; epubPath: string }>();
+
+  /**
    * Tracks the source file being edited (EPUB/PDF path, not the project directory).
    * When set, "Save" will write back to this file instead of creating a new export.
    */
@@ -9523,15 +9538,15 @@ export class PdfPickerComponent implements OnInit {
 
     if (id === 'tts') {
       const bookPath = this.stationEpubPath();
-      // Unreachable through the tab, which is disabled without a book, and
-      // stated by `handOffToNarration` rather than guessed if it is reached.
+      // Unreachable through the tab, which is disabled without a book and
+      // already carries the sentence saying so (`stationAbsenceReason`).
       if (bookPath === null) return;
       // Narration is handed the BOOK, so the book is what the window is showing
       // when it hands it over. Jumping straight here from a PDF station used to
       // leave the viewer on the PDF with the station claiming Narration — the
       // exact disagreement `viewedStation` is now derived to prevent.
       if (this.viewedArtifact() !== 'book') await this.showEpubStation(bookPath);
-      this.handOffToNarration();
+      await this.handOffToNarration();
       return;
     }
 
@@ -9640,21 +9655,59 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
-   * Hand the finished book on. The studio host owns what happens next.
+   * Hand the finished book on: put the user in front of narration, then close.
    *
-   * The contract is unchanged from the wizard it replaces — `finalized` with the
-   * path of the book on disk — so the destination is Phase C's business and not
-   * this component's.
+   * The destination used to be "Phase C's business" — it is Phase C now. Three
+   * acts, and the ORDER is the design:
+   *
+   *  1. Ask MAIN to raise the main window and open narration for this project
+   *     (`app:show-narration`). The picker is always its own BrowserWindow and
+   *     has no reach into the main window's router — the same reason "run in
+   *     background" goes through main to get to the Queue.
+   *  2. A refusal is SAID, and the window stays open. Closing on a failed
+   *     hand-off would leave the user with no picker, no narration and no
+   *     explanation of where their book went.
+   *  3. Only then is the host told this window's work is done — and it is told
+   *     with its OWN event. `finalized` means "the book has been written", which
+   *     the host answers with a success toast and a delayed close; a hand-off
+   *     has already moved the user to another window, so a toast here is
+   *     addressed to nobody and the delay is a window lingering over a book the
+   *     user has left.
    */
-  private handOffToNarration(): void {
+  private async handOffToNarration(): Promise<void> {
     const epubPath = this.stationEpubPath();
-    if (!epubPath) return;
+    const projectDir = this.projectPath();
+    if (epubPath === null || !projectDir) {
+      // Not reachable as a pair: `bookEpubPath` answers null unless this window
+      // is on a project, so a book path implies a project directory. Said out
+      // loud rather than returned in silence — the user pressed Next, and
+      // something has to answer them.
+      this.showAlert({
+        title: 'Narration could not be opened',
+        message: 'This window is not on a project with a built book, so there is nothing to narrate.',
+        type: 'error',
+      });
+      return;
+    }
+
+    try {
+      await this.electronService.showNarration(projectDir);
+    } catch (err) {
+      // Main's own sentence — it knows which half was missing.
+      this.showAlert({
+        title: 'Could not open narration',
+        message: err instanceof Error ? err.message : String(err),
+        type: 'error',
+      });
+      return;
+    }
+
     // The window holds no unsaved book state: every curation edit is already an
     // incremental update in the working document, and the EPUB on disk is what
-    // reflow wrote.
+    // reflow wrote. Cleared only now, once the hand-off has been accepted.
     this.editorState.hasUnsavedChanges.set(false);
     this.requestedStation.set('tts');
-    this.finalized.emit({ success: true, epubPath });
+    this.handedOffToNarration.emit({ projectDir, epubPath });
   }
 
   /** A station button was pressed. Each one belongs to the artifact on screen. */

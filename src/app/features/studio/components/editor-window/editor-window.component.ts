@@ -42,6 +42,7 @@ import { EditorRouteService } from '../../services/editor-route.service';
           [overrideSourcePath]="sourcePath()"
           [librarySourcePath]="libraryMode() ? projectPath() : null"
           (finalized)="onFinalized($event)"
+          (handedOffToNarration)="onHandedOffToNarration()"
           (exitRequested)="onExitRequested()"
         />
       } @else if (error()) {
@@ -227,6 +228,25 @@ export class EditorWindowComponent implements OnInit {
     } else {
       this.showToast(result.error || 'Finalization failed', 'error');
     }
+  }
+
+  /**
+   * The picker reached the top of its ladder: the book has been handed to
+   * narration and the main window has already been raised onto it.
+   *
+   * So this window closes, and closes NOW. There is no toast, because the user
+   * is looking at the main window by the time this fires; a success message on
+   * a window they have left is a message to nobody, and the 1.5s delay
+   * `onFinalized` uses to let them read it would just leave a stale picker
+   * floating over the book they were moved to.
+   *
+   * Nothing here checks whether the hand-off worked. The picker only emits this
+   * once main has accepted it (`app:show-narration`) and says so itself when it
+   * has not — closing on a refusal is exactly the failure that ordering exists
+   * to prevent.
+   */
+  onHandedOffToNarration(): void {
+    window.close();
   }
 
   /**
