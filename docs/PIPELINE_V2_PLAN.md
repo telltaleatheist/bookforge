@@ -217,6 +217,47 @@ the queue — binding record shows both stages landed, working copy intact at
   actually exists before showing it (`document:stage-finished` fires from a
   `finally`, so a failed or cancelled stage reaches the same code).
 
+## The second real session, 2026-08-04 (after B2)
+
+The station bar and the ladder work. What broke is the boundary between the
+two artifacts: **the picker is still treating the built book as if it were the
+working PDF.** Owen, standing at the EPUB station:
+
+- "when i open the epub itself, it shows deleted blocks from the pdf. it
+  shouldnt be overlaying changes/blocks from the pdf on top of the epub. this
+  is a separate entity now"
+- "when im in the epub, it has different block categories than the original.
+  when it builds the epub, it marked the chapter header from the pdf as a
+  title instead"
+- "it appears as though it merges adjacent blocks" on the EPUB
+- "footnotes, simplify, translate are grayed out"
+- "the next button is 'next: working'. we left the working (pdf) copy to
+  reflow the epub, we dont need to go back to the working copy once its
+  reflowed"
+
+**Leading hypothesis, to be PROVED before anything is changed:** the block
+layer is deliberately kept open at the EPUB station (Phase B fixed a bug where
+looking at the book tore it down), and `documentBlocksMirror` then paints the
+WORKING PDF's blocks, deletions and categories into `editorState` no matter
+which artifact is on screen. The EPUB's own analysis is overwritten by the
+PDF's — which would produce the overlaid deletions, the wrong categories, and
+the merged-looking blocks in one stroke. The block layer must stay OPEN (so the
+station does not tear down) while its MIRRORING is suspended for any artifact
+that is not the working PDF.
+
+**The ladder does not go backwards.** Reflow is the gate into the EPUB world;
+once the book exists, Next from the book is narration. It is never "back to
+the working copy" — that is a step already taken.
+
+**Auto-merge before reflow is retired.** `autoMergeForPipeline()` predates
+foundry's reflow, which does its own paragraph joining. Owen: "that logic was
+designed to solve a problem that doesnt exist anymore."
+
+**A new artifact appears the moment it exists.** "i reflowed the file but i
+dont see it listed in versions… there — it appeared. it should appear
+immediately." The versions page must re-measure when a stage lands, not when
+something else happens to make it reload.
+
 ## Foundry work
 
 - NEW: `ocr-correct --epub` (epub-in → epub-out correction pass).
