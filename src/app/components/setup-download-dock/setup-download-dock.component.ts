@@ -258,9 +258,14 @@ export class SetupDownloadDockComponent {
     else this.svc.expand();
   }
 
-  /** All batch items finished successfully. */
+  /**
+   * All batch items finished successfully — and the update check had nothing to
+   * complain about. A ✓ over a row saying the check failed would be the widget
+   * contradicting its own contents.
+   */
   readonly allDone = computed(() =>
-    this.svc.order().every((id) => {
+    this.svc.checkProblems().length === 0
+    && this.svc.order().every((id) => {
       const s = this.svc.statusOf(id);
       return s === 'done' || s === 'skipped';
     }),
