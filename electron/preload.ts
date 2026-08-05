@@ -1423,6 +1423,16 @@ export interface ElectronAPI {
     showQueue: () => Promise<{ success: boolean; error?: string }>;
     /** Main asked THIS window to show the Queue. Only the main window hears it. */
     onShowQueue: (callback: () => void) => () => void;
+    /**
+     * Raise the MAIN window and open narration for this project.
+     *
+     * The picker's Next at the top of the ladder. It names the project because
+     * narration is Studio's Process tab rather than a route — a bare event would
+     * put the user on whichever book happened to be selected.
+     */
+    showNarration: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
+    /** Main asked THIS window to open narration for a project. Main window only. */
+    onShowNarration: (callback: (projectDir: string) => void) => () => void;
   };
   plugins: {
     list: () => Promise<{ success: boolean; data?: PluginInfo[]; error?: string }>;
@@ -3081,6 +3091,13 @@ const electronAPI: ElectronAPI = {
       const listener = () => callback();
       ipcRenderer.on('app:show-queue', listener);
       return () => { ipcRenderer.removeListener('app:show-queue', listener); };
+    },
+    showNarration: (projectDir: string) =>
+      ipcRenderer.invoke('app:show-narration', projectDir),
+    onShowNarration: (callback: (projectDir: string) => void) => {
+      const listener = (_e: any, projectDir: string) => callback(projectDir);
+      ipcRenderer.on('app:show-narration', listener);
+      return () => { ipcRenderer.removeListener('app:show-narration', listener); };
     },
   },
   plugins: {

@@ -2716,6 +2716,30 @@ export class ElectronService {
     return (window as any).electron.window.onShowQueue(callback);
   }
 
+  /**
+   * Raise the MAIN window and open narration for this project — the picker's
+   * hand-off at the top of the ladder.
+   *
+   * Throws main's own refusal, and the caller is expected to SAY it: the picker
+   * closes itself once this resolves, so a hand-off that failed quietly would
+   * shut the only window the user had and leave them nowhere.
+   */
+  async showNarration(projectDir: string): Promise<void> {
+    if (!this.isElectron) {
+      throw new Error('Narration opens in the BookForge desktop window, which is not running.');
+    }
+    const result = await (window as any).electron.window.showNarration(projectDir);
+    if (!result?.success) {
+      throw new Error(result?.error || 'Opening narration failed with no message.');
+    }
+  }
+
+  /** Main asked this window to open narration. Only the main window ever hears it. */
+  onShowNarration(callback: (projectDir: string) => void): () => void {
+    if (!this.isElectron) return () => { /* nothing subscribed */ };
+    return (window as any).electron.window.onShowNarration(callback);
+  }
+
   // AI operations
   async checkAIConnection(provider: 'ollama' | 'claude' | 'openai', apiKey?: string): Promise<{
     available: boolean;

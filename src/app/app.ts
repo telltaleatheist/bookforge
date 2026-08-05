@@ -13,6 +13,7 @@ import { ElectronService } from './core/services/electron.service';
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
 import { SetupDownloadService } from './core/services/setup-download.service';
+import { NarrationHandoffService } from './core/services/narration-handoff.service';
 
 @Component({
   selector: 'app-root',
@@ -291,6 +292,7 @@ export class App implements OnInit {
   private readonly electron = inject(ElectronService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly setupDownloads = inject(SetupDownloadService);
+  private readonly narrationHandoff = inject(NarrationHandoffService);
 
   // Lets the user dismiss the setup overlay (only reachable in the error state).
   private readonly setupDismissed = signal(false);
@@ -412,6 +414,19 @@ export class App implements OnInit {
       void this.router.navigate(['/queue']);
     });
     this.destroyRef.onDestroy(unsubscribe);
+
+    // The picker reached the top of its ladder and handed the finished book to
+    // narration. Main has already raised this window (`app:show-narration`); the
+    // shell's half is exactly the one above — put Studio on screen — plus the
+    // request itself, because narration is Studio's Process TAB and not a route,
+    // so it needs to know which book. Studio is lazily loaded and may not be
+    // mounted yet, which is why the request is left with the service to be
+    // consumed rather than delivered to a listener that might not exist.
+    const unsubscribeNarration = this.electron.onShowNarration((projectDir: string) => {
+      this.narrationHandoff.request(projectDir);
+      void this.router.navigate(['/studio']);
+    });
+    this.destroyRef.onDestroy(unsubscribeNarration);
 
     // The main process checks at startup whether any INSTALLED component is
     // behind what the catalog names (and whether foundry has published a release

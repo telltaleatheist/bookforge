@@ -1060,6 +1060,44 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
+  /**
+   * The picker's Next, at the top of the ladder — the book is built, so hand the
+   * user to narration.
+   *
+   * Same shape as `app:show-queue` above and for the same reason: the picker is
+   * always its own BrowserWindow (`openEditorWindow`), so "take them to the TTS
+   * page" is a main-process action — raise the MAIN window and tell it where to
+   * go. The picker must never reach for the main window's router.
+   *
+   * It carries the PROJECT, because narration is not a route: it is Studio's
+   * Process tab, which shows the wizard for whichever project is selected. A
+   * bare event would land the user on somebody else's book.
+   *
+   * The refusal matters as much as the success. The picker waits for this answer
+   * before it closes itself, so a missing main window has to come back as a
+   * failure the picker can say out loud rather than as a window that shuts on a
+   * hand-off nobody caught.
+   */
+  ipcMain.handle('app:show-narration', (_e, projectDir: string) => {
+    if (typeof projectDir !== 'string' || projectDir.trim() === '') {
+      return {
+        success: false,
+        error: 'Opening narration needs the project it is for, and none was given.',
+      };
+    }
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return {
+        success: false,
+        error: 'BookForge has no main window open, so there is nowhere to open narration.',
+      };
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send('app:show-narration', projectDir);
+    return { success: true };
+  });
+
   // Managed binaries (ffmpeg, yt-dlp, …) — OUR server-hosted, watched components.
   ipcMain.handle('update:list-components', (_e, force?: boolean) => listManagedComponents(force));
   ipcMain.handle('update:install-component', (_e, id: string) =>
