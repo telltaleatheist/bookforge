@@ -18,6 +18,18 @@
  *
  * ── The rules, in the order they are applied ─────────────────────────────────
  *
+ *  0. It is CONTENT rather than a tool → keep, always. Owen, 2026-08-05: "the
+ *     only situation in which a voice will be downloaded again is if its fully
+ *     missing. they dont have versions." Weights are present or absent. A voice,
+ *     a Stanza pack, a Whisper model, the page-layout GGUF — you have it or you
+ *     do not, and the thing a user wants from a voice is the voice they already
+ *     chose, not a newer one arriving unasked at launch. Tools are the opposite:
+ *     a CLI at the wrong version breaks the pipeline, which is why upgrading it
+ *     is maintenance rather than surprise. The `version` field on a voice asset
+ *     is still a real lever — `rvc-voice-assets.json` documents it as "bump
+ *     (with a new tarball) to force a re-download + re-extract" — but that lever
+ *     belongs to the explicit install path, where a user asked for something,
+ *     never to a background sweep.
  *  1. Not installed → keep. A startup check that begins a multi-gigabyte download
  *     of an engine the user deliberately never installed is a bug, not a feature.
  *     Several of these artifacts are 2–4 GB (docs/DISTRIBUTION.md §4). Upgrading
@@ -71,6 +83,20 @@
  */
 
 import { gt } from '../update/semver';
+import type { ComponentKind } from './component-types';
+
+/**
+ * The kinds whose version is a fact about COMPATIBILITY rather than about
+ * content — a tool at the wrong version breaks the pipeline that drives it, so
+ * keeping it current is maintenance of a choice the user already made.
+ *
+ * Everything absent from this set is weights: `tts-model`, `rvc-model`,
+ * `language-pack`, `stt-model`, `blocks-model`. Those are present or absent
+ * (rule 0). `system` is here-or-not by definition and has nothing to download.
+ */
+const TOOL_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
+  'binary', 'conda-env', 'foundry-cli',
+]);
 
 /** The facts about one component, gathered by the caller. */
 export interface UpgradeCandidate {
@@ -87,6 +113,11 @@ export interface UpgradeCandidate {
   envPinned: boolean;
   /** True when a managed install for this id is already in flight. */
   installing: boolean;
+  /**
+   * What this component IS, which decides whether "a newer version exists" is
+   * even a question worth asking about it. See rule 0.
+   */
+  kind: ComponentKind;
   /**
    * True when an installed version NEWER than the catalog's is a legitimate
    * on-disk state — i.e. this component can adopt a release discovered at
@@ -158,6 +189,13 @@ export function planUpgrade(c: UpgradeCandidate): UpgradePlanItem {
   };
   const keep = (reason: string): UpgradePlanItem => ({ ...base, verdict: 'keep', reason });
 
+  if (!TOOL_KINDS.has(c.kind)) {
+    // Rule 0. Content is present or absent — it is never upgraded in the
+    // background. Listed as the kinds that ARE tools rather than the kinds that
+    // are not, so a new content kind is silent by default and only a deliberate
+    // edit here can put weights back into the startup sweep.
+    return keep(`a ${c.kind} is downloaded when it is missing, not when a version moves`);
+  }
   if (!c.installed) {
     return keep('not installed — a startup check upgrades what is here, it never installs what is not');
   }

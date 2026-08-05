@@ -345,6 +345,11 @@ export async function ensureFoundryPath(
     const verdict = planUpgrade({
       id: FOUNDRY_CLI_COMPONENT_ID,
       name: status?.component.name ?? FOUNDRY_CLI_COMPONENT_ID,
+      // A tool, so rule 0 lets it through to the version rules. Stated rather
+      // than read off `status?.component` so this candidate cannot silently
+      // become content and stop upgrading — the CLI at the wrong version is the
+      // one case where a mismatch actually breaks the pipeline.
+      kind: 'foundry-cli',
       targetVersion: effectiveFoundryVersion(),
       supportsManaged: true,
       installed: record ? { source: record.source, version: record.version } : null,

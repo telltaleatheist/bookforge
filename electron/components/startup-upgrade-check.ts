@@ -134,6 +134,9 @@ export async function checkForComponentUpgrades(): Promise<StartupUpgradeReport>
     return {
       id: component.id,
       name: component.name,
+      // What it IS decides whether a version move is even a question for it —
+      // weights are present or absent, tools are kept current. See rule 0.
+      kind: component.kind,
       targetVersion: component.version,
       supportsManaged: component.acquisition.includes('managed'),
       // A record whose files are gone is not an install to upgrade — it is an

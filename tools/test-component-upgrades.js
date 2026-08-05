@@ -52,6 +52,9 @@ const test = (name, fn) => tests.push({ name, fn });
 const candidate = (over = {}) => ({
   id: 'rvc-env',
   name: 'RVC Engine',
+  // A tool by default — the fixtures below are about version rules, and rule 0
+  // would otherwise answer every one of them before they were asked.
+  kind: 'conda-env',
   targetVersion: '2.0.0',
   supportsManaged: true,
   installed: { source: 'managed', version: '1.0.0' },
@@ -112,6 +115,34 @@ test('an unversioned component (Calibre, Tesseract) is never stale', () => {
   }));
   assert.strictEqual(v.verdict, 'keep');
   assert.match(v.reason, /does not version/);
+});
+
+// Owen, 2026-08-05: "the only situation in which a voice will be downloaded again
+// is if its fully missing. they dont have versions." Weights are present-or-absent;
+// this is rule 0 and it fires before any version is looked at.
+test('a voice is never upgraded, however far its catalog version has moved', () => {
+  const v = planUpgrade(candidate({
+    id: 'rvc-voice-us-female-1', name: 'US Female 1', kind: 'rvc-model',
+    targetVersion: '2027.01.01',
+    installed: { source: 'managed', version: '2026.06.25' },
+  }));
+  assert.strictEqual(v.verdict, 'keep');
+  assert.match(v.reason, /downloaded when it is missing/);
+});
+
+test('every content kind is present-or-absent, not upgraded', () => {
+  for (const kind of ['tts-model', 'rvc-model', 'language-pack', 'stt-model', 'blocks-model']) {
+    const v = planUpgrade(candidate({ kind, installed: { source: 'managed', version: '1.0.0' } }));
+    assert.strictEqual(v.verdict, 'keep', `${kind} was queued for upgrade`);
+    assert.match(v.reason, /downloaded when it is missing/);
+  }
+});
+
+test('the tools ARE still upgraded — rule 0 must not silence everything', () => {
+  for (const kind of ['binary', 'conda-env', 'foundry-cli']) {
+    const v = planUpgrade(candidate({ kind }));
+    assert.strictEqual(v.verdict, 'upgrade', `${kind} was not queued`);
+  }
 });
 
 // Regression, 2026-08-05: a Mac's first launch re-downloaded the US Female 1 RVC
