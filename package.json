@@ -62,7 +62,8 @@
     "migrate:sidecars": "node scripts/run-sidecar-migration.cjs",
     "test:station-ladder": "npx tsc -p tsconfig.electron.json && node tools/test-station-ladder.js",
     "test:version-family": "npx tsc -p tsconfig.electron.json && node tools/test-version-family.js",
-    "test:rail-tasks": "npx tsc -p tsconfig.electron.json && node tools/test-rail-tasks.js"
+    "test:rail-tasks": "npx tsc -p tsconfig.electron.json && node tools/test-rail-tasks.js",
+    "test:component-upgrades": "npx tsc -p tsconfig.electron.json && node tools/test-component-upgrades.js"
   },
   "prettier": {
     "printWidth": 100,
