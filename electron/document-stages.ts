@@ -159,18 +159,29 @@ function scratchPagesDir(scratchDir: string): string {
  * Pull an `n/total` out of a foundry progress line.
  *
  * foundry writes progress to stderr in one shape across stages — `page 3/50`,
- * `ocr: 100/2120 lines` — so one regex serves them all. The LAST pair on the
- * line wins, because `page 1/2: 20/20 blocks labelled` carries the page counter
- * first and the interesting number second. A line with no pair still becomes the
- * message: those are the lines that explain a run, and dropping them for lack of
- * a number would hide the one saying a book's paragraph convention is DEGRADED.
+ * `ocr: 100/2120 lines` — so one regex serves them all. The **FIRST** pair on
+ * the line wins, because when a line carries two counters the first is the run
+ * and the second is the item: `page 1/2: 20/20 blocks labelled` (foundry
+ * `src/commands.ts:1307`) is the outer page counter followed by that page's own
+ * block tally.
+ *
+ * This used to take the LAST pair, on the reasoning that the second number was
+ * "the interesting one". It is not, and taking it is what made the Detect row
+ * lie: every page reports all of its blocks labelled, so the inner pair is
+ * `20/20`, `31/31`, `12/12` — 100 % on the first page of the book and 100 % for
+ * the rest of the run, monotonically pinned there by StageTracker. The queue row
+ * read "Detect blocks 100 %" from the first second of a stage with hundreds of
+ * pages left to go.
+ *
+ * A line with no pair still becomes the message: those are the lines that
+ * explain a run, and dropping them for lack of a number would hide the one
+ * saying a book's paragraph convention is DEGRADED.
  */
 export function parseProgress(line: string): { done: number; total: number } | null {
-  const matches = [...line.matchAll(/(\d+)\s*\/\s*(\d+)/g)];
-  const last = matches[matches.length - 1];
-  if (!last) return null;
-  const done = Number(last[1]);
-  const total = Number(last[2]);
+  const first = /(\d+)\s*\/\s*(\d+)/.exec(line);
+  if (!first) return null;
+  const done = Number(first[1]);
+  const total = Number(first[2]);
   if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0) return null;
   return { done, total };
 }

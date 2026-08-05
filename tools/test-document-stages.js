@@ -107,11 +107,17 @@ async function bindCast(project) {
 
 // ── progress parsing ────────────────────────────────────────────────────────
 
-test('the LAST n/total on a line wins', () => {
-  // `page 1/2: 20/20 blocks labelled` carries the page counter first and the
-  // interesting number second.
-  assert.deepStrictEqual(stages.parseProgress('  page 1/2: 20/20 blocks labelled'), { done: 20, total: 20 });
+test('the FIRST n/total on a line wins — the run, not the item', () => {
+  // REGRESSION (Owen, 2026-08-04): "the queue item detect said it was complete
+  // but it was still running." foundry's blocks stage prints one of these per
+  // page (foundry src/commands.ts:1307) and EVERY page reports all of its own
+  // blocks labelled, so the second pair is always n/n. Reading it made the
+  // Detect row show 100 % from page one — and StageTracker is monotonic, so it
+  // stayed there for the whole run.
+  assert.deepStrictEqual(stages.parseProgress('  page 1/2: 20/20 blocks labelled'), { done: 1, total: 2 });
+  assert.deepStrictEqual(stages.parseProgress('  page 7/300: 31/31 blocks labelled'), { done: 7, total: 300 });
   assert.deepStrictEqual(stages.parseProgress('ocr: 100/2120 lines'), { done: 100, total: 2120 });
+  assert.deepStrictEqual(stages.parseProgress('footnotes: 12/480 units'), { done: 12, total: 480 });
   assert.deepStrictEqual(stages.parseProgress('render: 3/50 pages at 200 dpi'), { done: 3, total: 50 });
 });
 
