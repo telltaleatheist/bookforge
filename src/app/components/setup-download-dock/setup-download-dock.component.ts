@@ -55,9 +55,17 @@ import { RuntimeService } from '../../core/services/runtime.service';
                 <span class="di-pct">{{ eng.pct }}%</span>
               </div>
             }
+            <!-- What the startup update check could not find out. Its own rows
+                 rather than a modal: this is where downloads already speak, and
+                 the user can dismiss it. -->
+            @for (problem of svc.checkProblems(); track problem) {
+              <div class="dock-item problem-row">
+                <span class="di-name" [title]="problem">⚠ {{ problem }}</span>
+              </div>
+            }
             @for (id of svc.order(); track id) {
               <div class="dock-item" [attr.data-status]="svc.statusOf(id)">
-                <span class="di-name" [title]="nameOf(id)">{{ nameOf(id) }}</span>
+                <span class="di-name" [title]="labelOf(id)">{{ labelOf(id) }}</span>
 
                 @switch (svc.statusOf(id)) {
                   @case ('downloading') {
@@ -158,6 +166,13 @@ import { RuntimeService } from '../../core/services/runtime.service';
       border-bottom: 1px solid var(--border-subtle, #2c2c2c);
     }
     .engine-row .di-name { font-weight: 600; }
+    /* A row the update check wrote, not a download. */
+    .problem-row {
+      align-items: flex-start;
+      border-bottom: 1px solid var(--border-subtle, #2c2c2c);
+      color: var(--warning, #e0a020);
+    }
+    .problem-row .di-name { white-space: normal; font-size: 12px; line-height: 1.35; }
     .di-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .di-bar { flex: 0 0 60px; height: 4px; background: var(--bg-sunken, #1a1a1a); border-radius: 2px; overflow: hidden; }
     .di-fill { height: 100%; background: var(--accent); transition: width 0.2s ease; }
@@ -260,10 +275,24 @@ export class SetupDownloadDockComponent {
     if (this.svc.phase() === 'running') return `Downloading ${done}/${total}…`;
     const failed = Object.keys(this.svc.failed()).length;
     if (failed > 0) return `${done}/${total} done · ${failed} failed`;
+    // Nothing was queued, so the only reason the dock is up is the update check
+    // having something to say. Saying "All downloads complete" over a warning
+    // would be the widget contradicting its own contents.
+    if (total === 0 && this.svc.checkProblems().length > 0) return 'Update check';
     return `All downloads complete`;
   }
 
   nameOf(id: string): string {
     return this.components.components().find((c) => c.component.id === id)?.component.name ?? id;
+  }
+
+  /**
+   * The row label. An upgrade names the version it is moving to — otherwise the
+   * shelf shows a component the user already has, downloading, with nothing to
+   * explain why.
+   */
+  labelOf(id: string): string {
+    const target = this.svc.upgradeTarget(id);
+    return target === null ? this.nameOf(id) : `${this.nameOf(id)} → ${target}`;
   }
 }

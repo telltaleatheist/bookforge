@@ -1,6 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { ComponentService } from './component.service';
+import { ElectronService, StartupUpgradeReport } from './electron.service';
 import { RuntimeService } from './runtime.service';
 
 export type ItemStatus = 'queued' | 'downloading' | 'done' | 'failed' | 'skipped';
@@ -23,6 +24,7 @@ export type ItemStatus = 'queued' | 'downloading' | 'done' | 'failed' | 'skipped
 export class SetupDownloadService {
   private readonly components = inject(ComponentService);
   private readonly runtime = inject(RuntimeService);
+  private readonly electron = inject(ElectronService);
 
   /** Component ids the user has checked for download. */
   readonly selected = signal<Set<string>>(new Set());
@@ -37,6 +39,33 @@ export class SetupDownloadService {
   readonly doneIds = signal<Set<string>>(new Set());
   /** id → error message for items that failed this batch. */
   readonly failed = signal<Record<string, string>>({});
+
+  /**
+   * Ids in this batch that are UPGRADES of an already-installed component,
+   * mapped to the version they are moving to.
+   *
+   * An upgrade breaks the assumption the rest of this queue was built on —
+   * "installed means done". The component IS installed and still has work to do,
+   * and it stops being work when its RECORDED version reaches the target, not
+   * when it merely exists. Every place that asked `isInstalled` therefore asks
+   * about upgrade-ness first.
+   */
+  private readonly upgradeTo = signal<Record<string, string>>({});
+
+  /** The version an upgrade item is moving to, or null when it isn't one. */
+  upgradeTarget(id: string): string | null {
+    return this.upgradeTo()[id] ?? null;
+  }
+
+  /**
+   * What the startup update check could not find out.
+   *
+   * Shown in the shelf as its own row. It is deliberately NOT a modal and
+   * deliberately not silent: a Foundry release published without its checksums
+   * is a real refusal the user should see, and so is a GitHub that would not
+   * answer — the shelf is where downloads already speak, and it can be dismissed.
+   */
+  readonly checkProblems = signal<string[]>([]);
 
   /** Dock widget expand/collapse + dismiss (visible only with a live batch). */
   readonly expanded = signal(true);
@@ -110,8 +139,13 @@ export class SetupDownloadService {
 
   // ── Dock visibility ──────────────────────────────────────────────────────
 
-  /** The dock shows whenever a batch has items and hasn't been dismissed. */
-  readonly visible = computed(() => this.order().length > 0 && !this.dismissed());
+  /**
+   * The dock shows whenever a batch has items — or the update check has
+   * something to report — and hasn't been dismissed.
+   */
+  readonly visible = computed(
+    () => (this.order().length > 0 || this.checkProblems().length > 0) && !this.dismissed(),
+  );
 
   expand(): void { this.expanded.set(true); }
   collapse(): void { this.expanded.set(false); }
@@ -120,12 +154,33 @@ export class SetupDownloadService {
   // ── Progress (reactive off componentService state) ─────────────────────────
 
   statusOf(id: string): ItemStatus {
-    if (this.doneIds().has(id) || this.components.isInstalled(id)) return 'done';
+    if (this.doneIds().has(id)) return 'done';
+    // A fresh install is done once it exists. An UPGRADE is done once the
+    // recorded version reaches the target — the component was already installed
+    // when it was queued, so mere existence would mark it done before it started.
+    if (this.isDoneOnDisk(id)) return 'done';
     if (this.failed()[id]) return 'failed';
     if (this.currentId() === id) return 'downloading';
     // In the batch but no longer selected → the user unchecked it.
     if (!this.selected().has(id)) return 'skipped';
     return 'queued';
+  }
+
+  /**
+   * Has this item's work landed on disk? For an upgrade that means the installed
+   * RECORD now reads the target version — the one fact that distinguishes a
+   * finished upgrade from the old copy still sitting there.
+   */
+  private isDoneOnDisk(id: string): boolean {
+    const target = this.upgradeTarget(id);
+    if (target === null) return this.components.isInstalled(id);
+    return this.installedVersionOf(id) === target;
+  }
+
+  /** The version installed.json records for an id, or null when nothing is recorded. */
+  private installedVersionOf(id: string): string | null {
+    const status = this.components.components().find((c) => c.component.id === id);
+    return status?.installed?.version ?? null;
   }
 
   /** Live percent for the in-flight item (0–100). */
@@ -210,6 +265,75 @@ export class SetupDownloadService {
     this.enqueueSelected();
   }
 
+  // ── Startup upgrades ───────────────────────────────────────────────────────
+
+  private upgradeWatchStarted = false;
+
+  /**
+   * Listen for the main process's startup update sweep and run whatever it
+   * found through THIS queue — so an upgrade downloads, reports progress, and
+   * can be cancelled in exactly the same shelf as everything else.
+   *
+   * Called once from the app shell. Subscribes FIRST and pulls afterwards: the
+   * sweep is async in the main process and may have already pushed its result
+   * before this renderer was listening, and a report that arrives twice is
+   * idempotent here (the ids are already queued).
+   */
+  watchForUpgrades(): () => void {
+    if (this.upgradeWatchStarted) return () => { /* already watching */ };
+    this.upgradeWatchStarted = true;
+
+    const unsubscribe = this.electron.components.onUpgradesAvailable((report) => {
+      this.applyUpgradeReport(report);
+    });
+    void this.electron.components.upgrades().then((report) => {
+      // null = the sweep has not finished; the subscription above will bring it.
+      if (report) this.applyUpgradeReport(report);
+    });
+    return unsubscribe;
+  }
+
+  /**
+   * Queue the sweep's upgrades and surface anything it could not check.
+   *
+   * The component list is refreshed FIRST because every decision below reads it:
+   * `isDoneOnDisk` compares the recorded version against the target, and a stale
+   * renderer list would either mark a pending upgrade done or leave a finished
+   * one running. `refresh()` is the same call the Add-ons tab makes.
+   */
+  private async applyUpgradeReport(report: StartupUpgradeReport): Promise<void> {
+    if (report.problems.length > 0) {
+      this.checkProblems.update((existing) => {
+        const merged = new Set([...existing, ...report.problems]);
+        return [...merged];
+      });
+      this.dismissed.set(false);
+    }
+    if (report.upgrades.length === 0) return;
+
+    await this.components.ensureLoaded();
+    this.upgradeTo.update((map) => {
+      const next = { ...map };
+      for (const u of report.upgrades) next[u.id] = u.toVersion;
+      return next;
+    });
+
+    // Only ids not already in the batch. A replayed report (a dev reload pushes
+    // the cached one again) must not re-select an item the user just unchecked —
+    // that is a decision, and re-queuing over it would make the ✕ meaningless.
+    const additions = report.upgrades
+      .map((u) => u.id)
+      .filter((id) => !this.order().includes(id));
+    if (additions.length > 0) {
+      this.selectMany(additions);
+      this.order.update((o) => [...o, ...additions]);
+      this.dismissed.set(false);
+      this.expanded.set(true);
+    }
+    this.cancelled = false;
+    void this.drain();
+  }
+
   /** The next queued item still worth installing, or null when the queue is dry. */
   private nextToRun(): string | null {
     return (
@@ -219,7 +343,7 @@ export class SetupDownloadService {
           this.selected().has(id) &&
           !this.doneIds().has(id) &&
           !this.failed()[id] &&
-          !this.components.isInstalled(id),
+          !this.isDoneOnDisk(id),
       ) ?? null
     );
   }
@@ -251,7 +375,7 @@ export class SetupDownloadService {
         this.currentId.set(curId);
         await this.components.install(curId);
 
-        if (this.components.isInstalled(curId)) {
+        if (this.isDoneOnDisk(curId)) {
           this.doneIds.update((s) => new Set(s).add(curId));
         } else if (!this.cancelled) {
           this.failed.update((f) => ({ ...f, [curId]: this.components.error() || 'Download failed' }));

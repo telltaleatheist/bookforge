@@ -477,6 +477,24 @@ export interface InstallResult {
   error?: string;
 }
 
+/**
+ * The startup upgrade sweep's result. Mirrored from
+ * electron/components/startup-upgrade-check.ts, same rule as the block above.
+ * `problems` is a product, not an error channel: a check that could not be
+ * completed is shown in the download shelf, never as a modal.
+ */
+export interface ComponentUpgrade {
+  id: string;
+  name: string;
+  fromVersion: string;
+  toVersion: string;
+}
+
+export interface StartupUpgradeReport {
+  upgrades: ComponentUpgrade[];
+  problems: string[];
+}
+
 /** A Whisper transcription model in the catalog, with a present/absent flag. */
 export interface WhisperModelStatus {
   id: string;
@@ -4971,6 +4989,22 @@ export class ElectronService {
     onProgress: (cb: (p: InstallProgress) => void): () => void => {
       if (this.isElectron) {
         return (window as any).electron.components.onProgress(cb);
+      }
+      return () => {};
+    },
+    /** What the startup sweep found, or null while it is still running. */
+    upgrades: (): Promise<StartupUpgradeReport | null> => {
+      if (this.isElectron) {
+        return (window as any).electron.components.upgrades();
+      }
+      // Outside Electron there is no component system at all, so "nothing has
+      // been checked" is the honest answer — not an empty report, which would
+      // claim a check ran and found everything current.
+      return Promise.resolve(null);
+    },
+    onUpgradesAvailable: (cb: (report: StartupUpgradeReport) => void): () => void => {
+      if (this.isElectron) {
+        return (window as any).electron.components.onUpgradesAvailable(cb);
       }
       return () => {};
     },

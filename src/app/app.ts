@@ -12,6 +12,7 @@ import { UpdateBannerComponent } from './components/update-banner/update-banner.
 import { ElectronService } from './core/services/electron.service';
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
+import { SetupDownloadService } from './core/services/setup-download.service';
 
 @Component({
   selector: 'app-root',
@@ -289,6 +290,7 @@ export class App implements OnInit {
   private readonly router = inject(Router);
   private readonly electron = inject(ElectronService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly setupDownloads = inject(SetupDownloadService);
 
   // Lets the user dismiss the setup overlay (only reachable in the error state).
   private readonly setupDismissed = signal(false);
@@ -410,5 +412,17 @@ export class App implements OnInit {
       void this.router.navigate(['/queue']);
     });
     this.destroyRef.onDestroy(unsubscribe);
+
+    // The main process checks at startup whether any INSTALLED component is
+    // behind what the catalog names (and whether foundry has published a release
+    // newer than the pin). Listening here — in the shell, beside the dock —
+    // because the upgrades run through SetupDownloadService and show in the
+    // bottom-right download shelf, which outlives every route.
+    //
+    // Only the main window: a standalone editor/listen/alignment popup has the
+    // same shell but must not start a second copy of the same downloads.
+    if (!this.isStandaloneWindow()) {
+      this.destroyRef.onDestroy(this.setupDownloads.watchForUpgrades());
+    }
   }
 }
