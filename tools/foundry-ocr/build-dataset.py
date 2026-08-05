@@ -2381,13 +2381,22 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
                 'emittedTrainUnitsWithAJoin': sum(1 for u in train if u.get('goldJoins')),
                 'emittedTrainJoins': sum(u.get('goldJoins', 0) for u in train),
                 'emittedTrainEditUnits': sum(1 for u in train if not u['identity']),
-                'rule': 'A wrap hyphen inside a unit is closed in the GOLD when, and only '
-                        'when, the word the publisher printed (repair_hyphen\'s discarded '
-                        'joined truth word) says the two fragments are one word AND their '
-                        'alphanumeric characters concatenate to exactly that word\'s. '
-                        '`well-` + `known` = `well-known` in the EPUB, so the hyphen stays. '
-                        'Anything else is ambiguous and the hyphen stays. The SOURCE side is '
-                        'never touched.',
+                'rule': 'TWO RUNGS, and the hyphen stays unless one of them says otherwise. '
+                        '(1) The publisher\'s own word for THIS occurrence — repair_hyphen\'s '
+                        'discarded joined truth word — where the aligner still had it whole. '
+                        'Exact, and it decides only ~2% of cases: since align-epub.py\'s Aug '
+                        '2026 continuation rule `span_text` splits the truth word itself and '
+                        'APPENDS a hyphen, so a wrap (`pervert-`) and a real compound '
+                        '(`twenty-`) are byte-identical in the pairs file. (2) The book\'s own '
+                        'attested vocabulary, read from <lab>/gold/<book>/source.epub — the '
+                        'same standard src/export/linejoin.ts applies, and the vocabulary '
+                        'sentences.py declines this decision for want of. Hyphenated form '
+                        'attested -> real compound, hyphen stays. Joined form attested -> '
+                        'wrap, close it. Neither -> ambiguous, hyphen stays. The hyphenated '
+                        'test runs FIRST, so a compound whose halves are also words on their '
+                        'own is not welded into something the book never prints. Either way '
+                        'the LETTERS ARE IDENTICAL: the only character this may remove is the '
+                        'wrap hyphen. The SOURCE side is never touched.',
                 'servingDependency':
                     'The join teaches a ONE-word -> ONE-word change at edit distance 1 '
                     '(`extraordi-nary` -> `extraordinary`), which the shipped per-run / '
