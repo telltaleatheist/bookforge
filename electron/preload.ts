@@ -1350,6 +1350,20 @@ export interface ElectronAPI {
     detect: (ref: DocumentRef) => Promise<{ success: boolean; error?: string }>;
     reflow: (ref: DocumentRef, options?: { excludeCategories?: string[]; coverPath?: string }) =>
       Promise<{ success: boolean; epubPath?: string; error?: string }>;
+    /**
+     * Footnote removal over the book, inline. The same run the queue job makes,
+     * so the record it leaves is the same one; what differs is who watches it.
+     */
+    footnotesEpub: (projectDir: string, options?: { askEverything?: boolean }) => Promise<{
+      success: boolean;
+      error?: string;
+      bookPath?: string;
+      diffRelPath?: string;
+      reportRelPath?: string;
+      markersRemoved?: number;
+      documentsEdited?: number;
+      model?: string;
+    }>;
     cancelStage: (projectDir: string) => Promise<{ success: boolean; stopped?: boolean }>;
     resetTo: (ref: DocumentRef, target: ResetTarget) =>
       Promise<{ success: boolean; error?: string }>;
@@ -3023,6 +3037,11 @@ const electronAPI: ElectronAPI = {
     detect: (ref: DocumentRef) => ipcRenderer.invoke('document:blocks', ref),
     reflow: (ref: DocumentRef, options?: { excludeCategories?: string[]; coverPath?: string }) =>
       ipcRenderer.invoke('document:reflow', ref, options),
+    // Footnote removal over the book, run inline rather than queued: it is
+    // minutes at most, and its progress arrives on the same document:stage-*
+    // channels as the stages above it.
+    footnotesEpub: (projectDir: string, options?: { askEverything?: boolean }) =>
+      ipcRenderer.invoke('document:footnotes-epub', projectDir, options),
     cancelStage: (projectDir: string) => ipcRenderer.invoke('document:cancel-stage', projectDir),
     resetTo: (ref: DocumentRef, target: ResetTarget) =>
       ipcRenderer.invoke('document:reset-to', ref, target),

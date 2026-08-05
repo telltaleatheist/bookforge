@@ -612,6 +612,22 @@ export interface ProjectExportInfo {
   appliedPasses: AppliedPass[];
 }
 
+/**
+ * What a footnotes run over the book left behind — main's own answer, verbatim.
+ *
+ * The counts are foundry's report and the two paths are project-relative, which
+ * is how they are recorded: the diff is what the versions page's Footnotes star
+ * opens, and the report is what was ASKED rather than what changed.
+ */
+export interface EpubFootnotesOutcome {
+  bookPath: string;
+  diffRelPath: string;
+  reportRelPath: string;
+  markersRemoved: number;
+  documentsEdited: number;
+  model: string;
+}
+
 interface ProjectLoadResult {
   success: boolean;
   canceled?: boolean;
@@ -2587,6 +2603,34 @@ export class ElectronService {
       throw new Error(result.error || 'Building the book failed with no message.');
     }
     return result.epubPath;
+  }
+
+  /**
+   * Footnote removal over the project's book, run inline.
+   *
+   * The same function the queue job runs (`runEpubFootnotesOnBook`), so the
+   * record it leaves — the diff, foundry's report, the applied pass — does not
+   * depend on which button started it. Progress arrives on the
+   * `document:stage-*` channels; this promise settles when the book has been
+   * replaced and recorded.
+   */
+  async documentFootnotesEpub(
+    projectDir: string,
+    options?: { askEverything?: boolean },
+  ): Promise<EpubFootnotesOutcome> {
+    if (!this.isElectron) throw new Error('The document pipeline needs the desktop app.');
+    const result = await (window as any).electron.document.footnotesEpub(projectDir, options);
+    if (!result.success) {
+      throw new Error(result.error || 'Removing the footnote markers failed with no message.');
+    }
+    return {
+      bookPath: result.bookPath,
+      diffRelPath: result.diffRelPath,
+      reportRelPath: result.reportRelPath,
+      markersRemoved: result.markersRemoved,
+      documentsEdited: result.documentsEdited,
+      model: result.model,
+    };
   }
 
   async documentCancelStage(projectDir: string): Promise<boolean> {

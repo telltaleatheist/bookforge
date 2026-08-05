@@ -46,8 +46,8 @@ import {
 } from './document-stages';
 import { readWorkingDocumentBlocks } from './working-document';
 import { applyWorkingDocumentEdits, type WorkingDocumentEdit } from './working-document-writer';
-import { abortStageFor, beginStage } from './document-stage-registry';
-import { noteDocumentStageFinished } from './document-open-when-finished';
+import { abortStageFor } from './document-stage-registry';
+import { broadcastToAllWindows, withProjectStage } from './document-stage-run';
 import {
   documentBindingPath,
   workingDocumentPath,
@@ -59,11 +59,11 @@ import type {
   ResetTarget,
 } from '../shared/document/pipeline-types';
 
-function broadcast(channel: string, payload: unknown): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(channel, payload);
-  }
-}
+/**
+ * Every window, because a project's files belong to no one window. The one
+ * implementation lives with the stage machinery that needed it first.
+ */
+const broadcast = broadcastToAllWindows;
 
 /**
  * Stop every one of this project's bindings from vouching for a book EPUB.
@@ -98,12 +98,13 @@ async function projectOf(ref: DocumentRef): Promise<DocumentProject> {
 }
 
 /**
- * Run a stage, with its progress on the wire and its abort registered.
+ * Run a stage over this project's DOCUMENTS.
  *
- * The stage name travels with every progress line and with the failure, because
- * "which stage said this" is the whole of what makes foundry's own message
- * actionable — and foundry's message is passed through verbatim rather than
- * summarized (see `invokeFoundry`).
+ * The claim, the three broadcasts and the "open when finished" settlement are
+ * `withProjectStage`'s — the queue path needs exactly the same four things and
+ * had its own copy of them. What this adds is the resolved document project the
+ * document stages take, so a caller here hands `runGetTextStage` and friends
+ * what they expect.
  */
 async function withStage<T>(
   project: DocumentProject,
@@ -114,30 +115,7 @@ async function withStage<T>(
     onProgress: (progress: DocumentStageProgress) => void;
   }) => Promise<T>
 ): Promise<T> {
-  const controller = new AbortController();
-  // Claimed in the shared registry rather than a map private to this module: a
-  // reset has to be able to see a stage the QUEUE started, and quit has to be
-  // able to stop one either of us started.
-  const release = beginStage(project.projectDir, stage, controller);
-  broadcast('document:stage-started', { projectDir: project.projectDir, stage });
-  try {
-    return await run({
-      project,
-      signal: controller.signal,
-      onProgress: (progress) => {
-        broadcast('document:stage-progress', { projectDir: project.projectDir, ...progress });
-      },
-    });
-  } finally {
-    release();
-    broadcast('document:stage-finished', { projectDir: project.projectDir, stage });
-    // The app's half of "open when finished" — see document-open-when-finished.
-    // It fires from the same `finally` as the broadcast and for the same reason:
-    // a stage that failed still STOPPED, and the promise is settled by measuring
-    // the documents afterwards rather than by trusting that this line was
-    // reached.
-    noteDocumentStageFinished(project.projectDir, stage);
-  }
+  return withProjectStage(project.projectDir, stage, (opts) => run({ project, ...opts }));
 }
 
 
@@ -320,6 +298,44 @@ export function registerDocumentIpc(): void {
       await manifestService.registerEpubExport(project.projectDir, epubPath);
       broadcast('project:files-changed', project.projectDir);
       return { success: true, epubPath };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Footnote removal over the project's BOOK, run here and now.
+   *
+   * Owen, 2026-08-04: "footnote removal is pretty fast. instead of adding to the
+   * queue lets have it do it quickly in a modal with a progress bar, just like
+   * the OCR modal on pdfs." So it is a stage like the three above it: claimed in
+   * the registry (a second writer is refused by name, and `document:cancel-stage`
+   * stops it), reported on the `document:stage-*` channels the picker already
+   * listens to, and followed by `project:files-changed` so the versions page
+   * re-measures.
+   *
+   * WHAT IT RUNS IS NOT WRITTEN HERE. `runEpubFootnotesOnBook` is the one
+   * description of what a footnotes run IS — foundry, the diff, the report, the
+   * swap and the provenance record — and the queue job runs the same function.
+   * Two descriptions would mean a book whose record depends on which button
+   * started it.
+   */
+  ipcMain.handle('document:footnotes-epub', async (
+    _event, projectDir: string, options?: { askEverything?: boolean }
+  ) => {
+    try {
+      const manifestService = await import('./manifest-service.js');
+      const { EPUB_FOOTNOTES_STAGE, runEpubFootnotesOnBook } = await import('./processing-passes.js');
+      const stageRelDir = await manifestService.nextPassStageRelDir(projectDir, 'footnotes');
+      const result = await withProjectStage(projectDir, EPUB_FOOTNOTES_STAGE, (opts) =>
+        runEpubFootnotesOnBook({
+          projectDir,
+          stageRelDir,
+          askEverything: options?.askEverything === true,
+          signal: opts.signal,
+          onProgress: opts.onProgress,
+        }));
+      return { success: true, ...result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

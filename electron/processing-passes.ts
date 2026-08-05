@@ -48,10 +48,10 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-// `BrowserWindow` is a VALUE here as well as a type: a document stage run from
-// the queue has to reach every window that is looking at the book, not only the
-// one that happens to be handed in for progress rows.
-import { BrowserWindow } from 'electron';
+// A type here, and only a type. Reaching every window that is looking at the
+// book — which a stage run from the queue must do — is `document-stage-run`'s
+// job now, and this module holds the one window the queue's progress rows go to.
+import type { BrowserWindow } from 'electron';
 
 import * as manifestService from './manifest-service';
 import type { AppliedPassKind } from './manifest-types';
@@ -64,8 +64,7 @@ import {
   type FoundryEpubFootnotesReport,
 } from './foundry-bridge';
 import { readDocumentBinding } from './document-binding';
-import { beginStage } from './document-stage-registry';
-import { noteDocumentStageFinished } from './document-open-when-finished';
+import { broadcastToAllWindows, withProjectStage } from './document-stage-run';
 import { reflowOutputPath, resolveDocumentProject } from './document-project';
 import {
   bindingAbsPath,
@@ -79,6 +78,7 @@ import {
   runReflowStage,
   type DocumentProject,
   type DocumentStageOptions,
+  type DocumentStageProgress,
 } from './document-stages';
 import { StageTracker, type JobStageProgress } from './job-stages';
 import { writePassDiff, type DiffChange, type PassDiffUnit } from './diff-cache';
@@ -265,6 +265,16 @@ const DOCUMENT_STAGE_BARS: Record<string, string> = {
 };
 
 /**
+ * The stage name a footnotes-over-the-book run announces itself under.
+ *
+ * The same string whichever side started it, because it is what a window
+ * matches on to know the run it is watching is this one — and it is the queue
+ * bar's label too, so a user reading the queue and a user reading the modal are
+ * reading the same word.
+ */
+export const EPUB_FOOTNOTES_STAGE = DOCUMENT_STAGE_BARS['footnotes'];
+
+/**
  * The foundry SUBPROCESS an EPUB-mode pass is driving. It has no document stage
  * and no boundary — it is one process from start to finish — so stopping it is
  * an abort signal on the spawn.
@@ -295,26 +305,15 @@ export async function cancelProcessingPass(jobId: string): Promise<boolean> {
 }
 
 /**
- * Tell every window a document stage happened, on the channels that exist for it.
- *
- * A stage is about a PROJECT, and a project's documents change whoever ran the
- * stage — so a window looking at that book has to hear about it whether the user
- * pressed the button in the picker or dropped the run into the queue. The
- * picker-initiated path (`document-ipc.ts::withStage`) has always broadcast
- * these three; the queue path did not, which meant a book cast from the queue
- * left every open picker showing the documents as they were before it, and the
- * OCR dialog — which SUBMITS to the queue and then watches these channels —
- * watching a run it could never see.
- */
-function broadcastDocumentStage(channel: string, payload: Record<string, unknown>): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(channel, payload);
-  }
-}
-
-/**
  * Run one document stage as a queue job: bars, cancellation, and foundry's own
  * words on the row.
+ *
+ * The claim, the three `document:stage-*` broadcasts and the "open when
+ * finished" settlement are `withProjectStage`'s — the picker-initiated path
+ * needs exactly the same four things, and this module used to carry its own
+ * copy of them. What is added here is the QUEUE's half: the job's bars, foundry
+ * downloaded inside the job, and the abort registered against the job id so a
+ * queue row can stop it.
  *
  * `bars` is the stage list this pass will move through. More than one draws a
  * breakdown; exactly one draws none, because a single bar under an identical
@@ -336,49 +335,30 @@ async function withDocumentStage<T>(
 
   const abort = new AbortController();
   activeDocumentPasses.set(jobId, abort);
-  // Claimed in the shared registry too, so a reset submitted from another window
-  // sees this stage and refuses rather than being silently undone by it when the
-  // staged temp lands.
   const stageName = DOCUMENT_STAGE_BARS[config.kind] ?? config.kind;
-  const release = beginStage(project.projectDir, stageName, abort);
-  broadcastDocumentStage('document:stage-started', {
-    projectDir: project.projectDir, stage: stageName,
-  });
   try {
-    sendProgress(mainWindow, jobId, config.kind, tracker.master(), 'Preparing…', barsOf());
-    await ensureFoundryForJob(jobId, config.kind, mainWindow);
-    const result = await run({
-      project,
-      signal: abort.signal,
-      onProgress: (progress) => {
-        // The stage names foundry reports ARE the bar names, so nothing
-        // translates between them; a stage this pass did not declare moves no
-        // bar, by StageTracker's own rule.
-        if (progress.total > 0) {
-          tracker.set(progress.stage, (progress.done / progress.total) * 100);
-        }
-        sendProgress(mainWindow, jobId, config.kind, tracker.master(), progress.message, barsOf());
-        broadcastDocumentStage('document:stage-progress', {
-          projectDir: project.projectDir, ...progress,
-        });
-      },
-    });
-    tracker.completeAll();
-    return result;
+    return await withProjectStage(project.projectDir, stageName, async (opts) => {
+      sendProgress(mainWindow, jobId, config.kind, tracker.master(), 'Preparing…', barsOf());
+      await ensureFoundryForJob(jobId, config.kind, mainWindow);
+      const result = await run({
+        project,
+        signal: opts.signal,
+        onProgress: (progress) => {
+          // The stage names foundry reports ARE the bar names, so nothing
+          // translates between them; a stage this pass did not declare moves no
+          // bar, by StageTracker's own rule.
+          if (progress.total > 0) {
+            tracker.set(progress.stage, (progress.done / progress.total) * 100);
+          }
+          sendProgress(mainWindow, jobId, config.kind, tracker.master(), progress.message, barsOf());
+          opts.onProgress(progress);
+        },
+      });
+      tracker.completeAll();
+      return result;
+    }, abort);
   } finally {
-    release();
     activeDocumentPasses.delete(jobId);
-    // In `finally` for the same reason the picker-initiated path has it there: a
-    // stage that FAILED still stopped, and a window waiting for it to stop has
-    // to stop waiting. What it changed on disk is measured afterwards, not
-    // inferred from the fact that it ended.
-    broadcastDocumentStage('document:stage-finished', {
-      projectDir: project.projectDir, stage: stageName,
-    });
-    // The queue's half of "open when finished". A run submitted from the picker
-    // and then backgrounded lands HERE, not in document-ipc — which is exactly
-    // the case the old picker-only listener could never honour.
-    noteDocumentStageFinished(project.projectDir, stageName);
   }
 }
 
@@ -596,15 +576,106 @@ async function runEpubFootnotesPass(
   config: PassJobConfig,
   mainWindow: BrowserWindow | null | undefined
 ): Promise<PassJobResult> {
+  const abort = new AbortController();
+  // Registered against the job id so a queue row's Cancel reaches this
+  // subprocess. `withProjectStage` claims the SAME controller in the document
+  // stage registry, so `document:cancel-stage` — the picker's way in — stops
+  // exactly the same run.
+  activeFoundrySubprocesses.set(jobId, abort);
+  try {
+    const { bookPath } = await withProjectStage(
+      config.projectDir,
+      EPUB_FOOTNOTES_STAGE,
+      async (opts) => {
+        sendProgress(mainWindow, jobId, 'footnotes', 0, 'Reading the book…');
+        return runEpubFootnotesOnBook({
+          projectDir: config.projectDir,
+          stageRelDir: config.stageRelDir,
+          askEverything: config.footnotes?.askEverything === true,
+          signal: opts.signal,
+          onProgress: (progress) => {
+            sendProgress(
+              mainWindow, jobId, 'footnotes',
+              progress.total > 0 ? (progress.done / progress.total) * 100 : 0,
+              progress.message
+            );
+            opts.onProgress(progress);
+          },
+        });
+      },
+      abort
+    );
+    return { success: true, outputPath: bookPath };
+  } finally {
+    activeFoundrySubprocesses.delete(jobId);
+  }
+}
+
+export interface EpubFootnotesRunRequest {
+  readonly projectDir: string;
+  /** Project-relative stage directory this run's diff and report live in. */
+  readonly stageRelDir: string;
+  /** Ask about note bodies and index entries too — foundry skips both by default. */
+  readonly askEverything: boolean;
+  readonly signal: AbortSignal;
+  readonly onProgress: (progress: DocumentStageProgress) => void;
+}
+
+export interface EpubFootnotesRunResult {
+  /** The book, at its recorded path — the same file that went in. */
+  readonly bookPath: string;
+  /** Project-relative path of the diff this run wrote. */
+  readonly diffRelPath: string;
+  /** Project-relative path of foundry's own report. */
+  readonly reportRelPath: string;
+  readonly markersRemoved: number;
+  readonly documentsEdited: number;
+  /** foundry's own description of the weights that answered. */
+  readonly model: string;
+}
+
+/**
+ * WHAT A FOOTNOTES RUN OVER THE BOOK IS. One description, two callers.
+ *
+ * The queue job and the picker's inline modal both come here, because the work
+ * is not the foundry call — it is everything around it, and every piece of it is
+ * load-bearing:
+ *
+ *  - the staged EPUB and report land in a machine-local directory and are moved
+ *    into the library only when complete (the library is Syncthing-synced: a
+ *    half-written EPUB there is a corrupt book on another machine that looks
+ *    like a real one);
+ *  - the diff is computed from the two books and located from foundry's report,
+ *    and it is what the versions page's Footnotes star now opens;
+ *  - the report itself is kept beside the diff, because it is what was ASKED —
+ *    every refusal verbatim — and that is the number that decides whether this
+ *    model may be pointed at a library at all;
+ *  - and the pass is RECORDED against the book with its model, its marker count
+ *    and the diff's project-relative path. A run that skipped that would produce
+ *    a book with no record and no reviewable diff, which is indistinguishable
+ *    from a book nobody has run anything over.
+ *
+ * NO FALLBACKS. A missing binary, a missing GGUF, a nonzero exit or a missing
+ * report each fail with the message that names the thing.
+ */
+export async function runEpubFootnotesOnBook(
+  request: EpubFootnotesRunRequest
+): Promise<EpubFootnotesRunResult> {
+  const { projectDir, stageRelDir, askEverything, signal, onProgress } = request;
   // The book check first: a project with no book EPUB fails on the cheap stat,
   // not after a 38 MB download it was never going to use.
-  const bookPath = await requireBookEpub(config.projectDir);
-  await ensureFoundryForJob(jobId, 'footnotes', mainWindow);
-  const stageDir = absStage(config);
+  const bookPath = await requireBookEpub(projectDir);
+  // The binary, downloaded if this machine has none — inside the run, where it
+  // has a progress line and a failure state, rather than as a precondition the
+  // user is asked to go and satisfy. It serializes, so a second caller during a
+  // download waits for the same one.
+  await ensureFoundryPath((p) => {
+    if (p.message) onProgress({ stage: 'footnotes', message: p.message, done: 0, total: 100 });
+  });
+  const stageDir = path.join(projectDir, stageRelDir.split('/').join(path.sep));
   await fs.promises.mkdir(stageDir, { recursive: true });
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
 
-  const askEverything = config.footnotes?.askEverything === true;
   const run = crypto.randomUUID();
   const stagedEpub = path.join(STAGING_DIR, `footnotes-${run}.epub`);
   const stagedReport = path.join(STAGING_DIR, `footnotes-${run}.report.json`);
@@ -624,77 +695,101 @@ async function runEpubFootnotesPass(
     ...(askEverything ? ['--ask-everything'] : []),
   ];
 
-  const abort = new AbortController();
-  activeFoundrySubprocesses.set(jobId, abort);
-  let result;
   try {
-    sendProgress(mainWindow, jobId, 'footnotes', 0, 'Reading the book…');
-    result = await runFoundry(args, {
-      signal: abort.signal,
+    const result = await runFoundry(args, {
+      signal,
       onProgress: (line) => {
         const progress = parseProgress(line);
         // 0-90 %: the last tenth is the diff and the swap, which are this
         // module's work rather than foundry's.
         const within = progress && progress.total > 0 ? progress.done / progress.total : 0;
-        sendProgress(mainWindow, jobId, 'footnotes', within * 90, line.trim());
+        onProgress({
+          stage: 'footnotes',
+          message: line.trim(),
+          done: Math.round(within * 90),
+          total: 100,
+        });
       },
     });
-  } finally {
-    activeFoundrySubprocesses.delete(jobId);
-  }
 
-  if (result.code !== 0) {
-    // foundry's stderr IS the message: every throw in that program names the
-    // thing that is missing or wrong. Never summarized.
-    throw new Error(
-      `foundry footnotes failed (exit ${result.code}):\n${(result.stderr || result.stdout).trim()}`
+    if (result.code !== 0) {
+      // foundry's stderr IS the message: every throw in that program names the
+      // thing that is missing or wrong. Never summarized.
+      throw new Error(
+        `foundry footnotes failed (exit ${result.code}):\n${(result.stderr || result.stdout).trim()}`
+      );
+    }
+    if (!fs.existsSync(stagedReport)) {
+      throw new Error(
+        `foundry footnotes exited 0 but wrote no report at ${stagedReport}, so there is no record `
+        + 'of what it did to the book. The pass is refused rather than applied unreviewably.'
+      );
+    }
+    if (!fs.existsSync(stagedEpub)) {
+      throw new Error(`foundry footnotes exited 0 but wrote no book at ${stagedEpub}.`);
+    }
+
+    const report = readEpubFootnotesReport(stagedReport);
+    console.log(
+      `[processing-pass] footnotes --epub: ${report.totals.deletionsApplied} markers removed across `
+      + `${report.totals.documentsEdited}/${report.totals.documents} documents `
+      + `(${report.totals.deletionsRejected} refused by the guards)`
     );
-  }
-  if (!fs.existsSync(stagedReport)) {
-    throw new Error(
-      `foundry footnotes exited 0 but wrote no report at ${stagedReport}, so there is no record `
-      + 'of what it did to the book. The pass is refused rather than applied unreviewably.'
+
+    onProgress({ stage: 'footnotes', message: 'Working out what changed…', done: 92, total: 100 });
+    const before = await loadEpubForComparison(bookPath);
+    const after = await loadEpubForComparison(stagedEpub);
+    const diffRelPath = `${stageRelDir}/diff.json`;
+    await writePassDiff(
+      path.join(stageDir, 'diff.json'),
+      epubFootnoteDiffUnits(before.chapters, after.chapters, report)
     );
-  }
-  if (!fs.existsSync(stagedEpub)) {
-    throw new Error(`foundry footnotes exited 0 but wrote no book at ${stagedEpub}.`);
-  }
 
-  const report = readEpubFootnotesReport(stagedReport);
-  console.log(
-    `[processing-pass] footnotes --epub: ${report.totals.deletionsApplied} markers removed across `
-    + `${report.totals.documentsEdited}/${report.totals.documents} documents `
-    + `(${report.totals.deletionsRejected} refused by the guards)`
-  );
+    // The raw report stays beside the diff.
+    const reportRelPath = `${stageRelDir}/report.json`;
+    await moveIntoPlace(stagedReport, path.join(stageDir, 'report.json'));
 
-  sendProgress(mainWindow, jobId, 'footnotes', 92, 'Working out what changed…');
-  const before = await loadEpubForComparison(bookPath);
-  const after = await loadEpubForComparison(stagedEpub);
-  const diff = diffPaths(config);
-  await writePassDiff(diff.abs, epubFootnoteDiffUnits(before.chapters, after.chapters, report));
-
-  // The raw report stays beside the diff. The diff says what changed; the report
-  // says what was ASKED — every refusal verbatim, every skip counted by reason —
-  // and that is the number that decides whether this model may be pointed at a
-  // library at all.
-  await moveIntoPlace(stagedReport, path.join(stageDir, 'report.json'));
-
-  sendProgress(mainWindow, jobId, 'footnotes', 97, 'Putting the book back…');
-  const bookAfter = await replaceBookEpub(config.projectDir, stagedEpub);
-  await manifestService.appendAppliedPass(config.projectDir, {
-    kind: 'footnotes',
-    at: new Date().toISOString(),
-    params: {
-      // foundry's own description of what answered — "adapter
-      // foundry-footnotes-v1-4b on base foundry:4b" — rather than a path this
-      // app chose, because it no longer chooses one.
-      model: report.model,
+    onProgress({ stage: 'footnotes', message: 'Putting the book back…', done: 97, total: 100 });
+    const bookAfter = await replaceBookEpub(projectDir, stagedEpub);
+    await manifestService.appendAppliedPass(projectDir, {
+      kind: 'footnotes',
+      at: new Date().toISOString(),
+      params: {
+        // foundry's own description of what answered — "adapter
+        // foundry-footnotes-v1-4b on base foundry:4b" — rather than a path this
+        // app chose, because it no longer chooses one.
+        model: report.model,
+        markersRemoved: report.totals.deletionsApplied,
+        ...(askEverything ? { askEverything: true } : {}),
+      },
+      diff: diffRelPath,
+    });
+    // The book on disk is not the book it was. Said on the channel the versions
+    // page and the picker already re-measure on, so neither has to be told twice
+    // — and said from HERE, so it is said whichever side started the run.
+    broadcastToAllWindows('project:files-changed', projectDir);
+    onProgress({ stage: 'footnotes', message: 'Done.', done: 100, total: 100 });
+    return {
+      bookPath: bookAfter,
+      diffRelPath,
+      reportRelPath,
       markersRemoved: report.totals.deletionsApplied,
-      ...(askEverything ? { askEverything: true } : {}),
-    },
-    diff: diff.rel,
-  });
-  return { success: true, outputPath: bookAfter };
+      documentsEdited: report.totals.documentsEdited,
+      model: report.model,
+    };
+  } finally {
+    // A cancelled or failed run leaves nothing of itself in the staging
+    // directory. The book is untouched either way — it is only ever replaced by
+    // the rename above — so there is no half-applied state, and no stray 38 MB
+    // EPUB in the temp directory for a run that never landed.
+    for (const stray of [stagedEpub, stagedReport]) {
+      try {
+        if (fs.existsSync(stray)) await fs.promises.unlink(stray);
+      } catch (err) {
+        console.warn(`[processing-pass] could not remove the staged ${stray}:`, err);
+      }
+    }
+  }
 }
 
 /**

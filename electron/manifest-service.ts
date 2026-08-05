@@ -1025,6 +1025,23 @@ export function passStageRelDir(index: number, kind: AppliedPassKind): string {
 }
 
 /**
+ * Where the NEXT pass over the book already on disk will work.
+ *
+ * The single-pass case of the planner's numbering (processing-chain.ts): a pass
+ * that does not rebuild the book takes the position after everything the book
+ * already records, and both sides spell the directory through
+ * `passStageRelDir`. It is for a run that is not planned as a chain — the
+ * picker's inline footnote removal — which has no plan to take a number from.
+ */
+export async function nextPassStageRelDir(
+  projectDir: string,
+  kind: AppliedPassKind
+): Promise<string> {
+  const passes = await readAppliedPasses(projectDir);
+  return passStageRelDir(passes.length + 1, kind);
+}
+
+/**
  * Record a completed pass against the project's book EPUB.
  *
  * Refuses a project with no `outputs.epub`: a pass record describes what was done
