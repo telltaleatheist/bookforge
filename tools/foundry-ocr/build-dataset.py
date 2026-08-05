@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-build-dataset — assemble foundry-ocr-v1's LINE-level SFT split from the band
-pipeline's own aligner output.
+build-dataset — assemble foundry-ocr's SFT split from the band pipeline's own
+aligner output, at either of two UNITS: one Tesseract line, or a sentence.
 
     python3 tools/foundry-ocr/build-dataset.py \
         [--lab /Volumes/Callisto/training/ocr-lab] \
-        [--out /Volumes/Callisto/training/rubric/ocr/sft-line] \
+        [--unit line|sentence] [--cap 400] \
+        [--out /Volumes/Callisto/training/rubric/galley/sft-{line,sent}] \
         [--identity-share 0.5] [--sim-floor 0.75] [--max-cer 0.30] \
         [--include-quarantined] [--dry-run]
 
@@ -14,9 +15,13 @@ Input  : <lab>/<book>/scores/epub-align-pairs.json, one file per book, written b
          cerCaseFolded}.
 Output : <out>/{train,eval}.jsonl  — chat JSONL, the exact shape the rig's
          `text_sft` trainer consumed for dagger_v1
-         <out>/pairs-repaired.jsonl — the repaired pairs, so a different target
-         format (e.g. the block model's edit list) can be built without
-         re-deriving the repairs
+         <out>/pairs-repaired.jsonl — LINE mode: the repaired pairs, so a
+         different target format (e.g. the block model's edit list) can be built
+         without re-deriving the repairs
+         <out>/units.jsonl — SENTENCE mode: every packed unit, before the
+         downsample, tagged with its split and its drop reason. The same job one
+         scale up, and the base an identity-share sweep re-derives from
+         <out>/eval-parity-1k.jsonl — SENTENCE mode: a balanced 500/500 slice
          <out>/build-stats.json
 
 THIS IS THE LINE MODEL, NOT THE BLOCK MODEL. `tools/foundry-ocr/build-corpus.mjs`
@@ -116,6 +121,53 @@ begin (or end) with the OCR's own fragment, or the row is dropped rather than
 guessed at. Healing the hyphen is the block assembler's job downstream (§12g
 measured wrap hyphens in 17.1% of blocks), not the line model's, and the system
 prompt says so in as many words.
+
+────────────────────────────────────────────────────────────────────────────────
+--unit sentence — THE SAME LADDER, ONE UNIT UP
+────────────────────────────────────────────────────────────────────────────────
+
+`--unit sentence` packs the SAME repaired line pairs into sentence-sized units
+with tools/foundry-ocr/sentences.py, which mirrors foundry `src/ocr/sentences.ts`
+and is imported, never forked: a training unit and a serving unit that drift
+apart is the whole failure this exists to prevent. One file and one flag, so the
+two corpora provably share a repair ladder — that is the point of extending this
+builder rather than writing a second one.
+
+THE ORDER OF OPERATIONS IS THE WHOLE DESIGN (docs/OCR_SENTENCE_CORPUS_SURVEY.md
+§5b). `train.jsonl` cannot be re-unitised after the fact: the identity
+downsample shreds line contiguity, and the measurement says so — mean
+consecutive run 1.28 lines in train against 33.6 in the raw aligner output, so
+packing the shipped train file yields 1.3-line "sentences". So:
+
+    raw pairs (contiguous)
+      -> per-line repair ladder + per-line gates        (collect_pairs, shared)
+      -> holdout split, German slice carve              (LINE level, so no unit
+                                                         straddles a boundary)
+      -> PACK                                           (sentences.py build/pack/join)
+      -> per-UNIT gates, thresholds re-derived          (train only — see below)
+      -> identity downsample AT UNIT LEVEL, per-book caps
+      -> emit
+
+THE PER-LINE GATES STAY. §5e says the line thresholds do not transfer, and they
+do not — but they are gates on the ALIGNER's window, which is a per-line object.
+A line whose truth window is 40% wrong is still 40% wrong after it is buried
+inside 300 correct characters, where a unit-level gate can no longer see it.
+Both scales gate; the unit scale gets its own numbers.
+
+THE UNIT THRESHOLDS ARE THE LINE THRESHOLDS' PERCENTILES, not their values.
+`--sim-floor 0.75` was the 1st percentile of line `sim`; on a 400-character unit
+0.75 is a hundred differing characters and means something else entirely. So the
+builder measures where each line threshold SITS in the pre-gate line
+distribution and takes that same percentile of the unit distribution. Printed on
+every run and recorded in build-stats.json, with the histograms it read them off.
+
+THE UNIT GATES SHAPE TRAIN ONLY. The same reason the identity downsample does
+(see "identity discipline" below): eval's mix IS the baseline, and
+`sft-sent/eval.jsonl` has one more obligation — it must cover EXACTLY the
+characters `sft-line/eval.jsonl` covers, or the line-vs-sentence comparison is
+between two different books. That is asserted against the shipped file, not
+assumed. The count of eval units the train gates WOULD have dropped is printed,
+so nothing hides.
 """
 import argparse
 import json
@@ -217,6 +269,15 @@ SYSTEM = '\n'.join([
     '  the next line, which you cannot see.',
     '- If the line has no OCR errors, reply with it unchanged.',
 ])
+
+# Where each unit's corpus lives. sft-line/ is the provenance of the shipped
+# foundry-ocr-v1-4b and the only thing that lets a sentence model be compared
+# against a line model on the same books, so the two never share a directory and
+# neither default can overwrite the other.
+DEFAULT_OUT = {
+    'line': '/Volumes/Callisto/training/rubric/galley/sft-line',
+    'sentence': '/Volumes/Callisto/training/rubric/galley/sft-sent',
+}
 
 TRAILING_PUNCT = '.,!?;:\'"“”‘’)]}…'
 LEADING_PUNCT = '\'"“”‘’([{—–'
@@ -617,52 +678,69 @@ def load_tiers(lab):
     return {slug(k): v.get('truthTier') for k, v in m.get('books', {}).items()}
 
 
-def main():
-    ap = argparse.ArgumentParser(add_help=True)
-    ap.add_argument('--lab', default='/Volumes/Callisto/training/ocr-lab')
-    ap.add_argument('--out', default='/Volumes/Callisto/training/rubric/ocr/sft-line')
-    ap.add_argument('--sim-floor', type=float, default=0.75)
-    ap.add_argument('--max-cer', type=float, default=0.30)
-    ap.add_argument('--min-len-for-cer', type=int, default=40)
-    ap.add_argument('--min-len', type=int, default=8)
-    ap.add_argument('--identity-share', type=float, default=0.5)
-    ap.add_argument('--truth-edges', choices=['restore', 'drop', 'keep'], default='restore')
-    ap.add_argument('--edge-extensions', choices=['clamp', 'keep'], default='clamp')
-    ap.add_argument('--hyphen-policy', choices=['repair', 'drop', 'keep'], default='repair')
-    ap.add_argument('--include-quarantined', action='store_true')
-    ap.add_argument('--cap-books', dest='cap_books', action='store_true', default=True)
-    ap.add_argument('--no-cap-books', dest='cap_books', action='store_false')
-    ap.add_argument('--cap-book', action='append', metavar='BOOK=SHARE',
-                    help='cap a book at SHARE of train rows (repeatable)')
-    ap.add_argument('--german-slice', dest='german_slice', action='store_true', default=True)
-    ap.add_argument('--no-german-slice', dest='german_slice', action='store_false')
-    ap.add_argument('--allow-tier3-eval', action='store_true')
-    ap.add_argument('--seed', type=int, default=20260731)
-    ap.add_argument('--dry-run', action='store_true')
-    args = ap.parse_args()
+# ── the per-LINE half of the build ──────────────────────────────────────────
+def resolve_caps(args):
+    caps = dict(CAPPED_BOOKS) if args.cap_books else {}
+    for spec in (args.cap_book or []):
+        name, _, share = spec.partition('=')
+        caps[slug(name)] = float(share)
+    return caps
 
-    lab = os.path.expanduser(args.lab)
-    out = os.path.expanduser(args.out)
-    holdouts = {slug(b) for b in HOLDOUT_BOOKS}
-    quarantined = {slug(b) for b in QUARANTINED_BOOKS}
 
-    books = load_books(lab)
-    tiers = load_tiers(lab)
-    if not books:
-        sys.exit(f'build-dataset: no <book>/scores/epub-align-pairs.json under {lab}')
+def downsample_identity(train_all, share, caps, rnd):
+    """Hold train at `share` identity rows, drawing them subject to the per-book
+    caps. ONE description, used at both units — a sentence unit is identity only
+    when every line in it was, which changes the population and nothing else.
 
-    print(f'ocr build-dataset (LINE model) — {len(books)} book(s) with pairs under {lab}')
+    ── per-book caps, composed with the identity budget ────────────────────
+    The identity downsample decides HOW MANY identity rows train wants; the cap
+    decides WHERE they may come from. Doing it in that order is what makes the
+    two compose: a capped book gives back part of the identity budget, the
+    other books refill it, and --identity-share still holds exactly.
+    """
+    ident = [r for r in train_all if r['identity']]
+    edit = [r for r in train_all if not r['identity']]
+    want = round(len(edit) * share / max(1e-9, 1 - share))
 
-    missing_holdouts = [b for b in holdouts if b not in books]
-    if missing_holdouts:
-        print('\n!! DECLARED HOLDOUTS WITH NO PAIRS YET: ' + ', '.join(sorted(missing_holdouts)))
-        print('   The split still refuses to put them in train, but this build has no')
-        print('   eval rows from them. Mint their pairs before judging a model on it.')
+    train_target = len(edit) + want
+    ident_by_book = defaultdict(list)
+    for r in ident:
+        ident_by_book[r['book']].append(r)
+    for b in ident_by_book:
+        _shuffle(ident_by_book[b], rnd)
 
+    used_ident, cap_report = [], {}
+    for b, cap_share in caps.items():
+        e_b = sum(1 for r in edit if r['book'] == b)
+        allowance = max(0, int(round(cap_share * train_target)) - e_b)
+        pool = ident_by_book.pop(b, [])
+        taken = pool[:allowance]
+        used_ident += taken
+        if pool:
+            cap_report[b] = {'share': cap_share, 'editRows': e_b, 'identityAvailable': len(pool),
+                             'identityTaken': len(taken), 'identityDropped': len(pool) - len(taken)}
+    rest = [r for rs in ident_by_book.values() for r in rs]
+    _shuffle(rest, rnd)
+    used_ident += rest[:max(0, want - len(used_ident))]
+    return edit, ident, want, used_ident, cap_report, want - len(used_ident)
+
+
+def collect_pairs(args, books, tiers, holdouts, quarantined):
+    """Repair ladder + per-line gates. BOTH units stand on exactly this.
+
+    Lifted out of main() unchanged when --unit sentence arrived, so the two
+    corpora provably share a repair ladder rather than sharing one by inspection.
+
+    It also records, for every EDIT row that reaches the gates, the length / sim
+    / CER it arrived with — the PRE-gate distribution. The sentence corpus
+    derives its own thresholds from the percentile these line thresholds sit at,
+    and a percentile read off the survivors would be a percentile of the answer.
+    """
     counts = Counter()
     drops = Counter()
     per_book = defaultdict(lambda: Counter())
     kept = []
+    edit_dist = {'len': [], 'sim': [], 'cer': []}
 
     for book, rows in books.items():
         is_holdout = book in holdouts
@@ -751,6 +829,10 @@ def main():
             # the model to leave correct text alone, and they are the cheapest
             # supervision in the corpus (43% of it, free).
             if not identity:
+                c = cer(ocr, truth)
+                edit_dist['len'].append(len(ocr))
+                edit_dist['sim'].append(sim)
+                edit_dist['cer'].append(c)
                 if len(ocr) < args.min_len:
                     drops['tooShort'] += 1
                     continue
@@ -758,7 +840,6 @@ def main():
                     drops['simFloor'] += 1
                     per_book[book]['simDropped'] += 1
                     continue
-                c = cer(ocr, truth)
                 if len(ocr) >= args.min_len_for_cer and c > args.max_cer:
                     drops['maxCer'] += 1
                     per_book[book]['cerDropped'] += 1
@@ -775,6 +856,72 @@ def main():
             })
             per_book[book]['kept'] += 1
             per_book[book]['identity' if identity else 'edit'] += 1
+
+    return kept, counts, drops, per_book, edit_dist
+
+
+def main():
+    ap = argparse.ArgumentParser(add_help=True)
+    ap.add_argument('--lab', default='/Volumes/Callisto/training/ocr-lab')
+    ap.add_argument('--unit', choices=['line', 'sentence'], default='line',
+                    help='the training unit. line = one Tesseract --psm 7 band (the shipped '
+                         'foundry-ocr-v1-4b). sentence = consecutive lines packed to --cap.')
+    ap.add_argument('--cap', type=int, default=400,
+                    help='--unit sentence: characters a packed unit aims not to exceed')
+    ap.add_argument('--out', default=None,
+                    help='defaults per --unit; see DEFAULT_OUT')
+    ap.add_argument('--unit-sim-floor', type=float, default=None,
+                    help='--unit sentence: override the derived unit sim gate')
+    ap.add_argument('--unit-max-cer', type=float, default=None,
+                    help='--unit sentence: override the derived unit CER gate')
+    ap.add_argument('--unit-min-len', type=int, default=None,
+                    help='--unit sentence: override the derived unit length gate')
+    ap.add_argument('--parity-rows', type=int, default=1000,
+                    help='--unit sentence: rows in eval-parity-1k.jsonl, half identity')
+    ap.add_argument('--parity-against', default=None,
+                    help='--unit sentence: the line eval whose characters the sentence eval '
+                         'must cover exactly (default <out>/../sft-line/eval.jsonl)')
+    ap.add_argument('--sim-floor', type=float, default=0.75)
+    ap.add_argument('--max-cer', type=float, default=0.30)
+    ap.add_argument('--min-len-for-cer', type=int, default=40)
+    ap.add_argument('--min-len', type=int, default=8)
+    ap.add_argument('--identity-share', type=float, default=0.5)
+    ap.add_argument('--truth-edges', choices=['restore', 'drop', 'keep'], default='restore')
+    ap.add_argument('--edge-extensions', choices=['clamp', 'keep'], default='clamp')
+    ap.add_argument('--hyphen-policy', choices=['repair', 'drop', 'keep'], default='repair')
+    ap.add_argument('--include-quarantined', action='store_true')
+    ap.add_argument('--cap-books', dest='cap_books', action='store_true', default=True)
+    ap.add_argument('--no-cap-books', dest='cap_books', action='store_false')
+    ap.add_argument('--cap-book', action='append', metavar='BOOK=SHARE',
+                    help='cap a book at SHARE of train rows (repeatable)')
+    ap.add_argument('--german-slice', dest='german_slice', action='store_true', default=True)
+    ap.add_argument('--no-german-slice', dest='german_slice', action='store_false')
+    ap.add_argument('--allow-tier3-eval', action='store_true')
+    ap.add_argument('--seed', type=int, default=20260731)
+    ap.add_argument('--dry-run', action='store_true')
+    args = ap.parse_args()
+
+    lab = os.path.expanduser(args.lab)
+    out = os.path.expanduser(args.out or DEFAULT_OUT[args.unit])
+    args.out = out                      # so build-stats records where it landed
+    holdouts = {slug(b) for b in HOLDOUT_BOOKS}
+    quarantined = {slug(b) for b in QUARANTINED_BOOKS}
+
+    books = load_books(lab)
+    tiers = load_tiers(lab)
+    if not books:
+        sys.exit(f'build-dataset: no <book>/scores/epub-align-pairs.json under {lab}')
+
+    banner = 'LINE model' if args.unit == 'line' else f'SENTENCE units, cap {args.cap}'
+    print(f'ocr build-dataset ({banner}) — {len(books)} book(s) with pairs under {lab}')
+
+    missing_holdouts = [b for b in holdouts if b not in books]
+    if missing_holdouts:
+        print('\n!! DECLARED HOLDOUTS WITH NO PAIRS YET: ' + ', '.join(sorted(missing_holdouts)))
+        print('   The split still refuses to put them in train, but this build has no')
+        print('   eval rows from them. Mint their pairs before judging a model on it.')
+
+    kept, counts, drops, per_book, edit_dist = collect_pairs(args, books, tiers, holdouts, quarantined)
 
     if not kept:
         sys.exit('build-dataset: nothing survived the filters')
@@ -803,42 +950,22 @@ def main():
         gset = {id(r) for r in german}
         train_all = [r for r in train_all if id(r) not in gset]
 
-    ident = [r for r in train_all if r['identity']]
-    edit = [r for r in train_all if not r['identity']]
-    want = round(len(edit) * args.identity_share / max(1e-9, 1 - args.identity_share))
-
-    # ── per-book caps, composed with the identity budget ────────────────────
+    # ── one unit up ─────────────────────────────────────────────────────────
     #
-    # The identity downsample decides HOW MANY identity rows train wants; the cap
-    # decides WHERE they may come from. Doing it in that order is what makes the
-    # two compose: a capped book gives back part of the identity budget, the
-    # other books refill it, and --identity-share still holds exactly.
-    caps = dict(CAPPED_BOOKS) if args.cap_books else {}
-    for spec in (args.cap_book or []):
-        name, _, share = spec.partition('=')
-        caps[slug(name)] = float(share)
+    # Everything above is per-LINE and shared. Everything below the branch is the
+    # line corpus, untouched. The sentence corpus packs the three groups the
+    # split has just produced — which is why no unit can straddle the holdout
+    # boundary or the German page window: those walls were built at line level,
+    # one step ago, and a gap in the line numbering is where the packer stops.
+    if args.unit == 'sentence':
+        return build_sentence_corpus(
+            args, out, lab, tiers, holdouts, quarantined, books,
+            counts, drops, per_book, edit_dist, rnd,
+            train_all, ev, german, german_pages)
 
-    train_target = len(edit) + want
-    ident_by_book = defaultdict(list)
-    for r in ident:
-        ident_by_book[r['book']].append(r)
-    for b in ident_by_book:
-        _shuffle(ident_by_book[b], rnd)
-
-    used_ident, cap_report = [], {}
-    for b, share in caps.items():
-        e_b = sum(1 for r in edit if r['book'] == b)
-        allowance = max(0, int(round(share * train_target)) - e_b)
-        pool = ident_by_book.pop(b, [])
-        taken = pool[:allowance]
-        used_ident += taken
-        if pool:
-            cap_report[b] = {'share': share, 'editRows': e_b, 'identityAvailable': len(pool),
-                             'identityTaken': len(taken), 'identityDropped': len(pool) - len(taken)}
-    rest = [r for rs in ident_by_book.values() for r in rs]
-    _shuffle(rest, rnd)
-    used_ident += rest[:max(0, want - len(used_ident))]
-    shortfall = want - len(used_ident)
+    caps = resolve_caps(args)
+    edit, ident, want, used_ident, cap_report, shortfall = downsample_identity(
+        train_all, args.identity_share, caps, rnd)
 
     train = edit + used_ident
     _shuffle(train, rnd)
@@ -977,6 +1104,624 @@ def main():
             'system': SYSTEM,
         }, fh, indent=1)
     print(f'\nwrote {out}/{{train,eval}}.jsonl + pairs-repaired.jsonl + build-stats.json')
+
+
+# ── --unit sentence ─────────────────────────────────────────────────────────
+def _sentences_module():
+    """Import the sibling splitter rather than reimplementing it.
+
+    tools/foundry-ocr/sentences.py mirrors foundry `src/ocr/sentences.ts`, which
+    OWNS the boundary rules. A second copy of them in this file is how a training
+    unit and a serving unit drift apart — the exact failure the sentence corpus
+    exists to remove — so the corpus is packed by the same code the harness uses.
+
+    The prompt crosscheck runs in both directions: sentences.py --self-test reads
+    SYSTEM out of this file, and this reads OCR_SYSTEM_PROMPT out of that one.
+    """
+    import importlib.util
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sentences.py')
+    if not os.path.isfile(p):
+        sys.exit(f'build-dataset: sentences.py is not beside this file ({p}). '
+                 '--unit sentence has no splitter and will not guess at one.')
+    spec = importlib.util.spec_from_file_location('foundry_ocr_sentences', p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    if mod.OCR_SYSTEM_PROMPT != SYSTEM:
+        sys.exit('build-dataset: sentences.py OCR_SYSTEM_PROMPT and this file\'s SYSTEM differ. '
+                 'The prompt is half the contract; refusing to build two corpora with two prompts.')
+    return mod
+
+
+def _levenshtein():
+    """The C Levenshtein — the same library align-epub.py used to write `sim`.
+
+    A unit is ~400 characters and this file's own lev() is a pure-Python O(n*m)
+    two-row DP: ~24 ms a unit, hours over the corpus. Speed is not the only
+    reason though — `sim` has to MEAN what the aligner meant by it, and
+    Levenshtein.ratio is where that meaning came from.
+
+    lev() stays the contract for `cer`, so the library is proved against it here
+    rather than trusted across a version bump.
+    """
+    try:
+        import Levenshtein
+    except ImportError:
+        sys.exit('build-dataset: --unit sentence needs the Levenshtein module — the same one\n'
+                 '  tools/ocr-lab/align-epub.py writes `sim` with.  pip3 install python-Levenshtein')
+    for a, b in (('kitten', 'sitting'), ('', 'abc'), ('abc', ''),
+                 ('Reichsftihrer', 'Reichsführer'), ('the same', 'the same'),
+                 ('. . . okay', '... okay')):
+        if Levenshtein.distance(a, b) != lev(a, b):
+            sys.exit(f'build-dataset: Levenshtein.distance disagrees with this file\'s lev() on '
+                     f'{a!r}/{b!r} — refusing to measure a corpus with a metric that moved.')
+    return Levenshtein
+
+
+def pack_units(rows, cap, mod, tiers, split):
+    """Kept LINE rows -> sentence units, via sentences.build.
+
+    A unit is a run of CONSECUTIVE lines of ONE book, joined the way the pipeline
+    would join them, so the OCR unit and the truth unit are built from the same
+    line set and correspond exactly. A gap in the line numbering is a wall — which
+    is what makes the holdout split and the German page window walls too, since
+    both were carved out at line level before this ran.
+    """
+    if not rows:
+        return []
+    chat = [{'messages': [{'role': 'system', 'content': SYSTEM},
+                          {'role': 'user', 'content': r['ocr']},
+                          {'role': 'assistant', 'content': r['truth']}],
+             'book': r['book'], 'page': r['page'], 'line': r['line'],
+             'identity': r['identity']} for r in rows]
+    return [{'book': u['book'], 'page': u['page'], 'line': u['line'],
+             'lineRange': u['lineRange'], 'lines': u['lines'],
+             'ocr': u['src'], 'truth': u['gold'],
+             'identity': u['identity'], 'truthTier': tiers.get(u['book']),
+             'split': split, 'dropped': None}
+            for u in mod.build(chat, cap)]
+
+
+def measure_units(units, lv):
+    """CER and sim, recomputed on the UNIT. Neither can be carried up from the
+    lines: CER is a ratio over a different denominator, and the aligner's `sim`
+    described a window this unit is several of."""
+    for u in units:
+        if u['ocr'] == u['truth']:
+            u['cer'], u['sim'] = 0.0, 1.0
+            continue
+        u['cer'] = round(lv.distance(u['ocr'], u['truth']) / len(u['truth']), 5)
+        u['sim'] = round(lv.ratio(u['ocr'], u['truth']), 5)
+
+
+def assert_units_sound(units, rows, mod, label):
+    """Every unit is EXACTLY its own lines, joined — no character invented, none
+    lost, and no unit spanning a book.
+
+    The index is keyed on (book, line), so a unit that reached across a book
+    boundary could not resolve its own lines and stops the build by name. §5f
+    asks for this to be asserted rather than argued from construction.
+    """
+    index = {(r['book'], r['line']): r for r in rows}
+    for u in units:
+        a, b = u['lineRange']
+        want = list(range(a, b + 1))
+        if len(want) != u['lines']:
+            sys.exit(f'build-dataset: {label} unit {u["book"]} lines {a}-{b} claims {u["lines"]} '
+                     f'lines but its range covers {len(want)} — the packer and the record disagree.')
+        part = []
+        for ln in want:
+            r = index.get((u['book'], ln))
+            if r is None:
+                sys.exit(f'build-dataset: {label} unit {u["book"]} lines {a}-{b} covers line {ln}, '
+                         'which is not in the split it was packed from. A unit crossed a wall — '
+                         'a book boundary, the holdout split or the German page window.')
+            part.append(r)
+        if mod.join_all([r['ocr'] for r in part]) != u['ocr'] or \
+           mod.join_all([r['truth'] for r in part]) != u['truth']:
+            sys.exit(f'build-dataset: {label} unit {u["book"]} lines {a}-{b} is not its lines '
+                     'joined. The packer invented or lost characters.')
+
+
+def _percentile(sorted_vals, q):
+    if not sorted_vals:
+        return None
+    k = min(len(sorted_vals) - 1, max(0, int(round(q / 100.0 * (len(sorted_vals) - 1)))))
+    return sorted_vals[k]
+
+
+def _rank_of(sorted_vals, v, inclusive=False):
+    """Where a threshold sits in a distribution, as a percentile — i.e. what
+    fraction of the population the gate at that value cuts away.
+
+    `inclusive` for a gate that keeps `<= v` (`--max-cer`) rather than one that
+    cuts everything below it.
+    """
+    import bisect
+    if not sorted_vals:
+        return 0.0
+    k = bisect.bisect_right(sorted_vals, v) if inclusive else bisect.bisect_left(sorted_vals, v)
+    return k / len(sorted_vals) * 100
+
+
+def derive_unit_thresholds(args, edit_dist, unit_edit):
+    """CARRY THE PERCENTILE ACROSS, NOT THE NUMBER.
+
+    docs/OCR_SENTENCE_CORPUS_SURVEY.md §5e: the line gates were calibrated on a
+    ~60-character band and measure a different object at ~300. `--sim-floor 0.75`
+    was the 1st percentile of line `sim`; on a 400-character unit the same 0.75 is
+    a hundred differing characters, a far coarser gate than the one that was
+    argued for. `--min-len 8` is simply inert. `--max-cer 0.30` was a secondary
+    gate above `--min-len-for-cer 40` and becomes the primary one.
+
+    So each line threshold is located in the line distribution and the same
+    percentile is taken of the unit distribution. The derivation is mechanical
+    and printed, so a later argument about a threshold is an argument about a
+    percentile rather than about a taste.
+
+    THE GATES ARE A CASCADE AND THE PERCENTILE HAS TO BE READ THAT WAY. Measured
+    the naive way — every percentile off the whole pre-gate population — the CER
+    gate reads as the 92.8th percentile, because the rows carrying huge CERs are
+    the two-character ones the length gate already removed and the ones under 40
+    characters the CER gate is explicitly not applied to. Carrying 92.8% across
+    would build a unit gate that throws away a tenth of the corpus in the name of
+    a line gate that dropped 93 rows. So each threshold is ranked against the
+    population that gate actually SEES, in the order collect_pairs applies them,
+    and the unit side is cascaded identically.
+    """
+    rows = list(zip(edit_dist['len'], edit_dist['sim'], edit_dist['cer']))
+    units = [(len(u['ocr']), u['sim'], u['cer']) for u in unit_edit]
+
+    def take(pop, i):
+        return sorted(x[i] for x in pop)
+
+    # gate 1 — length, against everything that reaches the gates
+    q_len = _rank_of(take(rows, 0), args.min_len)
+    u_len = int(_percentile(take(units, 0), q_len))
+
+    # gate 2 — sim, against what survived the length gate
+    l1 = [r for r in rows if r[0] >= args.min_len]
+    n1 = [u for u in units if u[0] >= u_len]
+    q_sim = _rank_of(take(l1, 1), args.sim_floor)
+    u_sim = round(_percentile(take(n1, 1), q_sim), 4)
+
+    # gate 3 — the length above which CER is judged at all, then CER, each
+    # against what survived everything before it
+    l2 = [r for r in l1 if r[1] >= args.sim_floor]
+    n2 = [u for u in n1 if u[1] >= u_sim]
+    q_mlc = _rank_of(take(l2, 0), args.min_len_for_cer)
+    u_mlc = int(_percentile(take(n2, 0), q_mlc))
+    l3 = [r for r in l2 if r[0] >= args.min_len_for_cer]
+    n3 = [u for u in n2 if u[0] >= u_mlc]
+    q_cer = _rank_of(take(l3, 2), args.max_cer, inclusive=True)
+    u_cer = round(_percentile(take(n3, 2), q_cer), 4)
+
+    q = {'minLen': q_len, 'simFloor': q_sim, 'minLenForCer': q_mlc, 'maxCer': q_cer}
+    pop = {'minLen': len(rows), 'simFloor': len(l1), 'minLenForCer': len(l2), 'maxCer': len(l3)}
+    unit_pop = {'minLen': len(units), 'simFloor': len(n1), 'minLenForCer': len(n2), 'maxCer': len(n3)}
+    derived = {'minLen': u_len, 'simFloor': u_sim, 'minLenForCer': u_mlc, 'maxCer': u_cer}
+    used = dict(derived)
+    override = {}
+    for key, val in (('minLen', args.unit_min_len), ('simFloor', args.unit_sim_floor),
+                     ('maxCer', args.unit_max_cer)):
+        if val is not None:
+            used[key] = val
+            override[key] = val
+    return {'linePercentile': q, 'linePopulation': pop, 'unitPopulation': unit_pop,
+            'lineValue': {'minLen': args.min_len, 'minLenForCer': args.min_len_for_cer,
+                          'simFloor': args.sim_floor, 'maxCer': args.max_cer},
+            'derived': derived, 'override': override, 'used': used}
+
+
+def gate_units(units, th, tally, mark):
+    """The unit gates, on EDIT units only — the same asymmetry the line gates
+    have, and for the same reason: an already-correct unit is what teaches
+    restraint and is never dropped for scoring badly on a similarity the repairs
+    invalidated.
+
+    `mark=False` answers "what would this have taken out?" without touching the
+    units, which is how the eval side reports the gates it deliberately skips.
+    """
+    out = []
+    for u in units:
+        why = None
+        if not u['identity']:
+            if len(u['ocr']) < th['minLen']:
+                why = 'unitTooShort'
+            elif u['sim'] < th['simFloor']:
+                why = 'unitSimFloor'
+            elif len(u['ocr']) >= th['minLenForCer'] and u['cer'] > th['maxCer']:
+                why = 'unitMaxCer'
+        if why is None:
+            out.append(u)
+            continue
+        tally[why] += 1
+        if mark:
+            u['dropped'] = why
+    return out
+
+
+def verify_eval_parity(units, line_eval_path):
+    """sft-sent/eval.jsonl must cover EXACTLY the characters sft-line/eval.jsonl
+    covers, or the line-vs-sentence comparison is between two different books.
+
+    It holds by construction — the sentence eval is packed from the same kept
+    line rows the line eval was emitted from, and the unit gates deliberately do
+    not run on it — but "by construction" is what every leak was before it was
+    measured. So it is checked against the file ON DISK: the same line numbers,
+    per book, and the same non-whitespace character count. Whitespace is excluded
+    because joining lines ADDS the separator a line break stood for; that is the
+    one character a unit has that its lines did not.
+    """
+    if not os.path.isfile(line_eval_path):
+        print(f'\n!! NO CHARACTER-PARITY CHECK: {line_eval_path} is not there.')
+        print('   The sentence eval is packed from the same kept rows, but nothing proved it.')
+        return None
+    line_rows = [json.loads(l) for l in open(line_eval_path, encoding='utf-8') if l.strip()]
+    lhs, rhs = defaultdict(lambda: {'lines': set(), 'chars': 0}), defaultdict(lambda: {'lines': set(), 'chars': 0})
+    for r in line_rows:
+        u = {m['role']: m['content'] for m in r['messages']}['user']
+        lhs[r['book']]['lines'].add(r['line'])
+        lhs[r['book']]['chars'] += len(re.sub(r'\s', '', u))
+    for u in units:
+        a, b = u['lineRange']
+        rhs[u['book']]['lines'].update(range(a, b + 1))
+        rhs[u['book']]['chars'] += len(re.sub(r'\s', '', u['ocr']))
+
+    report = {}
+    bad = []
+    for book in sorted(set(lhs) | set(rhs)):
+        L, R = lhs[book], rhs[book]
+        report[book] = {'lineRowsInLineEval': len(L['lines']), 'linesCoveredBySentenceEval': len(R['lines']),
+                        'nonWhitespaceCharsLine': L['chars'], 'nonWhitespaceCharsSentence': R['chars'],
+                        'linesEqual': L['lines'] == R['lines'], 'charsEqual': L['chars'] == R['chars']}
+        if not report[book]['linesEqual'] or not report[book]['charsEqual']:
+            bad.append(book)
+    print(f'\nCHARACTER PARITY WITH {line_eval_path}')
+    print(f'  {"book":26s}{"line rows":>11s}{"lines covered":>15s}{"chars (line)":>14s}{"chars (sent)":>14s}')
+    for book, c in report.items():
+        print(f'  {book:26s}{c["lineRowsInLineEval"]:>11d}{c["linesCoveredBySentenceEval"]:>15d}'
+              f'{c["nonWhitespaceCharsLine"]:>14d}{c["nonWhitespaceCharsSentence"]:>14d}')
+    if bad:
+        sys.exit(f'build-dataset: REFUSING TO WRITE — the sentence eval does not cover the same '
+                 f'characters as the line eval for {bad}. The two evals would score different books.')
+    print('  identical line sets and identical non-whitespace character counts, per book.')
+    return report
+
+
+def _hist(vals, edges):
+    """(label, count) buckets over ascending upper edges."""
+    counts = Counter()
+    labels = [lab for _, lab in edges]
+    for v in vals:
+        for hi, lab in edges:
+            if v <= hi:
+                counts[lab] += 1
+                break
+    return [(lab, counts[lab]) for lab in labels]
+
+
+def _print_hist(title, rows, n):
+    print(title)
+    for label, c in rows:
+        bar = '#' * int(50 * c / max(1, n))
+        print(f'  {label:12s} {c:7d}  {c / max(1, n) * 100:5.1f}%  {bar}')
+
+
+def _quantiles(vals):
+    s = sorted(vals)
+    return {'min': s[0], 'p10': _percentile(s, 10), 'p50': _percentile(s, 50),
+            'p90': _percentile(s, 90), 'p99': _percentile(s, 99), 'max': s[-1],
+            'mean': round(sum(s) / len(s), 1)}
+
+
+# ── the token budget ────────────────────────────────────────────────────────
+#
+# MEASURED 2026-08-05 with the real Qwen3 tokenizer (apply_chat_template,
+# enable_thinking=False, the shape text_sft trains on), over the corpora this
+# file builds:
+#
+#     sft-line/train.jsonl    p50 163  p90 175  p99 201  max 246    0 over 512
+#     sft-line/eval.jsonl     p50 165  p90 173  p99 179  max 197    0 over 512
+#     sft-sent/train.jsonl    p50 283  p90 319  p99 405  max 573   15 over 512
+#     sft-sent/eval.jsonl     p50 275  p90 314  p99 343  max 432    0 over 512
+#     sft-sent/eval-german    p50 357  p90 434  p99 509  max 579    8 over 512
+#
+# 246 on lines is the number line-training-profiles.json's max_seq_length 512 was
+# set against. AT --cap 400 THE SENTENCE CORPUS OVERFLOWS 512 — 23 rows do, and
+# text_sft refuses to truncate, so that is a hard failure mid-run, not a silently
+# clipped example. 768 holds the measured maximum with room.
+#
+# THE TAIL IS GERMAN, and that is why an average-case estimate is worse than
+# useless here: English prose runs ~3.5 characters a token, umlauts and long
+# compounds run ~2.2, so a chars/3.5 heuristic reports that this corpus fits
+# inside 512 while the tokenizer reports that it does not. This file has no
+# tokenizer (and will not grow a transformers dependency to get one), so it
+# reports a WORST-CASE BOUND and never a verdict. Re-measure with train-line.sh
+# --preflight before any run; if --cap moves, this whole block is stale.
+CHARS_PER_TOKEN_WORST = 2.2
+TEMPLATE_TOKENS = 30
+MEASURED_TOKENS = {
+    'measuredOn': '2026-08-05',
+    'tokenizer': 'Qwen3 (apply_chat_template, enable_thinking=False)',
+    'sft-line/train.jsonl': {'p50': 163, 'p90': 175, 'p99': 201, 'max': 246, 'over512': 0},
+    'sft-line/eval.jsonl': {'p50': 165, 'p90': 173, 'p99': 179, 'max': 197, 'over512': 0},
+    'sft-sent/train.jsonl': {'p50': 283, 'p90': 319, 'p99': 405, 'max': 573, 'over512': 15},
+    'sft-sent/eval.jsonl': {'p50': 275, 'p90': 314, 'p99': 343, 'max': 432, 'over512': 0},
+    'sft-sent/eval-german.jsonl': {'p50': 357, 'p90': 434, 'p99': 509, 'max': 579, 'over512': 8},
+}
+
+
+def token_bound(units):
+    """An UPPER BOUND on the sequence length, not an estimate of it."""
+    return _quantiles([(len(SYSTEM) + len(u['ocr']) + len(u['truth'])) / CHARS_PER_TOKEN_WORST
+                       + TEMPLATE_TOKENS for u in units])
+
+
+def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
+                          counts, drops, per_book, edit_dist, rnd,
+                          train_all, ev, german, german_pages):
+    """The sentence half. Everything above the branch was per-line and shared."""
+    mod = _sentences_module()
+    lv = _levenshtein()
+
+    # ── pack ────────────────────────────────────────────────────────────────
+    u_train = pack_units(train_all, args.cap, mod, tiers, 'train')
+    u_eval = pack_units(ev, args.cap, mod, tiers, 'eval')
+    u_german = pack_units(german, args.cap, mod, tiers, 'eval-german')
+    assert_units_sound(u_train, train_all, mod, 'train')
+    assert_units_sound(u_eval, ev, mod, 'eval')
+    assert_units_sound(u_german, german, mod, 'eval-german')
+    for group in (u_train, u_eval, u_german):
+        measure_units(group, lv)
+    all_units = u_train + u_eval + u_german
+
+    n_in = sum(len(v) for v in books.values())
+    n_lines = len(train_all) + len(ev) + len(german)
+    print(f'\nREAD  {n_in} raw pairs -> {n_lines} kept lines -> {len(all_units)} packed units')
+    print(f'      (a unit is {n_lines / len(all_units):.2f} lines on average, cap {args.cap})')
+
+    # ── the histograms the thresholds are read off ──────────────────────────
+    lens = [len(u['ocr']) for u in all_units]
+    q_len = _quantiles(lens)
+    print(f'\nUNIT LENGTH (characters, OCR side; all {len(all_units)} units)')
+    print(f'  min {q_len["min"]}  p10 {q_len["p10"]}  p50 {q_len["p50"]}  p90 {q_len["p90"]}  '
+          f'p99 {q_len["p99"]}  max {q_len["max"]}  mean {q_len["mean"]}')
+    over_cap = sum(1 for v in lens if v > args.cap)
+    print(f'  over the cap ({args.cap}): {over_cap}  ({over_cap / len(lens) * 100:.2f}%)  '
+          '— one sentence longer than the cap, cut at a line boundary rather than mid-word')
+    _print_hist('', _hist(lens, [(50, '<=50'), (100, '(50,100]'), (200, '(100,200]'),
+                                 (300, '(200,300]'), (400, '(300,400]'), (10 ** 9, '>400')]),
+                len(lens))
+
+    edit_units = [u for u in all_units if not u['identity']]
+    if not edit_units:
+        sys.exit('build-dataset: no edit units — nothing to gate and nothing to learn from')
+    _print_hist(f'\nUNIT CER (edit units only, {len(edit_units)}; identity units are 0 by construction)',
+                _hist([u['cer'] for u in edit_units],
+                      [(0.005, '(0,0.5%]'), (0.01, '(0.5,1%]'), (0.02, '(1,2%]'), (0.05, '(2,5%]'),
+                       (0.10, '(5,10%]'), (0.20, '(10,20%]'), (1e9, '>20%')]), len(edit_units))
+    _print_hist('\nUNIT SIM (edit units only)',
+                _hist([u['sim'] for u in edit_units],
+                      [(0.80, '<=0.80'), (0.90, '(0.80,0.90]'), (0.95, '(0.90,0.95]'),
+                       (0.98, '(0.95,0.98]'), (0.99, '(0.98,0.99]'), (2.0, '>0.99')]), len(edit_units))
+
+    # ── thresholds ──────────────────────────────────────────────────────────
+    #
+    # Derived from TRAIN units only. A threshold is a scalar and the leak would be
+    # tiny, but a number read partly off the holdout books is a number the holdout
+    # books helped choose, and the split is law.
+    th = derive_unit_thresholds(args, edit_dist, [u for u in u_train if not u['identity']])
+    print('\nUNIT THRESHOLDS — the LINE thresholds\' percentiles, not their values')
+    print(f'  {"gate":16s}{"line":>10s}{"of N lines":>12s}{"percentile":>13s}'
+          f'{"unit":>10s}{"of N units":>12s}')
+    for key in ('minLen', 'simFloor', 'minLenForCer', 'maxCer'):
+        mark = '  <- --unit-* override' if key in th['override'] else ''
+        print(f'  {key:16s}{th["lineValue"][key]:>10}{th["linePopulation"][key]:>12d}'
+              f'{th["linePercentile"][key]:>12.3f}%{th["used"][key]:>10}'
+              f'{th["unitPopulation"][key]:>12d}{mark}')
+    print('  Each percentile is read against the population that gate actually SEES, in the')
+    print('  order collect_pairs applies them — a cascade, not four reads of one distribution.')
+
+    # ── the gates shape TRAIN only ──────────────────────────────────────────
+    #
+    # eval's mix IS the baseline (see "identity discipline"), and the sentence
+    # eval carries one more obligation: it must cover exactly the characters the
+    # LINE eval covers. A gate that dropped a unit there would score the two
+    # models on different books. What the gates WOULD have taken out of eval is
+    # counted and printed instead of hidden.
+    unit_drops = Counter()
+    u_train = gate_units(u_train, th['used'], unit_drops, True)
+    would = Counter()
+    gate_units(u_eval, th['used'], would, False)
+    gate_units(u_german, th['used'], would, False)
+    drops.update(unit_drops)
+
+    print('\nDROPPED (unit scale; the per-line ladder\'s drops are above)')
+    for k in sorted(unit_drops):
+        print(f'  {k:22s} {unit_drops[k]:6d}')
+    if not unit_drops:
+        print('  nothing — every packed train unit passed the unit gates')
+    if would:
+        print('  the same gates on eval / eval-german, NOT applied (character parity is law):')
+        for k in sorted(would):
+            print(f'    {k:20s} {would[k]:6d}')
+
+    # ── identity, at both scales ────────────────────────────────────────────
+    line_ident = sum(1 for r in (train_all + ev + german) if r['identity'])
+    unit_ident = sum(1 for u in all_units if u['identity'])
+    print('\nIDENTITY AT TWO SCALES (a unit is already-correct only if EVERY line in it was)')
+    print(f'  lines {line_ident}/{n_lines} = {line_ident / n_lines * 100:.1f}%')
+    print(f'  units {unit_ident}/{len(all_units)} = {unit_ident / len(all_units) * 100:.1f}%')
+    print('  A unit-level share is a HARSHER object than the same number at line level:')
+    print('  the corpus carries more damaged characters per token at the same percentage.')
+
+    caps = resolve_caps(args)
+    edit, ident, want, used_ident, cap_report, shortfall = downsample_identity(
+        u_train, args.identity_share, caps, rnd)
+
+    train = edit + used_ident
+    _shuffle(train, rnd)
+    _shuffle(u_eval, rnd)
+    _shuffle(u_german, rnd)
+
+    leaked = sorted({u['book'] for u in train} & holdouts)
+    if leaked:
+        sys.exit(f'build-dataset: REFUSING TO WRITE — holdout book(s) {leaked} reached train. '
+                 'The split is law; this is a bug in the builder, not a warning.')
+    bad_tier = sorted({u['book'] for u in u_eval if tiers.get(u['book']) == 3})
+    if bad_tier and not args.allow_tier3_eval:
+        sys.exit(f'build-dataset: REFUSING TO WRITE — eval contains tier-3 (teacher-only) book(s) {bad_tier}. '
+                 '--allow-tier3-eval to override deliberately.')
+    cross = sorted({u['book'] for u in train} & {u['book'] for u in u_eval})
+    if cross:
+        sys.exit(f'build-dataset: REFUSING TO WRITE — book(s) {cross} are in both train and eval.')
+
+    parity = verify_eval_parity(u_eval, args.parity_against or
+                                os.path.join(os.path.dirname(out.rstrip('/')), 'sft-line', 'eval.jsonl'))
+
+    # ── the balanced slice ──────────────────────────────────────────────────
+    #
+    # sft-line/eval-parity-1k.jsonl is 500 already-correct rows and 500 edit rows
+    # drawn at random from the eval: a cell where a do-nothing model scores
+    # exactly 50%, so a repair rate and a false-edit rate are read off the same
+    # thousand answers. The sentence file is the same DESIGN at the unit scale —
+    # not the same characters, which is eval.jsonl's job and is exact.
+    pi = [u for u in u_eval if u['identity']]
+    pe = [u for u in u_eval if not u['identity']]
+    _shuffle(pi, rnd)
+    _shuffle(pe, rnd)
+    half = args.parity_rows // 2
+    parity_rows = pi[:half] + pe[:half]
+    _shuffle(parity_rows, rnd)
+    if len(pi) < half or len(pe) < half:
+        print(f'\n!! eval-parity-1k is short: {min(len(pi), half)} identity + {min(len(pe), half)} edit '
+              f'(wanted {half} + {half})')
+
+    if cap_report:
+        print('\nCAPPED BOOKS (a clean render must not set the error distribution)')
+        for b, c in cap_report.items():
+            print(f'  {b:34s} capped at {c["share"] * 100:.0f}% of train — kept {c["editRows"]} edit + '
+                  f'{c["identityTaken"]} identity, dropped {c["identityDropped"]} identity units')
+
+    if german:
+        print('\nGERMAN DIAGNOSTIC SLICE — carved out of train at LINE level, BEFORE packing,')
+        print('  so no unit straddles the page window.')
+        print(f'  {GERMAN_SLICE_BOOK} pages {german_pages[0]}-{german_pages[1]}: '
+              f'{len(german)} lines -> {len(u_german)} units '
+              f'({sum(1 for u in u_german if not u["identity"])} edit)')
+
+    print('\nTRAIN CORPUS (eval is left at its natural identity rate on purpose)')
+    print(f'  edit units      {len(edit)}')
+    print(f'  identity units  {len(used_ident)} of {len(ident)} available '
+          f'({len(used_ident) / max(1, len(train)) * 100:.1f}% of train)')
+    if shortfall > 0:
+        print(f'  !! {shortfall} short of --identity-share {args.identity_share}. Restraint is undertrained;')
+        print('     more clean books is the fix, not a lower target.')
+
+    tok = token_bound(train)
+    tok_all = token_bound(all_units)
+    print(f'\nTOKEN BUDGET — a BOUND, from chars/{CHARS_PER_TOKEN_WORST} (the worst measured '
+          f'ratio, German) + {TEMPLATE_TOKENS}')
+    print(f'  train  p50 {tok["p50"]:.0f}  p90 {tok["p90"]:.0f}  p99 {tok["p99"]:.0f}  max {tok["max"]:.0f}')
+    print(f'  all    p50 {tok_all["p50"]:.0f}  p90 {tok_all["p90"]:.0f}  p99 {tok_all["p99"]:.0f}  '
+          f'max {tok_all["max"]:.0f}')
+    print(f'  MEASURED with the real Qwen3 tokenizer on {MEASURED_TOKENS["measuredOn"]}:')
+    for k in ('sft-line/train.jsonl', 'sft-sent/train.jsonl', 'sft-sent/eval-german.jsonl'):
+        m = MEASURED_TOKENS[k]
+        print(f'    {k:28s} p50 {m["p50"]:4d}  p90 {m["p90"]:4d}  p99 {m["p99"]:4d}  '
+              f'max {m["max"]:4d}   {m["over512"]:3d} over 512')
+    print('  max_seq_length 512 OVERFLOWS this corpus at cap 400 (23 rows, the tail German).')
+    print('  text_sft refuses to truncate, so that is a hard failure mid-run. 768 holds.')
+    print('  Re-measure with train-line.sh --preflight if --cap moves.')
+
+    # ── the final table ─────────────────────────────────────────────────────
+    files = [('train.jsonl', train), ('eval.jsonl', u_eval), ('eval-german.jsonl', u_german),
+             ('eval-parity-1k.jsonl', parity_rows), ('units.jsonl', all_units)]
+    print('\nFINAL')
+    print(f'  {"file":24s}{"rows":>8s}{"identity":>10s}{"ident%":>9s}{"books":>7s}'
+          f'{"len p50":>9s}{"len p90":>9s}{"len max":>9s}{"over cap":>10s}')
+    for name, rows_ in files:
+        if not rows_:
+            continue
+        ln = [len(u['ocr']) for u in rows_]
+        qi = _quantiles(ln)
+        ni = sum(1 for u in rows_ if u['identity'])
+        print(f'  {name:24s}{len(rows_):>8d}{ni:>10d}{ni / len(rows_) * 100:>8.1f}%'
+              f'{len({u["book"] for u in rows_}):>7d}{qi["p50"]:>9d}{qi["p90"]:>9d}{qi["max"]:>9d}'
+              f'{sum(1 for v in ln if v > args.cap):>10d}')
+
+    print(f'\nSPLIT  train {len(train)}   eval {len(u_eval)}   eval-german {len(u_german)}   '
+          f'units {len(all_units)}')
+
+    if args.dry_run:
+        print('\n--dry-run: nothing written')
+        return
+
+    os.makedirs(out, exist_ok=True)
+    for name, rows_ in (('train', train), ('eval', u_eval), ('eval-german', u_german),
+                        ('eval-parity-1k', parity_rows)):
+        if not rows_:
+            continue
+        with open(os.path.join(out, f'{name}.jsonl'), 'w') as fh:
+            for u in rows_:
+                fh.write(json.dumps({
+                    'messages': [
+                        {'role': 'system', 'content': SYSTEM},
+                        {'role': 'user', 'content': u['ocr']},
+                        {'role': 'assistant', 'content': u['truth']},
+                    ],
+                    'book': u['book'], 'page': u['page'], 'line': u['line'],
+                    'lineRange': u['lineRange'], 'lines': u['lines'],
+                    'cer': u['cer'], 'identity': u['identity'], 'truthTier': u['truthTier'],
+                }, ensure_ascii=False) + '\n')
+    # Every packed unit, gated or not, downsampled or not — the base an
+    # identity-share sweep (0.5 / 0.65 / 0.8) re-derives from without re-packing,
+    # and the sentence corpus's answer to pairs-repaired.jsonl.
+    with open(os.path.join(out, 'units.jsonl'), 'w') as fh:
+        for u in all_units:
+            fh.write(json.dumps(u, ensure_ascii=False) + '\n')
+    with open(os.path.join(out, 'build-stats.json'), 'w') as fh:
+        json.dump({
+            'generated': __import__('datetime').datetime.now().isoformat(timespec='seconds'),
+            'unit': 'sentence', 'cap': args.cap,
+            'lab': lab, 'args': vars(args),
+            'holdoutBooks': sorted(holdouts), 'quarantinedBooks': sorted(quarantined),
+            'rawPairs': n_in, 'keptLines': n_lines, 'packedUnits': len(all_units),
+            'repairs': dict(counts), 'dropped': dict(drops),
+            'unitGatesNotAppliedToEval': dict(would),
+            'unitThresholds': th,
+            'unitLength': q_len, 'unitLengthHistogram': dict(_hist(
+                lens, [(50, '<=50'), (100, '(50,100]'), (200, '(100,200]'),
+                       (300, '(200,300]'), (400, '(300,400]'), (10 ** 9, '>400')])),
+            'overCap': over_cap,
+            'unitCerHistogram': dict(_hist([u['cer'] for u in edit_units],
+                                           [(0.005, '(0,0.5%]'), (0.01, '(0.5,1%]'), (0.02, '(1,2%]'),
+                                            (0.05, '(2,5%]'), (0.10, '(5,10%]'), (0.20, '(10,20%]'),
+                                            (1e9, '>20%')])),
+            'identityShare': {'lines': round(line_ident / n_lines, 4),
+                              'units': round(unit_ident / len(all_units), 4),
+                              'lineRows': line_ident, 'lineTotal': n_lines,
+                              'unitRows': unit_ident, 'unitTotal': len(all_units),
+                              'trainTarget': args.identity_share},
+            'editUnits': len(edit), 'identityUnits': len(used_ident),
+            'identityAvailable': len(ident), 'identityShortfall': shortfall,
+            'books': {b: dict(c) for b, c in per_book.items()},
+            'unitsPerBook': {b: sum(1 for u in all_units if u['book'] == b)
+                             for b in sorted({u['book'] for u in all_units})},
+            'truthTiers': {b: tiers.get(b) for b in per_book},
+            'train': len(train), 'eval': len(u_eval), 'evalGerman': len(u_german),
+            'evalParity': len(parity_rows),
+            'germanSlice': ({'book': GERMAN_SLICE_BOOK, 'pages': list(german_pages),
+                             'lines': len(german), 'units': len(u_german)} if german else None),
+            'cappedBooks': cap_report,
+            'evalCharacterParity': parity,
+            'tokenBudget': {'bound': f'chars/{CHARS_PER_TOKEN_WORST} + {TEMPLATE_TOKENS}',
+                            'boundTrain': tok, 'boundAll': tok_all,
+                            'measured': MEASURED_TOKENS,
+                            'maxSeqLength512': 'OVERFLOWS — 23 rows measured over 512; use 768'},
+            'system': SYSTEM,
+        }, fh, indent=1)
+    print(f'\nwrote {out}/{{train,eval,eval-german,eval-parity-1k}}.jsonl + units.jsonl + build-stats.json')
 
 
 def pick_german_window(rows, share):

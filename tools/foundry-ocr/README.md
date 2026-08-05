@@ -65,6 +65,35 @@ truth or hand-checked pages".
 `what-to-expect-when-youre-expecting` and `what-to-expect-the-second-year` are
 quarantined: excluded entirely unless `--include-quarantined`.
 
+**`--unit sentence` builds the same corpus one unit up**, into `sft-sent/`
+(default; `sft-line/` is the `--unit line` default and the two can never
+collide). ONE file and ONE flag, so the two corpora provably share a repair
+ladder. The order of operations is the whole design: the identity downsample
+shreds line contiguity, so it has to run AFTER the packing, and the holdout
+split and the German page window are carved at LINE level so that no unit can
+straddle either. The unit gates are the LINE gates' PERCENTILES rather than
+their values, read as a cascade against the population each gate actually sees;
+they shape train only, because `sft-sent/eval.jsonl` must cover exactly the
+characters `sft-line/eval.jsonl` covers — asserted against the file on disk,
+identical line sets and identical non-whitespace character counts per book. The
+full argument is the module docstring and
+`docs/OCR_SENTENCE_CORPUS_SURVEY.md` §5.
+
+Built 2026-08-05: 311,207 raw pairs → 268,599 kept lines → 57,608 units (4.66
+lines each, p50 321 characters). Train 31,600 at 50.0% identity over 12 books,
+eval 4,979 at 63.8% over the two holdouts, eval-german 770, plus `units.jsonl`
+(every packed unit before the downsample — the base an identity-share sweep
+re-derives from) and a balanced `eval-parity-1k.jsonl`. **Identity is a harsher
+object at unit scale**: the same lines are 90.2% identity per line and 66.1% per
+unit, because a unit is already-correct only if EVERY line in it was.
+
+⚠️ **`max_seq_length 512` does not fit it.** Measured with the real Qwen3
+tokenizer: line corpus max 246 tokens (the number 512 was set against), sentence
+corpus max 573 on train and 579 on eval-german, 23 rows over 512. The tail is
+German — umlauts and compounds tokenize at ~2.2 characters a token where English
+prose runs ~3.5, so an average-case estimate says it fits and the tokenizer says
+it does not. Use 768; `text_sft` refuses to truncate.
+
 ### 2. `line-training-profiles.json`
 
 `ocr_line_v1_06b` — Qwen3-0.6B, 16-bit LoRA, derived from `dagger_v1`.
@@ -384,7 +413,11 @@ python3 tools/foundry-ocr/build-dataset.py --dry-run
 
 # build
 python3 tools/foundry-ocr/build-dataset.py \
-    --out /Volumes/Callisto/training/rubric/ocr/sft-line
+    --out /Volumes/Callisto/training/rubric/galley/sft-line
+
+# the sentence corpus — histograms and thresholds first, then build
+python3 tools/foundry-ocr/build-dataset.py --unit sentence --dry-run
+python3 tools/foundry-ocr/build-dataset.py --unit sentence
 ```
 
 It refuses to run if a holdout book's rows would land in train, or if a tier-3
