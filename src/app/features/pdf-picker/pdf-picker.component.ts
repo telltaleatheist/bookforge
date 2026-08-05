@@ -9896,9 +9896,11 @@ export class PdfPickerComponent implements OnInit {
   /**
    * Queue one text pass over this project's book.
    *
-   * Footnote removal, Simplify and Translate all edit the EPUB in place and all
-   * take minutes to hours, so there is no in-place variant of them: they go to
-   * the queue, which is where a long job is watched and cancelled.
+   * Simplify and Translate: AI rewrites of a whole book, hours each, so the
+   * queue is where they are watched and cancelled. Footnote removal is minutes
+   * and has its own modal (`FootnotesModalComponent`) that runs it inline —
+   * and that modal queues it through the same `submitProcessingRun` when the
+   * user asks for the background instead.
    */
   private async enqueueEpubPass(pass: ChainPassRequest): Promise<void> {
     const projectDir = this.projectPath();

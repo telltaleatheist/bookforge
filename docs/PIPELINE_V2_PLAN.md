@@ -50,7 +50,7 @@ answers no gesture reads as a broken picker. Consequences:
 |---|---|---|
 | Archive | `archive/<Original>.pdf`, read-only, and not where a session starts | **OCR / Cast** (mints the working copy), **Detect** (separate, never implied) |
 | Working | `<Original>.working.pdf` | **Detect** (re-run, one confirm), curation (select / delete / label / merge / chapter), **Build the book** (reflow) |
-| EPUB | `<Original>.epub` | **OCR correction** (NEW foundry epub mode), **Remove footnotes**, **Simplify**, **Translate** — each edits the EPUB in place, result visible, provenance starred |
+| EPUB | `<Original>.epub` | **OCR correction** (NEW foundry epub mode), **Remove footnotes**, **Simplify**, **Translate** — each edits the EPUB in place, result visible, provenance starred. They live on the LEFT RAIL, not on the station bar (see Picker modes and rail) |
 | TTS | — | voice / engine / settings, enqueue TTS |
 | Assembly | — | assembly options, produce the audiobook |
 
@@ -179,6 +179,59 @@ tested in `tools/test-pass-lifecycle.js` — and carried out in
 no orphan sweep, so a stage directory no record names stays exactly where it is.
 
 ## Picker modes and rail
+
+**RULED 2026-08-04, fourth real session: the rail's CONTENTS are a fact about
+the ARTIFACT on screen.** Owen, standing at the EPUB station: "lets move
+translate/simplify/footnotes to a left side nav just like the select/edit modes
+were when in a pdf". The rail used to be shown `!curationLocked()` — "where
+curation is possible" — which hid it at exactly the station the book's passes
+live on. Two questions had been collapsed into one:
+
+- **What the rail CONTAINS** is keyed by `ViewedArtifact`
+  (`shared/document/rail-tasks.ts`, tested in `tools/test-rail-tasks.js`): the
+  source gets Select / Crop / OCR text / Merge blocks, the book gets **Remove
+  footnotes → Simplify → Translate**, and neither ever gets the other's. Phase
+  D's `ocr-correct --epub` is one line in that table plus every site the
+  compiler then names — `TaskId` is derived from it.
+- **What is PRESSABLE** is `disabledTasks`, per entry, with the sentence that
+  says why. Curation locked over the archive of a cast book disables those rows
+  and carries the banner's own words onto them; the passes answer to their own
+  two refusals (no project, no book) and to neither of the curation rules.
+
+Digit shortcuts are per rail, so the book's first pass is 1 rather than 4, and a
+digit can never reach a row that is not on screen. Each pass entry's status is
+derived from `appliedPasses` through `latestPassByKind` — the same latest-wins
+implementation the versions page's stars read, so a pass that has run says so in
+both places or in neither. The station bar at the EPUB station keeps its tabs and
+Next and offers no actions: a button there as well would be a second door to one
+pass.
+
+**RULED: footnote removal runs INLINE, in a modal with a bar.** "footnote
+removal is pretty fast. instead of adding to the queue lets have it do it
+quickly in a modal with a progress bar, just like the OCR modal on pdfs." It is
+the OCR dialog's shape — inline by default, "run in background" handing the job
+to the queue and taking the user to it — over the new `document:footnotes-epub`
+stage. Simplify and Translate stay queued: they are hours, and their options
+dialog already exists.
+
+The extraction is the load-bearing part. `runEpubFootnotesOnBook`
+(electron/processing-passes.ts) is the ONE description of what a footnotes run
+IS — foundry, the diff, foundry's report kept beside it, the atomic swap onto
+the book, and `appendAppliedPass` with the model, the marker count and the
+diff's project-relative path — and both the queue job and the direct call run
+it. A direct path that had been written separately could have skipped the
+provenance, and a book with no record and no reviewable diff is
+indistinguishable from a book nobody ran anything over. Proved on a copy of the
+Kershaw project, 2026-08-04: both lanes produced a byte-identical EPUB, an
+identical `stages/02-footnotes/{diff.json,report.json}` and an identical
+`appliedPasses` entry.
+
+The claim/announce/settle around ANY stage was extracted the same way
+(`withProjectStage`, electron/document-stage-run.ts) — it had been written twice
+(document-ipc's `withStage`, processing-passes' `withDocumentStage`). A queued
+footnotes run consequently gains the `document:stage-*` broadcasts and the
+`project:files-changed` it never sent, which is why the versions page did not
+re-measure after one.
 
 Two pointer modes (RULED 2026-08-04: Edit mode is deleted outright — see
 Chapter titles below):
