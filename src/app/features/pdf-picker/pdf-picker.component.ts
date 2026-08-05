@@ -779,7 +779,7 @@ interface AlertModal {
               <app-document-nav
                 [blocks]="textLayerFilteredBlocks()"
                 [selectedBlockIds]="selectedBlockIds()"
-                [chapterBlocks]="documentBlocks.chapterBlocks()"
+                [chapterBlocks]="stationChapterBlocks()"
                 [state]="documentBlocks.state()"
                 [stageRunning]="documentBlocks.stageRunning()"
                 [stageMessage]="documentBlocks.stageMessage()"
@@ -3804,6 +3804,20 @@ export class PdfPickerComponent implements OnInit {
    */
   readonly stationBlocks = computed(() =>
     this.viewedStation() === 'archive' && this.hasWorkingCopy() ? [] : this.blocks());
+
+  /**
+   * The chapter rows the right-hand nav lists — the working document's `chapter`
+   * blocks, and only while that document is what is on screen.
+   *
+   * The same artifact boundary as the block mirror, said where the OTHER thing
+   * that paints the document's blocks reads them. Listing the working PDF's
+   * chapters beside the built book is the overlay wearing its third hat, and it
+   * is the one the Chapter tab shows: the book's own chapters come from its
+   * navigation, not from the PDF's annotations, and an empty list under a
+   * station where curation is refused says so honestly.
+   */
+  readonly stationChapterBlocks = computed(() =>
+    this.documentLayerLive() ? this.documentBlocks.chapterBlocks() : []);
 
   // Search state
   readonly showSearch = signal(false);
