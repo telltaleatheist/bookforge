@@ -65,6 +65,7 @@ import {
 } from './foundry-bridge';
 import { readDocumentBinding } from './document-binding';
 import { beginStage } from './document-stage-registry';
+import { noteDocumentStageFinished } from './document-open-when-finished';
 import { reflowOutputPath, resolveDocumentProject } from './document-project';
 import {
   bindingAbsPath,
@@ -374,6 +375,10 @@ async function withDocumentStage<T>(
     broadcastDocumentStage('document:stage-finished', {
       projectDir: project.projectDir, stage: stageName,
     });
+    // The queue's half of "open when finished". A run submitted from the picker
+    // and then backgrounded lands HERE, not in document-ipc — which is exactly
+    // the case the old picker-only listener could never honour.
+    noteDocumentStageFinished(project.projectDir, stageName);
   }
 }
 

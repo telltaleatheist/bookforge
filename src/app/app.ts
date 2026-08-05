@@ -1,4 +1,4 @@
-import { Component, OnInit, inject, computed, signal, effect } from '@angular/core';
+import { Component, DestroyRef, OnInit, inject, computed, signal, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, RouterOutlet } from '@angular/router';
 import {
@@ -9,6 +9,7 @@ import {
 import { NavRailComponent, NavRailItem } from './components/nav-rail/nav-rail.component';
 import { SetupDownloadDockComponent } from './components/setup-download-dock/setup-download-dock.component';
 import { UpdateBannerComponent } from './components/update-banner/update-banner.component';
+import { ElectronService } from './core/services/electron.service';
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
 
@@ -286,6 +287,8 @@ export class App implements OnInit {
   readonly libraryService = inject(LibraryService);
   readonly runtime = inject(RuntimeService);
   private readonly router = inject(Router);
+  private readonly electron = inject(ElectronService);
+  private readonly destroyRef = inject(DestroyRef);
 
   // Lets the user dismiss the setup overlay (only reachable in the error state).
   private readonly setupDismissed = signal(false);
@@ -394,5 +397,18 @@ export class App implements OnInit {
 
   ngOnInit() {
     this.themeService.initializeTheme();
+
+    // A run was handed to the queue from somewhere else — usually the picker,
+    // which is its own window — and the user is coming with it. Main has already
+    // raised this window; this is the other half, putting the Queue in front of
+    // them so the hand-off is witnessed rather than inferred
+    // (docs/PIPELINE_V2_PLAN.md, ruled 2026-08-04).
+    //
+    // Only the main window is ever sent this: a standalone editor or listen
+    // window has no nav rail and no queue to route to.
+    const unsubscribe = this.electron.onShowQueue(() => {
+      void this.router.navigate(['/queue']);
+    });
+    this.destroyRef.onDestroy(unsubscribe);
   }
 }

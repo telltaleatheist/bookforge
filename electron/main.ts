@@ -17,6 +17,7 @@ import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import { registerClipforgeIpc } from './clipforge-bridge';
 import { registerDocumentIpc } from './document-ipc';
 import { listWorkingDocuments } from './document-project';
+import { registerOpenWhenFinishedIpc } from './document-open-when-finished';
 import * as manifestService from './manifest-service';
 import * as manifestMigration from './manifest-migration';
 import * as archiveMigration from './archive-migration';
@@ -967,6 +968,37 @@ function openEditorWindow(
 function setupIpcHandlers(): void {
   // ClipForge: open its dedicated window (second app in this workspace).
   ipcMain.handle('clipforge:open-window', () => { openClipforgeWindow(); return { success: true }; });
+
+  /**
+   * "Run in background" — the hand-off, made visible.
+   *
+   * RULED 2026-08-04 (docs/PIPELINE_V2_PLAN.md): a job that moves to the queue
+   * moves the USER with it. "if the user hits the process in background button,
+   * it should move it to the queue and move focus from the current page (pdf
+   * picker) to the main page and jump to the queue so they can see it was moved
+   * there." A job that silently vanishes from one place and silently appears in
+   * another is how work gets lost.
+   *
+   * The picker is its own BrowserWindow (`openEditorWindow`), so "move focus to
+   * the main page" is literally that: raise the main window and route it. The
+   * editor window is deliberately NOT closed — the user did not ask to shut the
+   * book, only to stop watching the run — and the queue lives in the main window
+   * regardless (`processing:submit-chain` sends the plan only there), so this is
+   * the one place the row can actually be seen.
+   */
+  ipcMain.handle('app:show-queue', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return {
+        success: false,
+        error: 'BookForge has no main window open, so there is no Queue to show the run on.',
+      };
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send('app:show-queue');
+    return { success: true };
+  });
 
   // Managed binaries (ffmpeg, yt-dlp, …) — OUR server-hosted, watched components.
   ipcMain.handle('update:list-components', (_e, force?: boolean) => listManagedComponents(force));
@@ -10589,6 +10621,11 @@ app.whenReady().then(async () => {
   setupAlignmentIpc();
   registerClipforgeIpc();
   registerDocumentIpc();
+  // "Open when finished" is the APP's promise, so the thing that keeps it is
+  // here rather than in whichever window happened to make it. The opener is
+  // handed in rather than imported, because openEditorWindow lives in this file
+  // and this file is what registers the promise.
+  registerOpenWhenFinishedIpc((projectDir) => { openEditorWindow(projectDir); });
   // `electron . --clipforge` (the clipforge:electron:dev script) opens ONLY the
   // ClipForge window for a clean single-app dev session; otherwise BookForge.
   if (process.argv.includes('--clipforge')) {

@@ -1315,6 +1315,29 @@ export interface ElectronAPI {
   document: {
     state: (ref: DocumentRef) =>
       Promise<{ success: boolean; state?: DocumentPipelineState; error?: string }>;
+    /**
+     * Which pipeline the ARCHIVE ORIGINAL belongs to, measured before any cast.
+     *
+     * `state` reports the class recorded in the working document's marker, which
+     * does not exist until the cast has run. This is the question a window has
+     * to answer the instant a book is opened, and its two answers are seconds
+     * versus minutes of work — so it is measured and never assumed.
+     */
+    measureClass: (ref: DocumentRef) =>
+      Promise<{ success: boolean; documentClass?: 'scanned' | 'text'; error?: string }>;
+    /**
+     * "Open this station when the run I am about to submit lands."
+     *
+     * Kept in MAIN, so it outlives the window that asked — which is the whole
+     * point of backgrounding a run. See document-open-when-finished.ts.
+     */
+    requestOpenWhenFinished: (projectDir: string, station: string) =>
+      Promise<{ success: boolean; error?: string }>;
+    /** Withdraw it — a run that was refused will never finish. */
+    cancelOpenWhenFinished: (projectDir: string) => Promise<{ success: boolean }>;
+    /** Take it: the station, once, or null. Atomic, so two windows cannot both. */
+    takeOpenWhenFinished: (projectDir: string) =>
+      Promise<{ success: boolean; station?: string | null }>;
     readBlocks: (ref: DocumentRef) =>
       Promise<{ success: boolean; error?: string } & Partial<DocumentBlocksPayload>>;
     /** A batch of curation edits, landed as ONE incremental update. */
@@ -1358,6 +1381,16 @@ export interface ElectronAPI {
   window: {
     hide: () => Promise<{ success: boolean }>;
     close: () => Promise<{ success: boolean }>;
+    /**
+     * Raise the MAIN window and put the Queue on it.
+     *
+     * The "run in background" hand-off. Called from whichever window backgrounded
+     * the run — usually a detached editor window, where the queue does not even
+     * live (`processing:submit-chain` sends the plan to the main window only).
+     */
+    showQueue: () => Promise<{ success: boolean; error?: string }>;
+    /** Main asked THIS window to show the Queue. Only the main window hears it. */
+    onShowQueue: (callback: () => void) => () => void;
   };
   plugins: {
     list: () => Promise<{ success: boolean; data?: PluginInfo[]; error?: string }>;
@@ -2957,6 +2990,13 @@ const electronAPI: ElectronAPI = {
   },
   document: {
     state: (ref: DocumentRef) => ipcRenderer.invoke('document:state', ref),
+    measureClass: (ref: DocumentRef) => ipcRenderer.invoke('document:measure-class', ref),
+    requestOpenWhenFinished: (projectDir: string, station: string) =>
+      ipcRenderer.invoke('document:request-open-when-finished', projectDir, station),
+    cancelOpenWhenFinished: (projectDir: string) =>
+      ipcRenderer.invoke('document:cancel-open-when-finished', projectDir),
+    takeOpenWhenFinished: (projectDir: string) =>
+      ipcRenderer.invoke('document:take-open-when-finished', projectDir),
     readBlocks: (ref: DocumentRef) => ipcRenderer.invoke('document:read-blocks', ref),
     applyEdits: (ref: DocumentRef, edits: WorkingDocumentEdit[]) =>
       ipcRenderer.invoke('document:apply-edits', ref, edits),
@@ -2992,6 +3032,13 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('window:hide'),
     close: () =>
       ipcRenderer.invoke('window:close'),
+    showQueue: () =>
+      ipcRenderer.invoke('app:show-queue'),
+    onShowQueue: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on('app:show-queue', listener);
+      return () => { ipcRenderer.removeListener('app:show-queue', listener); };
+    },
   },
   plugins: {
     list: () =>

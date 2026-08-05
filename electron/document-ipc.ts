@@ -29,10 +29,13 @@
  */
 
 import { BrowserWindow, ipcMain } from 'electron';
+import * as fs from 'fs';
 
 import { resolveDocumentProject, reflowOutputPath } from './document-project';
 import {
   discardDocumentPipeline,
+  measureDocumentClass,
+  primaryAbsPath,
   readDocumentPipelineState,
   resetDocumentTo,
   runBlocksStage,
@@ -44,6 +47,7 @@ import {
 import { readWorkingDocumentBlocks } from './working-document';
 import { applyWorkingDocumentEdits, type WorkingDocumentEdit } from './working-document-writer';
 import { abortStageFor, beginStage } from './document-stage-registry';
+import { noteDocumentStageFinished } from './document-open-when-finished';
 import { workingDocumentPath } from './document-binding';
 import type {
   DocumentBlocksPayload,
@@ -99,6 +103,12 @@ async function withStage<T>(
   } finally {
     release();
     broadcast('document:stage-finished', { projectDir: project.projectDir, stage });
+    // The app's half of "open when finished" — see document-open-when-finished.
+    // It fires from the same `finally` as the broadcast and for the same reason:
+    // a stage that failed still STOPPED, and the promise is settled by measuring
+    // the documents afterwards rather than by trusting that this line was
+    // reached.
+    noteDocumentStageFinished(project.projectDir, stage);
   }
 }
 
@@ -135,6 +145,41 @@ export function registerDocumentIpc(): void {
           primaryRelPath: project.primaryRelPath,
         },
       };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Which pipeline this book's ORIGINAL belongs to, measured — before anything
+   * has been cast.
+   *
+   * `document:state` reports a document class too, but only the one recorded in
+   * the working document's marker, which by definition does not exist until the
+   * cast has run. That is the wrong side of the question the picker has to answer
+   * the instant a book is opened: a **text** PDF is cast on arrival because
+   * `foundry scan --pdf` reads the publisher's own layer in seconds, while a
+   * **scanned** one means rendering every page at 200 dpi (~1.4 GB) and running
+   * Tesseract over all of them — minutes, and never behind the user's back.
+   *
+   * So this measures the archive original itself (`pdf-analyzer` samples pages
+   * and counts what the text layer yields). It writes nothing and casts nothing.
+   * Its refusal is main's own sentence, and a renderer that gets one must NOT
+   * guess a class: guessing `text` spends a book's worth of GPU on the wrong
+   * pipeline, and guessing `scanned` puts a modal in front of a book that would
+   * have been ready in thirty seconds.
+   */
+  ipcMain.handle('document:measure-class', async (_event, ref: DocumentRef) => {
+    try {
+      const project = await projectOf(ref);
+      const primary = primaryAbsPath(project);
+      if (!fs.existsSync(primary)) {
+        throw new Error(
+          `The archive original is not at ${primary}, so there is nothing to measure. Every `
+          + 'document stage reads it; re-import the book.'
+        );
+      }
+      return { success: true, documentClass: await measureDocumentClass(primary) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

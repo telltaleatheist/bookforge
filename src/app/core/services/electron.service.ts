@@ -2457,6 +2457,60 @@ export class ElectronService {
   }
 
   /**
+   * Which pipeline this book's ARCHIVE ORIGINAL belongs to, measured.
+   *
+   * Asked before a cast exists, which is exactly when `documentState` cannot
+   * answer it — the class it reports is the one recorded in the working
+   * document's marker. A window opening a book needs the answer NOW, because it
+   * is the difference between a cast that finishes in seconds (a PDF carrying
+   * the publisher's own text) and one that renders every page and runs Tesseract
+   * over it (minutes, and never unasked).
+   *
+   * Throws main's own sentence. A caller must not guess a class from a failure:
+   * both guesses are wrong in a way the user pays for.
+   */
+  async documentMeasureClass(ref: DocumentRef): Promise<'scanned' | 'text'> {
+    if (!this.isElectron) throw new Error('The document pipeline needs the desktop app.');
+    const result = await (window as any).electron.document.measureClass(ref);
+    if (!result.success || !result.documentClass) {
+      throw new Error(result.error || 'Measuring the document class failed with no message.');
+    }
+    return result.documentClass;
+  }
+
+  /**
+   * "Open this station when the run I am about to submit lands."
+   *
+   * Held in MAIN, so it outlives this window — the whole point of a long run is
+   * that the user goes somewhere else while it works.
+   */
+  async documentRequestOpenWhenFinished(projectDir: string, station: string): Promise<void> {
+    if (!this.isElectron) return;
+    const result = await (window as any).electron.document.requestOpenWhenFinished(projectDir, station);
+    if (!result.success) {
+      throw new Error(result.error || 'Asking for the artifact to be opened failed with no message.');
+    }
+  }
+
+  /** Withdraw it — a run that was refused will never finish. */
+  async documentCancelOpenWhenFinished(projectDir: string): Promise<void> {
+    if (!this.isElectron) return;
+    await (window as any).electron.document.cancelOpenWhenFinished(projectDir);
+  }
+
+  /**
+   * Take the promise for this project: the station, once, or null.
+   *
+   * Consumed as it is returned, in main, so a book open in two windows is opened
+   * by one of them rather than fought over by both.
+   */
+  async documentTakeOpenWhenFinished(projectDir: string): Promise<string | null> {
+    if (!this.isElectron) return null;
+    const result = await (window as any).electron.document.takeOpenWhenFinished(projectDir);
+    return result?.station ?? null;
+  }
+
+  /**
    * The block layer, read with pdf-lib in the main process.
    *
    * Never through pdf.js: its `getAnnotations()` parses against a fixed key
@@ -2561,6 +2615,28 @@ export class ElectronService {
     if (this.isElectron) {
       await (window as any).electron.window.close();
     }
+  }
+
+  /**
+   * Raise the MAIN window and put the Queue on it — the "run in background"
+   * hand-off, witnessed rather than inferred.
+   *
+   * Throws main's own refusal. A hand-off that silently did nothing would leave
+   * the user looking at a picker with no run on it and no idea where it went,
+   * which is precisely the failure this exists to remove.
+   */
+  async showQueue(): Promise<void> {
+    if (!this.isElectron) return;
+    const result = await (window as any).electron.window.showQueue();
+    if (!result?.success) {
+      throw new Error(result?.error || 'Showing the Queue failed with no message.');
+    }
+  }
+
+  /** Main asked this window to show the Queue. Only the main window ever hears it. */
+  onShowQueue(callback: () => void): () => void {
+    if (!this.isElectron) return () => { /* nothing subscribed */ };
+    return (window as any).electron.window.onShowQueue(callback);
   }
 
   // AI operations
