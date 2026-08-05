@@ -17,8 +17,17 @@
  *  - **Next is navigation and never work.** It lights when the next station
  *    exists. When it does not, it says which button makes it — a disabled
  *    control that cannot say what would enable it is a dead end.
+ *  - **The ladder does not go backwards** (RULED 2026-08-04). Reflow is the gate
+ *    into the EPUB world; once the book exists, Next from the book is narration
+ *    and never "back to the working copy". Going back is a TAB press —
+ *    navigation — not forward progress.
+ *
+ * A third rule arrived with the second real session, and it is about the window
+ * rather than the book: **the station is a fact about what is ON SCREEN**. See
+ * `viewedArtifactOf` / `stationForArtifact` at the bottom of this file.
  */
 
+import { samePath } from './same-path';
 import type { DocumentPipelineStages } from './pipeline-types';
 
 /**
@@ -168,6 +177,29 @@ export function nextStation(from: StationId, book: BookDocuments): NextStep {
       + 'something the project no longer carries — reopen the book.'
     );
   }
+  return walkForward(from, book);
+}
+
+/**
+ * Where Next goes from the station ON SCREEN, whether or not the book has it.
+ *
+ * The walk is positional — it reads STATIONS from `at` onwards and never before
+ * it — which is the whole of "the ladder does not go backwards". That property
+ * is why this exists as its own entry point rather than being a `nextStation`
+ * the picker guards: the picker used to answer a not-present station by asking
+ * `nextStation('archive', book)`, and from the EPUB station that came back
+ * "Next: Working" — the rung the user had already climbed, offered as progress.
+ *
+ * A station the book does not have is a REAL state and not a caller bug here: a
+ * reset can remove the working copy while it is open, and a round trip to main
+ * can leave the book's own EPUB unmeasured for a moment. Neither is a reason to
+ * point the user back down the ladder.
+ */
+export function nextStationFromViewed(at: StationId, book: BookDocuments): NextStep {
+  return walkForward(at, book);
+}
+
+function walkForward(from: StationId, book: BookDocuments): NextStep {
   for (let at = STATIONS.indexOf(from) + 1; at < STATIONS.length; at += 1) {
     const candidate = STATIONS[at];
     const presence = stationPresence(candidate, book);
@@ -196,6 +228,83 @@ export function nextStation(from: StationId, book: BookDocuments): NextStep {
  * which is the honest answer: nothing has been proved to exist, so nothing is
  * opened.
  */
+// ─── The station is a fact about what is on screen ──────────────────────────
+//
+// Found the hard way in the second real session (2026-08-04): the picker showed
+// the built book while its station said "Working", so Next offered the working
+// copy as forward progress, curation read as unlocked over an EPUB, and the
+// working PDF's block layer was painted onto the book. Every one of those is the
+// same mistake — a station REMEMBERED rather than derived from the viewer.
+//
+// So the window asks for a station and this module answers with the one that
+// agrees with the artifact. Nothing downstream has to check again.
+
+/**
+ * What the file in the viewer IS to this book.
+ *
+ * `source` is the book's own original and its working copy — the same PAGES,
+ * with and without the annotations painted, which is why one artifact carries
+ * two stations. `book` is the built EPUB.
+ */
+export type ViewedArtifact = 'source' | 'book';
+
+/** The stations that can be stood on while each artifact is in the viewer. */
+export const ARTIFACT_STATIONS: Record<ViewedArtifact, readonly StationId[]> = {
+  source: ['archive', 'working'],
+  book: ['epub', 'tts'],
+};
+
+/**
+ * Which artifact the viewer is showing — measured from the paths, never
+ * remembered.
+ *
+ * Three questions, in this order, and each is exact rather than a guess:
+ *
+ *  1. **Is it the project's PDF?** Then it is the source, and which of the two
+ *     source stations the window is on is the window's own business (archive and
+ *     working render the same file).
+ *  2. **Is it the project's book?** Then it is the book. This is the branch an
+ *     EPUB-NATIVE project needs: such a book has no PDF at all, so its original
+ *     is an EPUB too and only its export path tells the two apart.
+ *  3. **Is it an EPUB, in a project that HAS a PDF original?** Then it is the
+ *     book. A PDF book's source is a PDF, so an EPUB on screen can only be what
+ *     reflow wrote — and this answer needs no round trip to main, which is why
+ *     it is here: `bookEpubPath` is main's answer and arrives a moment late, and
+ *     for that moment (2) cannot fire.
+ *
+ * Anything else — a loose file, a corpus book, a project's EPUB original before
+ * it has ever been built — is `source`. That is not a fallback: those books have
+ * exactly one station, the archive, and it is where they are curated.
+ */
+export function viewedArtifactOf(args: {
+  /** The path in the viewer. Empty while nothing is loaded. */
+  readonly displayedPath: string;
+  /** The project's PDF original, or null when the book has none. */
+  readonly curatedPdfPath: string | null;
+  /** Main's answer for where this project's book is, or null. */
+  readonly bookEpubPath: string | null;
+}): ViewedArtifact {
+  const { displayedPath, curatedPdfPath, bookEpubPath } = args;
+  if (displayedPath === '') return 'source';
+  if (curatedPdfPath !== null && samePath(displayedPath, curatedPdfPath)) return 'source';
+  if (bookEpubPath !== null && samePath(displayedPath, bookEpubPath)) return 'book';
+  if (curatedPdfPath !== null && /\.epub$/i.test(displayedPath)) return 'book';
+  return 'source';
+}
+
+/**
+ * The station that agrees with the artifact on screen.
+ *
+ * A request the artifact cannot carry is not an error — the window asks for a
+ * station and the artifact arrives a moment later, in either order — so it
+ * resolves to that artifact's FIRST station, which is where a viewer that has
+ * just been handed a new file is standing.
+ */
+export function stationForArtifact(requested: StationId, artifact: ViewedArtifact): StationId {
+  const allowed = ARTIFACT_STATIONS[artifact];
+  return allowed.includes(requested) ? requested : allowed[0];
+}
+
 export function stationMintedBy(stage: string): StationId | null {
   switch (stage) {
     // The cast and the detect both write into the working document.

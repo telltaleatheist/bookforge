@@ -29,11 +29,16 @@ if (!fs.existsSync(MODULE)) {
 const {
   STATIONS,
   STATION_LABELS,
+  ARTIFACT_STATIONS,
   existingStations,
   stationPresence,
   nextStation,
+  nextStationFromViewed,
+  stationForArtifact,
+  viewedArtifactOf,
   stationMintedBy,
 } = require(MODULE);
+const { samePath } = require(path.join(REPO, 'dist', 'shared', 'document', 'same-path.js'));
 
 let passed = 0;
 const failures = [];
@@ -259,6 +264,150 @@ test('a stage that mints no artifact opens nothing', () => {
   // away from what they were doing.
   assert.strictEqual(stationMintedBy('Footnotes'), null);
   assert.strictEqual(stationMintedBy(''), null);
+});
+
+// ── The ladder does not go backwards ────────────────────────────────────────
+//
+// RULED 2026-08-04 (second real session). Reflow is the gate into the EPUB
+// world; once the book exists, Next from the book is narration. Owen: "we left
+// the working (pdf) copy to reflow the epub, we dont need to go back to the
+// working copy once its reflowed."
+
+const builtBook = () => pdfBook({
+  workingStages: stages({ getText: true, blocks: true, reflow: true }),
+  bookEpubExists: true,
+});
+
+test('Next from the book is narration, never the working copy', () => {
+  const step = nextStationFromViewed('epub', builtBook());
+  assert.strictEqual(step.next, 'tts');
+  assert.strictEqual(step.lockedReason, null);
+});
+
+test('no station ever walks back down the ladder', () => {
+  // The property, not one case of it: whatever Next answers, it is further along
+  // STATIONS than where it was asked from. A single wrong branch anywhere in the
+  // walk shows up here.
+  const books = [pdfBook(), pdfBook({ workingStages: stages({ getText: true }) }),
+    builtBook(), epubBook(), epubBook({ bookEpubExists: true })];
+  for (const book of books) {
+    for (const from of STATIONS) {
+      const step = nextStationFromViewed(from, book);
+      if (step.next === null) continue;
+      assert.ok(
+        STATIONS.indexOf(step.next) > STATIONS.indexOf(from),
+        `Next from ${from} offered ${step.next}, which is backwards`);
+    }
+  }
+});
+
+test('a station the book does not measure as present is answered forwards, not sent home', () => {
+  // The bug this replaces, exactly: the picker answered a not-present station by
+  // asking `nextStation('archive', book)`, so standing on the built book with the
+  // EPUB station momentarily unmeasured produced "Next: Working" — the rung the
+  // user had already climbed, offered as progress.
+  const unmeasured = pdfBook({
+    workingStages: stages({ getText: true, blocks: true }),
+    bookEpubExists: false,
+  });
+  assert.strictEqual(stationPresence('epub', unmeasured), 'absent');
+  const step = nextStationFromViewed('epub', unmeasured);
+  assert.strictEqual(step.next, 'tts');
+  assert.match(step.lockedReason, /Build the book/);
+  // And the strict entry point still refuses to be asked about it, which is what
+  // guards callers that DO know where the book is.
+  assert.throws(() => nextStation('epub', unmeasured));
+});
+
+// ── The station is a fact about what is on screen ───────────────────────────
+
+const BOOK = 'C:\\lib\\Kershaw\\source\\Kershaw.epub';
+const PDF = 'C:\\lib\\Kershaw\\archive\\Kershaw.pdf';
+
+test('the project PDF on screen is the source, whichever source station it is', () => {
+  const artifact = viewedArtifactOf({
+    displayedPath: PDF, curatedPdfPath: PDF, bookEpubPath: BOOK,
+  });
+  assert.strictEqual(artifact, 'source');
+  assert.strictEqual(stationForArtifact('archive', artifact), 'archive');
+  assert.strictEqual(stationForArtifact('working', artifact), 'working');
+});
+
+test('the project book on screen is the book', () => {
+  assert.strictEqual(viewedArtifactOf({
+    displayedPath: BOOK, curatedPdfPath: PDF, bookEpubPath: BOOK,
+  }), 'book');
+});
+
+test('a PDF book showing an EPUB is showing the built book, before main answers', () => {
+  // `bookEpubPath` is a round trip to main and arrives late. A PDF book's source
+  // is a PDF, so an EPUB on screen can only be what reflow wrote — and this
+  // answer needs no round trip, which is what keeps the window from standing on
+  // a source station over the book for the length of one IPC call.
+  assert.strictEqual(viewedArtifactOf({
+    displayedPath: BOOK, curatedPdfPath: PDF, bookEpubPath: null,
+  }), 'book');
+});
+
+test('a book that arrived as an EPUB is at its ARCHIVE, not at an EPUB station', () => {
+  // Its original is an EPUB too, and the archive is where it is curated. Reading
+  // it as "the book" would lock curation on the one station it has.
+  assert.strictEqual(viewedArtifactOf({
+    displayedPath: 'C:\\lib\\Sagan\\archive\\Sagan.epub',
+    curatedPdfPath: null,
+    bookEpubPath: null,
+  }), 'source');
+});
+
+test('...until it has been built, and its own export is on screen', () => {
+  const exported = 'C:\\lib\\Sagan\\source\\Sagan.epub';
+  assert.strictEqual(viewedArtifactOf({
+    displayedPath: exported, curatedPdfPath: null, bookEpubPath: exported,
+  }), 'book');
+  assert.strictEqual(viewedArtifactOf({
+    displayedPath: 'C:\\lib\\Sagan\\archive\\Sagan.epub',
+    curatedPdfPath: null, bookEpubPath: exported,
+  }), 'source');
+});
+
+test('nothing on screen is the source, and never throws', () => {
+  assert.strictEqual(viewedArtifactOf({
+    displayedPath: '', curatedPdfPath: null, bookEpubPath: null,
+  }), 'source');
+});
+
+test('the same file spelled two ways is one file', () => {
+  // Main resolves with backslashes; manifests record forward slashes. A window
+  // that read those as two files would stand on the wrong station.
+  assert.strictEqual(viewedArtifactOf({
+    displayedPath: 'C:/lib/Kershaw/source/Kershaw.epub',
+    curatedPdfPath: PDF,
+    bookEpubPath: BOOK,
+  }), 'book');
+  assert.ok(samePath('C:\\lib\\a.epub', 'c:/lib/A.EPUB'));
+  assert.ok(!samePath('C:\\lib\\a.epub', 'C:\\lib\\b.epub'));
+});
+
+test('a station the artifact cannot carry resolves to one it can', () => {
+  // Not an error: the window asks for a station and the file arrives, in either
+  // order. What must never happen is the two disagreeing afterwards.
+  assert.strictEqual(stationForArtifact('working', 'book'), 'epub');
+  assert.strictEqual(stationForArtifact('archive', 'book'), 'epub');
+  assert.strictEqual(stationForArtifact('epub', 'source'), 'archive');
+  assert.strictEqual(stationForArtifact('tts', 'source'), 'archive');
+  assert.strictEqual(stationForArtifact('tts', 'book'), 'tts');
+});
+
+test('every station belongs to exactly one artifact, and every artifact is closed', () => {
+  const seen = [...ARTIFACT_STATIONS.source, ...ARTIFACT_STATIONS.book];
+  assert.deepStrictEqual([...seen].sort(), [...STATIONS].sort());
+  assert.strictEqual(new Set(seen).size, seen.length);
+  // Whatever is asked for, the answer is a station of the artifact on screen.
+  for (const artifact of ['source', 'book']) {
+    for (const requested of STATIONS) {
+      assert.ok(ARTIFACT_STATIONS[artifact].includes(stationForArtifact(requested, artifact)));
+    }
+  }
 });
 
 for (const { name, fn } of tests) {
