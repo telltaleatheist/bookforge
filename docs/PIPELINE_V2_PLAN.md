@@ -31,9 +31,24 @@ Archive PDF ──cast + detect──▶ Working PDF ──curate──▶ (refl
 
 ## Stations and their actions
 
+**RULED 2026-08-04 (first real session): you never START on a read-only book.**
+Opening a PDF book mints the working copy and opens THAT, preserving the
+original. The archive stays exactly what it was — untouched, and still a tab
+you can look at — but it is not where the user is put, because a book that
+answers no gesture reads as a broken picker. Consequences:
+
+- A **text** PDF casts in seconds (`measureDocumentClass` → `scan --pdf`), so
+  it is cast on open, silently.
+- A **scanned** PDF cannot have a working copy without the render + OCR pass
+  (~1.4 GB of page renders, minutes). So opening one offers that run
+  immediately, with progress **inline in the modal** — see OCR below. Until it
+  finishes there is no working copy, and the archive tab says so.
+- **Detect is NOT bundled with the cast.** They are separate steps and separate
+  queue jobs; casting must never enqueue a detect the user did not ask for.
+
 | Station | Artifact on screen | Actions offered there |
 |---|---|---|
-| Archive | `archive/<Original>.pdf`, read-only | **OCR / Cast** (mints the working sidecar; instant for text PDFs), **Detect** (implicit cast first if none) |
+| Archive | `archive/<Original>.pdf`, read-only, and not where a session starts | **OCR / Cast** (mints the working copy), **Detect** (separate, never implied) |
 | Working | `<Original>.working.pdf` | **Detect** (re-run, one confirm), curation (select / delete / label / merge / chapter), **Build the book** (reflow) |
 | EPUB | `<Original>.epub` | **OCR correction** (NEW foundry epub mode), **Remove footnotes**, **Simplify**, **Translate** — each edits the EPUB in place, result visible, provenance starred |
 | TTS | — | voice / engine / settings, enqueue TTS |
@@ -75,13 +90,43 @@ Running cast/detect from the archive tab opens the working tab; reflow opens
 the EPUB tab. Long operations from the picker offer "run in background" (job
 moves to the global monitor) and "open when finished".
 
+## Long operations: inline, or handed over in front of the user
+
+RULED 2026-08-04. A long run has exactly two shapes, and the difference is
+where the user's attention goes:
+
+- **Inline (default).** The OCR/cast run reports progress IN its modal, and
+  the picker opens the artifact when it lands. Nothing to go and find.
+- **Run in background.** The job moves to the queue and the app MOVES THE USER
+  WITH IT: out of the picker, to the main window, onto the Queue, so the
+  hand-off is witnessed rather than inferred. A job that silently vanishes
+  from one place and silently appears in another is how work gets lost.
+
+**"Open when finished" is an APP promise, not a picker one.** It must open the
+finished artifact even when the user has left the picker — the run outlives
+the window that started it, and the whole point of backgrounding is that they
+went somewhere else. A checkbox that only pays out if you stayed and watched
+is a checkbox that does nothing.
+
 ## Versions page
 
-Grouped rows: the archive original is the parent; the working sidecar and EPUB
+Grouped rows: the archive original is the parent; the working copy and EPUB
 are indented children, visually one family. Star columns — Cast, Detect,
 Corrected, Footnotes, Simplified, Translated — derived from the binding
 record and EPUB provenance. The archive row can never earn a star, by
 construction. No more stray line items.
+
+**RULED 2026-08-04, reversing docs/DOCUMENT_PIPELINE.md: the working copy GETS
+A ROW, and it is openable.** The old rule (sidecars get no line items, only
+"Reset to [stage]") failed its first real session: a book was cast and
+detected from the queue, and afterwards the versions page listed only the
+archive — the work existed on disk and had no door. A user cannot be asked to
+trust a pipeline whose products it does not admit to. The row is the working
+copy's own; clicking it opens that artifact in the picker.
+
+**A pass is not a version.** Footnote removal, simplify and translate produce
+no new line item — they are STARS on the book they edited. Any existing
+pass-shaped rows (the leftover footnote row seen 2026-08-04) come out.
 
 **Staleness, said not locked**: curation edits after a reflow mark the EPUB
 row "built before your last N edits" with a Rebuild button (binding boundary
@@ -136,7 +181,24 @@ Chapter titles below):
   `DocumentBlocksService` directly; all deletion paths ride an
   editorState→effect bridge that demonstrably never produces a write. Fix:
   deletions become direct service calls like relabel; the bridge is deleted.
-  Root cause gets a regression test on the way out.
+  Root cause gets a regression test on the way out. **FIXED, Phase A.**
+
+Found in the first real session, 2026-08-04 (Kershaw, cast + detected from
+the queue — binding record shows both stages landed, working copy intact at
+3,746,134 bytes):
+
+- **The finished work had no door.** Versions listed only the archive; the
+  working copy the user had just processed was unreachable from the UI. See
+  the Versions ruling above.
+- **A pass was still a row.** A footnote run from an earlier session was still
+  listed as its own version line item.
+- **Detect was queued unasked.** The OCR dialog submits `get-text` AND
+  `blocks` as one run, so casting always enqueued a detect. They separate.
+- **The queue lied about a stage.** The `Detect blocks` job reported complete
+  while it was still running — job completion is being reported off something
+  other than the stage actually ending. Needs diagnosis, not a guess.
+- **"Open when finished" paid out nothing** for a queued run, because the
+  picker was closed by then — the promise has to be the app's. See above.
 
 ## Foundry work
 
@@ -163,10 +225,17 @@ Chapter titles below):
   Also (rulings 2026-08-04): Edit mode deleted outright and Split removed
   from the rail; chapter-title editing moves into the Chapter tab
   (double-click to edit, merge adjacent chapter blocks there).
+  **A and B are MERGED (main ed3f1685).**
+- **B2: what the first real session found.** The five bugs listed under "Bugs
+  folded in", plus the two flow rulings above: open a book onto its working
+  copy (cast on open for text PDFs, offered inline for scans), cast and detect
+  unbundled, OCR progress inline in its modal, "run in background" moving the
+  user to the Queue, and "open when finished" honoured app-wide.
 - **C: versions + retirement.** Grouped versions page with derived stars and
-  staleness, per-row Process button, Processing/TTS/Reassembly tabs replaced
-  by ladder + global jobs monitor, chain wizard deleted.
+  staleness, the working copy given an openable row, pass-shaped rows removed,
+  per-row Process button, Processing/TTS/Reassembly tabs replaced by ladder +
+  global jobs monitor, chain wizard deleted.
 - **D: foundry epub correction.** `ocr-correct --epub`, the EPUB-station
   button, the validation run against per-line correction.
 
-Each phase lands independently; A is unblocked today.
+Each phase lands independently.
