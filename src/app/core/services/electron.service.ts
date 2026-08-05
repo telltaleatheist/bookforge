@@ -1,6 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
 import { ResolvedProjectVariant } from '../models/manifest.types';
+import type { AppliedPass } from '../models/manifest.types';
 import type { CorpusPageType } from '@shared/ocr/page-types';
 import type { BlockCategoryProvenance } from '@shared/ocr/text-block';
 import type { TextLayerReport } from '@shared/pdf/text-layer';
@@ -599,6 +600,16 @@ export interface ProjectExportInfo {
   exported: { relPath: string; absPath: string; modifiedAt?: string } | null;
   /** Absolute JPEG/PNG cover, or null for a book without one. */
   coverPath: string | null;
+  /**
+   * What has been done to that book — `manifest.outputs.epub.appliedPasses`, in
+   * execution order.
+   *
+   * Empty when there is no book, and empty when the book has had nothing run
+   * over it: both are real states, and neither is guessed at from the files. It
+   * travels with the export record because every caller that wants to know
+   * which passes a book carries is already asking where the book IS.
+   */
+  appliedPasses: AppliedPass[];
 }
 
 interface ProjectLoadResult {
@@ -1551,6 +1562,9 @@ export class ElectronService {
       target: result.target,
       exported: result.exported ?? null,
       coverPath: result.coverPath ?? null,
+      // Main sends the list whenever there is a book; a project with none sends
+      // nothing, which is "no book has any passes" rather than a value missing.
+      appliedPasses: result.appliedPasses ?? [],
     };
   }
 

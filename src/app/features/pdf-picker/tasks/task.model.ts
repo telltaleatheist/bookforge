@@ -1,12 +1,25 @@
-import { TextBlock } from '../services/pdf.service';
+import type { TextBlock } from '../services/pdf.service';
+import type { PassRecord } from '@shared/document/version-family';
+import {
+  ALL_RAIL_TASK_IDS,
+  EPUB_PASS_TASK_IDS,
+  RAIL_TASK_LABELS,
+  derivePassStatus,
+  type EpubPassTaskId,
+  type RailGroup,
+  type RailTaskId,
+  type RailTaskStatus,
+  type RailTaskStatusKind,
+} from '@shared/document/rail-tasks';
 
 /**
  * Task model for the PDF-picker task-checklist rail.
  *
  * A *task* is a discrete piece of book-prep work with a factual, derivable
- * status. Tasks are grouped by workflow stage in the left rail, and the first
- * group is the viewer's modes — the rail is the mode switcher as well as the
- * checklist, so there is no separate control that can disagree with it.
+ * status. WHICH tasks the rail carries is a fact about the artifact on screen
+ * and lives in `shared/document/rail-tasks.ts` — the source file gets the
+ * curation modes and their tasks, the book gets its text passes — so this file
+ * is the STATUS half: what each entry currently says about the document.
  * `analysis` is a PanelId but NOT a TaskId — it is a status-less tool (flags +
  * search), not a checklist item.
  *
@@ -17,11 +30,8 @@ import { TextBlock } from '../services/pdf.service';
  * one), and unknown states throw rather than guessing.
  */
 
-export type TaskId =
-  | 'select'
-  | 'crop'
-  | 'ocr'
-  | 'merge';
+/** Every rail entry, derived from the one table that lists them. */
+export type TaskId = RailTaskId;
 
 /**
  * The entries that change what the pointer does in the viewer. They are
@@ -45,74 +55,42 @@ export function isModeId(id: TaskId): id is ModeId {
   return (MODE_IDS as readonly string[]).includes(id);
 }
 
+/**
+ * The entries that run a pass over the BOOK rather than change the pointer.
+ *
+ * They are rail entries in every other way — a label, a shortcut, a derived
+ * status — but pressing one starts work instead of opening a panel, so the
+ * picker has to be able to tell them apart. Derived from the same table, so
+ * Phase D's fourth pass joins this set by being added there.
+ */
+export const EPUB_PASS_IDS: readonly EpubPassTaskId[] = EPUB_PASS_TASK_IDS;
+
+export function isEpubPassId(id: TaskId): id is EpubPassTaskId {
+  return (EPUB_PASS_IDS as readonly string[]).includes(id);
+}
+
 /** A panel the right pane can show. `analysis` is a tool, not a checklist task. */
 export type PanelId = TaskId | 'analysis';
 
-export type TaskStatusKind = 'done' | 'suggested' | 'untouched' | 'required-missing';
+export type TaskStatusKind = RailTaskStatusKind;
+export type TaskStatus = RailTaskStatus;
 
-export interface TaskStatus {
-  readonly kind: TaskStatusKind;
-  /** Factual, non-judgmental detail line, e.g. "applied to 12 pages", "not run". */
-  readonly detail: string;
-}
-
-export interface TaskGroup {
-  readonly id: string;
-  readonly label: string;
+/** A rail group, with its entries narrowed to the ids this picker knows. */
+export interface TaskGroup extends RailGroup {
   readonly tasks: readonly TaskId[];
 }
 
-export const TASK_GROUPS: readonly TaskGroup[] = [
-  { id: 'modes', label: 'Mode', tasks: ['select', 'crop'] },
-  // Split spreads left this rail on 2026-08-04: Owen's corpus has no spread
-  // scans, and if one ever shows up splitting returns at the OCR/Cast step,
-  // consumed by the cast, rather than as a mode the pointer can be in.
-  { id: 'setup', label: 'Setup', tasks: ['ocr'] },
-  // Chapters left this rail when they stopped being a list beside the book. A
-  // chapter is a block labelled `chapter`, so it is made on the Label tab and
-  // read on the Chapter tab of the document nav — there is nothing left for a
-  // checklist row to have a status about. Headers and footers left it for the
-  // same reason: they are a category, and a category is selected and deleted
-  // like any other. Paragraph structure left it because reflow decides it.
-  { id: 'cleanup', label: 'Clean up', tasks: ['merge'] },
-] as const;
-
 /** Human, sentence-case labels shown in the rail. */
-export const TASK_LABELS: Record<TaskId, string> = {
-  select: 'Select',
-  crop: 'Crop',
-  ocr: 'OCR text',
-  merge: 'Merge blocks',
-};
+export const TASK_LABELS: Record<TaskId, string> = RAIL_TASK_LABELS;
 
 /**
- * Task order for keyboard digit shortcuts (1..9) and rail rendering.
- * Derived from TASK_GROUPS so the two never drift apart.
+ * Every task there is, in rail order, across both artifacts.
+ *
+ * For the loops that must consider all of them — the disabled-reason map, the
+ * pre-export summary. It is NOT what any rail renders: a rail's rows are
+ * `railGroupsForArtifact`, and the two answer different questions.
  */
-export const TASK_ORDER: readonly TaskId[] = TASK_GROUPS.flatMap(g => [...g.tasks]);
-
-/**
- * Rail entries reachable by a digit key. Entries with a letter binding keep it
- * — rebinding them to digits would cost existing muscle memory to buy nothing —
- * so the digits run over everything else in rail order and stay inside 1..9.
- */
-const LETTER_TASKS: Readonly<Partial<Record<TaskId, string>>> = {
-  select: 'S',
-};
-
-const DIGIT_TASKS: readonly TaskId[] = TASK_ORDER.filter(id => !(id in LETTER_TASKS));
-
-/** The key hint shown on each rail row. */
-export const TASK_SHORTCUTS: Record<TaskId, string> = (() => {
-  const out = { ...LETTER_TASKS } as Record<TaskId, string>;
-  DIGIT_TASKS.forEach((id, i) => { out[id] = String(i + 1); });
-  return out;
-})();
-
-/** The rail entry a digit key activates, or undefined when that digit is unused. */
-export function taskForDigit(digit: number): TaskId | undefined {
-  return DIGIT_TASKS[digit - 1];
-}
+export const TASK_ORDER: readonly TaskId[] = ALL_RAIL_TASK_IDS;
 
 /** Glyph shown beside each task, keyed by its derived status kind. */
 export const STATUS_GLYPH: Record<TaskStatusKind, string> = {
@@ -254,6 +232,13 @@ export interface TaskStatusContext {
   readonly crop: CropStatusInput;
   readonly ocr: OcrStatusInput;
   readonly mergeCount: number;
+  /**
+   * `manifest.outputs.epub.appliedPasses` for the book this window is on, in
+   * execution order. An empty list is a real value — a book nothing has been
+   * run over — and a project with no book at all has one too, because "no book"
+   * is said by the entry being disabled rather than by its status.
+   */
+  readonly appliedPasses: readonly PassRecord[];
 }
 
 function assertNever(x: never): never {
@@ -270,6 +255,12 @@ export function deriveTaskStatus(id: TaskId, ctx: TaskStatusContext): TaskStatus
       return deriveOcrStatus(ctx.ocr);
     case 'merge':
       return deriveMergeStatus(ctx.mergeCount);
+    // The book's own passes: what a pass says about itself is what the book
+    // RECORDS about it, so all three read the one provenance list.
+    case 'footnotes':
+    case 'simplify':
+    case 'translate':
+      return derivePassStatus(id, ctx.appliedPasses);
     default:
       return assertNever(id);
   }

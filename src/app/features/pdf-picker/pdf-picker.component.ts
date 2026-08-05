@@ -68,19 +68,27 @@ import {
 } from '@shared/ocr/page-types';
 import { OcrPanelComponent } from './components/ocr-panel/ocr-panel.component';
 import {
-  TASK_GROUPS,
   TASK_ORDER,
   TASK_LABELS,
   STATUS_GLYPH,
   CHAPTERS_EXPORT_MINIMUM,
+  EPUB_PASS_IDS,
   TaskId,
+  TaskGroup,
   PanelId,
   TaskStatus,
-  taskForDigit,
+  isEpubPassId,
   deriveAllTaskStatuses,
   countPagesWithoutText,
   isBlockFullyOutside,
 } from './tasks/task.model';
+import {
+  railGroupsForArtifact,
+  railShortcutsFor,
+  railTaskForDigit,
+  type EpubPassTaskId,
+} from '@shared/document/rail-tasks';
+import type { PassRecord } from '@shared/document/version-family';
 import { parsePageRange } from './shared/page-range.util';
 
 interface OpenDocument {
@@ -496,16 +504,17 @@ interface AlertModal {
       >
         <!-- PDF Viewer (Primary) with Left Tools Sidebar -->
         <div pane-primary class="viewer-pane-container">
-          <!-- Left Tools Sidebar -->
-          @if (showToolbox()) {
+          <!-- Left Tools Sidebar. Rendered with the document: what it CONTAINS
+               is the artifact's business, what is pressable is disabledTasks'. -->
           <div
             class="tools-sidebar"
             [style.width.px]="toolsSidebarWidth()"
           >
             <app-task-rail
-              [groups]="taskGroups"
+              [groups]="taskGroups()"
               [statuses]="taskStatuses()"
               [current]="railCurrent()"
+              [shortcuts]="taskShortcuts()"
               [disabledTasks]="disabledTasks()"
               [collapsedGroups]="collapsedGroups()"
               (panelClick)="onRailPanelClick($event)"
@@ -581,7 +590,6 @@ interface AlertModal {
               (mousedown)="onSidebarResizeStart($event)"
             ></div>
           </div>
-          }
 
           <!-- Viewer + Timeline wrapper (stacked vertically) -->
           <div class="viewer-timeline-wrapper">
@@ -3198,8 +3206,11 @@ export class PdfPickerComponent implements OnInit {
       const key = event.key.toLowerCase();
 
       // Digits activate the rail row bound to them (the pointer modes keep S/E).
+      // The binding is per RAIL, so a digit can only ever reach a row the user
+      // can see — pressing 1 over the book runs the book's first pass, not a
+      // crop the book has no rail entry for.
       if (key >= '1' && key <= '9') {
-        const taskId = taskForDigit(Number(key));
+        const taskId = railTaskForDigit(this.viewedArtifact(), Number(key));
         if (taskId && !this.disabledTasks().has(taskId)) {
           event.preventDefault();
           this.onRailPanelClick(taskId);
@@ -3486,7 +3497,18 @@ export class PdfPickerComponent implements OnInit {
    * A's EPUB standing as B's, with a live tab that opens the wrong book. An
    * answer is only ever read back for the project it names (`bookEpubPath`).
    */
-  private readonly bookEpubAnswer = signal<{ dir: string; path: string | null } | null>(null);
+  private readonly bookEpubAnswer = signal<{
+    dir: string;
+    path: string | null;
+    /**
+     * `manifest.outputs.epub.appliedPasses` for that book, in execution order.
+     *
+     * It arrives with the path because it is the same round trip and the same
+     * book: the rail's pass entries say what has been run, and a second ask
+     * would be a second answer about one file.
+     */
+    appliedPasses: readonly PassRecord[];
+  } | null>(null);
 
   /**
    * Main's refusal when it could not answer where the book is, stamped the same
@@ -3507,6 +3529,21 @@ export class PdfPickerComponent implements OnInit {
     const answer = this.bookEpubAnswer();
     const dir = this.projectPath();
     return answer && dir && answer.dir === dir ? answer.path : null;
+  });
+
+  /**
+   * What has been done to THIS project's book, or an empty list.
+   *
+   * Empty covers three real states and needs to distinguish none of them: no
+   * project, no answer yet, and a book nothing has been run over. In each of
+   * them every pass entry reads "not run", which is true — whether the entry
+   * can be PRESSED is `disabledTasks`' question, and it is answered there with
+   * its own sentence.
+   */
+  private readonly bookAppliedPasses = computed<readonly PassRecord[]>(() => {
+    const answer = this.bookEpubAnswer();
+    const dir = this.projectPath();
+    return answer && dir && answer.dir === dir ? answer.appliedPasses : [];
   });
 
   /** Main's refusal about THIS project, or null. */
@@ -3531,7 +3568,11 @@ export class PdfPickerComponent implements OnInit {
     try {
       const info = await this.electronService.projectsExportInfo(dir);
       this.bookEpubErrorAnswer.set(null);
-      this.bookEpubAnswer.set({ dir, path: info.exported ? info.exported.absPath : null });
+      this.bookEpubAnswer.set({
+        dir,
+        path: info.exported ? info.exported.absPath : null,
+        appliedPasses: info.appliedPasses,
+      });
     } catch (err) {
       // Main's own sentence, kept and shown on the EPUB tab. The last proved
       // path for THIS project is left alone — a round trip that failed is not
@@ -3661,8 +3702,7 @@ export class PdfPickerComponent implements OnInit {
    */
   readonly stationActions = computed<StationAction[]>(() => {
     const book = this.bookDocuments();
-    const noProject = this.projectPath() ? null
-      : 'This document does not belong to a BookForge project, and every station writes into one.';
+    const noProject = this.noProjectReason();
     // Said here rather than discovered when the stage refuses: the document
     // pipeline casts a working PDF from the book's original, so a project that
     // arrived as an EPUB has nothing to cast FROM. Main refuses it by name; a
@@ -3718,15 +3758,27 @@ export class PdfPickerComponent implements OnInit {
         ];
       }
       case 'epub':
-        return [
-          { id: 'footnotes', label: 'Remove footnotes', reason: noProject },
-          { id: 'simplify', label: 'Simplify', reason: noProject },
-          { id: 'translate', label: 'Translate', reason: noProject },
-        ];
+        // The book's three passes MOVED to the left rail on 2026-08-04 (Owen:
+        // "lets move translate/simplify/footnotes to a left side nav just like
+        // the select/edit modes were when in a pdf"), so the station bar here
+        // carries the tabs and Next and nothing else. They are rail entries with
+        // derived statuses now — see `taskGroups` — and there is exactly one of
+        // each: a button here as well would be a second door to one pass.
+        return [];
       case 'tts':
         return [];
     }
   });
+
+  /**
+   * Why this document can run nothing that writes into a project, or null.
+   *
+   * One sentence, read by the station buttons and by the rail's pass entries:
+   * two wordings of the same refusal is two answers to "why is this off".
+   */
+  private readonly noProjectReason = computed<string | null>(() =>
+    this.projectPath() ? null
+      : 'This document does not belong to a BookForge project, and every station writes into one.');
 
   readonly stationNextLabel = computed(() => {
     const next = this.stationNextStep().next;
@@ -4529,8 +4581,22 @@ export class PdfPickerComponent implements OnInit {
    */
   readonly labelMode = computed(() => this.navTab() === 'label');
 
-  // Task groups for the rail (static; TASK_ORDER drives digit shortcuts).
-  readonly taskGroups = TASK_GROUPS;
+  /**
+   * The rail the file on screen gets — the curation modes and their tasks over
+   * the source, the book's own text passes over the book.
+   *
+   * The rule is `shared/document/rail-tasks.ts`'s and it is keyed by the
+   * measured artifact, so this is one lookup. It deliberately does NOT ask
+   * whether curation is allowed: what the rail CONTAINS is a fact about which
+   * file is in the viewer, and what is PRESSABLE is `disabledTasks`, with its
+   * own sentence per entry. Asking those as one question is what hid the rail
+   * at the EPUB station, which is where the passes now live.
+   */
+  readonly taskGroups = computed<readonly TaskGroup[]>(() =>
+    railGroupsForArtifact(this.viewedArtifact()) as readonly TaskGroup[]);
+
+  /** The key hints for the rail on screen; digits run over the rows shown. */
+  readonly taskShortcuts = computed(() => railShortcutsFor(this.viewedArtifact()));
 
   // Collapsed rail groups (persisted; see rail persistence effect).
   readonly collapsedGroups = signal<ReadonlySet<string>>(new Set());
@@ -4539,12 +4605,18 @@ export class PdfPickerComponent implements OnInit {
   readonly viewerEditorMode = computed<string>(() =>
     this.activePanel() === 'crop' ? 'crop' : 'select');
 
-  // The rail is the curation tools, so it is shown exactly where curation is
-  // possible and nowhere else — asked as one question rather than two, so a
-  // rail full of tools can never appear over an artifact that refuses them.
-  // That is the working copy for a cast book, and the book itself for one that
-  // has no working copy (an EPUB, a loose file: see `curationReadOnlyReason`).
-  readonly showToolbox = computed(() => !this.curationLocked());
+  // The rail has no visibility condition of its own any more. It is rendered
+  // with the document (`@if (pdfLoaded())`), because every artifact has
+  // something to offer: the source has the curation modes, the book has its
+  // passes (Owen, 2026-08-04 — "lets move translate/simplify/footnotes to a
+  // left side nav just like the select/edit modes were when in a pdf").
+  //
+  // It used to be gated on `!curationLocked()`, which hid it at exactly the
+  // station the passes live on. The lock has not gone anywhere: it now disables
+  // the CURATION entries and carries the same sentence onto each of them
+  // (`disabledTasks`), so a curation tool is never live over an artifact that
+  // refuses it — said, rather than achieved by leaving nothing on screen to say
+  // it about.
 
   // Crop mode state (derived from activePanel)
   readonly cropMode = computed(() => this.activePanel() === 'crop');
@@ -4814,6 +4886,10 @@ export class PdfPickerComponent implements OnInit {
       crop: { croppedPageCount: this.editorState.cropRegions().size },
       ocr: { blocks, deletedBlockIds, totalPages: this.totalPages() },
       mergeCount: this.editorState.blockMerges().size,
+      // The book's own record of what has been run over it. A pass that has run
+      // says so, and it says it from the manifest rather than from anything this
+      // window remembers doing.
+      appliedPasses: this.bookAppliedPasses(),
     });
   });
 
@@ -4877,8 +4953,28 @@ export class PdfPickerComponent implements OnInit {
       return disabled;
     }
 
+    // The book's passes answer to the BOOK, not to the viewer: they rewrite the
+    // file main has recorded, and neither the page renderer nor the block layer
+    // is involved. So they are refused for the two reasons that are actually
+    // theirs, by name, and are not touched by the curation rules below.
+    const passRefusal = this.epubPassRefusal();
+    if (passRefusal) {
+      for (const id of EPUB_PASS_IDS) disabled.set(id, passRefusal);
+    }
+
     for (const id of TASK_ORDER) {
       if (id === 'select') continue;
+      if (isEpubPassId(id)) continue;
+      // Curation is refused on the artifact on screen — the archived original of
+      // a cast book, the built book, a book handed to narration. The rail says
+      // so on each entry rather than vanishing: the reason is the same sentence
+      // the banner over the viewer carries, so there is one explanation and not
+      // two that can drift.
+      const curation = this.curationReadOnlyReason();
+      if (curation) {
+        disabled.set(id, curation);
+        continue;
+      }
       if (isEpub && (id === 'crop' || id === 'ocr')) {
         disabled.set(id, 'PDF only — not available for EPUB');
         continue;
@@ -4889,6 +4985,24 @@ export class PdfPickerComponent implements OnInit {
       }
     }
     return disabled;
+  });
+
+  /**
+   * Why the book's text passes cannot run here, or null.
+   *
+   * Two states, and neither is inferred from the other: a document that belongs
+   * to no project has nowhere to record a pass, and a project with no book has
+   * nothing for a pass to read. Main refuses both by name (`requireBookEpub`);
+   * this is the same refusal said before the press rather than after it.
+   */
+  private readonly epubPassRefusal = computed<string | null>(() => {
+    const noProject = this.noProjectReason();
+    if (noProject) return noProject;
+    if (this.bookEpubPath() === null) {
+      return 'This project has no book yet, and the text passes rewrite the book — press '
+        + 'Build the book first.';
+    }
+    return null;
   });
 
   /**
@@ -9545,6 +9659,20 @@ export class PdfPickerComponent implements OnInit {
       case 'reflow':
         this.requestBuildTheBook();
         return;
+      default:
+        throw new Error(`The station bar offered an action this window does not know: ${actionId}`);
+    }
+  }
+
+  /**
+   * A rail entry that runs a pass over the book was pressed.
+   *
+   * Where each one goes is the pass's own business: Simplify and Translate are
+   * AI runs over a whole book — hours — so they are queued, and their options
+   * dialog is where their settings are chosen.
+   */
+  private startEpubPass(kind: EpubPassTaskId): void {
+    switch (kind) {
       case 'footnotes':
         void this.enqueueEpubPass({ kind: 'footnotes' });
         return;
@@ -9554,8 +9682,10 @@ export class PdfPickerComponent implements OnInit {
       case 'translate':
         this.passOptionsKind.set('translate');
         return;
-      default:
-        throw new Error(`The station bar offered an action this window does not know: ${actionId}`);
+      default: {
+        const unknown: never = kind;
+        throw new Error(`There is no ${String(unknown)} pass on the rail.`);
+      }
     }
   }
 
@@ -12118,6 +12248,14 @@ export class PdfPickerComponent implements OnInit {
     // pages produces nonsense blocks) — and it still ran on one, because this
     // bypass used to sit in front of the check.
     if (this.disabledTasks().has(id as TaskId)) return;
+
+    // The book's passes are entries that START WORK rather than open a panel.
+    // They keep no `activePanel` for the same reason Select and OCR do not: what
+    // they leave behind is a record on the book, and the rail reads it back.
+    if (id !== 'analysis' && isEpubPassId(id)) {
+      this.startEpubPass(id);
+      return;
+    }
 
     // Select owns no panel: choosing it closes whatever panel had taken over the
     // pointer, so the click does what it looks like it does.

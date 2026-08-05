@@ -1051,6 +1051,20 @@ export async function appendAppliedPass(projectDir: string, pass: AppliedPass): 
   }
 }
 
+/**
+ * What has been done to the project's book, in execution order.
+ *
+ * The manifest's own list, verbatim. An empty array is a real answer twice
+ * over: a project with no book has had no passes applied to one, and a freshly
+ * built book has had nothing done to it yet — and neither is worth
+ * distinguishing here, because the caller that cares whether there IS a book
+ * asks `readExportEpub`, which answers that question exactly.
+ */
+export async function readAppliedPasses(projectDir: string): Promise<AppliedPass[]> {
+  const manifest = await readManifestAt(projectDir);
+  return manifest.outputs?.epub?.appliedPasses ?? [];
+}
+
 /** Every pass that has a diff, in execution order, with the diff resolved. */
 export async function listPassDiffs(projectDir: string): Promise<Array<{
   kind: AppliedPassKind;

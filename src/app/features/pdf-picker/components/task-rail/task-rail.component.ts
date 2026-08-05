@@ -6,17 +6,21 @@ import {
   TaskGroup,
   TaskStatus,
   TASK_LABELS,
-  TASK_SHORTCUTS,
   STATUS_GLYPH,
 } from '../../tasks/task.model';
 
 /**
  * Left task-checklist rail — also the viewer's mode switcher.
  *
- * Every entry is one row: the modes (Select / Edit / Crop / Label) in the first
- * group, then the remaining tasks grouped by stage, each with a live factual
- * status glyph + detail line, an "Analysis & search" tool entry, and a
- * projected [rail-footer] slot for the Rendering controls.
+ * Every entry is one row: for the source file the modes (Select / Crop) in the
+ * first group and then the remaining tasks grouped by stage; for the book, the
+ * text passes that rewrite it. Which of the two it is showing is decided by the
+ * shell and arrives as `groups` — this component renders what it is given and
+ * asks no questions about the artifact.
+ *
+ * Each row carries a live factual status glyph + detail line, and the rail ends
+ * with an "Analysis & search" tool entry and a projected [rail-footer] slot for
+ * the Rendering controls.
  *
  * Exactly one row is current at a time: the open panel, or — when no panel is
  * open — the pointer interaction. Merging the two into one list is deliberate;
@@ -238,6 +242,14 @@ export class TaskRailComponent {
    * panel is open. One input, so the rail cannot show two rows as current.
    */
   readonly current = input.required<PanelId>();
+  /**
+   * The key hint each row shows, for the rail that is on screen.
+   *
+   * An input rather than a constant because the digits run over the rows the
+   * user can SEE (see `railShortcutsFor`): a rail whose first row is hinted "4"
+   * is a rail advertising keys 1–3 that do nothing here.
+   */
+  readonly shortcuts = input.required<Readonly<Partial<Record<TaskId, string>>>>();
   readonly disabledTasks = input.required<Map<TaskId, string>>();
   readonly collapsedGroups = input.required<ReadonlySet<string>>();
 
@@ -261,7 +273,7 @@ export class TaskRailComponent {
   }
 
   shortcut(task: TaskId): string {
-    const key = TASK_SHORTCUTS[task];
+    const key = this.shortcuts()[task];
     if (key === undefined) {
       throw new Error(`task-rail: task "${task}" has no keyboard shortcut`);
     }

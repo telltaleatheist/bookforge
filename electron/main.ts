@@ -3107,7 +3107,12 @@ function setupIpcHandlers(): void {
       const record = await manifestService.readExportEpub(projectDir);
       const exported = record && fsSync.existsSync(record.absPath) ? record : null;
       const coverPath = await manifestService.resolveProjectCover(projectDir);
-      return { success: true, target, exported, coverPath };
+      // What has been done to that book travels with where it is: the picker's
+      // rail lights its pass entries from this, and asking twice — once for the
+      // path, once for the provenance — is how two surfaces come to disagree
+      // about the same book.
+      const appliedPasses = await manifestService.readAppliedPasses(projectDir);
+      return { success: true, target, exported, coverPath, appliedPasses };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
