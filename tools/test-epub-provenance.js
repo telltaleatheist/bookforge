@@ -75,10 +75,17 @@ const CONTAINER = '<?xml version="1.0" encoding="UTF-8"?>\n'
   + '    <rootfile full-path="EPUB/package.opf" media-type="application/oebps-package+xml"/>\n'
   + '  </rootfiles>\n</container>\n';
 
+// The analysis cache lives under the user's real Documents\BookForge\cache and
+// is keyed by the file's sha256, so a fixture with fixed bytes would be answered
+// out of the PREVIOUS run's cache and the extraction path would never run again.
+// A per-run nonce in the identifier makes every fixture a new file; the entries
+// it leaves are removed at the end (see clearFixtureCaches).
+const RUN_NONCE = path.basename(ROOT);
+
 const OPF = (title) => '<?xml version="1.0" encoding="UTF-8"?>\n'
   + '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id" xml:lang="en">\n'
   + '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">\n'
-  + `    <dc:identifier id="pub-id">urn:uuid:${title.length}-fixture</dc:identifier>\n`
+  + `    <dc:identifier id="pub-id">urn:uuid:${RUN_NONCE}-${title}</dc:identifier>\n`
   + `    <dc:title>${title}</dc:title>\n`
   + '    <dc:language>en</dc:language>\n'
   + '    <meta property="dcterms:modified">1980-01-01T00:00:00Z</meta>\n'
@@ -230,10 +237,15 @@ const FIXTURE_BLOCKS = [
   // book twice, differing only in the stamps.
   const { PDFAnalyzer } = require(path.join(DIST, 'electron', 'pdf-analyzer.js'));
 
+  // Cache entries these fixtures produce, cleaned up at the end — the analysis
+  // cache is the user's own directory and this suite is a guest in it.
+  const fixtureHashes = new Set();
   async function analyzed(epubPath) {
     const analyzer = new PDFAnalyzer();
     try {
-      return await analyzer.analyze(epubPath);
+      const result = await analyzer.analyze(epubPath);
+      fixtureHashes.add(result.sourceSha256);
+      return result;
     } finally {
       analyzer.close();
     }
@@ -262,6 +274,30 @@ const FIXTURE_BLOCKS = [
     assert.strictEqual(h.bf_group, undefined);
     assert.strictEqual(h.bf_blocks, undefined);
   });
+
+  // Regression: found by the provenance counters themselves, which reported 30
+  // blocks stamped AND 30 unaligned out of 30. analyzeText re-extracts the whole
+  // document, but its EPUB branch appended page by page, so running it over the
+  // blocks a cache-hit analyzeQuick had already restored gave the book two
+  // copies of everything. The picker does not take that route, so nothing else
+  // would have caught it.
+  await check('re-extracting text over a cached analysis does not double the book', async () => {
+    const analyzer = new PDFAnalyzer();
+    try {
+      const quick = await analyzer.analyzeQuick(stampedEpub);
+      assert.strictEqual(quick.textReady, true, 'the earlier analyze() should have cached this fixture');
+      const text = await analyzer.analyzeText(stampedEpub);
+      assert.strictEqual(text.blocks.length, quick.blocks.length, 'no block may appear twice');
+      assert.strictEqual(text.categoryProvenance.source, 'document');
+      assert.strictEqual(text.categoryProvenance.unalignedBlocks, 0);
+      assert.strictEqual(text.categoryProvenance.stampedBlocks, text.blocks.length);
+    } finally {
+      analyzer.close();
+    }
+  });
+
+  const cleaner = new PDFAnalyzer();
+  for (const hash of fixtureHashes) cleaner.clearCache(hash);
 
   // ── Report ────────────────────────────────────────────────────────────────
   for (const [status, name, message] of results) {

@@ -926,6 +926,17 @@ export class PDFAnalyzer {
     this.analysisWarnings = [];
     this.categoryProvenance = heuristicProvenance();
 
+    // This method re-extracts the whole document, so it starts from nothing.
+    // The PDF branch below always assigned `this.blocks` outright, but the
+    // EPUB branch APPENDS one page at a time — so calling analyzeText after an
+    // analyzeQuick that HIT the cache (which restores the cached blocks) left
+    // the book holding two copies of every block. The picker never does that
+    // (it only extracts text when quick came back textReady:false), which is
+    // why it went unseen; it surfaced the moment the provenance counters
+    // reported 30 blocks stamped and 30 unaligned out of 30.
+    this.blocks = [];
+    this.spans = [];
+
     const pageCount = maxPages
       ? Math.min(this.pageDimensions.length, maxPages)
       : this.pageDimensions.length;
