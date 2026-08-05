@@ -13,6 +13,15 @@ import { DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsic
 import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-target';
 import type { PassDiffEntry } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
+import {
+  STAR_LABELS,
+  STAR_MEANINGS,
+  latestPassByKind,
+  starSlotsFor,
+  versionFamily,
+  type VersionFamilyInput,
+  type VersionStar,
+} from '@shared/document/version-family';
 
 interface VersionRow {
   id: string; type: string; label: string; description: string;
@@ -20,6 +29,12 @@ interface VersionRow {
   modifiedAt?: string; fileSize?: number; editable: boolean; icon: string;
   diffRecordPath?: string;   // presence => this version has a pre-computed diff to review
   diffOriginalPath?: string; // the original it was computed against (resolved locally, if it exists)
+  /** The file the editor is pointed at for this row, when it is not this row's own. */
+  openPath?: string;
+  /** The 'working' row only: the binding's recorded stage boundaries. */
+  stageBoundaries?: Array<{ stage: string; finishedAt: string }>;
+  /** The 'exported' row only: when Reflow wrote this book, if it was recorded. */
+  builtAt?: string;
   // Present only on the synthetic 'analysis' entry (its durable version pin):
   analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
   analysisFlagCount?: number;
@@ -36,18 +51,39 @@ interface SentenceCacheInfo {
   complete: boolean;
 }
 
-/** One recorded pass diff, as a row in the "What's been done" list. */
-interface PassDiffRow {
+/**
+ * One provenance badge: a pass KIND, collapsed latest-wins, with the review of
+ * what its latest run changed hanging off it.
+ *
+ * A pass is not a version (docs/PIPELINE_V2_PLAN.md), so there is no row for it
+ * — but "Review changes" is the only way to see what a pass did, so it moved
+ * onto the badge rather than out of the app.
+ */
+/** One star column on a document row: what it is, and whether it is lit. */
+interface StarSlot {
+  id: VersionStar;
+  label: string;
+  lit: boolean;
+  tooltip: string;
+}
+
+/** One document row, arranged into the family and carrying its derived state. */
+interface DocumentFamilyRow {
+  v: VersionRow;
+  /** 0 for the archive parent (and for rows outside the family), 1 for a child. */
+  depth: 0 | 1;
+  slots: StarSlot[];
+  staleness: string | null;
+}
+
+interface ProvenanceBadge {
   kind: AppliedPassKind;
   label: string;
-  icon: string;
-  /** The stage number the diff lives under, e.g. "01". */
-  stage: string;
-  description: string;
-  when: string;
-  diffPath: string;
-  reportPath: string;
-  relPath: string;
+  /** How many times this kind ran. The badge describes the LAST one. */
+  count: number;
+  tooltip: string;
+  /** The latest run's recorded diff, when it left one. Null when it did not. */
+  review: { diffPath: string; reportPath: string; when: string } | null;
 }
 
 /** `foundry footnotes --epub`'s own review report, written beside its diff. */
@@ -80,18 +116,6 @@ const PASS_LABELS: Record<AppliedPassKind, string> = {
   tesseract: 'Tesseract',
   'ocr-correction': 'OCR correction',
   detection: 'Detection',
-};
-
-const PASS_ICONS: Record<AppliedPassKind, string> = {
-  'get-text': '\u{1F50D}',
-  blocks: '\u{1F5C3}\u{FE0F}',
-  reflow: '\u{1F4D6}',
-  footnotes: '\u{1F5D1}\u{FE0F}',
-  simplify: '\u{2702}\u{FE0F}',
-  translate: '\u{1F310}',
-  tesseract: '\u{1F50D}',
-  'ocr-correction': '\u{1F524}',
-  detection: '\u{1F5C3}\u{FE0F}',
 };
 
 const AUDIO_EXTS = new Set([
@@ -160,25 +184,12 @@ const AUDIO_EXTS = new Set([
             @for (b of provenanceBadges(); track b.kind) {
               <span class="pbadge" [title]="b.tooltip">
                 {{ b.label }}@if (b.count > 1) { <span class="pcount">×{{ b.count }}</span> }
+                @if (b.review; as r) {
+                  <button class="preview" (click)="startPassCompare(b)"
+                          [title]="b.tooltip">Review changes</button>
+                }
               </span>
             }
-          </div>
-        }
-
-        <!-- One row per pass that left a diff, in the order they ran. The badges
-             above collapse repeats by kind; these do not — each run left its own
-             record of what it changed, and each is openable. -->
-        @for (p of passDiffRows(); track p.relPath) {
-          <div class="row pass-row">
-            <span class="ricon">{{ p.icon }}</span>
-            <div class="rinfo">
-              <div class="rlabel"><span class="pstage">{{ p.stage }}</span> {{ p.label }}</div>
-              <div class="rdesc">{{ p.description }}</div>
-            </div>
-            <div class="ractions">
-              <button class="act" (click)="startPassCompare(p)"
-                      title="See exactly what this pass changed in the book">Review changes</button>
-            </div>
           </div>
         }
         @if (passDiffError(); as e) {
@@ -276,39 +287,62 @@ const AUDIO_EXTS = new Set([
           }
         </div>
 
-        <!-- Documents (pipeline source versions) -->
+        <!-- The document family: the archive original, and the working copy and
+             book EPUB indented under it. One family, not a flat list — and no
+             pass-shaped rows, because a pass is not a version. -->
         <div class="section-head">
-          <span>Working files</span>
+          <span>Documents</span>
         </div>
 
         @if (loading()) {
           <div class="muted">Loading versions…</div>
-        } @else if (documents().length === 0) {
+        } @else if (documentRows().length === 0) {
           <div class="muted">No document versions yet.</div>
         } @else {
-          @for (v of documents(); track v.id) {
-            <div class="row" [class.clickable]="v.editable" (click)="onDocRowClick(v)">
-              <span class="ricon">{{ v.icon || '\u{1F4C4}' }}</span>
+          @for (row of documentRows(); track row.v.id) {
+            <div class="row" [class.child]="row.depth === 1"
+                 [class.clickable]="row.v.editable" (click)="onDocRowClick(row.v)">
+              <span class="ricon">{{ row.v.icon || '\u{1F4C4}' }}</span>
               <div class="rinfo">
-                <div class="rlabel">{{ v.label }} <span class="ext">.{{ v.extension }}</span></div>
-                <div class="rdesc">{{ v.description }}{{ v.fileSize ? ' · ' + fmtSize(v.fileSize) : '' }}{{ v.modifiedAt ? ' · ' + fmtDate(v.modifiedAt) : '' }}</div>
+                <div class="rlabel">{{ row.v.label }} <span class="ext">.{{ row.v.extension }}</span></div>
+                <div class="rdesc">{{ rowDescription(row) }}</div>
+                @if (row.slots.length > 0) {
+                  <div class="stars">
+                    @for (s of row.slots; track s.id) {
+                      <span class="star" [class.lit]="s.lit" [title]="s.tooltip">
+                        <span class="sglyph">{{ s.lit ? '★' : '☆' }}</span>{{ s.label }}
+                      </span>
+                    }
+                  </div>
+                }
+                @if (row.staleness; as stale) {
+                  <div class="stale">{{ stale }}</div>
+                }
               </div>
               <div class="ractions" (click)="$event.stopPropagation()">
-                @if (hasSkippedReport(v)) { <button class="act" (click)="skipped.emit()">Skipped</button> }
-                @if (hasDiffRecord(v)) {
-                  <button class="act" (click)="startCompare(v)" title="Review the changes made to produce this version">Review Changes</button>
+                @if (row.staleness) {
+                  <button class="act" (click)="rebuildBook()" [disabled]="rebuilding()"
+                          title="Build the book again from the working copy, so it includes your latest edits">
+                    {{ rebuilding() ? 'Queueing…' : 'Rebuild' }}
+                  </button>
                 }
-                @if (isEpub(v) && !docIsAnalysisTarget(v)) {
-                  <button class="act" (click)="emitGenerateAnalysisDoc(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
+                @if (hasSkippedReport(row.v)) { <button class="act" (click)="skipped.emit()">Skipped</button> }
+                @if (hasDiffRecord(row.v)) {
+                  <button class="act" (click)="startCompare(row.v)" title="Review the changes made to produce this version">Review Changes</button>
                 }
-                @if (v.editable) {
-                  <button class="act" (click)="edit.emit(v.path)" title="Open this file in the editor">Open</button>
+                @if (isEpub(row.v) && !docIsAnalysisTarget(row.v)) {
+                  <button class="act" (click)="emitGenerateAnalysisDoc(row.v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
                 }
-                <button class="act" (click)="exportDoc.emit(v.path)" title="Save a copy to your computer">Export</button>
-                @if (deletable(v)) {
-                  <button class="act danger" (click)="removeDoc(v)" title="Delete this version">Delete</button>
+                @if (row.v.editable) {
+                  <button class="act" (click)="openDoc(row.v)" [title]="openTitle(row.v)">Open</button>
                 }
-                @if (v.type === 'original') {
+                @if (exportable(row.v)) {
+                  <button class="act" (click)="exportDoc.emit(row.v.path)" title="Save a copy to your computer">Export</button>
+                }
+                @if (deletable(row.v)) {
+                  <button class="act danger" (click)="removeDoc(row.v)" title="Delete this version">Delete</button>
+                }
+                @if (row.v.type === 'original') {
                   <button class="act danger" (click)="resetEdits()"
                           title="Clear all editor edits for this source and start fresh (the archive file is untouched)">Reset edits</button>
                 }
@@ -583,13 +617,40 @@ const AUDIO_EXTS = new Set([
       padding: 3px 9px; border-radius: 999px; cursor: default;
     }
     .pbadge .pcount { font-size: 0.62rem; color: var(--text-secondary); font-weight: 700; }
-
-    .row.pass-row { margin-top: 8px; }
-    .pstage {
-      font-family: var(--font-mono, ui-monospace, monospace);
-      font-size: 0.72rem; font-weight: 700; color: var(--text-secondary); margin-right: 6px;
+    /* "Review changes" rides its badge: a pass is not a version, so this is the
+       only place its recorded diff can be reached from. */
+    .pbadge .preview {
+      margin-left: 2px; padding: 0 2px; border: none; background: none;
+      font-size: 0.62rem; font-weight: 600; letter-spacing: 0.01em;
+      color: var(--accent-primary, #06b6d4); cursor: pointer; text-decoration: underline;
     }
+    .pbadge .preview:hover { color: var(--text-primary); }
+
     .pass-err { margin: 6px 4px; font-size: 0.78rem; color: #ef4444; }
+
+    /* A child of the archive original: the working copy, the book. Indented and
+       given a rule back to the parent so the three read as one family. */
+    .row.child { margin-left: 26px; position: relative; }
+    .row.child::before {
+      content: ''; position: absolute; left: -14px; top: 50%; width: 10px; height: 1px;
+      background: var(--border-default, rgba(255,255,255,0.18));
+    }
+
+    /* The star columns: what this document has been through, derived. Unlit
+       slots are shown so the row says what it COULD have and has not. */
+    .stars { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 5px; }
+    .star {
+      display: inline-flex; align-items: center; gap: 3px;
+      font-size: 0.68rem; color: var(--text-tertiary, var(--text-secondary));
+      opacity: 0.55; cursor: default;
+    }
+    .star.lit { opacity: 1; color: var(--text-primary); font-weight: 600; }
+    .star .sglyph { font-size: 0.78rem; color: var(--text-secondary); }
+    .star.lit .sglyph { color: var(--accent-primary, #06b6d4); }
+
+    /* Said, not locked: the book is older than the curation, and Rebuild is
+       right there. Nothing is disabled by it. */
+    .stale { margin-top: 5px; font-size: 0.7rem; color: var(--warning, #f59e0b); }
     /* Footnote removal's own review report, above the diff it belongs to. */
     .pass-report {
       margin: 0 4px 10px; padding: 8px 12px; border-radius: 8px;
@@ -892,6 +953,207 @@ export class StudioVersionsComponent {
 
   readonly documents = computed(() => this.versions().filter(v => v.type !== 'analysis'));
 
+  // ── The document family ────────────────────────────────────────────────────
+
+  /**
+   * What this book HAS, as the family derivation needs it — read off the rows
+   * main measured, never off anything this component remembers.
+   *
+   * The three members are found by TYPE rather than by position or by name: the
+   * types are `editor:get-versions`'s contract, and a row that is not there means
+   * the file is not there.
+   */
+  private readonly familyInput = computed<VersionFamilyInput>(() => {
+    const docs = this.documents();
+    const of = (type: string): VersionRow | null => docs.find(v => v.type === type) ?? null;
+
+    const archiveRow = of('archive');
+    const workingRow = of('working');
+    const epubRow = of('exported');
+
+    // Every 'working' row main emits carries its boundaries (possibly an empty
+    // list). One without them is IPC shape drift, not a working copy that has
+    // been through no stages — so it is reported and left out of the family
+    // rather than silently shown with no stars. The row itself still appears;
+    // rowDescription() says what could not be read.
+    if (workingRow && !workingRow.stageBoundaries) {
+      console.error(
+        `[studio-versions] the working-copy row for ${workingRow.path} arrived without its stage `
+        + 'boundaries. editor:get-versions sets them on every working row it emits, so this build '
+        + 'of the renderer and the main process disagree about the row shape.');
+    }
+
+    return {
+      archive: archiveRow ? { id: archiveRow.id } : null,
+      working: workingRow && workingRow.stageBoundaries
+        ? {
+          id: workingRow.id,
+          boundaries: workingRow.stageBoundaries,
+          // The working document's mtime: curation lands as an append to this
+          // file, so this is the measurement of when it was last edited.
+          modifiedAt: workingRow.modifiedAt ?? null,
+        }
+        : null,
+      epub: epubRow ? { id: epubRow.id, builtAt: epubRow.builtAt ?? null } : null,
+      appliedPasses: this.item()?.appliedPasses ?? [],
+    };
+  });
+
+  /**
+   * The rows as the page shows them: the family first, in ladder order, then
+   * whatever else this project carries.
+   *
+   * Depth and stars come from the shared derivation
+   * (`@shared/document/version-family`) rather than from anything decided here,
+   * which is what keeps "the archive can never earn a star" true by
+   * construction instead of by care.
+   */
+  readonly documentRows = computed<DocumentFamilyRow[]>(() => {
+    const input = this.familyInput();
+    const family = new Map(versionFamily(input).map(r => [r.id, r]));
+    const ladder = ['archive', 'working', 'exported'];
+    const rank = (v: VersionRow): number => {
+      const at = ladder.indexOf(v.type);
+      // Everything outside the family (legacy stage outputs, the old source/
+      // original) keeps its own order, after the family.
+      return at === -1 ? ladder.length : at;
+    };
+
+    return [...this.documents()]
+      .map((v, index) => ({ v, index }))
+      .sort((a, b) => (rank(a.v) - rank(b.v)) || (a.index - b.index))
+      .map(({ v }) => {
+        const member = family.get(v.id);
+        if (!member) return { v, depth: 0 as const, slots: [], staleness: null };
+        const lit = new Set<VersionStar>(member.stars);
+        return {
+          v,
+          depth: member.depth,
+          slots: starSlotsFor(member.kind).map(id => ({
+            id,
+            label: STAR_LABELS[id],
+            lit: lit.has(id),
+            tooltip: lit.has(id)
+              ? STAR_MEANINGS[id]
+              : `Not done: ${STAR_MEANINGS[id].charAt(0).toLowerCase()}${STAR_MEANINGS[id].slice(1)}`,
+          })),
+          staleness: member.staleness,
+        };
+      });
+  });
+
+  /** What a stage boundary is called on the working copy's line. */
+  private readonly BOUNDARY_LABELS: Record<string, string> = {
+    'get-text': 'Cast',
+    blocks: 'Blocks detected',
+    footnotes: 'Footnotes removed',
+  };
+
+  /**
+   * The row's own sentence: what it is, what has landed on it and when, and how
+   * big it is.
+   *
+   * The working copy's stages are spelled out with their dates because "what has
+   * happened to this file" is exactly the question the missing row left the user
+   * unable to answer.
+   */
+  rowDescription(row: DocumentFamilyRow): string {
+    const v = row.v;
+    const parts: string[] = [v.description];
+
+    if (v.type === 'working') {
+      const boundaries = v.stageBoundaries;
+      if (!boundaries) {
+        parts.push('BookForge could not read which stages have landed on it — see the console');
+      } else if (boundaries.length === 0) {
+        parts.push('no stage has finished on it yet');
+      } else {
+        parts.push(boundaries
+          .map(b => `${this.BOUNDARY_LABELS[b.stage] ?? b.stage} ${this.fmtDate(b.finishedAt)}`)
+          .join(' · '));
+      }
+    }
+
+    if (v.fileSize) parts.push(this.fmtSize(v.fileSize));
+    if (v.modifiedAt) parts.push(this.fmtDate(v.modifiedAt));
+    return parts.filter(Boolean).join(' · ');
+  }
+
+  /**
+   * The file the editor is pointed at for this row.
+   *
+   * `openPath` is set only where the row's own file is NOT what should open —
+   * the working copy, a hidden sidecar that standalone would carry no project,
+   * no binding and no annotations. Its absence is the ordinary case ("open this
+   * row's file"), which is why this is a branch rather than a default.
+   */
+  private editorTargetFor(v: VersionRow): string {
+    return v.openPath ? v.openPath : v.path;
+  }
+
+  openDoc(v: VersionRow): void { this.edit.emit(this.editorTargetFor(v)); }
+
+  openTitle(v: VersionRow): string {
+    return v.type === 'working'
+      ? 'Open this book in the picker, on your working copy'
+      : 'Open this file in the editor';
+  }
+
+  /**
+   * The working copy is the one row with no Export.
+   *
+   * It is the system's document, not a deliverable: it is shown in exactly one
+   * place, deliberately (docs/DOCUMENT_PIPELINE.md), and a copy of it outside
+   * the project would be a PDF bound to an original it can no longer name.
+   */
+  exportable(v: VersionRow): boolean { return v.type !== 'working'; }
+
+  // ── Rebuild (staleness is said, never locked) ──────────────────────────────
+
+  readonly rebuilding = signal(false);
+
+  /**
+   * Build the book again from the working copy as it stands now.
+   *
+   * Queued through the SAME entry point every other pass run uses, so nothing
+   * here assembles a job: main plans it, the queue runs it, and the user can
+   * watch it where they watch everything else.
+   */
+  async rebuildBook(): Promise<void> {
+    const dir = this.projectDir();
+    if (!dir || this.rebuilding()) return;
+    const { confirmed } = await this.electron.showConfirmDialog({
+      title: 'Rebuild the book',
+      message: 'Build the book again from your working copy?',
+      detail: 'The new book is written from the working copy as it stands now, so it includes the '
+        + 'curation you have done since the last build.\n\nIt is a FRESH book: the passes applied to '
+        + 'the old one — footnote removal, simplify, translate — are not carried over, and their '
+        + 'stars clear.',
+      confirmLabel: 'Rebuild', cancelLabel: 'Cancel', type: 'warning',
+    });
+    if (!confirmed) return;
+
+    this.rebuilding.set(true);
+    try {
+      const res = await this.queue.submitProcessingRun({ projectDir: dir, passes: [{ kind: 'reflow' }] });
+      if (!res.success) {
+        await this.electron.showMessageDialog({
+          title: 'Could not rebuild the book',
+          message: res.error || 'The rebuild was refused and gave no reason.',
+          type: 'error',
+        });
+        return;
+      }
+      await this.electron.showMessageDialog({
+        title: 'Added to queue',
+        message: 'Rebuilding the book was added to the queue. Open the Queue tab and press Start to run it.',
+        type: 'info',
+      });
+    } finally {
+      this.rebuilding.set(false);
+    }
+  }
+
   // ── Provenance ─────────────────────────────────────────────────────────────
 
   /**
@@ -907,29 +1169,48 @@ export class StudioVersionsComponent {
    * book nothing has run against. Hence no "unknown" or "probably cleaned"
    * badge: absence is a fact here, not a gap.
    */
-  readonly provenanceBadges = computed(() => {
+  readonly provenanceBadges = computed<ProvenanceBadge[]>(() => {
     const passes = this.item()?.appliedPasses ?? [];
     const order: AppliedPassKind[] = [
       'tesseract', 'ocr-correction', 'detection', 'footnotes', 'simplify', 'translate'];
-    // The same names the pass-diff rows below use — one pass must not be called
-    // two different things in the same panel.
-    const labels = PASS_LABELS;
+    // ONE latest-wins implementation, shared with the stars on the document rows
+    // (@shared/document/version-family). Two collapses of the same list is how
+    // one panel comes to say two things about one pass.
+    const collapsed = latestPassByKind(passes);
+    const diffs = this.passDiffs();
 
     return order.flatMap((kind) => {
-      const of = passes.filter(p => p.kind === kind);
-      if (of.length === 0) return [];
-      // The LAST run is the one that describes the book as it stands; an earlier
-      // one was overwritten by it.
-      const latest = of[of.length - 1];
+      const entry = collapsed.get(kind);
+      if (!entry) return [];
+      const latest = entry.latest;
       const detail = this.passParamSummary(latest);
       const at = new Date(latest.at);
       const when = isNaN(+at) ? 'date unknown' : at.toLocaleString();
+      // The diffs for this kind, in execution order — so the last is the latest.
+      // A pass whose job died halfway recorded nothing, so a kind with runs but
+      // no diff is a real state and the badge simply carries no review.
+      const ofKind = diffs.filter(d => d.kind === kind);
+      const latestDiff = ofKind.length > 0 ? ofKind[ofKind.length - 1] : null;
+      const many = entry.count > 1
+        ? ` (ran ${entry.count} times; this is the last${ofKind.length > 1 ? ', and Review changes opens its diff' : ''})`
+        : '';
       return [{
         kind,
-        label: labels[kind],
-        count: of.length,
-        tooltip: `${labels[kind]} — ${when}${detail ? ` · ${detail}` : ''}`
-          + (of.length > 1 ? ` (ran ${of.length} times; this is the last)` : ''),
+        label: PASS_LABELS[kind],
+        count: entry.count,
+        tooltip: `${PASS_LABELS[kind]} — ${when}${detail ? ` · ${detail}` : ''}${many}`,
+        review: latestDiff
+          ? {
+            diffPath: latestDiff.absPath,
+            // Footnote removal writes foundry's own review report beside its
+            // diff. Other passes have none, and a missing file shows no header.
+            reportPath: latestDiff.absPath.replace(/diff\.json$/, 'report.json'),
+            when: (() => {
+              const d = new Date(latestDiff.at);
+              return isNaN(+d) ? 'date unknown' : d.toLocaleString();
+            })(),
+          }
+          : null,
       }];
     });
   });
@@ -971,50 +1252,26 @@ export class StudioVersionsComponent {
   /** Footnote removal's own review report, when the open pass diff has one. */
   readonly passReport = signal<{ summary: string; detail: string } | null>(null);
 
-  /**
-   * One row per recorded pass diff, in the order the passes ran.
-   *
-   * Deliberately NOT collapsed by kind the way the badges above are: two
-   * footnote passes changed two different books (the second read what the first
-   * wrote), so one of them cannot stand in for the other. The stage number is
-   * shown because it is the pass's real identity on disk — `stages/02-simplify/`
-   * — and because it is what makes two rows of the same kind tellable apart.
-   */
-  readonly passDiffRows = computed<PassDiffRow[]>(() =>
-    this.passDiffs().map((p) => {
-      const label = PASS_LABELS[p.kind] ?? p.kind;
-      const at = new Date(p.at);
-      const when = isNaN(+at) ? 'date unknown' : at.toLocaleString();
-      const detail = this.passParamSummary({ kind: p.kind, at: p.at, params: p.params } as AppliedPass);
-      const stageMatch = /(?:^|\/)stages\/(\d+)-/.exec(p.relPath);
-      return {
-        kind: p.kind,
-        label,
-        icon: PASS_ICONS[p.kind] ?? '\u{1F4C4}',
-        stage: stageMatch ? stageMatch[1] : '--',
-        description: [when, detail].filter(Boolean).join(' · '),
-        when,
-        diffPath: p.absPath,
-        // Footnote removal writes foundry's own review report beside its diff.
-        // Other passes have none, and a missing file simply shows no header.
-        reportPath: p.absPath.replace(/diff\.json$/, 'report.json'),
-        relPath: p.relPath,
-      };
-    })
-  );
-
-  /** Open one pass's recorded diff in the Review Changes viewer. */
-  startPassCompare(row: PassDiffRow): void {
+  /** Open the LATEST run of this pass kind in the Review Changes viewer. */
+  startPassCompare(badge: ProvenanceBadge): void {
+    const review = badge.review;
+    // The button only exists when there is a review, so no review here is a
+    // template/logic divergence rather than an ordinary state — say so.
+    if (!review) {
+      console.error(`[studio-versions] "Review changes" was pressed on the ${badge.kind} badge, `
+        + 'which has no recorded diff. The button should not have been rendered.');
+      return;
+    }
     this.passReport.set(null);
     this.comparing.set({
       mode: 'pass',
-      diffPath: row.diffPath,
-      reportPath: row.reportPath,
-      title: `${row.label} — what changed`,
-      when: row.when,
+      diffPath: review.diffPath,
+      reportPath: review.reportPath,
+      title: `${badge.label} — what changed`,
+      when: review.when,
     });
     this.compareActive.emit(true);
-    if (row.kind === 'footnotes') void this.loadPassReport(row.reportPath);
+    if (badge.kind === 'footnotes') void this.loadPassReport(review.reportPath);
   }
 
   /**
@@ -1290,7 +1547,7 @@ export class StudioVersionsComponent {
   /** Clicking a pipeline document row opens it in the editor (its "edit feature").
    *  Variants open their inline details panel via the row's own toggleEditor. */
   onDocRowClick(v: VersionRow): void {
-    if (v.editable) this.edit.emit(v.path);
+    if (v.editable) this.openDoc(v);
   }
 
   /** The editor renders mupdf-backed documents — EPUB and PDF. Audio (m4b) and
@@ -1551,8 +1808,16 @@ export class StudioVersionsComponent {
   // 'exported' is deletable: it's the editor's working EPUB (the book-named
   // export recorded in manifest.outputs.epub); removing it just makes the
   // pipeline fall back to the read-only archive source.
-  // 'original'/'analysis' stay protected.
-  deletable(v: VersionRow): boolean { return !['original', 'analysis'].includes(v.type); }
+  //
+  // 'archive' is the immutable primary every other document is BOUND to — a
+  // delete would orphan the working copy and the book at once, and archive/ is
+  // never written to. 'working' is undone by "Reset to [stage]" in the picker,
+  // which truncates it to a recorded boundary; deleting the file outright would
+  // leave the binding vouching for a document that is gone.
+  // 'original'/'analysis' stay protected as before.
+  deletable(v: VersionRow): boolean {
+    return !['original', 'analysis', 'archive', 'working'].includes(v.type);
+  }
 
   async load(): Promise<void> {
     const dir = this.projectDir();
