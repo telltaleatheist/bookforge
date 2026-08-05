@@ -147,6 +147,24 @@ const MISSING_REASONS: Record<StationId, string> = {
   tts: 'Narration needs the book built — press Build the book.',
 };
 
+/**
+ * Why this book cannot be narrated, or null when it can.
+ *
+ * The versions page's per-row **Process** button and the picker's Next both ask
+ * this, and they must get the SAME sentence: one lock explained two ways is two
+ * locks as far as the user is concerned. So the answer is the ladder's own —
+ * `stationPresence('tts', …)` for the fact, `MISSING_REASONS.tts` for the words.
+ *
+ * The input is narrowed to the one field the TTS branch of `stationPresence`
+ * reads, and that narrowing is exact rather than partial: narration takes the
+ * book and nothing else (e2a accepts nothing but an EPUB — docs/PIPELINE_V2_PLAN.md
+ * "Gates"), so a caller that knows only whether the book exists knows everything
+ * this question needs. `tools/test-station-ladder.js` holds the two to each other.
+ */
+export function narrationRefusal(book: Pick<BookDocuments, 'bookEpubExists'>): string | null {
+  return book.bookEpubExists ? null : MISSING_REASONS.tts;
+}
+
 export interface NextStep {
   /** The station Next goes to, or null at the top of the ladder. */
   readonly next: StationId | null;

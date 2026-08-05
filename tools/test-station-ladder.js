@@ -34,6 +34,7 @@ const {
   stationPresence,
   nextStation,
   nextStationFromViewed,
+  narrationRefusal,
   stationForArtifact,
   viewedArtifactOf,
   stationMintedBy,
@@ -406,6 +407,48 @@ test('every station belongs to exactly one artifact, and every artifact is close
   for (const artifact of ['source', 'book']) {
     for (const requested of STATIONS) {
       assert.ok(ARTIFACT_STATIONS[artifact].includes(stationForArtifact(requested, artifact)));
+    }
+  }
+});
+
+// ── Can this book be narrated, and if not why ──────────────────────────────
+//
+// The versions page's per-row Process button and the picker's Next both ask
+// this. The tests hold them to ONE answer and ONE sentence: a Process button
+// that refuses a book the ladder would have let through (or the reverse) is two
+// pipelines wearing one name.
+
+test('narration is refused exactly when the book is not on disk', () => {
+  assert.strictEqual(narrationRefusal({ bookEpubExists: true }), null);
+  assert.ok(narrationRefusal({ bookEpubExists: false }));
+});
+
+test('the refusal names the button that would make the book', () => {
+  const reason = narrationRefusal({ bookEpubExists: false });
+  assert.match(reason, /Build the book/);
+});
+
+test('the refusal is the ladder\'s own answer, for every shape of book', () => {
+  // Whatever else a book has, narration follows the TTS station's presence and
+  // carries the same sentence a locked Next carries. Walked over every
+  // combination so the two can never drift apart in one of them.
+  for (const hasPdfOriginal of [true, false]) {
+    for (const stagesOn of [null, stages(), stages({ getText: true }), stages({ getText: true, blocks: true })]) {
+      for (const bookEpubExists of [true, false]) {
+        const book = { hasPdfOriginal, workingStages: stagesOn, bookEpubExists };
+        const refusal = narrationRefusal(book);
+        assert.strictEqual(
+          refusal === null,
+          stationPresence('tts', book) === 'present',
+          `narration refusal disagreed with the TTS station for ${JSON.stringify(book)}`
+        );
+        if (refusal !== null) {
+          // The SAME words a locked Next shows when the missing rung is the book.
+          const nextFromEpub = nextStationFromViewed('epub', book);
+          assert.strictEqual(nextFromEpub.next, 'tts');
+          assert.strictEqual(nextFromEpub.lockedReason, refusal);
+        }
+      }
     }
   }
 });
