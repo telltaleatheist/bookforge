@@ -3760,6 +3760,15 @@ export class PdfPickerComponent implements OnInit {
    * screen is the only one it has, and it is edited the way it always was.
    */
   readonly curationReadOnlyReason = computed<string | null>(() => {
+    // A book that is still arriving has not yet said what it is. A window opened
+    // straight onto a built book knows neither where the project's book lives
+    // (main has not answered) nor that the project has a PDF ancestor (no PDF
+    // has been displayed), so for that one round trip the artifact reads as the
+    // source and the archive's own lock — which asks whether there is a working
+    // copy — reads false. Curation is refused for the duration, because "we do
+    // not know yet" is not "go ahead", and this is the only station whose answer
+    // can change under the user between one frame and the next.
+    if (this.loading()) return 'This book is still opening.';
     switch (this.viewedStation()) {
       case 'archive':
         return this.hasWorkingCopy()
@@ -12913,6 +12922,13 @@ export class PdfPickerComponent implements OnInit {
     // EPUB has no PDF to cast a working document from, and main refuses one by
     // name. Such a book has no block layer for anything to show.
     if (pdf === null) return false;
+    // Exact, and NOT `samePath`, deliberately: that helper is separator- and
+    // case-insensitive and says so of itself — "every caller here uses the
+    // answer to pick a view rather than to authorize a write". This gate
+    // authorizes writes into somebody's document. Both sides are the same
+    // string by construction (`curatedPdfPath` is set FROM `effectivePath`), so
+    // exactness costs nothing and a loosened comparison would be the one that
+    // let a near-match through.
     return this.effectivePath() === pdf;
   });
 
