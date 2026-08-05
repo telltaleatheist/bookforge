@@ -184,7 +184,7 @@ const AUDIO_EXTS = new Set([
             @for (b of provenanceBadges(); track b.kind) {
               <span class="pbadge" [title]="b.tooltip">
                 {{ b.label }}@if (b.count > 1) { <span class="pcount">×{{ b.count }}</span> }
-                @if (b.review; as r) {
+                @if (b.review) {
                   <button class="preview" (click)="startPassCompare(b)"
                           [title]="b.tooltip">Review changes</button>
                 }
