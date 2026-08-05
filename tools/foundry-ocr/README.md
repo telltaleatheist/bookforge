@@ -518,3 +518,141 @@ verbatim, and the reason v1.1 trains at 4B.
 ships, the rule must live in the applier AND be the same implementation the
 scorer uses — the drift-is-a-hard-stop discipline `edits.mjs` applies to the
 block model.
+
+---
+
+## The guard's blast radius, and the unit — measured Aug 5 2026
+
+Two questions, one set of generations. **(1)** The shipped guard discards a whole
+unit when one word in it is bad; should it discard only the offending run?
+**(2)** Can the line corrector run on SENTENCES without retraining?
+
+Tools: `sentences.py` (line corpus or EPUB → sentence units), `align-degraded.py`
+(a scan of a damaged raster → pairs against the source's text), `eval-guard.py`
+(generate once, score under every policy), `review-edits.py` (the list a human
+reads when there is no gold), `guard-crosscheck.mjs` (the scorer's guard IS
+foundry's guard — proven, not assumed: 28,752 verdicts, 0 mismatches). Raw
+generations and every score are in `results-guard-experiment/`, so a claim here
+can be re-scored rather than re-argued.
+
+Model: **base `foundry-4b-f16.gguf` + adapter `foundry-ocr-v1-4b.gguf`
+(Checkpoint 5910) at scale 1.0**, llama-server b7482 CUDA, greedy
+(temperature 0, top_k 1). **Adapter activation was proved before anything else
+was measured** — 120 damaged held-out rows, exact match to truth **71/120 with
+the adapter, 22/120 without**, and scale 0.0 byte-identical to sending no `lora`
+field at all on 120/120 rows
+(`results-guard-experiment/adapter-activation-proof.txt`). Without that proof
+every number below would have been the bare base and nothing would have said so.
+
+### The table
+
+`degraded` counts UNITS and cannot compare two unit sizes — the same damage over
+4.3x fewer, 4.3x longer units gives a smaller count for free. `deg/100k` and
+`rep/100k` are CHARACTERS moved away from and toward the truth per 100,000 gold
+characters, and those do compare. Within a condition, lines and sentences cover
+**exactly the same text**.
+
+| condition | unit | policy | CER before → after | degraded | deg/100k | rep/100k | falseEdit |
+|---|---|---|---|---|---|---|---|
+| **corpus slice** | line | do nothing | 0.331% | 0 | 0.0 | 0.0 | 0.00% |
+| 1,232 lines | line | no-guard | 0.331 → 0.276% | 30 | 82.1 | 136.9 | 1.73% |
+| 284 sentences | line | whole-unit | 0.331 → 0.239% | 10 | **16.9** | 109.5 | 0.64% |
+| held-out books | line | per-run | 0.331 → **0.232%** | 11 | 18.2 | **117.3** | 0.64% |
+| | sent | no-guard | 0.327 → 0.346% ✗ | 52 | 131.5 | 113.5 | 17.68% |
+| | sent | whole-unit | 0.327 → 0.288% | 30 | **45.1** | 85.1 | 12.15% |
+| | sent | per-run | 0.327 → **0.277%** | 37 | 54.1 | **104.4** | 13.81% |
+| **Kershaw**, real | line | do nothing | 0.741% | 0 | 0.0 | 0.0 | 0.00% |
+| Tesseract on a | line | no-guard | 0.741 → 0.720% | 36 | 249.4 | 270.1 | 7.81% |
+| real page | line | whole-unit | 0.741 → **0.648%** | 27 | **138.5** | 232.1 | 6.69% |
+| 390 lines | line | per-run | 0.741 → 0.658% | 29 | 148.9 | 232.1 | 7.06% |
+| 103 sentences | sent | no-guard | 0.745 → **1.568%** ✗✗ | 24 | 1026.1 | 202.5 | 25.00% |
+| | sent | whole-unit | 0.745 → 0.697% | 17 | **103.0** | 151.0 | 25.00% |
+| | sent | per-run | 0.745 → **0.669%** | 19 | 109.8 | **185.3** | 25.00% |
+| **Kershaw**, speckle | line | no-guard | 6.854 → 9.223% ✗ | 53 | 4045.3 | 1676.3 | 0.00% |
+| (induced, 7% CER) | line | whole-unit | 6.854 → 6.245% | 13 | **65.8** | 675.4 | 0.00% |
+| 479 lines | line | per-run | 6.854 → **5.968%** | 20 | 97.0 | **983.6** | 0.00% |
+| 102 sentences | sent | no-guard | 7.070 → 4.789% | 8 | 1248.7 | 3529.9 | 0.00% |
+| | sent | whole-unit | 7.070 → 7.036% | 0 | **0.0** | 34.3 | 0.00% |
+| | sent | per-run | 7.070 → **6.206%** | 7 | 48.0 | **912.5** | 0.00% |
+
+### What it says
+
+**No guard never ships.** It is the worst policy in five of six scored cells, and
+on real Kershaw sentences it more than DOUBLES CER above doing nothing
+(0.745% → 1.568%). The measured case for a guard stands.
+
+**per-run buys recall in every condition and costs damage in every condition.**
+`rep/100k` is higher under per-run in all six cells (tied once); `deg/100k` is
+higher too. Net CER favours per-run in five of six. The exception — Kershaw
+lines at realistic damage, 0.648% vs 0.658% — rests on **2 differing units out
+of 390** and **cannot be distinguished from noise**. Neither can the
+corpus-slice line result (6 differing units out of 1,232).
+
+**The blast radius scales with the unit, exactly as the guard header predicts.**
+On lines the two policies are within noise. On 400-character sentences at 7%
+CER, `whole-unit` degenerates into a near-total rejection device: **6
+corrections across 102 units, `rep/100k` 34.3**, because a long unit almost
+always contains one illegal run somewhere. `per-run` keeps 96 corrections and
+912.5. That is the whole argument for the mode, and it is an argument about unit
+LENGTH, not about lines.
+
+**Sentence mode does NOT catch more real errors — it catches fewer.** On the same
+characters, lines repair more per 100k than sentences in every paired cell
+(109.5/117.3 vs 85.1/104.4; 232.1 vs 151.0/185.3), and sentence mode's
+false-edit rate is 12–25% of already-correct units against 0.6–7% for lines.
+Feeding a sentence to a prompt that says "a single line of text" costs recall
+and buys damage. **The one place sentences win is heavy damage with no guard**
+(7.070% → 4.789%, `rep/100k` 3,530): the extra context genuinely helps when the
+line alone is unreadable — but the model expresses that help as REWRITING, and
+the guard then throws most of it away.
+
+**The residual damage under the guard is TYPOGRAPHY.** `‘rational’` → `'rational'`
+and `—` → `-` are balanced, within-distance-2, one-word-for-one-word changes, so
+they pass the rule cleanly and ship. On the clean Kershaw EPUB they are the
+single largest class of proposed edit. This is the corpus's own prediction
+landing: "train on that and you get a Unicode normaliser."
+
+**The guard cannot express a word-merge, and that is structural.** Every
+de-spacing repair the model got RIGHT on Kershaw — `‘totali tarianism’` →
+`'totalitarianism'`, `compar ing` → `comparing`, `193 3,` → `1933,`,
+`Memoran dum` → `Memorandum` — is 2 words → 1 and is refused by BOTH guard
+policies. (Those are a soft-hyphen join defect being fixed deterministically
+elsewhere, not the model's job, and they are not counted as a win — but they are
+the cleanest demonstration that the balance rule has no way to say yes to a
+merge.)
+
+**On the real book, the named errors were fixed and the proper nouns survived.**
+`mid-i92os` → `mid-1920s` and `mid-i93os` → `mid-1930s`, both legal, shipped
+under every policy. `Führer` 33/33, `Hitler` 89/89, `Lammers` 5/5, `Nazi` 33/33,
+`Reich` 16/16 intact under every policy; `Son-derweg).` correctly healed to
+`Sonderweg).`. 145 units, 112 proposed edits, 78 legal / 34 illegal, and
+**22 legal runs that `whole-unit` discards because a sibling run was illegal** —
+that is what per-run would recover on this book.
+
+**The counter-example per-run has to answer for** (`kershaw-clean.lines`, p1 l45):
+an already-correct line, where the model rewrites two em dashes to hyphens
+(legal) AND inserts a word (illegal). `whole-unit` refuses everything and the
+line ships untouched; `per-run` keeps the dash rewrites and ships a 2-character
+degradation. Same shape at p5 l286, worse: `Anton Hoch` → `Anton Höch` is legal
+and WRONG, `Biirgerbraukeller` → `Bürgerbräukeller` is illegal at distance 3 and
+RIGHT — per-run keeps the wrong one and reverts the right one. An illegal run
+really is evidence about the whole answer, which is why the default did not move.
+
+### Open, and owed
+
+- The d≤2 threshold splits a single German repair class arbitrarily: `Miinchner`
+  → `Münchner` is accepted at d=2, `Biirgerbraukeller` → `Bürgerbräukeller` is
+  refused at d=3. Same error, opposite verdicts.
+- Kershaw's PDF is a **JBIG2 scan with an OCR text layer**, so the "truth" its
+  rows score against is an earlier OCR pass, not the publisher's file. Recall is
+  still measurable — induced errors are new and the reference's own errors
+  cancel — but a model CORRECTING a reference error scores as damage, and
+  `align-degraded.py` prints that warning rather than hiding it. The
+  corpus-slice rows carry real tier-1/2 truth and agree with Kershaw on every
+  direction.
+- Induced-error recall is an **optimistic bound**: `degrade.py`'s ladder may sit
+  closer to the training distribution than a random real scan would.
+- `photocopy-combo` was measured and DISCARDED as a condition: 18.3% CER, 0% of
+  lines already correct. That is not a degraded scan, it is a destroyed one, and
+  it is far outside anything the corpus was built from. `blur0.6` was discarded
+  for the opposite reason (0.796% — indistinguishable from clean).

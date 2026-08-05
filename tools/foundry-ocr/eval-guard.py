@@ -567,6 +567,17 @@ def do_score(args):
 
 
 def main():
+    # This tool's whole job is to print the exact characters a model produced,
+    # and on Windows a redirected stdout defaults to cp1252 — which raises
+    # UnicodeEncodeError on the first `∗`, `ü` or curly quote and takes the
+    # report down mid-sentence. A scorer that cannot print its own worst
+    # examples is not a scorer, so the stream is put into UTF-8 explicitly.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass
+
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest='cmd', required=True)
 

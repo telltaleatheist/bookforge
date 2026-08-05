@@ -1,0 +1,129 @@
+eval-guard — 390 units from C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/clean.lines.units.jsonl
+  generated 2026-08-05T00:22:29-0400 in 72.6s on http://127.0.0.1:8771
+  server args: llama-server.exe -m foundry-4b-f16.gguf -c 32768 -np 16 -ngl 99 --no-webui --lora-scaled ../../../../AppData/Local/foundry/models/foundry-ocr-v1-4b.gguf:0.0 [b7482 CUDA 12.4, RTX 3090 Ti]
+
+================================================================================================
+THE NUMBER THAT DECIDES: units the model made WORSE (`degraded`), and what it repaired
+================================================================================================
+
+policy        CER before  CER after  degraded  deg/100k  rep/100k  falseEdit  corrections   exact
+  do nothing     0.741%     0.741%         0       0.0       0.0      0.00%            0   69.0%
+  no-guard       0.741%     0.720%        36     249.4     270.1      7.81%           96   70.5%
+  whole-unit     0.741%     0.648%        27     138.5     232.1      6.69%           83   70.8%
+  per-run        0.741%     0.658%        29     148.9     232.1      7.06%           85   70.5%
+
+  390 units, 28873 gold characters, 269 already correct (69.0%)
+  model C:/Users/tellt/AppData/Local/foundry/models/foundry-4b-f16.gguf
+
+  A model only beats "do nothing" by moving CER down without moving degraded
+  and falseEdit up. `degraded` counts UNITS — compare it only within one unit
+  size; deg/100k and rep/100k are characters and compare across sizes.
+
+WHERE THE WORK IS — already-correct units vs damaged units
+  policy      population      units  CER before  CER after   impr  WORSE  deg/100k  rep/100k
+  no-guard    already-correct    269      0.000%     0.254%      0     21     254.1       0.0
+  no-guard    damaged           121      2.430%     1.783%     50     15     238.5     885.8
+  whole-unit  already-correct    269      0.000%     0.140%      0     18     139.5       0.0
+  whole-unit  damaged           121      2.430%     1.806%     46      9     136.3     760.8
+  per-run     already-correct    269      0.000%     0.149%      0     19     149.5       0.0
+  per-run     damaged           121      2.430%     1.817%     46     10     147.6     760.8
+
+GENERATION HEALTH — the RAW answer, before any guard
+  answers under 90% of the input length        1  (0.26%)
+  answers over 110% of the input length        0  (0.00%)
+  empty answers                                0
+  answers spanning more than one line          0   (only the first is kept)
+  answers near the n_predict ceiling           0
+
+WHAT THE GUARD REFUSED
+  units with at least one illegal run   13
+  illegal runs                          13
+  legal runs in those same units        3   <- what whole-unit throws away and per-run keeps
+
+WHERE THE TWO POLICIES DISAGREE (same generation, different blast radius)
+  units where the shipped text differs  2
+    per-run CLOSER to the truth         0   (0 characters recovered)
+    per-run FURTHER from the truth      2   (3 characters lost)
+    same distance, different text       0
+
+  PER-RUN DEGRADED A UNIT THAT WHOLE-UNIT DID NOT: 2
+    [kershaw-clean p1 l45] dist 0 -> 2  (was already correct)
+      SRC       "term ‘totalitarianism’ — leaving aside its non-scholarly usage — is that is a descriptive"
+      MODEL     "term ‘totalitarianism’ - leaving aside its non-scholarly usage - is that it is a descriptive"
+      PER-RUN   "term ‘totalitarianism’ - leaving aside its non-scholarly usage - is that is a descriptive"
+      GOLD      "term ‘totalitarianism’ — leaving aside its non-scholarly usage — is that is a descriptive"
+      refused   unbalanced change: [] -> [it] (0 words -> 1)
+    [kershaw-clean p5 l286] dist 6 -> 7
+      SRC       "27 See Anton Hoch, ‘Das Attentat auf Hitler im Miinchner Biirgerbraukeller 1939’, Viertel-"
+      MODEL     "27 See Anton Höch, ‘Das Attentat auf Hitler im Münchner Bürgerbräukeller 1939’, Viertel-"
+      PER-RUN   "27 See Anton Höch, ‘Das Attentat auf Hitler im Miinchner Biirgerbraukeller 1939’, Viertel-"
+      GOLD      "27 See Anton Hoch, ‘Das Attentat auf Hitler im Münchner Bürgerbräukeller 1939’, Viertel­"
+      refused   word changed beyond distance 2: "Biirgerbraukeller" -> "Bürgerbräukeller" (distance 3)
+
+WORST DAMAGE UNDER no-guard (5 of 36) — read these, do not average them
+  [kershaw-clean p2 l130] dist 0 -> 16  (was already correct)
+    IN   "Monologe (Hamburg: Albrecht Knaus Verlag, 1980), 158; trans. Hitler’s Table Talk thereafter Table"
+    OUT  "Monologe (Hamburg: Albrecht Knaus Verlag, 1980), 158; trans. Hitler’s Table Talk 1980."
+    GOLD "Monologe (Hamburg: Albrecht Knaus Verlag, 1980), 158; trans. Hitler’s Table Talk thereafter Table"
+  [kershaw-clean p1 l45] dist 0 -> 5  (was already correct)
+    IN   "term ‘totalitarianism’ — leaving aside its non-scholarly usage — is that is a descriptive"
+    OUT  "term ‘totalitarianism’ - leaving aside its non-scholarly usage - is that it is a descriptive"
+    GOLD "term ‘totalitarianism’ — leaving aside its non-scholarly usage — is that is a descriptive"
+  [kershaw-clean p7 l353] dist 2 -> 5
+    IN   "Goebbels was writing in his diary, in March 1943, of a ‘leadership crisis’*4* — and"
+    OUT  "Goebbels was writing in his diary, in March 1943, of a 'leadership crisis'∗44 - and"
+    GOLD "Goebbels was writing in his diary, in March 1943, of a ‘leadership crisis’34 — and"
+  [kershaw-clean p0 l29] dist 1 -> 3
+    IN   "Berlin: Proplyaen Verlag, 1987)."
+    OUT  "Berlin: Propylaen Verlag, 1987)."
+    GOLD "Berlin: Proplyäen Verlag, 1987)."
+  [kershaw-clean p1 l68] dist 0 -> 2  (was already correct)
+    IN   "ing and collapse of what one might call ‘rational’ structures of rule, a system of"
+    OUT  "ing and collapse of what one might call 'rational' structures of rule, a system of"
+    GOLD "ing and collapse of what one might call ‘rational’ structures of rule, a system of"
+
+WORST DAMAGE UNDER whole-unit (5 of 27) — read these, do not average them
+  [kershaw-clean p0 l29] dist 1 -> 3
+    IN   "Berlin: Proplyaen Verlag, 1987)."
+    OUT  "Berlin: Propylaen Verlag, 1987)."
+    GOLD "Berlin: Proplyäen Verlag, 1987)."
+  [kershaw-clean p1 l68] dist 0 -> 2  (was already correct)
+    IN   "ing and collapse of what one might call ‘rational’ structures of rule, a system of"
+    OUT  "ing and collapse of what one might call 'rational' structures of rule, a system of"
+    GOLD "ing and collapse of what one might call ‘rational’ structures of rule, a system of"
+  [kershaw-clean p2 l109] dist 0 -> 2  (was already correct)
+    IN   "Minister himself was not included in the short distribution list! Business and"
+    OUT  "Minister himself was not included in the short distribution list11 Business and"
+    GOLD "Minister himself was not included in the short distribution list! Business and"
+  [kershaw-clean p4 l198] dist 0 -> 2  (was already correct)
+    IN   "presided over an inexorable erosion of ‘rational’ forms of government. And while"
+    OUT  "presided over an inexorable erosion of 'rational' forms of government. And while"
+    GOLD "presided over an inexorable erosion of ‘rational’ forms of government. And while"
+  [kershaw-clean p4 l230] dist 0 -> 2  (was already correct)
+    IN   "20 Ibid., 30; Robert Koehl, ‘Feudal Aspects of National Socialism’, American Political Science"
+    OUT  "20 Ibid., 30; Robert Koehl, 'Feudal Aspects of National Socialism', American Political Science"
+    GOLD "20 Ibid., 30; Robert Koehl, ‘Feudal Aspects of National Socialism’, American Political Science"
+
+WORST DAMAGE UNDER per-run (5 of 29) — read these, do not average them
+  [kershaw-clean p0 l29] dist 1 -> 3
+    IN   "Berlin: Proplyaen Verlag, 1987)."
+    OUT  "Berlin: Propylaen Verlag, 1987)."
+    GOLD "Berlin: Proplyäen Verlag, 1987)."
+  [kershaw-clean p1 l45] dist 0 -> 2  (was already correct)
+    IN   "term ‘totalitarianism’ — leaving aside its non-scholarly usage — is that is a descriptive"
+    OUT  "term ‘totalitarianism’ - leaving aside its non-scholarly usage - is that is a descriptive"
+    GOLD "term ‘totalitarianism’ — leaving aside its non-scholarly usage — is that is a descriptive"
+  [kershaw-clean p1 l68] dist 0 -> 2  (was already correct)
+    IN   "ing and collapse of what one might call ‘rational’ structures of rule, a system of"
+    OUT  "ing and collapse of what one might call 'rational' structures of rule, a system of"
+    GOLD "ing and collapse of what one might call ‘rational’ structures of rule, a system of"
+  [kershaw-clean p2 l109] dist 0 -> 2  (was already correct)
+    IN   "Minister himself was not included in the short distribution list! Business and"
+    OUT  "Minister himself was not included in the short distribution list11 Business and"
+    GOLD "Minister himself was not included in the short distribution list! Business and"
+  [kershaw-clean p4 l198] dist 0 -> 2  (was already correct)
+    IN   "presided over an inexorable erosion of ‘rational’ forms of government. And while"
+    OUT  "presided over an inexorable erosion of 'rational' forms of government. And while"
+    GOLD "presided over an inexorable erosion of ‘rational’ forms of government. And while"
+
+wrote C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/clean.lines.stats.json

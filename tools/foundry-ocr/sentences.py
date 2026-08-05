@@ -81,11 +81,34 @@ eval is a holdout, not a whole book, and lines the builder dropped leave gaps
 that are NOT adjacent text. `book` + `line` is reading order; a gap is a wall.
 """
 import argparse
+import html
 import json
 import os
 import re
 import sys
+import zipfile
 from collections import defaultdict
+
+# The prompt is half the contract, and a corpus this file MINTS (an EPUB has no
+# rows to copy one from) has to carry the same one the model was trained on.
+# Byte-identical to `build-dataset.py`'s SYSTEM and to foundry
+# `src/ocr/prompt.ts`'s OCR_SYSTEM_PROMPT; `--self-test` proves the first of
+# those by reading the sibling file, and foundry's contract-crosscheck covers
+# the second. It says "a single line of text" and it STAYS saying that: feeding
+# a sentence to a line prompt is the experiment.
+OCR_SYSTEM_PROMPT = '\n'.join([
+    'You correct OCR errors in a single line of text from a scanned book.',
+    '',
+    'Reply with the corrected line and nothing else.',
+    '',
+    'Rules:',
+    '- Reply with the whole line, not just the part you changed.',
+    '- Correct only what the scanner misread. Do not reword, translate, modernise',
+    '  spelling, or change punctuation that is merely old-fashioned.',
+    '- Keep a hyphen at the end of the line exactly as it is. The word finishes on',
+    '  the next line, which you cannot see.',
+    '- If the line has no OCR errors, reply with it unchanged.',
+])
 
 # A line-final hyphen: ASCII, the two Unicode non-breaking forms, and soft hyphen.
 WRAP_HYPHEN = re.compile(r'[-‐‑­]$')
@@ -233,6 +256,108 @@ def build(rows, cap: int):
     return units
 
 
+# ── running prose, which has no lines to pack ───────────────────────────────
+#
+# An EPUB (or any already-flowed text) has paragraphs, not bands. The cut rules
+# are the SAME — sentence boundary first, word boundary only when one sentence
+# runs past the cap, never a fixed offset — but the atom is a sentence rather
+# than a line, and a unit never spans a paragraph.
+
+def split_sentences(text):
+    """A paragraph -> its sentences, cutting after terminal punctuation that is
+    followed by whitespace. Uses the same abbreviation guard as `ends_sentence`,
+    so `Mr. Hitler` and `J. R. R.` do not become boundaries."""
+    out = []
+    start = 0
+    for m in re.finditer(r'[.!?…][\'"’”»)\]]*(?=\s)', text):
+        end = m.end()
+        if not ends_sentence(text[start:end]):
+            continue
+        piece = text[start:end]
+        if piece.strip():
+            out.append(piece.strip())
+        start = end
+    tail = text[start:].strip()
+    if tail:
+        out.append(tail)
+    return out
+
+
+def pack_sentences(sentences, cap):
+    """Greedy to `cap`, cutting between sentences. A sentence longer than the cap
+    is split at WORD boundaries — never mid-word, never at a fixed offset."""
+    units = []
+    cur = ''
+    for s in sentences:
+        if len(s) > cap:
+            if cur:
+                units.append(cur)
+                cur = ''
+            piece = ''
+            for w in s.split(' '):
+                if piece and len(piece) + 1 + len(w) > cap:
+                    units.append(piece)
+                    piece = w
+                else:
+                    piece = f'{piece} {w}' if piece else w
+            if piece:
+                cur = piece
+            continue
+        if cur and len(cur) + 1 + len(s) > cap:
+            units.append(cur)
+            cur = s
+        else:
+            cur = f'{cur} {s}' if cur else s
+    if cur:
+        units.append(cur)
+    return units
+
+
+def epub_blocks(path):
+    """An EPUB -> its block-level texts, in spine order.
+
+    Tags are stripped and entities decoded, and runs of whitespace inside a block
+    collapse to one space — an XHTML block is wrapped for the file, not for the
+    reader. Nothing else is normalised: the point is to hand the model the book's
+    own characters, artefacts included.
+    """
+    z = zipfile.ZipFile(path)
+    names = [n for n in z.namelist() if n.lower().endswith(('.xhtml', '.html', '.htm'))
+             and 'nav' not in n.lower()]
+    blocks = []
+    for n in sorted(names):
+        x = z.read(n).decode('utf-8')
+        body = re.search(r'<body[^>]*>(.*)</body>', x, re.S)
+        if not body:
+            continue
+        for m in re.finditer(r'<(p|h1|h2|h3|h4|blockquote|li)\b[^>]*>(.*?)</\1>', body.group(1), re.S):
+            text = html.unescape(re.sub(r'<[^>]+>', '', m.group(2)))
+            text = re.sub(r'\s+', ' ', text).strip()
+            if text:
+                blocks.append({'file': n, 'tag': m.group(1), 'text': text})
+    return blocks
+
+
+def build_from_blocks(blocks, cap, book):
+    """Block texts -> units. `gold` is None: this is a book, not a corpus, and
+    there is nothing to score against — only edits to review."""
+    units = []
+    for bi, b in enumerate(blocks):
+        for ui, text in enumerate(pack_sentences(split_sentences(b['text']), cap)):
+            units.append({
+                'system': OCR_SYSTEM_PROMPT,
+                'src': text,
+                'gold': None,
+                'book': book,
+                'page': bi,
+                'line': ui,
+                'lines': 1,
+                'tag': b['tag'],
+                'identity': False,
+            })
+    return units
+
+
 # ── self-test ───────────────────────────────────────────────────────────────
 def self_test():
     fails = []
@@ -288,6 +413,36 @@ def self_test():
     check('a numbering gap starts a new unit',
           [u['src'] for u in build(rows2, cap=400)], ['One. Two.', 'Nine.'])
 
+    # Running prose: the same cut rules with a sentence as the atom.
+    check('splits a paragraph into sentences',
+          split_sentences('He went home. She did not. Then Mr. Smith left.'),
+          ['He went home.', 'She did not.', 'Then Mr. Smith left.'])
+    check('packs sentences to the cap',
+          pack_sentences(['One two three.', 'Four five.', 'Six.'], 26),
+          ['One two three. Four five.', 'Six.'])
+    over = pack_sentences(['aa bb cc dd ee ff gg hh'], 10)
+    check('an over-cap sentence splits at word boundaries', over, ['aa bb cc', 'dd ee ff', 'gg hh'])
+    if any(len(u) > 10 for u in over[:-1]):
+        fails.append(f'a packed unit ran past the cap: {over}')
+    for u in over:
+        if u.startswith(' ') or u.endswith(' ') or '  ' in u:
+            fails.append(f'a word-boundary split produced ragged whitespace: {u!r}')
+
+    # The prompt is half the contract: prove this file's copy against the
+    # builder's, byte for byte, rather than trusting that two files agree.
+    builder = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'build-dataset.py')
+    if os.path.isfile(builder):
+        src = open(builder, encoding='utf-8').read()
+        m = re.search(r"^SYSTEM = '\\n'\.join\(\[(.*?)^\]\)", src, re.S | re.M)
+        if not m:
+            fails.append('could not find SYSTEM in build-dataset.py — the crosscheck is blind')
+        else:
+            theirs = '\n'.join(eval('[' + m.group(1) + ']'))   # a literal list of literals
+            check('OCR_SYSTEM_PROMPT matches build-dataset.py SYSTEM byte for byte',
+                  OCR_SYSTEM_PROMPT, theirs)
+    else:
+        fails.append(f'build-dataset.py not found beside this file — the prompt crosscheck is blind')
+
     if fails:
         print('sentences: SELF-TEST FAILED')
         for f in fails:
@@ -299,6 +454,8 @@ def self_test():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--sft', help='the line corpus JSONL (chat rows with book/page/line)')
+    ap.add_argument('--epub', help='an EPUB — units from running prose, with no gold to score against')
+    ap.add_argument('--book', default='', help='the book id recorded on --epub units')
     ap.add_argument('--out', help='where to write the sentence units')
     ap.add_argument('--cap', type=int, default=400)
     ap.add_argument('--self-test', action='store_true')
@@ -307,8 +464,28 @@ def main():
     if args.self_test:
         self_test()
         return
-    if not args.sft or not args.out:
-        sys.exit('sentences: --sft and --out are required (or pass --self-test)')
+    if not args.out or not (args.sft or args.epub):
+        sys.exit('sentences: --out and one of --sft / --epub are required (or pass --self-test)')
+
+    if args.epub:
+        epath = os.path.expanduser(args.epub)
+        if not os.path.isfile(epath):
+            sys.exit(f'sentences: no such file: {epath}')
+        blocks = epub_blocks(epath)
+        if not blocks:
+            sys.exit(f'sentences: no block-level text in {epath}')
+        book = args.book or os.path.splitext(os.path.basename(epath))[0]
+        units = build_from_blocks(blocks, args.cap, book)
+        with open(os.path.expanduser(args.out), 'w', encoding='utf-8') as fh:
+            for u in units:
+                fh.write(json.dumps(u, ensure_ascii=False) + '\n')
+        chars = sum(len(u['src']) for u in units)
+        print(f'sentences — {len(blocks)} blocks -> {len(units)} units (cap {args.cap})')
+        print(f'  chars per unit   mean {chars / len(units):.1f}   max {max(len(u["src"]) for u in units)}')
+        print(f'  characters total {chars}')
+        print(f'  NO GOLD: these units carry the book\'s own text and nothing to score against.')
+        print(f'wrote {args.out}')
+        return
 
     path = os.path.expanduser(args.sft)
     if not os.path.isfile(path):

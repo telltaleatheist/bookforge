@@ -1,0 +1,147 @@
+eval-guard — 479 units from C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/speckle.lines.units.jsonl
+  generated 2026-08-05T00:24:45-0400 in 85.7s on http://127.0.0.1:8771
+  server args: llama-server.exe -m foundry-4b-f16.gguf -c 32768 -np 16 -ngl 99 --no-webui --lora-scaled ../../../../AppData/Local/foundry/models/foundry-ocr-v1-4b.gguf:0.0 [b7482 CUDA 12.4, RTX 3090 Ti]
+
+================================================================================================
+THE NUMBER THAT DECIDES: units the model made WORSE (`degraded`), and what it repaired
+================================================================================================
+
+policy        CER before  CER after  degraded  deg/100k  rep/100k  falseEdit  corrections   exact
+  do nothing     6.854%     6.854%         0       0.0       0.0      0.00%            0    5.4%
+  no-guard       6.854%     9.223%        53    4045.3    1676.3      0.00%          327   14.6%
+  whole-unit     6.854%     6.245%        13      65.8     675.4      0.00%          155   10.4%
+  per-run        6.854%     5.968%        20      97.0     983.6      0.00%          227   10.4%
+
+  479 units, 28873 gold characters, 26 already correct (5.4%)
+  model C:/Users/tellt/AppData/Local/foundry/models/foundry-4b-f16.gguf
+
+  A model only beats "do nothing" by moving CER down without moving degraded
+  and falseEdit up. `degraded` counts UNITS — compare it only within one unit
+  size; deg/100k and rep/100k are characters and compare across sizes.
+
+WHERE THE WORK IS — already-correct units vs damaged units
+  policy      population      units  CER before  CER after   impr  WORSE  deg/100k  rep/100k
+  no-guard    already-correct     26      0.000%     0.000%      0      0       0.0       0.0
+  no-guard    damaged           453      7.336%     9.871%    222     53    4329.6    1794.1
+  whole-unit  already-correct     26      0.000%     0.000%      0      0       0.0       0.0
+  whole-unit  damaged           453      7.336%     6.683%    104     13      70.4     722.8
+  per-run     already-correct     26      0.000%     0.000%      0      0       0.0       0.0
+  per-run     damaged           453      7.336%     6.387%    159     20     103.8    1052.7
+
+GENERATION HEALTH — the RAW answer, before any guard
+  answers under 90% of the input length       14  (2.92%)
+  answers over 110% of the input length       15  (3.13%)
+  empty answers                                0
+  answers spanning more than one line          0   (only the first is kept)
+  answers near the n_predict ceiling           5
+
+WHAT THE GUARD REFUSED
+  units with at least one illegal run   172
+  illegal runs                          205
+  legal runs in those same units        106   <- what whole-unit throws away and per-run keeps
+
+WHERE THE TWO POLICIES DISAGREE (same generation, different blast radius)
+  units where the shipped text differs  72
+    per-run CLOSER to the truth         55   (89 characters recovered)
+    per-run FURTHER from the truth      7   (9 characters lost)
+    same distance, different text       10
+
+  PER-RUN DEGRADED A UNIT THAT WHOLE-UNIT DID NOT: 7
+    [kershaw-speckle p0 l27] dist 5 -> 6
+      SRC       "thereby to claim that Hitler's Tegime, too, was — and intentionally so —a ‘modernis-"
+      MODEL     "thereby to claim that Hitler's Tegime, too, was - and intentionally so - a 'modernis-"
+      PER-RUN   "thereby to claim that Hitler's Tegime, too, was - and intentionally so —a ‘modernis-"
+      GOLD      "thereby to claim that Hitler’s regime, too, was — and intentionally so - a ‘modernis­"
+      refused   unbalanced change: [—a ‘modernis-] -> [- a 'modernis-] (2 words -> 3)
+    [kershaw-speckle p0 l40] dist 10 -> 11
+      SRC       ". : Erhst Nolte’s contributions {to the Histovikerset reflect this tendency. ‘See ‘Historikerstreit’. Die"
+      MODEL     ". . . Erst Nolte’s contributions to the Historikerstreit reflect this tendency. ‘See 'Historikerstreit'. Die"
+      PER-RUN   ". : Erhst Nolte’s contributions to the Histovikerset reflect this tendency. ‘See 'Historikerstreit'. Die"
+      GOLD      "1 Ernst Nolte’s contributions to the Historikerstreit reflect this tendency. See ‘Historikerstreit’. Die"
+      refused   unbalanced change: [: Erhst] -> [. . Erst] (2 words -> 3)
+    [kershaw-speckle p1 l95] dist 3 -> 4
+      SRC       "ing and.collapse of what. one might call ‘rational’ structures of rule,-a system of"
+      MODEL     "ing and collapse of what one might call 'rational' structures of rule,-a system of"
+      PER-RUN   "ing and.collapse of what one might call 'rational' structures of rule,-a system of"
+      GOLD      "ing and collapse of what one might call ‘rational’ structures of rule, a system of"
+      refused   unbalanced change: [and.collapse] -> [and collapse] (1 word -> 2)
+    [kershaw-speckle p2 l137] dist 7 -> 8
+      SRC       "myself: “By God, how that has developed!’’’?!° eu"
+      MODEL     "myself: 'By God, how that has developed!'120 eu"
+      PER-RUN   "myself: 'By God, how that has developed!’’’?!° eu"
+      GOLD      "myself: “By God, how that has developed!” ’?1"
+      refused   word changed beyond distance 2: "developed!’’’?!°" -> "developed!'120" (distance 6)
+    [kershaw-speckle p4 l290] dist 6 -> 8
+      SRC       "= Suny, ‘Dictator’; 20, 27. °°."
+      MODEL     "= Suny, 'Dictator'; 20, 27.56."
+      PER-RUN   "= Suny, 'Dictator'; 20, 27. °°."
+      GOLD      "22 Suny, ‘Dictator’, 20, 27. 2"
+      refused   unbalanced change: [27. °°.] -> [27.56.] (2 words -> 1)
+
+WORST DAMAGE UNDER no-guard (5 of 53) — read these, do not average them
+  [kershaw-speckle p3 l240] dist 12 -> 227
+    IN   "NU ee iy Sia"
+    OUT  "by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way,"
+    GOLD "‘"
+  [kershaw-speckle p4 l300] dist 12 -> 227
+    IN   "NU ee iy Sia"
+    OUT  "by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way,"
+    GOLD ""
+  [kershaw-speckle p5 l359] dist 12 -> 227
+    IN   "NU ee iy Sia"
+    OUT  "by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way,"
+    GOLD "‘"
+  [kershaw-speckle p6 l417] dist 12 -> 227
+    IN   "NU ee iy Sia"
+    OUT  "by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way,"
+    GOLD "n"
+  [kershaw-speckle p7 l475] dist 12 -> 227
+    IN   "NU ee iy Sia"
+    OUT  "by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way, by the way,"
+    GOLD ""
+
+WORST DAMAGE UNDER whole-unit (5 of 13) — read these, do not average them
+  [kershaw-speckle p1 l72] dist 2 -> 4
+    IN   "term ‘totalitarianism’ = leaving aside its non-scholarly usage — is that isa descriptive"
+    OUT  "term ‘totalitarianism’ = leaving aside its non-scholarly usage — is that a descriptive"
+    GOLD "term ‘totalitarianism’ — leaving aside its non-scholarly usage — is that is a descriptive"
+  [kershaw-speckle p4 l250] dist 4 -> 6
+    IN   ": presided over an inexorable erosion of ‘rational’ forms of government. And while :"
+    OUT  ": presided over an inexorable erosion of 'rational' forms of government. And while :"
+    GOLD "presided over an inexorable erosion of ‘rational’ forms of government. And while"
+  [kershaw-speckle p5 l311] dist 4 -> 6
+    IN   "treachery — the ‘loyal Heinrich’ finally ‘stabbing him in the back.?¢"
+    OUT  "treachery — the 'loyal Heinrich' finally 'stabbing him in the back.'"
+    GOLD "treachery - the ‘loyal Heinrich’ finally stabbing him in the back.26"
+  [kershaw-speckle p5 l326] dist 3 -> 5
+    IN   ": both were capable of surviving: it, the ‘Hitler myth’ was structurally indispensable"
+    OUT  ": both were capable of surviving; it, the 'Hitler myth' was structurally indispensable"
+    GOLD "both were capable of surviving it, the ‘Hitler myth’ was structurally indispensable"
+  [kershaw-speckle p6 l388] dist 3 -> 5
+    IN   "other peoples were. boundless: ‘Whereas Stalinism could ‘settle down’, as it"
+    OUT  "other peoples were. boundless: 'Whereas Stalinism could 'settle down', as it"
+    GOLD "other peoples were boundless. Whereas Stalinism could ‘settle down’, as it"
+
+WORST DAMAGE UNDER per-run (5 of 20) — read these, do not average them
+  [kershaw-speckle p1 l72] dist 2 -> 4
+    IN   "term ‘totalitarianism’ = leaving aside its non-scholarly usage — is that isa descriptive"
+    OUT  "term ‘totalitarianism’ = leaving aside its non-scholarly usage — is that a descriptive"
+    GOLD "term ‘totalitarianism’ — leaving aside its non-scholarly usage — is that is a descriptive"
+  [kershaw-speckle p4 l250] dist 4 -> 6
+    IN   ": presided over an inexorable erosion of ‘rational’ forms of government. And while :"
+    OUT  ": presided over an inexorable erosion of 'rational' forms of government. And while :"
+    GOLD "presided over an inexorable erosion of ‘rational’ forms of government. And while"
+  [kershaw-speckle p4 l290] dist 6 -> 8
+    IN   "= Suny, ‘Dictator’; 20, 27. °°."
+    OUT  "= Suny, 'Dictator'; 20, 27. °°."
+    GOLD "22 Suny, ‘Dictator’, 20, 27. 2"
+  [kershaw-speckle p5 l311] dist 4 -> 6
+    IN   "treachery — the ‘loyal Heinrich’ finally ‘stabbing him in the back.?¢"
+    OUT  "treachery — the 'loyal Heinrich' finally 'stabbing him in the back.'"
+    GOLD "treachery - the ‘loyal Heinrich’ finally stabbing him in the back.26"
+  [kershaw-speckle p5 l326] dist 3 -> 5
+    IN   ": both were capable of surviving: it, the ‘Hitler myth’ was structurally indispensable"
+    OUT  ": both were capable of surviving; it, the 'Hitler myth' was structurally indispensable"
+    GOLD "both were capable of surviving it, the ‘Hitler myth’ was structurally indispensable"
+
+wrote C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/speckle.lines.stats.json

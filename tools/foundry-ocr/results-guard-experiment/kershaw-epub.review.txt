@@ -1,0 +1,700 @@
+====================================================================================================
+review-edits — 145 units from C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/kershaw.units.jsonl
+====================================================================================================
+generated 2026-08-04T23:49:44-0400 in 55.9s on http://127.0.0.1:8771
+server: llama-server.exe -m foundry-4b-f16.gguf -c 32768 -np 16 -ngl 99 --no-webui --lora-scaled ../../../../AppData/Local/foundry/models/foundry-ocr-v1-4b.gguf:0.0 [b7482 CUDA 12.4, RTX 3090 Ti]
+sampling: {"temperature": 0.0, "top_k": 1, "stop": ["<|im_end|>"], "n_predict": "len(src) + 64", "cache_prompt": true}
+gold available: False   -> every proposed edit below is a FALSE EDIT until a reader says otherwise
+
+SUMMARY
+  units                                        145
+  units the model changed at all               61  (42.1%)
+  units the model returned unchanged           84
+  proposed runs (contiguous changed regions)   112
+    legal under the rule                       78
+    illegal under the rule                     34
+  units containing at least one illegal run    32
+
+  WHAT EACH POLICY SHIPS
+    no-guard     units changed    61   runs applied   112
+    whole-unit   units changed    29   runs applied    56
+    per-run      units changed    43   runs applied    78
+
+  >>> LEGAL RUNS whole-unit DISCARDS because something else in the same unit
+      was illegal — exactly what per-run would recover:   22
+
+====================================================================================================
+EVERY PROPOSED EDIT
+====================================================================================================
+  ⟦…⟧ marks the text the model wanted to change. `ship` is what each policy did.
+
+[   1] unit 2 (kershaw-working-towards-the-fuhrer block 1/1)
+       '—'  ->  '-'
+       …ism has prompted attempts to relativise Nazi barbarism ⟦—⟧ seen as wicked, but on the whole less wicked, than tha…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[   2] unit 3 (kershaw-working-towards-the-fuhrer block 1/2)
+       '—'  ->  '-'
+       …ts and thereby to claim that Hitler’s regime, too, was ⟦—⟧ and intentionally so - a ‘modernis ing dictatorship’.2…
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[   3] unit 3 (kershaw-working-towards-the-fuhrer block 1/2)
+       '‘modernis ing dictatorship’.2'  ->  "'modernising dictatorship'.2"
+       …t Hitler’s regime, too, was — and intentionally so - a ⟦‘modernis ing dictatorship’.2⟧ Implicit in all this is a reversion, despite the many …
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [‘modernis ing dictatorship’.2] -> ['modernising dictatorship'.2] (3 words -> 2)
+
+[   4] unit 4 (kershaw-working-towards-the-fuhrer block 1/3)
+       '‘totali tarianism’'  ->  "'totalitarianism'"
+       1960s, to essentially traditional views on ⟦‘totali tarianism’⟧ and to views of Stalin and Hitler as ‘totalitarian dic…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [‘totali tarianism’] -> ['totalitarianism'] (2 words -> 1)
+
+[   5] unit 4 (kershaw-working-towards-the-fuhrer block 1/3)
+       '‘totalitarian dictators’.'  ->  "'totalitarian dictators'."
+       …totali tarianism’ and to views of Stalin and Hitler as ⟦‘totalitarian dictators’.⟧ There can be no principled objection to comparing the …
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[   6] unit 6 (kershaw-working-towards-the-fuhrer block 1/5)
+       '—'  ->  '-'
+       …ttempted indoctrination, manipulation and mobilisation ⟦—⟧ giving these regimes a dynamic missing from more conve…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[   7] unit 6 (kershaw-working-towards-the-fuhrer block 1/5)
+       '—'  ->  '-'
+       …ttempted indoctrination, manipulation and mobilisation ⟦—⟧ giving these regimes a dynamic missing from more conve…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[   8] unit 7 (kershaw-working-towards-the-fuhrer block 1/6)
+       '‘totalitarianism’'  ->  "'totalitarianism'"
+       But the fundamental problem with the term ⟦‘totalitarianism’⟧ — leaving aside its non-scholarly usage — is that is a…
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[   9] unit 7 (kershaw-working-towards-the-fuhrer block 1/6)
+       ''  ->  'it'
+       But the fundamental problem with the term ‘totalitarianism’ — leaving aside its non-scholarly usage — is that is a descriptive concept, not a theory, and has little or no explanatory power. It presumes that Stalinism and Hitlerism were more like each other than different from each other. But the basis of comparison is a shallow one, largely confined to the apparatus of rule.
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [] -> [it] (0 words -> 1)
+
+[  10] unit 10 (kershaw-working-towards-the-fuhrer block 1/9)
+       'Son-derweg).'  ->  'Sonderweg).'
+       …ashionable attachment to notions of a qualified German ⟦Son-derweg).⟧ Sometimes, however, highlighting contrasts can be more…
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[  11] unit 10 (kershaw-working-towards-the-fuhrer block 1/9)
+       'compar ing'  ->  'comparing'
+       …ever, highlighting contrasts can be more valuable than ⟦compar ing⟧ similarities.
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [compar ing] -> [comparing] (2 words -> 1)
+
+[  12] unit 12 (kershaw-working-towards-the-fuhrer block 1/11)
+       'momen tum'  ->  'momentum'
+       …tation of the Third Reich: what explains the gathering ⟦momen tum⟧ of radicalisation, the dynamic of destruction in the T…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [momen tum] -> [momentum] (2 words -> 1)
+
+[  13] unit 13 (kershaw-working-towards-the-fuhrer block 1/12)
+       'undermin ing'  ->  'undermining'
+       …ion has, I would suggest at the outset, to do with the ⟦undermin ing⟧ and collapse of what one might call ‘rational’ structu…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [undermin ing] -> [undermining] (2 words -> 1)
+
+[  14] unit 17 (kershaw-working-towards-the-fuhrer block 1/16)
+       '193 3,'  ->  '1933,'
+       …d detached from the Nazi Movement’s bureaucracy. After ⟦193 3,⟧ as head of government he scarcely put pen to paper him…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [193 3,] -> [1933,] (2 words -> 1)
+
+[  15] unit 18 (kershaw-working-towards-the-fuhrer block 1/17)
+       'Memoran dum'  ->  'Memorandum'
+       The Four-Year Plan ⟦Memoran dum⟧ of 1936 is a unique example from the years 1933—45 of …
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [Memoran dum] -> [Memorandum] (2 words -> 1)
+
+[  16] unit 18 (kershaw-working-towards-the-fuhrer block 1/17)
+       '1935—6'  ->  '1935-6'
+       …ry at the stance adopted during the economic crisis of ⟦1935—6⟧ by Schacht and some sectors of business and industry.
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[  17] unit 19 (kershaw-working-towards-the-fuhrer block 1/18)
+       'list!'  ->  'list1'
+       …ter himself was not included in the short distribution ⟦list!⟧ Business and industrial leaders were not even made awa…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  18] unit 22 (kershaw-working-towards-the-fuhrer block 1/21)
+       '...'  ->  '. . .'
+       … decisions which he alone could make as head of state. ⟦...⟧ When Hitler stayed at Obersalzberg it was even worse. …
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [...] -> [. . .] (1 word -> 3)
+
+[  19] unit 25 (kershaw-working-towards-the-fuhrer block 1/24)
+       'September!'  ->  'September†'
+       …en he had been able to provide a detailed report, on 4 ⟦September!⟧
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  20] unit 27 (kershaw-working-towards-the-fuhrer block 1/26)
+       'commit tees.'  ->  'committees.'
+       …g or interfering with policy. He chaired all important ⟦commit tees.⟧ His aim appears to have been a monopolisation of all d…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [commit tees.] -> [committees.] (2 words -> 1)
+
+[  21] unit 27 (kershaw-working-towards-the-fuhrer block 1/26)
+       'Party—State'  ->  'Party-State'
+       …d unity of decision making which would have eliminated ⟦Party—State⟧ dualism.
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[  22] unit 31 (kershaw-working-towards-the-fuhrer block 1/30)
+       'of‘feudal'  ->  'of ‘feudal'
+       …‘rational’ forms of government. And while the metaphor ⟦of‘feudal⟧ anarchy’ might be applied to both systems, it seems mo…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [of‘feudal] -> [of ‘feudal] (1 word -> 2)
+
+[  23] unit 32 (kershaw-working-towards-the-fuhrer block 1/31)
+       'structu rally'  ->  'structurally'
+       …art, Hitler’s leadership position appears to have been ⟦structu rally⟧ more secure than Stalin’s. If I have followed the deba…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [structu rally] -> [structurally] (2 words -> 1)
+
+[  24] unit 33 (kershaw-working-towards-the-fuhrer block 1/32)
+       'interpreta tion'  ->  'interpretation'
+       …ne set of policies among a number of alternatives, one ⟦interpreta tion⟧ of the Marx-Lenin arcanum among others, Stalin remaine…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [interpreta tion] -> [interpretation] (2 words -> 1)
+
+[  25] unit 35 (kershaw-working-towards-the-fuhrer block 1/34)
+       'purges'  ->  'purges.'
+       Hitler thought Stalin must be mad to carry out the ⟦purges⟧ The only faint reflections in the Third Reich were the…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  26] unit 44 (kershaw-working-towards-the-fuhrer block 1/43)
+       '‘Hitler myth’'  ->  "'Hitler myth'"
+       …nist Party, and both were capable of surviving it, the ⟦‘Hitler myth’⟧ was structurally indispensable to, in fact the very ba…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  27] unit 44 (kershaw-working-towards-the-fuhrer block 1/43)
+       'mid-i92os,'  ->  'mid-1920s,'
+       …m, the Nazi Movement and its Weltanschauung. Since the ⟦mid-i92os,⟧ ideological orthodoxy was synonymous with adherence to…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  28] unit 50 (kershaw-working-towards-the-fuhrer block 1/49)
+       '‘cumulative radicalisation’'  ->  "'cumulative radicalisation'"
+       …o a personalised dictatorship, there was no inexorable ⟦‘cumulative radicalisation’⟧ in the Soviet Union. Rather, there was even the ‘great…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  29] unit 50 (kershaw-working-towards-the-fuhrer block 1/49)
+       '‘great retreat’'  ->  "'great retreat'"
+       …ation’ in the Soviet Union. Rather, there was even the ⟦‘great retreat’⟧ from radicalism by the mid-i93os and a reversion towar…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  30] unit 50 (kershaw-working-towards-the-fuhrer block 1/49)
+       'mid-i93os'  ->  'mid-1930s'
+       …re was even the ‘great retreat’ from radicalism by the ⟦mid-i93os⟧ and a reversion towards some forms of social conservat…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  31] unit 51 (kershaw-working-towards-the-fuhrer block 1/50)
+       'destruc tiveness'  ->  'destructiveness'
+       …r the costs of the personal regiment, and whatever the ⟦destruc tiveness⟧ of Stalin in the purges of the party and of the milita…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [destruc tiveness] -> [destructiveness] (2 words -> 1)
+
+[  32] unit 58 (kershaw-working-towards-the-fuhrer block 1/57)
+       '‘special authorities’'  ->  "'special authorities'"
+       The proliferation of ⟦‘special authorities’⟧ and plenipotentiaries for specific tasks, delegated by…
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[  33] unit 58 (kershaw-working-towards-the-fuhrer block 1/57)
+       'domi nation.'  ->  'domination.'
+       …y character and improvised techniques immanent in Nazi ⟦domi nation.⟧
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [domi nation.] -> [domination.] (2 words -> 1)
+
+[  34] unit 61 (kershaw-working-towards-the-fuhrer block 1/60)
+       'unco-ordinated'  ->  'uncoordinated'
+       …efined structures of domination by the untramelled and ⟦unco-ordinated⟧ force of competing power groups to unheard of levels. …
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  35] unit 62 (kershaw-working-towards-the-fuhrer block 1/61)
+       'unmistakeable,'  ->  'unmistakable,'
+       …nt of limited goals. Its self-destructive capacity was ⟦unmistakeable,⟧ its eventual demise certain. Hitler was irreplaceable …
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  36] unit 64 (kershaw-working-towards-the-fuhrer block 1/63)
+       'quasi-indepen-dently'  ->  'quasi-independently'
+       …e and for all any expectation of a party body existing ⟦quasi-indepen-dently⟧ of the Leader in Germany.
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  37] unit 65 (kershaw-working-towards-the-fuhrer block 1/64)
+       'systema tised.'  ->  'systematised.'
+       … how the personalised rule of Hitler could have become ⟦systema tised.⟧
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [systema tised.] -> [systematised.] (2 words -> 1)
+
+[  38] unit 67 (kershaw-working-towards-the-fuhrer block 1/66)
+       '‘world power’'  ->  "'world power'"
+       …ed on a further three and a half years, the gamble for ⟦‘world power’⟧ was objectively lost. As such, the dynamism of the reg…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  39] unit 71 (kershaw-working-towards-the-fuhrer block 1/70)
+       'of‘charismatic'  ->  'of ‘charismatic'
+       The main features ⟦of‘charismatic⟧ authority’ as outlined by Max Weber need no embroideri…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [of‘charismatic] -> [of ‘charismatic] (1 word -> 2)
+
+[  40] unit 72 (kershaw-working-towards-the-fuhrer block 1/71)
+       'subordinat ing'  ->  'subordinating'
+       …apable of reproducing itself only through eliminating, ⟦subordinat ing⟧ or subsuming the ‘charismatic’ essence.
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [subordinat ing] -> [subordinating] (2 words -> 1)
+
+[  41] unit 73 (kershaw-working-towards-the-fuhrer block 1/72)
+       'domi nation'  ->  'domination'
+       In its pure form, the personal ⟦domi nation⟧ of ‘charismatic authority’ represents the contradictio…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [domi nation] -> [domination] (2 words -> 1)
+
+[  42] unit 75 (kershaw-working-towards-the-fuhrer block 1/74)
+       '‘mission’'  ->  "'mission'"
+       For a while, it is true, Stalin hijacked the ⟦‘mission’⟧ and threatened to expropriate it through his personali…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  43] unit 76 (kershaw-working-towards-the-fuhrer block 1/75)
+       '‘mission’'  ->  "'mission'"
+       …onality cult of Hitler, which was inseparable from the ⟦‘mission’⟧ embodied in his name practically from the begin ning, …
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[  44] unit 76 (kershaw-working-towards-the-fuhrer block 1/75)
+       'begin ning,'  ->  'beginning,'
+       …he ‘mission’ embodied in his name practically from the ⟦begin ning,⟧ a ‘mission’ which from the mid-ipzos at the latest did…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [begin ning,] -> [beginning,] (2 words -> 1)
+
+[  45] unit 76 (kershaw-working-towards-the-fuhrer block 1/75)
+       '‘mission’'  ->  "'mission'"
+       …onality cult of Hitler, which was inseparable from the ⟦‘mission’⟧ embodied in his name practically from the begin ning, …
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[  46] unit 76 (kershaw-working-towards-the-fuhrer block 1/75)
+       'mid-ipzos'  ->  'mid-1930s'
+       …ically from the begin ning, a ‘mission’ which from the ⟦mid-ipzos⟧ at the latest did not exist as a doctrine independent …
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: word changed beyond distance 2: "mid-ipzos" -> "mid-1930s" (distance 4)
+
+[  47] unit 77 (kershaw-working-towards-the-fuhrer block 1/76)
+       'of‘charismatic authority’'  ->  "of 'charismatic authority'"
+       Weber’s model ⟦of‘charismatic authority’⟧ is an abstraction, a descriptive concept which says no…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [of‘charismatic authority’] -> [of 'charismatic authority'] (2 words -> 3)
+
+[  48] unit 77 (kershaw-working-towards-the-fuhrer block 1/76)
+       'of‘charisma tic authority’.'  ->  "of 'charismatic authority'."
+       …in itself of the content of any specific manifestation ⟦of‘charisma tic authority’.⟧ This is determined by the relationship of the leadersh…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: word changed beyond distance 2: "of‘charisma" -> "of" (distance 9)
+
+[  49] unit 77 (kershaw-working-towards-the-fuhrer block 1/76)
+       '‘political culture’'  ->  "'political culture'"
+       …e leadership claim to the particular circumstances and ⟦‘political culture’⟧ in which it arises and which give it shape.
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[  50] unit 78 (kershaw-working-towards-the-fuhrer block 1/77)
+       '‘charismatic claim’'  ->  "'charismatic claim'"
+       The essence of the Hitlerian ⟦‘charismatic claim’⟧ was the ‘mission’ to achieve ‘national rebirth’ throug…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  51] unit 78 (kershaw-working-towards-the-fuhrer block 1/77)
+       '‘mission’'  ->  "'mission'"
+       …e essence of the Hitlerian ‘charismatic claim’ was the ⟦‘mission’⟧ to achieve ‘national rebirth’ through racial purity an…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  52] unit 78 (kershaw-working-towards-the-fuhrer block 1/77)
+       '‘national rebirth’'  ->  "'national rebirth'"
+       …erian ‘charismatic claim’ was the ‘mission’ to achieve ⟦‘national rebirth’⟧ through racial purity and racial empire. But this clai…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  53] unit 79 (kershaw-working-towards-the-fuhrer block 1/78)
+       '‘national disgrace’,'  ->  "'national disgrace',"
+       The trauma of war, defeat and ⟦‘national disgrace’,⟧ then the extreme conditions of a state system in a ter…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  54] unit 79 (kershaw-working-towards-the-fuhrer block 1/78)
+       '‘charismatic claim’'  ->  "'charismatic claim'"
+       …smic internal divisions, offered the potential for the ⟦‘charismatic claim’⟧ to gain extensive support, stretching way beyond the o…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  55] unit 79 (kershaw-working-towards-the-fuhrer block 1/78)
+       '‘charismatic community’,'  ->  "'charismatic community',"
+       … extensive support, stretching way beyond the original ⟦‘charismatic community’,⟧ and for it to provide the basis for an altogether new …
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  56] unit 80 (kershaw-working-towards-the-fuhrer block 1/79)
+       '‘legal-rational’'  ->  "'legal-rational'"
+       … surely an impossibility. But even the co-existence of ⟦‘legal-rational’⟧ and ‘charismatic’ sources of legitimacy can only be a …
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  57] unit 80 (kershaw-working-towards-the-fuhrer block 1/79)
+       '‘charismatic’'  ->  "'charismatic'"
+       …ity. But even the co-existence of ‘legal-rational’ and ⟦‘charismatic’⟧ sources of legitimacy can only be a source of tension …
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  58] unit 82 (kershaw-working-towards-the-fuhrer block 1/81)
+       'of‘state'  ->  'of ‘state'
+       …re Germany’s leading constitutional lawyer could speak ⟦of‘state⟧ power’ being replaced by unrestrained ‘Führer power’, …
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [of‘state] -> [of ‘state] (1 word -> 2)
+
+[  59] unit 84 (kershaw-working-towards-the-fuhrer block 1/83)
+       '‘divide'  ->  "'divide"
+       …l constraint on his power. But there was no systematic ⟦‘divide⟧ and rule’ policy, no sustained attempt to create the a…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  60] unit 84 (kershaw-working-towards-the-fuhrer block 1/83)
+       'rule’'  ->  "rule'"
+       … on his power. But there was no systematic ‘divide and ⟦rule’⟧ policy, no sustained attempt to create the administrat…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  61] unit 87 (kershaw-working-towards-the-fuhrer block 1/86)
+       'of‘rational’'  ->  "of 'rational'"
+       It was not in itself simply the undermining ⟦of‘rational’⟧ structures of government and proliferation of chaotic,…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [of‘rational’] -> [of 'rational'] (1 word -> 2)
+
+[  62] unit 87 (kershaw-working-towards-the-fuhrer block 1/86)
+       '‘polycratic’'  ->  "'polycratic'"
+       …structures of government and proliferation of chaotic, ⟦‘polycratic’⟧ agencies that mattered.
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[  63] unit 91 (kershaw-working-towards-the-fuhrer block 1/90)
+       'Blomberg—Fritsch'  ->  'Blomberg-Fritsch'
+       After the ⟦Blomberg—Fritsch⟧ affair of February 1938 it is difficult to see where t…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  64] unit 93 (kershaw-working-towards-the-fuhrer block 1/92)
+       '—'  ->  '-'
+       … pogrom in November, instigated by Goebbels not Hitler ⟦—⟧ though carried out with the latter’s express approval …
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  65] unit 93 (kershaw-working-towards-the-fuhrer block 1/92)
+       '—'  ->  '-'
+       … pogrom in November, instigated by Goebbels not Hitler ⟦—⟧ though carried out with the latter’s express approval …
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  66] unit 93 (kershaw-working-towards-the-fuhrer block 1/92)
+       '‘Jewish Question’'  ->  "'Jewish Question'"
+       …anding over effective centralised co-ordination of the ⟦‘Jewish Question’⟧ to Heydrich.
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  67] unit 98 (kershaw-working-towards-the-fuhrer block 1/97)
+       '‘idea’'  ->  "'idea'"
+       As unifier, the ⟦‘idea’⟧ incorporated in the quasi-deified Führer figure was su…
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[  68] unit 98 (kershaw-working-towards-the-fuhrer block 1/97)
+       'suffi ciently'  ->  'sufficiently'
+       …a’ incorporated in the quasi-deified Führer figure was ⟦suffi ciently⟧ indistinct but dynamic to act as a bond not only for o…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [suffi ciently] -> [sufficiently] (2 words -> 1)
+
+[  69] unit 100 (kershaw-working-towards-the-fuhrer block 1/99)
+       '‘vision’'  ->  "'vision'"
+       As activator, the ⟦‘vision’⟧ embodied by Hitler served as a stimulant to action in …
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  70] unit 102 (kershaw-working-towards-the-fuhrer block 1/101)
+       '‘vision’'  ->  "'vision'"
+       In all these ways, the utopian ⟦‘vision’⟧ bound up with the Führer — undefined and largely undef…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  71] unit 102 (kershaw-working-towards-the-fuhrer block 1/101)
+       '—'  ->  '-'
+       …se ways, the utopian ‘vision’ bound up with the Führer ⟦—⟧ undefined and largely undefinable - provided ‘guidelin…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  72] unit 102 (kershaw-working-towards-the-fuhrer block 1/101)
+       '‘guidelines'  ->  "'guidelines"
+       … Führer — undefined and largely undefinable - provided ⟦‘guidelines⟧ for action’ which were given concrete meaning and spec…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  73] unit 102 (kershaw-working-towards-the-fuhrer block 1/101)
+       'action’'  ->  "action'"
+       …ned and largely undefinable - provided ‘guidelines for ⟦action’⟧ which were given concrete meaning and specific content…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  74] unit 102 (kershaw-working-towards-the-fuhrer block 1/101)
+       '‘push’'  ->  "'push'"
+       …concrete meaning and specific content by the voluntary ⟦‘push’⟧ of a wide variety of often competing agencies of the r…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  75] unit 105 (kershaw-working-towards-the-fuhrer block 1/104)
+       '‘national community’,'  ->  "'national community',"
+       Building a ⟦‘national community’,⟧ preparing for the showdown with Bolshevism, purifying …
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  76] unit 107 (kershaw-working-towards-the-fuhrer block 1/106)
+       '‘progress'  ->  "'progress"
+       Crucial to this ⟦‘progress⟧ into barbarism’ was the fact that in 1933 the barriers…
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[  77] unit 107 (kershaw-working-towards-the-fuhrer block 1/106)
+       'barbarism’'  ->  "barbarism'"
+       Crucial to this ‘progress into ⟦barbarism’⟧ was the fact that in 1933 the barriers to state-sancti…
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[  78] unit 107 (kershaw-working-towards-the-fuhrer block 1/106)
+       'ofJuly'  ->  'of July'
+       …; and they were readily grasped. The Sterilisation Law ⟦ofJuly⟧ 1933 is an early instance of such a dropping of barrie…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [ofJuly] -> [of July] (1 word -> 2)
+
+[  79] unit 108 (kershaw-working-towards-the-fuhrer block 1/107)
+       '—'  ->  '-'
+       …t the constraints still taken for granted in proposals ⟦—⟧ in themselves inhumane enough, but still confined to v…
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[  80] unit 108 (kershaw-working-towards-the-fuhrer block 1/107)
+       '—'  ->  '-'
+       …t the constraints still taken for granted in proposals ⟦—⟧ in themselves inhumane enough, but still confined to v…
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[  81] unit 108 (kershaw-working-towards-the-fuhrer block 1/107)
+       'Associ ation'  ->  'Association'
+       …n — for legislation put forward by the German Doctors’ ⟦Associ ation⟧ just weeks before Hitler’s takeover of power.
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [Associ ation] -> [Association] (2 words -> 1)
+
+[  82] unit 112 (kershaw-working-towards-the-fuhrer block 1/111)
+       'inhu manity'  ->  'humanity'
+       …e confined by legal considerations, the constraints on ⟦inhu manity⟧ to the Polish population, and of course to the Jewish …
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [inhu manity] -> [humanity] (2 words -> 1)
+
+[  83] unit 114 (kershaw-working-towards-the-fuhrer block 1/113)
+       '—'  ->  '-'
+       … itself sufficient to spark a competition in brutality ⟦—⟧ though allegedly this was the opposite of what Hitler …
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  84] unit 114 (kershaw-working-towards-the-fuhrer block 1/113)
+       '—'  ->  '-'
+       … itself sufficient to spark a competition in brutality ⟦—⟧ though allegedly this was the opposite of what Hitler …
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  85] unit 114 (kershaw-working-towards-the-fuhrer block 1/113)
+       '‘racial struggle’'  ->  "'racial struggle'"
+       … to report to the Führer in the shortest time that the ⟦‘racial struggle’⟧ had been won, that complete Germanisation had been ach…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  86] unit 115 (kershaw-working-towards-the-fuhrer block 1/114)
+       'tuberculo sis.'  ->  'tuberculosis.'
+       …e liquidation of 35,000 Poles suffering from incurable ⟦tuberculo sis.⟧ In the event, Greiser’s suggestion encountered difficu…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [tuberculo sis.] -> [tuberculosis.] (2 words -> 1)
+
+[  87] unit 116 (kershaw-working-towards-the-fuhrer block 1/115)
+       '—'  ->  '-'
+       … were raised that it would be hard to maintain secrecy ⟦—⟧ reference was made here to the impact of the earlier ‘…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  88] unit 116 (kershaw-working-towards-the-fuhrer block 1/115)
+       '‘euthanasia programme’'  ->  "'euthanasia programme'"
+       …— reference was made here to the impact of the earlier ⟦‘euthanasia programme’⟧ in Germany itself — and was likely, therefore, to arou…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  89] unit 116 (kershaw-working-towards-the-fuhrer block 1/115)
+       '—'  ->  '-'
+       … were raised that it would be hard to maintain secrecy ⟦—⟧ reference was made here to the impact of the earlier ‘…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  90] unit 116 (kershaw-working-towards-the-fuhrer block 1/115)
+       '‘action’'  ->  "'action'"
+       …regarded as necessary to consult Hitler himself if the ⟦‘action’⟧ were to go ahead.
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  91] unit 122 (kershaw-working-towards-the-fuhrer block 2/1)
+       '—'  ->  '-'
+       Very often and in many spheres it has been the case ⟦—⟧ in previous years as well — that individuals have simp…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  92] unit 122 (kershaw-working-towards-the-fuhrer block 2/1)
+       '—'  ->  '-'
+       Very often and in many spheres it has been the case ⟦—⟧ in previous years as well — that individuals have simp…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  93] unit 124 (kershaw-working-towards-the-fuhrer block 3/0)
+       '—'  ->  '-'
+       … ‘charismatic authority’ functioned in the Third Reich ⟦—⟧ anticipation of Hitler’s presumed wishes and intention…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  94] unit 129 (kershaw-working-towards-the-fuhrer block 3/5)
+       'prepar ations'  ->  'preparations'
+       … undesirables; business leaders anxious to profit from ⟦prepar ations⟧ for war and, once in war, by the grabbing of booty and
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [prepar ations] -> [preparations] (2 words -> 1)
+
+[  95] unit 130 (kershaw-working-towards-the-fuhrer block 3/6)
+       'experiment ation'  ->  'experimentation'
+       …ence through jumping on the bandwagon of technological ⟦experiment ation⟧ and modernisation; non-Nazi military leaders keen to b…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [experiment ation] -> [experimentation] (2 words -> 1)
+
+[  96] unit 133 (kershaw-working-towards-the-fuhrer block 3/9)
+       '‘work'  ->  "'work"
+       …, far from being confined to party activists, ready to ⟦‘work⟧ towards the Führer’ to put the mandate into operation.…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  97] unit 133 (kershaw-working-towards-the-fuhrer block 3/9)
+       'Führer’'  ->  "Führer'"
+       …onfined to party activists, ready to ‘work towards the ⟦Führer’⟧ to put the mandate into operation. Once the war — intr…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  98] unit 133 (kershaw-working-towards-the-fuhrer block 3/9)
+       '—'  ->  '-'
+       …ührer’ to put the mandate into operation. Once the war ⟦—⟧ intrinsic to Nazism and Hitler’s ‘vision’ — had begun,…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[  99] unit 133 (kershaw-working-towards-the-fuhrer block 3/9)
+       'Hitler’s ‘vision’ —'  ->  "Hitler's 'vision' -"
+       …into operation. Once the war — intrinsic to Nazism and ⟦Hitler’s ‘vision’ —⟧ had begun, the barbarism inspired by that ‘vision’ and…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[ 100] unit 133 (kershaw-working-towards-the-fuhrer block 3/9)
+       '‘vision’'  ->  "'vision'"
+       …ation. Once the war — intrinsic to Nazism and Hitler’s ⟦‘vision’⟧ — had begun, the barbarism inspired by that ‘vision’ a…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[ 101] unit 136 (kershaw-working-towards-the-fuhrer block 3/12)
+       'of‘working'  ->  "of 'working"
+       Through the metaphor ⟦of‘working⟧ towards the Führer’, I have tried to suggest here that…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [of‘working] -> [of 'working] (1 word -> 2)
+
+[ 102] unit 136 (kershaw-working-towards-the-fuhrer block 3/12)
+       'Führer’,'  ->  "Führer',"
+       Through the metaphor of‘working towards the ⟦Führer’,⟧ I have tried to suggest here that the ‘vision’ embodie…
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[ 103] unit 136 (kershaw-working-towards-the-fuhrer block 3/12)
+       '‘vision’'  ->  "'vision'"
+       …rds the Führer’, I have tried to suggest here that the ⟦‘vision’⟧ embodied in Hitler’s leadership claim served to funnel…
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[ 104] unit 136 (kershaw-working-towards-the-fuhrer block 3/12)
+       'Hitler’s'  ->  "Hitler's"
+       …ve tried to suggest here that the ‘vision’ embodied in ⟦Hitler’s⟧ leadership claim served to funnel a variety of social …
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[ 105] unit 136 (kershaw-working-towards-the-fuhrer block 3/12)
+       '—'  ->  '-'
+       …t times contradictory and conflicting, into furthering ⟦—⟧ intentionally or unwittingly — Nazi aims closely assoc…
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[ 106] unit 136 (kershaw-working-towards-the-fuhrer block 3/12)
+       '—'  ->  '-'
+       …t times contradictory and conflicting, into furthering ⟦—⟧ intentionally or unwittingly — Nazi aims closely assoc…
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[ 107] unit 136 (kershaw-working-towards-the-fuhrer block 3/12)
+       'Hitler’s'  ->  "Hitler's"
+       …ve tried to suggest here that the ‘vision’ embodied in ⟦Hitler’s⟧ leadership claim served to funnel a variety of social …
+       ship: no-guard YES | whole-unit NO (a sibling run was illegal) | per-run YES
+
+[ 108] unit 138 (kershaw-working-towards-the-fuhrer block 3/14)
+       '‘charismatic authority’,'  ->  "'charismatic authority',"
+       The model of ⟦‘charismatic authority’,⟧ which I have suggested is applicable to the Hitlerian …
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[ 109] unit 139 (kershaw-working-towards-the-fuhrer block 3/15)
+       '‘charismatic authority’'  ->  "'charismatic authority'"
+       It also, given the irreconcilable tension between ⟦‘charismatic authority’⟧ and bureaucratic rule in the Third Reich, offers insig…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[ 110] unit 141 (kershaw-working-towards-the-fuhrer block 3/17)
+       '‘charismatic’'  ->  "'charismatic'"
+       Above all, the ⟦‘charismatic’⟧ model fits a form of domination which could never sett…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[ 111] unit 141 (kershaw-working-towards-the-fuhrer block 3/17)
+       '‘normality’'  ->  "'normality'"
+       … form of domination which could never settle down into ⟦‘normality’⟧ or routine, draw a line under its achievements and com…
+       ship: no-guard YES | whole-unit YES | per-run YES
+
+[ 112] unit 144 (kershaw-working-towards-the-fuhrer block 3/20)
+       'ten dencies'  ->  'tendencies'
+       Hitler’s own suicidal ⟦ten dencies⟧ could in this sense be said to reflect the inbuilt inc…
+       ship: no-guard YES | whole-unit NO | per-run NO
+       refused: unbalanced change: [ten dencies] -> [tendencies] (2 words -> 1)
+
+====================================================================================================
+WATCHLIST — proposed edits touching: Führer, Hitler, Broszat, Lammers, Nazi, Reich, Sonderweg, totali tarianism, modernis ing, compar ing, commit tees, interpreta tion, mid-i92os, mid-i93os
+  Damage here is invisible in any average and audible in a finished audiobook.
+====================================================================================================
+  '‘modernis ing dictatorship’.2' -> "'modernising dictatorship'.2"   [ILLEGAL: unbalanced change: [‘modernis ing dictatorship’.2] -> ['modernising dictatorship'.2] (3 words -> 2)]
+    …t Hitler’s regime, too, was — and intentionally so - a ⟦‘modernis ing dictatorship’.2⟧ Implicit in all this is a reversion, despite the many …
+  '‘totali tarianism’' -> "'totalitarianism'"   [ILLEGAL: unbalanced change: [‘totali tarianism’] -> ['totalitarianism'] (2 words -> 1)]
+    1960s, to essentially traditional views on ⟦‘totali tarianism’⟧ and to views of Stalin and Hitler as ‘totalitarian dic…
+  'Son-derweg).' -> 'Sonderweg).'   [legal]
+    …ashionable attachment to notions of a qualified German ⟦Son-derweg).⟧ Sometimes, however, highlighting contrasts can be more…
+  'compar ing' -> 'comparing'   [ILLEGAL: unbalanced change: [compar ing] -> [comparing] (2 words -> 1)]
+    …ever, highlighting contrasts can be more valuable than ⟦compar ing⟧ similarities.
+  'commit tees.' -> 'committees.'   [ILLEGAL: unbalanced change: [commit tees.] -> [committees.] (2 words -> 1)]
+    …g or interfering with policy. He chaired all important ⟦commit tees.⟧ His aim appears to have been a monopolisation of all d…
+  'interpreta tion' -> 'interpretation'   [ILLEGAL: unbalanced change: [interpreta tion] -> [interpretation] (2 words -> 1)]
+    …ne set of policies among a number of alternatives, one ⟦interpreta tion⟧ of the Marx-Lenin arcanum among others, Stalin remaine…
+  '‘Hitler myth’' -> "'Hitler myth'"   [legal]
+    …nist Party, and both were capable of surviving it, the ⟦‘Hitler myth’⟧ was structurally indispensable to, in fact the very ba…
+  'mid-i92os,' -> 'mid-1920s,'   [legal]
+    …m, the Nazi Movement and its Weltanschauung. Since the ⟦mid-i92os,⟧ ideological orthodoxy was synonymous with adherence to…
+  'mid-i93os' -> 'mid-1930s'   [legal]
+    …re was even the ‘great retreat’ from radicalism by the ⟦mid-i93os⟧ and a reversion towards some forms of social conservat…
+  'Führer’' -> "Führer'"   [legal]
+    …onfined to party activists, ready to ‘work towards the ⟦Führer’⟧ to put the mandate into operation. Once the war — intr…
+  'Hitler’s ‘vision’ —' -> "Hitler's 'vision' -"   [legal]
+    …into operation. Once the war — intrinsic to Nazism and ⟦Hitler’s ‘vision’ —⟧ had begun, the barbarism inspired by that ‘vision’ and…
+  'Führer’,' -> "Führer',"   [legal]
+    Through the metaphor of‘working towards the ⟦Führer’,⟧ I have tried to suggest here that the ‘vision’ embodie…
+  'Hitler’s' -> "Hitler's"   [legal]
+    …ve tried to suggest here that the ‘vision’ embodied in ⟦Hitler’s⟧ leadership claim served to funnel a variety of social …
+  'Hitler’s' -> "Hitler's"   [legal]
+    …ve tried to suggest here that the ‘vision’ embodied in ⟦Hitler’s⟧ leadership claim served to funnel a variety of social …
+
+  PRESENCE OF EACH WATCHED TERM IN THE BOOK, and whether it survived:
+    Führer           in book   33   after no-guard       33
+    Führer           in book   33   after whole-unit     33
+    Führer           in book   33   after per-run        33
+    Hitler           in book   89   after no-guard       89
+    Hitler           in book   89   after whole-unit     89
+    Hitler           in book   89   after per-run        89
+    Broszat          in book    0   after no-guard        0
+    Broszat          in book    0   after whole-unit      0
+    Broszat          in book    0   after per-run         0
+    Lammers          in book    5   after no-guard        5
+    Lammers          in book    5   after whole-unit      5
+    Lammers          in book    5   after per-run         5
+    Nazi             in book   33   after no-guard       33
+    Nazi             in book   33   after whole-unit     33
+    Nazi             in book   33   after per-run        33
+    Reich            in book   16   after no-guard       16
+    Reich            in book   16   after whole-unit     16
+    Reich            in book   16   after per-run        16
+    Sonderweg        in book    0   after no-guard        1
+    Sonderweg        in book    0   after whole-unit      0
+    Sonderweg        in book    0   after per-run         1
+    totali tarianism in book    1   after no-guard        0   <-- LOST
+    totali tarianism in book    1   after whole-unit      1
+    totali tarianism in book    1   after per-run         1
+    modernis ing     in book    1   after no-guard        0   <-- LOST
+    modernis ing     in book    1   after whole-unit      1
+    modernis ing     in book    1   after per-run         1
+    compar ing       in book    1   after no-guard        0   <-- LOST
+    compar ing       in book    1   after whole-unit      1
+    compar ing       in book    1   after per-run         1
+    commit tees      in book    1   after no-guard        0   <-- LOST
+    commit tees      in book    1   after whole-unit      1
+    commit tees      in book    1   after per-run         1
+    interpreta tion  in book    1   after no-guard        0   <-- LOST
+    interpreta tion  in book    1   after whole-unit      1
+    interpreta tion  in book    1   after per-run         1
+    mid-i92os        in book    1   after no-guard        0   <-- LOST
+    mid-i92os        in book    1   after whole-unit      0   <-- LOST
+    mid-i92os        in book    1   after per-run         0   <-- LOST
+    mid-i93os        in book    1   after no-guard        0   <-- LOST
+    mid-i93os        in book    1   after whole-unit      0   <-- LOST
+    mid-i93os        in book    1   after per-run         0   <-- LOST
