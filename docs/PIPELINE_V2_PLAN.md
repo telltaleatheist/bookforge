@@ -548,6 +548,73 @@ footnotes model was trained on EPUBs and wants it verified rather than assumed
 the same input-shape question that Phase D is measuring for the corrector
 applies here too.
 
+## The repair architecture — DECIDED by Owen, 2026-08-05
+
+His words: "we convert the book from pdf as quickly as possible - only doing
+the steps necessary to know what stays in the book - and then we run repair
+steps. we run tesseract to figure out whats on the page and then foundry blocks
+to figure out how theyre categorized. the user removes the blocks they dont
+want. then it gets written to an epub. then we send it through the model for
+ocr repair, and finally footnotes."
+
+```
+PDF ─get-text─▶ ─blocks─▶ ─curate─▶ EPUB ─ocr repair─▶ ─footnotes─▶ book
+     (what is    (what     (what          ═══ every repair happens HERE ═══
+      on the      kind)     stays)
+      page)
+```
+
+**Reach the EPUB with the fewest steps that can answer "what stays", then
+repair.** Consequences, each of which settles something already measured:
+
+- **Reflow's per-line OCR correction is RETIRED** once the epub pass is
+  validated. Repair on the working PDF was always invisible and un-re-runnable;
+  under this architecture it is also redundant. Reflow becomes structural only,
+  which is what "the working PDF is structural only" already said.
+- **The unit is the sentence** — split at `.`, `!`, `?` and the other
+  terminators. **"When in doubt, send more":** an abbreviation (`Dr.`, `Hrsg.`,
+  `Bd.`, `S. 123`, `ibid.`), an initial (`J. P. Taylor`), a decimal or an
+  ellipsis must NOT end a unit. A history book's endnotes are full of these, and
+  a naive split on `.` manufactures the very fragments this design escapes. When
+  a candidate looks too short or ends in a known abbreviation, keep accumulating.
+- Sentences are typically 50–250 chars — far more context than a line, far less
+  blast radius than a 1600-char paragraph, so the guard's whole-unit rejection
+  costs much less even before the per-run change.
+
+**Train on sentences from a COMPLETED EPUB** (Owen). This is the fix for the
+distribution mismatch measured twice over: the corrector is line-trained but
+would serve on sentences, and the footnote model's ceiling-length units were 1%
+of its corpus and 90% of a real run. Train on what serving actually produces.
+
+**Where the truth comes from — VERIFIED 2026-08-05, and it is not EPUBs.**
+`tools/foundry-ocr/mine-book.mjs`: pairs are the app's own headless OCR of a
+rendered page against **the born-digital PDF's own text layer**, matched by
+GEOMETRY (`align-pairs.py`), never by text similarity. Free, unlabelled — and
+its own header names the hazard: a confidently-wrong text layer trains the model
+to introduce the error. The footnotes corpus is the only one with EPUB truth:
+1,200 of 4,398 rows from publisher EPUBs across 78 books. **There are no
+matching EPUBs for everything, and the corrector uses none today.**
+
+**The asymmetry that makes Owen's hyphen examples free** (verify before relying
+on it): truth is read with `fitz`/PyMuPDF, which PRESERVES U+00AD — that is why
+`mutool` showed the soft hyphens foundry's pdf.js path had already dropped. So
+the two sides of a pair come from DIFFERENT extractors and the truth side is the
+clean one. Run a book through the real pipeline and it yields
+`totali tarianism`; read its text layer with PyMuPDF and it yields
+`totalitarianism`. Pair those at sentence level and the split-word examples
+generate themselves, on-distribution by construction, because the damaged side
+IS the pipeline's real output. The bug supplies its own training signal.
+
+**Where the work runs** (Owen): the corpus lives on the Mac
+(`/Volumes/Callisto/training/rubric/`) and the miners expect to run there, so
+mine and build on the Mac. TRAINING still runs on the Windows 3090 Ti — see the
+standing corpus-prep doctrine, which says not to train on the Mac.
+
+**Still open under this architecture:** the footnote model has its own
+unit-shape problem and it is NOT the same unit — footnotes needs enough context
+around a marker to judge it, so its units and the corrector's sentences may
+want different sizes. Do not assume one answer serves both.
+
 ## Foundry work
 
 - NEW: `ocr-correct --epub` (epub-in → epub-out correction pass).
