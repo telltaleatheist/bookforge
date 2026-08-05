@@ -1,4 +1,6 @@
-import { Component, inject, input, output, signal, computed, effect, untracked } from '@angular/core';
+import {
+  Component, DestroyRef, inject, input, output, signal, computed, effect, untracked,
+} from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ElectronService, WhisperModelStatus } from '../../../../core/services/electron.service';
@@ -13,6 +15,7 @@ import { DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsic
 import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-target';
 import type { PassDiffEntry } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
+import { samePath } from '@shared/document/same-path';
 import {
   STAR_LABELS,
   STAR_MEANINGS,
@@ -1443,6 +1446,29 @@ export class StudioVersionsComponent {
       untracked(() => void this.load());
     });
 
+    // A new artifact appears the moment it exists.
+    //
+    // Owen, second real session 2026-08-04: "i reflowed the file but i dont see
+    // it listed in versions… there — it appeared. it should appear immediately."
+    // The parent's `project:files-changed` listener was the only thing bumping
+    // `refreshTrigger`, and the QUEUE path never sends it: `withDocumentStage`
+    // (electron/processing-passes.ts) broadcasts stage-started/progress/finished
+    // and nothing else, so a backgrounded reflow wrote a book that this page had
+    // no way of hearing about. `document:stage-finished` IS broadcast by both
+    // producers, to every window, from a `finally` — so it is what to listen to.
+    //
+    // It re-runs the SAME load(), which measures the project folder and the
+    // binding record. Nothing about the event is believed except that something
+    // happened to this project: the stage name is not consulted, no row is
+    // synthesized from it, and a stage that FAILED simply re-measures to what was
+    // already there.
+    const unsubscribe = this.electron.onDocumentStageFinished((event) => {
+      const dir = this.projectDir();
+      if (dir === '') return;
+      if (!samePath(event.projectDir, dir)) return;
+      void this.load();
+    });
+    inject(DestroyRef).onDestroy(unsubscribe);
   }
 
   // ── Book variants ───────────────────────────────────────────────────────
