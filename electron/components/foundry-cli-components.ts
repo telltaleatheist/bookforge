@@ -44,7 +44,7 @@ export const FOUNDRY_CLI_COMPONENT_ID = 'foundry-cli';
 export const FOUNDRY_CLI_ENV_VAR = 'FOUNDRY_CLI_PATH';
 
 /** The release these artifacts come from. Bumping it means new URLs and hashes. */
-export const FOUNDRY_CLI_VERSION = '0.4.0';
+export const FOUNDRY_CLI_VERSION = '0.5.0';
 
 const RELEASE_BASE =
   `https://github.com/telltaleatheist/foundry/releases/download/v${FOUNDRY_CLI_VERSION}`;
@@ -66,29 +66,29 @@ const ASSETS: FoundryAsset[] = [
     platform: 'darwin',
     arch: 'arm64',
     file: 'foundry-darwin-arm64.tar.gz',
-    sha256: 'fa6b333f28fca66d1e40a400048a016afde292455c2fb7039b11b0cc18f7cf77',
-    bytes: 25180562,
+    sha256: 'b47c85e5f5c98d583f7a5efcb2f53320a9c4af77e9a1adfb49d4125b4aaa7a84',
+    bytes: 25180719,
   },
   {
     platform: 'darwin',
     arch: 'x64',
     file: 'foundry-darwin-x64.tar.gz',
-    sha256: 'fe3cc77c7c783c4cf5e3733ac45ae916aa88b39b80d0b1df5dfc5c738aa02c9f',
-    bytes: 27705433,
+    sha256: '70e15d5bc73f0dff3d20b60003365b157cbe3213fe22dd0047ad83f5999d3eda',
+    bytes: 27705538,
   },
   {
     platform: 'linux',
     arch: 'x64',
     file: 'foundry-linux-x64.tar.gz',
-    sha256: 'e95b4bfa669ae365d1a2b684577a598dd023c59eeaaabc9808bf0d3845403ed4',
-    bytes: 37166308,
+    sha256: '2a2377400de7440f46cecf6372269c2598e18a93419fa1dc9570e5d88099c2b7',
+    bytes: 37166423,
   },
   {
     platform: 'win32',
     arch: 'x64',
     file: 'foundry-windows-x64.tar.gz',
-    sha256: '517f71d9c2db08cd372fe55517194a52352f0d2acad8ca1ea42dea12d2c958fe',
-    bytes: 39534278,
+    sha256: '97ce639d64c1220046b6318307c5a326baf50661c1bd95117f74e991c6553249',
+    bytes: 39534381,
   },
 ];
 
