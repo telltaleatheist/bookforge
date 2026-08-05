@@ -13,14 +13,28 @@ import { pdfBridgeManager, RedactionRegion, Bookmark, MupdfJsBridge } from './pd
 import { getRenderCacheBaseDir } from './render-cache';
 import { MutoolBridge } from './mutool-bridge';
 import { BLOCK_CATEGORIES } from '../shared/ocr/block-categories';
+import type { BlockCategoryProvenance } from '../shared/ocr/text-block';
+import { readEpubBlockProvenance, type EpubExportBlock } from './epub-processor';
 import { TEXT_LAYER_MIN_CHARS_PER_PAGE, type TextLayerReport } from '../shared/pdf/text-layer';
+
+export type { BlockCategoryProvenance };
+
+/**
+ * A document whose blocks state no categories of their own. Every PDF, and every
+ * EPUB that was not written by our own reflow — see BlockCategoryProvenance:
+ * these are two input classes, and for this one the font/geometry classifier is
+ * the only reading there is.
+ */
+function heuristicProvenance(): BlockCategoryProvenance {
+  return { source: 'heuristic', stampedBlocks: 0, unstampedElementBlocks: 0, unalignedBlocks: 0 };
+}
 
 export { TEXT_LAYER_MIN_CHARS_PER_PAGE, type TextLayerReport };
 
 const execAsync = promisify(exec);
 
 // Cache version - increment this when changing extraction logic to invalidate old caches
-const ANALYSIS_CACHE_VERSION = 11;  // v11: drop-cap lines join to the next word, not with a space
+const ANALYSIS_CACHE_VERSION = 12;  // v12: EPUB categories read from the book's own provenance stamps
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;
@@ -161,6 +175,14 @@ export interface TextBlock {
   parent_block_id?: string;     // If this is a marker extracted from a parent block
   line_count: number;
   is_ocr?: boolean;             // True if this block was generated via OCR (independent from images)
+  // The book's own record of what this block is, read back from the EPUB
+  // element it was laid out from. Set only on blocks of an EPUB the pipeline
+  // itself reflowed; see the full declaration in shared/ocr/text-block.ts,
+  // which is what the picker, the manifest and the CLI all describe blocks
+  // with. Several blocks legitimately share one bf_group — mupdf re-lays the
+  // book out and one authored paragraph becomes one block per visual line.
+  bf_group?: string;
+  bf_blocks?: string[];
 }
 
 export interface Category {
@@ -194,6 +216,15 @@ export interface AnalyzeResult {
   // result genuinely lacks the affected data, so the warning replays too.
   warnings?: string[];
   /**
+   * Where `category_id` came from: the document's own record, or this file's
+   * font/geometry classifier. See BlockCategoryProvenance — the two are
+   * different input classes and only one of them is trustworthy.
+   *
+   * Present on every analysis, including PDFs (always `heuristic`: a PDF text
+   * layer states no categories).
+   */
+  categoryProvenance: BlockCategoryProvenance;
+  /**
    * Full SHA-256 of the file these blocks were extracted from. The identity of
    * the analyzed file: edits are keyed to block ids, and block ids only mean
    * anything against the exact bytes they came out of. Always present — the
@@ -220,6 +251,12 @@ export interface AnalyzeQuickResult {
   categories?: Record<string, Category>;
   spans?: TextSpan[];
   warnings?: string[];
+  /**
+   * See AnalyzeResult.categoryProvenance. Present only when textReady is true —
+   * on a cache miss no block has been classified yet, so there is nothing to
+   * say about where the categories came from.
+   */
+  categoryProvenance?: BlockCategoryProvenance;
   /** See AnalyzeResult.sourceSha256 — present on cache hit and miss alike. */
   sourceSha256: string;
 }
@@ -229,6 +266,8 @@ export interface AnalyzeTextResult {
   categories: Record<string, Category>;
   spans: TextSpan[];
   warnings?: string[];
+  /** See AnalyzeResult.categoryProvenance. */
+  categoryProvenance: BlockCategoryProvenance;
   /** See AnalyzeResult.sourceSha256. */
   sourceSha256: string;
 }
@@ -355,6 +394,8 @@ export class PDFAnalyzer {
   // Non-fatal analysis problems collected during analyze()/analyzeText(),
   // surfaced on the result so the renderer can show them (see AnalyzeResult.warnings)
   private analysisWarnings: string[] = [];
+  // Where the last analysis's categories came from — see AnalyzeResult.categoryProvenance.
+  private categoryProvenance: BlockCategoryProvenance = heuristicProvenance();
   private doc: any = null; // mupdf.PDFDocument | mupdf.Document
   private pdfPath: string | null = null;
   private mutoolBridge: MutoolBridge = new MutoolBridge();
@@ -425,6 +466,26 @@ export class PDFAnalyzer {
   /**
    * Load cached analysis if available
    */
+  /**
+   * The provenance recorded with a cached analysis.
+   *
+   * Cached alongside the blocks and versioned with them (ANALYSIS_CACHE_VERSION
+   * 12 is where it starts existing), so any payload this reader can load has it.
+   * One that does not cannot say where its categories came from, and answering
+   * with a guess about a guess is exactly what this whole change removes — so
+   * it refuses and names the fix.
+   */
+  private cachedProvenance(cached: CachedAnalysis, pdfPath: string): BlockCategoryProvenance {
+    if (!cached.categoryProvenance) {
+      throw new Error(
+        `The cached analysis of ${path.basename(pdfPath)} records no categoryProvenance, so it `
+        + `cannot say whether its block categories are the document's own or this app's guess. `
+        + `Clear the analysis cache for this file and re-open it.`,
+      );
+    }
+    return cached.categoryProvenance;
+  }
+
   private async loadCachedAnalysis(fileHash: string): Promise<CachedAnalysis | null> {
     const cachePath = await this.getAnalysisCachePath(fileHash);
     try {
@@ -483,6 +544,7 @@ export class PDFAnalyzer {
         this.spans = cached.spans || [];
         this.categories = cached.categories;
         this.pageDimensions = cached.page_dimensions;
+        this.categoryProvenance = this.cachedProvenance(cached, pdfPath);
 
         // Fix up spans from older caches that lack block_id
         this.assignBlockIdsToSpans();
@@ -509,6 +571,7 @@ export class PDFAnalyzer {
     this.categories = {};
     this.pageDimensions = [];
     this.analysisWarnings = [];
+    this.categoryProvenance = heuristicProvenance();
 
     // Read document file asynchronously to avoid blocking the main thread
     sendProgress('loading', 'Reading document file...');
@@ -676,8 +739,8 @@ export class PDFAnalyzer {
       // No span extraction for EPUBs (mutool doesn't support them)
     }
 
-    // Generate categories
-    this.generateCategories();
+    // Assign categories — from the book's own record when it has one.
+    await this.assignCategories(pdfPath, mimeType);
 
     const cacheable: CachedAnalysis = {
       blocks: this.blocks,
@@ -686,6 +749,7 @@ export class PDFAnalyzer {
       page_dimensions: this.pageDimensions,
       pdf_name: path.basename(pdfPath),
       spans: this.spans,
+      categoryProvenance: this.categoryProvenance,
       ...(this.analysisWarnings.length > 0 ? { warnings: [...this.analysisWarnings] } : {}),
     };
 
@@ -732,6 +796,7 @@ export class PDFAnalyzer {
         this.spans = cached.spans || [];
         this.categories = cached.categories;
         this.pageDimensions = cached.page_dimensions;
+        this.categoryProvenance = this.cachedProvenance(cached, pdfPath);
 
         // Fix up spans from older caches that lack block_id
         this.assignBlockIdsToSpans();
@@ -755,6 +820,7 @@ export class PDFAnalyzer {
           blocks: cached.blocks,
           categories: cached.categories,
           spans: this.spans,
+          categoryProvenance: this.categoryProvenance,
           sourceSha256,
           // A cached analysis that was produced with (e.g.) failed image
           // extraction genuinely lacks that data — replay its warnings.
@@ -770,6 +836,7 @@ export class PDFAnalyzer {
     this.categories = {};
     this.pageDimensions = [];
     this.analysisWarnings = [];
+    this.categoryProvenance = heuristicProvenance();
 
     sendProgress('loading', 'Reading document file...');
     const data = await fsPromises.readFile(pdfPath);
@@ -857,6 +924,7 @@ export class PDFAnalyzer {
     }
 
     this.analysisWarnings = [];
+    this.categoryProvenance = heuristicProvenance();
 
     const pageCount = maxPages
       ? Math.min(this.pageDimensions.length, maxPages)
@@ -949,7 +1017,7 @@ export class PDFAnalyzer {
       }
     }
 
-    this.generateCategories();
+    await this.assignCategories(pdfPath, mimeType);
 
     // Identity of the file the blocks just came out of — returned to the caller
     // whether or not the result is cacheable, so an edit set can always be bound
@@ -965,6 +1033,7 @@ export class PDFAnalyzer {
         page_dimensions: this.pageDimensions,
         pdf_name: path.basename(pdfPath),
         spans: this.spans,
+        categoryProvenance: this.categoryProvenance,
         ...(this.analysisWarnings.length > 0 ? { warnings: [...this.analysisWarnings] } : {}),
       };
       await this.saveAnalysisToCache(this.analysisCacheKey(sourceSha256), cacheable);
@@ -975,6 +1044,7 @@ export class PDFAnalyzer {
       categories: this.categories,
       spans: this.spans,
       sourceSha256,
+      categoryProvenance: this.categoryProvenance,
       ...(this.analysisWarnings.length > 0 ? { warnings: [...this.analysisWarnings] } : {}),
     };
   }
@@ -1482,9 +1552,107 @@ export class PDFAnalyzer {
   }
 
   /**
-   * Generate categories based on block attributes
+   * Read the book's OWN record of its blocks, when it has one, and put it on
+   * `this.blocks`. Returns the categories to be used verbatim, keyed by block id.
+   *
+   * ── Why this exists ───────────────────────────────────────────────────────
+   *
+   * MuPDF reflows an EPUB and hands back glyph geometry and font metrics; the
+   * markup is gone by then, so `classifyBlock` below has nothing to read but
+   * relative type size, weight and position. On a book WE built that is absurd:
+   * reflow put the `<h1>` there because the working PDF said `chapter`, and then
+   * the picker reads the finished book back and calls it a `title` because the
+   * heading does not literally begin with the word "chapter". Since foundry
+   * 86c59bc every element it emits carries its category, its group and the
+   * source block ids, so the answer is written down — the job is to find the
+   * element again, which `readEpubBlockProvenance` does through the same
+   * aligner the preserving exporter uses.
+   *
+   * ── Two input classes ─────────────────────────────────────────────────────
+   *
+   * A book with no stamps was not written by our reflow. There is no record to
+   * read, so its blocks keep the classifier's answer and the result says
+   * `heuristic`. That is not a fallback for a missing value: it is the honest
+   * reading of a different kind of input, and the caller can tell the two apart
+   * because the result says which it got. A STAMPED book whose blocks fail to
+   * align is a third thing again, and it is a problem — those blocks fall back
+   * to the classifier and the count is both returned and warned about, so the
+   * degradation can never happen quietly.
    */
-  private generateCategories(): void {
+  private async readDocumentCategories(pdfPath: string): Promise<Map<string, string>> {
+    this.categoryProvenance = heuristicProvenance();
+
+    const alignable: EpubExportBlock[] = this.blocks.map(b => ({
+      id: b.id,
+      page: b.page,
+      y: b.y,
+      text: b.text,
+      // Nothing is deleted at analysis time — deletion is a picker edit that
+      // happens long after this, and the aligner only reads the flag to report
+      // policy failures the exporter cares about.
+      deleted: false,
+      isImage: b.is_image,
+      isFootnoteMarker: b.is_footnote_marker,
+    }));
+
+    const reading = await readEpubBlockProvenance(pdfPath, alignable);
+    if (!reading.stamped) return new Map();
+
+    const stampedCategories = new Map<string, string>();
+    for (const block of this.blocks) {
+      const stamp = reading.byBlockId.get(block.id);
+      if (stamp === undefined) continue;
+      block.bf_group = stamp.group;
+      block.bf_blocks = stamp.sourceBlockIds;
+      stampedCategories.set(block.id, stamp.category);
+    }
+
+    this.categoryProvenance = {
+      source: 'document',
+      stampedBlocks: stampedCategories.size,
+      unstampedElementBlocks: reading.alignedToUnstampedElement,
+      unalignedBlocks: reading.unaligned,
+    };
+    console.log(
+      `[PDF Analyzer] ${path.basename(pdfPath)} carries its own block record: `
+      + `${stampedCategories.size} blocks stamped, ${reading.alignedToUnstampedElement} on unstamped `
+      + `elements, ${reading.unaligned} unaligned, ${reading.spanningElements} spanning several elements.`,
+    );
+    if (reading.unaligned > 0) {
+      this.analysisWarnings.push(
+        `${reading.unaligned} block(s) of this book could not be matched to the markup they were `
+        + `laid out from, so their categories are this app's guess rather than the book's own record. `
+        + `Everything else in it is the record.`,
+      );
+    }
+    return stampedCategories;
+  }
+
+  /**
+   * Assign every block its category, from the document's own record where there
+   * is one and from the classifier where there is not. The one place both
+   * analysis entry points go through, so the two can never disagree about which
+   * input class they are looking at.
+   */
+  private async assignCategories(pdfPath: string, mimeType: string): Promise<void> {
+    // Only an EPUB can carry the stamps — they are written by the EPUB emitter,
+    // into EPUB markup. A PDF states no categories at all.
+    if (mimeType !== 'application/epub+zip') {
+      this.categoryProvenance = heuristicProvenance();
+      this.generateCategories();
+      return;
+    }
+    this.generateCategories(await this.readDocumentCategories(pdfPath));
+  }
+
+  /**
+   * Generate categories based on block attributes.
+   *
+   * `stated` holds the categories the DOCUMENT ITSELF declared for its blocks
+   * (see readDocumentCategories). Those are used verbatim — not as a hint, not
+   * as a tiebreaker — and only the blocks absent from it are classified.
+   */
+  private generateCategories(stated: Map<string, string> = new Map()): void {
     // Find body text size (most common in body region)
     const sizeChars = new Map<number, number>();
     for (const block of this.blocks) {
@@ -1575,15 +1743,24 @@ export class PDFAnalyzer {
       if (pages.size >= 3) repeatedTopTexts.add(text);
     }
 
-    // Classify blocks and group by type
+    // Classify blocks and group by type — except where the document already
+    // stated the answer, which is not something to second-guess.
     const blockCategories = new Map<string, string>(); // block id → catType
     for (const block of this.blocks) {
+      const declared = stated.get(block.id);
+      if (declared !== undefined) {
+        blockCategories.set(block.id, declared);
+        continue;
+      }
       blockCategories.set(block.id, this.classifyBlock(block, bodySize, bodyFont, bodyIsItalic, imagesByPage, bodyMarginX, blocksByPage, repeatedTopTexts));
     }
 
-    // Enforce one header per page — keep only the topmost, reclassify rest as body
+    // Enforce one header per page — keep only the topmost, reclassify rest as
+    // body. Blocks the document labelled are exempt: this rule exists to clean
+    // up a guess, and there is no guess to clean up on those.
     const headersByPage = new Map<number, TextBlock[]>();
     for (const block of this.blocks) {
+      if (stated.has(block.id)) continue;
       if (blockCategories.get(block.id) === 'header') {
         if (!headersByPage.has(block.page)) {
           headersByPage.set(block.page, []);

@@ -12,6 +12,7 @@ import * as zlib from 'zlib';
 import * as os from 'os';
 import { promisify } from 'util';
 import * as cheerio from 'cheerio';
+import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
 
 const inflateRaw = promisify(zlib.inflateRaw);
 
@@ -4305,6 +4306,192 @@ export async function alignBlocksToEpub(
   const uncoveredUnits = streamOrder.filter((i) => !coveredUnits.has(i));
 
   return { units, blockToUnits, unaligned, uncoveredUnits };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Provenance — reading back the record the pipeline stamped into its own book
+//
+// Reflow knows exactly what it wrote: it turned a chapter block into an <h1> and
+// a body group into a <p>, and since foundry 86c59bc every element it emits
+// carries that knowledge as three data attributes. Anyone handed the finished
+// EPUB afterwards can only guess the categories back from how the text looks —
+// and that guess is wrong precisely where it matters, on every chapter opening
+// not literally titled "Chapter N", which mupdf hands back as large type and the
+// analyzer therefore calls a `title`.
+//
+// So: don't guess, read. The one thing standing between the laid-out block and
+// its element is that mupdf's reflow throws the DOM away — and mapping blocks
+// back onto the source elements is exactly what `alignBlocksToEpub` above
+// already does for the preserving exporter. This reuses it rather than growing a
+// second matcher: one aligner, one set of alignment rules, nothing to drift.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The attributes foundry's EPUB emitter stamps on every element it writes. */
+export const PROVENANCE_CATEGORY_ATTR = 'data-bf-category';
+export const PROVENANCE_GROUP_ATTR = 'data-bf-group';
+export const PROVENANCE_BLOCKS_ATTR = 'data-bf-blocks';
+
+/** One element's stamp, as read off the markup. */
+export interface EpubBlockProvenance {
+  /** `data-bf-category` — a member of the one palette, verbatim. */
+  category: string;
+  /** `data-bf-group` — the paragraph group the element was rendered from. */
+  group: string;
+  /** `data-bf-blocks`, split on whitespace — the working PDF's own block ids. */
+  sourceBlockIds: string[];
+}
+
+export interface EpubProvenanceReading {
+  /**
+   * True when the book carries stamps at all — i.e. our reflow wrote it. False
+   * is a different INPUT CLASS (a book from elsewhere), not a failure: there is
+   * no record to read, so `byBlockId` is empty and the caller classifies.
+   */
+  stamped: boolean;
+  /** Block id → the stamp of the element it was laid out from. */
+  byBlockId: Map<string, EpubBlockProvenance>;
+  /** Blocks aligned to an element carrying no stamp (nav TOC, hand-added markup). */
+  alignedToUnstampedElement: number;
+  /** Blocks the aligner could not place in the source markup at all. */
+  unaligned: number;
+  /**
+   * Blocks whose text spanned SEVERAL source elements. Their category is the
+   * first one's — the element the block's text begins in — because a block that
+   * runs across an element boundary has no single answer and reading order is
+   * the only non-arbitrary tiebreak. Counted so it cannot happen invisibly.
+   */
+  spanningElements: number;
+}
+
+/**
+ * Does this EPUB carry provenance stamps? A raw substring test over the spine
+ * documents, deliberately: it is the class test, it runs before any parsing or
+ * alignment, and a book from elsewhere must not pay for a lookup that can only
+ * come back empty.
+ */
+export async function epubCarriesProvenance(epubSourcePath: string): Promise<boolean> {
+  const processor = new EpubProcessor();
+  try {
+    const structure = await processor.open(epubSourcePath);
+    for (const chapter of structure.chapters) {
+      const entryName = normalizeZipEntryName(processor.resolvePath(chapter.href));
+      const xhtml = await processor.readFile(entryName);
+      if (xhtml.includes(PROVENANCE_CATEGORY_ATTR)) return true;
+    }
+    return false;
+  } finally {
+    processor.close();
+  }
+}
+
+/**
+ * The stamp on an element or on the nearest ancestor that has one.
+ *
+ * Foundry writes the stamp on the OUTERMOST element of a group — the `<ul>` and
+ * not each `<li>`, the `<blockquote>` and not the `<p>` inside it — while the
+ * unit collector picks whichever of those it treats as a block. Walking up
+ * covers both without either side having to know the other's tag list. A group
+ * is one element, so at most one ancestor can carry a stamp; there is nothing to
+ * choose between.
+ *
+ * A partial stamp is a broken writer, not a missing value: foundry emits all
+ * three attributes in one expression or none of them.
+ */
+function provenanceOnOrAbove(el: any, whatFor: string): EpubBlockProvenance | null {
+  for (let node = el; node && node.nodeType === 1; node = node.parentNode) {
+    if (typeof node.getAttribute !== 'function') break;
+    const category = node.getAttribute(PROVENANCE_CATEGORY_ATTR);
+    if (category === null || category === '') continue;
+    const group = node.getAttribute(PROVENANCE_GROUP_ATTR);
+    const blocks = node.getAttribute(PROVENANCE_BLOCKS_ATTR);
+    if (group === null || group === '' || blocks === null || blocks === '') {
+      throw new Error(
+        `${whatFor}: a <${node.tagName}> carries ${PROVENANCE_CATEGORY_ATTR}="${category}" but not `
+        + `both ${PROVENANCE_GROUP_ATTR} and ${PROVENANCE_BLOCKS_ATTR} `
+        + `(group=${JSON.stringify(group)}, blocks=${JSON.stringify(blocks)}). `
+        + `The three are written together; a partial stamp means the book was written by `
+        + `something other than foundry's EPUB emitter.`,
+      );
+    }
+    return {
+      category,
+      group,
+      sourceBlockIds: blocks.split(/\s+/).filter((id: string) => id.length > 0),
+    };
+  }
+  return null;
+}
+
+/**
+ * Read each laid-out block's category, group and source block ids off the EPUB
+ * element it came from.
+ *
+ * `blocks` are the picker's blocks in the aligner's own input shape; at analysis
+ * time nothing is deleted yet, so callers pass `deleted: false` throughout.
+ *
+ * A stamped value outside the ONE palette (`shared/ocr/block-categories.ts`) is
+ * a disagreement between foundry and BookForge about what a category IS, and it
+ * throws naming the value — dropping it would leave the block silently wearing
+ * the heuristic's guess while the book plainly states otherwise. The palette is
+ * imported rather than passed in: a caller free to supply its own list is a
+ * second palette waiting to happen.
+ */
+export async function readEpubBlockProvenance(
+  epubSourcePath: string,
+  blocks: EpubExportBlock[],
+): Promise<EpubProvenanceReading> {
+  const empty: EpubProvenanceReading = {
+    stamped: false,
+    byBlockId: new Map(),
+    alignedToUnstampedElement: 0,
+    unaligned: 0,
+    spanningElements: 0,
+  };
+  if (!(await epubCarriesProvenance(epubSourcePath))) return empty;
+
+  const legal = new Set<string>(BLOCK_CATEGORY_IDS);
+  const whatFor = `EPUB provenance in ${path.basename(epubSourcePath)}`;
+  const { units, blockToUnits, unaligned } = await alignBlocksToEpub(epubSourcePath, blocks);
+
+  // One element serves many blocks; resolve each unit's stamp once.
+  const stampByUnit = new Map<number, EpubBlockProvenance | null>();
+  const stampFor = (unitIndex: number): EpubBlockProvenance | null => {
+    if (stampByUnit.has(unitIndex)) return stampByUnit.get(unitIndex)!;
+    const stamp = provenanceOnOrAbove(units[unitIndex].el, whatFor);
+    if (stamp !== null && !legal.has(stamp.category)) {
+      throw new Error(
+        `${whatFor}: element <${units[unitIndex].tag}> in ${units[unitIndex].file} is stamped `
+        + `${PROVENANCE_CATEGORY_ATTR}="${stamp.category}" (group ${stamp.group}), which is not a `
+        + `block category BookForge knows. The palette is shared/ocr/block-categories.ts: `
+        + `${BLOCK_CATEGORY_IDS.join(', ')}.`,
+      );
+    }
+    stampByUnit.set(unitIndex, stamp);
+    return stamp;
+  };
+
+  const byBlockId = new Map<string, EpubBlockProvenance>();
+  let alignedToUnstampedElement = 0;
+  let spanningElements = 0;
+  for (const [blockId, unitIndices] of blockToUnits) {
+    if (unitIndices.length === 0) {
+      // The aligner matched the text but it overlapped no unit — impossible for
+      // a range built out of unit extents, so say so rather than absorb it.
+      throw new Error(`${whatFor}: block ${blockId} aligned to zero source elements — this is a bug.`);
+    }
+    if (unitIndices.length > 1) spanningElements++;
+    const stamp = stampFor(unitIndices[0]);
+    if (stamp === null) alignedToUnstampedElement++;
+    else byBlockId.set(blockId, stamp);
+  }
+
+  return {
+    stamped: true,
+    byBlockId,
+    alignedToUnstampedElement,
+    unaligned: unaligned.length,
+    spanningElements,
+  };
 }
 
 /**

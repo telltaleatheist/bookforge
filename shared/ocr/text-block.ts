@@ -97,6 +97,73 @@ export interface TextBlock {
    * even where OCR misread the characters.
    */
   ocr_descender_ratio?: number;
+  /**
+   * The id of the paragraph GROUP foundry rendered this block's source element
+   * from — the `data-bf-group` attribute it stamps on every element it writes.
+   *
+   * Written by `readEpubBlockProvenance` (electron/epub-processor.ts) when an
+   * EPUB the pipeline itself built is analyzed: the laid-out block is aligned
+   * back to the element it came from, and the element says what it is. Absent on
+   * every other block — a PDF has no such record, and neither does a book that
+   * came from somewhere else.
+   *
+   * SEVERAL BLOCKS MAY SHARE ONE GROUP ID, and that is the truth rather than a
+   * collision: mupdf re-lays the book out at its own page size, so one authored
+   * paragraph becomes one block per visual line and may straddle a page turn.
+   * They all came from the one element, so they all carry its group.
+   *
+   * Its presence is also what marks `category_id` as the BOOK'S OWN record
+   * rather than the analyzer's font/geometry guess — foundry writes all three
+   * attributes together or none of them.
+   */
+  bf_group?: string;
+  /**
+   * The WORKING PDF block ids that were joined to make this block's source
+   * element — the `data-bf-blocks` attribute, split on whitespace.
+   *
+   * These are the same ids the working document's annotations carry, so a
+   * paragraph in the book can be traced back to the blocks and pages it was
+   * made from. Written by the same reader as `bf_group`, under the same rules.
+   */
+  bf_blocks?: string[];
+}
+
+/**
+ * Where a set of blocks got their categories — a fact about the INPUT, not a
+ * quality score.
+ *
+ * There are two input classes and they are not comparable:
+ *
+ *  - `document`: the book carries the pipeline's own record of what it wrote
+ *    (foundry stamps `data-bf-category` on every element of every EPUB it
+ *    reflows), and the categories were read off it. They are not a guess: the
+ *    `<h1>` that says `chapter` IS the chapter block of the working PDF.
+ *  - `heuristic`: nothing in the document says what its blocks are, so they were
+ *    classified from relative font size, weight and page position. A book
+ *    imported from elsewhere was never written by our reflow and there is
+ *    nothing else to read — this is the honest answer for that class, not a
+ *    fallback standing in for a missing value.
+ *
+ * A caller that needs to know whether it can trust the labels reads `source`.
+ * The counts exist so a `document` book that only PARTLY aligned cannot quietly
+ * pass itself off as fully recorded.
+ */
+export interface BlockCategoryProvenance {
+  source: 'document' | 'heuristic';
+  /** Blocks whose category was read off their source element's stamp. */
+  stampedBlocks: number;
+  /**
+   * Blocks aligned to a source element that carries no stamp — the nav TOC and
+   * any hand-added markup. Expected in small numbers; their categories are the
+   * heuristic's.
+   */
+  unstampedElementBlocks: number;
+  /**
+   * Blocks the aligner could not place in the source markup at all. Their
+   * categories are the heuristic's, and a non-zero count is reported as an
+   * analysis warning: a stamped book must not degrade to guessing in silence.
+   */
+  unalignedBlocks: number;
 }
 
 export interface Category {

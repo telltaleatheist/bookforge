@@ -5,8 +5,8 @@ import { ElectronService, Chapter } from '../../../core/services/electron.servic
 // so the main process and the CLI can describe the same blocks the picker edits —
 // `manifest.editor.ocrBlocks` is literally a TextBlock[]. Re-exported here because
 // this file has always been where the rest of the app imports them from.
-export type { TextBlock, Category, PageDimension } from '@shared/ocr/text-block';
-import type { TextBlock, Category, PageDimension } from '@shared/ocr/text-block';
+export type { TextBlock, Category, PageDimension, BlockCategoryProvenance } from '@shared/ocr/text-block';
+import type { TextBlock, Category, PageDimension, BlockCategoryProvenance } from '@shared/ocr/text-block';
 
 export interface PdfAnalysisResult {
   blocks: TextBlock[];
@@ -32,6 +32,12 @@ export interface PdfQuickResult {
   spans?: any[];
   // Non-fatal analysis problems (e.g. image extraction failed) to surface to the user
   warnings?: string[];
+  /**
+   * Whether these blocks' categories are the DOCUMENT'S OWN record or this
+   * app's font/geometry guess — two different input classes, only one of them
+   * trustworthy. Present only alongside blocks (i.e. when textReady is true).
+   */
+  categoryProvenance?: BlockCategoryProvenance;
   /** See PdfAnalysisResult.sourceSha256 — present on cache hit and miss alike. */
   sourceSha256: string;
 }
@@ -41,6 +47,8 @@ export interface PdfTextResult {
   categories: Record<string, Category>;
   spans?: any[];
   warnings?: string[];
+  /** See PdfQuickResult.categoryProvenance. */
+  categoryProvenance?: BlockCategoryProvenance;
   /** See PdfAnalysisResult.sourceSha256. */
   sourceSha256: string;
 }

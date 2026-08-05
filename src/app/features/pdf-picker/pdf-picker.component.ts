@@ -5452,6 +5452,21 @@ export class PdfPickerComponent implements OnInit {
       // Surface non-fatal extraction problems (e.g. images failed) to the user
       this.surfaceAnalysisWarnings(data.warnings);
 
+      // Say which input class this document is: a book our own reflow wrote
+      // states its block categories and they were read off it, or nothing in it
+      // says anything and they are the analyzer's font/geometry guess. Logged
+      // rather than assumed, because the two look identical on the canvas.
+      const provenance = data.categoryProvenance;
+      if (provenance) {
+        console.log(
+          provenance.source === 'document'
+            ? `[PdfPicker] categories are the book's own record: ${provenance.stampedBlocks} stamped, `
+              + `${provenance.unstampedElementBlocks} on unstamped elements, `
+              + `${provenance.unalignedBlocks} unaligned (those are guesses)`
+            : '[PdfPicker] categories are this app\'s font/geometry guess — the document states none',
+        );
+      }
+
       // Update editor state if this doc is still the active one
       if (this.activeDocumentId() === docId) {
         this.editorState.updateTextData({

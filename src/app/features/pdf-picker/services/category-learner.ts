@@ -1317,6 +1317,8 @@ export function detectMergeableGroups(
  * - Bounding box: union of all source blocks
  * - Text: stacked lines joined as flowing prose (see line-join.ts)
  * - Inherits category_id, font_size, font_name, region from first block
+ * - Provenance (`bf_group` / `bf_blocks`): see below — the merged block keeps
+ *   the record of what it was made from, or it is not a record any more.
  */
 export function createMergedBlock(mergedId: string, blocks: TextBlock[]): TextBlock {
   const first = blocks[0];
@@ -1348,6 +1350,31 @@ export function createMergedBlock(mergedId: string, blocks: TextBlock[]): TextBl
   }, '');
   const totalLines = blocks.reduce((sum, b) => sum + (b.line_count || 1), 0);
 
+  // Provenance travels with the text it describes. `bf_blocks` is the union in
+  // reading order (deduplicated — an EPUB paragraph laid out as five lines gives
+  // five blocks all naming the same source ids), which is the honest answer for
+  // a merge however it was formed.
+  //
+  // `bf_group` is carried only when every source block that has one AGREES.
+  // Merging lines of one authored paragraph is the normal case and they all
+  // share its group; merging across a group boundary produces a block that came
+  // from two elements, and naming one of them would be a claim the block cannot
+  // support. Absent is the truth there, and the ids in `bf_blocks` still say
+  // exactly what went in.
+  const groups = new Set(blocks.map(b => b.bf_group).filter((g): g is string => g !== undefined));
+  const sourceIds: string[] = [];
+  const seenSourceIds = new Set<string>();
+  for (const b of blocks) {
+    // Undefined is a real state, not a missing value: a PDF block, or a block of
+    // an EPUB nobody here wrote, has no provenance to carry.
+    if (b.bf_blocks === undefined) continue;
+    for (const id of b.bf_blocks) {
+      if (seenSourceIds.has(id)) continue;
+      seenSourceIds.add(id);
+      sourceIds.push(id);
+    }
+  }
+
   return {
     id: mergedId,
     page: first.page,
@@ -1367,5 +1394,7 @@ export function createMergedBlock(mergedId: string, blocks: TextBlock[]): TextBl
     is_image: false,
     is_footnote_marker: false,
     line_count: totalLines,
+    ...(groups.size === 1 ? { bf_group: [...groups][0] } : {}),
+    ...(sourceIds.length > 0 ? { bf_blocks: sourceIds } : {}),
   };
 }

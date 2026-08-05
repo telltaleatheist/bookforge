@@ -2,6 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
 import { ResolvedProjectVariant } from '../models/manifest.types';
 import type { CorpusPageType } from '@shared/ocr/page-types';
+import type { BlockCategoryProvenance } from '@shared/ocr/text-block';
 import type { TextLayerReport } from '@shared/pdf/text-layer';
 import type {
   PassDiffEntry,
@@ -949,7 +950,7 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  onTextReady(callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[]; pdfPath?: string; warnings?: string[] }) => void): () => void {
+  onTextReady(callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[]; pdfPath?: string; warnings?: string[]; categoryProvenance?: BlockCategoryProvenance }) => void): () => void {
     if (this.isElectron) {
       return (window as any).electron.pdf.onTextReady(callback);
     }
