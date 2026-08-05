@@ -13097,7 +13097,8 @@ export class PdfPickerComponent implements OnInit {
     }
     this.viewedStation.set('archive');
 
-    if (this.autoCastAttempted) return;
+    const projectDir = this.projectPath();
+    if (projectDir && this.autoCastAttemptedFor === projectDir) return;
     await this.measureOriginalClass();
 
     const action = decideArrival({
@@ -13124,25 +13125,32 @@ export class PdfPickerComponent implements OnInit {
         // A scan costs minutes and 1.4 GB of page renders, so it is OFFERED and
         // never taken: the dialog opens with the run one press away and its
         // progress inline, and the archive stays on screen until it lands.
-        this.autoCastAttempted = true;
+        this.autoCastAttemptedFor = projectDir;
         this.showOcrSettings.set(true);
         return;
       case 'cast-now':
         // Seconds, on the publisher's own text layer. Nothing is asked because
         // there is nothing worth interrupting somebody about.
-        this.autoCastAttempted = true;
+        this.autoCastAttemptedFor = projectDir;
         await this.castOnArrival();
         return;
     }
   }
 
   /**
-   * Once per book per window. Not idempotence for its own sake: `open()` runs
-   * again after every stage and after every reload, and a cast that FAILED —
-   * foundry missing, a damaged original — would otherwise be retried on every
-   * one of them, forever, with the window unusable in between.
+   * The project this window has already tried to cast on arrival, or null.
+   *
+   * Once per BOOK per window. `open()` runs again after every stage and after
+   * every reload, and a cast that FAILED — foundry missing, a damaged original —
+   * would otherwise be retried on every one of them, forever, with the window
+   * unusable in between.
+   *
+   * Keyed by project rather than a bare flag, because one window opens many
+   * books: a flag set by the first book would follow the window to the next one
+   * and leave every book after it standing on a read-only archive — the exact
+   * thing this arrival rule exists to prevent.
    */
-  private autoCastAttempted = false;
+  private autoCastAttemptedFor: string | null = null;
 
   /**
    * Mint the working copy and stand on it. The text-PDF path, on open.
