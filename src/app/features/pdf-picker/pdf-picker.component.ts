@@ -35,6 +35,7 @@ import {
   type PassOptionsKind,
   type PassOptionsResult,
 } from './components/pass-options-modal/pass-options-modal.component';
+import { FootnotesModalComponent } from './components/footnotes-modal/footnotes-modal.component';
 import {
   STATIONS,
   STATION_LABELS,
@@ -372,6 +373,7 @@ interface AlertModal {
     DocumentNavComponent,
     StationBarComponent,
     PassOptionsModalComponent,
+    FootnotesModalComponent,
     TabBarComponent,
     OcrSettingsModalComponent,
     ExportSettingsModalComponent,
@@ -1101,6 +1103,20 @@ interface AlertModal {
         (documentReadyToPaint)="onDocumentReadyToPaint()"
         (handOffToQueue)="handOffToQueue()"
         (backgroundJobStarted)="onBackgroundOcrStarted($event)"
+      />
+    }
+
+    <!-- Footnote removal: minutes, so it runs HERE with a bar rather than in
+         the queue — with the same hand-off if the user would rather it did. -->
+    @if (showFootnotesModal()) {
+      <app-footnotes-modal
+        [projectDir]="projectPath() || ''"
+        [appliedPasses]="bookAppliedPasses()"
+        [runInBackground]="runInBackground()"
+        (close)="showFootnotesModal.set(false)"
+        (runInBackgroundChange)="setRunInBackground($event)"
+        (handOffToQueue)="onFootnotesHandedToQueue()"
+        (bookReplaced)="onBookReplacedByPass()"
       />
     }
 
@@ -3540,7 +3556,7 @@ export class PdfPickerComponent implements OnInit {
    * can be PRESSED is `disabledTasks`' question, and it is answered there with
    * its own sentence.
    */
-  private readonly bookAppliedPasses = computed<readonly PassRecord[]>(() => {
+  readonly bookAppliedPasses = computed<readonly PassRecord[]>(() => {
     const answer = this.bookEpubAnswer();
     const dir = this.projectPath();
     return answer && dir && answer.dir === dir ? answer.appliedPasses : [];
@@ -9667,14 +9683,19 @@ export class PdfPickerComponent implements OnInit {
   /**
    * A rail entry that runs a pass over the book was pressed.
    *
-   * Where each one goes is the pass's own business: Simplify and Translate are
-   * AI runs over a whole book — hours — so they are queued, and their options
-   * dialog is where their settings are chosen.
+   * Where each one goes is the pass's own business, and the difference is how
+   * long the run is rather than how it is launched. Footnote removal is minutes
+   * at most and runs INLINE in its own modal with a progress bar (Owen,
+   * 2026-08-04: "footnote removal is pretty fast. instead of adding to the queue
+   * lets have it do it quickly in a modal with a progress bar, just like the OCR
+   * modal on pdfs"), with the same "run in background" hand-off the OCR dialog
+   * has. Simplify and Translate are AI runs over a whole book — hours — so they
+   * stay queued, and their options dialog is where their settings are chosen.
    */
   private startEpubPass(kind: EpubPassTaskId): void {
     switch (kind) {
       case 'footnotes':
-        void this.enqueueEpubPass({ kind: 'footnotes' });
+        this.showFootnotesModal.set(true);
         return;
       case 'simplify':
         this.passOptionsKind.set('simplify');
@@ -9960,6 +9981,45 @@ export class PdfPickerComponent implements OnInit {
         type: 'warning',
       });
     }
+  }
+
+  /** The footnote-removal dialog is open. It runs the pass, not just sets it up. */
+  readonly showFootnotesModal = signal(false);
+
+  /** The run went to the queue instead, and the user goes with it. */
+  async onFootnotesHandedToQueue(): Promise<void> {
+    this.showFootnotesModal.set(false);
+    await this.handOffToQueue();
+  }
+
+  /**
+   * A pass replaced the book in place — show the file that is there NOW.
+   *
+   * The passes rewrite `outputs.epub` at its own path, so nothing about the
+   * window's idea of where the book is has changed and nothing would prompt it
+   * to re-read: a picker standing at the EPUB station would go on rendering the
+   * bytes it loaded before the run. So the provenance is re-asked (the rail's
+   * pass statuses come from it) and, when the book is what is on screen, the
+   * file is loaded again. `showEpubStation` closes the tab and re-opens it, and
+   * the analysis cache is keyed by the file's SHA-256, so the rewritten book is
+   * analysed afresh rather than served from the old one's entry.
+   */
+  async onBookReplacedByPass(): Promise<void> {
+    await this.refreshBookEpub();
+    if (this.viewedArtifact() !== 'book') return;
+    const epubPath = this.stationEpubPath();
+    // Unreachable in practice — a pass that landed recorded the book it wrote —
+    // and said rather than ignored if main has stopped answering for it.
+    if (!epubPath) {
+      this.showAlert({
+        title: 'The book was rewritten, but this window cannot find it',
+        message: 'The pass finished and recorded its work, but this project no longer reports '
+          + 'where its book is. Reopen the book from the versions page.',
+        type: 'warning',
+      });
+      return;
+    }
+    await this.showEpubStation(epubPath);
   }
 
   /** The simplify/translate dialog is open for this pass, or null. */
