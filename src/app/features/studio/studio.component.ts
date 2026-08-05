@@ -1978,6 +1978,12 @@ export class StudioComponent implements OnInit, OnDestroy {
    */
   goToNarration(): void {
     this.goToProcessing();
+    // Re-read the selected project first. The versions page re-measures itself
+    // on `document:stage-finished` and the ITEM does not, so a book built in the
+    // picker a moment ago can be showing an EPUB row here while the record this
+    // tab reads (`currentEpubPath`) still predates it — and the Process tab
+    // answers an empty one with "No EPUB available for processing".
+    void this.onFileChanged();
     this.narrationRequest.update(n => n + 1);
   }
 
@@ -1988,26 +1994,25 @@ export class StudioComponent implements OnInit, OnDestroy {
    * Process tab shows the wizard for the SELECTED book, so a hand-off that only
    * switched tabs would narrate whichever book happened to be open.
    *
-   * The list is re-read before the project is declared missing. The book may
-   * have been created, or its export recorded, since this window last loaded —
-   * measuring again is cheap and is the difference between "we looked and it is
-   * not there" and "we were holding an old list".
+   * The list is re-read FIRST, every time. The book the picker is handing over
+   * was written moments ago, so whatever this window is holding predates it: the
+   * Process tab shows the wizard only when the project has a document
+   * (`currentEpubPath`), and a record read before the EPUB existed is exactly
+   * how a freshly built book arrives reading as a book with nothing to narrate.
+   * It also makes the missing-project message a measurement rather than a
+   * report about a list that was already old.
    */
   private async openNarrationFor(projectDir: string): Promise<void> {
+    await this.studioService.loadAll();
+
     // Archived books are searched too: being archived is not being gone, and a
     // book the picker had open is one the user is plainly still working on.
     // Matched with samePath because the two spellings come from different hands
     // — main resolves with backslashes on Windows, the studio list joins with
     // forward slashes — and two spellings of one directory are not two books.
-    const find = (): StudioItem | undefined =>
-      [...this.studioService.books(), ...this.studioService.archived()]
-        .find(b => !!b.projectDir && samePath(b.projectDir, projectDir));
+    const item = [...this.studioService.books(), ...this.studioService.archived()]
+      .find(b => !!b.projectDir && samePath(b.projectDir, projectDir));
 
-    let item = find();
-    if (!item) {
-      await this.studioService.loadAll();
-      item = find();
-    }
     if (!item) {
       void this.electronService.showMessageDialog({
         title: 'Could not open narration',
