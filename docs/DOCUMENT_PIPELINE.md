@@ -29,7 +29,7 @@ A project directory holds three documents, all named after the original:
 | File | Role |
 |---|---|
 | `archive/<Original>.pdf` | The immutable primary. **Never written. Ever.** Its sha256 is the identity every other document is bound to. |
-| `<Original>.working.pdf` | The mutable working document — a copy of the primary, sitting in the project root. Stages write INTO it (text layer, annotations). **System file: never shown in the versions page or any user-facing listing.** |
+| `<Original>.working.pdf` | The mutable working document — a copy of the primary, sitting in the project root. Stages write INTO it (text layer, annotations). **Shown in the versions page's document family, and nowhere else** (RULED 2026-08-04 — see below). |
 | `<Original>.epub` | The final product, written by Reflow **with this name from birth**. `book.epub` never exists on disk. Later stages (footnotes-on-epub) edit it in place via staged write + atomic rename. |
 
 `working.pdf` and the EPUB are **sidecars of the archive primary** under the
@@ -50,13 +50,39 @@ every picker edit (hashing a 300 MB PDF per annotation click is not a thing).
 Between stage boundaries the delivery tier (size+mtime) identifies the working
 copy.
 
-### Sidecars are system files, not products
+### Sidecars are system files, and the working copy still gets a door
 
-`working.pdf` and the binding record are the system's working documents. They
-get **no item lines in the versions page** and no presence in any user-facing
-file listing. The user sees exactly two things: the archive original and, once
-Reflow has run, `<Original>.epub`. The one user-facing affordance the working
-documents power is **"Reset to [stage]"** (see below).
+**RULED 2026-08-04, reversing this section's original rule.** The old rule was
+that `working.pdf` gets no item line anywhere. It failed its first real session:
+a book was cast and detected from the queue, and afterwards the versions page
+listed only the archive — the work existed on disk, at 3.7 MB, with both stage
+boundaries recorded, and had no door. A user cannot be asked to trust a pipeline
+whose products it does not admit to.
+
+The rule now:
+
+- **The working copy has exactly ONE line item, in the versions page's document
+  family** — the archive original as parent, the working copy and the book EPUB
+  indented under it. It is still absent from every other listing (the library
+  grid, file pickers, the variants list).
+- **Clicking it opens the PROJECT**, not the file. `editor:get-versions` gives
+  that row an `openPath` pointing at the project's PDF primary, and the picker
+  lands on the furthest station the book has reached — which is the working
+  copy. Opening `working.pdf` standalone would give it no project, no binding
+  and no annotations: a window that looks like the book and answers no gesture.
+- **The binding record itself stays invisible.** It is a record, not a document.
+- The row is DERIVED, per run, from the binding record plus the file's
+  existence (`listWorkingDocuments`, `electron/document-project.ts`). No binding
+  or no file means no row; nothing is ever inferred from a filename.
+
+The other user-facing affordance the working documents power is unchanged:
+**"Reset to [stage]"** (see below).
+
+**A pass is not a version.** Footnote removal, simplify and translate mint no
+line item — they are STARS on the book they edited, collapsed by kind,
+latest-wins (`shared/document/version-family.ts`). `appliedPasses` stays
+append-only in the manifest: it is the book's own history, and the fix was how
+it is displayed, not deleting it.
 
 ### Reset to stage
 
