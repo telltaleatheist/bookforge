@@ -371,6 +371,104 @@ same `load()`.
 established from the code and from the pure tests; the smoke pass on a real book
 is outstanding.
 
+## Phase D — correcting the book (REWRITTEN 2026-08-04, after measurement)
+
+`ocr-correct --epub`: book in, book out, on screen, reviewable. Correction
+lives on the EPUB because that is where every text transformation lives, and
+because correction buried inside reflow is invisible, un-re-runnable and
+un-reviewable.
+
+**Offered on every book, never refused.** Earlier drafts had it refuse a
+text-class book on the grounds that the words are the publisher's. Owen's
+counter-example kills that: "maybe it was imported as an epub but it was
+converted from a pdf before it was imported." Our provenance knowledge is
+incomplete, the error class is identical, and there are legitimate reasons we
+cannot see. Say the caveat in the modal; do not lock the button.
+
+**Order: correction FIRST among the EPUB passes.** Footnote removal measures
+97.0/0.5 on corrected text against 90.5/2.1 on raw, so correcting afterwards
+takes the worse number for nothing. Simplify and translate REWRITE the prose —
+correcting after them means the rewrite consumed uncorrected text and you are
+then editing the model's output rather than the book.
+
+**Unit: sentences, not lines.** More context disambiguates more errors. The
+generation budget is already derived from input length (`text.length + 64`), so
+it scales by itself. Cap at ~400 chars, split only at a sentence boundary, and
+if one sentence exceeds the cap split at a word boundary — a fixed cut lands
+mid-sentence and recreates the fragment problem this is meant to escape.
+
+**The prompt is NOT reworded.** `src/ocr/prompt.ts` says a near-miss prompt is
+worse than an error, `contract-crosscheck.mjs` exists to catch drift, and the
+eval data carries it verbatim. It says "a single line of text"; a sentence is
+still a line of text. Rewording it leaves the trained distribution in the one
+dimension this repo guards hardest — that is a retrain, not an edit.
+
+**The guard must stop discarding whole units** (Owen, and he is right). Today
+one bad word rejects everything, which on a 400-char sentence throws away every
+good correction alongside it. The rule itself (word-level alignment, balanced
+N→N substitution runs, each pair within Levenshtein 2) is scale-free and
+survives; what changes is that only the offending RUN is rejected. Being
+measured now against the held-out eval — the shipped whole-unit policy is the
+control, `degraded` is the headline, and the "model deleted the word I" case
+must still be refused. Retraining, or a bigger base, is on the table if the
+numbers ask for it.
+
+**A join is a recognition fix, and the current rule cannot express one.**
+`totali tarianism` → `totalitarianism` is 2 words → 1: UNBALANCED, so the
+shipped guard would reject the very repair most wanted. The extension: when an
+aligned run's letters are IDENTICAL once whitespace is removed, it is a pure
+join or split — no character invented, no word lost — and is always safe.
+Anything that changes letters keeps the existing per-word rule, which is what
+protects the measured failure (the model once deleted the word "I").
+
+## Soft hyphens: a reflow bug, not a correction job (MEASURED 2026-08-04)
+
+Owen: "spaces where words didnt join properly… theyre all over the place in
+this book." Measured on his Kershaw book, in the archive PDF's own text layer:
+
+```
+line 51: …traditional views on ‘totali<U+00AD>
+line 52: tarianism’ and to views of Stalin…
+```
+
+Those lines end in **U+00AD SOFT HYPHEN**, not `-`. `WRAP_HYPHEN_END` in
+`src/paragraphs/hyphen.ts` is `/[A-Za-zÀ-ÿ]-[ \t]*$/` — ASCII hyphen-minus
+only — and U+00AD appears nowhere in foundry, so the line reads as ending
+without a hyphen and the join inserts a space. No model is involved and no
+model should be: this is deterministic.
+
+**A soft hyphen is less ambiguous than an ASCII one, not more.** The whole
+corpus-attestation apparatus exists because `well-` at a line end might be a
+real compound. U+00AD cannot be: it is by definition a typesetter's
+hyphenation point, invisible unless the line breaks there. So it joins
+unconditionally — no attestation, no hyphen kept — and a soft hyphen anywhere
+else is invisible formatting that must never reach a TTS engine.
+
+Owen's framing, which is the general lesson: this whole class of damage "is an
+artifact of joining two lines from a pdf instead of just doing it from an epub
+from the start." A book that arrives as an EPUB has the publisher's own
+paragraphs and never meets a line join. Every wrap-hyphen rule, every
+attestation lookup and this bug all exist only on the PDF path — which is the
+main path, so they must be right, but nothing on the EPUB path should ever grow
+a line-joining step to be consistent with them.
+
+## Footnote removal — what it missed, and what it was trained on
+
+Owen, on the same book: "it missed a few. it did a good job overall but we
+should probably modify the corpus to provide more examples like the ones it
+missed." Two jobs, in order: collect the ACTUAL misses off his book as a named
+list (the run writes `stages/NN-footnotes/report.json`, which records every
+marker asked about and every refusal by reason — the misses are in there, not
+guesswork), then decide whether they are a corpus gap or a guard rejection,
+because those need opposite fixes.
+
+**Check the training provenance before adding anything.** Owen believes the
+footnotes model was trained on EPUBs and wants it verified rather than assumed
+— and it matters, because `footnotes --epub` is the documented default while
+`footnotes --pdf` is scanned-class only. If it was trained on PDF-derived text
+the same input-shape question that Phase D is measuring for the corrector
+applies here too.
+
 ## Foundry work
 
 - NEW: `ocr-correct --epub` (epub-in → epub-out correction pass).
