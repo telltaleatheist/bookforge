@@ -1,0 +1,66 @@
+eval-guard — 4983 units from /Volumes/Callisto/training/rubric/galley/sft-sent-v1_3/eval.jsonl
+  generated 2026-08-05T19:18:29-0400 in 3006.0s on http://127.0.0.1:8771
+  server args: llama-server b7482 macos-arm64 Metal -m foundry-4b-f16.gguf -c 16384 -np 8 -ngl 99 --lora-scaled foundry-ocr-sent-v1-4b.gguf:0.0  [ocr_sent_v1_4b ckpt-1975, BASELINE on the v1.3/v1.2 eval]
+
+================================================================================================
+THE NUMBER THAT DECIDES: units the model made WORSE (`degraded`), and what it repaired
+================================================================================================
+
+policy        CER before  CER after  degraded  deg/100k  rep/100k  falseEdit  corrections   exact
+  do nothing     0.477%     0.477%         0       0.0       0.0      0.00%            0   63.8%
+  no-guard       0.477%     0.597%      1167     227.2     108.1     23.19%         2305   43.4%
+  whole-unit     0.477%     0.395%        56       5.2      87.7      1.10%          964   53.4%
+  per-run        0.477%     0.358%       118      12.4     131.9      1.86%         1464   55.7%
+
+  4983 units, 1345356 gold characters, 3178 already correct (63.8%)
+  model /Users/telltale/Library/Application Support/foundry/models/foundry-4b-f16.gguf
+
+  A model only beats "do nothing" by moving CER down without moving degraded
+  and falseEdit up. `degraded` counts UNITS — compare it only within one unit
+  size; deg/100k and rep/100k are characters and compare across sizes.
+
+PER BOOK
+  policy      book                    units  CER before  CER after  WORSE  deg/100k  falseEdit
+  no-guard    deathstalker-coda        3028      0.484%     0.611%    737     229.3     23.04%
+  no-guard    michelle-remembers       1955      0.467%     0.574%    430     223.9     23.41%
+  whole-unit  deathstalker-coda        3028      0.484%     0.410%     20       2.8      0.52%
+  whole-unit  michelle-remembers       1955      0.467%     0.371%     36       9.0      1.98%
+  per-run     deathstalker-coda        3028      0.484%     0.354%     54       7.9      1.09%
+  per-run     michelle-remembers       1955      0.467%     0.365%     64      19.5      3.02%
+
+WHERE THE WORK IS — already-correct units vs damaged units
+  policy      population      units  CER before  CER after   impr  WORSE  deg/100k  rep/100k
+  no-guard    already-correct   3178      0.131%     0.346%      0    737     214.2       0.0
+  no-guard    damaged          1805      1.013%     0.985%    895    430     247.3     275.3
+  whole-unit  already-correct   3178      0.131%     0.137%      0     35       6.0       0.0
+  whole-unit  damaged          1805      1.013%     0.793%    800     21       4.0     223.3
+  per-run     already-correct   3178      0.131%     0.142%      0     59      10.9       0.0
+  per-run     damaged          1805      1.013%     0.692%   1158     59      14.8     335.7
+
+GENERATION HEALTH — the RAW answer, before any guard
+  answers under 90% of the input length        3  (0.06%)
+  answers over 110% of the input length        1  (0.02%)
+  empty answers                                0
+  answers spanning more than one line          0   (only the first is kept)
+  answers near the n_predict ceiling           0
+
+WHAT THE GUARD REFUSED
+  units with at least one illegal run   1341
+  illegal runs                          2983
+  legal runs in those same units        809   <- what whole-unit throws away and per-run keeps
+
+WHERE THE TWO POLICIES DISAGREE (same generation, different blast radius)
+  units where the shipped text differs  500
+    per-run CLOSER to the truth         358   (594 characters recovered)
+    per-run FURTHER from the truth      62   (97 characters lost)
+    same distance, different text       80
+
+  PER-RUN DEGRADED A UNIT THAT WHOLE-UNIT DID NOT: 62
+
+WORST DAMAGE UNDER no-guard (0 of 1167) — read these, do not average them
+
+WORST DAMAGE UNDER whole-unit (0 of 56) — read these, do not average them
+
+WORST DAMAGE UNDER per-run (0 of 118) — read these, do not average them
+
+wrote results-sent-v2/fulleval-v14gold.OLDMODEL.stats.json

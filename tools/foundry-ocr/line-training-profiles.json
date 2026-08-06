@@ -554,6 +554,54 @@
           "enable_thinking": false
         }
       }
+    },
+    "ocr_sent_v1_4_4b": {
+      "kind": "text_sft",
+      "description": "ocr SENTENCE corrector v1.4, Qwen3-4B — THE JOIN IS TAUGHT AND MEASURED. Corpus: rubric/galley/sft-sent-v1_4-promptb — 43,848 train / 4,983 eval / 772 eval-german, built from the v2 alignment with --gold-join wrap-hyphen --gold-join-scope train+eval --identity-share-mode fill --ocr-typography keep --prompt-variant b. TWO THINGS DIFFER FROM v1.2. (1) --gold-join-scope train+eval: every earlier corpus applied the wrap-hyphen join to TRAIN ONLY and merely REPORTED what it withheld from eval (evalUnitsNotJoined 1532). That charged a degradation for every weld the model performed CORRECTLY on 27% of eval units, which made the capability unmeasurable in the run that exists to acquire it. 1,816 joins are now applied to the eval gold too. Owen's ruling, Aug 5 2026: the model owns hyphen joining; it is not to happen deterministically. (2) --identity-share-mode fill instead of balance: balance discarded 4,338 EDIT units to hold a 50% ratio, and recall — not false edits — is this model's weak axis (1.1% falseEdit against only a third of error mass repaired). Identity lands at 45.1% and every edit unit is kept, giving 24,093 edit units of which 14,958 are genuine letter repair and 9,135 teach the join. PROMPT VARIANT B IS REQUIRED HERE, not optional: variant A says 'keep a hyphen at the end of the line exactly as it is', which directly contradicts 17,229 gold joins. Shipping this model means moving foundry src/ocr/prompt.ts, sentences.py and both crosschecks in ONE commit with it. STAGE TO REMOTE_DIR=$HOME/ocr-sent-v1_4. RECIPE IS ocr_sent_v1_4b UNCHANGED — same base, same LoRA, same schedule, max_seq_length 768. RE-MEASURE token lengths with train-line.sh --preflight; the builder's bound for this corpus is under the 683 already recorded for variant B. Judge by tools/foundry-ocr/eval-guard.py under per-run against ocr_sent_v1_4b, degraded first, do-nothing baseline alongside — never by loss. Score on BOTH evals and say which a number is from.",
+      "model": {
+        "id": "Qwen/Qwen3-4B",
+        "max_seq_length": 768,
+        "load_in_4bit": false
+      },
+      "lora": {
+        "r": 32,
+        "alpha": 32,
+        "dropout": 0.0,
+        "target_modules": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj",
+          "gate_proj",
+          "up_proj",
+          "down_proj"
+        ]
+      },
+      "training": {
+        "learning_rate": 0.0001,
+        "optimizer": "adamw_8bit",
+        "per_device_train_batch_size": 2,
+        "gradient_accumulation_steps": 8,
+        "max_epochs": 3,
+        "early_stopping_patience": 2,
+        "save_total_limit": 4,
+        "warmup_ratio": 0.05,
+        "weight_decay": 0.01,
+        "lr_scheduler_type": "cosine",
+        "seed": 3407
+      },
+      "output": {
+        "lora_dir_template": "{run_name}_lora",
+        "merged_dir_template": "{run_name}_merged"
+      },
+      "dataset": {
+        "format": "chat_jsonl",
+        "messages_field": "messages",
+        "assistant_only_loss": true,
+        "template_kwargs": {
+          "enable_thinking": false
+        }
+      }
     }
   }
 }

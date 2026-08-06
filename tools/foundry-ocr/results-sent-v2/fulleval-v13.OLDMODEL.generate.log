@@ -1,0 +1,10 @@
+  ... 500/4983  (1.6/s, 46.7 min left)
+  ... 1000/4983  (1.6/s, 40.7 min left)
+  ... 1500/4983  (1.7/s, 35.1 min left)
+  ... 2000/4983  (1.7/s, 30.0 min left)
+  ... 2500/4983  (1.7/s, 24.9 min left)
+  ... 3000/4983  (1.7/s, 19.9 min left)
+  ... 3500/4983  (1.6/s, 15.0 min left)
+  ... 4000/4983  (1.7/s, 9.9 min left)
+  ... 4500/4983  (1.7/s, 4.9 min left)
+eval-guard: 4983 units in 3006.0s -> results-sent-v2/dumps/fulleval-v13.OLDMODEL.dump.jsonl

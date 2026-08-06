@@ -1257,6 +1257,13 @@ def main():
                          'the curly quotes, dashes and ellipses the scanner actually read and '
                          'align-epub.py folded to ASCII. Train only — eval must stay '
                          'character-comparable. Default fold = v1 behaviour.')
+    ap.add_argument('--gold-join-scope', choices=['train', 'train+eval'], default='train',
+                    help="which side of the corpus the wrap-hyphen join is applied to. "
+                         "train = the historical behaviour: eval gold keeps every wrap hyphen, "
+                         "so the eval stays comparable with results-sent-v1/ and a model TRAINED "
+                         "to join is charged a degradation for each correct weld (27%% of eval "
+                         "units carry one). train+eval = the eval asks for the same thing the "
+                         "training gold teaches, which is required to measure the join at all.")
     ap.add_argument('--gold-join', choices=['off', 'wrap-hyphen'], default='off',
                     help='--unit sentence: wrap-hyphen closes a wrap hyphen in the GOLD when '
                          'both halves are inside one unit and the publisher\'s own word says '
@@ -2232,11 +2239,26 @@ def build_sentence_corpus(args, out, lab, tiers, holdouts, quarantined, books,
                 print(f'  !! no <lab>/gold/<{book}>/source.epub — every wrap hyphen in that '
                       'book stays, for want of the vocabulary that would decide it.')
         apply_gold_joins(u_train, train_all, mod, joins, vocab_of)
-        would_join = Counter()
-        apply_gold_joins([dict(u) for u in u_eval + u_german], ev + german, mod,
-                         would_join, vocab_of)
-        joins['evalUnitsNotJoined'] = would_join['unitsChanged']
-        joins['evalJoinsNotApplied'] = would_join['joined']
+        if args.gold_join_scope == 'train+eval':
+            # The join is a THING THE MODEL IS BEING TAUGHT, so the eval has to
+            # ask for it. Withholding it from the gold charges the model a
+            # degradation for every weld it performs correctly — 27% of eval
+            # units carry one — and the capability becomes unmeasurable in the
+            # exact run that exists to acquire it.
+            applied = Counter()
+            apply_gold_joins(u_eval + u_german, ev + german, mod, applied, vocab_of)
+            joins['evalUnitsJoined'] = applied['unitsChanged']
+            joins['evalJoinsApplied'] = applied['joined']
+            joins['evalScope'] = 'train+eval'
+        else:
+            # Eval left un-joined: comparable with results-sent-v1/, and WRONG
+            # for any model trained to join. Reported, never silent.
+            would_join = Counter()
+            apply_gold_joins([dict(u) for u in u_eval + u_german], ev + german, mod,
+                             would_join, vocab_of)
+            joins['evalUnitsNotJoined'] = would_join['unitsChanged']
+            joins['evalJoinsNotApplied'] = would_join['joined']
+            joins['evalScope'] = 'train'
 
     for group in (u_train, u_eval, u_german):
         measure_units(group, lv)
