@@ -82,6 +82,11 @@ const LABEL_OF: Record<AppliedPassKind, string> = {
   footnotes: 'Footnote removal',
   simplify: 'Simplify',
   translate: 'Translate',
+  // The other route to a book, and NOT a pass: it is a document stage
+  // (electron/vlm-convert.ts) and a chain request naming it is refused by
+  // `JOB_TYPE_OF` having no entry for it. Named here because provenance is a
+  // book's own history and a converted book records one.
+  'vlm-convert': 'Convert to EPUB',
   // Retired — named only so a refusal about an old book's history reads.
   tesseract: 'Tesseract',
   'ocr-correction': 'OCR correction',

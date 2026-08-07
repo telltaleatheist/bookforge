@@ -33,6 +33,11 @@ import type {
   AppliedPassKind,
 } from './manifest-types.js';
 import { passesAfterEpubEvent } from '../shared/document/pass-lifecycle';
+import {
+  narrationEpubRelPath,
+  type NarrationDeletions,
+  type NarrationEpubOutput,
+} from '../shared/vlm/narration-deletions';
 
 // Generate UUID v4 without external dependency
 function uuidv4(): string {
@@ -933,6 +938,13 @@ export async function registerEpubExport(projectDir: string, epubAbsPath: string
   const saved = await modifyManifest(projectId, (m) => {
     if (!m.outputs) m.outputs = {};
     m.outputs.epub = { path: relPath, modifiedAt: new Date().toISOString() };
+    // The narration copy was cut from the book that has just been replaced, and
+    // so were the strikes it was cut by (they go with `outputs.epub` in the
+    // assignment above). A record that survived would tell the TTS step to
+    // narrate a file made out of a book nobody has any more. The FILE is left
+    // where it is: this code does not delete a user's EPUBs, and the next export
+    // writes over it under the same derived name.
+    delete m.outputs.ttsEpub;
   });
   if (!saved.success) {
     throw new Error(`Exported to ${epubAbsPath}, but recording it in the manifest failed: ${saved.error}`);
@@ -990,7 +1002,12 @@ export async function forgetEpubExport(projectDir: string): Promise<EpubForgetSu
   const lifecycle = passesAfterEpubEvent('epub-deleted', record.appliedPasses ?? []);
 
   const saved = await modifyManifest(projectId, (m) => {
-    if (m.outputs) delete m.outputs.epub;
+    if (m.outputs) {
+      delete m.outputs.epub;
+      // Cut from the book that is going. See registerEpubExport for why the file
+      // itself is left alone.
+      delete m.outputs.ttsEpub;
+    }
   });
   if (!saved.success) {
     throw new Error(
@@ -1102,6 +1119,120 @@ export async function listPassDiffs(projectDir: string): Promise<Array<{
     }));
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The narration copy
+//
+// The book with what the user struck out of it removed — a SECOND file, cut
+// from `outputs.epub` and never written over it. Everything about WHY is in
+// shared/vlm/narration-deletions.ts; what lives here is where the file goes and
+// how the two records are read and written, for the same reason the book's own
+// name lives here: one derivation, one authority.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** What the user has struck out of the project's book, or null when nothing. */
+export async function readNarrationDeletions(
+  projectDir: string
+): Promise<NarrationDeletions | null> {
+  const manifest = await readManifestAt(projectDir);
+  return manifest.outputs?.epub?.narrationDeletions ?? null;
+}
+
+/**
+ * Record what the user has struck out, stamped with the book it was struck from.
+ *
+ * Refuses a project with no `outputs.epub` by name: a strike is positional
+ * inside a specific file, and there is no such file to be positional inside.
+ * An empty list is a real state and is stored — "I looked at the book and want
+ * all of it" is an answer, and clearing the record instead would make it
+ * indistinguishable from never having looked.
+ */
+export async function writeNarrationDeletions(
+  projectDir: string,
+  deletions: NarrationDeletions
+): Promise<void> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  const saved = await modifyManifest(projectId, (m) => {
+    const epub = m.outputs?.epub;
+    if (!epub) {
+      throw new Error(
+        `Cannot record narration deletions for ${projectDir}: the project has no outputs.epub, so `
+        + 'there is no book for them to be strikes out of.'
+      );
+    }
+    epub.narrationDeletions = deletions;
+  });
+  if (!saved.success) {
+    throw new Error(`Recording the narration deletions for ${projectDir} failed: ${saved.error}`);
+  }
+}
+
+/** Forget the strikes — the book stays exactly as it is. */
+export async function clearNarrationDeletions(projectDir: string): Promise<void> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+  const saved = await modifyManifest(projectId, (m) => {
+    if (m.outputs?.epub) delete m.outputs.epub.narrationDeletions;
+  });
+  if (!saved.success) {
+    throw new Error(`Clearing the narration deletions for ${projectDir} failed: ${saved.error}`);
+  }
+}
+
+/**
+ * Where the NEXT narration copy is written — derived from the BOOK's recorded
+ * path, so it is named after the book and moves with it.
+ *
+ * Refuses a project with no book, because there is nothing to cut a copy from.
+ */
+export async function narrationEpubTarget(projectDir: string): Promise<ExportEpubLocation> {
+  const book = await readExportEpub(projectDir);
+  if (!book) {
+    throw new Error(
+      `${path.basename(projectDir)} has no book EPUB recorded (manifest outputs.epub), so there is `
+      + 'nothing to cut a narration copy from. Convert or build the book first.'
+    );
+  }
+  const relPath = narrationEpubRelPath(book.relPath);
+  return { relPath, absPath: toAbs(projectDir, relPath) };
+}
+
+/**
+ * Where the project's narration copy IS, or null when it has never been
+ * exported. The record is the only answer — same rule as the book itself.
+ */
+export async function readNarrationEpub(projectDir: string): Promise<ExportEpubLocation | null> {
+  const manifest = await readManifestAt(projectDir);
+  const recorded = manifest.outputs?.ttsEpub;
+  if (!recorded?.path) return null;
+  return {
+    relPath: recorded.path,
+    absPath: toAbs(projectDir, recorded.path),
+    modifiedAt: recorded.modifiedAt,
+  };
+}
+
+/** Record a written narration copy as `outputs.ttsEpub`. */
+export async function registerNarrationEpub(
+  projectDir: string,
+  record: NarrationEpubOutput
+): Promise<void> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  const saved = await modifyManifest(projectId, (m) => {
+    if (!m.outputs) m.outputs = {};
+    m.outputs.ttsEpub = record;
+  });
+  if (!saved.success) {
+    throw new Error(
+      `The narration copy was written to ${record.path}, but recording it in the manifest failed: `
+      + `${saved.error}`
+    );
+  }
+}
+
 /**
  * Which keys under `manifest.source` are records of a FOUNDRY RUN rather than of
  * the source document, and therefore die when the book starts over.
@@ -1170,7 +1301,12 @@ export async function clearProcessingRecords(projectDir: string): Promise<{
   const clearedSourceKeys = foundrySourceRecordKeys(manifest);
 
   const saved = await modifyManifest(projectId, (m) => {
-    if (m.outputs) delete m.outputs.epub;
+    if (m.outputs) {
+      delete m.outputs.epub;
+      // Cut from the book, and going with it. Its file is in the reset's own
+      // item list, named, so the user reads it before saying yes.
+      delete m.outputs.ttsEpub;
+    }
     const source = m.source as unknown as Record<string, unknown> | undefined;
     if (source) for (const key of clearedSourceKeys) delete source[key];
   });

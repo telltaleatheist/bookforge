@@ -275,6 +275,21 @@ export async function resetBookProcessing(
     removed: false,
   });
 
+  // The narration copy is cut from that book, so it dies with it — same kind,
+  // same rule: the user reads its name in the confirmation before it goes.
+  const narration = await manifestService.readNarrationEpub(projectDir);
+  const narrationExists = !!narration && fs.existsSync(narration.absPath);
+  if (narration) {
+    items.push({
+      kind: 'book-epub',
+      label: `The narration copy — ${narration.relPath}`
+        + `${narrationExists ? '' : ' (recorded, but not on disk)'}`,
+      path: narration.absPath,
+      present: narrationExists,
+      removed: false,
+    });
+  }
+
   const passCount = manifest.outputs?.epub?.appliedPasses?.length ?? 0;
   items.push({
     kind: 'provenance',

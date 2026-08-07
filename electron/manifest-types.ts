@@ -6,6 +6,9 @@
  */
 
 import type { TextBlock, Category } from '../shared/ocr/text-block';
+import type { NarrationDeletions, NarrationEpubOutput } from '../shared/vlm/narration-deletions';
+
+export type { NarrationDeletions, NarrationEpubOutput };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core Types
@@ -290,6 +293,16 @@ export interface ManifestOutputs {
   bilingualAudiobooks?: Record<string, AudiobookOutput>;
   /** The project's converted book — see EpubOutput. */
   epub?: EpubOutput;
+  /**
+   * The narration copy: the book with what the user struck out of it removed.
+   *
+   * A SECOND file, never the book. `outputs.epub` is the complete converted book
+   * and stays complete; this is what the TTS step reads when it is there, and
+   * the wizard says which of the two it is using rather than swapping one for
+   * the other. Written by `book:export-narration-epub` from
+   * `epub.narrationDeletions`; see shared/vlm/narration-deletions.ts.
+   */
+  ttsEpub?: NarrationEpubOutput;
 }
 
 /**
@@ -312,6 +325,17 @@ export interface EpubOutput {
    * gone for the mono pipeline.
    */
   appliedPasses?: AppliedPass[];
+  /**
+   * What the user has struck out of this book FOR NARRATION — never applied to
+   * the file itself.
+   *
+   * It lives inside this record on purpose: `registerEpubExport` replaces
+   * `outputs.epub` wholesale on a rebuild, so a book that has been rebuilt loses
+   * the strikes made against the old one in the same act that ends its
+   * provenance. See shared/vlm/narration-deletions.ts for the identity of an
+   * element and why the record is stamped with the book's sha256 anyway.
+   */
+  narrationDeletions?: NarrationDeletions;
 }
 
 /**
@@ -337,6 +361,13 @@ export type AppliedPassKind =
   | 'footnotes'
   | 'simplify'
   | 'translate'
+  // The OTHER route to a book: a document vision model read the pages and
+  // foundry assembled them (`foundry vlm-convert`). Like `reflow` it is a book's
+  // ORIGIN rather than a transformation of one, so it is the first record in a
+  // freshly converted book's provenance and never appears after another pass.
+  // It is not a queue job type and the chain planner refuses it — see
+  // shared/vlm/conversion.ts.
+  | 'vlm-convert'
   | RetiredPassKind;
 
 /** One completed pass. Appended when the pass finishes, never on failure. */

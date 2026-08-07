@@ -11,6 +11,8 @@ import type {
   ProcessingChainRequest,
 } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
+import type { VlmConvertRequest, VlmConvertResult } from '@shared/vlm/conversion';
+import type { NarrationDeletions, NarrationState } from '@shared/vlm/narration-deletions';
 import type {
   DocumentBlocksPayload,
   DocumentPipelineState,
@@ -3101,6 +3103,62 @@ export class ElectronService {
   }> {
     if (this.isElectron) {
       return (window as any).electron.processing.submitChain(request);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  // ── Convert to EPUB, and the narration copy ──────────────────────────────
+  //
+  // `foundry vlm-convert` reads the pages with a document vision model and
+  // writes the project's book — complete, everything kept. What the user does
+  // not want narrated is struck out in the picker and exported as a SECOND
+  // file; the book is never rewritten. Contract:
+  // shared/vlm/narration-deletions.ts.
+
+  /**
+   * Convert this project's PDF into its book.
+   *
+   * Long — about ninety minutes for a 300-page book — and owned by MAIN, so the
+   * promise outlives nothing: a renderer reload cannot kill the run. Progress
+   * arrives on `document:stage-progress` like every other document stage.
+   */
+  async convertPdfToEpub(request: VlmConvertRequest): Promise<{
+    success: boolean; result?: VlmConvertResult; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.convert(request);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** The book, whether a VLM read it, and what has been struck out of it. */
+  async narrationState(projectDir: string): Promise<{
+    success: boolean; state?: NarrationState; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.narrationState(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Record what the user has struck out. The book on disk is not touched. */
+  async saveNarrationDeletions(projectDir: string, elements: string[]): Promise<{
+    success: boolean; deletions?: NarrationDeletions; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.saveNarrationDeletions(projectDir, elements);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Write the narration copy from the strikes as recorded. */
+  async exportNarrationEpub(projectDir: string): Promise<{
+    success: boolean;
+    result?: { epubPath: string; relPath: string; removedElements: number; totalElements: number };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.exportNarration(projectDir);
     }
     return { success: false, error: 'Not running in Electron' };
   }

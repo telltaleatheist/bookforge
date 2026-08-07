@@ -103,7 +103,12 @@ export interface DocumentProject {
 }
 
 export interface DocumentStageProgress {
-  stage: DocumentStage | 'reflow' | 'render';
+  // `vlm-convert` is not a stage of THIS pipeline — it is the other route to a
+  // book (electron/vlm-convert.ts) and shares no artifact with the four above.
+  // It reports on the same channel because a window watching a project's
+  // documents has to hear about it too, and the picker's progress bar is one
+  // listener, not two.
+  stage: DocumentStage | 'reflow' | 'render' | 'vlm-convert';
   /** foundry's own most recent line, verbatim. */
   message: string;
   done: number;

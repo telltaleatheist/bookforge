@@ -13,6 +13,13 @@ import * as os from 'os';
 import { promisify } from 'util';
 import * as cheerio from 'cheerio';
 import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
+import { blockCategoryForVlm } from '../shared/vlm/conversion';
+import {
+  narrationElementKey,
+  planNarrationRemoval,
+  type NarrationElementKey,
+  type NarrationUnit,
+} from '../shared/vlm/narration-deletions';
 
 const inflateRaw = promisify(zlib.inflateRaw);
 
@@ -3728,6 +3735,14 @@ export interface EpubPreservingEdits {
 export interface ExportUnit {
   /** Zip entry name of the spine document this element lives in. */
   file: string;
+  /**
+   * `<file>#<index within that file's unit list>` — this element's positional
+   * identity, and the only one it has: foundry's EPUB emitter gives elements no
+   * ids. It is what the narration deletions are recorded as, and both the reader
+   * that records them and the writer that applies them walk THIS unit list, so
+   * the index means the same thing to both (shared/vlm/narration-deletions.ts).
+   */
+  key: string;
   tag: string;
   /** The live xmldom element — kept so the exporter can serialize it verbatim. */
   el: any;
@@ -4114,9 +4129,11 @@ export async function alignBlocksToEpub(
       const entryName = normalizeZipEntryName(processor.resolvePath(chapter.href));
       const xhtml = await processor.readFile(entryName);
       const { doc, body } = parseXhtmlBody(xhtml, entryName);
+      let indexInFile = 0;
       for (const c of collectExportUnits(doc, body, entryName)) {
         units.push({
           file: entryName,
+          key: narrationElementKey(entryName, indexInFile++),
           tag: c.tag,
           el: c.el,
           normText: c.normText,
@@ -4491,6 +4508,285 @@ export async function readEpubBlockProvenance(
     alignedToUnstampedElement,
     unaligned: unaligned.length,
     spanningElements,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The OTHER stamp: a book a document vision model read
+//
+// `foundry vlm-convert` writes a book from page pictures rather than from a
+// working PDF, so it has no working-PDF block ids and no paragraph groups to
+// stamp. What it CAN say is what the model called each block and which page it
+// was read from, and it says it as `data-bf-cat` and `data-bf-page` (foundry
+// README §vlm-convert).
+//
+// Same job as the provenance reader above — don't guess the categories back out
+// of type size, read the book's own record — and the same aligner, deliberately:
+// one traversal of a book's elements, so a unit index means one thing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const CONVERSION_CATEGORY_ATTR = 'data-bf-cat';
+export const CONVERSION_PAGE_ATTR = 'data-bf-page';
+
+/** One element's conversion stamp, as read off the markup. */
+export interface EpubConversionStamp {
+  /** The BookForge palette id, translated from `data-bf-cat`. */
+  category: string;
+  /** `data-bf-cat` verbatim — the model's own word for it. */
+  statedCategory: string;
+  /** `data-bf-page` — the PDF page this element was read from. */
+  sourcePage: number;
+  /** The element's positional key, for the narration deletions. */
+  element: NarrationElementKey;
+}
+
+export interface EpubConversionReading {
+  /** True when the book carries conversion stamps — i.e. vlm-convert wrote it. */
+  converted: boolean;
+  /** Block id → the stamp of the element it was laid out from. */
+  byBlockId: Map<string, EpubConversionStamp>;
+  /** Blocks aligned to an element carrying no stamp (nav TOC, hand-added markup). */
+  alignedToUnstampedElement: number;
+  /** Blocks the aligner could not place in the source markup at all. */
+  unaligned: number;
+}
+
+/**
+ * Does this EPUB carry conversion stamps?
+ *
+ * The test is `data-bf-cat="` WITH the quote, and that is not fussiness: a
+ * reflowed book's `data-bf-category="` starts with the same eleven characters,
+ * and a bare substring test would read every reflowed book as a converted one.
+ */
+export async function epubCarriesConversionStamps(epubSourcePath: string): Promise<boolean> {
+  const processor = new EpubProcessor();
+  try {
+    const structure = await processor.open(epubSourcePath);
+    for (const chapter of structure.chapters) {
+      const entryName = normalizeZipEntryName(processor.resolvePath(chapter.href));
+      const xhtml = await processor.readFile(entryName);
+      if (xhtml.includes(`${CONVERSION_CATEGORY_ATTR}="`)) return true;
+    }
+    return false;
+  } finally {
+    processor.close();
+  }
+}
+
+/**
+ * The conversion stamp on an element or on the nearest ancestor that has one.
+ *
+ * Walks up for the same reason the provenance reader does: foundry stamps the
+ * outermost element of a group (the `<ul>`, not each `<li>`), while the unit
+ * collector may pick either.
+ *
+ * A category with no page — or a page that is not a number — is a broken writer
+ * rather than a missing value: foundry emits the pair in one expression.
+ */
+function conversionStampOnOrAbove(el: any, whatFor: string): {
+  category: string;
+  statedCategory: string;
+  sourcePage: number;
+} | null {
+  for (let node = el; node && node.nodeType === 1; node = node.parentNode) {
+    if (typeof node.getAttribute !== 'function') break;
+    const stated = node.getAttribute(CONVERSION_CATEGORY_ATTR);
+    if (stated === null || stated === '') continue;
+    const page = node.getAttribute(CONVERSION_PAGE_ATTR);
+    const pageNumber = page === null ? NaN : Number(page);
+    if (!Number.isInteger(pageNumber)) {
+      throw new Error(
+        `${whatFor}: a <${node.tagName}> carries ${CONVERSION_CATEGORY_ATTR}="${stated}" but `
+        + `${CONVERSION_PAGE_ATTR}=${JSON.stringify(page)}, which is not a page number. The two are `
+        + 'written together by foundry\'s vlm-convert emitter; a partial stamp means the book was '
+        + 'written by something else.'
+      );
+    }
+    return {
+      category: blockCategoryForVlm(stated, whatFor),
+      statedCategory: stated,
+      sourcePage: pageNumber,
+    };
+  }
+  return null;
+}
+
+/**
+ * Every stamped element of a converted book, in the book's own order.
+ *
+ * This is what the narration writer plans against and what tells a caller
+ * whether a book is a conversion at all. It reads the SAME unit list the block
+ * aligner builds — `alignBlocksToEpub` with no blocks, which does the traversal
+ * and aligns nothing — so a key here and a key on a block are the same key.
+ */
+export async function readEpubConversionUnits(epubSourcePath: string): Promise<NarrationUnit[]> {
+  const whatFor = `conversion stamps in ${path.basename(epubSourcePath)}`;
+  const { units } = await alignBlocksToEpub(epubSourcePath, []);
+  return units.map((unit) => {
+    const stamp = conversionStampOnOrAbove(unit.el, whatFor);
+    return {
+      key: unit.key,
+      category: stamp?.statedCategory ?? null,
+      sourcePage: stamp?.sourcePage ?? null,
+    };
+  });
+}
+
+/**
+ * Read each laid-out block's category, source page and element key off the
+ * converted book's own markup.
+ *
+ * A book with no stamps returns `converted: false` and an empty map — a
+ * different INPUT CLASS, not a failure, exactly as with the reflow provenance
+ * above. The caller can tell the two apart and classify for itself.
+ */
+export async function readEpubConversionStamps(
+  epubSourcePath: string,
+  blocks: EpubExportBlock[],
+): Promise<EpubConversionReading> {
+  const empty: EpubConversionReading = {
+    converted: false,
+    byBlockId: new Map(),
+    alignedToUnstampedElement: 0,
+    unaligned: 0,
+  };
+  if (!(await epubCarriesConversionStamps(epubSourcePath))) return empty;
+
+  const whatFor = `conversion stamps in ${path.basename(epubSourcePath)}`;
+  const { units, blockToUnits, unaligned } = await alignBlocksToEpub(epubSourcePath, blocks);
+
+  const stampByUnit = new Map<number, EpubConversionStamp | null>();
+  const stampFor = (unitIndex: number): EpubConversionStamp | null => {
+    if (stampByUnit.has(unitIndex)) return stampByUnit.get(unitIndex)!;
+    const read = conversionStampOnOrAbove(units[unitIndex].el, whatFor);
+    const stamp: EpubConversionStamp | null = read === null ? null : {
+      ...read,
+      element: units[unitIndex].key,
+    };
+    stampByUnit.set(unitIndex, stamp);
+    return stamp;
+  };
+
+  const byBlockId = new Map<string, EpubConversionStamp>();
+  let alignedToUnstampedElement = 0;
+  for (const [blockId, unitIndices] of blockToUnits) {
+    if (unitIndices.length === 0) {
+      throw new Error(`${whatFor}: block ${blockId} aligned to zero source elements — this is a bug.`);
+    }
+    // A block that spans several elements takes the FIRST one's, which is the
+    // element its text begins in — the same tiebreak the provenance reader uses,
+    // and the only non-arbitrary one when reading order is all there is.
+    const stamp = stampFor(unitIndices[0]);
+    if (stamp === null) alignedToUnstampedElement++;
+    else byBlockId.set(blockId, stamp);
+  }
+
+  return { converted: true, byBlockId, alignedToUnstampedElement, unaligned: unaligned.length };
+}
+
+export interface NarrationEpubWriteResult {
+  /** How many elements were removed. */
+  removedElements: number;
+  /** How many the book had. */
+  totalElements: number;
+  /** The spine documents that were rewritten. */
+  rewrittenFiles: string[];
+}
+
+/**
+ * Write the narration copy: the book, with the struck elements gone.
+ *
+ * THE INPUT IS NEVER TOUCHED. Every zip entry is copied across; the spine
+ * documents that lose an element are re-serialized from the same DOM the unit
+ * list was built on, and everything else — the OPF, the nav, the CSS, the
+ * cropped figures — goes over byte for byte. So the official conversion stays
+ * the complete book it was, which is the whole point of there being two files.
+ *
+ * `planNarrationRemoval` decides WHAT comes out and refuses a key the book does
+ * not have; this function only carries that out. The output is written to
+ * `outputPath` and the caller is responsible for moving it into place.
+ */
+export async function writeNarrationEpub(
+  inputPath: string,
+  outputPath: string,
+  deletions: readonly NarrationElementKey[],
+): Promise<NarrationEpubWriteResult> {
+  const { XMLSerializer } = require('@xmldom/xmldom');
+  const whatFor = `the narration copy of ${path.basename(inputPath)}`;
+
+  // One traversal of the book, kept: the plan is checked against exactly the
+  // elements that are about to be rewritten, so a key cannot pass the check and
+  // then miss the element.
+  const processor = new EpubProcessor();
+  const perFile = new Map<string, { doc: any; units: Array<{ key: string; el: any }> }>();
+  const units: NarrationUnit[] = [];
+  try {
+    const structure = await processor.open(inputPath);
+    for (const chapter of structure.chapters) {
+      const entryName = normalizeZipEntryName(processor.resolvePath(chapter.href));
+      if (perFile.has(entryName)) continue;  // a spine document listed twice is one file
+      const xhtml = await processor.readFile(entryName);
+      const { doc, body } = parseXhtmlBody(xhtml, entryName);
+      const collected: Array<{ key: string; el: any }> = [];
+      let indexInFile = 0;
+      for (const c of collectExportUnits(doc, body, entryName)) {
+        const key = narrationElementKey(entryName, indexInFile++);
+        collected.push({ key, el: c.el });
+        const stamp = conversionStampOnOrAbove(c.el, whatFor);
+        units.push({
+          key,
+          category: stamp?.statedCategory ?? null,
+          sourcePage: stamp?.sourcePage ?? null,
+        });
+      }
+      perFile.set(entryName, { doc, units: collected });
+    }
+  } finally {
+    processor.close();
+  }
+
+  const plan = planNarrationRemoval(units, deletions);
+  const struck = new Set(plan.remove);
+
+  const rewrittenFiles: string[] = [];
+  const replacements = new Map<string, Buffer>();
+  for (const [file, { doc, units: fileUnits }] of perFile) {
+    const toRemove = fileUnits.filter((u) => struck.has(u.key));
+    if (toRemove.length === 0) continue;
+    for (const unit of toRemove) {
+      // An element whose parent has already gone with an ancestor is already
+      // out of the tree; removing it again would throw in xmldom.
+      if (unit.el.parentNode) unit.el.parentNode.removeChild(unit.el);
+    }
+    let serialized: string = new XMLSerializer().serializeToString(doc);
+    if (!serialized.startsWith('<?xml')) {
+      serialized = `<?xml version="1.0" encoding="utf-8"?>\n${serialized}`;
+    }
+    replacements.set(file, Buffer.from(serialized, 'utf8'));
+    rewrittenFiles.push(file);
+  }
+
+  const zipReader = new ZipReader(inputPath);
+  await zipReader.open();
+  try {
+    const zipWriter = new ZipWriter();
+    for (const entry of zipReader.getEntries()) {
+      const replacement = replacements.get(entry);
+      // `mimetype` is stored, never deflated — the EPUB spec requires it, and a
+      // compressed one makes the book unopenable in strict readers.
+      zipWriter.addFile(
+        entry, replacement ?? await zipReader.readEntry(entry), entry !== 'mimetype');
+    }
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await zipWriter.write(outputPath);
+  } finally {
+    zipReader.close();
+  }
+
+  return {
+    removedElements: plan.remove.length,
+    totalElements: plan.total,
+    rewrittenFiles,
   };
 }
 

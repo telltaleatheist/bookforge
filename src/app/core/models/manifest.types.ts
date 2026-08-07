@@ -10,6 +10,10 @@
 // Core Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+import type { NarrationDeletions, NarrationEpubOutput } from '@shared/vlm/narration-deletions';
+
+export type { NarrationDeletions, NarrationEpubOutput };
+
 export type ProjectType = 'book' | 'article';
 export type SourceType = 'pdf' | 'epub' | 'url' | 'audiobook';
 
@@ -345,6 +349,10 @@ export interface ManifestOutputs {
   // The project's converted book — see EpubOutput.
   epub?: EpubOutput;
 
+  // The narration copy: the book with what the user struck out removed. A SECOND
+  // file, never the book — see shared/vlm/narration-deletions.ts.
+  ttsEpub?: NarrationEpubOutput;
+
   // Playback position bookmarks keyed by output identifier: "audiobook", "en-de", etc.
   bookmarks?: Record<string, BookmarkState>;
 
@@ -365,6 +373,10 @@ export interface EpubOutput {
   // place, so this list is the only record of what was done to it — and what
   // Studio reads instead of scanning for the stage copies it replaced.
   appliedPasses?: AppliedPass[];
+  // What the user has struck out of this book FOR NARRATION — never applied to
+  // the file itself. Inside this record so a rebuild drops it with the
+  // provenance it belongs to.
+  narrationDeletions?: NarrationDeletions;
 }
 
 // The six things a processing run can do to a book. One queue job type each
@@ -384,6 +396,10 @@ export type AppliedPassKind =
   | 'footnotes'
   | 'simplify'
   | 'translate'
+  // The OTHER route to a book: a document vision model read the pages
+  // (`foundry vlm-convert`). A book's ORIGIN, like reflow — never a
+  // transformation of one, and never a queue job.
+  | 'vlm-convert'
   | RetiredPassKind;
 
 // One completed pass. Appended when the pass finishes, never on failure.

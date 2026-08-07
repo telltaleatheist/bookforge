@@ -24,6 +24,8 @@ import type {
   ProcessingChainRequest,
 } from '../shared/processing/pass-types';
 import type { BookResetSummary } from '../shared/processing/reset-book';
+import type { VlmConvertRequest, VlmConvertResult } from '../shared/vlm/conversion';
+import type { NarrationDeletions, NarrationState } from '../shared/vlm/narration-deletions';
 import type { TextLayerReport } from '../shared/pdf/text-layer';
 import type {
   DocumentBlocksPayload,
@@ -1409,6 +1411,23 @@ export interface ElectronAPI {
     resetBook: (request: { projectDir: string; preview?: boolean }) =>
       Promise<{ success: boolean; summary?: BookResetSummary; error?: string }>;
     onEnqueueChain: (callback: (plan: ProcessingChainPlan) => void) => () => void;
+  };
+  /**
+   * The other route to a book (`foundry vlm-convert`), and the narration copy
+   * cut from what the user struck out of it. See shared/vlm/.
+   */
+  vlm: {
+    convert: (request: VlmConvertRequest) =>
+      Promise<{ success: boolean; result?: VlmConvertResult; error?: string }>;
+    narrationState: (projectDir: string) =>
+      Promise<{ success: boolean; state?: NarrationState; error?: string }>;
+    saveNarrationDeletions: (projectDir: string, elements: string[]) =>
+      Promise<{ success: boolean; deletions?: NarrationDeletions; error?: string }>;
+    exportNarration: (projectDir: string) => Promise<{
+      success: boolean;
+      result?: { epubPath: string; relPath: string; removedElements: number; totalElements: number };
+      error?: string;
+    }>;
   };
   window: {
     hide: () => Promise<{ success: boolean }>;
@@ -3242,6 +3261,24 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('queue:enqueue-chain', listener);
       };
     },
+  },
+  /**
+   * The other route to a book, and the narration copy cut from it.
+   *
+   * `convert` is long (ninety minutes for a 300-page book) and reports on
+   * `document:stage-progress` like every other document stage — there is no
+   * progress channel of its own, because a window watching a project's documents
+   * must not have to listen on two.
+   */
+  vlm: {
+    convert: (request: VlmConvertRequest) =>
+      ipcRenderer.invoke('vlm:convert', request),
+    narrationState: (projectDir: string) =>
+      ipcRenderer.invoke('narration:state', projectDir),
+    saveNarrationDeletions: (projectDir: string, elements: string[]) =>
+      ipcRenderer.invoke('narration:save-deletions', projectDir, elements),
+    exportNarration: (projectDir: string) =>
+      ipcRenderer.invoke('narration:export', projectDir),
   },
   play: {
     startSession: () =>

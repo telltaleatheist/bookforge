@@ -16,6 +16,9 @@ import { initializeLoggers, getMainLogger, getTTSLogger, closeLoggers } from './
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import { registerClipforgeIpc } from './clipforge-bridge';
 import { registerDocumentIpc } from './document-ipc';
+// A project's files belong to no one window: the picker is its own BrowserWindow
+// and has to hear that the book changed just as much as the main one does.
+import { broadcastToAllWindows } from './document-stage-run';
 import { listWorkingDocuments } from './document-project';
 import { registerOpenWhenFinishedIpc } from './document-open-when-finished';
 import * as manifestService from './manifest-service';
@@ -6865,6 +6868,76 @@ function setupIpcHandlers(): void {
     try {
       const { loadDiffFileAt } = await import('./diff-cache.js');
       return { success: true, data: await loadDiffFileAt(diffPath) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ── Convert to EPUB, and the narration copy ─────────────────────────────
+  //
+  // The OTHER route to a book: `foundry vlm-convert` hands each page picture to
+  // a document vision model and assembles the answers into an EPUB. What it
+  // writes is the project's book, complete. What the user does not want narrated
+  // is struck out of it in the picker and exported as a SECOND file — the book
+  // itself is never rewritten. See electron/vlm-convert.ts and
+  // electron/narration-export.ts; the deletion contract is
+  // shared/vlm/narration-deletions.ts.
+  //
+  // A dedicated pair rather than a pass: a conversion is where a book comes
+  // FROM, so it has nothing to read, nothing to diff against, and no legal
+  // position in a chain. The planner never sees it.
+
+  /**
+   * Convert this project's PDF into its book. Long — ninety minutes for a
+   * 300-page book on an M1 Ultra — and owned by MAIN, so a renderer reload
+   * cannot kill it. Progress arrives on `document:stage-progress`; a second
+   * conversion of the same project is refused by name by the stage registry.
+   */
+  ipcMain.handle('vlm:convert', async (
+    _event, request: import('../shared/vlm/conversion').VlmConvertRequest) => {
+    try {
+      const { runVlmConversion } = await import('./vlm-convert.js');
+      const result = await runVlmConversion(request);
+      broadcastToAllWindows('project:files-changed', request.projectDir);
+      return { success: true, result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /** The book, whether a VLM read it, and what has been struck out of it. */
+  ipcMain.handle('narration:state', async (_event, projectDir: string) => {
+    try {
+      const { readNarrationState } = await import('./narration-export.js');
+      return { success: true, state: await readNarrationState(projectDir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /** Record what the user has struck out. The book on disk is not touched. */
+  ipcMain.handle('narration:save-deletions', async (
+    _event, projectDir: string, elements: string[]) => {
+    try {
+      const { saveNarrationDeletions } = await import('./narration-export.js');
+      return { success: true, deletions: await saveNarrationDeletions(projectDir, elements) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Write the narration copy from the strikes as recorded.
+   *
+   * Takes no list: the manifest is the state (see `exportNarrationEpub`), so
+   * the file's contents are always explained by a record.
+   */
+  ipcMain.handle('narration:export', async (_event, projectDir: string) => {
+    try {
+      const { exportNarrationEpub } = await import('./narration-export.js');
+      const result = await exportNarrationEpub(projectDir);
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return { success: true, result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

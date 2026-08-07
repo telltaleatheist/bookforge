@@ -146,6 +146,9 @@ const PASS_LABELS: Record<AppliedPassKind, string> = {
   footnotes: 'Footnote removal',
   simplify: 'Simplify',
   translate: 'Translate',
+  // The other route to a book: a document vision model read the pages. A book's
+  // ORIGIN like Build the book, not a transformation of one.
+  'vlm-convert': 'Convert to EPUB',
   // Retired, and named anyway: books processed before Aug 2026 carry these, and a
   // badge that could not name a pass would shorten a real book's own history.
   tesseract: 'Tesseract',
@@ -1436,6 +1439,7 @@ export class StudioVersionsComponent {
   readonly provenanceBadges = computed<ProvenanceBadge[]>(() => {
     const passes = this.item()?.appliedPasses ?? [];
     const order: AppliedPassKind[] = [
+      'vlm-convert',
       'tesseract', 'ocr-correction', 'detection', 'footnotes', 'simplify', 'translate'];
     // ONE latest-wins implementation, shared with the stars on the document rows
     // (@shared/document/version-family). Two collapses of the same list is how

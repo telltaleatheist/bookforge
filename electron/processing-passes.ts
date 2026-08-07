@@ -154,7 +154,7 @@ async function replaceBookEpub(projectDir: string, producedAbsPath: string): Pro
  * do not — a pass working in /tmp, a library on another volume — the copy lands
  * beside the destination first and the rename happens there.
  */
-async function moveIntoPlace(fromAbsPath: string, toAbsPath: string): Promise<void> {
+export async function moveIntoPlace(fromAbsPath: string, toAbsPath: string): Promise<void> {
   await fs.promises.mkdir(path.dirname(toAbsPath), { recursive: true });
   try {
     await fs.promises.rename(fromAbsPath, toAbsPath);
