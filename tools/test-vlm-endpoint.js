@@ -192,10 +192,19 @@ check('with no route at all, both reasons are given and neither is buried', () =
   assert.ok(/Settings/.test(route.reason), 'the refusal does not say where to set an endpoint');
 });
 
-check('the route is named either way', () => {
-  assert.match(vlmRouteLabel(null), /MLX/);
+check('every route names the machine that will actually be busy', () => {
+  // It takes the ROUTE, never the endpoint setting. Given the setting alone, a
+  // Windows machine reading through WSL has `endpoint === null` and the label
+  // said "this machine (MLX)" — announcing the wrong GPU for a ninety-minute
+  // run, on the one line that tells someone which GPU they cannot use.
+  assert.match(vlmRouteLabel({ kind: 'mlx-local' }), /MLX/);
+  assert.match(vlmRouteLabel({ kind: 'wsl-server' }), /WSL/);
+  assert.ok(!/MLX/.test(vlmRouteLabel({ kind: 'wsl-server' })), 'the WSL route claims to be MLX');
   assert.strictEqual(
-    vlmRouteLabel({ url: 'http://gpu.local:8000/v1', model: '', concurrency: 0 }),
+    vlmRouteLabel({
+      kind: 'endpoint',
+      endpoint: { url: 'http://gpu.local:8000/v1', model: '', concurrency: 0 },
+    }),
     'http://gpu.local:8000/v1');
 });
 

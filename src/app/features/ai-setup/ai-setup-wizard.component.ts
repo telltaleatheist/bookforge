@@ -432,7 +432,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     void this.electron.vlmReaderStatus().then((s) => {
       this.wslReaderRefusal.set(
         s.success
-          ? s.wslRefusal ?? null
+          ? s.wslRefusal
           : `BookForge could not check the WSL page reader: ${s.error}`
       );
     });

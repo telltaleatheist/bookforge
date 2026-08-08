@@ -360,11 +360,25 @@ export function vlmLocalReadingRefusal(platform: string, arch: string): string |
   );
 }
 
-/** How the run is described while it happens: which GPU is reading the pages. */
-export function vlmRouteLabel(endpoint: VlmEndpointConfig | null): string {
-  return endpoint === null
-    ? 'this machine (MLX)'
-    : endpoint.url;
+/**
+ * How the run is described while it happens: which GPU is reading the pages.
+ *
+ * Takes the ROUTE, not the endpoint setting. It used to take the setting, and on
+ * a Windows machine reading its pages through WSL that setting is null — so the
+ * dialog announced "this machine (MLX)" for a run that was about to happen on a
+ * vLLM server in a Linux VM. A label naming the wrong machine is worse than no
+ * label: this is the line that tells someone which GPU is unavailable for the
+ * next ninety minutes.
+ */
+export function vlmRouteLabel(route: VlmRoute): string {
+  switch (route.kind) {
+    case 'endpoint': return route.endpoint.url;
+    case 'mlx-local': return 'this machine (MLX)';
+    case 'wsl-server': return "this machine's GPU (WSL)";
+    // Nothing reads the pages, so nothing is about to be busy. Callers refuse
+    // before they get here; naming it keeps the switch total.
+    case 'refused': return 'nothing — no reader is available';
+  }
 }
 
 /**

@@ -2610,16 +2610,30 @@ export class ElectronService {
    * reason beside a working server would be telling the user to fix something
    * that is not broken.
    */
-  async vlmReaderStatus(): Promise<{
-    success: boolean;
-    wslRefusal?: string | null;
-    server?: { running: boolean; url: string; model: string | null };
-    error?: string;
-  }> {
-    if (this.isElectron) {
-      return (window as any).electron.vlm.readerStatus();
+  async vlmReaderStatus(): Promise<
+    | { success: true; wslRefusal: string | null; server: { running: boolean; url: string; model: string | null } }
+    | { success: false; error: string }
+  > {
+    if (!this.isElectron) {
+      return { success: false, error: 'Not running in Electron' };
     }
-    return { success: false, error: 'Not running in Electron' };
+    const raw = await (window as any).electron.vlm.readerStatus();
+    if (!raw?.success) {
+      return { success: false, error: raw?.error ?? 'the page-reader status call returned nothing' };
+    }
+    // A DISCRIMINATED result, and this is the check that makes it one. `null`
+    // means "no reason it cannot run"; ABSENT means main answered a shape this
+    // build does not understand. Collapsing the second into the first with `??`
+    // would read as "the reader is ready" and start a server nobody configured —
+    // a missing fact reported as the more convenient of its two possible values.
+    if (raw.wslRefusal !== null && typeof raw.wslRefusal !== 'string') {
+      return {
+        success: false,
+        error: 'BookForge asked which machine can read the pages and got an answer it could not '
+          + `read (wslRefusal was ${JSON.stringify(raw.wslRefusal)}).`,
+      };
+    }
+    return { success: true, wslRefusal: raw.wslRefusal, server: raw.server };
   }
 
   /** The book, whether a VLM read it, and what has been struck out of it. */

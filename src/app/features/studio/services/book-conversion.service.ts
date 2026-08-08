@@ -44,6 +44,7 @@ import {
   vlmRouteLabel,
   type VlmConvertResult,
   type VlmEndpointConfig,
+  type VlmRoute,
 } from '@shared/vlm/conversion';
 import { samePath } from '@shared/document/same-path';
 
@@ -123,26 +124,42 @@ export class BookConversionService {
    * stops the two disagreeing.
    */
   async refusal(): Promise<string | null> {
+    const route = await this.route();
+    return 'error' in route ? route.error
+      : route.kind === 'refused' ? route.reason
+        : null;
+  }
+
+  /**
+   * Which machine reads the pages — the one resolution both the pre-modal check
+   * and the run itself use.
+   *
+   * Written once because these two asked the same question in two places and the
+   * label went wrong the moment they answered it differently: the run knew about
+   * the WSL reader and the label did not, so a conversion about to happen on a
+   * vLLM server announced itself as MLX.
+   *
+   * Asked of main every time rather than cached: the WSL toggle and env name
+   * live in Settings, and a user who has just filled them in must not have to
+   * restart the window before Convert believes them.
+   */
+  private async route(): Promise<VlmRoute | { error: string }> {
     let endpoint: VlmEndpointConfig | null;
     try {
       endpoint = resolveVlmEndpoint(this.settings.getVlmEndpointConfig());
     } catch (err) {
-      return (err as Error).message;
+      return { error: (err as Error).message };
     }
-    // Asked of main every time rather than cached: the WSL toggle and env name
-    // live in Settings, and a user who has just filled them in must not have to
-    // restart the window before Convert believes them.
     const status = await this.electron.vlmReaderStatus();
     if (!status.success) {
-      return `BookForge could not check the WSL page reader: ${status.error}`;
+      return { error: `BookForge could not check the WSL page reader: ${status.error}` };
     }
-    const route = resolveVlmRoute({
+    return resolveVlmRoute({
       platform: this.electron.platform,
       arch: this.electron.arch,
       endpoint,
-      wslReaderRefusal: status.wslRefusal ?? null,
+      wslReaderRefusal: status.wslRefusal,
     });
-    return route.kind === 'refused' ? route.reason : null;
   }
 
   /**
@@ -170,13 +187,19 @@ export class BookConversionService {
       return;
     }
 
-    let endpoint: VlmEndpointConfig | null;
-    try {
-      endpoint = resolveVlmEndpoint(this.settings.getVlmEndpointConfig());
-    } catch (err) {
-      await this.failed(request.sourceLabel, (err as Error).message);
+    // Which machine is actually about to be busy — the same resolution the
+    // pre-modal refusal used, so the label cannot describe a different route
+    // than the one that runs.
+    const route = await this.route();
+    if ('error' in route) {
+      await this.failed(request.sourceLabel, route.error);
       return;
     }
+    if (route.kind === 'refused') {
+      await this.failed(request.sourceLabel, `${route.reason} Nothing was converted.`);
+      return;
+    }
+    const endpoint = route.kind === 'endpoint' ? route.endpoint : null;
 
     this.put({
       projectDir: request.projectDir,
@@ -185,7 +208,7 @@ export class BookConversionService {
       // Said before anything spawns, and replaced by main's own first progress
       // line the moment it arrives — which is the one that knows whether the WSL
       // reader was started. Until then this is the honest half of the answer.
-      route: vlmRouteLabel(endpoint),
+      route: vlmRouteLabel(route),
       message: 'Starting…',
       done: 0,
       total: 0,
