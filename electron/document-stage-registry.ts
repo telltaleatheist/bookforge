@@ -58,6 +58,8 @@ export interface StageProgressLine {
   message: string;
   done: number;
   total: number;
+  /** The rasterising pass's own count, when the run has one. See DocumentStageProgress. */
+  render?: { done: number; total: number };
   /** When this line was emitted — an ETA reattaches to a rate, not to a count. */
   at: number;
 }

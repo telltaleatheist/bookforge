@@ -35,12 +35,20 @@
  *
  * ── Lifetime ─────────────────────────────────────────────────────────────────
  *
- * Started on the first conversion that needs it, held across consecutive
- * conversions (loading the model costs ~44 s, and a user converting three books
- * should pay that once), and shut down `IDLE_SHUTDOWN_MS` after the last one
- * lets go. Reference-counted rather than timed alone: a 300-page book is ninety
- * minutes of one caller holding it, and an idle timer that could fire mid-run
- * would kill the server under a conversion that is still reading pages.
+ * Started on the first conversion that needs it, shared by any conversion that
+ * arrives while one is already reading, and STOPPED THE MOMENT THE LAST ONE LETS
+ * GO. Reference-counted, so a 300-page book is ninety minutes of one caller
+ * holding it and nothing can pull the server out from under a run.
+ *
+ * There used to be a five-minute idle delay before the shutdown, to spare a user
+ * converting three books in a row from paying the ~44 s model load each time.
+ * That was the wrong trade and Owen named it (2026-08-08): the server is ~20 GB
+ * of VRAM and it holds the GPU arbiter for as long as it is up, so those five
+ * minutes are five minutes in which a queued TTS job cannot start. Forty-four
+ * seconds against a conversion measured in tens of minutes is noise; a GPU held
+ * against nothing at all is not. So the teardown is immediate and there is no
+ * timer to hit — releasing the card is the point, and keeping weights warm for a
+ * book that may never be queued is not worth blocking the work that was.
  *
  * ── Two rules this file exists to keep ───────────────────────────────────────
  *
@@ -81,9 +89,6 @@ const VLM_SERVER_PORT = 8077;
 /** Base URL foundry is handed. The `/v1` is the OpenAI-compatible prefix. */
 const VLM_SERVER_URL = `http://127.0.0.1:${VLM_SERVER_PORT}/v1`;
 
-/** Long enough to span consecutive conversions, short enough to give 20 GB back. */
-const IDLE_SHUTDOWN_MS = 5 * 60_000;
-
 /**
  * Loading the model, capturing CUDA graphs and opening the port took 43.7 s on
  * this machine's 3090 Ti with the weights already cached. The budget is set well
@@ -115,8 +120,6 @@ interface RunningServer {
   log: string[];
   /** Conversions currently holding this server. */
   holders: number;
-  /** Set while no one holds it. */
-  idleTimer: NodeJS.Timeout | null;
   /** True once the port answered. */
   ready: boolean;
 }
@@ -124,6 +127,11 @@ interface RunningServer {
 let server: RunningServer | null = null;
 /** In-flight start, so two conversions beginning together share one spawn. */
 let starting: Promise<RunningServer> | null = null;
+/**
+ * In-flight shutdown, so a conversion starting as one ends waits for the VRAM,
+ * the GPU arbiter and the port to actually come back before it spawns.
+ */
+let stopping: Promise<void> | null = null;
 
 /** What a caller gets: where to send pages, and the name to send them under. */
 export interface VlmPageServer {
@@ -269,7 +277,7 @@ async function startServer(): Promise<RunningServer> {
     console.log(`[vlm-server] serving ${model} from WSL at ${VLM_SERVER_URL} (util ${util})`);
 
     const proc = spawn(file, args, { windowsHide: true });
-    entry = { proc, model, log: [], holders: 0, idleTimer: null, ready: false };
+    entry = { proc, model, log: [], holders: 0, ready: false };
     const record = entry;
 
     const collect = (chunk: Buffer) => {
@@ -361,15 +369,23 @@ async function terminate(entry: RunningServer, reason: string): Promise<void> {
   }
 }
 
-/** Start the idle countdown, replacing any previous one. */
-function armIdleTimer(entry: RunningServer): void {
-  if (entry.idleTimer) clearTimeout(entry.idleTimer);
-  entry.idleTimer = setTimeout(() => {
-    if (entry.holders > 0) return;
-    if (server !== entry) return;
-    server = null;
-    void terminate(entry, 'idle').finally(() => releaseGpu(GPU_OWNER));
-  }, IDLE_SHUTDOWN_MS);
+/**
+ * Bring this server down now, and remember the teardown so a conversion that
+ * arrives mid-shutdown waits for the card instead of racing it.
+ *
+ * Without `stopping`, the next `ensureVlmPageServer` would see `server === null`
+ * and spawn immediately — a second vLLM reserving the same VRAM while the first
+ * still holds it, on a port the first has not let go of yet.
+ */
+function stopNow(entry: RunningServer, reason: string): void {
+  // Not ours any more: a stop already ran, or the entry was replaced. Either way
+  // the thing that replaced it owns the shutdown.
+  if (server !== entry) return;
+  server = null;
+  stopping = terminate(entry, reason).finally(() => {
+    releaseGpu(GPU_OWNER);
+    stopping = null;
+  });
 }
 
 /**
@@ -380,6 +396,11 @@ function armIdleTimer(entry: RunningServer): void {
  * never gives the card back.
  */
 export async function ensureVlmPageServer(): Promise<VlmPageServer> {
+  // A shutdown in flight has to finish first: it still holds the VRAM, the GPU
+  // arbiter and the port, and starting a second server into all three is how you
+  // get an out-of-memory failure that names the wrong cause.
+  if (stopping !== null) await stopping;
+
   if (server === null && starting === null) {
     starting = startServer();
     try {
@@ -395,11 +416,6 @@ export async function ensureVlmPageServer(): Promise<VlmPageServer> {
 
   const entry = server!;
   entry.holders += 1;
-  if (entry.idleTimer) {
-    clearTimeout(entry.idleTimer);
-    entry.idleTimer = null;
-  }
-
   let released = false;
   return {
     url: VLM_SERVER_URL,
@@ -410,17 +426,29 @@ export async function ensureVlmPageServer(): Promise<VlmPageServer> {
       if (released) return;
       released = true;
       entry.holders -= 1;
-      if (entry.holders <= 0) armIdleTimer(entry);
+      // The last conversion to let go takes the server down with it. Nothing is
+      // kept warm: the card is wanted by whatever the queue runs next.
+      if (entry.holders <= 0) stopNow(entry, 'the last conversion finished');
     },
   };
 }
 
-/** Stop the server now, if one is up. For app shutdown and for the settings UI. */
+/**
+ * Stop the server now, if one is up. For app shutdown and for the settings UI.
+ *
+ * Goes through the same `stopNow` a finished conversion uses, so there is one
+ * teardown path and one `stopping` promise for a start to wait behind — and it
+ * AWAITS it, because quit needs the device actually released before it returns,
+ * not a shutdown left running in a process that is about to exit.
+ */
 export async function stopVlmPageServer(reason = 'asked to stop'): Promise<void> {
   const entry = server;
-  if (entry === null) return;
-  if (entry.idleTimer) clearTimeout(entry.idleTimer);
-  server = null;
-  await terminate(entry, reason);
-  releaseGpu(GPU_OWNER);
+  if (entry === null) {
+    // A teardown already in flight is still this call's answer: the caller asked
+    // for the server to be down, and it is not down until that has finished.
+    if (stopping !== null) await stopping;
+    return;
+  }
+  stopNow(entry, reason);
+  if (stopping !== null) await stopping;
 }

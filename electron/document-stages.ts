@@ -98,6 +98,20 @@ export interface DocumentStageProgress {
   message: string;
   done: number;
   total: number;
+  /**
+   * Pages RASTERISED, when the run has a rasterising pass of its own.
+   *
+   * Only a conversion through an endpoint does: it draws every page first and
+   * posts them afterwards, so the two counts move at wildly different rates
+   * (a fifth of a second a page against several seconds) and belong on separate
+   * bars. `done`/`total` above stay the READING count throughout — that is the
+   * work the ETA is measured from, and mixing a 15x-faster phase into the same
+   * series would make the estimate wrong in both directions.
+   *
+   * Absent on the MLX route, which renders and reads each page in one pass and
+   * therefore has one phase to show. Absent is a real answer, not a gap.
+   */
+  render?: { done: number; total: number };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

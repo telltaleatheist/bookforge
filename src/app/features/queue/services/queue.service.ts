@@ -41,6 +41,7 @@ import { JobEtaService } from './job-eta.service';
 import {
   buildConversionConfig,
   runConversionJob,
+  stagesOf,
   type VlmConvertJobConfig,
 } from '../jobs/vlm-convert-job';
 import { samePath } from '@shared/document/same-path';
@@ -4212,9 +4213,13 @@ export class QueueService {
               // the queue's ETA widget is JobEtaService, whose unit is TTS
               // chunks — and adding one here would write a key into queue.json
               // that nothing reads and every future build has to keep honouring.
-              report: ({ progress, message }) => {
+              report: ({ progress, message, stages }) => {
                 this._jobs.update(jobs => jobs.map(j => j.id === job.id
-                  ? { ...j, progress, progressMessage: message }
+                  // `stages` is the run's own phase breakdown — two bars on the
+                  // endpoint route, none on MLX, which reads each page as it
+                  // draws it. Written through as-is: `stagesFor` renders what
+                  // the run reported and invents nothing when it reports none.
+                  ? { ...j, progress, progressMessage: message, stages }
                   : j));
               },
             },
@@ -4891,6 +4896,10 @@ export class QueueService {
           ...j,
           progress,
           progressMessage: p?.message ?? `${live.label} is running`,
+          // The phase bars too, from the same line — otherwise a reload would
+          // drop the breakdown until the next page turned, which during the
+          // rasterising pass is the whole of what there is to see.
+          stages: p ? stagesOf(p.render, p.done, p.total) : [],
           startedAt: new Date(live.startedAt),
           wasInterrupted: false,
           // It must not START a conversion — one is already running, and main

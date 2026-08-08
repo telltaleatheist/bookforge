@@ -116,6 +116,13 @@ export function stagesFor(job: QueueJob): JobStageProgress[] {
     case 'reassembly':
       return job.stages ?? [];
 
+    // Two passes over the book on the endpoint route — every page drawn with
+    // PyMuPDF, then every picture posted to the model, at rates an order of
+    // magnitude apart. The MLX route reads each page as it draws it and reports
+    // NO stages, which renders as the single overall bar: one phase, one bar.
+    case 'vlm-convert':
+      return job.stages ?? [];
+
     // Bridge-reported when available (parallel-tts-bridge knows the model-load
     // boundary and, on Mac/MLX, reads completions off disk a batch earlier than
     // stdout reports them); the phase-derived list covers the first tick and any

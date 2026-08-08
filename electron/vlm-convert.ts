@@ -347,8 +347,9 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
       ? configured
       : { url: reader.url, model: reader.model, concurrency: 0 });
   } finally {
-    // On success, on failure and on cancellation alike — a server nobody
-    // released never goes idle and never gives the 20 GB back.
+    // On success, on failure and on cancellation alike — this is what takes the
+    // server down and hands the 20 GB and the GPU arbiter to whatever the queue
+    // runs next. A release that did not happen pins the card indefinitely.
     reader?.release();
   }
 
@@ -357,6 +358,19 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     let lastMessage = '';
     let done = 0;
     let total = 0;
+    // The rasterising pass, counted separately and only once it has spoken. It
+    // stays null on the MLX route, and a null here is what tells the renderer to
+    // show one bar rather than two.
+    //
+    // Gated on the ROUTE rather than on whether a render line turned up, because
+    // those are not the same question. Only the endpoint route runs foundry with
+    // `renderOnly`, which is what makes a conversion two passes. A RESUMED MLX
+    // run also prints `page N/M: rendered` — for pages already banked in the
+    // readings file, which it draws and then does not read — and reading those
+    // as a rasterising pass would put up a bar that tracked which pages were
+    // cached rather than any progress at all.
+    const twoPass = endpoint !== null;
+    let render: { done: number; total: number } | null = null;
 
     // Said before the first page, on the same channel the progress lines use, so
     // the modal states which GPU is about to be busy for the next ninety
@@ -392,11 +406,26 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
         onProgress: (line) => {
           lastMessage = line;
           const parsed = parseVlmProgressLine(line);
-          if (parsed) {
+          if (parsed?.phase === 'render') {
+            if (twoPass) render = { done: parsed.done, total: parsed.total };
+          } else if (parsed) {
             done = parsed.done;
             total = parsed.total;
+            // Reading has begun, so every page that was going to be drawn has
+            // been. foundry renders the whole book before it posts the first
+            // page, and the last render line is the one for the last page it
+            // was asked for — but a book with pages excluded never reaches its
+            // own page count, so the bar would stop short of the end of work it
+            // had actually finished.
+            if (render !== null) render = { done: render.total, total: render.total };
           }
-          opts.onProgress({ stage: 'vlm-convert', message: line, done, total });
+          opts.onProgress({
+            stage: 'vlm-convert',
+            message: line,
+            done,
+            total,
+            ...(render !== null ? { render } : {}),
+          });
         },
       }
     );

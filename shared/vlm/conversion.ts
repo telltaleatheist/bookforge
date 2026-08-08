@@ -501,6 +501,23 @@ export function describeVlmEndpointCheck(url: string, check: VlmEndpointCheck): 
  * being read again and a bar that counted them would sit still at the start.
  */
 export interface VlmProgressLine {
+  /**
+   * Which half of the run this line is about.
+   *
+   * A conversion through an ENDPOINT is genuinely two passes over the book, and
+   * they are nothing alike: foundry rasterises every page with PyMuPDF first
+   * (`renderOnly`, a fifth of a second each), and only then posts the pictures
+   * to the model (seconds each, a dozen in flight). Until this existed the first
+   * pass reported NOTHING — its line is the rasteriser's own, with no
+   * `vlm-convert:` prefix, so nothing matched it — and the bar sat at zero
+   * through the whole of it, which on a long book reads as a run that never
+   * started.
+   *
+   * The MLX route has no such split — it renders and reads each page in one
+   * pass — so it only ever reports 'read', and a caller that finds no 'render'
+   * line has one phase because there IS one, not because it missed something.
+   */
+  phase: 'render' | 'read';
   done: number;
   total: number;
   message: string;
@@ -508,18 +525,41 @@ export interface VlmProgressLine {
 
 export function parseVlmProgressLine(line: string): VlmProgressLine | null {
   const trimmed = line.trim();
+
+  // The rasteriser's own line, forwarded verbatim from vlm_page.py's stderr
+  // through foundry (bridge.ts writes every line of it to its own stderr):
+  //
+  //   page 3/317: rendered
+  //
+  // It has no `vlm-convert:` prefix because foundry did not write it — which is
+  // exactly why the prefix test below cannot come first.
+  const rendered = /^page\s+(\d+)\/(\d+):\s+rendered$/.exec(trimmed);
+  if (rendered) {
+    return {
+      phase: 'render',
+      done: Number(rendered[1]),
+      total: Number(rendered[2]),
+      message: trimmed,
+    };
+  }
+
   if (!trimmed.startsWith('vlm-convert:')) return null;
 
   // The endpoint form is checked first: it also contains "page N", and reading
   // it with the MLX pattern would report the PDF page number as a count.
   const viaEndpoint = /\bpage\s+\d+\s+\((\d+)\/(\d+)\)/.exec(trimmed);
   if (viaEndpoint) {
-    return { done: Number(viaEndpoint[1]), total: Number(viaEndpoint[2]), message: trimmed };
+    return {
+      phase: 'read',
+      done: Number(viaEndpoint[1]),
+      total: Number(viaEndpoint[2]),
+      message: trimmed,
+    };
   }
 
   const local = /\bpage\s+(\d+)\/(\d+)\b/.exec(trimmed);
   if (local) {
-    return { done: Number(local[1]), total: Number(local[2]), message: trimmed };
+    return { phase: 'read', done: Number(local[1]), total: Number(local[2]), message: trimmed };
   }
 
   return null;

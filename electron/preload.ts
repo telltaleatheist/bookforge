@@ -1244,7 +1244,10 @@ export interface ElectronAPI {
         projectDir: string;
         label: string;
         startedAt: number;
-        lastProgress: { stage: string; message: string; done: number; total: number; at: number } | null;
+        lastProgress: {
+          stage: string; message: string; done: number; total: number;
+          render?: { done: number; total: number }; at: number;
+        } | null;
       }>;
     }>;
     resetTo: (ref: DocumentRef, target: ResetTarget) =>

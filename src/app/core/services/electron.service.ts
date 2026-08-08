@@ -2123,7 +2123,10 @@ export class ElectronService {
     projectDir: string;
     label: string;
     startedAt: number;
-    lastProgress: { stage: string; message: string; done: number; total: number; at: number } | null;
+    lastProgress: {
+      stage: string; message: string; done: number; total: number;
+      render?: { done: number; total: number }; at: number;
+    } | null;
   }>> {
     if (!this.isElectron) return [];
     const result = await (window as any).electron.document.activeStages();

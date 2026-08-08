@@ -157,4 +157,13 @@ export interface DocumentStageProgressEvent {
   message: string;
   done: number;
   total: number;
+  /**
+   * Pages rasterised, when this stage has a rasterising pass of its own.
+   *
+   * A conversion through an endpoint draws the whole book before it posts a
+   * single page, so the two counts move at rates an order of magnitude apart and
+   * are shown as separate bars. Absent means one phase, which is the truth on
+   * the MLX route — it renders and reads each page together.
+   */
+  render?: { done: number; total: number };
 }

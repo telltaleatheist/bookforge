@@ -82,11 +82,30 @@ export interface VlmConvertJobConfig {
   attachToRunning?: boolean;
 }
 
+/** One sub-bar under the row's own, in the shape the queue's stage list takes. */
+export interface ConversionStage {
+  name: string;
+  label: string;
+  pct: number;
+  status: 'pending' | 'running' | 'complete';
+}
+
 /** What the runner may do to the row it is running. Deliberately narrow. */
 export interface ConversionJobContext {
   jobId: string;
-  /** Percentage 0-100, the line under it, and the ETA. */
-  report(update: { progress: number; message: string; etaSeconds: number | null }): void;
+  /**
+   * Percentage 0-100, the line under it, the ETA, and the phase breakdown.
+   *
+   * `stages` is empty on a run with one phase — the MLX route reads each page as
+   * it draws it — and a caller must render nothing rather than one bar labelled
+   * as if there were two.
+   */
+  report(update: {
+    progress: number;
+    message: string;
+    etaSeconds: number | null;
+    stages: ConversionStage[];
+  }): void;
   /** Fires when the user cancels. Main is asked to stop the stage. */
   signal: AbortSignal;
 }
@@ -97,7 +116,10 @@ export interface ConversionJobElectron {
     projectDir: string; variantId?: string; sourcePath?: string; skipDeletedPages?: boolean;
   }): Promise<{ success: boolean; result?: { epubPath: string }; error?: string }>;
   onDocumentStageProgress(
-    cb: (e: { projectDir: string; stage: string; message: string; done: number; total: number }) => void
+    cb: (e: {
+      projectDir: string; stage: string; message: string; done: number; total: number;
+      render?: { done: number; total: number };
+    }) => void
   ): () => void;
   onDocumentStageFinished(cb: (e: { projectDir: string; stage: string }) => void): () => void;
   cancelDocumentStage(projectDir: string): Promise<unknown>;
@@ -146,6 +168,56 @@ function percentOf(done: number, total: number): number {
   return Math.min(Math.round((done / total) * 100), 100);
 }
 
+/**
+ * The two bars a conversion shows, or none.
+ *
+ * A run through an endpoint is two passes over the book — every page drawn with
+ * PyMuPDF, then every picture posted to the model — and they run at rates an
+ * order of magnitude apart. The first pass used to report nothing at all, so the
+ * bar sat at zero through it and a long book looked like it had never started.
+ *
+ * NONE on the MLX route, which draws and reads each page in the same breath and
+ * so has one phase to report. An empty list means the row shows its single
+ * overall bar, which is the honest rendering of a run with one phase — bars
+ * invented to fill a shape would be worse than the thing they replaced.
+ *
+ * Rendering is reported COMPLETE the moment the first page is read: foundry
+ * finishes the whole book before it posts anything, so reading having begun is
+ * proof drawing has ended. Waiting for the render count to reach its own total
+ * would leave the bar short on any book with pages excluded, which never reaches
+ * its page count by design.
+ */
+export function stagesOf(
+  render: { done: number; total: number } | undefined,
+  readDone: number,
+  readTotal: number
+): ConversionStage[] {
+  if (!render) return [];
+  const pct = (done: number, total: number): number =>
+    total > 0 ? Math.min(Math.round((done / total) * 100), 100) : 0;
+
+  const reading = readTotal > 0;
+  const renderPct = reading ? 100 : pct(render.done, render.total);
+  const readPct = pct(readDone, readTotal);
+  return [
+    {
+      name: 'render',
+      label: 'Rendering pages',
+      pct: renderPct,
+      status: renderPct >= 100 ? 'complete' : 'running',
+    },
+    {
+      name: 'read',
+      label: 'Reading pages',
+      pct: readPct,
+      // Not `pct > 0`: the first page of a long book takes seconds to come back,
+      // and a bar sitting at 'pending' through it says the model has not started
+      // when it has. Reading is running from the moment a total exists.
+      status: readPct >= 100 ? 'complete' : reading ? 'running' : 'pending',
+    },
+  ];
+}
+
 /** `Reading page 41 of 317 · 4.8s/page · 22m 10s left` */
 function line(message: string, sample: ConversionRateSample | null, now: number): string {
   const rate = formatPageRate(sample);
@@ -171,15 +243,24 @@ export async function runConversionJob(
   now: () => number = () => Date.now()
 ): Promise<{ epubPath: string }> {
   let sample: ConversionRateSample | null = null;
+  // The breakdown as last reported, so the finish can complete the bars this run
+  // ACTUALLY had rather than assert a shape. A one-phase run ends with none.
+  let lastStages: ConversionStage[] = [];
 
   const unsubscribe = electron.onDocumentStageProgress((event) => {
     if (!samePath(event.projectDir, config.projectDir)) return;
     const at = now();
+    // The rate is measured on READING only, and `event.done/total` is that
+    // count throughout — main keeps the rasteriser's tally in `render`. Feeding
+    // a 15x-faster phase into the same series would make the estimate wrong
+    // while it ran and wrong again in the other direction once it stopped.
     sample = sampleConversionRate(sample, event.done, event.total, at);
+    lastStages = stagesOf(event.render, event.done, event.total);
     ctx.report({
       progress: percentOf(event.done, event.total),
       message: line(event.message, sample, at),
       etaSeconds: conversionEtaSeconds(sample, at),
+      stages: lastStages,
     });
   });
 
@@ -219,7 +300,14 @@ export async function runConversionJob(
           // strength of a failed question.
         });
       });
-      ctx.report({ progress: 100, message: `Converted ${config.sourceLabel}`, etaSeconds: 0 });
+      ctx.report({
+        progress: 100,
+        message: `Converted ${config.sourceLabel}`,
+        etaSeconds: 0,
+        // The bars this run actually had, finished. Reported rather than
+        // cleared: a breakdown that vanishes at the end reads as work undone.
+        stages: lastStages.map(s => ({ ...s, pct: 100, status: 'complete' as const })),
+      });
       // The path is main's to report and this row never learned it; the book is
       // on the versions page either way. An invented path would be worse.
       return { epubPath: '' };
@@ -237,7 +325,14 @@ export async function runConversionJob(
       // failed", which is the one thing the user already knows.
       throw new Error(result.error || 'The conversion failed and gave no reason.');
     }
-    ctx.report({ progress: 100, message: `Converted ${config.sourceLabel}`, etaSeconds: 0 });
+    ctx.report({
+        progress: 100,
+        message: `Converted ${config.sourceLabel}`,
+        etaSeconds: 0,
+        // The bars this run actually had, finished. Reported rather than
+        // cleared: a breakdown that vanishes at the end reads as work undone.
+        stages: lastStages.map(s => ({ ...s, pct: 100, status: 'complete' as const })),
+      });
     return { epubPath: result.result.epubPath };
   } finally {
     unsubscribe();
