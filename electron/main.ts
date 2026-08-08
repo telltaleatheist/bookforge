@@ -10007,6 +10007,29 @@ function setupIpcHandlers(): void {
         );
       }
 
+      // The NARRATION COPY, when one has been cut: the book minus what the user
+      // struck out, and the file narration prefers as its input the moment it
+      // exists (ll-wizard `ttsInput`). It was written and recorded here all
+      // along and simply had no row — so the one place a user looks to see what
+      // versions of a book exist said the copy they had just made did not, and
+      // there was no way to open, play or delete it (Aug 8 2026).
+      //
+      // NOT editable: it is a derived cut, remade from the book and the strikes
+      // every time `Export TTS copy` runs, so an edit made here would be thrown
+      // away by the next export without saying so.
+      const narrationRecord = await manifestService.readNarrationEpub(projectDir);
+      if (narrationRecord) {
+        await addVersion(
+          'narration',
+          'narration',
+          `${path.basename(narrationRecord.absPath, path.extname(narrationRecord.absPath))}`,
+          'The book with what you struck out removed — what narration reads',
+          narrationRecord.absPath,
+          '🎙️',
+          false
+        );
+      }
+
       // 2. Cleaned/Simplified EPUB from stages/01-cleanup/
       const cleanupDir = path.join(projectDir, 'stages', '01-cleanup');
       if (fsSync.existsSync(cleanupDir)) {

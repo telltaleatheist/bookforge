@@ -3742,11 +3742,28 @@ export interface ExportUnit {
   fromCatchAll: boolean;
 }
 
+/**
+ * A block the aligner could not place in the source markup, and WHY.
+ *
+ * The reason is the aligner's own words at the point it gave up, and the excerpt
+ * is the block's opening text — together they are the difference between "one
+ * block failed" (which no one can act on) and "the lone '3' on page 41 was too
+ * short to place unambiguously" (which anyone can). Carried rather than counted
+ * for exactly that reason: the count is derivable from the detail, the detail is
+ * not recoverable from the count.
+ */
+export interface UnalignedBlock {
+  blockId: string;
+  page: number;
+  excerpt: string;
+  reason: string;
+}
+
 export interface EpubAlignmentResult {
   units: ExportUnit[];
   /** Block id → indices into `units` the block's text overlaps. */
   blockToUnits: Map<string, number[]>;
-  unaligned: Array<{ blockId: string; page: number; excerpt: string; reason: string }>;
+  unaligned: UnalignedBlock[];
   /** Indices of text units no block matched. */
   uncoveredUnits: number[];
 }
@@ -4366,8 +4383,8 @@ export interface EpubProvenanceReading {
   elementByBlockId: Map<string, NarrationElementKey>;
   /** Blocks aligned to an element carrying no stamp (nav TOC, hand-added markup). */
   alignedToUnstampedElement: number;
-  /** Blocks the aligner could not place in the source markup at all. */
-  unaligned: number;
+  /** Blocks the aligner could not place in the source markup at all, and why. */
+  unaligned: UnalignedBlock[];
   /**
    * Blocks whose text spanned SEVERAL source elements. Their category is the
    * first one's — the element the block's text begins in — because a block that
@@ -4459,7 +4476,7 @@ export async function readEpubBlockProvenance(
     byBlockId: new Map(),
     elementByBlockId: new Map(),
     alignedToUnstampedElement: 0,
-    unaligned: 0,
+    unaligned: [],
     spanningElements: 0,
   };
   // An unstamped book is not read here at all, and it does not need to be: the
@@ -4513,7 +4530,7 @@ export async function readEpubBlockProvenance(
     byBlockId,
     elementByBlockId,
     alignedToUnstampedElement,
-    unaligned: unaligned.length,
+    unaligned,
     spanningElements,
   };
 }
@@ -4561,8 +4578,8 @@ export interface EpubConversionReading {
   elementByBlockId: Map<string, NarrationElementKey>;
   /** Blocks aligned to an element carrying no stamp (nav TOC, hand-added markup). */
   alignedToUnstampedElement: number;
-  /** Blocks the aligner could not place in the source markup at all. */
-  unaligned: number;
+  /** Blocks the aligner could not place in the source markup at all, and why. */
+  unaligned: UnalignedBlock[];
 }
 
 /**
@@ -4709,7 +4726,7 @@ export async function readEpubConversionStamps(
     byBlockId,
     elementByBlockId,
     alignedToUnstampedElement,
-    unaligned: unaligned.length,
+    unaligned,
   };
 }
 

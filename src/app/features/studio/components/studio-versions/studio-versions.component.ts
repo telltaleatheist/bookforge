@@ -2319,7 +2319,12 @@ export class StudioVersionsComponent {
       return !!v.variantId;
     }
     if (v.type === 'working') return !!v.primaryPath;
-    return !['original', 'analysis'].includes(v.type);
+    // 'narration' joins them: the narration copy is pointed at by a manifest
+    // record (`outputs.ttsEpub`) that the generic remover does not clear, so a
+    // delete here would leave narration reading a path with no file behind it.
+    // It is also the one row that costs nothing to lose — `Export TTS copy` cuts
+    // it again from the book and the strikes, both of which are still there.
+    return !['original', 'analysis', 'narration'].includes(v.type);
   }
 
   deleteTitle(v: VersionRow): string {

@@ -18,6 +18,7 @@ import {
   readEpubBlockProvenance,
   readEpubConversionStamps,
   type EpubExportBlock,
+  type UnalignedBlock,
 } from './epub-processor';
 import { TEXT_LAYER_MIN_CHARS_PER_PAGE, type TextLayerReport } from '../shared/pdf/text-layer';
 
@@ -1638,20 +1639,14 @@ export class PDFAnalyzer {
       source: 'document',
       stampedBlocks: stampedCategories.size,
       unstampedElementBlocks: reading.alignedToUnstampedElement,
-      unalignedBlocks: reading.unaligned,
+      unalignedBlocks: reading.unaligned.length,
     };
     console.log(
       `[PDF Analyzer] ${path.basename(pdfPath)} carries its own block record: `
       + `${stampedCategories.size} blocks stamped, ${reading.alignedToUnstampedElement} on unstamped `
-      + `elements, ${reading.unaligned} unaligned, ${reading.spanningElements} spanning several elements.`,
+      + `elements, ${reading.unaligned.length} unaligned, ${reading.spanningElements} spanning several elements.`,
     );
-    if (reading.unaligned > 0) {
-      this.analysisWarnings.push(
-        `${reading.unaligned} block(s) of this book could not be matched to the markup they were `
-        + `laid out from, so their categories are this app's guess rather than the book's own record. `
-        + `Everything else in it is the record.`,
-      );
-    }
+    this.warnUnalignedBlocks(reading.unaligned, true);
     return stampedCategories;
   }
 
@@ -1710,9 +1705,9 @@ export class PDFAnalyzer {
       console.log(
         `[PDF Analyzer] ${path.basename(pdfPath)} states no categories of its own; `
         + `${reading.elementByBlockId.size} of ${this.blocks.length} blocks carry an element key, `
-        + `${reading.unaligned} could not be placed in the markup.`,
+        + `${reading.unaligned.length} could not be placed in the markup.`,
       );
-      if (reading.unaligned > 0) this.warnUnalignedBlocks(reading.unaligned, false);
+      this.warnUnalignedBlocks(reading.unaligned, false);
       return new Map();
     }
 
@@ -1720,14 +1715,14 @@ export class PDFAnalyzer {
       source: 'document',
       stampedBlocks: stampedCategories.size,
       unstampedElementBlocks: reading.alignedToUnstampedElement,
-      unalignedBlocks: reading.unaligned,
+      unalignedBlocks: reading.unaligned.length,
     };
     console.log(
       `[PDF Analyzer] ${path.basename(pdfPath)} was written by a document vision model: `
       + `${stampedCategories.size} blocks stamped, ${reading.alignedToUnstampedElement} on unstamped `
-      + `elements, ${reading.unaligned} unaligned.`,
+      + `elements, ${reading.unaligned.length} unaligned.`,
     );
-    if (reading.unaligned > 0) this.warnUnalignedBlocks(reading.unaligned, true);
+    this.warnUnalignedBlocks(reading.unaligned, true);
     return stampedCategories;
   }
 
@@ -1739,15 +1734,31 @@ export class PDFAnalyzer {
    * recorded as the element it names. A book that also STATED its categories
    * loses those for the same blocks, so it has one thing more to say.
    */
-  private warnUnalignedBlocks(count: number, stated: boolean): void {
+  private warnUnalignedBlocks(unaligned: UnalignedBlock[], stated: boolean): void {
+    if (unaligned.length === 0) return;
+
+    // The aligner knows the page, the opening text and the reason it gave up.
+    // Say them: "1 block(s) failed" is a fact no reader can act on, and this
+    // warning is shown every time the book is opened. A handful are listed in
+    // full; beyond that the list itself becomes the noise, so the rest are
+    // counted and the console keeps the complete record.
+    const SHOWN = 3;
+    const describe = (u: UnalignedBlock): string =>
+      `page ${u.page}, "${u.excerpt.trim()}" — ${u.reason}`;
+    const listed = unaligned.slice(0, SHOWN).map(describe).join('; ');
+    const rest = unaligned.length - SHOWN;
+
     this.analysisWarnings.push(
-      `${count} block(s) of this book could not be matched to the markup they were laid out from, `
-      + `so they cannot be struck out of the narration copy`
+      `${unaligned.length} block(s) of this book could not be matched to the markup they were laid `
+      + `out from, so they cannot be struck out of the narration copy`
       + (stated
-        ? `, and their categories are this app's guess rather than the book's own record. `
-          + 'Everything else in it is the record.'
-        : '.'),
+        ? `, and their categories are this app's guess rather than the book's own record`
+        : '')
+      + `. ${listed}${rest > 0 ? `; and ${rest} more (see the log)` : ''}.`,
     );
+    for (const u of unaligned) {
+      console.warn(`[PDF Analyzer] unaligned block ${u.blockId}: ${describe(u)}`);
+    }
   }
 
   /**
