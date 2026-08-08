@@ -1,281 +1,113 @@
 # The Document Pipeline
 
-**Status: SPEC — approved direction, pending Owen's review of this document.**
-Decided 2026-08-03/04 after the foundry-integration fragility audit. This
-supersedes the run-directory-as-state model (`bookforge-run.json`, run
-attachment, the orphan export gate) and the category-override layer.
+**Status: CURRENT — rewritten 2026-08-07 for the vision-model era.** This
+supersedes both the Tesseract document pipeline this file used to describe and
+the station-ladder plan in `docs/PIPELINE_V2_PLAN.md`. Those described a
+cast → detect → curate → reflow world; that world was removed from BookForge on
+2026-08-07 (foundry keeps its copy of the machinery; BookForge no longer calls
+it). PDF→EPUB conversion is `foundry vlm-convert` — the dots.ocr document
+vision model — and nothing else.
 
 ## The principle
 
-**Every stage is document-in → document-out.** A stage ends by writing a real
-file in the project folder that any external tool can open, and the next stage
-reads that file. If a stage ran, the document changed, and you can open it and
-see. The app sequences file transformations; it does not keep pipeline state.
+**The archive is never written. Ever. Whatever its format.** A project's
+original — `archive/<Original>.pdf` or `source/original.epub` — is immutable,
+and every mutable thing is a copy of it, bound to it by sha256 where the
+sidecar-binding protocol applies. Every stage is document-in → document-out: a
+real file in the project folder, openable by any external tool.
 
-What this forbids, by name:
+## The three flows
 
-- Results parked in a run directory, an edit list, an override map, or an app
-  database, waiting for a later step to "apply" them.
-- Any notion of a result being "attached" to a window. The document on disk is
-  the result.
-- Caching a previous run's output as an answer to a new request.
-- Fallback values standing in for missing stage output. A missing input is an
-  error naming the stage that should have written it.
+All three converge on the same tail:
 
-## Documents, names, and bindings
+```
+1  PDF ─▶ create working copy ─▶ curate (delete pages/blocks) ─▶ Create EPUB (vlm, skips deleted pages) ─▶ book EPUB
+2  PDF ──────────────────────────────────────────────────────▶ Convert to EPUB (vlm, whole document) ───▶ book EPUB
+3  EPUB original ── first strike/pass lazily mints the book as a COPY (ensureBookEpub) ─────────────────▶ book EPUB
 
-A project directory holds three documents, all named after the original:
+                     book EPUB ─▶ strikes (categories, elements, pages) ─▶ Export TTS copy ─▶ TTS
+```
+
+## Documents
 
 | File | Role |
 |---|---|
-| `archive/<Original>.pdf` | The immutable primary. **Never written. Ever.** Its sha256 is the identity every other document is bound to. |
-| `<Original>.working.pdf` | The mutable working document — a copy of the primary, sitting in the project root. Stages write INTO it (text layer, annotations). **Shown in the versions page's document family, and nowhere else** (RULED 2026-08-04 — see below). |
-| `<Original>.epub` | The final product, written by Reflow **with this name from birth**. `book.epub` never exists on disk. Later stages (footnotes-on-epub) edit it in place via staged write + atomic rename. |
+| `archive/<Original>.pdf` / `source/original.epub` | The immutable original. Its sha256 is the identity everything else is bound to. |
+| `<Original>.working.pdf` | Mutable curation copy of a PDF original, in the project root. Minted by `document:create-working-copy` (electron/working-copy.ts): plain copy + `/Foundry` marker (producer `bookforge-working-copy/1`) + sidecar binding + **seeded block annotations** from the app's own analysis, so it is born curatable. Instant, no queue. Structural edits only — its text is never rewritten. |
+| `source/<Book Title>.epub` | The project's book, recorded as `manifest.outputs.epub` (the ONE authority — nothing is found by filename). Written by `vlm:convert`, or minted as a copy of an EPUB original by `manifestService.ensureBookEpub` the first time a strike or pass needs a mutable book. |
+| `source/<Book Title>.tts.epub` | The narration copy — `outputs.ttsEpub`. Derived, disposable, rebuilt from the book + the strike record at any time. |
 
-`working.pdf` and the EPUB are **sidecars of the archive primary** under the
-existing `bookforge-sidecar-binding-v1` protocol (`electron/sidecar-binding.ts`):
-a binding record carries the primary's sha256 and each sidecar's own hash, and a
-reader trusts a sidecar only after the recorded primary hash matches the actual
-archive bytes. Two consequences:
+## Conversion — `foundry vlm-convert`
 
-- **Archive immutability becomes a checked invariant.** Every stage that
-  consults the binding re-proves the archive was never touched.
-- **Deviation from the m4b protocol:** the binding record cannot sit beside the
-  primary (that would write into `archive/`). It lives in the **project root**,
-  deterministically named after the primary basename (same 255-byte-component
-  hashed-tail rule the protocol already has).
+Lives on **Studio's versions page**, not in the picker. The archive PDF row
+offers **Convert to EPUB** (whole document) and **Create working copy**; the
+working-copy row offers **Create EPUB**, which passes the pages you deleted as
+`--skip-pages` (foundry ≥ v0.7.1) — skipped pages are never rasterized, never
+read, never in the book, and the skip list is read from the working document's
+own `/FoundryPageDeleted` marks, not from a manifest mirror, so an unsaved
+deletion cannot leak a page into a 90-minute run.
 
-Sidecar hashes in the binding are refreshed at **stage completions**, not on
-every picker edit (hashing a 300 MB PDF per annotation click is not a thing).
-Between stage boundaries the delivery tier (size+mtime) identifies the working
-copy.
+The run opens in a modal with a live progress bar (`document:stage-*` events),
+owned by `BookConversionService`: **Run in background** closes the modal while
+the conversion continues in main (the versions row keeps a slim live bar +
+"Show progress"); Escape backgrounds, never cancels; Cancel is real
+(`document:cancel-stage` → the AbortSignal `runFoundry` honours). There is no
+queue row — the queue owns execution it starts, and this run is main's.
 
-### Sidecars are system files, and the working copy still gets a door
+Reading machines, resumability, provenance stamps (`data-bf-cat`,
+`data-bf-page`), and the MLX-vs-endpoint rules are unchanged — see CLAUDE.md
+§Convert to EPUB. The conversion records `appliedPasses[].params.skippedPages`.
 
-**RULED 2026-08-04, reversing this section's original rule.** The old rule was
-that `working.pdf` gets no item line anywhere. It failed its first real session:
-a book was cast and detected from the queue, and afterwards the versions page
-listed only the archive — the work existed on disk, at 3.7 MB, with both stage
-boundaries recorded, and had no door. A user cannot be asked to trust a pipeline
-whose products it does not admit to.
+## Strikes and the TTS copy
 
-The rule now:
+Striking never edits a book. The record is
+`outputs.epub.narrationDeletions = { epubSha256, elements, updatedAt }`
+(contract: `shared/vlm/narration-deletions.ts`), element identity is positional
+(`<zip entry>#<index>`), and `bf_element` keys are minted for EVERY epub — a
+publisher EPUB strikes exactly like a converted one. **Export TTS copy** (picker
+rail, book artifact) writes `outputs.ttsEpub`, applying the strikes and — on by
+default — **Remove footnote reference numbers**: digits-only `<sup>` elements
+stripped by the same shared predicate (`shared/text/sup-markers.ts`) the TTS
+extractor applies at read time. The result reports elements removed and markers
+stripped. This replaced the AI footnotes pass on 2026-08-07.
 
-- **The working copy has exactly ONE line item, in the versions page's document
-  family** — the archive original as parent, the working copy and the book EPUB
-  indented under it. It is still absent from every other listing (the library
-  grid, file pickers, the variants list).
-- **Clicking it opens the PROJECT**, not the file. `editor:get-versions` gives
-  that row an `openPath` pointing at the project's PDF primary, and the picker
-  lands on the furthest station the book has reached — which is the working
-  copy. Opening `working.pdf` standalone would give it no project, no binding
-  and no annotations: a window that looks like the book and answers no gesture.
-- **The binding record itself stays invisible.** It is a record, not a document.
-- The row is DERIVED, per run, from the binding record plus the file's
-  existence (`listWorkingDocuments`, `electron/document-project.ts`). No binding
-  or no file means no row; nothing is ever inferred from a filename.
+## Passes
 
-The other user-facing affordance the working documents power is unchanged:
-**"Reset to [stage]"** (see below).
+`ProcessingPassKind = 'simplify' | 'translate'` — that is the whole run-able
+set (`shared/processing/pass-types.ts`). Both read the book EPUB (lazily minted
+for EPUB-born projects), rename the result atomically onto the same path, and
+append provenance. Historical kinds (`tesseract`, `detection`,
+`ocr-correction`, `footnotes`, `get-text`, `blocks`, `reflow`, `vlm-convert`)
+survive in `AppliedPassKind` because books recording them exist; queue rows of
+the retired job types are failed by name on load, never run.
 
-**A pass is not a version.** Footnote removal, simplify and translate mint no
-line item — they are STARS on the book they edited, collapsed by kind,
-latest-wins (`shared/document/version-family.ts`). `appliedPasses` stays
-append-only in the manifest: it is the book's own history, and the fix was how
-it is displayed, not deleting it.
+## The picker is one screen
 
-### Reset to stage
+No stations, no bottom tabs, no ladder. The FILE TYPE on screen decides the
+tools (`viewedArtifactOf`):
 
-Because curation and stage writes land as PDF **incremental updates**
-(append-only), every stage completion is a byte offset in `working.pdf`. The
-pipeline records that offset (and the document hash) in the binding at each
-stage boundary. "Reset to Blocks" (or any stage) = truncate `working.pdf` to
-the recorded boundary — an exact, verifiable restoration of the document as it
-stood when that stage finished, costing zero GPU and no re-run. Resetting past
-Get Text simply re-copies the archive primary.
+| Open file | Tools |
+|---|---|
+| Archive PDF | Read-only + Analysis + Search. Curation locked with a sentence pointing at the versions page. |
+| Working PDF | Full curation: Select / Crop modes, Merge, block & page deletion, category palette, chapter tab. |
+| EPUB (book or original) | Category select/delete (strikes), chapter tab, rail passes: Simplify, Translate, **Export TTS copy**. **Next → narration** hands the project to Studio's Process tab (TTS step) via the narration hand-off. |
 
-## Input classes
-
-| Class | Definition | Stages |
-|---|---|---|
-| **Scanned PDF** | No usable embedded text (`pdf-analyzer` measures this — commit c6a608a8) | Get Text (Tesseract) → Blocks → curate → Reflow (with OCR correction) → Footnotes (epub) |
-| **Text PDF** | Embedded text works | Blocks (from embedded text) → curate → Reflow (no model) → Footnotes (epub) |
-| **EPUB** | Already a book | Footnotes `--epub` (exists today), and whatever future epub-stage passes |
-
-OCR correction is **not a stage the user schedules on scanned books — it is
-part of Reflow** (see below). Footnotes may run on the PDF instead of the EPUB
-when the user chooses, but the default for scanned books is the EPUB stage:
-the adapter measures 97.0% applied / 0.5% false-fire on clean text vs
-90.5% / 2.1% on raw OCR text. Text PDFs are clean either way.
-
-## Stage contracts
-
-### 1. Get Text (scanned PDFs only)
-
-Tesseract (foundry's pinned, verified build) reads the pages and the recognized
-lines are written into `working.pdf` as a real **embedded text layer** —
-invisible text runs positioned at each line's bbox, the OCRmyPDF technique.
-Foundry's scan already produces every line with geometry; this stage makes the
-PDF carry it. Tangible test: open `working.pdf` in any reader and select/search
-the text.
-
-For text PDFs this stage is skipped — the embedded text already is ground
-truth. Foundry's scan grows an **embedded-text mode** that extracts
-lines-with-geometry from the existing text layer instead of running Tesseract,
-so everything downstream sees one input shape.
-
-### 2. Blocks (detect)
-
-Reads the text layer (lines + geometry) out of `working.pdf`, forms blocks
-(foundry's formation rules), labels them with the foundry blocks model, and
-writes the result into `working.pdf` as **real PDF annotations** — one square
-annotation per block: category, color from the one palette
-(`shared/ocr/block-categories.ts`), block id, and merge membership. Open the
-PDF in Acrobat and the boxes are there, colored and named.
-
-Adjacent `chapter` blocks and adjacent `title` blocks (close together, nothing
-between) are merged before writing.
-
-Detect **replaces** whatever annotations exist. One confirm in the picker
-before it runs (it overwrites hand curation); zero confirmation when submitted
-through the queue — submitting was the decision. Results are never staged,
-previewed, or held: if it ran, the annotations in the PDF are the new truth.
-
-There is **one detect**. The legacy classifier path
-(`electron/blocks-run.ts`, the picker's old Detect panel backend) is deleted.
-
-### 3. Curation (the picker)
-
-The picker reads and writes the **same annotations**. Deleting, merging,
-splitting, relabeling, and chapter-title text are all edits to `working.pdf`.
-Saves use PDF **incremental update** (append-only, the Acrobat mechanism) so a
-300 MB scan never gets rewritten for a label click.
-
-> **Library decision (spike resolved 2026-08-04):** `@cantoo/pdf-lib`
-> (MIT, pure JS — the maintained fork of the dead Hopding/pdf-lib), **pinned
-> ≥ 2.8.1**, is the write-side library in BOTH repos: invisible text layer via
-> low-level `pushOperators` + `TextRenderingMode.Invisible` (no high-level
-> option exists), square annotations with custom keys via the `PDFDict`
-> escape hatch, and incremental saves via its `forIncrementalUpdate` +
-> `saveIncremental` path. Pure JS means it runs identically in bun-compiled
-> foundry and Electron — no wasm, no native modules.
->
-> **mupdf.js is rejected** on two independent grounds: AGPL (and distribution
-> of the BookForge installer triggers AGPL obligations — "private repo" is no
-> exemption), and mupdf-wasm is confirmed broken under `bun build --compile`
-> (oven-sh/bun#18145, ArtifexSoftware/mupdf.js#147).
->
-> **pdf.js** (already BookForge's renderer) does page rendering and
-> text-with-geometry extraction ONLY. Its `getAnnotations()` parses against a
-> fixed key whitelist and **silently drops custom dict keys** — reading our
-> annotations through it would silently lose category metadata, so the picker
-> parses annotations with pdf-lib and hand-draws the overlay.
->
-> **P1 still validates before trusting:** the incremental path had data-loss/
-> xref bugs fixed as recently as 2026-07; stress-test sequential appends on a
-> 300 MB fixture, verify truncate-to-boundary yields valid PDFs, and
-> de-linearize during the Get Text full rewrite (linearized PDFs break
-> incremental update). Fallback candidate if validation fails:
-> `@libpdf/core` (Documenso).
-
-Category semantics: a block has **one category field**, in the annotation.
-Displayed color, selection, chapter derivation, and reflow all read that one
-field. The override map is deleted.
-
-### 4. Reflow
-
-Reads `working.pdf` (text layer + annotations) and writes `<Original>.epub`,
-properly named, immediately. In one pass:
-
-1. Drop deleted blocks/pages and excluded categories.
-2. **Scanned class only:** OCR-correct the *kept* lines with the foundry ocr
-   adapter — per-line, the model's trained surface, before any joining. Culled
-   blocks cost zero GPU. (Foundry's ocr stage gains a keep-list, the same
-   deletions/exclusions plumbing export already takes.)
-3. Reflow lines into paragraphs (foundry's calibration + formation),
-   dehyphenating at joins under the corpus-attestation rules — never blind
-   `word-\nword` collapsing.
-4. Chapters come from the chapter blocks; their annotation text is the
-   definitive title.
-
-Every element the emitter writes carries `data-bf-category`, `data-bf-group` and
-`data-bf-blocks` — the category it was rendered from, the paragraph group, and
-the working PDF's own block ids — on the OUTERMOST element of the group (the
-`<ul>`, not each `<li>`). That is what makes the EPUB's block categories
-IDENTICAL to the working PDF's instead of guessed back from type size: the picker
-reads the stamps rather than re-classifying (`readEpubBlockProvenance`, which
-maps blocks to elements with the export aligner). A book with no stamps is a
-different input class and keeps the font/geometry classifier; the analysis result
-says which one it read.
-
-### 5. Footnotes
-
-A text transformation on whichever document it is given:
-
-- `--epub` (exists today): edits the EPUB in place (staged write, atomic
-  rename), report artifact beside it.
-- `--pdf` (new): rewrites the text layer of `working.pdf`.
-
-Default for scanned books: EPUB stage, after Reflow (accuracy numbers above).
+The rail (`shared/document/rail-tasks.ts`): source = Select, Crop | Merge;
+book = Simplify, Translate | Export TTS copy.
 
 ## Error handling
 
-- A failed stage writes **nothing partial** to the document (foundry's staged
-  temp + rename discipline) and surfaces its message — stage name and the
-  program's own words — in the queue row and the picker.
-- There is no persistent error state to attach, clear, or trip over later. The
-  scratch directory a stage used is deleted on failure and on success. The
-  user re-runs the stage; that is the whole recovery model.
-- Export/Generate never consults run state. It reads documents. If the
-  documents a stage needs are missing, the error names the stage that writes
-  them.
+Unchanged in spirit: a failed stage writes nothing partial (staged temp +
+atomic rename), surfaces the program's own words, and deletes its scratch. A
+missing input is an error naming what should have written it. No fallbacks.
 
-## Picker UI (lands on the new foundation, not the old)
+## What was removed, 2026-08-07
 
-One mode: **select mode**. Right-side nav:
-
-- **Detect** — a single button at the top. One confirm → runs foundry blocks →
-  replaces the annotations (merged chapter/title blocks included).
-- **Select tab** — click a category swatch → selects every block of that
-  category, and only that category (the one field; no divergence possible).
-  Double-click a block → selects all blocks of its category. Chapter blocks
-  select like anything else.
-- **Label tab** — click a block, then click its category (current label-mode
-  gesture).
-- **Chapter tab** — lists all chapter blocks; titles editable inline here.
-  Relabeling any block to `chapter` makes it appear here. Replaces the old
-  chapters mode/sidebar.
-- **Pencil** — clicking a chapter block shows a pencil; the pencil opens title
-  editing. Chapter blocks are otherwise ordinary blocks (select, merge, move,
-  relabel).
-- **Merge** — select multiple blocks → merge into one. This is the "the system
-  thinks it's two blocks but it isn't" correction, and it feeds chapter
-  assembly too.
-
-## What gets deleted
-
-- `bookforge-run.json` and run persistence as state; run attachment
-  (`foundryReattachEffect`, `foundryRunLoaded`, `attachFoundryRun` wiring);
-  the orphan export gate in `tryFoundryExport`.
-- The category override map and every read of it.
-- The legacy detect backend (`electron/blocks-run.ts`, its store, its panel
-  wiring) and the second detect path.
-- The legacy reflow exporter as a separate gated path — Reflow is the one
-  exporter.
-- The chapter-marker occlusion machinery tied to the old chapter system.
-
-## Build phases (each on a branch, delegate-and-review, merge to main)
-
-- **P0 — keep the app usable now (small diffs on current code):**
-  double-click selection reads the same effective category the display paints;
-  errored runs are auto-cleared with their reason surfaced; the export gate
-  stops blocking on run objects that exported nothing.
-- **P1 — foundry document modes:** text-layer writer (scan → PDF), embedded-
-  text scan mode, `blocks` annotation write, Reflow (PDF → named EPUB, with
-  keep-list OCR), `footnotes --pdf`. Incremental-update spike decision.
-- **P2 — BookForge pipeline:** queue stages become document transforms;
-  sidecar bindings + naming; the deletion list above actually deleted.
-- **P3 — picker:** annotation-backed editing and the select/label/chapter tab
-  redesign, pencil, merge.
-
-Review gate at the end of each phase before the next begins.
+The Tesseract arm (get-text/cast, blocks/Detect, reflow, OCR correction, the
+blocks llama-server and its 8 GB model, the AI footnotes pass), the station
+bar/ladder, the Training tab and its whole corpus stack, and the picker's
+Setup/OCR rail group. Foundry keeps its own scan/blocks/ocr/footnotes commands
+untouched — BookForge simply no longer calls them. The training corpus was
+archived to
+`Shared/BookForge/training-corpus-backups/training-archive-2026-08-07.zip` and
+`/Volumes/Callisto/training/` deleted.

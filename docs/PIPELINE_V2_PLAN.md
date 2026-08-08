@@ -1,5 +1,16 @@
 # Pipeline V2 — per-document stations (PLAN, 2026-08-04)
 
+**Status: SUPERSEDED, 2026-08-07.** The station ladder, the cast/detect/reflow
+stages, the station bar and its tabs were all removed three days after this
+plan was built, when `foundry vlm-convert` (dots.ocr) replaced the Tesseract
+pipeline as the one PDF→EPUB conversion. `docs/DOCUMENT_PIPELINE.md` is the
+current authority. Rulings in here that survived (the narration hand-off, the
+chapter tab, inline-modal-with-progress for long runs, "a pass is not a
+version", the versions-page family rows) are folded into that doc and CLAUDE.md;
+everything about stations, casting and reflow is history.
+
+---
+
 Owen's redesign after the first day on the document pipeline. Supersedes the
 chain-wizard model. `docs/DOCUMENT_PIPELINE.md` remains the authority for the
 document mechanics (binding, incremental updates, reset); this plan is the

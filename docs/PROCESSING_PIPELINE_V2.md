@@ -1,5 +1,15 @@
 # Processing Pipeline v2 — the pass builder
 
+**Status: SUPERSEDED, 2026-08-07.** The pass builder this described — the
+foundry scan/blocks/ocr chain, the footnotes pass, chain planning around them —
+was removed from BookForge in the vision-model cleanup. The current contract is
+`docs/DOCUMENT_PIPELINE.md`: conversion is `foundry vlm-convert`, the runnable
+passes are Simplify and Translate, and footnote markers are stripped
+deterministically at TTS-copy export. This file stays as the historical record
+of the model the provenance kinds in old manifests were written under.
+
+---
+
 Status: COMPLETE — all eight phases landed (Aug 3 2026). This document is the
 contract the implementation works from; §Phases records what each one did.
 

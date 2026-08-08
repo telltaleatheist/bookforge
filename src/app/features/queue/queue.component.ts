@@ -15,7 +15,6 @@ import { JobEtaService } from './services/job-eta.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { JobListComponent } from './components/job-list/job-list.component';
 import { JobPanelComponent } from './components/job-panel/job-panel.component';
-import { DiffViewComponent } from '../audiobook/components/diff-view/diff-view.component';
 import { QueueJob } from './models/queue.types';
 
 @Component({
@@ -27,8 +26,7 @@ import { QueueJob } from './models/queue.types';
     ToolbarComponent,
     DesktopButtonComponent,
     JobListComponent,
-    JobPanelComponent,
-    DiffViewComponent
+    JobPanelComponent
   ],
   template: `
     <!-- Toolbar -->
@@ -416,51 +414,6 @@ import { QueueJob } from './models/queue.types';
       }
     }
 
-    .diff-modal-backdrop {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: rgba(0, 0, 0, 0.7);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 1000;
-      animation: fadeIn 0.15s ease;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; }
-      to { opacity: 1; }
-    }
-
-    .diff-modal {
-      width: 90%;
-      max-width: 1200px;
-      height: 80%;
-      max-height: 800px;
-      background: var(--bg-elevated);
-      border-radius: 12px;
-      box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
-      overflow: hidden;
-      animation: slideUp 0.2s ease;
-
-      app-diff-view {
-        height: 100%;
-      }
-    }
-
-    @keyframes slideUp {
-      from {
-        opacity: 0;
-        transform: translateY(20px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
-    }
   `]
 })
 export class QueueComponent implements OnInit, OnDestroy {
@@ -477,7 +430,6 @@ export class QueueComponent implements OnInit, OnDestroy {
   readonly collapsedStepIds = signal<Set<string>>(new Set());
 
   // Diff modal state
-  @ViewChild(DiffViewComponent) diffViewRef?: DiffViewComponent;
 
   // Computed: get the selected job object
   readonly selectedJob = computed(() => {
