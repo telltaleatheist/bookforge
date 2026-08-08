@@ -6972,7 +6972,34 @@ function setupIpcHandlers(): void {
     }
   });
 
-  /** Record what the user has struck out. The book on disk is not touched. */
+  /**
+   * ONE GESTURE, applied to the record. The book on disk is not touched.
+   *
+   * The picker's whole strike path. It sends what a gesture CHANGED — the
+   * elements it struck and the elements it put back — and this reads, modifies
+   * and writes the record in one `modifyManifest` transaction. The record is the
+   * state; the editor's deletion sets are a view of it.
+   *
+   * Deliberately not "here is what is struck now": that shape made the renderer's
+   * volatile view the authority over a durable record, and a view that had just
+   * been reset wrote an empty book's worth of strikes over an evening's work.
+   */
+  ipcMain.handle('narration:edit-deletions', async (
+    _event, projectDir: string, edit: { strike: string[]; unstrike: string[] }) => {
+    try {
+      const { editNarrationDeletions } = await import('./narration-export.js');
+      return { success: true, deletions: await editNarrationDeletions(projectDir, edit) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Replace the record wholesale.
+   *
+   * Not the picker's path any more — see `narration:edit-deletions`. Kept for
+   * callers that own the entire answer rather than a gesture's worth of it.
+   */
   ipcMain.handle('narration:save-deletions', async (
     _event, projectDir: string, elements: string[]) => {
     try {

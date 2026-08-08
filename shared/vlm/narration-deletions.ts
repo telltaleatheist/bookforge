@@ -37,8 +37,40 @@
  * reconciled by guessing.
  */
 
-/** One element struck out of the book, `<zip entry>#<index>`. */
+/**
+ * One element struck out of the book. TWO forms, in TWO SEPARATE NAMESPACES:
+ *
+ *  - `<zip entry>#<index>` — a TEXT unit, indexed into that document's unit list
+ *    (`collectExportUnits`, electron/epub-processor.ts).
+ *  - `<zip entry>#img<N>` — an IMAGE element, indexed into that document's image
+ *    list in flow order (`collectImageElements`, same file): `<img>`, `<svg>`,
+ *    and a bare `<image>`, which is exactly the set `bodyIsEmpty` counts as
+ *    content.
+ *
+ * ── Why images get their own numbering rather than a place in the unit list ──
+ *
+ * Because the unit list is already the identity of every strike in the library.
+ * A picture is not a text unit — it contributes no characters to the alignment
+ * stream, `collectExportUnits` collects the ELEMENT AROUND it (a `<p>`, a
+ * `<div class="image">`) or nothing at all — so giving images unit indices would
+ * mean renumbering the units of every document that holds one, and every
+ * recorded strike after the first picture in that document would then name a
+ * different paragraph. A second namespace costs one prefix and invalidates
+ * nothing.
+ *
+ * Until Aug 2026 images had NO identity at all, and the consequence was measured
+ * on a real book: `cover.xhtml`, `htit.xhtml` and `title.xhtml` hold a single
+ * `<img>` each, the user struck those pages out, and the narration copy still
+ * had all three — nothing could be recorded for them, so their documents never
+ * emptied and the pruning that would have removed them never fired.
+ */
 export type NarrationElementKey = string;
+
+/** The prefix that puts a key in the IMAGE namespace rather than the unit one. */
+const IMAGE_KEY_PREFIX = 'img';
+
+/** Which of the two things a key names. */
+export type NarrationElementKind = 'unit' | 'image';
 
 export interface NarrationDeletions {
   /**
@@ -97,16 +129,32 @@ export function narrationElementKey(file: string, index: number): NarrationEleme
   return `${file}#${index}`;
 }
 
-export function parseNarrationElementKey(key: NarrationElementKey): { file: string; index: number } {
+/** The key of the Nth image element of a document, in flow order. */
+export function narrationImageElementKey(file: string, ordinal: number): NarrationElementKey {
+  if (!Number.isInteger(ordinal) || ordinal < 0) {
+    throw new Error(`A narration image ordinal must be a whole number ≥ 0, not ${ordinal}.`);
+  }
+  return `${file}#${IMAGE_KEY_PREFIX}${ordinal}`;
+}
+
+export function parseNarrationElementKey(
+  key: NarrationElementKey
+): { file: string; index: number; kind: NarrationElementKind } {
   const at = key.lastIndexOf('#');
-  const index = at < 0 ? NaN : Number(key.slice(at + 1));
-  if (at <= 0 || !Number.isInteger(index) || index < 0) {
+  const rest = at < 0 ? '' : key.slice(at + 1);
+  const isImage = rest.startsWith(IMAGE_KEY_PREFIX);
+  const digits = isImage ? rest.slice(IMAGE_KEY_PREFIX.length) : rest;
+  // `Number('')` is 0, which would read `x#` and `x#img` as index 0 — so the
+  // digits are checked as characters before they are read as a number.
+  const index = /^\d+$/.test(digits) ? Number(digits) : NaN;
+  if (at <= 0 || !Number.isInteger(index)) {
     throw new Error(
-      `"${key}" is not a narration element key. The shape is <zip entry>#<index>, e.g. `
-      + 'OEBPS/chapter-01.xhtml#12.'
+      `"${key}" is not a narration element key. The shape is <zip entry>#<index> for a text `
+      + 'element (e.g. OEBPS/chapter-01.xhtml#12) or <zip entry>#img<N> for a picture (e.g. '
+      + 'OEBPS/cover.xhtml#img0).'
     );
   }
-  return { file: key.slice(0, at), index };
+  return { file: key.slice(0, at), index, kind: isImage ? 'image' : 'unit' };
 }
 
 /**
@@ -141,13 +189,21 @@ export interface NarrationLaidOutBlock {
   /** The element it was laid out FROM, absent when the aligner could not place it. */
   element?: NarrationElementKey;
   /**
-   * True for the two classes the aligner NEVER places, by design rather than by
-   * failure: an image block (mupdf's `[Image 528x815]` furniture, which exists
-   * in no DOM text node) and a footnote-marker block (whose text duplicates its
-   * parent's, so aligning it would double-count). Both are skipped outright by
-   * `alignBlocksToEpub` — `if (b.isImage || b.isFootnoteMarker) continue` — so
-   * their having no element is a STATE and not a problem, and reporting them
-   * beside genuinely unaligned prose would bury the prose in furniture.
+   * True for the ONE class that has no element by design rather than by failure:
+   * a footnote-marker block, whose text duplicates its parent's, so the text
+   * aligner skips it outright to avoid double-counting. Its content is carried
+   * by the paragraph it was lifted out of, and the markers themselves come out
+   * of the narration copy at cut time (`stripFootnoteMarkerSups`) — so striking
+   * one alone is a no-op that would be noise if it were reported as a failure.
+   *
+   * IMAGE blocks used to be in this class too, and that was the hole: they had
+   * no element to be struck and no way to acquire one, so an image-only document
+   * could never be removed from the narration copy. Since Aug 2026 image blocks
+   * are matched to image ELEMENTS by document and ordinal (`alignImageBlocks`,
+   * electron/epub-processor.ts), so an image is placeable; one the matcher
+   * REFUSED to pair (the counts disagreed) arrives here with no element and
+   * `unplaceable: false`, which is right — it is a deletion that reached
+   * nothing, and the user has to be told.
    */
   unplaceable: boolean;
   /** The opening of the block's text, so an unstruck deletion can be NAMED. */
@@ -201,11 +257,23 @@ export interface NarrationStrikes {
  * statement as striking every block on it, said in one gesture, so it resolves
  * the same way: through the blocks that were laid out on that page.
  *
- * DERIVED, never accumulated. The editor's two sets are the state the user is
- * looking at; this reads them and produces the one record the export cuts by.
- * That is also what makes UNDO work with nothing added for it: restoring a page
- * or a block puts it back in those sets, and the next derivation simply does not
- * name its elements.
+ * ── What this is FOR, since Aug 2026 ────────────────────────────────────────
+ *
+ * It is the translator between a gesture and the record, and NOT the record's
+ * author. It used to be both: the picker ran this over its whole view state on
+ * every save and overwrote `narrationDeletions` with the answer. That made the
+ * volatile thing the authority — the view resets on every document reload, and
+ * a derivation over a freshly-reset view is a legitimate-looking record with
+ * zero strikes in it. Measured on a real book: a document whose text aligns
+ * perfectly ended with NO strikes for pages the user had deleted, and only 309
+ * of 668 footnote elements survived to the export.
+ *
+ * So the record is the state now, and this runs TWICE PER GESTURE over the same
+ * block layout — once before, once after — with the difference posted as
+ * `narration:edit-deletions` (strike / unstrike). Taking the difference rather
+ * than carrying a per-gesture element list is what makes overlapping gestures
+ * come out right: an element two blocks name stays struck when only one of them
+ * is restored, because it is still in the AFTER set.
  */
 export function deriveNarrationStrikes(
   blocks: readonly NarrationLaidOutBlock[],
@@ -298,8 +366,8 @@ export function describeUnstruckDeletions(strikes: NarrationStrikes): string | n
     const rest = strikes.pagesWithNothingStruck.length - 5;
     parts.push(
       `${strikes.pagesWithNothingStruck.length} deleted page(s) had nothing on them that could be `
-      + `struck (page ${shown}${rest > 0 ? `, and ${rest} more` : ''}) — a blank page, or one holding `
-      + 'nothing but an image.'
+      + `struck (page ${shown}${rest > 0 ? `, and ${rest} more` : ''}) — a blank page, or one whose `
+      + 'only picture could not be matched to an image in the markup.'
     );
   }
 
@@ -320,6 +388,72 @@ export function narrationDeletedBlockIds(
 ): string[] {
   const struck = new Set(elements);
   return blocks.filter((b) => b.element !== undefined && struck.has(b.element)).map((b) => b.id);
+}
+
+/**
+ * Which PAGES of the laid-out book a recorded deletion set presents as deleted.
+ *
+ * PRESENTATION, derived, and never written back. The record says which ELEMENTS
+ * are struck; "this page is deleted" is what the picker draws when there is
+ * nothing left on the page that could be read aloud, which is exactly "every
+ * strikeable block on it is struck".
+ *
+ * A page with NO strikeable blocks at all (a page of footnote markers, a blank)
+ * is not deleted: vacuous truth would strike every empty page in the book the
+ * moment anything else was. And a page shown as deleted must not ALSO have its
+ * blocks listed individually — the caller takes those out — because restoring
+ * the page has to be one gesture that puts the whole page back, not one that
+ * leaves several hundred block deletions the user never made.
+ */
+export function narrationDeletedPages(
+  blocks: readonly NarrationLaidOutBlock[],
+  struckBlockIds: ReadonlySet<string>
+): Set<number> {
+  const strikeable = new Map<number, number>();
+  const struckOn = new Map<number, number>();
+  for (const b of blocks) {
+    if (b.element === undefined) continue;
+    strikeable.set(b.page, (strikeable.get(b.page) ?? 0) + 1);
+    if (struckBlockIds.has(b.id)) struckOn.set(b.page, (struckOn.get(b.page) ?? 0) + 1);
+  }
+  const pages = new Set<number>();
+  for (const [page, count] of strikeable) {
+    if (count > 0 && struckOn.get(page) === count) pages.add(page);
+  }
+  return pages;
+}
+
+/**
+ * One transactional edit of the record: what to add, what to take away.
+ *
+ * Both lists in one message because a gesture can do both at once — a page
+ * toggle over a mixed selection deletes some pages and restores others — and
+ * two messages would be two writes with a moment between them in which the
+ * record described neither state.
+ */
+export interface NarrationDeletionEdit {
+  strike: NarrationElementKey[];
+  unstrike: NarrationElementKey[];
+}
+
+/**
+ * The edit that takes `before` to `after` — the difference, both ways.
+ *
+ * The whole transactional model rests on this being a DIFFERENCE and not a
+ * snapshot: `after` is never sent as the record. A window whose view is stale,
+ * or empty because the document just reloaded, produces an empty difference and
+ * therefore no write at all, which is the failure mode the old snapshot save
+ * turned into silent data loss.
+ */
+export function narrationDeletionEdit(
+  before: ReadonlySet<NarrationElementKey>,
+  after: ReadonlySet<NarrationElementKey>
+): NarrationDeletionEdit {
+  const strike: NarrationElementKey[] = [];
+  const unstrike: NarrationElementKey[] = [];
+  for (const key of after) if (!before.has(key)) strike.push(key);
+  for (const key of before) if (!after.has(key)) unstrike.push(key);
+  return { strike: strike.sort(), unstrike: unstrike.sort() };
 }
 
 /** Every block that came off one source page — the "delete this page" selection. */

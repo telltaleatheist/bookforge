@@ -39,6 +39,7 @@ import {
   type WorkingCopyRemint,
 } from '../shared/document/working-copy-remint';
 import {
+  narrationDeletionsStaleReason,
   narrationEpubRelPath,
   type NarrationDeletions,
   type NarrationEpubOutput,
@@ -1640,6 +1641,76 @@ export async function writeNarrationDeletions(
   if (!saved.success) {
     throw new Error(`Recording the narration deletions for ${projectDir} failed: ${saved.error}`);
   }
+}
+
+/**
+ * Apply ONE EDIT to the strike record, inside the project's lock.
+ *
+ * ── Why the read and the write are one call ─────────────────────────────────
+ *
+ * Because the record is now an ACCUMULATOR — the picker sends what a gesture
+ * changed, not what is struck — and an accumulator read outside the lock and
+ * written inside it loses whatever landed between the two. Two picker windows on
+ * one project, or one window striking faster than the manifest writes, is enough
+ * (a "delete all like this" over a book's footnotes is one gesture and hundreds
+ * of elements arriving as one message, but the next gesture need not wait for
+ * it). So the whole read-modify-write happens under `modifyManifest`, which is
+ * the same lock `saveManifest` takes.
+ *
+ * `bookSha256` is measured by the caller from the file on disk and checked HERE,
+ * against the stamp the record carries. A mismatch means the book was rewritten
+ * under a positional record: the record is cleared and the reason is returned
+ * rather than thrown, because clearing it IS the write this call makes.
+ */
+export async function editNarrationDeletions(
+  projectDir: string,
+  bookSha256: string,
+  edit: { strike: readonly string[]; unstrike: readonly string[] },
+): Promise<{ deletions: NarrationDeletions; staleReason: null }
+  | { deletions: null; staleReason: string }> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  let written: NarrationDeletions | null = null;
+  let staleReason: string | null = null;
+
+  const saved = await modifyManifest(projectId, (m) => {
+    const epub = m.outputs?.epub;
+    if (!epub) {
+      throw new Error(
+        `Cannot record narration deletions for ${projectDir}: the project has no outputs.epub, so `
+        + 'there is no book for them to be strikes out of.'
+      );
+    }
+    const recorded = epub.narrationDeletions ?? null;
+    staleReason = narrationDeletionsStaleReason(recorded, bookSha256);
+    if (staleReason !== null) {
+      delete epub.narrationDeletions;
+      return;
+    }
+    const elements = new Set(recorded?.elements ?? []);
+    for (const key of edit.unstrike) elements.delete(key);
+    // AFTER the unstrikes: one gesture can do both (a page toggle over a mixed
+    // selection), and an element named by both halves of it is struck.
+    for (const key of edit.strike) elements.add(key);
+    written = {
+      epubSha256: bookSha256,
+      elements: [...elements].sort(),
+      updatedAt: new Date().toISOString(),
+    };
+    epub.narrationDeletions = written;
+  });
+  if (!saved.success) {
+    throw new Error(`Recording the narration deletions for ${projectDir} failed: ${saved.error}`);
+  }
+  if (staleReason !== null) return { deletions: null, staleReason };
+  if (written === null) {
+    throw new Error(
+      `Editing the narration deletions for ${projectDir} wrote nothing and gave no reason — this `
+      + 'is a bug.'
+    );
+  }
+  return { deletions: written, staleReason: null };
 }
 
 /** Forget the strikes — the book stays exactly as it is. */

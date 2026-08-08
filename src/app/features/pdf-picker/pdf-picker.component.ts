@@ -75,10 +75,12 @@ import {
   describeUnstruckDeletions,
   narrationBlocksOnSourcePage,
   narrationDeletedBlockIds,
+  narrationDeletedPages,
+  narrationDeletionEdit,
   parseNarrationElementKey,
+  type NarrationDeletionEdit,
   type NarrationLaidOutBlock,
   type NarrationState,
-  type NarrationStrikes,
 } from '@shared/vlm/narration-deletions';
 import type { BookChapterTitles } from '@shared/vlm/chapter-titles';
 import { parsePageRange } from './shared/page-range.util';
@@ -2549,60 +2551,35 @@ export class PdfPickerComponent implements OnInit {
   });
 
   /**
-   * Put the recorded narration strikes back on screen once the converted book's
-   * blocks are in the editor.
+   * PAINT the recorded strikes once the book's blocks are in the editor.
    *
-   * Keyed on the DOCUMENT plus the record's own timestamp, so it fires once per
-   * book per record and not on every block list the segmenter rewrites. It only
-   * ever ADDS: the record says what the user struck, and a strike they have
-   * since undone in this session is theirs to undo.
+   * The record is the state; the editor's two deletion sets are a VIEW of it
+   * (shared/vlm/narration-deletions.ts). So this is a rebuild, not a merge: it
+   * REPLACES both sets with what the record says, and writes nothing — there is
+   * nothing to write, the record already is the answer.
+   *
+   * Keyed on the DOCUMENT plus the record's own timestamp plus the block count,
+   * so it re-paints when the segmenter replaces the block list (the blocks a
+   * recorded element names may not have existed a moment ago) and when the
+   * record changes underneath, and not otherwise.
+   *
+   * There is no save effect beside it any more, and that is the point. There
+   * used to be one, debounced, deriving the whole record from these two signals
+   * — which made the volatile thing the authority over the durable one and lost
+   * an evening's strikes to a document reload.
    */
   private appliedNarrationKey = '';
   private readonly narrationRestoreEffect = effect(() => {
     if (!this.pdfLoaded() || !this.canStrikeForNarration()) return;
     const recorded = this.narrationState()?.deletions;
     const docId = this.activeDocumentId() ?? '';
-    // Read so the effect re-runs when the segmenter replaces the block list —
-    // the blocks the record names may not have existed a moment ago.
+    // Read so the effect re-runs when the segmenter replaces the block list.
     const blockCount = this.blocks().length;
     if (blockCount === 0) return;
     const key = `${docId}|${recorded?.updatedAt ?? ''}|${blockCount}`;
     if (this.appliedNarrationKey === key) return;
     this.appliedNarrationKey = key;
-    this.applyNarrationDeletions();
-  });
-
-  /**
-   * Record the strikes as they are made.
-   *
-   * Debounced, because a "delete all like this" over a book's footnotes is one
-   * gesture and hundreds of blocks, and a manifest write per block would be
-   * hundreds of writes into a Syncthing-synced folder. It is a WRITE SCHEDULE
-   * and not a cache: the export saves synchronously before it reads the record
-   * (`exportNarrationCopy`), so the file that lands can never be cut by strikes
-   * that were still in flight.
-   */
-  private narrationSaveTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly narrationSaveEffect = effect(() => {
-    // Tracked: BOTH sets the user is looking at. Reading only the block set is
-    // what left page deletions out of the record entirely — the strikes were
-    // re-derived on every block gesture and never on a page one, so a session
-    // that deleted only pages recorded nothing at all.
-    const struck = this.deletedBlockIds();
-    const struckPages = this.deletedPages();
-    if (!this.pdfLoaded() || !this.canStrikeForNarration()) return;
-    // The restore has to land before the first save, or an empty editor would
-    // be recorded over a book's worth of strikes.
-    if (this.appliedNarrationKey === '') return;
-    void struck;
-    void struckPages;
-    if (this.narrationSaveTimer) clearTimeout(this.narrationSaveTimer);
-    this.narrationSaveTimer = setTimeout(() => {
-      this.narrationSaveTimer = null;
-      void this.saveNarrationDeletions().catch((err) => {
-        console.error('[picker] could not record the narration deletions:', err);
-      });
-    }, 600);
+    this.rebuildNarrationView();
   });
 
   // Tab persistence - localStorage keys
@@ -4977,6 +4954,17 @@ export class PdfPickerComponent implements OnInit {
    * - Excludes first and last pages (covers)
    * - Keeps actual photos/illustrations (different from background pattern)
    */
+  /**
+   * Deliberately NOT a narration strike, either arm of it.
+   *
+   * This is a SCAN affordance: it hides the page photograph a PDF was rendered
+   * from, and its own flag (`remove_backgrounds`) is what persists it. An EPUB
+   * has no page photograph, so on a book there is nothing here for it to find —
+   * and routing it through `landBlockDeletions` would let a view-only toggle
+   * strike a book's plates out of the narration copy for good. The two arms
+   * cancel in the strike derivation anyway: an id in the view before and after a
+   * gesture contributes to both sides of the difference.
+   */
   async toggleRemoveBackgrounds(): Promise<void> {
     const isCurrentlyEnabled = this.editorState.removeBackgrounds();
 
@@ -7222,12 +7210,19 @@ export class PdfPickerComponent implements OnInit {
 
   // Delegate undo/redo to service
   async undo(): Promise<void> {
+    // The two sets as they stand BEFORE the entry is applied. An undo says what
+    // it undid in the editor's vocabulary, not in elements, so the strike record
+    // is edited by the difference — read here, in the same handler, before
+    // anything else can touch either set.
+    const struckBefore = new Set(this.deletedBlockIds());
+    const pagesBefore = new Set(this.deletedPages());
     const action = this.editorState.undo();
     if (!action) return;
     // One history entry can restore a crop's worth of blocks, a class of them
     // and a page at once, so what an undo means to the document is the
     // difference it just made — taken here, before anything else writes.
     this.reconcileDeletionsWithDocument();
+    this.landNarrationHistory(struckBefore, pagesBefore);
 
     // Handle visual changes based on action type
     if (action.type === 'toggleBackgrounds') {
@@ -7247,9 +7242,12 @@ export class PdfPickerComponent implements OnInit {
   }
 
   async redo(): Promise<void> {
+    const struckBefore = new Set(this.deletedBlockIds());
+    const pagesBefore = new Set(this.deletedPages());
     const action = this.editorState.redo();
     if (!action) return;
     this.reconcileDeletionsWithDocument();
+    this.landNarrationHistory(struckBefore, pagesBefore);
 
     // Handle visual changes based on action type
     if (action.type === 'toggleBackgrounds') {
@@ -8204,21 +8202,21 @@ export class PdfPickerComponent implements OnInit {
    * those cannot autosave their copy of the state back. It cannot do that to the
    * window that pressed the button, and that window holds the same state: the
    * struck sets, the chapters, the undo stacks, the merges, a snapshot per open
-   * document, and two debounced writers (`autoSaveTimeout` → `project:save-to-path`,
-   * `narrationSaveTimer` → the strike record). Every one of them is a way for
-   * the erase to be undone seconds after it succeeded.
+   * document, and a debounced writer (`autoSaveTimeout` → `project:save-to-path`).
+   * Every one of them is a way for the erase to be undone seconds after it
+   * succeeded.
    *
    * So the invariant is built here rather than hoped for:
    *
    *  1. `erasing` is set BEFORE the reset IPC and cleared only after the reload
    *     has finished, and every manifest writer in this component refuses while
    *     it is set (`scheduleAutoSave`, `performAutoSave`, `saveProjectToPath`,
-   *     `saveNarrationDeletions`). Nothing can slip through the window between
-   *     the reset returning and this window having re-read the manifest.
-   *  2. The two pending timers are cancelled outright, and `appliedNarrationKey`
-   *     is cleared so the strike saver goes back to refusing until a restore has
-   *     read the CLEARED record — the same guard that stops an empty editor
-   *     recording over a book's worth of strikes on open.
+   *     `postNarrationEdit`). Nothing can slip through the window between the
+   *     reset returning and this window having re-read the manifest.
+   *  2. The pending autosave timer is cancelled outright, and
+   *     `appliedNarrationKey` is cleared so the next restore rebuilds the view
+   *     from the CLEARED record rather than believing it has already painted
+   *     this book.
    *  3. Every open document of this project is DROPPED, which takes its snapshot
    *     of the edit set with it, and the live editor is closed. Reloading only
    *     the file on screen would leave the other tabs holding the old sets, and
@@ -8300,27 +8298,27 @@ export class PdfPickerComponent implements OnInit {
   /**
    * Cancel every write this window has SCHEDULED but not yet made.
    *
-   * There are exactly two, and they are two because they write two different
-   * records: `autoSaveTimeout` fires `project:save-to-path` (the editor
-   * container and the deletion keys under `manifest.source`), and
-   * `narrationSaveTimer` fires the strike record inside `outputs.epub`. A
-   * cancelled timer is not enough on its own — a timer that had ALREADY fired is
-   * an in-flight promise — which is why the writers themselves refuse while
-   * `erasing` is set; this is the half that stops new ones being born.
+   * There is exactly ONE now: `autoSaveTimeout`, which fires
+   * `project:save-to-path` (the editor container and the deletion keys under
+   * `manifest.source`). A cancelled timer is not enough on its own — a timer
+   * that had ALREADY fired is an in-flight promise — which is why the writer
+   * itself refuses while `erasing` is set; this is the half that stops new ones
+   * being born.
    *
-   * `appliedNarrationKey` goes back to its opening value on purpose. The strike
-   * saver refuses to run until a restore has landed (`narrationSaveEffect`), so
-   * clearing the key puts that guard back in force: the next strike save can
-   * only be scheduled by a restore that has read the record as it stands NOW.
+   * The strike record used to have a debounced writer of its own here. It has
+   * none now: strikes are posted at the gesture that makes them
+   * (`postNarrationEdit`), and that call refuses outright while `erasing` is
+   * set, so there is no scheduled strike write left to cancel.
+   *
+   * `appliedNarrationKey` goes back to its opening value on purpose: it is what
+   * makes the next `narrationRestoreEffect` run rebuild the view from the
+   * record as it stands AFTER the erase, rather than believing it has already
+   * painted this book.
    */
   private cancelScheduledProjectWrites(): void {
     if (this.autoSaveTimeout) {
       clearTimeout(this.autoSaveTimeout);
       this.autoSaveTimeout = null;
-    }
-    if (this.narrationSaveTimer) {
-      clearTimeout(this.narrationSaveTimer);
-      this.narrationSaveTimer = null;
     }
     this.appliedNarrationKey = '';
   }
@@ -8611,7 +8609,11 @@ export class PdfPickerComponent implements OnInit {
     this.loading.set(true);
     this.loadingText.set('Writing the TTS copy...');
     try {
-      await this.saveNarrationDeletions();
+      // Whatever this window has posted and not yet heard back about. There is
+      // nothing to SAVE here any more — the record already is the state, and the
+      // export reads it — but a gesture still in flight must land before the
+      // cut, or the file would be one gesture behind the screen.
+      await this.narrationEdits;
       const answer = await this.electronService.exportNarrationEpub(dir, {
         stripSupMarkers: choice.checkboxChecked,
       });
@@ -8683,115 +8685,230 @@ export class PdfPickerComponent implements OnInit {
       id: b.id,
       page: b.page,
       ...(b.bf_element !== undefined ? { element: b.bf_element } : {}),
-      // The two classes the aligner skips outright, read off the block's own
-      // flags — see NarrationLaidOutBlock.unplaceable. Both are declared
-      // optional on TextBlock and an absent one means the block is not of that
-      // class: they are set on every block the analyzer produces, and the
-      // picker's own constructed blocks set them literally false. That is a
-      // real state and not a missing fact, which is why it is read as one here
-      // (same reading as `isFootnoteMarker: !!b.is_footnote_marker` at the
-      // export aligner's call site).
-      unplaceable: b.is_image === true || b.is_footnote_marker === true,
+      // The ONE class the aligner skips by design, read off the block's own
+      // flag — see NarrationLaidOutBlock.unplaceable. `is_image` is NOT in here
+      // any more: a picture is matched to an image element by document and
+      // ordinal now, so an image block with no element is a REFUSAL to guess and
+      // must be reported like any other deletion that reached nothing.
+      //
+      // The flag is declared optional on TextBlock and an absent one means the
+      // block is not a marker: it is set on every block the analyzer produces,
+      // and the picker's own constructed blocks set it literally false. A real
+      // state, not a missing fact, which is why it is read as one here.
+      unplaceable: b.is_footnote_marker === true,
       excerpt: b.text.slice(0, 80),
     }));
   }
 
   /**
-   * What the last derivation could NOT strike, or null when it struck
-   * everything the user deleted.
+   * What the last gesture could NOT strike, or null when it struck everything
+   * the user deleted.
    *
-   * Held so the export can say it at the moment the user asks for the file. The
-   * save itself runs on a debounce behind every deletion gesture, and a modal
-   * per gesture would make the picker unusable — but a deletion that quietly
-   * does nothing is exactly the failure this whole change is about, so it is
-   * said on the console as it happens and in front of the user at export.
+   * Held so the export can say it at the moment the user asks for the file. A
+   * modal per gesture would make the picker unusable — but a deletion that
+   * quietly does nothing is exactly the failure this whole change is about, so
+   * it is said on the console as it happens and in front of the user at export.
    */
   private readonly narrationUnstruckReport = signal<string | null>(null);
 
   /**
-   * Record what is struck out, derived from what the editor has deleted —
-   * BLOCKS and PAGES both.
+   * The strike edits this window has in flight, chained.
    *
-   * Derived, never accumulated: the editor's deletion sets are the state the
-   * user is looking at, and a second list maintained alongside them would be a
-   * second answer to "what is struck". Pages are in here because a page
-   * deletion is the same statement as striking every block on it: leaving them
-   * out is what made 64 struck pages reach a finished audiobook
-   * (shared/vlm/narration-deletions.ts, `deriveNarrationStrikes`).
-   *
-   * Returns the derivation so a caller that is about to write a file can report
-   * what it did — and what it could not.
+   * Each is a read-modify-write of one manifest record. Main takes the project
+   * lock for each, so two of them cannot interleave ON DISK — but two of them
+   * racing would still land in an order this window did not choose, and the
+   * order of a strike and the unstrike that follows it is the whole meaning of
+   * an undo. So they are posted one after another, in gesture order.
    */
-  private async saveNarrationDeletions(): Promise<NarrationStrikes | null> {
+  private narrationEdits: Promise<void> = Promise.resolve();
+
+  /**
+   * Send ONE GESTURE to the record: what it struck, and what it put back.
+   *
+   * ── Why a difference, computed from the same layout, twice ─────────────────
+   *
+   * The two derivations run over ONE `narrationLaidOutBlocks()` snapshot, so the
+   * difference between them is exactly what this gesture changed and nothing
+   * else — not a block the segmenter added between them, not a document that
+   * reloaded underneath. And it is a DIFFERENCE rather than the "after" set
+   * because the after set is a view, and a view that has just been reset is
+   * indistinguishable from a book with nothing struck in it. That mistake is
+   * what this whole change exists to end: the old debounced save derived the
+   * WHOLE record from these two signals and overwrote the manifest with it.
+   *
+   * Taking the difference is also what makes overlapping gestures come out
+   * right. An element two blocks were laid out from stays struck when only one
+   * of them is restored, because it is still in the after set — nothing has to
+   * remember which gesture named it.
+   */
+  private postNarrationEdit(
+    beforeBlockIds: ReadonlySet<string>,
+    beforePages: ReadonlySet<number>,
+    afterBlockIds: ReadonlySet<string>,
+    afterPages: ReadonlySet<number>,
+  ): void {
     const dir = this.projectPath();
-    if (!dir || !this.canStrikeForNarration()) return null;
+    if (!dir || !this.canStrikeForNarration()) return;
     // The strikes are one of the records the erase clears, and this window's
-    // struck sets are what it is clearing them of — see saveProjectToPath for
-    // why the gate is here as well as at the erase site.
+    // struck sets are what it is clearing them of — see `eraseAllChanges`.
     if (this.erasing()) {
       console.warn('[picker] not recording narration deletions: this project\'s changes are being erased.');
-      return null;
+      return;
     }
-    const strikes = deriveNarrationStrikes(
-      this.narrationLaidOutBlocks(),
-      this.deletedBlockIds(),
-      this.deletedPages()
-    );
 
-    const unstruck = describeUnstruckDeletions(strikes);
+    const laid = this.narrationLaidOutBlocks();
+    const before = deriveNarrationStrikes(laid, beforeBlockIds, beforePages);
+    const after = deriveNarrationStrikes(laid, afterBlockIds, afterPages);
+
+    const unstruck = describeUnstruckDeletions(after);
     this.narrationUnstruckReport.set(unstruck);
     if (unstruck) console.warn('[picker] narration strikes:', unstruck);
 
-    const answer = await this.electronService.saveNarrationDeletions(dir, strikes.elements);
-    if (!answer.success) {
-      throw new Error(answer.error || 'The narration deletions could not be recorded.');
-    }
-    const state = this.narrationAnswer();
-    if (state && state.dir === dir && answer.deletions) {
-      this.narrationAnswer.set({ dir, state: { ...state.state, deletions: answer.deletions } });
-    }
-    return strikes;
+    const edit = narrationDeletionEdit(new Set(before.elements), new Set(after.elements));
+    if (edit.strike.length === 0 && edit.unstrike.length === 0) return;
+    this.sendNarrationEdit(dir, edit);
+  }
+
+  /** Post one edit, behind whatever this window has already posted. */
+  private sendNarrationEdit(dir: string, edit: NarrationDeletionEdit): void {
+    this.narrationEdits = this.narrationEdits.then(async () => {
+      const answer = await this.electronService.editNarrationDeletions(dir, edit);
+      if (!answer.success) {
+        throw new Error(answer.error || 'The narration deletions could not be recorded.');
+      }
+      // The record main just wrote, kept here so the next gesture's rebuild and
+      // the export's report describe the same answer the file does.
+      const state = this.narrationAnswer();
+      if (state && state.dir === dir && answer.deletions) {
+        this.narrationAnswer.set({ dir, state: { ...state.state, deletions: answer.deletions } });
+      }
+    }).catch((err) => {
+      console.error('[picker] could not record the narration deletions:', err);
+      this.showAlert({
+        title: 'That deletion was not recorded',
+        message: (err instanceof Error ? err.message : String(err))
+          + '\n\nThe narration copy is cut from the record, so what you just struck out would still '
+          + 'be read aloud. Re-open the book to see what is actually recorded.',
+        type: 'error',
+      });
+    });
   }
 
   /**
-   * Put the recorded strikes back on screen after the book is opened.
+   * A BLOCK gesture, landed in the record.
    *
-   * ONE element can own SEVERAL blocks — mupdf re-lays the book out and a
-   * paragraph becomes one block per visual line — so this is a fan-out and every
-   * block of a struck element is struck. Nothing is written: this restores what
-   * the record already says.
+   * The "before" set is reconstructed from the ids the gesture acted on rather
+   * than snapshotted, because every call site hands the ids in as the RESULT of
+   * the editor-state call that already made the change (`landBlockDeletions(
+   * this.editorState.deleteBlocks(ids), true)`). Reconstructing is exact — those
+   * ids ARE the difference, reported by the one place that decided it.
    */
-  private applyNarrationDeletions(): void {
+  private landNarrationBlockStrikes(blockIds: readonly string[], deleted: boolean): void {
+    if (blockIds.length === 0 || !this.canStrikeForNarration()) return;
+    const after = this.deletedBlockIds();
+    const before = new Set(after);
+    for (const id of blockIds) {
+      if (deleted) before.delete(id);
+      else before.add(id);
+    }
+    const pages = this.deletedPages();
+    this.postNarrationEdit(before, pages, after, pages);
+  }
+
+  /**
+   * A PAGE gesture, landed in the record.
+   *
+   * A page deletion is the same statement as striking every block laid out on
+   * it, said in one gesture — `deriveNarrationStrikes` resolves it that way, so
+   * the difference this posts is the page's own elements. With image blocks now
+   * carrying element keys, that finally includes a page holding nothing but a
+   * picture, which is the case that let cover, half-title and title pages
+   * through to a finished narration copy.
+   */
+  private landNarrationPageStrikes(pages: readonly number[], deleted: boolean): void {
+    if (pages.length === 0 || !this.canStrikeForNarration()) return;
+    const after = this.deletedPages();
+    const before = new Set(after);
+    for (const p of pages) {
+      if (deleted) before.delete(p);
+      else before.add(p);
+    }
+    const blockIds = this.deletedBlockIds();
+    this.postNarrationEdit(blockIds, before, blockIds, after);
+  }
+
+  /**
+   * UNDO and REDO, landed in the record as the difference they made.
+   *
+   * One history entry can restore a crop's worth of blocks, a class of them and
+   * a page at once, and it says so in the editor's vocabulary rather than in
+   * elements. So the honest reading is the same one the document mirror takes:
+   * the two sets as they were before the entry was applied, against the two sets
+   * now. The caller snapshots them immediately before calling `editorState.undo`
+   * and hands them here, in the same handler, before anything else can write.
+   */
+  private landNarrationHistory(
+    beforeBlockIds: ReadonlySet<string>,
+    beforePages: ReadonlySet<number>,
+  ): void {
+    if (!this.canStrikeForNarration()) return;
+    this.postNarrationEdit(
+      beforeBlockIds, beforePages, this.deletedBlockIds(), this.deletedPages());
+  }
+
+  /**
+   * PAINT the record: the editor's two deletion sets, rebuilt from what is
+   * recorded, replacing whatever was in them.
+   *
+   * ── The inversion this is half of ──────────────────────────────────────────
+   *
+   * `outputs.epub.narrationDeletions` is the state. These two signals are a VIEW
+   * of it, and every gesture posts its difference to the record rather than the
+   * record being re-derived from them. So opening a book is a rebuild, and it
+   * writes nothing at all — there is nothing to write.
+   *
+   * ── Which of the two sets a strike shows up in ─────────────────────────────
+   *
+   * The record does not say whether the user struck a page or its blocks, and it
+   * does not need to: both resolve to the same elements. But the SCREEN has to
+   * choose, and the choice matters for what the next gesture can undo. A page
+   * every strikeable block of which is struck is presented as a deleted PAGE,
+   * and its blocks are then left out of the block set — otherwise restoring the
+   * page would leave several hundred block deletions the user never made, and
+   * the page would come back still struck through.
+   *
+   * One element can own SEVERAL blocks (mupdf re-lays the book out and a
+   * paragraph becomes one block per visual line), so the fan-out is a fan-out
+   * and every block of a struck element is struck.
+   */
+  private rebuildNarrationView(): void {
     const recorded = this.narrationState()?.deletions;
-    if (!recorded || recorded.elements.length === 0) return;
-    const ids = narrationDeletedBlockIds(
-      this.blocks().map(b => ({
-        id: b.id,
-        ...(b.bf_element !== undefined ? { element: b.bf_element } : {}),
-      })),
-      recorded.elements
+    const blocks = this.blocks();
+    const struckIds = new Set(
+      recorded === undefined || recorded === null
+        ? []
+        : narrationDeletedBlockIds(
+            blocks.map(b => ({
+              id: b.id,
+              ...(b.bf_element !== undefined ? { element: b.bf_element } : {}),
+            })),
+            recorded.elements,
+          ),
     );
 
-    // A block on a page the user has already struck is NOT re-struck as a block.
-    // The record does not say which gesture named an element and it does not
-    // need to — both derive to the same strike — but fanning a page's elements
-    // back out into individual block deletions would turn one undoable page
-    // deletion into several hundred block deletions the user never made, and
-    // restoring the page afterwards would leave them all struck.
-    //
-    // If the project's page set has not landed yet this skips nothing, which is
-    // exactly the behaviour that was here before — never worse, and correct the
-    // moment the pages are known.
-    const onDeletedPage = this.deletedPages();
-    const pageOf = new Map(this.blocks().map(b => [b.id, b.page]));
-    const already = this.deletedBlockIds();
-    const missing = ids.filter(id => {
-      if (already.has(id)) return false;
+    const pages = narrationDeletedPages(this.narrationLaidOutBlocks(), struckIds);
+    const pageOf = new Map(blocks.map(b => [b.id, b.page]));
+    for (const id of [...struckIds]) {
       const page = pageOf.get(id);
-      return page === undefined || !onDeletedPage.has(page);
-    });
-    if (missing.length === 0) return;
-    this.editorState.deleteBlocks(missing);
+      if (page !== undefined && pages.has(page)) struckIds.delete(id);
+    }
+
+    // Set, never `deleteBlocks`: this is the view being brought in line with the
+    // record, not an edit. Going through the editor's deletion methods would
+    // push an undo entry for work the user did in another session, and mark the
+    // project dirty for a change that is not one.
+    this.editorState.deletedBlockIds.set(struckIds);
+    this.editorState.deletedPages.set(pages);
   }
 
   /**
@@ -12003,6 +12120,11 @@ export class PdfPickerComponent implements OnInit {
    * through, and its refusal is news — `lastError` says so.
    */
   private landBlockDeletions(blockIds: readonly string[], deleted: boolean): void {
+    // The BOOK's record, first and outside the working-document gate. The two
+    // artifacts are exclusive — the working PDF's annotations and the book's
+    // strike record are never both live — and each helper answers for its own,
+    // so neither gate can swallow the other's write.
+    this.landNarrationBlockStrikes(blockIds, deleted);
     // The artifact boundary, on the WRITE side: nothing done to the book may
     // reach the working document. `curationLocked` refuses those gestures at the
     // front door too, and this is the same statement said where the write is.
@@ -12013,8 +12135,9 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  /** A page struck out of the book, landed in the document. */
+  /** A page struck out of the book, landed in the record and in the document. */
   private landPageDeletions(pages: readonly number[], deleted: boolean): void {
+    this.landNarrationPageStrikes(pages, deleted);
     if (!this.documentLayerLive()) return;
     for (const p of pages) this.documentBlocks.setPageDeleted(p, deleted);
   }

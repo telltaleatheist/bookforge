@@ -110,7 +110,10 @@ export async function readBookBlockLayer(
       id: b.id,
       page: b.page,
       ...(typeof b.bf_element === 'string' ? { element: b.bf_element } : {}),
-      unplaceable: b.is_image === true || b.is_footnote_marker === true,
+      // Footnote markers only. An IMAGE block now carries an element key of its
+      // own when the ordinal matcher could pair it, and is an honest failure to
+      // report when it could not — see NarrationLaidOutBlock.unplaceable.
+      unplaceable: b.is_footnote_marker === true,
       excerpt: (b.text ?? '').slice(0, 80),
     };
   });
