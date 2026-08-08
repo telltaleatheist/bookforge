@@ -67,6 +67,7 @@ import {
   type ViewedArtifact,
 } from '@shared/document/rail-tasks';
 import { samePath } from '@shared/document/same-path';
+import { describeWorkingCopyRemint } from '@shared/document/working-copy-remint';
 import { narrationRefusal, type PassRecord } from '@shared/document/version-family';
 import {
   deriveNarrationStrikes,
@@ -3305,6 +3306,22 @@ export class PdfPickerComponent implements OnInit {
         path: info.exported ? info.exported.absPath : null,
         appliedPasses: info.appliedPasses,
       });
+      // ── The working copy was made AGAIN, and the user is told ───────────────
+      //
+      // Main sets this on exactly the ask that re-minted the file, so showing it
+      // whenever it arrives shows it once per re-mint — there is no flag to keep
+      // and nothing to remember between windows. It is a WARNING because the
+      // thing it corrects is a belief the user is acting on: they deleted the
+      // file to start the book over, the edits are records rather than bytes,
+      // and the records came with the new copy. See
+      // shared/document/working-copy-remint.ts.
+      if (info.remint !== null) {
+        this.showAlert({
+          title: 'The working copy was created again',
+          message: describeWorkingCopyRemint(info.remint),
+          type: 'warning',
+        });
+      }
     } catch (err) {
       // Main's own sentence, kept and shown on the EPUB tab. The last proved
       // path for THIS project is left alone — a round trip that failed is not
@@ -8168,10 +8185,32 @@ export class PdfPickerComponent implements OnInit {
    * the same act, because "erase all changes" that left some behind would be a
    * lie about what it did.
    *
-   * The window RELOADS the project afterwards rather than trying to unwind its
-   * own signals: main destroys any editor window for the project as it resets
-   * (so an autosave cannot undo it), and a window that kept its in-memory edit
-   * set would write it all back on the next save.
+   * ── Why THIS window is the dangerous one ────────────────────────────────────
+   *
+   * Main destroys any registered EDITOR window for the project as it resets, so
+   * those cannot autosave their copy of the state back. It cannot do that to the
+   * window that pressed the button, and that window holds the same state: the
+   * struck sets, the chapters, the undo stacks, the merges, a snapshot per open
+   * document, and two debounced writers (`autoSaveTimeout` → `project:save-to-path`,
+   * `narrationSaveTimer` → the strike record). Every one of them is a way for
+   * the erase to be undone seconds after it succeeded.
+   *
+   * So the invariant is built here rather than hoped for:
+   *
+   *  1. `erasing` is set BEFORE the reset IPC and cleared only after the reload
+   *     has finished, and every manifest writer in this component refuses while
+   *     it is set (`scheduleAutoSave`, `performAutoSave`, `saveProjectToPath`,
+   *     `saveNarrationDeletions`). Nothing can slip through the window between
+   *     the reset returning and this window having re-read the manifest.
+   *  2. The two pending timers are cancelled outright, and `appliedNarrationKey`
+   *     is cleared so the strike saver goes back to refusing until a restore has
+   *     read the CLEARED record — the same guard that stops an empty editor
+   *     recording over a book's worth of strikes on open.
+   *  3. Every open document of this project is DROPPED, which takes its snapshot
+   *     of the edit set with it, and the live editor is closed. Reloading only
+   *     the file on screen would leave the other tabs holding the old sets, and
+   *     switching back to one and touching anything would write them back.
+   *  4. Only then is the artifact re-opened, from the now-clean manifest.
    */
   async eraseAllChanges(): Promise<void> {
     if (this.eraseRefusal() !== null || this.erasing()) return;
@@ -8198,7 +8237,14 @@ export class PdfPickerComponent implements OnInit {
     });
     if (!confirmed) return;
 
+    // Where the user is standing, read BEFORE anything is torn down: the erase
+    // should not move them to a different file.
+    const onScreen = this.effectivePath();
+
+    // Set first, and it is what every writer in this component checks. From here
+    // to the `finally` this window cannot write to the manifest.
     this.erasing.set(true);
+    this.cancelScheduledProjectWrites();
     this.loading.set(true);
     this.loadingText.set('Erasing every change...');
     try {
@@ -8206,13 +8252,21 @@ export class PdfPickerComponent implements OnInit {
       if (!result.success) {
         throw new Error(result.error || 'The changes could not be erased.');
       }
+      // Nothing this window remembers about the project survives it.
+      this.forgetProjectDocuments(projectDir);
       // Re-measure everything this window believes about the project from the
       // files, in the order the open path does: what the book is, what is struck
       // out of it, and then the document itself.
       await this.refreshBookEpub();
       await this.refreshNarrationState();
+      // The book when the project has one — that is what the rail is about and
+      // what the user was almost certainly looking at — and otherwise the file
+      // they were on, which for a project with no book yet is its archive. Two
+      // named cases, not a ladder: a project with a book never lands on the
+      // second, and a project without one has no book to land on.
       const book = this.bookEpubPath();
-      if (book !== null) await this.showBookEpub(book);
+      const reopen = book !== null ? book : onScreen;
+      if (reopen) await this.showArtifact(reopen);
       this.showAlert({
         title: 'Everything was erased',
         message: 'This book is back to the way it arrived. The file itself was never rewritten.',
@@ -8228,6 +8282,66 @@ export class PdfPickerComponent implements OnInit {
       this.erasing.set(false);
       this.loading.set(false);
     }
+  }
+
+  /**
+   * Cancel every write this window has SCHEDULED but not yet made.
+   *
+   * There are exactly two, and they are two because they write two different
+   * records: `autoSaveTimeout` fires `project:save-to-path` (the editor
+   * container and the deletion keys under `manifest.source`), and
+   * `narrationSaveTimer` fires the strike record inside `outputs.epub`. A
+   * cancelled timer is not enough on its own — a timer that had ALREADY fired is
+   * an in-flight promise — which is why the writers themselves refuse while
+   * `erasing` is set; this is the half that stops new ones being born.
+   *
+   * `appliedNarrationKey` goes back to its opening value on purpose. The strike
+   * saver refuses to run until a restore has landed (`narrationSaveEffect`), so
+   * clearing the key puts that guard back in force: the next strike save can
+   * only be scheduled by a restore that has read the record as it stands NOW.
+   */
+  private cancelScheduledProjectWrites(): void {
+    if (this.autoSaveTimeout) {
+      clearTimeout(this.autoSaveTimeout);
+      this.autoSaveTimeout = null;
+    }
+    if (this.narrationSaveTimer) {
+      clearTimeout(this.narrationSaveTimer);
+      this.narrationSaveTimer = null;
+    }
+    this.appliedNarrationKey = '';
+  }
+
+  /**
+   * Drop everything this window is holding about a project, documents included.
+   *
+   * Called only from the erase, and it is the structural half of it: the state
+   * cannot be written back if the window is not holding it. Clearing the live
+   * editor alone would not do — `openDocuments` keeps a per-document SNAPSHOT of
+   * the same fields (deletions, undo and redo stacks, chapters, corrections,
+   * crops), taken on every tab switch and restored on the way back, so a project
+   * open as both its archive and its book would keep one full copy of the erased
+   * edit set per tab.
+   *
+   * `closePdf` does the live half, and it is the same call the artifact swap
+   * makes — `artifactSwapping` is set around it for the reason it always is: the
+   * window stays bound to the project, which it must, because the very next act
+   * is to re-open one of that project's files.
+   */
+  private forgetProjectDocuments(projectDir: string): void {
+    this.openDocuments.set(
+      this.openDocuments().filter(d => !(d.projectPath && samePath(d.projectPath, projectDir))));
+    this.activeDocumentId.set(null);
+    this.artifactSwapping = true;
+    try {
+      this.closePdf();
+    } finally {
+      this.artifactSwapping = false;
+    }
+    // Cancel again: closing the document writes to the signals the auto-save
+    // effect watches, and an effect that ran during it could have scheduled one.
+    this.cancelScheduledProjectWrites();
+    this.editorState.markSaved();
   }
 
   /** Set while the banner's button is doing its one thing. */
@@ -8259,7 +8373,7 @@ export class PdfPickerComponent implements OnInit {
               'This project reported a working copy a moment ago and does not now. Close the '
               + 'window and open the book again.');
           }
-          await this.showBookEpub(book);
+          await this.showArtifact(book);
           return;
         }
         case 'create-working': {
@@ -8267,8 +8381,18 @@ export class PdfPickerComponent implements OnInit {
           if (!answer.success || !answer.path) {
             throw new Error(answer.error || 'The working copy could not be made.');
           }
+          // Said HERE and not after the refresh below: by then the file exists,
+          // so the ask that follows has no re-mint to report. See
+          // `refreshBookEpub` for the whole of why this is said at all.
+          if (answer.remint) {
+            this.showAlert({
+              title: 'The working copy was created again',
+              message: describeWorkingCopyRemint(answer.remint),
+              type: 'warning',
+            });
+          }
           await this.refreshBookEpub();
-          await this.showBookEpub(answer.path);
+          await this.showArtifact(answer.path);
           return;
         }
         case 'generate-epub': {
@@ -8297,8 +8421,16 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  /** Show this project's book, closing whatever is on screen for it. */
-  private async showBookEpub(epubPath: string): Promise<void> {
+  /**
+   * Show one of this project's files, closing whatever is on screen for it.
+   *
+   * Named for the artifact rather than for the book because it is handed a book
+   * on almost every call and an archive on one: the erase re-opens the file the
+   * user was standing on, and for a project that has no book yet that is its
+   * archive. The mechanics are identical either way — this closes a document and
+   * opens another one inside the same project.
+   */
+  private async showArtifact(artifactPath: string): Promise<void> {
     this.loading.set(true);
     this.loadingText.set('Opening the book...');
     try {
@@ -8311,11 +8443,11 @@ export class PdfPickerComponent implements OnInit {
       }
       this.artifactSwapping = true;
       this.closePdf();
-      await this.loadPdf(epubPath);
+      await this.loadPdf(artifactPath);
       this.activatePanel(null);
     } catch (error) {
       this.showAlert({
-        title: 'Could not open the book',
+        title: 'Could not open the file',
         message: error instanceof Error ? error.message : String(error),
         type: 'error',
       });
@@ -8402,7 +8534,7 @@ export class PdfPickerComponent implements OnInit {
    * to re-read: a picker showing the book would go on rendering the bytes it
    * loaded before the run. So the provenance is re-asked (the rail's pass
    * statuses come from it) and, when the book is what is on screen, the file is
-   * loaded again. `showBookEpub` closes the tab and re-opens it, and the
+   * loaded again. `showArtifact` closes the tab and re-opens it, and the
    * analysis cache is keyed by the file's SHA-256, so the rewritten book is
    * analysed afresh rather than served from the old one's entry.
    */
@@ -8421,7 +8553,7 @@ export class PdfPickerComponent implements OnInit {
       });
       return;
     }
-    await this.showBookEpub(epubPath);
+    await this.showArtifact(epubPath);
   }
 
   // ─── The narration copy ───────────────────────────────────────────────────
@@ -8580,6 +8712,13 @@ export class PdfPickerComponent implements OnInit {
   private async saveNarrationDeletions(): Promise<NarrationStrikes | null> {
     const dir = this.projectPath();
     if (!dir || !this.canStrikeForNarration()) return null;
+    // The strikes are one of the records the erase clears, and this window's
+    // struck sets are what it is clearing them of — see saveProjectToPath for
+    // why the gate is here as well as at the erase site.
+    if (this.erasing()) {
+      console.warn('[picker] not recording narration deletions: this project\'s changes are being erased.');
+      return null;
+    }
     const strikes = deriveNarrationStrikes(
       this.narrationLaidOutBlocks(),
       this.deletedBlockIds(),
@@ -9342,6 +9481,14 @@ export class PdfPickerComponent implements OnInit {
 
   // Schedule auto-save (debounced)
   private scheduleAutoSave(): void {
+    // An erase is in flight: this window's edit set is the thing being thrown
+    // away, so scheduling a write of it is scheduling the erase to be undone.
+    // See eraseAllChanges for the whole of the rule.
+    if (this.erasing()) {
+      console.warn('[scheduleAutoSave] Suppressed: this project\'s changes are being erased.');
+      return;
+    }
+
     // A session that declined to load the project's edits must not autosave over
     // them — see projectStateNotApplied. Silent by design: the user was told once,
     // with an alert, when the document was bound.
@@ -9372,6 +9519,9 @@ export class PdfPickerComponent implements OnInit {
   // Perform the actual auto-save
   private async performAutoSave(): Promise<void> {
     if (!this.pdfLoaded()) return;
+    // Checked at fire time as well as at schedule time: a timer set before the
+    // user pressed erase would otherwise land in the middle of it.
+    if (this.erasing()) return;
     // Checked again at fire time: a save scheduled over the working copy can
     // reach this timer AFTER a swap put the book on screen, and it would then
     // run against the wrong document — see scheduleAutoSave.
@@ -9497,6 +9647,18 @@ export class PdfPickerComponent implements OnInit {
   }
 
   private async saveProjectToPath(filePath: string, silent: boolean = false): Promise<void> {
+
+    // The manifest's editor state is being erased. Every field this would write
+    // — the deletions, the undo stacks, the chapters, the corrections — is what
+    // the erase is removing, so the write is refused for as long as the erase is
+    // in flight, whichever caller reached here (an autosave timer that had
+    // already fired, a save-on-close, finalize). This is the LAST gate rather
+    // than the only one: eraseAllChanges also cancels the timers, and the gates
+    // exist so a caller that arrives by some other route cannot get past.
+    if (this.erasing()) {
+      console.warn(`[saveProjectToPath] REFUSED ${filePath}: this project's changes are being erased.`);
+      return;
+    }
 
     // The one place every project-state write goes through, so the one place that
     // can guarantee a session which declined to load the project's edits cannot

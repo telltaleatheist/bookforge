@@ -35,6 +35,10 @@ import type {
 } from './manifest-types.js';
 import { passesAfterEpubEvent } from '../shared/document/pass-lifecycle';
 import {
+  describeWorkingCopyRemint,
+  type WorkingCopyRemint,
+} from '../shared/document/working-copy-remint';
+import {
   narrationEpubRelPath,
   type NarrationDeletions,
   type NarrationEpubOutput,
@@ -1084,6 +1088,16 @@ async function sourceOriginalEpub(
   return null;
 }
 
+/** Where the book is, and whether making it there was a re-mint. */
+export interface EnsuredBookEpub extends ExportEpubLocation {
+  /**
+   * Non-null ONLY when a recorded book was missing from disk and has been made
+   * again. Null for a book that was already there and for a project's first
+   * copy — see `ensureBookEpub` below for why those are not the same event.
+   */
+  remint: WorkingCopyRemint | null;
+}
+
 /**
  * The project's book EPUB, minting it from an EPUB original if there is none.
  *
@@ -1119,11 +1133,21 @@ async function sourceOriginalEpub(
  * for one, so this never mints a SECOND copy of a book the project already has —
  * which is exactly what would happen otherwise, the recorded path being a file
  * that exists under a name the derivation no longer produces.
+ *
+ * ── A RE-mint is answered for, not done in silence ──────────────────────────
+ *
+ * Making the FIRST copy and making it AGAIN are two different events, and only
+ * the second is news: a record naming a file that is not on disk is evidence
+ * that a file somebody was editing has gone — the measured case is a user who
+ * deleted it believing that started the book over. The answer carries the fact
+ * and the counts, and `shared/document/working-copy-remint.ts` says why and in
+ * what words. Nothing is refused and nothing is thrown away here; the caller
+ * that has a user in front of it is the one that tells them.
  */
-export async function ensureBookEpub(projectDir: string): Promise<ExportEpubLocation> {
+export async function ensureBookEpub(projectDir: string): Promise<EnsuredBookEpub> {
   await migrateWorkingEpubNaming(projectDir);
   const existing = await readExportEpub(projectDir);
-  if (existing && fs.existsSync(existing.absPath)) return existing;
+  if (existing && fs.existsSync(existing.absPath)) return { ...existing, remint: null };
 
   const manifest = await readManifestAt(projectDir);
   const original = await sourceOriginalEpub(projectDir, manifest);
@@ -1178,15 +1202,40 @@ export async function ensureBookEpub(projectDir: string): Promise<ExportEpubLoca
     );
   }
 
-  await registerEpubExport(projectDir, target.absPath);
-  const carried = manifest.source?.deletedBlockIds?.length ?? 0;
+  // ── Counted BEFORE the record is rewritten ─────────────────────────────────
+  //
+  // `registerEpubExport` replaces `outputs.epub` wholesale, which takes the
+  // narration strikes with it, so this is the last instant at which they can be
+  // counted. The two `manifest.source` lists survive that call — they are not
+  // inside `outputs` — and are read from the same manifest snapshot so all three
+  // numbers describe one moment.
+  //
+  // An absent list is a real state (a project nothing has been deleted in) and
+  // is the only thing its absence can mean; it is not a missing value standing
+  // in for one that should have been there.
+  const carriedBlocks = manifest.source?.deletedBlockIds?.length ?? 0;
   const carriedPages = manifest.source?.deletedPages?.length ?? 0;
+  const strikes = manifest.outputs?.epub?.narrationDeletions?.elements.length ?? 0;
+
+  // A record that named a book, for a book that was not there. The FIRST copy
+  // has no record to have named anything, and is not this.
+  const remint: WorkingCopyRemint | null = existing === null ? null : {
+    relPath: existing.relPath,
+    deletedBlockIds: carriedBlocks,
+    deletedPages: carriedPages,
+    narrationStrikes: strikes,
+  };
+
+  await registerEpubExport(projectDir, target.absPath);
   console.log(
     `[manifest-service] ${path.basename(projectDir)}: minted ${target.relPath} from its EPUB `
-    + `original, byte-identical (${copyDigest.slice(0, 12)}); ${carried} deleted block(s) and `
+    + `original, byte-identical (${copyDigest.slice(0, 12)}); ${carriedBlocks} deleted block(s) and `
     + `${carriedPages} deleted page(s) already recorded against those bytes carry over unchanged.`
   );
-  return { ...target, modifiedAt: new Date().toISOString() };
+  if (remint !== null) {
+    console.warn(`[manifest-service] ${path.basename(projectDir)}: ${describeWorkingCopyRemint(remint)}`);
+  }
+  return { ...target, modifiedAt: new Date().toISOString(), remint };
 }
 
 /** sha256 of a file, streamed — the same digest every identity check here uses. */
