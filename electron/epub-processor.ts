@@ -4082,6 +4082,15 @@ const ALIGN_ANCHOR_LEN = 24;
 // a 1–3 char string matches everywhere, so positional evidence must carry it.
 const ALIGN_TINY_LEN = 4;
 
+// The most characters mupdf's layout is allowed to have DROPPED inside one
+// block before the clipped-line bridge (rule c2) refuses to span the hole.
+// Measured case: a 55-character-wide column wrapping an unbreakable URL loses
+// one line-width of characters at the clip, so one line's worth with headroom.
+// A larger hole is not "layout clipped a long token" any more — it is two
+// different texts, and bridging them would attribute a block to markup it does
+// not come from.
+const ALIGN_CLIP_MAX = 160;
+
 // List-marker furniture mupdf's layout SYNTHESIZES for <ol>/<ul> items and nav
 // <ol> counters: "1.", "a)", "iv.", "•" etc. prefixes that exist in the laid-out
 // text but nowhere in the source markup (they come from CSS counters). Measured
@@ -4259,6 +4268,39 @@ export async function alignBlocksToEpub(
       const matchEnd = bandedLevenshteinMatchEnd(norm, stream, occ, tolerance);
       if (matchEnd >= 0) {
         return { kind: 'range', start: occ, end: matchEnd };
+      }
+      /*
+       * c2. The clipped-line bridge. mupdf's layout DROPS characters when an
+       * unbreakable token overflows the column: Killing America's CDC citation
+       * renders as `…%2Fvaccines%2Fco` ⏎ `by-product%2F…` — fourteen characters
+       * of the URL (`vid-19%2Finfo-`) simply do not exist in the laid-out text,
+       * measured against the markup, which carries the whole thing. Levenshtein
+       * sees a 14-edit hole against a tolerance of 5 and rightly refuses; the
+       * block then has no element key and the one line of a book a user least
+       * wants narrated — a bare URL — becomes the one line they cannot strike.
+       *
+       * The bridge demands MORE positional evidence than the fuzzy rule it
+       * follows, not less: the block's head already matched exactly (that is
+       * the anchor that got us here), its TAIL must also match exactly, and the
+       * two may only stand further apart than the block's own length by the
+       * bounded clip allowance. Forty-eight exact characters bracketing a hole
+       * of at most ALIGN_CLIP_MAX is not a coincidence any book supplies twice;
+       * a tolerance of 20 would be.
+       *
+       * The matched range includes the dropped characters — they are part of
+       * the element the block was laid out from, which is what a strike names.
+       */
+      if (norm.length >= ALIGN_ANCHOR_LEN * 3) {
+        const tail = norm.slice(-ALIGN_ANCHOR_LEN);
+        const tailFrom = occ + norm.length - ALIGN_ANCHOR_LEN * 2;
+        const tailAt = stream.indexOf(tail, Math.max(occ + ALIGN_ANCHOR_LEN, tailFrom));
+        if (tailAt !== -1) {
+          const end = tailAt + tail.length;
+          const stretch = end - occ - norm.length;
+          if (stretch >= 0 && stretch <= ALIGN_CLIP_MAX) {
+            return { kind: 'range', start: occ, end };
+          }
+        }
       }
       searchFrom = occ + 1;
     }
@@ -4739,6 +4781,16 @@ export interface NarrationEpubWriteResult {
   removedSupMarkers: number;
   /** The spine documents that were rewritten. */
   rewrittenFiles: string[];
+  /**
+   * The spine documents that were REMOVED because the strikes emptied them, by
+   * zip entry name.
+   *
+   * Reported rather than counted quietly because it is the difference between
+   * "your deletions worked" and "your deletions worked and the blank pages they
+   * would have left are gone too" — and the second is what the user is looking
+   * at when they open the copy to check.
+   */
+  removedDocuments: string[];
 }
 
 export interface NarrationEpubWriteOptions {
@@ -4755,6 +4807,188 @@ export interface NarrationEpubWriteOptions {
    * is never edited — see shared/text/sup-markers.ts.
    */
   stripSupMarkers?: boolean;
+}
+
+/**
+ * Is this body EMPTY — nothing left in it that a reader would see?
+ *
+ * ── Why this test is about CONTENT and not about tags ───────────────────────
+ *
+ * The strikes remove the elements they name and nothing else, so a document
+ * whose every paragraph was struck is left holding the wrappers those paragraphs
+ * were inside: a `<div class="chapter">` around a `<section>` around nothing.
+ * Counting tags would call that document non-empty; the reader sees a blank
+ * page. So the question asked here is the reader's question — is there any TEXT,
+ * and is there any PICTURE — and the wrapper hierarchy is beside the point.
+ *
+ * An image is content. That is not a special case: the five image-only pages of
+ * a typical book (cover, half-title, title, colophon plate, back cover) have no
+ * text and never did, they were not struck, and removing them would take the
+ * cover out of the book because it happens to have no words on it.
+ *
+ * `<svg>` counts alongside `<img>` because a wrapped cover is often an SVG
+ * `<image>`, which is how EPUB 3 covers are usually written.
+ */
+function bodyIsEmpty(body: any): boolean {
+  const text = (body.textContent ?? '').replace(/[\s ]+/g, '');
+  if (text.length > 0) return false;
+  for (const tag of ['img', 'image', 'svg']) {
+    if (body.getElementsByTagName(tag).length > 0) return false;
+  }
+  return true;
+}
+
+/** Every `<a href>` / `<content src>` value in the document, with the element. */
+function linkNodesOf(doc: any, tag: string, attr: string): Array<{ el: any; href: string }> {
+  const out: Array<{ el: any; href: string }> = [];
+  const nodes = doc.getElementsByTagName(tag);
+  for (let i = 0; i < nodes.length; i++) {
+    const href = nodes[i].getAttribute(attr);
+    if (typeof href === 'string' && href.length > 0) out.push({ el: nodes[i], href });
+  }
+  return out;
+}
+
+/** The document a link points AT, without its fragment — resolved to a zip entry. */
+function linkTargetEntry(href: string, fromEntry: string): string | null {
+  // A link that names no document (a bare `#id`) points inside its own file, and
+  // an absolute one points outside the book entirely. Neither can name a spine
+  // document of this book, so neither is a candidate for pruning.
+  if (href.startsWith('#')) return null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return null;
+  const withoutFragment = href.split('#')[0];
+  if (withoutFragment.length === 0) return null;
+  const dir = path.posix.dirname(fromEntry);
+  return normalizeZipEntryName(path.posix.normalize(path.posix.join(dir, withoutFragment)));
+}
+
+/** Remove a node, then any ancestor the removal left with nothing in it. */
+function removeAndCollapse(el: any, stopTag: string): void {
+  let node = el;
+  while (node && node.parentNode) {
+    const parent = node.parentNode;
+    parent.removeChild(node);
+    if (typeof parent.tagName !== 'string') return;
+    if (parent.tagName.toLowerCase() === stopTag) return;
+    // A list item that held only the link to a removed document is a bullet
+    // pointing at nothing; the list that held only that item is an empty list.
+    // Both go, up to (never including) the container the caller names.
+    if ((parent.textContent ?? '').replace(/[\s ]+/g, '').length > 0) return;
+    if (parent.getElementsByTagName('img').length > 0) return;
+    node = parent;
+  }
+}
+
+/**
+ * Take the removed documents out of the OPF: their manifest items and the spine
+ * itemrefs that name them.
+ *
+ * Returns the ids it removed, because the spine names documents by id and the
+ * manifest is the only place that says which id is which file.
+ */
+function pruneOpf(opfXml: string, pruned: ReadonlySet<string>, opfEntry: string): string {
+  const { DOMParser, XMLSerializer } = require('@xmldom/xmldom');
+  const doc = new DOMParser().parseFromString(opfXml, 'application/xml');
+
+  const removedIds = new Set<string>();
+  const items = doc.getElementsByTagName('item');
+  for (let i = items.length - 1; i >= 0; i--) {
+    const href = items[i].getAttribute('href');
+    if (!href) continue;
+    const entry = linkTargetEntry(href, opfEntry);
+    if (entry === null || !pruned.has(entry)) continue;
+    const id = items[i].getAttribute('id');
+    if (id) removedIds.add(id);
+    items[i].parentNode.removeChild(items[i]);
+  }
+
+  const refs = doc.getElementsByTagName('itemref');
+  for (let i = refs.length - 1; i >= 0; i--) {
+    const idref = refs[i].getAttribute('idref');
+    if (idref && removedIds.has(idref)) refs[i].parentNode.removeChild(refs[i]);
+  }
+
+  return new XMLSerializer().serializeToString(doc);
+}
+
+/**
+ * Take the removed documents out of the book's TABLE OF CONTENTS — whichever of
+ * the two kinds this book has.
+ *
+ * ── Why this matters more than tidiness ─────────────────────────────────────
+ *
+ * ebook2audiobook takes its chapter titles from the book's own navigation,
+ * matched to spine documents by identity (memory: chapter markers are paired by
+ * POSITION, and a title that names nothing shifts every title after it). A TOC
+ * entry pointing at a document that is not in the book any more is a chapter
+ * marker for nothing — so leaving one would not merely be untidy, it would put
+ * the wrong title on a chapter of the finished audiobook.
+ *
+ * Both dialects are handled because both are real: EPUB 3 books carry a nav
+ * document (`<nav epub:type="toc">`, plus landmarks and page-list), EPUB 2 books
+ * carry an NCX, and plenty of books carry both. Killing America is a 2.0 package
+ * with an NCX and no nav at all (measured).
+ *
+ * Entries that point INTO a removed document by fragment go with it: the anchor
+ * they name went when the document did.
+ */
+function pruneNavDocument(xhtml: string, pruned: ReadonlySet<string>, navEntry: string): string {
+  const { DOMParser, XMLSerializer } = require('@xmldom/xmldom');
+  const doc = new DOMParser().parseFromString(xmlSafeEntities(xhtml), 'application/xhtml+xml');
+  for (const { el, href } of linkNodesOf(doc, 'a', 'href')) {
+    const entry = linkTargetEntry(href, navEntry);
+    if (entry !== null && pruned.has(entry)) removeAndCollapse(el, 'nav');
+  }
+  return new XMLSerializer().serializeToString(doc);
+}
+
+function pruneNcx(ncxXml: string, pruned: ReadonlySet<string>, ncxEntry: string): string {
+  const { DOMParser, XMLSerializer } = require('@xmldom/xmldom');
+  const doc = new DOMParser().parseFromString(ncxXml, 'application/xml');
+  for (const { el, href } of linkNodesOf(doc, 'content', 'src')) {
+    const entry = linkTargetEntry(href, ncxEntry);
+    if (entry === null || !pruned.has(entry)) continue;
+    // The `<content>` element is not the entry — its parent `<navPoint>` (or
+    // `<pageTarget>`, in a page-list) is the thing with a label on it, and a
+    // navPoint with no content is a heading that points nowhere.
+    const owner = el.parentNode;
+    removeAndCollapse(owner && typeof owner.tagName === 'string' ? owner : el, 'navMap');
+  }
+  return new XMLSerializer().serializeToString(doc);
+}
+
+/**
+ * A link in a SURVIVING document that points at a removed one: keep the words,
+ * drop the href.
+ *
+ * ── Why not remove the link entirely, and why not leave it dangling ─────────
+ *
+ * The text of a cross-reference is usually a sentence a narrator reads — "see
+ * the note on page 214" — so removing the element would delete prose the user
+ * never struck. The href is the part that is now false.
+ *
+ * Leaving it would be cosmetic in practice: nobody reads the narration copy
+ * visually, and TTS never follows a link. But it is not free — epubcheck flags a
+ * dangling href as an error, and the narration copy is a file that gets handed
+ * to other software (e2a reads it; a user may open it in a reader to verify,
+ * which is the whole reason this pruning exists). A copy that a strict reader
+ * refuses to open is a worse outcome than a link that no longer navigates.
+ *
+ * Measured on the book this was written for: ZERO surviving documents link into
+ * either pruned document, so on that book this does nothing at all. It is here
+ * because an index or a citation list in another book will, and a dangling href
+ * that only appears in somebody else's library is the kind of thing that is
+ * never found.
+ */
+function neutralizeLinksToPruned(doc: any, pruned: ReadonlySet<string>, entry: string): number {
+  let neutralized = 0;
+  for (const { el, href } of linkNodesOf(doc, 'a', 'href')) {
+    const target = linkTargetEntry(href, entry);
+    if (target === null || !pruned.has(target)) continue;
+    el.removeAttribute('href');
+    neutralized++;
+  }
+  return neutralized;
 }
 
 /**
@@ -4787,10 +5021,20 @@ export async function writeNarrationEpub(
   // elements that are about to be rewritten, so a key cannot pass the check and
   // then miss the element.
   const processor = new EpubProcessor();
-  const perFile = new Map<string, { doc: any; units: Array<{ key: string; el: any }> }>();
+  const perFile = new Map<string, { doc: any; body: any; units: Array<{ key: string; el: any }> }>();
   const units: NarrationUnit[] = [];
+  // The three structural files, remembered from the one traversal: the OPF says
+  // which documents the book HAS, and the nav or the NCX says what it calls
+  // them. Removing a document means editing all three, so all three are needed
+  // after the processor is closed.
+  let opfEntry = '';
+  let navEntry: string | null = null;
+  let ncxEntry: string | null = null;
   try {
     const structure = await processor.open(inputPath);
+    opfEntry = normalizeZipEntryName(structure.opfPath);
+    navEntry = structure.navPath ? normalizeZipEntryName(structure.navPath) : null;
+    ncxEntry = structure.ncxPath ? normalizeZipEntryName(structure.ncxPath) : null;
     for (const chapter of structure.chapters) {
       const entryName = normalizeZipEntryName(processor.resolvePath(chapter.href));
       if (perFile.has(entryName)) continue;  // a spine document listed twice is one file
@@ -4808,7 +5052,7 @@ export async function writeNarrationEpub(
           sourcePage: stamp?.sourcePage ?? null,
         });
       }
-      perFile.set(entryName, { doc, units: collected });
+      perFile.set(entryName, { doc, body, units: collected });
     }
   } finally {
     processor.close();
@@ -4818,8 +5062,10 @@ export async function writeNarrationEpub(
   const struck = new Set(plan.remove);
 
   const rewrittenFiles: string[] = [];
-  const replacements = new Map<string, Buffer>();
-  for (const [file, { doc, units: fileUnits }] of perFile) {
+  const emptied: string[] = [];
+  /** Serialized survivors, held until the pruning set is known. */
+  const replacementsFromDoc = new Map<string, string>();
+  for (const [file, { doc, body, units: fileUnits }] of perFile) {
     const toRemove = fileUnits.filter((u) => struck.has(u.key));
     if (toRemove.length === 0) continue;
     for (const unit of toRemove) {
@@ -4827,12 +5073,62 @@ export async function writeNarrationEpub(
       // out of the tree; removing it again would throw in xmldom.
       if (unit.el.parentNode) unit.el.parentNode.removeChild(unit.el);
     }
+    // ── The document the strikes emptied ──────────────────────────────────
+    //
+    // Removing the ELEMENTS is not the whole job. A spine document whose body
+    // is left with nothing in it is still a document, and mupdf lays it out as
+    // a BLANK PAGE — so a user who deleted 64 pages, exported, and opened the
+    // copy to check saw blank pages exactly where their deletions were and read
+    // it as "the deletions didn't work". The narration was never affected (an
+    // empty body narrates as nothing), but the whole point of being able to
+    // open the copy is to verify intent, and a ghost page defeats that.
+    //
+    // The NAV DOCUMENT is never pruned, however empty it looks. It is
+    // structure rather than content — it is what says what the book's chapters
+    // are called, and e2a reads its titles — so a book that struck out its
+    // printed contents page must still end up with a navigable book.
+    if (bodyIsEmpty(body) && file !== navEntry) {
+      emptied.push(file);
+      continue;  // no point serializing a document that is about to be dropped
+    }
     let serialized: string = new XMLSerializer().serializeToString(doc);
     if (!serialized.startsWith('<?xml')) {
       serialized = `<?xml version="1.0" encoding="utf-8"?>\n${serialized}`;
     }
-    replacements.set(file, Buffer.from(serialized, 'utf8'));
     rewrittenFiles.push(file);
+    perFile.get(file)!.doc = doc;
+    replacementsFromDoc.set(file, serialized);
+  }
+
+  const pruned = new Set(emptied);
+  const replacements = new Map<string, Buffer>();
+
+  // The surviving documents are serialized AFTER the pruning set is known,
+  // because a link inside one of them may point at a document that is going —
+  // and that can only be answered once every document has been judged.
+  for (const [file, serialized] of replacementsFromDoc) {
+    const { doc } = perFile.get(file)!;
+    let text = serialized;
+    if (pruned.size > 0 && neutralizeLinksToPruned(doc, pruned, file) > 0) {
+      text = new XMLSerializer().serializeToString(doc);
+      if (!text.startsWith('<?xml')) {
+        text = `<?xml version="1.0" encoding="utf-8"?>\n${text}`;
+      }
+    }
+    replacements.set(file, Buffer.from(text, 'utf8'));
+  }
+
+  // A document that lost NOTHING can still link into one that is going, so the
+  // untouched documents are checked too — and rewritten only if they had one.
+  if (pruned.size > 0) {
+    for (const [file, { doc }] of perFile) {
+      if (pruned.has(file) || replacements.has(file)) continue;
+      if (neutralizeLinksToPruned(doc, pruned, file) === 0) continue;
+      let text: string = new XMLSerializer().serializeToString(doc);
+      if (!text.startsWith('<?xml')) text = `<?xml version="1.0" encoding="utf-8"?>\n${text}`;
+      replacements.set(file, Buffer.from(text, 'utf8'));
+      rewrittenFiles.push(file);
+    }
   }
 
   const stripSups = options?.stripSupMarkers !== false;
@@ -4841,8 +5137,39 @@ export async function writeNarrationEpub(
   const zipReader = new ZipReader(inputPath);
   await zipReader.open();
   try {
+    // ── The book's own account of itself, brought in line ──────────────────
+    //
+    // Three files say what this book contains, and all three are edited before
+    // anything is written: the OPF (which documents exist, and in what order),
+    // and whichever table of contents the book carries — the EPUB 3 nav, the
+    // EPUB 2 NCX, or both. Leaving any of them naming a document that is not in
+    // the zip produces a book that a strict reader refuses and that e2a reads a
+    // chapter title out of for a chapter that does not exist.
+    if (pruned.size > 0) {
+      const opfXml = (await zipReader.readEntry(opfEntry)).toString('utf8');
+      replacements.set(opfEntry, Buffer.from(pruneOpf(opfXml, pruned, opfEntry), 'utf8'));
+      rewrittenFiles.push(opfEntry);
+
+      if (navEntry !== null && zipReader.hasEntry(navEntry)) {
+        const navXhtml = (await zipReader.readEntry(navEntry)).toString('utf8');
+        replacements.set(
+          navEntry, Buffer.from(pruneNavDocument(navXhtml, pruned, navEntry), 'utf8'));
+        rewrittenFiles.push(navEntry);
+      }
+      if (ncxEntry !== null && zipReader.hasEntry(ncxEntry)) {
+        const ncxXml = (await zipReader.readEntry(ncxEntry)).toString('utf8');
+        replacements.set(ncxEntry, Buffer.from(pruneNcx(ncxXml, pruned, ncxEntry), 'utf8'));
+        rewrittenFiles.push(ncxEntry);
+      }
+    }
+
     const zipWriter = new ZipWriter();
     for (const entry of zipReader.getEntries()) {
+      // The emptied documents themselves. Their images, styles and fonts stay:
+      // this removes documents the strikes emptied, not assets, and an asset
+      // another document still uses would take that document's picture with it.
+      if (pruned.has(entry)) continue;
+
       let data = replacements.get(entry) ?? await zipReader.readEntry(entry);
 
       // The marker strip runs on the BYTES that are about to be written — after
@@ -4874,6 +5201,7 @@ export async function writeNarrationEpub(
     totalElements: plan.total,
     removedSupMarkers,
     rewrittenFiles,
+    removedDocuments: emptied.sort(),
   };
 }
 

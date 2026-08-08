@@ -97,7 +97,7 @@ function requireUnalignedFacts(cached: CachedAnalysis, pdfPath: string): void {
 const execAsync = promisify(exec);
 
 // Cache version - increment this when changing extraction logic to invalidate old caches
-const ANALYSIS_CACHE_VERSION = 15;  // v15: unaligned blocks cached as FACTS (payload.unaligned); the warning sentence is rendered at read time, never cached — see presentedWarnings
+const ANALYSIS_CACHE_VERSION = 16;  // v16: clipped-line bridge (epub-processor rule c2) aligns blocks whose long tokens mupdf clipped — alignment output (bf_element) is part of this payload
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;
