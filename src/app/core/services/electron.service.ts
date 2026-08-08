@@ -17,6 +17,7 @@ import type {
   VlmEndpointConfig,
 } from '@shared/vlm/conversion';
 import type { NarrationDeletions, NarrationState } from '@shared/vlm/narration-deletions';
+import type { BookChapterRenameResult, BookChapterTitles } from '@shared/vlm/chapter-titles';
 import type {
   DocumentBlocksPayload,
   DocumentPipelineState,
@@ -2696,6 +2697,39 @@ export class ElectronService {
   }> {
     if (this.isElectron) {
       return (window as any).electron.vlm.exportNarration(projectDir, options);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * What the project's book calls each of its chapters.
+   *
+   * `titles: null` means the project has no book on disk — a PDF nobody has
+   * converted yet, which is most projects for most of their life — and is an
+   * answer rather than a failure.
+   */
+  async bookChapterTitles(projectDir: string): Promise<{
+    success: boolean; titles?: BookChapterTitles | null; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.chapterTitles(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Rename one chapter in the book itself — its nav entry and its document's
+   * `<title>`, never the print on the page.
+   *
+   * `file` is the chapter document's zip entry name, which the picker takes off
+   * the renamed block's own element key. The book is the only store, so there is
+   * nothing to save afterwards: asking again reads the new title back.
+   */
+  async renameBookChapter(projectDir: string, file: string, title: string): Promise<{
+    success: boolean; result?: BookChapterRenameResult; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.renameChapter(projectDir, file, title);
     }
     return { success: false, error: 'Not running in Electron' };
   }

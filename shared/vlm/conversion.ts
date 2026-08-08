@@ -35,6 +35,7 @@
 export const VLM_CATEGORIES = [
   'text',
   'title',
+  'chapter',
   'section-header',
   'footnote',
   'caption',
@@ -53,12 +54,20 @@ export type VlmCategory = (typeof VLM_CATEGORIES)[number];
  * The two vocabularies were written for different jobs and the map is the whole
  * of the translation between them, stated once. Three of them need saying:
  *
- *  - `title` and `section-header` are foundry's two heading levels. BookForge
- *    has four (`title`, `chapter`, `heading`, `subheading`), and NOTHING here
- *    guesses which of the middle two a heading is: dots was not asked that
- *    question, so an answer would be invented. `title` → `title`,
- *    `section-header` → `heading`, and the user relabels a chapter opening in
- *    the picker where the page is in front of them.
+ *  - `title`, `chapter` and `section-header` are foundry's three heading levels,
+ *    and each maps to the BookForge class of the same meaning. `chapter` is the
+ *    newest of the three (foundry, Aug 2026): the emitter already has to decide
+ *    where one chapter document ends and the next begins, so it now STATES that
+ *    decision on the heading it split at instead of leaving every heading looking
+ *    alike. That is a question dots was effectively asked and foundry answered —
+ *    unlike `subheading`, BookForge's fourth level, which nothing upstream
+ *    distinguishes and which therefore appears nowhere in this table.
+ *
+ *    The user's relabel is still the override, and it is the only one: the
+ *    Chapter tab lists what carries this class, and moving a block in or out of
+ *    it in the Label tab is how a person corrects the split points with the page
+ *    in front of them. Before the stamp existed EVERY chapter opening arrived as
+ *    `heading` and that relabel was mandatory work on every book.
  *  - `list-item` → `list`, which is BookForge's name for entry-per-line content.
  *  - `formula` has no counterpart, and that is a real gap rather than a missing
  *    value: a display equation is body content that is not a sentence. It goes
@@ -71,6 +80,7 @@ export type VlmCategory = (typeof VLM_CATEGORIES)[number];
 export const VLM_CATEGORY_TO_BLOCK: Readonly<Record<VlmCategory, string>> = {
   'text': 'body',
   'title': 'title',
+  'chapter': 'chapter',
   'section-header': 'heading',
   'footnote': 'footnote',
   'caption': 'caption',
@@ -93,7 +103,7 @@ export function blockCategoryForVlm(stamped: string, whatFor: string): string {
   if (mapped === undefined) {
     throw new Error(
       `${whatFor}: an element is stamped data-bf-cat="${stamped}", which is not a category this `
-      + `build of BookForge knows. The ten foundry's vlm-convert writes are `
+      + `build of BookForge knows. The ${VLM_CATEGORIES.length} foundry's vlm-convert writes are `
       + `${VLM_CATEGORIES.join(', ')}. Update BookForge, or re-convert with the foundry it ships with.`
     );
   }

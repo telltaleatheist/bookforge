@@ -6891,6 +6891,44 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * What the project's book calls each of its chapters.
+   *
+   * The picker's Chapter tab asks this for a converted book: the blocks on
+   * screen are the chapter OPENINGS (`data-bf-cat="chapter"`), and the book's
+   * navigation is what those openings are CALLED — the title an audiobook is
+   * built from. `titles: null` means the project has no book yet, which is a
+   * state and not a failure.
+   */
+  ipcMain.handle('book:chapter-titles', async (_event, projectDir: string) => {
+    try {
+      const { readBookChapterTitles } = await import('./book-chapters.js');
+      return { success: true, titles: await readBookChapterTitles(projectDir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Rename one chapter, in the book itself.
+   *
+   * The nav entry and the chapter document's `<title>`; never the print. The
+   * book is the only store — re-opening the project reads the new title back out
+   * of it — so there is nothing here that also has to be saved. See
+   * electron/book-chapters.ts for why the narration records move with it.
+   */
+  ipcMain.handle('book:rename-chapter', async (
+    _event, projectDir: string, file: string, title: string) => {
+    try {
+      const { renameBookChapter } = await import('./book-chapters.js');
+      const result = await renameBookChapter(projectDir, file, title);
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return { success: true, result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ── Foundry CLI ─────────────────────────────────────────────────────────
   // The standalone binary this app's page-layout model, OCR-repair contract and
   // footnote-marker remover were extracted into (github.com/telltaleatheist/
