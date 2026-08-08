@@ -40,6 +40,7 @@ const {
   DEFAULT_VLM_ENDPOINT_CONFIG,
   describeVlmEndpointCheck,
   resolveVlmEndpoint,
+  resolveVlmRoute,
   vlmEndpointArgs,
   vlmEndpointModelsUrl,
   vlmLocalReadingRefusal,
@@ -139,11 +140,55 @@ check('an Intel Mac cannot, and neither can Windows or Linux', () => {
   for (const [platform, arch] of [['darwin', 'x64'], ['win32', 'x64'], ['linux', 'arm64']]) {
     const refusal = vlmLocalReadingRefusal(platform, arch);
     assert.ok(refusal, `${platform}/${arch} was allowed a local reader`);
-    // It must name the machine it is talking about and the way out of it.
+    // It names the machine it is talking about. It does NOT say what to do
+    // instead: this is one of three facts `resolveVlmRoute` weighs, and a
+    // machine with a WSL reader configured is never shown it at all.
     assert.ok(refusal.includes(`${platform}/${arch}`), 'the refusal does not name the machine');
-    assert.ok(/Settings/.test(refusal), 'the refusal does not say where to set an endpoint');
-    assert.ok(/Nothing was converted/.test(refusal), 'the refusal does not say nothing happened');
   }
+});
+
+// ── which of the three routes applies ───────────────────────────────────────
+
+check('a configured endpoint wins, even where a local reader exists', () => {
+  const endpoint = resolveVlmEndpoint({ url: 'http://gpu.local:8000/v1', model: '', concurrency: 0 });
+  const route = resolveVlmRoute({
+    platform: 'darwin', arch: 'arm64', endpoint, wslReaderRefusal: null,
+  });
+  // A server someone configured by hand is a deliberate choice about which GPU
+  // does the work; preferring the local one would overrule them.
+  assert.strictEqual(route.kind, 'endpoint');
+  assert.strictEqual(route.endpoint.url, 'http://gpu.local:8000/v1');
+});
+
+check('Apple silicon with nothing configured reads its own pages', () => {
+  const route = resolveVlmRoute({
+    platform: 'darwin', arch: 'arm64', endpoint: null, wslReaderRefusal: 'not on a Mac',
+  });
+  assert.strictEqual(route.kind, 'mlx-local');
+});
+
+check('Windows with the WSL reader ready uses it', () => {
+  const route = resolveVlmRoute({
+    platform: 'win32', arch: 'x64', endpoint: null, wslReaderRefusal: null,
+  });
+  assert.strictEqual(route.kind, 'wsl-server');
+});
+
+check('with no route at all, both reasons are given and neither is buried', () => {
+  const route = resolveVlmRoute({
+    platform: 'win32',
+    arch: 'x64',
+    endpoint: null,
+    wslReaderRefusal: 'WSL2 for page reading is switched off.',
+  });
+  assert.strictEqual(route.kind, 'refused');
+  // The hardware fact, which never changes...
+  assert.ok(route.reason.includes('win32/x64'), 'the refusal does not name the machine');
+  // ...the setting the user CAN act on, which a message about Apple silicon
+  // alone would hide behind "buy a Mac"...
+  assert.ok(/switched off/.test(route.reason), 'the refusal drops the WSL reason');
+  // ...and the third way out.
+  assert.ok(/Settings/.test(route.reason), 'the refusal does not say where to set an endpoint');
 });
 
 check('the route is named either way', () => {

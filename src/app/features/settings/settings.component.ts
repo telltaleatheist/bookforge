@@ -918,6 +918,64 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                           </div>
                         </div>
 
+                        <!-- Page reading (Convert to EPUB) served from WSL -->
+                        <h3 class="wsl-section-title">WSL2 for page reading</h3>
+                        <p class="wsl-description">
+                          Convert to EPUB reads every page with a document vision model. vLLM has no
+                          Windows build at all, so on this machine the model is served from a WSL
+                          conda environment you set up yourself — point BookForge at it and it will
+                          start and stop the server around each conversion.
+                        </p>
+
+                        <div class="tool-row">
+                          <div class="tool-info">
+                            <h4>Enable WSL2 for page reading</h4>
+                            <p class="tool-description">Serve the document vision model from WSL when converting a PDF</p>
+                          </div>
+                          <div class="tool-control">
+                            <input
+                              type="checkbox"
+                              class="toggle-input"
+                              [checked]="getToolPathValue('useWsl2ForVlm') === 'true'"
+                              (change)="toggleWsl2ForVlm($any($event.target).checked)"
+                            />
+                          </div>
+                        </div>
+
+                        <div class="tool-row">
+                          <div class="tool-info">
+                            <h4>WSL conda environment</h4>
+                            <p class="tool-description">Name of the conda env holding vLLM (e.g. dots)</p>
+                          </div>
+                          <div class="tool-control">
+                            <input
+                              type="text"
+                              class="text-input"
+                              [value]="getToolPathValue('wslVlmCondaEnv')"
+                              placeholder="dots"
+                              (change)="updateToolPath('wslVlmCondaEnv', $any($event.target).value)"
+                            />
+                          </div>
+                        </div>
+
+                        <div class="tool-row">
+                          <div class="tool-info">
+                            <h4>Vision model</h4>
+                            <p class="tool-description">
+                              HuggingFace repo the server loads. Downloaded into WSL on first use.
+                            </p>
+                          </div>
+                          <div class="tool-control">
+                            <input
+                              type="text"
+                              class="text-input"
+                              [value]="getToolPathValue('wslVlmModel')"
+                              placeholder="rednote-hilab/dots.ocr"
+                              (change)="updateToolPath('wslVlmModel', $any($event.target).value)"
+                            />
+                          </div>
+                        </div>
+
                         <!-- Save and Verify Buttons -->
                         <div class="wsl-verify-section">
                           <desktop-button
@@ -2898,6 +2956,16 @@ export class SettingsComponent implements OnInit {
 
   toggleWsl2ForOrpheus(enabled: boolean): void {
     this.updateToolPath('useWsl2ForOrpheus', enabled ? 'true' : '');
+  }
+
+  /**
+   * A SEPARATE toggle from the Orpheus one, not a second reader of it. A machine
+   * can have a WSL env with vLLM for Orpheus and none for the page reader, or
+   * the reverse — one flag standing for both would send a conversion at an env
+   * that does not hold the model.
+   */
+  toggleWsl2ForVlm(enabled: boolean): void {
+    this.updateToolPath('useWsl2ForVlm', enabled ? 'true' : '');
   }
 
   selectWslDistro(distro: string): void {

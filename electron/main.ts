@@ -6923,6 +6923,25 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * Why this machine cannot serve the page reader from WSL, or null when it can.
+   *
+   * The renderer cannot work this out for itself: it is a question about
+   * tool-paths.json and the host platform, and both live here. Every surface
+   * that has to say whether a conversion is possible — the picker's Convert
+   * action, the Reading pages card — asks this and feeds it to the same
+   * `resolveVlmRoute` the run uses, which is what stops a card promising a route
+   * the run then denies.
+   */
+  ipcMain.handle('vlm:reader-status', async () => {
+    try {
+      const { wslVlmRefusal, vlmPageServerStatus } = await import('./vlm-page-server.js');
+      return { success: true, wslRefusal: wslVlmRefusal(), server: vlmPageServerStatus() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   /** The book, whether a VLM read it, and what has been struck out of it. */
   ipcMain.handle('narration:state', async (_event, projectDir: string) => {
     try {

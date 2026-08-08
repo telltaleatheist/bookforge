@@ -1427,6 +1427,17 @@ export interface ElectronAPI {
     /** Is the configured endpoint up, and what is it serving? */
     checkEndpoint: (config: VlmEndpointConfig) =>
       Promise<{ success: boolean; check?: VlmEndpointCheck; error?: string }>;
+    /**
+     * Why the WSL page reader is unavailable (null when it is ready), and
+     * whether one is running right now. Fed to `resolveVlmRoute` by every
+     * surface that has to state whether a conversion can happen.
+     */
+    readerStatus: () => Promise<{
+      success: boolean;
+      wslRefusal?: string | null;
+      server?: { running: boolean; url: string; model: string | null };
+      error?: string;
+    }>;
     narrationState: (projectDir: string) =>
       Promise<{ success: boolean; state?: NarrationState; error?: string }>;
     saveNarrationDeletions: (projectDir: string, elements: string[]) =>
@@ -3291,6 +3302,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('vlm:convert', request),
     checkEndpoint: (config: VlmEndpointConfig) =>
       ipcRenderer.invoke('vlm:check-endpoint', config),
+    readerStatus: () => ipcRenderer.invoke('vlm:reader-status'),
     narrationState: (projectDir: string) =>
       ipcRenderer.invoke('narration:state', projectDir),
     saveNarrationDeletions: (projectDir: string, elements: string[]) =>

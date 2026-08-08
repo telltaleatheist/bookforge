@@ -93,7 +93,7 @@ import type { PassRecord } from '@shared/document/version-family';
 import {
   VLM_CONVERT_STAGE,
   resolveVlmEndpoint,
-  vlmLocalReadingRefusal,
+  resolveVlmRoute,
   type VlmEndpointConfig,
 } from '@shared/vlm/conversion';
 import {
@@ -10087,7 +10087,7 @@ export class PdfPickerComponent implements OnInit {
         this.requestBuildTheBook();
         return;
       case 'vlm-convert':
-        this.requestVlmConversion();
+        void this.requestVlmConversion();
         return;
       case 'export-narration':
         void this.exportNarrationCopy();
@@ -10153,7 +10153,8 @@ export class PdfPickerComponent implements OnInit {
    * half-typed URL is a sentence in the confirm dialog rather than a failure
    * after the stage has been claimed.
    */
-  private vlmEndpointOrRefusal(): { endpoint: VlmEndpointConfig | null } | { refusal: string } {
+  private async vlmEndpointOrRefusal():
+    Promise<{ endpoint: VlmEndpointConfig | null } | { refusal: string }> {
     const config = this.settingsService.getVlmEndpointConfig();
     let endpoint: VlmEndpointConfig | null;
     try {
@@ -10161,21 +10162,35 @@ export class PdfPickerComponent implements OnInit {
     } catch (err) {
       return { refusal: err instanceof Error ? err.message : String(err) };
     }
-    if (endpoint === null) {
-      const refusal = vlmLocalReadingRefusal(this.electronService.platform, this.electronService.arch);
-      if (refusal !== null) return { refusal };
+    // Asked of main every time rather than cached: the WSL toggle and env name
+    // live in Settings, and a user who just filled them in must not have to
+    // restart the window before Convert believes them.
+    const status = await this.electronService.vlmReaderStatus();
+    if (!status.success) {
+      return { refusal: `BookForge could not check the WSL page reader: ${status.error}` };
     }
+    const route = resolveVlmRoute({
+      platform: this.electronService.platform,
+      arch: this.electronService.arch,
+      endpoint,
+      wslReaderRefusal: status.wslRefusal ?? null,
+    });
+    if (route.kind === 'refused') return { refusal: route.reason };
+    // `endpoint` stays null for both local routes — MLX here, or the WSL server
+    // main starts and names itself. Main resolves the route a second time and is
+    // the one that knows the URL its own server came up on; a URL guessed here
+    // would be this window's idea of where that server will be.
     return { endpoint };
   }
 
-  private requestVlmConversion(): void {
+  private async requestVlmConversion(): Promise<void> {
     if (this.stationBusy()) return;
 
     // Which machine would read the pages — asked BEFORE the dialog, because the
     // dialog quotes a time per page and the two routes are nothing like each
     // other, and because a machine with no reader at all should say so instead
     // of offering a Convert button that cannot work.
-    const route = this.vlmEndpointOrRefusal();
+    const route = await this.vlmEndpointOrRefusal();
     if ('refusal' in route) {
       this.showAlert({
         title: 'Nothing here can read the pages',

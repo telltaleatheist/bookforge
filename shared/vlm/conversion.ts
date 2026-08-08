@@ -284,10 +284,8 @@ export function vlmEndpointArgs(endpoint: VlmEndpointConfig | null): string[] {
 export function vlmLocalReadingRefusal(platform: string, arch: string): string | null {
   if (platform === 'darwin' && arch === 'arm64') return null;
   return (
-    'Reading the pages on this machine needs an Apple Silicon Mac — the local reader is MLX, '
-    + `which runs on Metal and nothing else, and this machine is ${platform}/${arch}. `
-    + 'Point BookForge at a vLLM (or any OpenAI-compatible) server that serves the document '
-    + 'vision model: Settings → AI → Reading pages. Nothing was converted.'
+    'Reading the pages on this machine itself needs an Apple Silicon Mac — the local reader is '
+    + `MLX, which runs on Metal and nothing else, and this machine is ${platform}/${arch}.`
   );
 }
 
@@ -296,6 +294,64 @@ export function vlmRouteLabel(endpoint: VlmEndpointConfig | null): string {
   return endpoint === null
     ? 'this machine (MLX)'
     : endpoint.url;
+}
+
+/**
+ * Which of the three ways of reading a page applies here.
+ *
+ * There are exactly three, and they are not interchangeable:
+ *
+ *  - `endpoint`   — a URL the user typed. It WINS whenever it is set, because a
+ *                   server someone configured by hand is a deliberate choice
+ *                   about which GPU does the work, and the machine quietly
+ *                   preferring its own would be the app overruling them. Same
+ *                   precedence as an external component beating a managed one.
+ *  - `mlx-local`  — Apple silicon reads its own pages, no server involved.
+ *  - `wsl-server` — Windows, where vLLM in a WSL env the user pointed at is the
+ *                   only route that exists: vLLM has no Windows build, and
+ *                   dots.ocr under transformers needs 23.9 GB for a 3B model
+ *                   without flash-attn (measured 2026-08-07).
+ *
+ * PURE, and given every fact rather than reading any of them, so the sentence a
+ * Windows user sees can be tested on a Mac — the property `vlmLocalReadingRefusal`
+ * already had and the reason the picker card cannot promise a route the run then
+ * denies. `wslReaderRefusal` is the caller's answer to "and if not WSL, why not",
+ * which only the main process can know; a renderer passes what it was told.
+ */
+export type VlmRoute =
+  | { kind: 'endpoint'; endpoint: VlmEndpointConfig }
+  | { kind: 'mlx-local' }
+  | { kind: 'wsl-server' }
+  | { kind: 'refused'; reason: string };
+
+export function resolveVlmRoute(facts: {
+  platform: string;
+  arch: string;
+  /** The Settings → AI → Reading pages value, already through `resolveVlmEndpoint`. */
+  endpoint: VlmEndpointConfig | null;
+  /** Why the WSL page reader is unavailable, or null when it is ready to start. */
+  wslReaderRefusal: string | null;
+}): VlmRoute {
+  if (facts.endpoint !== null) {
+    return { kind: 'endpoint', endpoint: facts.endpoint };
+  }
+  if (vlmLocalReadingRefusal(facts.platform, facts.arch) === null) {
+    return { kind: 'mlx-local' };
+  }
+  if (facts.wslReaderRefusal === null) {
+    return { kind: 'wsl-server' };
+  }
+  // Neither route is open. Both halves are said: the reason THIS machine cannot
+  // read locally is a fact about the hardware and never changes, while the WSL
+  // reason is a setting the user can act on — and a message carrying only the
+  // first reads as "buy a Mac".
+  return {
+    kind: 'refused',
+    reason:
+      `${vlmLocalReadingRefusal(facts.platform, facts.arch)} ${facts.wslReaderRefusal} `
+      + 'You can also point BookForge at any OpenAI-compatible server that already serves the '
+      + 'document vision model: Settings → AI → Reading pages.',
+  };
 }
 
 /**

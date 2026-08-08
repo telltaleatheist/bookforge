@@ -65,6 +65,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { ensureFoundryPath, runFoundry } from './foundry-bridge';
+import { ensureVlmPageServer, wslVlmRefusal } from './vlm-page-server';
 import { resolveDocumentProject } from './document-project';
 import { primaryAbsPath } from './document-stages';
 import { withProjectStage } from './document-stage-run';
@@ -77,7 +78,7 @@ import {
   resolveVlmEndpoint,
   vlmEndpointArgs,
   vlmEndpointModelsUrl,
-  vlmLocalReadingRefusal,
+  resolveVlmRoute,
   type VlmConvertRequest,
   type VlmConvertResult,
   type VlmEndpointCheck,
@@ -169,11 +170,14 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
   // throws on a half-configured endpoint, and with no endpoint at all a machine
   // that is not an Apple Silicon Mac has no local reader — both are the user's
   // settings being wrong, and both are cheapest to say before anything starts.
-  const endpoint = resolveVlmEndpoint(request.endpoint);
-  if (endpoint === null) {
-    const refusal = vlmLocalReadingRefusal(process.platform, process.arch);
-    if (refusal !== null) throw new Error(refusal);
-  }
+  const configured = resolveVlmEndpoint(request.endpoint);
+  const route = resolveVlmRoute({
+    platform: process.platform,
+    arch: process.arch,
+    endpoint: configured,
+    wslReaderRefusal: wslVlmRefusal(),
+  });
+  if (route.kind === 'refused') throw new Error(`${route.reason} Nothing was converted.`);
 
   const project = await resolveDocumentProject({
     projectDir: request.projectDir,
@@ -208,6 +212,25 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
   const stagedEpub = path.join(STAGING_DIR, `vlm-convert-${sha256.slice(0, 16)}.epub`);
 
+  // Started BEFORE the stage is claimed, for the same reason `ensureFoundryPath`
+  // is: this waits on the GPU arbiter — potentially behind a TTS job — and then
+  // on ~44 s of model load, and holding a project's stage lock through that
+  // would refuse every other stage for a run that has not begun.
+  //
+  // `configured` WINS when it is set, so a user who pointed at their own server
+  // is not made to start a second one on this machine.
+  const reader = route.kind === 'wsl-server' ? await ensureVlmPageServer() : null;
+  try {
+    return await convertWith(reader === null
+      ? configured
+      : { url: reader.url, model: reader.model, concurrency: 0 });
+  } finally {
+    // On success, on failure and on cancellation alike — a server nobody
+    // released never goes idle and never gives the 20 GB back.
+    reader?.release();
+  }
+
+  async function convertWith(endpoint: VlmEndpointConfig | null): Promise<VlmConvertResult> {
   const result = await withProjectStage(project.projectDir, VLM_CONVERT_STAGE, async (opts) => {
     let lastMessage = '';
     let done = 0;
@@ -220,7 +243,9 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
       stage: 'vlm-convert',
       message: endpoint === null
         ? 'Loading the vision model on this machine…'
-        : `Reading the pages on ${endpoint.url}…`,
+        : reader !== null
+          ? `Reading the pages on this machine's GPU, through WSL (${reader.model})…`
+          : `Reading the pages on ${endpoint.url}…`,
       done: 0,
       total: 0,
     });
@@ -302,6 +327,7 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     totalPages,
     unreadable,
   };
+  }
 }
 
 /**

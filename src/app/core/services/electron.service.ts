@@ -3164,6 +3164,28 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /**
+   * Why the WSL page reader is unavailable (null when it is ready), and whether
+   * one is running.
+   *
+   * Answered by MAIN because it is a question about tool-paths.json and the host
+   * platform. Feed it to `resolveVlmRoute` rather than rendering it directly —
+   * an explicitly configured endpoint outranks it, and a card that showed this
+   * reason beside a working server would be telling the user to fix something
+   * that is not broken.
+   */
+  async vlmReaderStatus(): Promise<{
+    success: boolean;
+    wslRefusal?: string | null;
+    server?: { running: boolean; url: string; model: string | null };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.readerStatus();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   /** The book, whether a VLM read it, and what has been struck out of it. */
   async narrationState(projectDir: string): Promise<{
     success: boolean; state?: NarrationState; error?: string;

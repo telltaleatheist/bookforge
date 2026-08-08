@@ -126,6 +126,20 @@ export interface ToolPathsConfig {
   wslE2aPath?: string;             // e2a path inside WSL (e.g., "/home/user/ebook2audiobook")
   wslOrpheusCondaEnv?: string;     // Conda env name for Orpheus in WSL (default: "orpheus_tts")
 
+  // Page reading (Convert to EPUB) served from WSL. Same shape as the Orpheus
+  // pair above and for a related but DISTINCT reason: Orpheus needs WSL because
+  // vLLM's CUDA graphs don't capture on native Windows, while the page reader
+  // needs it because vLLM has no Windows build AT ALL — `pip download vllm
+  // --only-binary=:all:` on the bundled interpreter answers "from versions:
+  // none" (measured 2026-08-07). The native-Windows alternative, dots.ocr under
+  // transformers, does run — and takes 23.9 GB of VRAM for a 3B model, because
+  // no Windows flash-attn wheel exists for this torch build and the vision
+  // tower falls back to eager attention over ~3,450 patches. So this is an
+  // opt-in pointer at an env the user already built, never a managed download.
+  useWsl2ForVlm?: boolean;         // Serve the document vision model from WSL
+  wslVlmCondaEnv?: string;         // Conda env name holding vLLM (e.g. "dots")
+  wslVlmModel?: string;            // HF repo the server loads, e.g. "rednote-hilab/dots.ocr"
+
   // Enhance tab (local Adobe-Podcast-style speech cleanup). Only the Resemble
   // Enhance step needs wiring; see EnhanceConfig.
   enhance?: EnhanceConfig;
@@ -244,9 +258,44 @@ export function saveConfig(config: ToolPathsConfig): void {
 /**
  * Update specific config values (merge with existing)
  */
+/**
+ * The keys this config declares as BOOLEAN, listed because the renderer cannot
+ * send one.
+ *
+ * Settings' tool-path draft is a `Record<string, string>` — every checkbox in it
+ * writes the STRING `'true'` or `''` (see `toggleWsl2ForOrpheus`), and
+ * `tool-paths:update-config` passes what it is given straight through. So a
+ * checked box stored `"useWsl2ForOrpheus": "true"`, while every reader asks
+ * `=== true`, and `'true' !== true`: the toggle appeared on and did nothing.
+ * It has been invisible because the one machine using it has a BOOLEAN in its
+ * tool-paths.json, written by some earlier path — flip that switch in the UI
+ * once and Orpheus silently stops routing through WSL.
+ *
+ * Coerced here, at the boundary where the string actually arrives, rather than
+ * by loosening the readers: `=== true` is the correct question to ask of a
+ * boolean, and a reader that also accepted `'true'` would be carrying the
+ * renderer's serialisation quirk into every call site forever.
+ */
+const BOOLEAN_CONFIG_KEYS: ReadonlySet<string> = new Set([
+  'useWsl2ForAllTts',
+  'useWsl2ForOrpheus',
+  'useWsl2ForVlm',
+]);
+
 export function updateConfig(updates: Partial<ToolPathsConfig>): ToolPathsConfig {
   loadConfig();
-  const newConfig = { ...state.config, ...updates };
+
+  const coerced: Record<string, unknown> = { ...updates };
+  for (const key of BOOLEAN_CONFIG_KEYS) {
+    if (!(key in coerced)) continue;
+    const raw = coerced[key];
+    if (typeof raw !== 'string') continue;
+    // '' is left alone: the loop below deletes empty values, which is how an
+    // unchecked box removes the key rather than storing `false`.
+    if (raw !== '') coerced[key] = raw === 'true';
+  }
+
+  const newConfig = { ...state.config, ...coerced } as ToolPathsConfig;
 
   // Remove undefined/null values
   for (const key of Object.keys(newConfig) as (keyof ToolPathsConfig)[]) {
@@ -797,6 +846,54 @@ export function shouldUseWsl2ForOrpheus(): boolean {
   if (os.platform() !== 'win32') return false;
   loadConfig();
   return state.config.useWsl2ForOrpheus === true;
+}
+
+/**
+ * WSL routing for the document vision model that reads pages.
+ *
+ * The same explicit opt-in as `shouldUseWsl2ForOrpheus()`, and deliberately a
+ * SEPARATE toggle rather than a second reader of that one: a machine can have a
+ * WSL env with vLLM for Orpheus and none for the page reader, or the reverse,
+ * and one flag standing for both would route a conversion at an env that does
+ * not hold the model. Windows-only; every other platform either reads pages
+ * locally (Apple Silicon, MLX) or is pointed at a server by URL.
+ */
+export function shouldUseWsl2ForVlm(): boolean {
+  if (os.platform() !== 'win32') return false;
+  loadConfig();
+  return state.config.useWsl2ForVlm === true;
+}
+
+/**
+ * The conda env in WSL that holds vLLM, or undefined when none is set.
+ *
+ * NO DEFAULT, unlike `getWslOrpheusCondaEnv()`. That one can name
+ * 'orpheus_tts' because it is the name this project's own setup instructions
+ * create (CLAUDE.md). There is no conventional name for a vLLM env a user built
+ * themselves — the one on this machine is called `dots` — so a guess here would
+ * send `conda run -n <wrong>` at the wall and report a conda error instead of
+ * the setting nobody filled in.
+ */
+export function getWslVlmCondaEnv(): string | undefined {
+  loadConfig();
+  const name = state.config.wslVlmCondaEnv?.trim();
+  return name && name.length > 0 ? name : undefined;
+}
+
+/**
+ * The HuggingFace repo the WSL server loads, or undefined when none is set.
+ *
+ * It is a setting rather than a constant because the name has to match on both
+ * sides: vLLM serves the repo it was started with, and foundry sends that same
+ * string as the `model` field of every chat request (its registry calls it
+ * `endpointModel`). Two places naming the model independently is how they come
+ * to disagree, so the server is started from this value and foundry is told
+ * this value.
+ */
+export function getWslVlmModel(): string | undefined {
+  loadConfig();
+  const repo = state.config.wslVlmModel?.trim();
+  return repo && repo.length > 0 ? repo : undefined;
 }
 
 /**

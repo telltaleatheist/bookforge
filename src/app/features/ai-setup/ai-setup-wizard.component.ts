@@ -10,7 +10,7 @@ import { ElectronService } from '../../core/services/electron.service';
 import {
   DEFAULT_VLM_CONCURRENCY,
   describeVlmEndpointCheck,
-  vlmLocalReadingRefusal,
+  resolveVlmRoute,
 } from '@shared/vlm/conversion';
 
 /**
@@ -425,6 +425,18 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   }
 
   async ngOnInit(): Promise<void> {
+    // Which routes are open, asked once. A failure to ask is reported as a
+    // refusal naming the failure rather than left as "available": this value
+    // decides whether the card tells the user a conversion can happen, and
+    // guessing yes is the guess that wastes their time.
+    void this.electron.vlmReaderStatus().then((s) => {
+      this.wslReaderRefusal.set(
+        s.success
+          ? s.wslRefusal ?? null
+          : `BookForge could not check the WSL page reader: ${s.error}`
+      );
+    });
+
     this.unsub = this.ai.onModelProgress((p) => {
       this._progress.update((map) => {
         const next = { ...map };
@@ -551,14 +563,35 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   readonly vlmTesting = signal(false);
 
   /**
-   * Why this machine cannot read the pages by itself, or null.
+   * Why the WSL page reader is unavailable, as main last reported it.
    *
-   * The SAME function main refuses a conversion with, given this machine's
-   * platform and architecture — so the card cannot promise a local route that
-   * the run will then deny.
+   * `undefined` while the answer has not arrived yet, which is NOT the same as
+   * "available": a card that rendered "ready" for the first frame and then
+   * corrected itself would be worse than one that says nothing for a moment.
    */
-  readonly localReadingRefusal = computed(() =>
-    vlmLocalReadingRefusal(this.electron.platform, this.electron.arch));
+  readonly wslReaderRefusal = signal<string | null | undefined>(undefined);
+
+  /**
+   * Why no machine can read the pages, or null when one can.
+   *
+   * The SAME function main refuses a conversion with, given the same facts — so
+   * the card cannot promise a route the run will then deny. Note it resolves to
+   * null as soon as ANY route is open, including the WSL one, which is why this
+   * no longer says "needs an Apple Silicon Mac" on a correctly configured PC.
+   */
+  readonly localReadingRefusal = computed(() => {
+    const wsl = this.wslReaderRefusal();
+    if (wsl === undefined) return null;
+    const route = resolveVlmRoute({
+      platform: this.electron.platform,
+      arch: this.electron.arch,
+      endpoint: this.settings.getVlmEndpointConfig().url.trim().length > 0
+        ? this.settings.getVlmEndpointConfig()
+        : null,
+      wslReaderRefusal: wsl,
+    });
+    return route.kind === 'refused' ? route.reason : null;
+  });
 
   vlmUrl(): string { return this.settings.getVlmEndpointConfig().url; }
   vlmModel(): string { return this.settings.getVlmEndpointConfig().model; }
