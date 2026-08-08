@@ -4354,6 +4354,16 @@ export interface EpubProvenanceReading {
   stamped: boolean;
   /** Block id → the stamp of the element it was laid out from. */
   byBlockId: Map<string, EpubBlockProvenance>;
+  /**
+   * Block id → the positional key of the element it was laid out from.
+   *
+   * EVERY aligned block has one, stamped or not: the key is a fact about the
+   * book's markup and the aligner's traversal, not about what any emitter wrote
+   * into it. It is the identity a narration strike is recorded as
+   * (shared/vlm/narration-deletions.ts), so a block missing from here is a block
+   * the user can strike through on screen while nothing is recorded.
+   */
+  elementByBlockId: Map<string, NarrationElementKey>;
   /** Blocks aligned to an element carrying no stamp (nav TOC, hand-added markup). */
   alignedToUnstampedElement: number;
   /** Blocks the aligner could not place in the source markup at all. */
@@ -4447,10 +4457,14 @@ export async function readEpubBlockProvenance(
   const empty: EpubProvenanceReading = {
     stamped: false,
     byBlockId: new Map(),
+    elementByBlockId: new Map(),
     alignedToUnstampedElement: 0,
     unaligned: 0,
     spanningElements: 0,
   };
+  // An unstamped book is not read here at all, and it does not need to be: the
+  // caller asks the CONVERSION reader next, and that one aligns every EPUB and
+  // answers the element keys whether or not it finds a stamp.
   if (!(await epubCarriesProvenance(epubSourcePath))) return empty;
 
   const legal = new Set<string>(BLOCK_CATEGORY_IDS);
@@ -4475,6 +4489,7 @@ export async function readEpubBlockProvenance(
   };
 
   const byBlockId = new Map<string, EpubBlockProvenance>();
+  const elementByBlockId = new Map<string, NarrationElementKey>();
   let alignedToUnstampedElement = 0;
   let spanningElements = 0;
   for (const [blockId, unitIndices] of blockToUnits) {
@@ -4484,6 +4499,10 @@ export async function readEpubBlockProvenance(
       throw new Error(`${whatFor}: block ${blockId} aligned to zero source elements — this is a bug.`);
     }
     if (unitIndices.length > 1) spanningElements++;
+    // The element key first, and unconditionally: it is where the block CAME
+    // FROM, which is true of a nav-TOC entry nothing stamped exactly as it is
+    // true of a stamped paragraph.
+    elementByBlockId.set(blockId, units[unitIndices[0]].key);
     const stamp = stampFor(unitIndices[0]);
     if (stamp === null) alignedToUnstampedElement++;
     else byBlockId.set(blockId, stamp);
@@ -4492,6 +4511,7 @@ export async function readEpubBlockProvenance(
   return {
     stamped: true,
     byBlockId,
+    elementByBlockId,
     alignedToUnstampedElement,
     unaligned: unaligned.length,
     spanningElements,
@@ -4530,8 +4550,15 @@ export interface EpubConversionStamp {
 export interface EpubConversionReading {
   /** True when the book carries conversion stamps — i.e. vlm-convert wrote it. */
   converted: boolean;
-  /** Block id → the stamp of the element it was laid out from. */
+  /** Block id → the stamp of the element it was laid out from. Stamped books only. */
   byBlockId: Map<string, EpubConversionStamp>;
+  /**
+   * Block id → the positional key of the element it was laid out from.
+   *
+   * Filled for EVERY aligned block of EVERY EPUB — see the reading below for
+   * why that is not the same question as `converted`.
+   */
+  elementByBlockId: Map<string, NarrationElementKey>;
   /** Blocks aligned to an element carrying no stamp (nav TOC, hand-added markup). */
   alignedToUnstampedElement: number;
   /** Blocks the aligner could not place in the source markup at all. */
@@ -4620,25 +4647,31 @@ export async function readEpubConversionUnits(epubSourcePath: string): Promise<N
 }
 
 /**
- * Read each laid-out block's category, source page and element key off the
- * converted book's own markup.
+ * Read each laid-out block's element key — and, when the book states them, its
+ * category and source page — off the book's own markup.
  *
- * A book with no stamps returns `converted: false` and an empty map — a
- * different INPUT CLASS, not a failure, exactly as with the reflow provenance
- * above. The caller can tell the two apart and classify for itself.
+ * ── The ALIGNER RUNS FOR EVERY EPUB, and that is the point ──────────────────
+ *
+ * The categories and the page numbers are a converted book's own record, and a
+ * book with no stamps has none: `converted: false`, an empty `byBlockId`, a
+ * different INPUT CLASS rather than a failure, exactly as with the reflow
+ * provenance above.
+ *
+ * The ELEMENT KEY is not that. It is where the block came from — a zip entry and
+ * a position in the aligner's traversal — and every EPUB has one for every block
+ * it laid out, whoever wrote the book. Reading it only for stamped books is what
+ * this used to do, by returning before the aligner ever ran, and it broke
+ * striking for narration on every publisher EPUB: the picker enables the gesture
+ * on any book on screen (`canStrikeForNarration`), the user strikes a paragraph,
+ * `narrationElementsOf` skips every block with no `element`, and NOTHING is
+ * recorded — silently, looking exactly like it worked. So the gate is now only
+ * on what it can honestly gate: the stamps.
  */
 export async function readEpubConversionStamps(
   epubSourcePath: string,
   blocks: EpubExportBlock[],
 ): Promise<EpubConversionReading> {
-  const empty: EpubConversionReading = {
-    converted: false,
-    byBlockId: new Map(),
-    alignedToUnstampedElement: 0,
-    unaligned: 0,
-  };
-  if (!(await epubCarriesConversionStamps(epubSourcePath))) return empty;
-
+  const converted = await epubCarriesConversionStamps(epubSourcePath);
   const whatFor = `conversion stamps in ${path.basename(epubSourcePath)}`;
   const { units, blockToUnits, unaligned } = await alignBlocksToEpub(epubSourcePath, blocks);
 
@@ -4655,6 +4688,7 @@ export async function readEpubConversionStamps(
   };
 
   const byBlockId = new Map<string, EpubConversionStamp>();
+  const elementByBlockId = new Map<string, NarrationElementKey>();
   let alignedToUnstampedElement = 0;
   for (const [blockId, unitIndices] of blockToUnits) {
     if (unitIndices.length === 0) {
@@ -4663,12 +4697,20 @@ export async function readEpubConversionStamps(
     // A block that spans several elements takes the FIRST one's, which is the
     // element its text begins in — the same tiebreak the provenance reader uses,
     // and the only non-arbitrary one when reading order is all there is.
+    elementByBlockId.set(blockId, units[unitIndices[0]].key);
+    if (!converted) continue;
     const stamp = stampFor(unitIndices[0]);
     if (stamp === null) alignedToUnstampedElement++;
     else byBlockId.set(blockId, stamp);
   }
 
-  return { converted: true, byBlockId, alignedToUnstampedElement, unaligned: unaligned.length };
+  return {
+    converted,
+    byBlockId,
+    elementByBlockId,
+    alignedToUnstampedElement,
+    unaligned: unaligned.length,
+  };
 }
 
 export interface NarrationEpubWriteResult {

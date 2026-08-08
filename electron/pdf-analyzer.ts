@@ -1622,6 +1622,11 @@ export class PDFAnalyzer {
 
     const stampedCategories = new Map<string, string>();
     for (const block of this.blocks) {
+      // The element key is a fact about where the block came from, so it is set
+      // for every block the aligner placed — including one that landed on an
+      // element carrying no stamp. It is what a narration strike is recorded as.
+      const element = reading.elementByBlockId.get(block.id);
+      if (element !== undefined) block.bf_element = element;
       const stamp = reading.byBlockId.get(block.id);
       if (stamp === undefined) continue;
       block.bf_group = stamp.group;
@@ -1651,7 +1656,8 @@ export class PDFAnalyzer {
   }
 
   /**
-   * The same job for a book a document VISION MODEL wrote.
+   * The same job for a book a document VISION MODEL wrote — and the element key
+   * for every EPUB, whoever wrote it.
    *
    * `foundry vlm-convert` has no working PDF and no paragraph groups to stamp,
    * so it states the two things it DOES know: what the model called each block
@@ -1659,12 +1665,16 @@ export class PDFAnalyzer {
    * Both are unrecoverable once mupdf has laid the book out — an EPUB has no
    * page concept and no memory of a layout model's opinion — and both are what
    * the picker needs to let a user say "every footnote" or "everything that was
-   * on page 3".
+   * on page 3". A book with neither states no categories, and this returns an
+   * empty map so the classifier's answers stand.
    *
    * A second reader rather than a branch inside the first because the two
-   * dialects say different things: this one also carries the element's
-   * positional KEY onto the block, which is the identity the narration
-   * deletions are recorded as (shared/vlm/narration-deletions.ts).
+   * dialects say different things. But the element's positional KEY is in
+   * neither dialect: it is where the block came from, the aligner knows it for
+   * every book, and it is the identity a narration strike is recorded as
+   * (shared/vlm/narration-deletions.ts). So it is set unconditionally. It used
+   * to be set only on a stamped book, which meant a user could strike a
+   * paragraph of a publisher's EPUB and have nothing recorded at all.
    */
   private async readConversionCategories(pdfPath: string): Promise<Map<string, string>> {
     const alignable: EpubExportBlock[] = this.blocks.map(b => ({
@@ -1678,16 +1688,32 @@ export class PDFAnalyzer {
     }));
 
     const reading = await readEpubConversionStamps(pdfPath, alignable);
-    if (!reading.converted) return new Map();
 
     const stampedCategories = new Map<string, string>();
     for (const block of this.blocks) {
+      // ALWAYS, for every EPUB: the element key says where the block came from,
+      // which is true of a publisher's book as much as of a converted one, and
+      // it is the identity a narration strike is recorded as. Only the model's
+      // category and the source page are a converted book's own record.
+      const element = reading.elementByBlockId.get(block.id);
+      if (element !== undefined) block.bf_element = element;
       const stamp = reading.byBlockId.get(block.id);
       if (stamp === undefined) continue;
       block.bf_cat = stamp.statedCategory;
       block.bf_source_page = stamp.sourcePage;
-      block.bf_element = stamp.element;
       stampedCategories.set(block.id, stamp.category);
+    }
+
+    if (!reading.converted) {
+      // No stamps: the categories stay the classifier's, and the provenance says
+      // so. The element keys are set either way, and they are not a category.
+      console.log(
+        `[PDF Analyzer] ${path.basename(pdfPath)} states no categories of its own; `
+        + `${reading.elementByBlockId.size} of ${this.blocks.length} blocks carry an element key, `
+        + `${reading.unaligned} could not be placed in the markup.`,
+      );
+      if (reading.unaligned > 0) this.warnUnalignedBlocks(reading.unaligned, false);
+      return new Map();
     }
 
     this.categoryProvenance = {
@@ -1701,14 +1727,27 @@ export class PDFAnalyzer {
       + `${stampedCategories.size} blocks stamped, ${reading.alignedToUnstampedElement} on unstamped `
       + `elements, ${reading.unaligned} unaligned.`,
     );
-    if (reading.unaligned > 0) {
-      this.analysisWarnings.push(
-        `${reading.unaligned} block(s) of this book could not be matched to the markup they were `
-        + `laid out from, so their categories are this app's guess rather than the book's own record, `
-        + `and they cannot be struck out of the narration copy. Everything else in it is the record.`,
-      );
-    }
+    if (reading.unaligned > 0) this.warnUnalignedBlocks(reading.unaligned, true);
     return stampedCategories;
+  }
+
+  /**
+   * Blocks the aligner could not place, said once, in the user's terms.
+   *
+   * The consequence is the same whichever kind of book it is — a block with no
+   * element key cannot be struck out of the narration copy, because a strike is
+   * recorded as the element it names. A book that also STATED its categories
+   * loses those for the same blocks, so it has one thing more to say.
+   */
+  private warnUnalignedBlocks(count: number, stated: boolean): void {
+    this.analysisWarnings.push(
+      `${count} block(s) of this book could not be matched to the markup they were laid out from, `
+      + `so they cannot be struck out of the narration copy`
+      + (stated
+        ? `, and their categories are this app's guess rather than the book's own record. `
+          + 'Everything else in it is the record.'
+        : '.'),
+    );
   }
 
   /**

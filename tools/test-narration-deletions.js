@@ -45,6 +45,7 @@ process.env.BOOKFORGE_USERDATA_DIR = path.join(ROOT, 'userdata');
 const {
   ZipWriter,
   epubCarriesConversionStamps,
+  readEpubConversionStamps,
   readEpubConversionUnits,
   writeNarrationEpub,
 } = require(path.join(DIST, 'electron', 'epub-processor.js'));
@@ -255,6 +256,54 @@ async function buildEpub(name, chapterXhtml) {
     const plain = await buildEpub('plain.epub', PLAIN_CHAPTER);
     assert.strictEqual(await epubCarriesConversionStamps(converted), true);
     assert.strictEqual(await epubCarriesConversionStamps(plain), false);
+  });
+
+  await check('an UNSTAMPED book still gives every block its element key', async () => {
+    // The hole this closes: element keys used to be minted only for a book
+    // carrying `data-bf-cat`, because the reader returned before the aligner
+    // ever ran. So on a publisher's EPUB every block came back with no element,
+    // `narrationElementsOf` skipped all of them, and striking a paragraph
+    // recorded NOTHING — silently, looking exactly like it had worked.
+    const laidOut = (text, i) => ({
+      id: `b${i}`, page: 0, y: i * 20, text,
+      deleted: false, isImage: false, isFootnoteMarker: false,
+    });
+    const blocks = [
+      'Working Towards the Fuhrer',
+      'The first paragraph of the book, which is ordinary body prose and long enough to align.',
+      'A second paragraph on the following page, also ordinary and also long enough to align cleanly.',
+      'An epigraph set apart from the body of the chapter.',
+      'Figure 1. The caption belonging to the plate above.',
+      '1. Kershaw, Ian. Working Towards the Fuhrer, page two hundred and eleven.',
+    ].map(laidOut);
+
+    const plain = await buildEpub('plain-stamps.epub', PLAIN_CHAPTER);
+    const plainReading = await readEpubConversionStamps(plain, blocks);
+    assert.strictEqual(plainReading.converted, false, 'a plain book states no categories');
+    assert.strictEqual(plainReading.byBlockId.size, 0, 'and therefore no stamps');
+    assert.strictEqual(plainReading.unaligned, 0, 'every block was placed in the markup');
+    assert.strictEqual(plainReading.elementByBlockId.size, blocks.length,
+      'but EVERY block knows which element it came from');
+    assert.strictEqual(
+      plainReading.elementByBlockId.get('b0'), 'OEBPS/chapter-01.xhtml#0');
+    // Which is exactly what the picker needs to record a strike.
+    assert.deepStrictEqual(
+      narrationElementsOf(
+        blocks.map((b) => ({ id: b.id, element: plainReading.elementByBlockId.get(b.id) })),
+        new Set(['b5'])),
+      [plainReading.elementByBlockId.get('b5')]);
+
+    // The converted book answers the same keys AND its stamps.
+    const converted = await buildEpub('converted-stamps.epub', CHAPTER);
+    const reading = await readEpubConversionStamps(converted, blocks);
+    assert.strictEqual(reading.converted, true);
+    assert.strictEqual(reading.byBlockId.size, blocks.length);
+    assert.deepStrictEqual(
+      [...reading.elementByBlockId.entries()].sort(),
+      [...plainReading.elementByBlockId.entries()].sort(),
+      'the element key is a fact about the markup, not about the stamps');
+    assert.strictEqual(reading.byBlockId.get('b5').statedCategory, 'footnote');
+    assert.strictEqual(reading.byBlockId.get('b5').sourcePage, 3);
   });
 
   await check('every element of a converted book states its category and its page', async () => {
