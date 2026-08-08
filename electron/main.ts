@@ -945,9 +945,8 @@ function openClipforgeWindow(): BrowserWindow {
 /**
  * Track open editor windows by the path they were opened on.
  *
- * Module scope rather than inside setupIpcHandlers because the application menu
- * opens editor windows too (Open Corpus Book…), and a second map would let the
- * same book open twice in two windows that then autosave over each other.
+ * Keyed by path rather than per-caller, so the same book cannot open twice in
+ * two windows that then autosave over each other.
  */
 const editorWindows = new Map<string, BrowserWindow>();
 
@@ -957,7 +956,6 @@ const editorWindows = new Map<string, BrowserWindow>();
  * it before `did-finish-load` lands nowhere.
  *
  *   mode=library   editing a standalone ebook file, not a manifest project
- *   mode=corpus    labelling a training-corpus book, which must never become one
  */
 function openEditorWindow(
   rawProjectPath: string,
@@ -6678,16 +6676,6 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Delete a project's content-analysis report (report + any in-progress checkpoint).
-  // ─── Training-data sessions ───────────────────────────────────────────────
-  // Everything here is confined to {projectDir}/training/. Production outputs
-  // (source/, stages/, output/) are never read or written by these handlers,
-  // so relabelling an already-finished book cannot disturb its EPUB or M4B.
-
-  // Align the current OCR blocks against a paired EPUB and return per-block
-  // category labels. The engine is tools/aligner/align-core.mjs — one
-  // implementation shared with the batch CLI. Dev-tool: tools/ is not packaged,
-  // and the handler says so instead of failing cryptically.
   // ── Processing passes ───────────────────────────────────────────────────
   // ONE run handler for all five pass types: the pass kind is in the config, and
   // every pass has the same contract (transform the project's book, leave a diff,
@@ -6926,281 +6914,7 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('training:align', async (_event, payload: {
-    epubPath: string;
-    blocks: Array<{ id: string; page: number; x: number; y: number; width: number; height: number;
-      text: string; font_size: number; line_count?: number; ocr_confidence?: number }>;
-    pageDimensions: Array<{ width: number; height: number }>;
-  }) => {
-    try {
-      const { pathToFileURL } = await import('url');
-      const fsSync = await import('node:fs');
-      const corePath = path.join(codeRoot, 'tools', 'aligner', 'align-core.mjs');
-      if (!fsSync.existsSync(corePath)) {
-        return { success: false, error: 'Aligner not available in this build (tools/aligner missing).' };
-      }
-      const core = await import(pathToFileURL(corePath).href);
-
-      const segments = core.parseEpub(payload.epubPath);
-      const stream = core.buildStream(segments);
-      const blocks = payload.blocks.map(b => ({
-        page: b.page, x: b.x, y: b.y, w: b.width, h: b.height,
-        text: b.text, lineCount: b.line_count ?? 1, fsize: b.font_size,
-        conf: b.ocr_confidence ?? 0,
-        pageW: payload.pageDimensions[b.page]?.width ?? 612,
-        pageH: payload.pageDimensions[b.page]?.height ?? 792,
-      }));
-      const results = core.align(blocks, stream);
-      core.furniture(blocks, results, segments);
-
-      const labels: Record<string, { category: string; tier: string }> = {};
-      const tierCount: Record<string, number> = {};
-      results.forEach((r: any, i: number) => {
-        const cat = r.furniture ?? (r.matched && r.segIndex != null ? segments[r.segIndex].cat : null);
-        if (!cat) return;
-        const tier = r.why ?? 'matched';
-        labels[payload.blocks[i].id] = { category: cat, tier };
-        tierCount[tier] = (tierCount[tier] || 0) + 1;
-      });
-      return {
-        success: true, labels, tierCount,
-        matched: Object.keys(labels).length, total: payload.blocks.length,
-        streamWords: stream.words.length, segments: segments.length,
-      };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('training:pick-epub', async (_event, defaultPath?: string) => {
-    if (!mainWindow) return { success: false, error: 'No window' };
-    const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Choose the paired EPUB',
-      defaultPath: defaultPath || undefined,
-      filters: [{ name: 'EPUB', extensions: ['epub'] }],
-      properties: ['openFile'],
-    });
-    if (result.canceled || !result.filePaths[0]) return { success: false };
-    return { success: true, path: result.filePaths[0] };
-  });
-
-  // EPUB editions attached to the project — the natural alignment partners.
-  // archive/ holds independent editions; source/original.epub counts when the
-  // book was imported from an EPUB. The project's own export is deliberately
-  // excluded: it is DERIVED from the very scan being labelled, so aligning
-  // against it can only launder the pipeline's own output back in as truth.
-  ipcMain.handle('training:list-epubs', async (_event, projectDir: string) => {
-    try {
-      const fsSync = await import('node:fs');
-      const found: string[] = [];
-      const archiveDir = path.join(projectDir, 'archive');
-      if (fsSync.existsSync(archiveDir)) {
-        for (const f of fsSync.readdirSync(archiveDir)) {
-          if (f.toLowerCase().endsWith('.epub') && !f.startsWith('._')) {
-            found.push(path.join(archiveDir, f));
-          }
-        }
-      }
-      const sourceOriginal = path.join(projectDir, 'source', 'original.epub');
-      if (fsSync.existsSync(sourceOriginal)) found.push(sourceOriginal);
-      return { success: true, epubs: found };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('training:load', async (_event, projectDir: string) => {
-    try {
-      const trainingData = await import('./training-data.js');
-      const session = await trainingData.loadSession(projectDir);
-      return { success: true, session };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Writes a snapshot only for a book with no archived session; an existing
-  // one is reported back as skipped, never replaced. There is no reset handler:
-  // archived labelling sessions are not deletable from the app.
-  ipcMain.handle('training:save', async (_event, projectDir: string, session: unknown) => {
-    try {
-      const trainingData = await import('./training-data.js');
-      const { written, path: target } = await trainingData.saveSession(projectDir, session as any);
-      return { success: written, skipped: !written, path: target };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('training:export', async (_event, projectDir: string, records: unknown[]) => {
-    try {
-      const trainingData = await import('./training-data.js');
-      const outputPath = await trainingData.writeDataset(projectDir, records);
-      return { success: true, path: outputPath, count: records.length };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // ── Corpus books ────────────────────────────────────────────────────────
-  // A training-corpus book is labelled straight out of
-  // /Volumes/Callisto/training/rubric/<slug>/ and saved straight back there. It
-  // never becomes a library project — see electron/corpus-book.ts.
-
-  // Loading a book is also what arms the staleness watch for the window that
-  // loaded it — see electron/corpus-watch.ts. Doing it here rather than behind a
-  // separate call means there is no state in which a book is open and unwatched.
-  ipcMain.handle('corpus:load', async (event, dir: string) => {
-    try {
-      const { loadCorpusBook } = await import('./corpus-book.js');
-      const { watchCorpusBook } = await import('./corpus-watch.js');
-      const book = await loadCorpusBook(dir);
-      watchCorpusBook(event.sender, book);
-      return { success: true, book };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('corpus:save-labels', async (
-    event,
-    dir: string,
-    update: {
-      labels: Record<string, string>;
-      labelSet: string[];
-      pageTypes?: Record<string, import('../shared/ocr/page-types.js').CorpusPageType>;
-    },
-    expectedFingerprint?: import('./corpus-book.js').CorpusFingerprint | null,
-  ) => {
-    try {
-      const { saveCorpusLabels } = await import('./corpus-book.js');
-      const { retargetCorpusWatch } = await import('./corpus-watch.js');
-      const result = await saveCorpusLabels(dir, update, expectedFingerprint);
-      // Our own write moved the file on. Tell the watcher, or the next tick
-      // would report this save as somebody else's rewrite.
-      retargetCorpusWatch(event.sender.id, result.fingerprint);
-      return { success: true, result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // The book was closed but the window lives on (a tab, a picker that went back
-  // to an ordinary document). Window teardown is handled inside corpus-watch.
-  ipcMain.handle('corpus:unwatch', async (event) => {
-    const { stopWatchingCorpusBook } = await import('./corpus-watch.js');
-    stopWatchingCorpusBook(event.sender.id);
-    return { success: true };
-  });
-
-  ipcMain.handle('training:list', async () => {
-    try {
-      const { listTrainingBooks } = await import('./corpus-book.js');
-      return { success: true, books: await listTrainingBooks() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Adds a PDF that is anywhere on disk. Deliberately its own dialog rather than
-  // a drop into the library import: a training book must not acquire a project.
-  ipcMain.handle('training:add', async () => {
-    try {
-      const picked = await dialog.showOpenDialog({
-        title: 'Add a PDF to the training corpus',
-        message: 'The file stays where it is — only a reference to it is recorded.',
-        properties: ['openFile', 'multiSelections'],
-        filters: [{ name: 'PDF', extensions: ['pdf'] }],
-      });
-      if (picked.canceled || picked.filePaths.length === 0) return { success: true, books: [] };
-
-      const { createTrainingBook } = await import('./corpus-book.js');
-      const books = [];
-      const failures: string[] = [];
-      for (const file of picked.filePaths) {
-        // One bad file does not lose the rest of a multi-select.
-        try { books.push(await createTrainingBook(file)); }
-        catch (err) { failures.push(`${path.basename(file)}: ${(err as Error).message}`); }
-      }
-      return { success: true, books, error: failures.length ? failures.join('\n') : undefined };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('training:open', async (_event, dir: string) => {
-    openEditorWindow(dir, { mode: 'corpus' });
-    return { success: true };
-  });
-
-  // Open a PAIRED book (one of the OCR lab's PDF+EPUB books) for labelling.
-  //
-  // Same two steps as picking a PDF by hand — createTrainingBook() then
-  // openEditorWindow(…, corpus) — with the file and the directory name already
-  // known instead of coming from a dialog. The slug is passed because every
-  // lab book's PDF is called scan.pdf, and the corpus directory has to be named
-  // for the BOOK if it is ever to be recognised as that book again.
-  //
-  // An existing directory is opened, never re-created: that is the whole point
-  // of working down the list — the second visit continues the first.
-  ipcMain.handle('training:open-paired', async (
-    _event,
-    payload: { pdfPath: string; slug: string; title?: string },
-  ) => {
-    try {
-      const { pdfPath, slug, title } = payload ?? ({} as typeof payload);
-      if (!pdfPath || !slug) {
-        return { success: false, error: 'training:open-paired needs both pdfPath and slug.' };
-      }
-      const { trainingRootDir } = await import('./training-data.js');
-      const dir = path.join(trainingRootDir(), slug);
-
-      let created = false;
-      if (!fsSync.existsSync(dir)) {
-        const { createTrainingBook } = await import('./corpus-book.js');
-        await createTrainingBook(pdfPath, { slug, title });
-        created = true;
-      }
-      openEditorWindow(dir, { mode: 'corpus' });
-      return { success: true, dir, created };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('training:corpora', async () => {
-    try {
-      const { listTrainingCorpora } = await import('./training-corpora.js');
-      return { success: true, corpora: await listTrainingCorpora() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // A judgement only a human can make -- see TrainingBookRecord.reviewedAt.
-  ipcMain.handle('training:set-reviewed', async (_event, dir: string, reviewed: boolean) => {
-    try {
-      const { setTrainingBookReviewed } = await import('./corpus-book.js');
-      return { success: true, ...(await setTrainingBookReviewed(dir, reviewed)) };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('training:save-blocks', async (
-    _event,
-    dir: string,
-    input: import('./corpus-book.js').TrainingBlocksInput,
-    opts?: { force?: boolean },
-  ) => {
-    try {
-      const { saveTrainingBlocks } = await import('./corpus-book.js');
-      return { success: true, result: await saveTrainingBlocks(dir, input, opts ?? {}) };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
+  // Delete a project's content-analysis report (report + any in-progress checkpoint).
   ipcMain.handle('analysis:delete', async (_event, projectDir: string) => {
     try {
       if (!projectDir || !fsSync.existsSync(projectDir)) {
@@ -10891,26 +10605,6 @@ app.whenReady().then(async () => {
     {
       label: 'File',
       submenu: [
-        // The only way into corpus mode, and deliberately a menu item rather
-        // than anything in Studio or the library view: a corpus book is not a
-        // project and must not appear anywhere that lists projects. Opening one
-        // imports nothing — see electron/corpus-book.ts.
-        {
-          label: 'Open Corpus Book…',
-          click: async () => {
-            const { trainingRootDir } = await import('./training-data.js');
-            const root = trainingRootDir();
-            const picked = await dialog.showOpenDialog({
-              title: 'Choose a training-corpus book',
-              message: 'Pick the book folder under /Volumes/Callisto/training/rubric/',
-              defaultPath: root,
-              properties: ['openDirectory'],
-            });
-            if (picked.canceled || !picked.filePaths[0]) return;
-            openEditorWindow(picked.filePaths[0], { mode: 'corpus' });
-          },
-        },
-        { type: 'separator' as const },
         isMac
           ? { label: 'Close Window', accelerator: 'CmdOrCtrl+W', click: (_item, focusedWindow) => {
               // Hide the main window (keeps the app alive); close any other focused window (e.g. the Listen/player window).

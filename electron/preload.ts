@@ -118,33 +118,6 @@ export interface PdfAnalyzeResult {
   error?: string;
 }
 
-/**
- * Which revision of a corpus file a labelling session is holding.
- *
- * Declared here rather than imported from `./corpus-book` because preload is
- * bundled for the renderer and must not drag main-process modules across the
- * boundary. Keep in step with `CorpusFingerprint` there — and the same goes for
- * the two declarations below it.
- */
-export interface CorpusFingerprint {
-  file: string;
-  mtimeMs: number;
-  size: number;
-}
-
-/** A whole page declared to be one thing. Mirrors `../shared/ocr/page-types`. */
-export type CorpusPageType = 'title' | 'copyright';
-
-/** The file under an open labelling session changed. Mirrors `./corpus-watch`. */
-export interface CorpusFileChanged {
-  dir: string;
-  slug: string;
-  file: string;
-  expected: { mtimeMs: number; size: number };
-  actual: { mtimeMs: number; size: number } | null;
-  detail: string;
-}
-
 // Plugin system types
 export interface PluginInfo {
   id: string;
@@ -2242,55 +2215,6 @@ export interface ElectronAPI {
     offFilesChanged: () => void;
     saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) => Promise<{ success: boolean; error?: string }>;
   };
-  training: {
-    align: (payload: unknown) => Promise<{ success: boolean; labels?: Record<string, { category: string; tier: string }>; tierCount?: Record<string, number>; matched?: number; total?: number; error?: string }>;
-    pickEpub: (defaultPath?: string) => Promise<{ success: boolean; path?: string }>;
-    listEpubs: (projectDir: string) => Promise<{ success: boolean; epubs?: string[]; error?: string }>;
-    load: (projectDir: string) => Promise<{ success: boolean; session?: unknown; error?: string }>;
-    save: (projectDir: string, session: unknown) => Promise<{ success: boolean; skipped?: boolean; path?: string; error?: string }>;
-    export: (projectDir: string, records: unknown[]) => Promise<{ success: boolean; path?: string; count?: number; error?: string }>;
-    // The Training tab: the corpus as a browsable list, plus the OCR write that
-    // gives a newly added book blocks for labels to key to. Same namespace as
-    // the label-session calls above because both are the corpus, not the library.
-    list: () => Promise<{ success: boolean; books?: unknown[]; error?: string }>;
-    corpora: () => Promise<{ success: boolean; corpora?: unknown; error?: string }>;
-    setReviewed: (dir: string, reviewed: boolean) =>
-      Promise<{ success: boolean; reviewedAt?: string | null; error?: string }>;
-    add: () => Promise<{ success: boolean; books?: unknown[]; error?: string }>;
-    open: (dir: string) => Promise<{ success: boolean; error?: string }>;
-    /** Mint a paired book's corpus directory if it has none, then open it. */
-    openPaired: (payload: { pdfPath: string; slug: string; title?: string }) =>
-      Promise<{ success: boolean; dir?: string; created?: boolean; error?: string }>;
-    saveBlocks: (dir: string, input: unknown, opts?: { force?: boolean }) => Promise<{
-      success: boolean;
-      result?: { path: string; blocks: number; orphanedLabels: string | null };
-      error?: string;
-    }>;
-  };
-  // Training-corpus books, labelled without importing them into the library.
-  corpus: {
-    load: (dir: string) => Promise<{ success: boolean; book?: unknown; error?: string }>;
-    saveLabels: (
-      dir: string,
-      update: {
-        labels: Record<string, string>;
-        labelSet: string[];
-        pageTypes?: Record<string, CorpusPageType>;
-      },
-      expectedFingerprint?: CorpusFingerprint | null,
-    ) => Promise<{
-      success: boolean;
-      result?: {
-        path: string; labelCount: number; changed: number; added: number; removed: number;
-        fingerprint: CorpusFingerprint;
-      };
-      error?: string;
-    }>;
-    /** The book was closed; stop polling its file. */
-    unwatch: () => Promise<{ success: boolean }>;
-    /** Returns its own unsubscribe, like every other event bridge here. */
-    onFileChanged: (callback: (change: CorpusFileChanged) => void) => () => void;
-  };
   analysis: {
     delete: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
     listAudiobooks: (projectId: string) => Promise<{
@@ -4141,45 +4065,6 @@ const electronAPI: ElectronAPI = {
     },
     saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) =>
       ipcRenderer.invoke('editor:save-epub', epubPath, epubData),
-  },
-  training: {
-    align: (payload: unknown) => ipcRenderer.invoke('training:align', payload),
-    pickEpub: (defaultPath?: string) => ipcRenderer.invoke('training:pick-epub', defaultPath),
-    listEpubs: (projectDir: string) => ipcRenderer.invoke('training:list-epubs', projectDir),
-    load: (projectDir: string) => ipcRenderer.invoke('training:load', projectDir),
-    save: (projectDir: string, session: unknown) => ipcRenderer.invoke('training:save', projectDir, session),
-    export: (projectDir: string, records: unknown[]) => ipcRenderer.invoke('training:export', projectDir, records),
-    list: () => ipcRenderer.invoke('training:list'),
-    corpora: () => ipcRenderer.invoke('training:corpora'),
-    setReviewed: (dir: string, reviewed: boolean) =>
-      ipcRenderer.invoke('training:set-reviewed', dir, reviewed),
-    add: () => ipcRenderer.invoke('training:add'),
-    open: (dir: string) => ipcRenderer.invoke('training:open', dir),
-    openPaired: (payload: { pdfPath: string; slug: string; title?: string }) =>
-      ipcRenderer.invoke('training:open-paired', payload),
-    saveBlocks: (dir: string, input: unknown, opts?: { force?: boolean }) =>
-      ipcRenderer.invoke('training:save-blocks', dir, input, opts),
-  },
-  corpus: {
-    load: (dir: string) => ipcRenderer.invoke('corpus:load', dir),
-    saveLabels: (
-      dir: string,
-      update: {
-        labels: Record<string, string>;
-        labelSet: string[];
-        pageTypes?: Record<string, CorpusPageType>;
-      },
-      expectedFingerprint?: CorpusFingerprint | null,
-    ) => ipcRenderer.invoke('corpus:save-labels', dir, update, expectedFingerprint),
-    unwatch: () => ipcRenderer.invoke('corpus:unwatch'),
-    // Main polls the file this session was loaded from; this is how a session
-    // that has gone stale finds out while it is still recoverable.
-    onFileChanged: (callback: (change: CorpusFileChanged) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, change: CorpusFileChanged) =>
-        callback(change);
-      ipcRenderer.on('corpus:file-changed', listener);
-      return () => { ipcRenderer.removeListener('corpus:file-changed', listener); };
-    },
   },
   analysis: {
     delete: (projectDir: string) =>
