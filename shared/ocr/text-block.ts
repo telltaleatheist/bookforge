@@ -165,30 +165,41 @@ export interface TextBlock {
  * Where a set of blocks got their categories — a fact about the INPUT, not a
  * quality score.
  *
- * There are two input classes and they are not comparable:
+ * There are three input classes and they are not comparable:
  *
  *  - `document`: the book carries the pipeline's own record of what it wrote
  *    (foundry stamps `data-bf-category` on every element of every EPUB it
- *    reflows), and the categories were read off it. They are not a guess: the
- *    `<h1>` that says `chapter` IS the chapter block of the working PDF.
- *  - `heuristic`: nothing in the document says what its blocks are, so they were
- *    classified from relative font size, weight and page position. A book
- *    imported from elsewhere was never written by our reflow and there is
- *    nothing else to read — this is the honest answer for that class, not a
- *    fallback standing in for a missing value.
+ *    reflows, and `data-bf-cat` on every element vlm-convert writes), and the
+ *    categories were read off it. They are not a guess: the `<h1>` that says
+ *    `chapter` IS the chapter block of the working PDF.
+ *  - `markup`: nobody stamped this book, but it is an EPUB and an EPUB names its
+ *    own parts — `<h1>`, `<blockquote>`, `<figcaption>`, `epub:type`, the
+ *    `<sup>` links that bind a reference to its note, and the table of contents
+ *    that says which documents open a chapter. Those were read off the elements
+ *    the blocks were laid out from. Weaker than a stamp only in that it
+ *    describes the publisher's typesetting rather than our own intent; it is
+ *    still the book's own statement and never a guess about how text looks.
+ *  - `heuristic`: the document has no structure to read at all — a PDF, whose
+ *    text layer is glyphs and boxes — so its blocks were classified from
+ *    relative font size, weight and page position. The honest answer for that
+ *    class, not a fallback standing in for a missing value.
  *
  * A caller that needs to know whether it can trust the labels reads `source`.
- * The counts exist so a `document` book that only PARTLY aligned cannot quietly
- * pass itself off as fully recorded.
+ * The counts exist so a `document` or `markup` book that only PARTLY aligned
+ * cannot quietly pass itself off as fully recorded.
  */
 export interface BlockCategoryProvenance {
-  source: 'document' | 'heuristic';
-  /** Blocks whose category was read off their source element's stamp. */
+  source: 'document' | 'markup' | 'heuristic';
+  /**
+   * Blocks whose category came off their source element — its stamp under
+   * `document`, its markup under `markup`.
+   */
   stampedBlocks: number;
   /**
    * Blocks aligned to a source element that carries no stamp — the nav TOC and
    * any hand-added markup. Expected in small numbers; their categories are the
-   * heuristic's.
+   * heuristic's. Always zero under `markup`, which derives an answer for every
+   * element rather than looking for an attribute that may be absent.
    */
   unstampedElementBlocks: number;
   /**

@@ -4772,6 +4772,593 @@ export async function readEpubConversionStamps(
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The THIRD reading: a publisher's EPUB, which states its structure in the only
+// place it has — its own markup
+//
+// Both readers above ask a book what OUR pipeline wrote into it. A book from a
+// publisher was never written by us and carries neither stamp, so until now it
+// fell all the way through to `classifyBlock` — a classifier written for SCANNED
+// PAGES, which decides `header` and `footer` from where a block sits on the
+// paper. An EPUB has no paper. mupdf reflows it onto pages of its own invention,
+// so "this block is in the bottom tenth of the page" is a fact about the reflow
+// window and about nothing else. Measured on Killing America (Harrison House,
+// 2024): ordinary prose came back `footer`, and the chapter openings came back
+// as an assortment of `title`, `heading` and `body` depending on how the reflow
+// happened to break the page.
+//
+// But a publisher's EPUB is not silent. It says a great deal, in the vocabulary
+// XHTML and EPUB give it:
+//
+//   - `<h1>`…`<h6>` are headings, `<blockquote>` is a quotation, `<figcaption>`
+//     is a caption, `<ul>`/`<ol>`/`<dl>` are entry-per-line lists, `<table>` is
+//     a table.
+//   - `epub:type` (and the ARIA `role` that mirrors it) names notes outright.
+//   - LINK TOPOLOGY names them even where `epub:type` does not: a `<sup>` around
+//     an `<a href="#fn-7">` is a note reference, and the element carrying
+//     `id="fn-7"` is the note it points at. Killing America carries 640 of those
+//     and not one `epub:type`.
+//   - The TABLE OF CONTENTS — the EPUB 3 nav document or the EPUB 2 `toc.ncx`
+//     navMap — names which documents open a chapter, and what the book calls it.
+//
+// None of that is a guess and none of it is positional. This reader joins it to
+// the laid-out blocks through the SAME aligner the other two readers use, so a
+// unit index means one thing across all three.
+//
+// A plain `<p>` comes back `body`, and that is a STATE rather than a fallback:
+// an unadorned paragraph in a book's markup is body text, which is why the
+// markup does not adorn it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One entry of a book's own table of contents, resolved onto the archive. */
+export interface EpubTocTarget {
+  /**
+   * Candidate zip entry names for the document the entry points at, best first.
+   * More than one because an href may or may not be percent-encoded and the
+   * archive may hold either spelling — the caller picks whichever it actually
+   * has units for, exactly as `EpubProcessor.resolvePath` picks whichever the
+   * archive actually holds.
+   */
+  entryCandidates: string[];
+  /** The fragment after `#`, or null when the entry names the whole document. */
+  fragment: string | null;
+  /** The navigation label — what the book calls this chapter. */
+  label: string;
+}
+
+/**
+ * An href that is not percent-encoded decodes to itself; `decodeURIComponent`
+ * throws on a lone `%` instead of saying so. Both spellings are kept as
+ * candidates by the caller, so this never has to be right on its own.
+ */
+function decodeHrefPart(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
+/** Resolve one navigation href against the document it was written in. */
+function tocTargetForHref(href: string, baseDir: string, label: string): EpubTocTarget | null {
+  // An absolute URI leaves the book — a nav may link to the publisher's site.
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href)) return null;
+  const hashAt = href.indexOf('#');
+  const rawPath = hashAt === -1 ? href : href.slice(0, hashAt);
+  const rawFragment = hashAt === -1 ? '' : href.slice(hashAt + 1);
+  // `#frag` alone points inside the navigation document itself, which is not a
+  // chapter of the book.
+  if (rawPath === '') return null;
+  const join = (p: string) => normalizeZipEntryName(baseDir ? `${baseDir}/${p}` : p);
+  const decoded = decodeHrefPart(rawPath);
+  const entryCandidates = decoded === rawPath ? [join(rawPath)] : [join(decoded), join(rawPath)];
+  return {
+    entryCandidates,
+    fragment: rawFragment === '' ? null : decodeHrefPart(rawFragment),
+    label,
+  };
+}
+
+/** The directory of a zip entry, '' when it sits at the archive root. */
+function zipEntryDir(entry: string): string {
+  const at = entry.lastIndexOf('/');
+  return at === -1 ? '' : entry.slice(0, at);
+}
+
+/** `epub:type` / ARIA `role` tokens on one element, lower-cased. */
+function structureTokens(node: any): string[] {
+  if (typeof node.getAttribute !== 'function') return [];
+  const values = [
+    node.getAttribute('epub:type'),
+    typeof node.getAttributeNS === 'function'
+      ? node.getAttributeNS('http://www.idpf.org/2007/ops', 'type')
+      : null,
+    node.getAttribute('role'),
+  ];
+  const out: string[] = [];
+  for (const v of values) {
+    if (typeof v !== 'string' || v === '') continue;
+    for (const token of v.trim().toLowerCase().split(/\s+/)) {
+      // `role="doc-footnote"` says the same thing `epub:type="footnote"` does.
+      out.push(token.startsWith('doc-') ? token.slice(4) : token);
+    }
+  }
+  return out;
+}
+
+// The `epub:type` values that make an element a note, on the element itself or
+// on the section/aside that holds it. The plurals are the container forms
+// (`<section epub:type="endnotes">`), which is where books that type anything at
+// all usually type it.
+const EPUB_TYPE_NOTE = new Set([
+  'footnote', 'footnotes', 'endnote', 'endnotes', 'rearnote', 'rearnotes', 'note', 'notes',
+]);
+
+const MARKUP_HEADING_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
+
+// What a note REFERENCE looks like when the book does not say `epub:type`: an
+// anchor whose whole text is a note marker. Anything longer is a cross-reference
+// or a link, not a marker.
+const NOTE_MARKER_TEXT =
+  /^[\[(]?[\d¹²³⁰-⁹*†‡§¶abcdefghij]{1,4}[\]).]?$/;
+
+// The most consecutive elements a chapter opening may be spelled across. A book
+// that sets the number, the title and a subtitle on separate lines is the widest
+// real case; more than that and the run has stopped being a heading.
+const CHAPTER_TITLE_RUN_MAX = 4;
+
+// The fewest characters a title match may rest on. A one- or two-character run
+// ("1", "II") appears inside almost any navigation label by accident.
+const CHAPTER_TITLE_MIN_CHARS = 4;
+
+/**
+ * Fold text for comparison against a navigation label: letters and digits only.
+ *
+ * Aggressive on purpose, and only ever used for THIS comparison. A book writes
+ * "Chapter 1: Killing America" in its navMap and sets the same chapter opening
+ * as `<p class="cn">1</p><p class="ct">KILLING AMERICA</p>` — different case,
+ * different punctuation, the word "Chapter" present in one and not the other.
+ * Everything that differs there is punctuation, case or spacing, so all three go.
+ */
+function foldForTitleMatch(s: string): string {
+  return s.normalize('NFKC').toUpperCase().replace(/[^\p{L}\p{N}]/gu, '');
+}
+
+/**
+ * Read the book's own table of contents: the EPUB 3 nav document if it declares
+ * one, else the EPUB 2 `toc.ncx` navMap.
+ *
+ * Returned in navigation order, which is the order the book means them in.
+ */
+export async function readEpubTocTargets(epubSourcePath: string): Promise<EpubTocTarget[]> {
+  const processor = new EpubProcessor();
+  try {
+    const structure = await processor.open(epubSourcePath);
+    if (structure.navPath) {
+      // A declared-but-unreadable nav is not swallowed here: `open()` above has
+      // already read the same path and recorded the failure on
+      // `structure.warnings`, which is what the caller shows the user. Throwing
+      // a second time would turn a book that opens today into one that cannot be
+      // analyzed at all.
+      try {
+        const targets = parseNavTocTargets(
+          await processor.readFile(structure.navPath),
+          normalizeZipEntryName(structure.navPath),
+        );
+        if (targets.length > 0) return targets;
+      } catch (err) {
+        console.warn(`[EpubProcessor] nav document ${structure.navPath} states no usable TOC: `
+          + `${(err as Error).message}`);
+      }
+    }
+    if (structure.ncxPath) {
+      try {
+        return parseNcxTocTargets(
+          await processor.readFile(structure.ncxPath),
+          normalizeZipEntryName(structure.ncxPath),
+        );
+      } catch (err) {
+        console.warn(`[EpubProcessor] toc.ncx ${structure.ncxPath} states no usable TOC: `
+          + `${(err as Error).message}`);
+      }
+    }
+    return [];
+  } finally {
+    processor.close();
+  }
+}
+
+/**
+ * The `<nav epub:type="toc">` of an EPUB 3 navigation document, as targets.
+ *
+ * The type is REQUIRED rather than guessed at: a nav document also carries
+ * `landmarks` and `page-list` navs, whose anchors point at cover pages and
+ * printed page breaks. Reading the first `<nav>` because none says `toc` would
+ * make chapter openings out of whichever list the publisher happened to put
+ * first. A document with no `toc` nav states no table of contents, and the
+ * caller asks the NCX next — which most EPUB 3 books still ship.
+ */
+function parseNavTocTargets(navXhtml: string, navEntry: string): EpubTocTarget[] {
+  const { body } = parseXhtmlBody(navXhtml, `nav document ${navEntry}`);
+  const navs = body.getElementsByTagName('nav');
+  for (let i = 0; i < navs.length; i++) {
+    if (!structureTokens(navs[i]).includes('toc')) continue;
+    return anchorTocTargets(navs[i], zipEntryDir(navEntry));
+  }
+  return [];
+}
+
+/** Every in-book anchor under one element, in document order, as targets. */
+function anchorTocTargets(root: any, baseDir: string): EpubTocTarget[] {
+  const out: EpubTocTarget[] = [];
+  const anchors = root.getElementsByTagName('a');
+  for (let i = 0; i < anchors.length; i++) {
+    const href = anchors[i].getAttribute('href');
+    if (href === null || href === '') continue;
+    const label = getUnitTextContent(anchors[i]).replace(/\s+/g, ' ').trim();
+    if (label === '') continue;
+    const target = tocTargetForHref(href, baseDir, label);
+    if (target !== null) out.push(target);
+  }
+  return out;
+}
+
+/** The first child element of `el` with this tag name, or null. */
+function childElementByTag(el: any, tag: string): any {
+  for (let n = el.firstChild; n; n = n.nextSibling) {
+    if (n.nodeType === 1 && (n.tagName || '').toLowerCase().split(':').pop() === tag) return n;
+  }
+  return null;
+}
+
+/**
+ * The `navMap` of an EPUB 2 `toc.ncx`, as targets.
+ *
+ * `navLabel` and `content` are DIRECT children of their `navPoint` per the NCX
+ * schema, and reading them as direct children is what keeps a nested navPoint's
+ * label from being read as its parent's.
+ */
+function parseNcxTocTargets(ncxXml: string, ncxEntry: string): EpubTocTarget[] {
+  const { DOMParser } = require('@xmldom/xmldom');
+  const doc = new DOMParser().parseFromString(xmlSafeEntities(ncxXml), 'application/xml');
+  if (!doc || !doc.documentElement) {
+    throw new Error(`Could not parse ${ncxEntry} — the navigation is malformed.`);
+  }
+  const baseDir = zipEntryDir(ncxEntry);
+  const out: EpubTocTarget[] = [];
+  const points = doc.getElementsByTagName('navPoint');
+  for (let i = 0; i < points.length; i++) {
+    const navLabel = childElementByTag(points[i], 'navlabel');
+    const content = childElementByTag(points[i], 'content');
+    if (navLabel === null || content === null) continue;
+    const src = content.getAttribute('src');
+    if (src === null || src === '') continue;
+    const label = getUnitTextContent(navLabel).replace(/\s+/g, ' ').trim();
+    if (label === '') continue;
+    const target = tocTargetForHref(src, baseDir, label);
+    if (target !== null) out.push(target);
+  }
+  return out;
+}
+
+/** Depth-first search for the element carrying this `id`. */
+function findElementById(root: any, id: string): any {
+  if (root.nodeType !== 1) return null;
+  if (typeof root.getAttribute === 'function' && root.getAttribute('id') === id) return root;
+  if (!root.childNodes) return null;
+  for (let i = 0; i < root.childNodes.length; i++) {
+    const hit = findElementById(root.childNodes[i], id);
+    if (hit !== null) return hit;
+  }
+  return null;
+}
+
+/** Every `id` in a subtree, including the root's own. */
+function collectIds(node: any, into: Set<string>): void {
+  if (node.nodeType !== 1) return;
+  if (typeof node.getAttribute === 'function') {
+    const id = node.getAttribute('id');
+    if (id !== null && id !== '') into.add(id);
+  }
+  if (!node.childNodes) return;
+  for (let i = 0; i < node.childNodes.length; i++) collectIds(node.childNodes[i], into);
+}
+
+/** The nearest ancestor tag names of `node`, stopping at `stopAt` (inclusive). */
+function isInsideTag(node: any, stopAt: any, tag: string): boolean {
+  for (let n = node; n && n.nodeType === 1; n = n.parentNode) {
+    if ((n.tagName || '').toLowerCase() === tag) return true;
+    if (n === stopAt) return false;
+  }
+  return false;
+}
+
+export interface EpubMarkupReading {
+  /** Block id → the category this book's own markup states for it. */
+  byBlockId: Map<string, string>;
+  /**
+   * Block id → the positional key of the element it was laid out from. Filled
+   * for every aligned block, exactly as the other two readers fill it — it is
+   * what a narration strike is recorded as.
+   */
+  elementByBlockId: Map<string, NarrationElementKey>;
+  /** Blocks the aligner could not place in the source markup, and why. */
+  unaligned: UnalignedBlock[];
+  /** Navigation entries that resolved onto a document of this book. */
+  tocTargets: number;
+  /** Of those, how many opened with a heading this reader called `chapter`. */
+  chapterOpenings: number;
+  /** Note references found by `epub:type` or by `<sup>` link topology. */
+  noterefs: number;
+}
+
+/**
+ * Derive one category per export unit from the markup around it.
+ *
+ * Ordered by how specific the evidence is, not by tag alphabet:
+ *
+ *  1. A unit with no text of its own is the image it holds.
+ *  2. A heading tag is a heading — including inside a notes section, where the
+ *     "Notes" heading is a heading and the notes under it are not.
+ *  3. `epub:type` on the unit or on the section/aside that holds it.
+ *  4. The link topology: this unit carries the `id` some `<sup>` reference
+ *     points at, so it IS the note.
+ *  5. The remaining structural tags, each of which means one thing.
+ *  6. Anything else — a `<p>`, a `<div>`, a `<pre>` — is body text.
+ */
+function markupCategoryForUnit(unit: ExportUnit, isNoteTarget: boolean): string {
+  if (unit.imageOnly) return 'image';
+  if (MARKUP_HEADING_TAGS.has(unit.tag)) return 'heading';
+  for (let node = unit.el; node && node.nodeType === 1; node = node.parentNode) {
+    if (structureTokens(node).some((t) => EPUB_TYPE_NOTE.has(t))) return 'footnote';
+  }
+  if (isNoteTarget) return 'footnote';
+  // A <figure> is collected whole, so the only text it contributes is the
+  // caption its <figcaption> holds — the picture itself is an image block, which
+  // never reaches the aligner.
+  if (unit.tag === 'figcaption' || unit.tag === 'figure') return 'caption';
+  if (unit.tag === 'table') return 'table';
+  if (unit.tag === 'ul' || unit.tag === 'ol' || unit.tag === 'dl') return 'list';
+  if (unit.tag === 'blockquote') return 'quote';
+  if (unit.tag === 'img') return 'image';
+  return 'body';
+}
+
+/**
+ * The `id`s a book's own note REFERENCES point at, as `<zip entry>#<id>`.
+ *
+ * Two spellings, and a book uses one or the other:
+ *
+ *  - `epub:type="noteref"` on the anchor, which says it outright.
+ *  - An anchor inside a `<sup>` whose whole text is a marker token. That is the
+ *    form every book that types nothing uses, and it is unambiguous: no other
+ *    construct puts a bare "12" in superscript and links it somewhere.
+ *
+ * `epub:type="backlink"` is deliberately NOT a reference. The note's own
+ * "back to the text" anchor points AT the body paragraph, so reading it as a
+ * reference would make the paragraph a footnote — which is exactly backwards.
+ * The `<sup>` requirement rules the untyped form of the same anchor out too:
+ * Killing America wraps its backlinks in `<span class="fn">`, never `<sup>`.
+ */
+function collectNoteReferenceTargets(units: ExportUnit[]): Set<string> {
+  const targets = new Set<string>();
+  for (const unit of units) {
+    if (typeof unit.el.getElementsByTagName !== 'function') continue;
+    const anchors = unit.el.getElementsByTagName('a');
+    for (let i = 0; i < anchors.length; i++) {
+      const a = anchors[i];
+      const href = a.getAttribute('href');
+      if (href === null || !href.includes('#')) continue;
+      const tokens = structureTokens(a);
+      if (!tokens.includes('noteref')) {
+        if (tokens.includes('backlink')) continue;
+        if (!isInsideTag(a, unit.el, 'sup')) continue;
+        if (!NOTE_MARKER_TEXT.test(getUnitTextContent(a).trim())) continue;
+      }
+      const hashAt = href.indexOf('#');
+      const rawPath = href.slice(0, hashAt);
+      const fragment = decodeHrefPart(href.slice(hashAt + 1));
+      if (fragment === '') continue;
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(rawPath)) continue;
+      const dir = zipEntryDir(unit.file);
+      const entry = rawPath === ''
+        ? unit.file
+        : normalizeZipEntryName(dir ? `${dir}/${decodeHrefPart(rawPath)}` : decodeHrefPart(rawPath));
+      targets.add(`${entry}#${fragment}`);
+    }
+  }
+  return targets;
+}
+
+/**
+ * Read each laid-out block's category off the STRUCTURE of a book that carries
+ * neither of our stamps.
+ *
+ * `blocks` are the picker's blocks in the aligner's own input shape, exactly as
+ * the other two readers take them.
+ *
+ * Every returned category is a member of the one palette
+ * (`shared/ocr/block-categories.ts`) by construction — this reader writes the
+ * ids itself rather than translating a stamp, so there is nothing to validate
+ * and nothing that could disagree.
+ */
+export async function readEpubMarkupCategories(
+  epubSourcePath: string,
+  blocks: EpubExportBlock[],
+): Promise<EpubMarkupReading> {
+  const targets = await readEpubTocTargets(epubSourcePath);
+  const { units, blockToUnits, unaligned } = await alignBlocksToEpub(epubSourcePath, blocks);
+
+  const noteTargets = collectNoteReferenceTargets(units);
+
+  const categories = units.map((unit) => {
+    let isNoteTarget = false;
+    if (noteTargets.size > 0) {
+      const ids = new Set<string>();
+      collectIds(unit.el, ids);
+      for (const id of ids) {
+        if (noteTargets.has(`${unit.file}#${id}`)) { isNoteTarget = true; break; }
+      }
+    }
+    return markupCategoryForUnit(unit, isNoteTarget);
+  });
+
+  const chapterOpenings = markChapterOpenings(units, categories, targets);
+
+  const byBlockId = new Map<string, string>();
+  const elementByBlockId = new Map<string, NarrationElementKey>();
+  for (const [blockId, unitIndices] of blockToUnits) {
+    if (unitIndices.length === 0) {
+      throw new Error(
+        `Markup structure of ${path.basename(epubSourcePath)}: block ${blockId} aligned to zero `
+        + 'source elements — this is a bug.',
+      );
+    }
+    // A block spanning several elements takes the FIRST one's — the element its
+    // text begins in, the same tiebreak both stamp readers use.
+    elementByBlockId.set(blockId, units[unitIndices[0]].key);
+    byBlockId.set(blockId, categories[unitIndices[0]]);
+  }
+
+  // Footnote MARKERS never reach the aligner — they duplicate their parent
+  // block's text, so it skips them — but the markup has just proved the book
+  // carries note references, and a superscript marker block IS one. Stated only
+  // when references were actually found: in a book with none, a superscript is
+  // whatever the classifier makes of it, which is the honest answer there.
+  if (noteTargets.size > 0) {
+    for (const b of blocks) {
+      if (b.isFootnoteMarker) byBlockId.set(b.id, 'footnote');
+    }
+  }
+
+  return {
+    byBlockId,
+    elementByBlockId,
+    unaligned,
+    tocTargets: targets.length,
+    chapterOpenings,
+    noterefs: noteTargets.size,
+  };
+}
+
+/**
+ * Turn the opening heading of every document the table of contents points at
+ * into a `chapter`, in place on `categories`. Returns how many it found.
+ *
+ * `chapter` is the class the picker's Chapter tab lists (`isChapterBlock`), so
+ * this is what gives a publisher's EPUB the chapter rows a converted book gets
+ * from its `data-bf-cat="chapter"` stamps. The book names its own chapters in
+ * its navigation; the only question is which element in the target document
+ * spells that name, and there are two answers depending on how the book is set:
+ *
+ *  1. STRUCTURAL. The document opens with `<h1>`…`<h6>`. That run of headings is
+ *     the chapter opening, full stop — no text comparison is needed or wanted.
+ *  2. BY THE BOOK'S OWN LABEL. Many publisher EPUBs use no heading tags at all —
+ *     Killing America sets every heading as a styled `<p>` and carries zero
+ *     `<h1>`–`<h6>` in 21 documents. There the navigation label IS the evidence:
+ *     the navMap says ch01.xhtml is "Chapter 1: Killing America" and the
+ *     document opens `<p class="cn">1</p><p class="ct">KILLING AMERICA</p>`, so
+ *     the run whose folded text the label starts or ends with is the heading the
+ *     book means. Body prose cannot match — a label is short and a paragraph is
+ *     not, so neither can contain the other.
+ *
+ * Deliberately not a third answer: a document whose opening matches nothing gets
+ * no chapter block. Copyright pages, cover images and back matter reach here
+ * like everything else in the navigation, and inventing an opening for them
+ * would put rows in the Chapter tab the book never claimed.
+ *
+ * ── One chapter block per document ────────────────────────────────────────────
+ *
+ * Only the FIRST element of the run becomes `chapter`; the rest become
+ * `heading`. That is not a hedge, it is what the Chapter tab counts: a converted
+ * book carries `data-bf-cat="chapter"` on the ONE heading foundry split at, and
+ * `bookChapterRows` gives the document's nav title to the first chapter block in
+ * it and marks every later one "not the one its chapter document opens with".
+ * Marking a two-line opening as two chapter blocks would put two rows in the tab
+ * for one chapter of the book — the same chapter twice, the second unrenameable.
+ * The lines after the first are still the chapter's heading, and `heading` says
+ * exactly that.
+ */
+function markChapterOpenings(
+  units: ExportUnit[],
+  categories: string[],
+  targets: readonly EpubTocTarget[],
+): number {
+  const byFile = new Map<string, number[]>();
+  for (let i = 0; i < units.length; i++) {
+    const list = byFile.get(units[i].file);
+    if (list === undefined) byFile.set(units[i].file, [i]);
+    else list.push(i);
+  }
+
+  const alreadyOpened = new Set<number>();
+  let found = 0;
+
+  for (const target of targets) {
+    const entry = target.entryCandidates.find((c) => byFile.has(c));
+    if (entry === undefined) continue; // navigation points outside the spine
+    const fileUnits = byFile.get(entry)!;
+
+    // Where in the document the entry points. A fragment naming nothing this
+    // book's units cover lands at the document start, which is where a reading
+    // system lands too — the entry still names the document.
+    let from = 0;
+    if (target.fragment !== null) {
+      const root = fileUnits.length > 0 ? units[fileUnits[0]].el.ownerDocument?.documentElement : null;
+      const anchor = root ? findElementById(root, target.fragment) : null;
+      if (anchor !== null) {
+        const at = fileUnits.findIndex((u) => {
+          const el = units[u].el;
+          return el === anchor || isDescendantOf(anchor, el) || isDescendantOf(el, anchor);
+        });
+        if (at >= 0) from = at;
+      }
+    }
+
+    // The text-bearing units from there on. A leading cover image or spacer
+    // carries no text and cannot be a heading, so it is stepped over rather
+    // than treated as the document's opening.
+    const run: number[] = [];
+    for (let i = from; i < fileUnits.length && run.length < CHAPTER_TITLE_RUN_MAX; i++) {
+      const u = units[fileUnits[i]];
+      if (u.imageOnly || u.normText.length === 0) continue;
+      run.push(fileUnits[i]);
+    }
+    if (run.length === 0) continue;
+
+    let opening: number[] = [];
+    if (MARKUP_HEADING_TAGS.has(units[run[0]].tag)) {
+      for (const idx of run) {
+        if (!MARKUP_HEADING_TAGS.has(units[idx].tag)) break;
+        opening.push(idx);
+      }
+    } else {
+      const label = foldForTitleMatch(target.label);
+      let folded = '';
+      for (let k = 0; k < run.length; k++) {
+        folded += foldForTitleMatch(units[run[k]].normText);
+        if (folded.length < CHAPTER_TITLE_MIN_CHARS) continue;
+        // The LONGEST run that still agrees with the label, not the first: a
+        // book setting "CHAPTER 1" and "KILLING AMERICA" on two lines matches at
+        // k=0 on the prefix alone, and stopping there would leave the title
+        // itself labelled body text.
+        if (label === folded || label.startsWith(folded) || label.endsWith(folded)) {
+          opening = run.slice(0, k + 1);
+        }
+      }
+    }
+
+    if (opening.length === 0) continue;
+    if (opening.some((idx) => alreadyOpened.has(idx))) continue;
+    for (const idx of opening) alreadyOpened.add(idx);
+    categories[opening[0]] = 'chapter';
+    for (const idx of opening.slice(1)) categories[idx] = 'heading';
+    found++;
+  }
+
+  return found;
+}
+
 export interface NarrationEpubWriteResult {
   /** How many elements were removed. */
   removedElements: number;

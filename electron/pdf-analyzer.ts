@@ -15,8 +15,10 @@ import { MutoolBridge } from './mutool-bridge';
 import { BLOCK_CATEGORIES } from '../shared/ocr/block-categories';
 import type { BlockCategoryProvenance } from '../shared/ocr/text-block';
 import {
+  epubCarriesConversionStamps,
   readEpubBlockProvenance,
   readEpubConversionStamps,
+  readEpubMarkupCategories,
   type EpubExportBlock,
   type UnalignedBlock,
 } from './epub-processor';
@@ -25,10 +27,10 @@ import { TEXT_LAYER_MIN_CHARS_PER_PAGE, type TextLayerReport } from '../shared/p
 export type { BlockCategoryProvenance };
 
 /**
- * A document whose blocks state no categories of their own. Every PDF, and every
- * EPUB that was not written by our own reflow — see BlockCategoryProvenance:
- * these are two input classes, and for this one the font/geometry classifier is
- * the only reading there is.
+ * A document whose blocks state no categories of their own AND whose structure
+ * cannot be read either — every PDF, whose text layer is glyphs and boxes. An
+ * EPUB is never this: even a publisher's book states its structure in its markup
+ * (see readMarkupCategories), so `heuristic` is now the PDF answer.
  */
 function heuristicProvenance(): BlockCategoryProvenance {
   return { source: 'heuristic', stampedBlocks: 0, unstampedElementBlocks: 0, unalignedBlocks: 0 };
@@ -97,7 +99,7 @@ function requireUnalignedFacts(cached: CachedAnalysis, pdfPath: string): void {
 const execAsync = promisify(exec);
 
 // Cache version - increment this when changing extraction logic to invalidate old caches
-const ANALYSIS_CACHE_VERSION = 16;  // v16: clipped-line bridge (epub-processor rule c2) aligns blocks whose long tokens mupdf clipped — alignment output (bf_element) is part of this payload
+const ANALYSIS_CACHE_VERSION = 17;  // v17: an EPUB carrying neither stamp gets its categories from its own markup (headings, epub:type, note links, the TOC) instead of the scanned-page positional classifier
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;
@@ -1837,6 +1839,67 @@ export class PDFAnalyzer {
   }
 
   /**
+   * The same job again for a book NEITHER emitter wrote — and this one is most
+   * of the library.
+   *
+   * A publisher's EPUB carries no stamp because our pipeline never touched it,
+   * but it is not silent: `<h1>`, `<blockquote>`, `<figcaption>`, `epub:type`,
+   * the `<sup>` links that bind a reference to its note, and the table of
+   * contents that names which documents open a chapter are all the book stating
+   * what its own parts are. `readEpubMarkupCategories` reads that through the
+   * same aligner the two stamp readers use, so a unit index means one thing
+   * across all three.
+   *
+   * What this replaces is not a subtler guess — it is a wrong one. Falling
+   * through to `classifyBlock` handed an EPUB to a classifier written for
+   * scanned pages, which reads `header` and `footer` off where a block sits on
+   * the paper. There is no paper: mupdf reflows the book onto pages of its own
+   * invention, and on Killing America that put `footer` on ordinary prose.
+   *
+   * Every aligned block gets a category here, so `unstampedElementBlocks` is
+   * zero by construction — the reader derives the answer rather than looking for
+   * an attribute that may be absent. Only blocks the aligner could not place at
+   * all are left to the classifier, and those are already warned about.
+   */
+  private async readMarkupCategories(pdfPath: string): Promise<Map<string, string>> {
+    const alignable: EpubExportBlock[] = this.blocks.map(b => ({
+      id: b.id,
+      page: b.page,
+      y: b.y,
+      text: b.text,
+      deleted: false,
+      isImage: b.is_image,
+      isFootnoteMarker: b.is_footnote_marker,
+    }));
+
+    const reading = await readEpubMarkupCategories(pdfPath, alignable);
+
+    const stated = new Map<string, string>();
+    for (const block of this.blocks) {
+      const element = reading.elementByBlockId.get(block.id);
+      if (element !== undefined) block.bf_element = element;
+      const category = reading.byBlockId.get(block.id);
+      if (category === undefined) continue;
+      stated.set(block.id, category);
+    }
+
+    this.categoryProvenance = {
+      source: 'markup',
+      stampedBlocks: stated.size,
+      unstampedElementBlocks: 0,
+      unalignedBlocks: reading.unaligned.length,
+    };
+    console.log(
+      `[PDF Analyzer] ${path.basename(pdfPath)} states no categories, so they were read off its `
+      + `markup: ${stated.size} of ${this.blocks.length} blocks categorized, `
+      + `${reading.chapterOpenings} of ${reading.tocTargets} table-of-contents entries opened with a `
+      + `chapter heading, ${reading.noterefs} note references, ${reading.unaligned.length} unaligned.`,
+    );
+    this.warnUnalignedBlocks(reading.unaligned, true);
+    return stated;
+  }
+
+  /**
    * Blocks the aligner could not place, said once, in the user's terms.
    *
    * The consequence is the same whichever kind of book it is — a block with no
@@ -1861,28 +1924,41 @@ export class PDFAnalyzer {
    * analysis entry points go through, so the two can never disagree about which
    * input class they are looking at.
    *
-   * THREE input classes now, and they are asked about in the order of how much
-   * the book states. A reflowed book carries `data-bf-category` and the working
-   * PDF's own block ids; a converted book carries `data-bf-cat` and the page it
-   * was read from; a book from anywhere else carries nothing and is classified.
+   * FOUR input classes now, asked in the order of how much the book states. A
+   * reflowed book carries `data-bf-category` and the working PDF's own block
+   * ids; a converted book carries `data-bf-cat` and the page it was read from; a
+   * publisher's EPUB carries neither stamp but states its structure in its
+   * markup; a PDF states nothing at all and is classified.
+   *
    * A book carries at most one of the two stamps — each emitter writes its own —
-   * so the order is not a precedence rule, it is two questions asked in turn,
-   * and the second is only reached because the first came back empty.
+   * so the order is not a precedence rule, it is questions asked in turn, and
+   * each is only reached because the one before came back empty.
+   *
+   * The conversion stamp is TESTED before its reader runs, rather than let the
+   * reader answer "no": both that reader and the markup reader run the aligner,
+   * which is the expensive half, and the test is a substring scan. So exactly
+   * one of the two runs, and the branch on stamped-or-not is written here where
+   * it can be read.
    */
   private async assignCategories(pdfPath: string, mimeType: string): Promise<void> {
     // Only an EPUB can carry the stamps — they are written by an EPUB emitter,
-    // into EPUB markup. A PDF states no categories at all.
+    // into EPUB markup — and only an EPUB has markup to read at all. A PDF's
+    // text layer is glyphs and boxes, which is what the classifier is for.
     if (mimeType !== 'application/epub+zip') {
       this.categoryProvenance = heuristicProvenance();
-      this.generateCategories();
+      this.generateCategories(new Map(), 'pdf-page');
       return;
     }
     const reflowed = await this.readDocumentCategories(pdfPath);
     if (reflowed.size > 0) {
-      this.generateCategories(reflowed);
+      this.generateCategories(reflowed, 'epub-reflow');
       return;
     }
-    this.generateCategories(await this.readConversionCategories(pdfPath));
+    if (await epubCarriesConversionStamps(pdfPath)) {
+      this.generateCategories(await this.readConversionCategories(pdfPath), 'epub-reflow');
+      return;
+    }
+    this.generateCategories(await this.readMarkupCategories(pdfPath), 'epub-reflow');
   }
 
   /**
@@ -1891,8 +1967,22 @@ export class PDFAnalyzer {
    * `stated` holds the categories the DOCUMENT ITSELF declared for its blocks
    * (see readDocumentCategories). Those are used verbatim — not as a hint, not
    * as a tiebreaker — and only the blocks absent from it are classified.
+   *
+   * `layout` says what kind of pages these blocks sit on, and the ONE thing it
+   * decides is whether page furniture exists to be found. A PDF page is a sheet
+   * of paper: it has a running head, it has a folio, and a block at the top or
+   * bottom edge is evidence of one. An EPUB has neither. mupdf reflows it onto
+   * pages of its own invention at its own window size, so "in the bottom tenth"
+   * means the paragraph happened to land at the end of a synthetic page —
+   * measured on Killing America, that is how ordinary prose came back `footer`.
+   * The rules that read page position are therefore skipped for reflowed books,
+   * explicitly, rather than left to misfire on evidence that does not exist.
    */
-  private generateCategories(stated: Map<string, string> = new Map()): void {
+  private generateCategories(
+    stated: Map<string, string>,
+    layout: 'pdf-page' | 'epub-reflow',
+  ): void {
+    const hasPageFurniture = layout === 'pdf-page';
     // Find body text size (most common in body region)
     const sizeChars = new Map<number, number>();
     for (const block of this.blocks) {
@@ -1966,8 +2056,10 @@ export class PDFAnalyzer {
     // Detect repeated top-of-page text across pages (running header signal)
     // Normalize by stripping digits, punctuation, and whitespace to match
     // "10 Childhood, 1886-1904" with "Childhood, 1886-1904 12"
+    // Not built at all for a reflow: the "running head" it would find is the
+    // first line of whatever paragraph the window happened to break at.
     const topTextPages = new Map<string, Set<number>>(); // normalized text → set of page numbers
-    for (const block of this.blocks) {
+    for (const block of hasPageFurniture ? this.blocks : []) {
       if (block.is_image || block.line_count > 2) continue;
       const ph = this.pageDimensions[block.page]?.height || 800;
       if (block.y / ph < 0.10) {
@@ -1992,14 +2084,15 @@ export class PDFAnalyzer {
         blockCategories.set(block.id, declared);
         continue;
       }
-      blockCategories.set(block.id, this.classifyBlock(block, bodySize, bodyFont, bodyIsItalic, imagesByPage, bodyMarginX, blocksByPage, repeatedTopTexts));
+      blockCategories.set(block.id, this.classifyBlock(block, bodySize, bodyFont, bodyIsItalic, imagesByPage, bodyMarginX, blocksByPage, repeatedTopTexts, hasPageFurniture));
     }
 
     // Enforce one header per page — keep only the topmost, reclassify rest as
     // body. Blocks the document labelled are exempt: this rule exists to clean
-    // up a guess, and there is no guess to clean up on those.
+    // up a guess, and there is no guess to clean up on those. Nor on a reflow,
+    // which produced no header to thin out in the first place.
     const headersByPage = new Map<number, TextBlock[]>();
-    for (const block of this.blocks) {
+    for (const block of hasPageFurniture ? this.blocks : []) {
       if (stated.has(block.id)) continue;
       if (blockCategories.get(block.id) === 'header') {
         if (!headersByPage.has(block.page)) {
@@ -2295,7 +2388,15 @@ export class PDFAnalyzer {
   }
 
   /**
-   * Classify a block into a semantic category
+   * Classify a block into a semantic category.
+   *
+   * `hasPageFurniture` is false when these blocks came out of an EPUB reflow —
+   * see generateCategories. Every rule below that reads a Y coordinate against
+   * the page height is asking "is this a running head / a folio / a footnote at
+   * the foot of the page", and on a reflow the page is mupdf's invention, so the
+   * question has no answer and is not asked. The typographic rules — relative
+   * type size, weight, italics, adjacency to an image — mean the same thing on
+   * both and are asked either way.
    */
   private classifyBlock(
     block: TextBlock,
@@ -2305,7 +2406,8 @@ export class PDFAnalyzer {
     imagesByPage: Map<number, TextBlock[]>,
     bodyMarginX: number,
     blocksByPage: Map<number, TextBlock[]>,
-    repeatedTopTexts: Set<string>
+    repeatedTopTexts: Set<string>,
+    hasPageFurniture: boolean
   ): string {
     if (block.is_image) return 'image';
 
@@ -2323,58 +2425,62 @@ export class PDFAnalyzer {
       return 'footnote_ref';
     }
 
-    // Header detection — scoring-based consensus approach
-    // Blocks in the 'header' region or positioned near the top get scored
-    if (block.region === 'header') {
-      const score = this.computeHeaderScore(block, bodySize, bodyFont, bodyIsItalic, bodyMarginX, blocksByPage, repeatedTopTexts);
-      // Already in header region (top of page, ≤2 lines, no body-text indicators),
-      // so the positional evidence is strong — threshold of 2
-      return score >= 2 ? 'header' : 'body';
-    }
-    if (block.region === 'footer') return 'footer';
+    if (hasPageFurniture) {
+      const pageHeight = this.pageDimensions[block.page]?.height || 800;
 
-    // Additional header detection for blocks that slipped through region detection
-    const pageHeight = this.pageDimensions[block.page]?.height || 800;
-    const yPct = block.y / pageHeight;
-    const text = block.text.trim();
+      // Header detection — scoring-based consensus approach
+      // Blocks in the 'header' region or positioned near the top get scored
+      if (block.region === 'header') {
+        const score = this.computeHeaderScore(block, bodySize, bodyFont, bodyIsItalic, bodyMarginX, blocksByPage, repeatedTopTexts);
+        // Already in header region (top of page, ≤2 lines, no body-text indicators),
+        // so the positional evidence is strong — threshold of 2
+        return score >= 2 ? 'header' : 'body';
+      }
+      if (block.region === 'footer') return 'footer';
 
-    // Body text indicators - skip these
-    const looksLikeBodyText = block.char_count > 100 ||
-                              /[.!?]["']?\s+[A-Z]/.test(text) ||  // Multiple sentences
-                              (text.endsWith('.') && block.char_count > 60);
+      // Additional header detection for blocks that slipped through region detection
+      const yPct = block.y / pageHeight;
+      const text = block.text.trim();
 
-    const bottomPct = (block.y + block.height) / pageHeight;
-    if (block.line_count <= 2 && (yPct < 0.10 || bottomPct < 0.15) && !looksLikeBodyText) {
-      const score = this.computeHeaderScore(block, bodySize, bodyFont, bodyIsItalic, bodyMarginX, blocksByPage, repeatedTopTexts);
-      // Not initially assigned header region — require stronger evidence (threshold 3)
-      if (score >= 3) return 'header';
-    }
+      // Body text indicators - skip these
+      const looksLikeBodyText = block.char_count > 100 ||
+                                /[.!?]["']?\s+[A-Z]/.test(text) ||  // Multiple sentences
+                                (text.endsWith('.') && block.char_count > 60);
 
-    // Footnotes: multiple signals — font size, content pattern, gap above
-    const isLowerHalf = block.y / pageHeight > 0.50;
-    const hasSmallerFont = block.font_size < bodySize * 0.95;
-    const hasFootnotePattern = this.startsWithFootnotePattern(block.text);
-    const hasGap = this.hasSignificantGapAbove(block, blocksByPage, pageHeight);
-    const bodyTextBelow = this.hasBodyTextBelow(block, blocksByPage, bodySize);
+      const bottomPct = (block.y + block.height) / pageHeight;
+      if (block.line_count <= 2 && (yPct < 0.10 || bottomPct < 0.15) && !looksLikeBodyText) {
+        const score = this.computeHeaderScore(block, bodySize, bodyFont, bodyIsItalic, bodyMarginX, blocksByPage, repeatedTopTexts);
+        // Not initially assigned header region — require stronger evidence (threshold 3)
+        if (score >= 3) return 'header';
+      }
 
-    // Original rule: lower region + smaller font + no body text below
-    if (block.region === 'lower' && hasSmallerFont && !bodyTextBelow) {
-      return 'footnote';
-    }
+      // Footnotes: multiple signals — font size, content pattern, gap above.
+      // Every one of them reads the page, so all four go together.
+      const isLowerHalf = block.y / pageHeight > 0.50;
+      const hasSmallerFont = block.font_size < bodySize * 0.95;
+      const hasFootnotePattern = this.startsWithFootnotePattern(block.text);
+      const hasGap = this.hasSignificantGapAbove(block, blocksByPage, pageHeight);
+      const bodyTextBelow = this.hasBodyTextBelow(block, blocksByPage, bodySize);
 
-    // Content pattern in lower half — even at body font size
-    if (isLowerHalf && hasFootnotePattern && !bodyTextBelow) {
-      return 'footnote';
-    }
+      // Original rule: lower region + smaller font + no body text below
+      if (block.region === 'lower' && hasSmallerFont && !bodyTextBelow) {
+        return 'footnote';
+      }
 
-    // Gap above + lower half — strong spatial signal (footnote separator)
-    if (isLowerHalf && hasGap && hasSmallerFont) {
-      return 'footnote';
-    }
+      // Content pattern in lower half — even at body font size
+      if (isLowerHalf && hasFootnotePattern && !bodyTextBelow) {
+        return 'footnote';
+      }
 
-    // Gap above + content pattern — very strong combined signal
-    if (hasGap && hasFootnotePattern) {
-      return 'footnote';
+      // Gap above + lower half — strong spatial signal (footnote separator)
+      if (isLowerHalf && hasGap && hasSmallerFont) {
+        return 'footnote';
+      }
+
+      // Gap above + content pattern — very strong combined signal
+      if (hasGap && hasFootnotePattern) {
+        return 'footnote';
+      }
     }
 
     // --- Caption detection ---
