@@ -28,6 +28,7 @@ import { normalizeFsPath, toAsciiSlug } from './path-utils';
 // use here, so importing its types costs nothing at runtime.
 import type { EpubPreservingEdits } from './epub-processor.js';
 import type { ExportProvenance, ResolvedProjectVariant } from './manifest-types';
+import type { WorkingCopyRemint } from '../shared/document/working-copy-remint';
 import { addVariant, importAudiobookProject, saveVariantMetadata, setPrimaryVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
@@ -3251,11 +3252,19 @@ function setupIpcHandlers(): void {
       // writes, that run costs an hour of GPU, and starting it as a side effect
       // of opening a window is not something anybody asked for. The picker shows
       // the archive with a banner offering to start it instead.
+      //
+      // A copy made AGAIN is not invisible. `ensureBookEpub` answers whether the
+      // copy it made replaced one the manifest still had a record for, and that
+      // answer travels back with the path — this is the call the picker makes as
+      // the project opens, so it is the one place a window is looking when the
+      // fact is discovered. Nobody downstream re-derives it: a second derivation
+      // would need the record that has just been rewritten.
+      let remint: WorkingCopyRemint | null = null;
       await manifestService.migrateWorkingEpubNaming(projectDir);
       const recordedBefore = await manifestService.readExportEpub(projectDir);
       if (!recordedBefore || !fsSync.existsSync(recordedBefore.absPath)) {
         if (await manifestService.archiveOriginalFormat(projectDir) === 'epub') {
-          await manifestService.ensureBookEpub(projectDir);
+          remint = (await manifestService.ensureBookEpub(projectDir)).remint;
         }
       }
 
@@ -3268,7 +3277,7 @@ function setupIpcHandlers(): void {
       // path, once for the provenance — is how two surfaces come to disagree
       // about the same book.
       const appliedPasses = await manifestService.readAppliedPasses(projectDir);
-      return { success: true, target, exported, coverPath, appliedPasses };
+      return { success: true, target, exported, coverPath, appliedPasses, remint };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -6925,7 +6934,11 @@ function setupIpcHandlers(): void {
     try {
       const book = await manifestService.ensureBookEpub(projectDir);
       broadcastToAllWindows('project:files-changed', projectDir);
-      return { success: true, path: book.absPath, relPath: book.relPath };
+      // The re-mint travels back from here too, for the same reason it travels
+      // back from `projects:export-info`: this IS that call, reached by hand.
+      // A door that made the copy again in silence would be exactly the bug the
+      // other door no longer has.
+      return { success: true, path: book.absPath, relPath: book.relPath, remint: book.remint };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

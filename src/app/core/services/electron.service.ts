@@ -10,6 +10,7 @@ import type {
   ProcessingChainRequest,
 } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
+import type { WorkingCopyRemint } from '@shared/document/working-copy-remint';
 import type {
   VlmConvertRequest,
   VlmConvertResult,
@@ -458,6 +459,16 @@ export interface ProjectExportInfo {
    * which passes a book carries is already asking where the book IS.
    */
   appliedPasses: AppliedPass[];
+  /**
+   * Set when answering this ask MADE the working copy again — i.e. the manifest
+   * recorded a book and the file it named was not on disk.
+   *
+   * Null in every other case, including the first copy a project ever gets: only
+   * a re-mint is evidence that a file somebody was editing has gone, and it is
+   * the one thing a window has to say out loud. See
+   * `shared/document/working-copy-remint.ts`.
+   */
+  remint: WorkingCopyRemint | null;
 }
 
 interface ProjectLoadResult {
@@ -1325,6 +1336,11 @@ export class ElectronService {
       // Main sends the list whenever there is a book; a project with none sends
       // nothing, which is "no book has any passes" rather than a value missing.
       appliedPasses: result.appliedPasses ?? [],
+      // Main sends null on every ask that did not re-mint the working copy, and
+      // that is the overwhelming majority of them. An older main that predates
+      // the field sends nothing at all, which reads the same and correctly: it
+      // has no re-mint to report.
+      remint: result.remint ?? null,
     };
   }
 
@@ -2667,7 +2683,16 @@ export class ElectronService {
    * working copy is what vlm-convert writes.
    */
   async ensureWorkingEpub(projectDir: string): Promise<{
-    success: boolean; path?: string; relPath?: string; error?: string;
+    success: boolean;
+    path?: string;
+    relPath?: string;
+    /**
+     * Set when this call made the copy AGAIN over a record whose file was gone.
+     * Same field, same meaning and same obligation as `ProjectExportInfo.remint`
+     * — this is the same act, started by hand.
+     */
+    remint?: WorkingCopyRemint | null;
+    error?: string;
   }> {
     if (this.isElectron) {
       return (window as any).electron.vlm.ensureWorkingEpub(projectDir);
