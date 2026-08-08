@@ -8880,6 +8880,20 @@ export class PdfPickerComponent implements OnInit {
    * One element can own SEVERAL blocks (mupdf re-lays the book out and a
    * paragraph becomes one block per visual line), so the fan-out is a fan-out
    * and every block of a struck element is struck.
+   *
+   * ── A struck DOCUMENT ──────────────────────────────────────────────────────
+   *
+   * `<zip entry>#doc` fans out to every block of that document
+   * (`narrationDeletedBlockIds`), which is the exact inverse of the escalation
+   * that produced it — so the next gesture's "before" derivation over this view
+   * returns the document key rather than its elements, and a reload does not
+   * rewrite the shape of the record.
+   *
+   * A page holding NOTHING that could be struck stays undeleted on screen even
+   * inside a struck document — the plate gallery's middle pages hold no text at
+   * all, so no block on them names the document, and presenting them as deleted
+   * would be a claim this projection has no evidence for. Their pictures go with
+   * the document at the cut all the same.
    */
   private rebuildNarrationView(): void {
     const recorded = this.narrationState()?.deletions;

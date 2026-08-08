@@ -54,6 +54,7 @@ const manifestService = require(path.join(DIST, 'electron', 'manifest-service.js
 const {
   narrationElementKey,
   narrationImageElementKey,
+  narrationDocumentKey,
   parseNarrationElementKey,
   deriveNarrationStrikes,
   describeUnstruckDeletions,
@@ -64,6 +65,7 @@ const {
   narrationEpubRelPath,
   narrationDeletionsStaleReason,
   planNarrationRemoval,
+  splitNarrationDeletions,
 } = require(path.join(DIST, 'shared', 'vlm', 'narration-deletions.js'));
 const {
   blockCategoryForVlm,
@@ -198,6 +200,105 @@ async function buildIllustratedEpub(name, chapterXhtml) {
   return out;
 }
 
+// ── A book with a PLATE GALLERY in it ────────────────────────────────────────
+//
+// The shape the document-level strike exists for, copied from the real one:
+// `bm01.xhtml` of Killing America states 3 image elements and mupdf laid 6
+// picture blocks out of it, so the ordinal matcher refuses all six and the
+// user's deletion of the gallery reaches nothing. The gallery here holds one
+// caption — the ONE strikeable thing in it, and therefore the certain evidence
+// the escalation reads — and three pictures.
+//
+// It carries BOTH tables of contents and a guide, because a document that
+// leaves the book has to leave all three.
+
+const GALLERY = `<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Plates</title></head>
+<body>
+<p data-bf-page="9" data-bf-cat="caption">The plates, printed together at the back of the book.</p>
+<div class="plate"><img src="images/p1.jpg" alt=""/></div>
+<div class="plate"><img src="images/p2.jpg" alt=""/></div>
+<div class="plate"><img src="images/p3.jpg" alt=""/></div>
+</body>
+</html>`;
+
+/** The chapter, with a cross-reference INTO the gallery — the link that dangles. */
+const CHAPTER_LINKING_TO_GALLERY = CHAPTER_WITH_PLATE.replace(
+  '</body>',
+  '<p data-bf-page="3" data-bf-cat="text">See <a href="plates.xhtml">the plates</a> at the back.</p>\n</body>');
+
+const NAV = `<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><title>Contents</title></head>
+<body><nav epub:type="toc"><ol>
+<li><a href="chapter-01.xhtml">One</a></li>
+<li><a href="plates.xhtml">Plates</a></li>
+</ol></nav></body>
+</html>`;
+
+const NCX = `<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+<head><meta name="dtb:uid" content="urn:sha256:test"/></head>
+<docTitle><text>Working Towards the Fuhrer</text></docTitle>
+<navMap>
+<navPoint id="n1" playOrder="1"><navLabel><text>One</text></navLabel><content src="chapter-01.xhtml"/></navPoint>
+<navPoint id="n2" playOrder="2"><navLabel><text>Plates</text></navLabel><content src="plates.xhtml"/></navPoint>
+</navMap>
+</ncx>`;
+
+const OPF_WITH_GALLERY = `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:identifier id="id">urn:sha256:test</dc:identifier>
+<dc:title>Working Towards the Fuhrer</dc:title>
+<dc:language>en</dc:language>
+</metadata>
+<manifest>
+<item id="cov" href="cover.xhtml" media-type="application/xhtml+xml"/>
+<item id="c1" href="chapter-01.xhtml" media-type="application/xhtml+xml"/>
+<item id="pl" href="plates.xhtml" media-type="application/xhtml+xml"/>
+<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+<item id="coverimg" href="images/cover.jpg" media-type="image/jpeg"/>
+</manifest>
+<spine toc="ncx"><itemref idref="cov"/><itemref idref="c1"/><itemref idref="pl"/></spine>
+<guide>
+<reference type="cover" href="cover.xhtml" title="Cover"/>
+<reference type="other.plates" href="plates.xhtml" title="Plates"/>
+</guide>
+</package>`;
+
+/** Cover, chapter, plate gallery — with a nav, an NCX and a guide naming all three. */
+async function buildGalleryEpub(name) {
+  const zip = new ZipWriter();
+  zip.addFile('mimetype', Buffer.from('application/epub+zip', 'utf8'), false);
+  zip.addFile('META-INF/container.xml', Buffer.from(CONTAINER, 'utf8'));
+  zip.addFile('OEBPS/content.opf', Buffer.from(OPF_WITH_GALLERY, 'utf8'));
+  zip.addFile('OEBPS/cover.xhtml', Buffer.from(COVER, 'utf8'));
+  zip.addFile('OEBPS/chapter-01.xhtml', Buffer.from(CHAPTER_LINKING_TO_GALLERY, 'utf8'));
+  zip.addFile('OEBPS/plates.xhtml', Buffer.from(GALLERY, 'utf8'));
+  zip.addFile('OEBPS/nav.xhtml', Buffer.from(NAV, 'utf8'));
+  zip.addFile('OEBPS/toc.ncx', Buffer.from(NCX, 'utf8'));
+  for (const img of ['cover.jpg', 'plate.jpg', 'p1.jpg', 'p2.jpg', 'p3.jpg']) {
+    zip.addFile(`OEBPS/images/${img}`, Buffer.from('JPEGBYTES', 'utf8'));
+  }
+  const out = path.join(ROOT, name);
+  await zip.write(out);
+  return out;
+}
+
+/** One entry of a written book, as text. */
+async function readEntry(epubPath, entry) {
+  const reader = new ZipReader(epubPath);
+  await reader.open();
+  try {
+    return (await reader.readEntry(entry)).toString('utf8');
+  } finally {
+    reader.close();
+  }
+}
+
 /** The zip entries of a written book. */
 async function entriesOf(epubPath) {
   const reader = new ZipReader(epubPath);
@@ -259,6 +360,22 @@ function illustratedLayout() {
     assert.notStrictEqual(key, narrationElementKey('OEBPS/cover.xhtml', 0));
   });
 
+  // The THIRD namespace: the container whose identity is never in doubt. It
+  // carries no index at all, which is why the parse answers a union rather than
+  // a record with an index field — a 0 there would be a position naming an
+  // element of the document rather than the document.
+  await check('a document key is <file>#doc, and round-trips', () => {
+    const key = narrationDocumentKey('OEBPS/bm01.xhtml');
+    assert.strictEqual(key, 'OEBPS/bm01.xhtml#doc');
+    assert.deepStrictEqual(parseNarrationElementKey(key),
+      { file: 'OEBPS/bm01.xhtml', kind: 'doc' });
+    // The two numbered namespaces are untouched by it.
+    assert.deepStrictEqual(parseNarrationElementKey('OEBPS/bm01.xhtml#0'),
+      { file: 'OEBPS/bm01.xhtml', kind: 'unit', index: 0 });
+    assert.deepStrictEqual(parseNarrationElementKey('OEBPS/bm01.xhtml#img0'),
+      { file: 'OEBPS/bm01.xhtml', kind: 'image', index: 0 });
+  });
+
   await check('a key with no index is refused by name', () => {
     assert.throws(() => parseNarrationElementKey('OEBPS/chapter-01.xhtml'),
       /not a narration element key/);
@@ -270,6 +387,27 @@ function illustratedLayout() {
     assert.throws(() => parseNarrationElementKey('OEBPS/c.xhtml#'),
       /not a narration element key/);
     assert.throws(() => narrationImageElementKey('OEBPS/c.xhtml', -1), /whole number/);
+    // Near-misses of the document suffix are not documents: only the exact word
+    // is the third namespace, and everything else has to be a number.
+    assert.throws(() => parseNarrationElementKey('OEBPS/c.xhtml#docs'),
+      /not a narration element key/);
+    assert.throws(() => parseNarrationElementKey('OEBPS/c.xhtml#doc0'),
+      /not a narration element key/);
+    assert.throws(() => parseNarrationElementKey('#doc'), /not a narration element key/);
+    assert.throws(() => narrationDocumentKey(''), /is not one/);
+    assert.throws(() => narrationDocumentKey('OEBPS/c.xhtml#0'), /already carries a "#"/);
+  });
+
+  await check('a mixed record splits into documents and elements', () => {
+    assert.deepStrictEqual(
+      splitNarrationDeletions(
+        ['OEBPS/b.xhtml#doc', 'OEBPS/a.xhtml#3', 'OEBPS/b.xhtml#doc', 'OEBPS/a.xhtml#img1']),
+      { documents: ['OEBPS/b.xhtml'], elements: ['OEBPS/a.xhtml#3', 'OEBPS/a.xhtml#img1'] });
+    // The element planner will not take a document key: it is answered by the
+    // spine, and letting it fall through would refuse it as a missing element.
+    assert.throws(
+      () => planNarrationRemoval([{ key: 'a#0', category: null, sourcePage: null }], ['a#doc']),
+      /name a whole document/);
   });
 
   // ── the category map ──────────────────────────────────────────────────────
@@ -397,6 +535,10 @@ function illustratedLayout() {
       // the page they are both on struck as well.
       laid('b1', 2, 'OEBPS/c1.xhtml#4'),
       laid('b2', 2, 'OEBPS/c1.xhtml#4'),
+      // A third block of the same document, on a page nobody deleted. Without
+      // it the document would be covered and would escalate to one #doc key,
+      // which is a different question from the one this test asks.
+      laid('b3', 3, 'OEBPS/c1.xhtml#5'),
     ];
     const strikes = deriveNarrationStrikes(blocks, new Set(['b1']), new Set([2]));
     assert.deepStrictEqual(strikes.elements, ['OEBPS/c1.xhtml#4']);
@@ -431,10 +573,168 @@ function illustratedLayout() {
       deriveNarrationStrikes([laid('b1', 0, 'e#0')], new Set(['b1']), new Set())), null);
   });
 
+  // ── the escalation to the document ────────────────────────────────────────
+  //
+  // Owen, 2026-08-09: when the identity of the pieces is ambiguous, escalate to
+  // the enclosing container whose identity is certain. The condition is read off
+  // the ALIGNED blocks — the only certain evidence there is — and the effect
+  // reaches everything else in the document.
+
+  await check('a document every strikeable block of which is struck becomes ONE key', () => {
+    const blocks = [
+      laid('a1', 0, 'OEBPS/c1.xhtml#0'),
+      laid('a2', 0, 'OEBPS/c1.xhtml#1'),
+      laid('a3', 0, 'OEBPS/c1.xhtml#2'),
+      laid('b1', 1, 'OEBPS/c2.xhtml#0'),
+      laid('b2', 1, 'OEBPS/c2.xhtml#1'),
+    ];
+    const byPage = deriveNarrationStrikes(blocks, new Set(), new Set([0]));
+    assert.deepStrictEqual(byPage.elements, ['OEBPS/c1.xhtml#doc']);
+    assert.strictEqual(byPage.fromPages, 1, 'the page gesture named the document');
+    assert.strictEqual(byPage.fromBlocks, 0);
+    assert.strictEqual(byPage.fromBlocks + byPage.fromPages, byPage.elements.length);
+
+    // The same statement made block by block escalates identically — the record
+    // does not remember which gesture was used, and must not.
+    const byBlocks = deriveNarrationStrikes(blocks, new Set(['a1', 'a2', 'a3']), new Set());
+    assert.deepStrictEqual(byBlocks.elements, ['OEBPS/c1.xhtml#doc']);
+    assert.strictEqual(byBlocks.fromBlocks, 1);
+    assert.strictEqual(byBlocks.fromPages, 0);
+  });
+
+  await check('a document ONE block short of covered stays per-element', () => {
+    const blocks = [
+      laid('a1', 0, 'OEBPS/c1.xhtml#0'),
+      laid('a2', 0, 'OEBPS/c1.xhtml#1'),
+      // The same document, laid out onto a SECOND page the user did not delete.
+      laid('a3', 1, 'OEBPS/c1.xhtml#2'),
+    ];
+    const strikes = deriveNarrationStrikes(blocks, new Set(), new Set([0]));
+    assert.deepStrictEqual(strikes.elements, ['OEBPS/c1.xhtml#0', 'OEBPS/c1.xhtml#1']);
+    assert.ok(!strikes.elements.some((k) => k.endsWith('#doc')),
+      'a partly-struck document escalated');
+  });
+
+  // Vacuous truth would say "every one of its zero strikeable blocks is struck"
+  // about a document nobody touched. A deletion that names nothing certain is
+  // still a deletion that reached nothing, and it is reported as one.
+  await check('a document with NOTHING strikeable in it cannot escalate', () => {
+    const blocks = [
+      laid('img1', 0, null),
+      laid('img2', 0, null),
+    ];
+    const strikes = deriveNarrationStrikes(blocks, new Set(), new Set([0]));
+    assert.deepStrictEqual(strikes.elements, []);
+    assert.deepStrictEqual(strikes.unstruck.map((u) => u.blockId), ['img1', 'img2']);
+    assert.ok(/could not be matched/.test(describeUnstruckDeletions(strikes)));
+  });
+
+  // The measured case, in miniature: a plate gallery whose caption aligns and
+  // whose pictures no ordinal can settle, with pages in the middle of it that
+  // hold nothing but pictures. Striking the documents covers all of it.
+  await check('a picture no ordinal could settle is COVERED by its struck document', () => {
+    const blocks = [
+      laid('cap', 0, 'OEBPS/bm01.xhtml#0'),
+      laid('p1', 0, null),
+      laid('p2', 1, null),   // a page with no strikeable block on it at all
+      laid('p3', 2, null),
+      laid('back1', 3, 'OEBPS/back.xhtml#0'),
+      // A picture between two aligned blocks of ONE document — the unambiguous
+      // half of the same window, and three of the real book's nine.
+      laid('p4', 3, null),
+      laid('back2', 3, 'OEBPS/back.xhtml#1'),
+    ];
+    const covered = deriveNarrationStrikes(blocks, new Set(), new Set([0, 1, 2, 3]));
+    assert.deepStrictEqual(covered.elements,
+      ['OEBPS/back.xhtml#doc', 'OEBPS/bm01.xhtml#doc']);
+    assert.deepStrictEqual(covered.unstruck, [],
+      'a picture inside a struck document was still reported as unreachable');
+    assert.deepStrictEqual(covered.pagesWithNothingStruck, [],
+      'a page of nothing but covered pictures was reported as striking nothing');
+    assert.strictEqual(describeUnstruckDeletions(covered), null);
+
+    // And the honest half: when the document on the FAR side is not struck, the
+    // picture could be in either and is reported rather than assumed.
+    const partial = deriveNarrationStrikes(blocks, new Set(), new Set([0]));
+    assert.deepStrictEqual(partial.elements, ['OEBPS/bm01.xhtml#doc']);
+    assert.deepStrictEqual(partial.unstruck.map((u) => u.blockId), ['p1']);
+  });
+
+  // An END of the book is an OPEN end: there is no aligned block after the last
+  // picture, so the document it is in is bounded on one side only, and a
+  // document with nothing laid out from it could sit past the last one. Reported
+  // rather than assumed, which is the same answer `alignImageBlocks` gives.
+  await check('a picture past the last aligned block is not covered by anything', () => {
+    const blocks = [
+      laid('t1', 0, 'OEBPS/back.xhtml#0'),
+      laid('tail', 0, null),
+    ];
+    const strikes = deriveNarrationStrikes(blocks, new Set(), new Set([0]));
+    assert.deepStrictEqual(strikes.elements, ['OEBPS/back.xhtml#doc']);
+    assert.deepStrictEqual(strikes.unstruck.map((u) => u.blockId), ['tail']);
+  });
+
+  // The whole transactional model has to survive an un-delete without anything
+  // remembering that an escalation ever happened. It does, because both sides of
+  // the difference are derived the same way.
+  await check('restoring ONE block de-escalates: unstrike #doc, strike the rest', () => {
+    const blocks = [
+      laid('a1', 0, 'OEBPS/c1.xhtml#0'),
+      laid('a2', 0, 'OEBPS/c1.xhtml#1'),
+      laid('a3', 0, 'OEBPS/c1.xhtml#2'),
+    ];
+    const before = deriveNarrationStrikes(blocks, new Set(['a1', 'a2', 'a3']), new Set());
+    assert.deepStrictEqual(before.elements, ['OEBPS/c1.xhtml#doc']);
+    const after = deriveNarrationStrikes(blocks, new Set(['a1', 'a3']), new Set());
+    assert.deepStrictEqual(after.elements, ['OEBPS/c1.xhtml#0', 'OEBPS/c1.xhtml#2']);
+    assert.deepStrictEqual(
+      narrationDeletionEdit(new Set(before.elements), new Set(after.elements)),
+      { strike: ['OEBPS/c1.xhtml#0', 'OEBPS/c1.xhtml#2'], unstrike: ['OEBPS/c1.xhtml#doc'] });
+
+    // And back again, which is the gesture the user actually makes to undo it.
+    assert.deepStrictEqual(
+      narrationDeletionEdit(new Set(after.elements), new Set(before.elements)),
+      { strike: ['OEBPS/c1.xhtml#doc'], unstrike: ['OEBPS/c1.xhtml#0', 'OEBPS/c1.xhtml#2'] });
+  });
+
+  // The projection is the inverse of the escalation, so a reload must not
+  // rewrite the record's SHAPE. If it did, every open of the book would post a
+  // difference nobody asked for.
+  await check('a recorded #doc key survives the round trip through the view', () => {
+    const blocks = [
+      laid('a1', 0, 'OEBPS/c1.xhtml#0'),
+      laid('a2', 0, 'OEBPS/c1.xhtml#1'),
+      // One element, two laid-out lines — the fan-out has to reach both.
+      laid('a3', 1, 'OEBPS/c1.xhtml#2'),
+      laid('a4', 1, 'OEBPS/c1.xhtml#2'),
+      laid('b1', 2, 'OEBPS/c2.xhtml#0'),
+      laid('b2', 2, 'OEBPS/c2.xhtml#1'),
+    ];
+    const record = ['OEBPS/c1.xhtml#doc', 'OEBPS/c2.xhtml#1'];
+
+    // Exactly what `rebuildNarrationView` does: fan out, work out which pages
+    // read as deleted, then take those pages' blocks out of the block set.
+    const struckIds = new Set(narrationDeletedBlockIds(blocks, record));
+    assert.deepStrictEqual([...struckIds].sort(), ['a1', 'a2', 'a3', 'a4', 'b2']);
+    const pages = narrationDeletedPages(blocks, struckIds);
+    assert.deepStrictEqual([...pages].sort((x, y) => x - y), [0, 1]);
+    const pageOf = new Map(blocks.map((b) => [b.id, b.page]));
+    for (const id of [...struckIds]) if (pages.has(pageOf.get(id))) struckIds.delete(id);
+
+    const again = deriveNarrationStrikes(blocks, struckIds, pages);
+    assert.deepStrictEqual(again.elements, record.slice().sort(),
+      'reloading the book fanned the document key back out into elements');
+    assert.deepStrictEqual(
+      narrationDeletionEdit(new Set(record), new Set(again.elements)),
+      { strike: [], unstrike: [] }, 'a reload posted a difference nobody asked for');
+  });
+
   await check('a deleted block id this layout does not have is named', () => {
     const strikes = deriveNarrationStrikes(
       [laid('b1', 0, 'e#0')], new Set(['b1', 'ghost']), new Set());
-    assert.deepStrictEqual(strikes.elements, ['e#0']);
+    // `e` holds exactly one strikeable block and it was struck, so the answer is
+    // the DOCUMENT — the escalation, on the smallest document there can be.
+    assert.deepStrictEqual(strikes.elements, ['e#doc']);
     assert.deepStrictEqual(strikes.unknownBlockIds, ['ghost']);
     assert.ok(/ghost/.test(describeUnstruckDeletions(strikes)));
   });
@@ -744,6 +1044,88 @@ function illustratedLayout() {
       'the pruned cover still has elements in the copy');
   });
 
+  // ── the cut, for a document struck BY NAME ────────────────────────────────
+
+  await check('a #doc key takes the document out of the zip, the OPF, the TOCs and the guide',
+    async () => {
+      const book = await buildGalleryEpub('gallery1.epub');
+      const before = fs.readFileSync(book);
+      const out = path.join(ROOT, 'gallery1.tts.epub');
+      const written = await writeNarrationEpub(book, out, ['OEBPS/plates.xhtml#doc'], {
+        stripSupMarkers: false,
+      });
+
+      assert.deepStrictEqual(written.removedDocuments, ['OEBPS/plates.xhtml']);
+      // Everything the document held is counted as removed: its caption unit,
+      // its three pictures, and the `<div>` wrappers the unit walk collected.
+      assert.ok(written.removedElements >= 4,
+        `only ${written.removedElements} element(s) counted for a whole document`);
+      assert.ok(before.equals(fs.readFileSync(book)), 'the official book was rewritten');
+
+      const entries = await entriesOf(out);
+      assert.ok(!entries.includes('OEBPS/plates.xhtml'), 'the struck document is still in the zip');
+      // The PICTURES it held go with it without ever having been identified —
+      // which is the whole point: no ordinal could settle which was which.
+      assert.ok(entries.includes('OEBPS/chapter-01.xhtml'), 'a surviving document went missing');
+      // Its image FILES stay: this removes documents, not assets.
+      assert.ok(entries.includes('OEBPS/images/p1.jpg'));
+
+      const opf = await readEntry(out, 'OEBPS/content.opf');
+      assert.ok(!/plates\.xhtml/.test(opf), `plates.xhtml is still named in the package:\n${opf}`);
+      assert.ok(/chapter-01\.xhtml/.test(opf), 'the surviving document left the package too');
+      assert.ok(/other\.plates/.test(opf) === false, 'the guide still points at the gallery');
+
+      const nav = await readEntry(out, 'OEBPS/nav.xhtml');
+      assert.ok(!/plates\.xhtml/.test(nav), `the nav still lists the gallery:\n${nav}`);
+      assert.ok(/chapter-01\.xhtml/.test(nav), 'the nav lost a chapter that is still in the book');
+
+      const ncx = await readEntry(out, 'OEBPS/toc.ncx');
+      assert.ok(!/plates\.xhtml/.test(ncx), `the NCX still points at the gallery:\n${ncx}`);
+      assert.ok(/chapter-01\.xhtml/.test(ncx), 'the NCX lost a chapter that is still in the book');
+
+      // The cross-reference in the surviving chapter keeps its words and loses
+      // its href — a dangling one is an epubcheck error.
+      const chapter = await readEntry(out, 'OEBPS/chapter-01.xhtml');
+      assert.ok(/the plates/.test(chapter), 'the cross-reference text was deleted');
+      assert.ok(!/href="plates\.xhtml"/.test(chapter), 'the link into the removed document dangles');
+    });
+
+  // The strikes the escalation replaced still work when they arrive alongside
+  // it: the record is just keys, and a legacy record merged with a new document
+  // strike has to cut both.
+  await check('a #doc key and element keys compose in one cut', async () => {
+    const book = await buildGalleryEpub('gallery2.epub');
+    const units = await readEpubConversionUnits(book);
+    const footnote = units.find((u) => u.category === 'footnote').key;
+    const out = path.join(ROOT, 'gallery2.tts.epub');
+    const written = await writeNarrationEpub(
+      book, out,
+      // The gallery's own caption is in here TWICE over — once by name and once
+      // inside its document — which is what a legacy element record merged with
+      // a new document strike looks like (`mergeEditorStateDeletions` unions the
+      // two). One removal, counted once.
+      ['OEBPS/plates.xhtml#doc', 'OEBPS/plates.xhtml#0', footnote, 'OEBPS/cover.xhtml#img0'],
+      { stripSupMarkers: false });
+    assert.deepStrictEqual(written.removedDocuments,
+      ['OEBPS/cover.xhtml', 'OEBPS/plates.xhtml'],
+      'the emptied cover and the struck gallery did not both go');
+    const after = await readEpubConversionUnits(out);
+    assert.ok(!after.some((u) => u.key.startsWith('OEBPS/plates.xhtml')));
+    assert.ok(!after.some((u) => u.key.startsWith('OEBPS/cover.xhtml')));
+    assert.ok(!after.some((u) => u.category === 'footnote'), 'the struck footnote survived');
+    assert.ok(after.some((u) => u.category === 'quote'), 'an untouched element was removed');
+  });
+
+  await check('a #doc key naming a document the book does not have is refused by name',
+    async () => {
+      const book = await buildGalleryEpub('gallery3.epub');
+      const out = path.join(ROOT, 'gallery3.tts.epub');
+      await assert.rejects(
+        writeNarrationEpub(book, out, ['OEBPS/bm01.xhtml#doc']),
+        /OEBPS\/bm01\.xhtml#doc/);
+      assert.ok(!fs.existsSync(out), 'a refused export wrote a file anyway');
+    });
+
   // ── the view, projected from the record ───────────────────────────────────
   await check('a page every strikeable block of which is struck reads as deleted', () => {
     const blocks = [
@@ -844,6 +1226,38 @@ function illustratedLayout() {
     const onDisk = await manifestService.readNarrationDeletions(p.projectDir);
     assert.deepStrictEqual(onDisk.elements, ['OEBPS/chapter-01.xhtml#5']);
     assert.strictEqual(onDisk.epubSha256, sha);
+  });
+
+  // Legacy translation and the escalation compose without either knowing about
+  // the other: the record is a set of KEYS, and the three namespaces are three
+  // ways of naming what comes out, not three records.
+  await check('a document strike composes with an element record already on disk', async () => {
+    const p = makeProject('compose');
+    fs.copyFileSync(await buildIllustratedEpub('rec4.epub', CHAPTER_WITH_PLATE), p.bookAbs);
+    const { sha256File } = require(path.join(DIST, 'electron', 'sidecar-binding.js'));
+    const { sha256: sha } = await sha256File(p.bookAbs);
+
+    // What a book curated before documents were strikeable has on disk.
+    await manifestService.editNarrationDeletions(
+      p.projectDir, sha,
+      { strike: ['OEBPS/chapter-01.xhtml#5', 'OEBPS/cover.xhtml#img0'], unstrike: [] });
+    // A new gesture, escalated.
+    const merged = await manifestService.editNarrationDeletions(
+      p.projectDir, sha, { strike: ['OEBPS/bm01.xhtml#doc'], unstrike: [] });
+    assert.deepStrictEqual(merged.deletions.elements, [
+      'OEBPS/bm01.xhtml#doc', 'OEBPS/chapter-01.xhtml#5', 'OEBPS/cover.xhtml#img0',
+    ]);
+    assert.deepStrictEqual(
+      splitNarrationDeletions(merged.deletions.elements),
+      {
+        documents: ['OEBPS/bm01.xhtml'],
+        elements: ['OEBPS/chapter-01.xhtml#5', 'OEBPS/cover.xhtml#img0'],
+      });
+    // And it comes back out the way an element key does.
+    const undone = await manifestService.editNarrationDeletions(
+      p.projectDir, sha, { strike: [], unstrike: ['OEBPS/bm01.xhtml#doc'] });
+    assert.deepStrictEqual(undone.deletions.elements,
+      ['OEBPS/chapter-01.xhtml#5', 'OEBPS/cover.xhtml#img0']);
   });
 
   await check('an edit against a book that has moved on CLEARS and refuses', async () => {
