@@ -7007,37 +7007,6 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // ── Block-category model ────────────────────────────────────────────────
-  // Thin pass-through to the resident adapter (tools/aligner/blocks-serve.py).
-  // The prompt format is owned entirely by blocks-encoder.ts in the renderer;
-  // reformatting anything here would degrade the fine-tune in a way that looks
-  // like a bad model rather than a bad wire hop.
-  ipcMain.handle('blocks:health', async (_event, endpoint: string,
-                                            backend?: 'ollama' | 'service', model?: string) => {
-    const { blocksHealth } = await import('./blocks-bridge.js');
-    return blocksHealth(endpoint, backend, model);
-  });
-
-  ipcMain.handle('blocks:unload', async (_event, endpoint?: string, model?: string) => {
-    const { blocksUnload } = await import('./blocks-bridge.js');
-    return blocksUnload(endpoint, model);
-  });
-
-  ipcMain.handle('blocks:models', async (_event, endpoint: string,
-                                        backend?: 'local' | 'ollama' | 'service') => {
-    const { blocksModels } = await import('./blocks-bridge.js');
-    return blocksModels(endpoint, backend);
-  });
-
-  ipcMain.handle('blocks:classify', async (_event, payload: {
-    endpoint: string;
-    pages: Array<{ system: string; user: string }>;
-    batch?: number;
-  }) => {
-    const { blocksClassify } = await import('./blocks-bridge.js');
-    return blocksClassify(payload);
-  });
-
   ipcMain.handle('training:align', async (_event, payload: {
     epubPath: string;
     blocks: Array<{ id: string; page: number; x: number; y: number; width: number; height: number;
@@ -10720,19 +10689,6 @@ app.whenReady().then(async () => {
   const logger = getMainLogger();
   logger.info('BookForge starting', { version: app.getVersion(), platform: process.platform });
 
-  // Kill model servers left behind by a previous run, BEFORE anything can start
-  // one. The quit-time stops below only reach a server this process spawned, so
-  // an app that was hard-killed — Ctrl-C on the dev runner, a crash, Force Quit —
-  // strands a llama-server holding several GB with no owner left to stop it.
-  // Reaped by recorded pid, never by port, so a llama-server the user started
-  // themselves is untouched. See LlamaModelServer.reapOrphan.
-  try {
-    const { blocksServer } = await import('./blocks-server.js');
-    blocksServer.reapOrphan();
-  } catch (err) {
-    logger.warn('Orphaned model-server sweep failed', { error: (err as Error).message });
-  }
-
   // In development, point FOUNDRY_CLI_PATH at the locally-built binary unless
   // the developer set one. Dev only: a packaged build resolves the foundry CLI
   // from the component (or the user's own environment variable) and nothing
@@ -11232,30 +11188,6 @@ app.on('before-quit', async (event) => {
     if (stopped > 0) console.log(`[MAIN] Stopped ${stopped} document stage(s)`);
   } catch (err) {
     console.warn('[MAIN] Could not stop the document stages:', err);
-  }
-
-  // Stop the built-in page-layout server. Several GB of resident weights, and a
-  // detached llama-server would outlive the app that spawned it.
-  try {
-    const { stopBlocksServer } = await import('./blocks-server.js');
-    await stopBlocksServer();
-  } catch (err) {
-    console.warn('[MAIN] Could not stop the page-layout model server:', err);
-  }
-
-  // Release the category model. Ollama keeps it resident on its own idle timer
-  // — several GB — and closing the app is an unambiguous "done with it".
-  // Best-effort and short-timeout: a shutdown must never wait on Ollama.
-  //
-  // This is the FAST path only. It cannot fire on a crash or a force-quit, so
-  // correctness rests on the keep_alive TTL refreshed by every request — see
-  // `keepAliveSeconds` in blocks-bridge.ts.
-  try {
-    const { blocksUnload } = await import('./blocks-bridge.js');
-    const released = await blocksUnload();
-    if (released.success) console.log('[MAIN] Released the block-category model');
-  } catch (err) {
-    console.warn('[MAIN] Could not release the block-category model:', err);
   }
 
   // Kill any active TTS workers

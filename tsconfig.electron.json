@@ -26,13 +26,7 @@
   },
   "include": [
     "electron/**/*",
-    "shared/**/*",
-    // blocks-encoder owns the Qwen3 chat template the fine-tune was trained
-    // under, and a second copy of it is exactly the kind of drift that degrades
-    // a model silently. It has no value imports — only
-    // `import type` — so compiling it here emits a file with no requires and
-    // drags none of Angular in. Main reaches it at dist/src/app/....
-    "src/app/features/pdf-picker/services/blocks-encoder.ts"
+    "shared/**/*"
   ],
   "exclude": [
     "node_modules"

@@ -2400,12 +2400,6 @@ export interface ElectronAPI {
     /** Returns its own unsubscribe, like every other event bridge here. */
     onFileChanged: (callback: (change: CorpusFileChanged) => void) => () => void;
   };
-  blocks: {
-    health: (endpoint: string, backend?: string, model?: string) => Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }>;
-    models: (endpoint: string, backend?: string) => Promise<{ success: boolean; models?: string[]; error?: string }>;
-    unload: (endpoint?: string, model?: string) => Promise<{ success: boolean; error?: string }>;
-    classify: (payload: unknown) => Promise<{ success: boolean; answers?: string[]; error?: string }>;
-  };
   analysis: {
     delete: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
     listAudiobooks: (projectId: string) => Promise<{
@@ -4350,17 +4344,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('corpus:file-changed', listener);
       return () => { ipcRenderer.removeListener('corpus:file-changed', listener); };
     },
-  },
-  // The fine-tuned block-category model. Prompts are built in the renderer by
-  // blocks-encoder.ts and travel as opaque strings; main only forwards them.
-  blocks: {
-    health: (endpoint: string, backend?: string, model?: string) =>
-      ipcRenderer.invoke('blocks:health', endpoint, backend, model),
-    models: (endpoint: string, backend?: string) =>
-      ipcRenderer.invoke('blocks:models', endpoint, backend),
-    unload: (endpoint?: string, model?: string) =>
-      ipcRenderer.invoke('blocks:unload', endpoint, model),
-    classify: (payload: unknown) => ipcRenderer.invoke('blocks:classify', payload),
   },
   analysis: {
     delete: (projectDir: string) =>

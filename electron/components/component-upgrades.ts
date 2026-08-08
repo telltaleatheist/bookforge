@@ -91,8 +91,8 @@ import type { ComponentKind } from './component-types';
  * keeping it current is maintenance of a choice the user already made.
  *
  * Everything absent from this set is weights: `tts-model`, `rvc-model`,
- * `language-pack`, `stt-model`, `blocks-model`. Those are present or absent
- * (rule 0). `system` is here-or-not by definition and has nothing to download.
+ * `language-pack`, `stt-model`. Those are present or absent (rule 0). `system`
+ * is here-or-not by definition and has nothing to download.
  */
 const TOOL_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
   'binary', 'conda-env', 'foundry-cli',
