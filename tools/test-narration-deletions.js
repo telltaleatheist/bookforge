@@ -204,6 +204,26 @@ async function buildEpub(name, chapterXhtml) {
     assert.throws(() => narrationEpubRelPath('source/original.pdf'), /which is not an EPUB/);
   });
 
+  // The three files of one project are SIBLINGS, all three named after the
+  // archive file: what you handed us, what you edit, what narration reads.
+  // Appending to the working copy's whole stem would make the third read as a
+  // copy of the second (`X.working.tts.epub`), which is a different claim.
+  await check('the narration copy is a sibling of the working copy, not a copy of it', () => {
+    assert.strictEqual(
+      narrationEpubRelPath('source/Killing America. Bailey, Gene.working.epub'),
+      'source/Killing America. Bailey, Gene.tts.epub');
+    // Case is not a second rule: the marker is written by one derivation, and
+    // this only has to agree with it about what the marker IS.
+    assert.strictEqual(
+      narrationEpubRelPath('source/A Book.WORKING.epub'), 'source/A Book.tts.epub');
+    // A ".working" that is part of the book's own NAME rather than the marker
+    // keeps its extension-position meaning — there is exactly one marker, and it
+    // is the last thing before `.epub`.
+    assert.strictEqual(
+      narrationEpubRelPath('source/Still Working.working.epub'),
+      'source/Still Working.tts.epub');
+  });
+
   // ── deriving the record from the editor ───────────────────────────────────
   //
   // The laid-out block shape the derivation reads: a page (mupdf's own

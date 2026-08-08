@@ -2658,6 +2658,43 @@ export class ElectronService {
     return { success: true, wslRefusal: raw.wslRefusal, server: raw.server };
   }
 
+  /**
+   * The project's working copy — `<archive basename>.working.epub` — made if it
+   * is not there yet.
+   *
+   * The same call the project's own opening makes, so a copy made by hand and
+   * one made automatically are one act. Refuses a PDF project by name: its
+   * working copy is what vlm-convert writes.
+   */
+  async ensureWorkingEpub(projectDir: string): Promise<{
+    success: boolean; path?: string; relPath?: string; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.ensureWorkingEpub(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Ask the MAIN window to queue this project's PDF→EPUB conversion and show the
+   * queue. The queue is the main window's; see the preload declaration.
+   */
+  async showBookConversion(projectDir: string): Promise<void> {
+    if (!this.isElectron) {
+      throw new Error('Reading a book\'s pages needs the desktop app.');
+    }
+    const result = await (window as any).electron.window.showBookConversion(projectDir);
+    if (!result?.success) {
+      throw new Error(result?.error || 'The conversion could not be handed to the queue.');
+    }
+  }
+
+  /** Main asked this window to queue a conversion. Main window only. */
+  onShowBookConversion(callback: (projectDir: string) => void): () => void {
+    if (!this.isElectron) return () => {};
+    return (window as any).electron.window.onShowBookConversion(callback);
+  }
+
   /** The book, whether a VLM read it, and what has been struck out of it. */
   async narrationState(projectDir: string): Promise<{
     success: boolean; state?: NarrationState; error?: string;

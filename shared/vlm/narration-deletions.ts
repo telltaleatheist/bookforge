@@ -315,12 +315,29 @@ export function narrationBlocksOnSourcePage(
 }
 
 /**
- * The narration copy's path, beside the book and named after it.
+ * The narration copy's path, beside the book and named after the same thing the
+ * book is named after.
  *
- * `<stem>.tts.epub`, from the book's OWN recorded path — never re-derived from
- * the title, because the book's name is settled once by
- * `manifest-service.exportEpubStem` and a second derivation here would be a
+ * `<archive basename>.tts.epub`, derived from the book's OWN recorded path —
+ * never re-derived from the title, because the name is settled once by
+ * `manifest-service.exportEpubRelPath` and a second derivation here would be a
  * second naming rung (docs: "The export EPUB — the project's converted book").
+ *
+ * ── Why `.working` comes off ────────────────────────────────────────────────
+ *
+ * The book is `<archive basename>.working.epub` (Owen, 2026-08-08: the filename
+ * is a sidecar declaration of which archive file it belongs to). Appending to
+ * that verbatim would produce `X.working.tts.epub`, which declares that the
+ * narration copy is a copy OF THE WORKING COPY. It is not — it is the third
+ * member of one family, all three named after the archive file: the file you
+ * handed us, the file you edit, the file narration reads. So the working marker
+ * is dropped and the tts marker takes its place.
+ *
+ * A book that is not a working copy (there is one moment in a project's life
+ * when that is true — a record written before the convention existed, on its way
+ * through `migrateWorkingEpubNaming`) keeps its whole stem. That is not a
+ * fallback: `.working` is a marker that is either present or absent, and absent
+ * means there is nothing to take off.
  */
 export function narrationEpubRelPath(bookRelPath: string): string {
   if (!bookRelPath.toLowerCase().endsWith('.epub')) {
@@ -329,7 +346,11 @@ export function narrationEpubRelPath(bookRelPath: string): string {
       + 'is cut from the book, so there is nothing to cut.'
     );
   }
-  return `${bookRelPath.slice(0, -'.epub'.length)}.tts.epub`;
+  const withoutExt = bookRelPath.slice(0, -'.epub'.length);
+  const stem = withoutExt.toLowerCase().endsWith('.working')
+    ? withoutExt.slice(0, -'.working'.length)
+    : withoutExt;
+  return `${stem}.tts.epub`;
 }
 
 /** One element of the official book, as the narration writer sees it. */

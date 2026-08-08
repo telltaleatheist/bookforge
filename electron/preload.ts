@@ -1316,6 +1316,12 @@ export interface ElectronAPI {
       server?: { running: boolean; url: string; model: string | null };
       error?: string;
     }>;
+    /**
+     * The project's working copy, made if it is not there yet. Refuses a PDF
+     * project by name — its working copy is what vlm-convert writes.
+     */
+    ensureWorkingEpub: (projectDir: string) =>
+      Promise<{ success: boolean; path?: string; relPath?: string; error?: string }>;
     narrationState: (projectDir: string) =>
       Promise<{ success: boolean; state?: NarrationState; error?: string }>;
     saveNarrationDeletions: (projectDir: string, elements: string[]) =>
@@ -1368,6 +1374,14 @@ export interface ElectronAPI {
     showNarration: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
     /** Main asked THIS window to open narration for a project. Main window only. */
     onShowNarration: (callback: (projectDir: string) => void) => () => void;
+    /**
+     * Ask main to raise the main window and have it queue this project's
+     * PDF→EPUB conversion. The queue lives in the main window; a second window
+     * enqueueing into its own copy would overwrite the state the user watches.
+     */
+    showBookConversion: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
+    /** Main asked THIS window to queue a conversion. Main window only. */
+    onShowBookConversion: (callback: (projectDir: string) => void) => () => void;
   };
   plugins: {
     list: () => Promise<{ success: boolean; data?: PluginInfo[]; error?: string }>;
@@ -2934,6 +2948,13 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('app:show-narration', listener);
       return () => { ipcRenderer.removeListener('app:show-narration', listener); };
     },
+    showBookConversion: (projectDir: string) =>
+      ipcRenderer.invoke('app:show-book-conversion', projectDir),
+    onShowBookConversion: (callback: (projectDir: string) => void) => {
+      const listener = (_e: any, projectDir: string) => callback(projectDir);
+      ipcRenderer.on('app:show-book-conversion', listener);
+      return () => { ipcRenderer.removeListener('app:show-book-conversion', listener); };
+    },
   },
   plugins: {
     list: () =>
@@ -3092,6 +3113,8 @@ const electronAPI: ElectronAPI = {
     checkEndpoint: (config: VlmEndpointConfig) =>
       ipcRenderer.invoke('vlm:check-endpoint', config),
     readerStatus: () => ipcRenderer.invoke('vlm:reader-status'),
+    ensureWorkingEpub: (projectDir: string) =>
+      ipcRenderer.invoke('book:ensure-working-copy', projectDir),
     narrationState: (projectDir: string) =>
       ipcRenderer.invoke('narration:state', projectDir),
     saveNarrationDeletions: (projectDir: string, elements: string[]) =>

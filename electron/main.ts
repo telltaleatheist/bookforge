@@ -1096,6 +1096,37 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
+  /**
+   * A window asked for this project's pages to be read into a book.
+   *
+   * Same shape, same reason, as `app:show-narration` above: the picker is often
+   * its own BrowserWindow with no nav rail and NO QUEUE — the queue is a
+   * renderer-side scheduler that lives in the main window and persists its state
+   * through main. A second window enqueueing into its own copy would write a
+   * queue file over the one the user is watching. So the request is handed to
+   * the main window, which starts the job through the ordinary path
+   * (`BookConversionService.sendToQueue`) and shows the user the queue.
+   */
+  ipcMain.handle('app:show-book-conversion', (_e, projectDir: string) => {
+    if (typeof projectDir !== 'string' || projectDir.trim() === '') {
+      return {
+        success: false,
+        error: 'Reading a book\'s pages needs the project it is for, and none was given.',
+      };
+    }
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return {
+        success: false,
+        error: 'BookForge has no main window open, so there is no queue to put the conversion in.',
+      };
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send('app:show-book-conversion', projectDir);
+    return { success: true };
+  });
+
   // Managed binaries (ffmpeg, yt-dlp, …) — OUR server-hosted, watched components.
   ipcMain.handle('update:list-components', (_e, force?: boolean) => listManagedComponents(force));
   ipcMain.handle('update:install-component', (_e, id: string) =>
@@ -3199,6 +3230,35 @@ function setupIpcHandlers(): void {
   // coverPath null — that is an ordinary book, not an error.
   ipcMain.handle('projects:export-info', async (_event, projectDir: string) => {
     try {
+      // ── The working copy is made here, invisibly, because this is where the
+      // book is asked for ──────────────────────────────────────────────────────
+      //
+      // Owen's model, 2026-08-08: "the user should just know 'I'm editing the
+      // book Killing America'… one working copy per archive file… fully
+      // seamless." So the two acts that used to need a button are done as the
+      // picker opens:
+      //
+      //  1. A book named before the `<archive basename>.working.epub` convention
+      //     is renamed onto it and the manifest repointed, so every project
+      //     declares which archive file it is the copy of.
+      //  2. A project whose archive original is an EPUB and has no working copy
+      //     yet gets one — an instant byte copy of the archive. Its narration
+      //     strikes and its editor deletions come with it for free, because the
+      //     copy IS those bytes: the strikes are stamped with the sha256 the copy
+      //     also has, and the block ids are minted from the laid-out content.
+      //
+      // A PDF project is NOT given one. Its working copy is what `vlm-convert`
+      // writes, that run costs an hour of GPU, and starting it as a side effect
+      // of opening a window is not something anybody asked for. The picker shows
+      // the archive with a banner offering to start it instead.
+      await manifestService.migrateWorkingEpubNaming(projectDir);
+      const recordedBefore = await manifestService.readExportEpub(projectDir);
+      if (!recordedBefore || !fsSync.existsSync(recordedBefore.absPath)) {
+        if (await manifestService.archiveOriginalFormat(projectDir) === 'epub') {
+          await manifestService.ensureBookEpub(projectDir);
+        }
+      }
+
       const target = await manifestService.exportEpubTarget(projectDir);
       const record = await manifestService.readExportEpub(projectDir);
       const exported = record && fsSync.existsSync(record.absPath) ? record : null;
@@ -6849,6 +6909,28 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * Give me this project's working copy, making it if it does not exist.
+   *
+   * The banner's "Create working copy" button, and the same call the project's
+   * own opening makes (`projects:export-info`) — one seam, so a copy made by
+   * hand and a copy made automatically are the same act with the same name and
+   * the same legacy edits carried into it.
+   *
+   * It REFUSES a PDF project by name (`ensureBookEpub`'s own sentence): the
+   * working copy of a PDF is what vlm-convert writes, and there is no second,
+   * silent way to end up with something to narrate.
+   */
+  ipcMain.handle('book:ensure-working-copy', async (_event, projectDir: string) => {
+    try {
+      const book = await manifestService.ensureBookEpub(projectDir);
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return { success: true, path: book.absPath, relPath: book.relPath };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   /** The book, whether a VLM read it, and what has been struck out of it. */
   ipcMain.handle('narration:state', async (_event, projectDir: string) => {
     try {
@@ -9710,8 +9792,9 @@ function setupIpcHandlers(): void {
         // overwrite it with a guessed shape.
         const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
 
-        // Editor state in a manifest lives in exactly three places, per the
-        // project:save-to-path / projects:load-from-path contract:
+        // Editor state in a manifest lives in exactly FOUR places, per the
+        // project:save-to-path / projects:load-from-path contract and the
+        // narration record:
         //   1. manifest.editor — the whole container (undo/redo stacks, block
         //      edits, custom + OCR categories/blocks, category corrections,
         //      learned categories, paragraph breaks). Cleared WHOLESALE so this
@@ -9734,6 +9817,16 @@ function setupIpcHandlers(): void {
         }
         delete manifest.chapters;
         delete manifest.chaptersSource;
+        //   4. The narration strikes. Added 2026-08-08 with the picker's own
+        //      "Erase all changes and start over" button, and it belongs to this
+        //      handler rather than to a second one: a strike IS an editor edit —
+        //      the same deletion the user made in Select mode, said as the
+        //      element it names (shared/vlm/narration-deletions.ts) — so a reset
+        //      that cleared one record and left the other would put the book back
+        //      on screen unstruck and then quietly re-cut the narration copy by
+        //      strikes nothing on screen explains. The BOOK is untouched: only
+        //      this sub-field of its record goes.
+        if (manifest.outputs?.epub) delete manifest.outputs.epub.narrationDeletions;
 
         manifest.modifiedAt = new Date().toISOString();
         await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));

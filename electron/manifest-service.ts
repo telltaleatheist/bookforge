@@ -766,34 +766,121 @@ function sanitizeExportStem(raw: string): string {
   );
 }
 
-/**
- * The export EPUB's filename stem, from the manifest.
- *
- * THE SOURCE FILE'S OWN STEM first, then the title. The export is the same
- * book as the source document, so it carries the same name with a different
- * extension — "Working Towards The Fuhrer. Kershaw, Ian. (1993).pdf" exports
- * as "Working Towards The Fuhrer. Kershaw, Ian. (1993).epub" (owner's call,
- * Aug 3 2026; title-first produced a second, shorter name for the same book).
- * There is deliberately no third rung: a book named "exported" tells the user
- * nothing and re-creates the very name this replaced, so a project with
- * neither field is a stop with instructions.
- */
-export function exportEpubStem(manifest: ProjectManifest): string {
-  const original = manifest.source?.originalFilename ?? '';
-  const fromSource = sanitizeExportStem(original.replace(/\.[^./\\]+$/, ''));
-  if (fromSource) return fromSource;
+/** The suffix that makes a file in `source/` the one file the user edits. */
+export const WORKING_EPUB_SUFFIX = '.working.epub';
 
-  const fromTitle = sanitizeExportStem(manifest.metadata?.title ?? '');
-  if (fromTitle) return fromTitle;
+/**
+ * The project's archive original — the file the user handed us, whatever format
+ * it is in.
+ *
+ * `role: 'original'`, and an audiobook is not one: an m4b is a rendering of a
+ * book rather than the book, and a project whose only archive entry is one has
+ * no document to work from. Returns null rather than throwing, because "this
+ * project has no archive original" is a real state (73 of the library's 378
+ * projects are imported audiobooks, measured 2026-08-08) and the callers that
+ * cannot proceed without one say so in their own words.
+ */
+function archiveOriginalEntry(manifest: ProjectManifest): ArchiveEntry | null {
+  const entry = (manifest.archive ?? []).find(
+    (a) => a.role === 'original' && (a.format || '').toLowerCase() !== 'm4b');
+  return entry ?? null;
+}
+
+/**
+ * Which format the archive original is in, lowercased, or null when there is
+ * none. `pdf` and `epub` are the two the pipeline knows; anything else is a
+ * format nothing here can open, and it is returned verbatim so a refusal can
+ * name it.
+ */
+export async function archiveOriginalFormat(projectDir: string): Promise<string | null> {
+  const manifest = await readManifestAt(projectDir);
+  const entry = archiveOriginalEntry(manifest);
+  if (entry) return (entry.format || '').toLowerCase();
+  // The pre-archive layout: an EPUB project's original sat at `source/original.epub`
+  // and no archive entry was written for it. It is the same fact in an older
+  // place, not a second kind of answer.
+  return fs.existsSync(path.join(projectDir, 'source', 'original.epub')) ? 'epub' : null;
+}
+
+/**
+ * The working copy's filename stem: THE ARCHIVE FILE'S OWN BASENAME.
+ *
+ * ── Why the archive's name and not the book's title ─────────────────────────
+ *
+ * Owen, 2026-08-08: "one working copy per archive file… the filename is a
+ * sidecar declaration of which archive file it belongs to — nothing anonymous."
+ * `<archive basename>.working.epub` sits in `source/` beside
+ * `<archive basename>.tts.epub`, and the three names read as one family: the
+ * file you handed us, the file you edit, the file narration reads.
+ *
+ * This REPLACES a derivation that took `manifest.source.originalFilename` and
+ * fell back to the title. That name was not wrong, it was just unattached: the
+ * library holds projects where the recorded source filename and the file in
+ * `archive/` differ (Killing America's archive is "Killing America. Bailey,
+ * Gene.epub" while its recorded source filename is the full subtitled one), so
+ * the book on disk did not say which archive file it came out of. Now it does.
+ *
+ * NOT sanitized and NOT truncated. The stem is the name of a file that already
+ * exists on this filesystem, so it is already legal; passing it through the
+ * sanitizer would invent a second name for the same thing, and truncating it
+ * would silently point the working copy at a different archive file than the one
+ * it claims. The length is CHECKED instead — see below.
+ */
+export function workingEpubStem(manifest: ProjectManifest): string {
+  const entry = archiveOriginalEntry(manifest);
+  const fromArchive = entry ? path.basename(entry.path).replace(/\.[^./\\]+$/, '') : '';
+  if (fromArchive) return fromArchive;
+
+  // The pre-archive layout again: `source/original.epub` is the original, and
+  // its basename is "original", which names nothing. Such a project has no
+  // archive file to declare, so the recorded source filename is what it is
+  // about — sanitized, because unlike a real basename it has never had to be a
+  // legal filename.
+  const recorded = sanitizeExportStem(
+    (manifest.source?.originalFilename ?? '').replace(/\.[^./\\]+$/, ''));
+  if (recorded) return recorded;
 
   throw new Error(
-    `Project ${manifest.projectId || '(no id)'} has neither a title nor a source filename, `
-    + 'so its export EPUB cannot be named. Set the book\'s title in its metadata, then export again.'
+    `Project ${manifest.projectId || '(no id)'} has no archive original and no recorded source `
+    + 'filename, so its working copy cannot be named after anything. Re-import the book.'
   );
 }
 
+/**
+ * The 255-character cap is on ONE PATH COMPONENT, on every Windows filesystem,
+ * regardless of long-path support — and a write over it fails as ENOENT, which
+ * reads as "the folder is missing" and sends whoever hits it looking in the
+ * wrong place entirely.
+ *
+ * So it is measured here and refused by name. Truncating instead is the one
+ * thing that must not happen: `<archive basename>.working.epub` is a claim about
+ * which archive file this is the working copy OF, and a shortened claim points
+ * at a file that may not be the one.
+ */
+function requireLegalComponent(component: string, manifest: ProjectManifest): string {
+  if (component.length <= 255) return component;
+  throw new Error(
+    `${manifest.projectId || '(no id)'}'s working copy would be called "${component}", which is `
+    + `${component.length} characters — a filename may be at most 255 on this filesystem, and a `
+    + 'longer one fails as a missing-folder error rather than a naming one. Rename the file in '
+    + `archive/ to something shorter (at most ${255 - WORKING_EPUB_SUFFIX.length} characters before `
+    + 'its extension) and open the book again.'
+  );
+}
+
+/**
+ * Where the project's working copy lives: `source/<archive basename>.working.epub`.
+ *
+ * ONE derivation, and every writer of the book goes through it — the EPUB
+ * projects that copy their original, `foundry vlm-convert` writing a PDF's pages
+ * out as a book, and the picker's own reflow export. That is what makes "the
+ * working copy" a thing the user can point at rather than whichever of several
+ * files happened to be written last.
+ */
 export function exportEpubRelPath(manifest: ProjectManifest): string {
-  return `source/${exportEpubStem(manifest)}.epub`;
+  const component = requireLegalComponent(
+    `${workingEpubStem(manifest)}${WORKING_EPUB_SUFFIX}`, manifest);
+  return `source/${component}`;
 }
 
 /** Read a manifest straight off disk — works for a directory the library doesn't own. */
@@ -861,6 +948,117 @@ export async function readExportEpub(projectDir: string): Promise<ExportEpubLoca
   return { relPath: recorded.path, absPath: toAbs(projectDir, recorded.path), modifiedAt: recorded.modifiedAt };
 }
 
+/** What a naming migration did, so a caller can say it once on the console. */
+export interface WorkingEpubRenameSummary {
+  /** The book's path before and after, project-relative. Null when nothing moved. */
+  from: string | null;
+  to: string | null;
+  /** The narration copy's, when it moved with the book. */
+  ttsFrom: string | null;
+  ttsTo: string | null;
+}
+
+/**
+ * Rename this project's book to the working-copy convention, if it is not
+ * already there.
+ *
+ * ── Why a migration, and why here ───────────────────────────────────────────
+ *
+ * The book used to be named after the recorded source filename or the title, and
+ * the library has four of those on disk (measured 2026-08-08: 4 of 378 projects
+ * have an `outputs.epub`, none already named `.working.epub`). The name is now a
+ * DECLARATION — `<archive basename>.working.epub` says which archive file this
+ * is the editable copy of — and a declaration only means something if every book
+ * makes it. So the file is renamed the next time anything resolves it, and the
+ * manifest is repointed in the same act.
+ *
+ * ── The narration copy moves with it ────────────────────────────────────────
+ *
+ * `<stem>.tts.epub` is named FROM the book, so leaving it behind would strand a
+ * file named after a book that no longer exists under that name — the exact
+ * anonymity this convention removes. It is renamed too when the project has one,
+ * and its record is repointed with the book's. If it is missing from disk the
+ * record still moves: the next export writes the new name, and a record pointing
+ * at where the file WILL be is better than one pointing at a name nothing
+ * produces any more.
+ *
+ * ── What it will not do ─────────────────────────────────────────────────────
+ *
+ * It never overwrites. A target that already exists is a project that has both
+ * names on disk, and picking one for the user would delete a book; it stops and
+ * says so. And it never renames a file it cannot find — a record pointing at a
+ * deleted book is left exactly as it is, because that is `ensureBookEpub`'s
+ * problem and it has its own sentence for it.
+ */
+export async function migrateWorkingEpubNaming(
+  projectDir: string
+): Promise<WorkingEpubRenameSummary> {
+  const nothing: WorkingEpubRenameSummary = { from: null, to: null, ttsFrom: null, ttsTo: null };
+  const manifest = await readManifestAt(projectDir);
+
+  const recorded = manifest.outputs?.epub?.path;
+  if (!recorded) return nothing;
+  const targetRel = exportEpubRelPath(manifest);
+  if (recorded === targetRel) return nothing;
+
+  const fromAbs = toAbs(projectDir, recorded);
+  const toAbsPath = toAbs(projectDir, targetRel);
+  if (!fs.existsSync(fromAbs)) return nothing;
+  if (fs.existsSync(toAbsPath)) {
+    throw new Error(
+      `${path.basename(projectDir)} has both ${recorded} and ${targetRel} on disk. The second is `
+      + 'the name this project\'s book should have, and renaming the first onto it would destroy '
+      + 'whichever of the two is the real one. Delete the copy you do not want, then open the book '
+      + 'again.'
+    );
+  }
+
+  // The narration copy is resolved BEFORE the book moves, because its name is
+  // derived from the book's — asking afterwards would derive it from the new name
+  // and find nothing.
+  const ttsRecorded = manifest.outputs?.ttsEpub?.path ?? null;
+  const ttsTargetRel = narrationEpubRelPath(targetRel);
+
+  await fs.promises.rename(fromAbs, toAbsPath);
+  let ttsMoved = false;
+  if (ttsRecorded !== null && ttsRecorded !== ttsTargetRel) {
+    const ttsFromAbs = toAbs(projectDir, ttsRecorded);
+    const ttsToAbs = toAbs(projectDir, ttsTargetRel);
+    if (fs.existsSync(ttsFromAbs) && !fs.existsSync(ttsToAbs)) {
+      await fs.promises.rename(ttsFromAbs, ttsToAbs);
+    }
+    ttsMoved = true;
+  }
+
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+  const saved = await modifyManifest(projectId, (m) => {
+    // The record is repointed IN PLACE — `registerEpubExport` is deliberately not
+    // used, because that call means "the book has been rebuilt" and drops the
+    // applied passes, the narration strikes and the pass diffs with it. Nothing
+    // has been rebuilt here: the same bytes have a truer name.
+    if (m.outputs?.epub) m.outputs.epub.path = targetRel;
+    if (m.outputs?.ttsEpub && ttsMoved) m.outputs.ttsEpub.path = ttsTargetRel;
+  });
+  if (!saved.success) {
+    throw new Error(
+      `${path.basename(projectDir)}'s book was renamed to ${targetRel} but the manifest could not `
+      + `be repointed at it: ${saved.error}. The file is where the new name says; fix the manifest `
+      + 'and open the book again.'
+    );
+  }
+
+  console.log(
+    `[manifest-service] ${path.basename(projectDir)}: ${recorded} -> ${targetRel}`
+    + (ttsMoved ? ` (and ${ttsRecorded} -> ${ttsTargetRel})` : '')
+  );
+  return {
+    from: recorded,
+    to: targetRel,
+    ttsFrom: ttsMoved ? ttsRecorded : null,
+    ttsTo: ttsMoved ? ttsTargetRel : null,
+  };
+}
+
 /**
  * The project's source original, when it is an EPUB.
  *
@@ -913,8 +1111,17 @@ async function sourceOriginalEpub(
  * A project with no EPUB original is REFUSED by name. A PDF with no book has no
  * book; converting one is what makes it, and this helper is not a second, silent
  * way to end up with something to narrate.
+ *
+ * ── The naming migration runs FIRST ─────────────────────────────────────────
+ *
+ * A project whose book predates `<archive basename>.working.epub` has one under
+ * the old name. `migrateWorkingEpubNaming` renames it before anything here looks
+ * for one, so this never mints a SECOND copy of a book the project already has —
+ * which is exactly what would happen otherwise, the recorded path being a file
+ * that exists under a name the derivation no longer produces.
  */
 export async function ensureBookEpub(projectDir: string): Promise<ExportEpubLocation> {
+  await migrateWorkingEpubNaming(projectDir);
   const existing = await readExportEpub(projectDir);
   if (existing && fs.existsSync(existing.absPath)) return existing;
 
@@ -940,11 +1147,57 @@ export async function ensureBookEpub(projectDir: string): Promise<ExportEpubLoca
     );
   }
   await atomicCopyFile(original, target.absPath);
+
+  // ── The edits already made against the archive come with it ────────────────
+  //
+  // Nothing is translated or rewritten here, and that is the POINT: the working
+  // copy is the archive's bytes, so every record keyed to those bytes still
+  // describes it. A narration strike is a position in the aligner's traversal of
+  // the markup; a deleted block id is an md5 of where mupdf laid that block out;
+  // both are functions of the content, and the content is identical. So the
+  // user's work carries over by construction rather than by a migration that
+  // could get it wrong.
+  //
+  // It is VERIFIED rather than assumed, because "identical bytes" is the whole
+  // argument and a short copy would silently invalidate every one of those
+  // records — the strikes would name elements that had moved, and the deletions
+  // would name blocks that were not there. A copy that is not identical is a
+  // failed copy and is refused as one.
+  const [originalDigest, copyDigest] = await Promise.all([
+    sha256Of(original),
+    sha256Of(target.absPath),
+  ]);
+  if (originalDigest !== copyDigest) {
+    await fs.promises.rm(target.absPath, { force: true });
+    throw new Error(
+      `${path.basename(projectDir)}'s working copy did not come out identical to its archive `
+      + `original (${originalDigest.slice(0, 12)} vs ${copyDigest.slice(0, 12)}). The copy has been `
+      + 'removed. Every edit already recorded against this book is keyed to its exact bytes, so a '
+      + 'copy that differs would silently apply them to the wrong paragraphs. Try opening the book '
+      + 'again; if it keeps happening, the disk is the place to look.'
+    );
+  }
+
   await registerEpubExport(projectDir, target.absPath);
+  const carried = manifest.source?.deletedBlockIds?.length ?? 0;
+  const carriedPages = manifest.source?.deletedPages?.length ?? 0;
   console.log(
-    `[manifest-service] ${path.basename(projectDir)}: minted ${target.relPath} from its EPUB original`
+    `[manifest-service] ${path.basename(projectDir)}: minted ${target.relPath} from its EPUB `
+    + `original, byte-identical (${copyDigest.slice(0, 12)}); ${carried} deleted block(s) and `
+    + `${carriedPages} deleted page(s) already recorded against those bytes carry over unchanged.`
   );
   return { ...target, modifiedAt: new Date().toISOString() };
+}
+
+/** sha256 of a file, streamed — the same digest every identity check here uses. */
+function sha256Of(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
 }
 
 /**
