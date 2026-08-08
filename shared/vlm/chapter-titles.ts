@@ -2,10 +2,15 @@
  * chapter-titles — what the project's book calls its chapters, as a wire shape.
  *
  * The book `foundry vlm-convert` writes is one XHTML document per chapter, and
- * the EPUB 3 navigation document is where each of them is NAMED. That name is
- * not decoration: ebook2audiobook takes its chapter titles from the book's own
- * nav.xhtml, matched to spine documents by identity, so the nav entry is
- * literally what a listener hears announced.
+ * the book's table of contents is where each of them is NAMED. That name is not
+ * decoration: ebook2audiobook takes its chapter titles from the book's own
+ * navigation, matched to spine documents by identity, so the entry is literally
+ * what a listener hears announced.
+ *
+ * A book states that list in an EPUB 3 navigation document, in an EPUB 2 NCX, or
+ * in both, and a chapter has ONE name whichever way it is written down — so
+ * these shapes speak of documents and titles rather than of navs, and a rename
+ * lands in every list the book carries (electron/book-chapters.ts).
  *
  * Declared under `shared/` beside the narration deletions, for the same reason
  * those are: main reads the book and the picker draws what came back, and a
@@ -27,7 +32,11 @@ export interface BookChapterTitle {
    * first half of that key. No page arithmetic, no range matching.
    */
   file: string;
-  /** The nav entry's link text: THE title, the one the audiobook is built from. */
+  /**
+   * The table-of-contents entry's text: THE title, the one the audiobook is
+   * built from. Named for the EPUB 3 nav it is usually read out of; a book with
+   * only an NCX answers with its `navLabel`, which is the same fact.
+   */
   navTitle: string;
   /** The document's own `<head><title>`, which should say the same thing. */
   docTitle: string;
@@ -36,9 +45,14 @@ export interface BookChapterTitle {
 export interface BookChapterTitles {
   /** Absolute path to the book these came out of. */
   bookPath: string;
-  /** The navigation document's zip entry name. */
-  navFile: string;
-  /** Every document the table of contents lists, in the order it lists them. */
+  /**
+   * Every table of contents the book carries, as zip entry names — the nav
+   * document first where there is one, then the NCX. A rename rewrites the
+   * chapter's entry in all of them, so this is also the list of files an edit
+   * will touch.
+   */
+  tocFiles: string[];
+  /** Every document the tables of contents list, in the order they list them. */
   chapters: BookChapterTitle[];
 }
 
@@ -67,9 +81,15 @@ export interface BookChapterRenameResult {
   file: string;
   /** What it is called now. */
   title: string;
-  /** What the nav called it before. */
+  /** What the book's first table of contents called it before. */
   previousTitle: string;
   /** The book's sha256 after the rewrite. */
   bookSha256: string;
+  /**
+   * The tables of contents the new title was written into, as zip entry names.
+   * A book carrying both a nav document and an NCX lists both: the rename that
+   * updated only one of them is the bug this field is evidence against.
+   */
+  rewrittenTocs: string[];
   narrationCopy: NarrationCopyOutcome;
 }
