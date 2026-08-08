@@ -2756,6 +2756,11 @@ export class ElectronService {
        * deletions that reached nothing (electron/narration-export.ts).
        */
       fromStrikes: number; translated: number; unresolved: string | null;
+      /**
+       * Spine documents the strikes emptied, removed from the copy entirely
+       * rather than left as blank pages. Named so the user can recognize them.
+       */
+      removedDocuments: string[];
     };
     error?: string;
   }> {

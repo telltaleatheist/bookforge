@@ -72,6 +72,22 @@ export interface NarrationEpubOutput {
    * ran.
    */
   removedSupMarkers?: number;
+  /**
+   * The spine documents that were removed because the strikes emptied them, by
+   * zip entry name.
+   *
+   * A document whose every element was struck is left as a blank page in the
+   * copy, so it is taken out of the book entirely (electron/epub-processor.ts,
+   * `writeNarrationEpub`). The LIST rather than a count, because it is the only
+   * record of which documents this copy does not have — a later reader that
+   * cannot find one needs to be able to tell "pruned on purpose" from "the two
+   * files have come apart", and those get very different sentences.
+   *
+   * OPTIONAL because records written before the pruning existed have no list,
+   * and inventing an empty one for them would say nothing was pruned rather
+   * than that the question was never asked.
+   */
+  removedDocuments?: string[];
 }
 
 export function narrationElementKey(file: string, index: number): NarrationElementKey {

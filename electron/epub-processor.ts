@@ -4908,6 +4908,19 @@ function pruneOpf(opfXml: string, pruned: ReadonlySet<string>, opfEntry: string)
     if (idref && removedIds.has(idref)) refs[i].parentNode.removeChild(refs[i]);
   }
 
+  // The EPUB 2 `<guide>`: a third place the OPF names documents, by href rather
+  // than by id, and the one this missed on the first run — Killing America's
+  // guide pointed `type="toc"` at the printed contents page the user had struck
+  // out, so the file was gone from the zip and still named in the package.
+  // A reader that follows the guide would have looked for it.
+  const guideRefs = doc.getElementsByTagName('reference');
+  for (let i = guideRefs.length - 1; i >= 0; i--) {
+    const href = guideRefs[i].getAttribute('href');
+    if (!href) continue;
+    const entry = linkTargetEntry(href, opfEntry);
+    if (entry !== null && pruned.has(entry)) guideRefs[i].parentNode.removeChild(guideRefs[i]);
+  }
+
   return new XMLSerializer().serializeToString(doc);
 }
 

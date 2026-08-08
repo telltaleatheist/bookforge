@@ -50,8 +50,17 @@ export interface BookChapterTitles {
  * cut from some other version of this book and was NOT touched, which the caller
  * must say out loud rather than absorb: an audiobook made from it would announce
  * the old chapter title, and nothing on screen would explain why.
+ *
+ * `chapter-pruned` — the copy is current, but this chapter is NOT IN IT: the
+ * strikes emptied that document, so the export removed it from the copy along
+ * with its table-of-contents entry (electron/epub-processor.ts,
+ * `writeNarrationEpub`). Nothing is wrong and nothing needs re-exporting — the
+ * book carries the new title and the narration has no chapter to carry it on.
+ * It is its own outcome rather than folded into `none` because the two are
+ * opposite facts: `none` is "there is no copy", this is "there is one, and you
+ * deleted this chapter out of it".
  */
-export type NarrationCopyOutcome = 'none' | 'updated' | 'already-stale';
+export type NarrationCopyOutcome = 'none' | 'updated' | 'already-stale' | 'chapter-pruned';
 
 export interface BookChapterRenameResult {
   /** The chapter document that was renamed, as a zip entry name. */
