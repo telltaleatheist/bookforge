@@ -22,35 +22,36 @@
  *    boundaries nor the passes, so no input can light one.
  */
 
-/** The six things a book can have had done to it, in ladder order. */
+/**
+ * The two things a book can have had done to it, in ladder order.
+ *
+ * Four stars went in Aug 2026, and all four for the same reason: nothing runs
+ * that would light them. **Cast** and **Detect** were read off the working
+ * copy's recorded stage boundaries, and a working copy is a plain copy with a
+ * marker now — no stage writes a boundary, so those two columns could only ever
+ * be empty. **Corrected** and **Footnotes** were EPUB passes that no longer
+ * exist: OCR repair went with the Tesseract pipeline, and footnote references
+ * come out as the narration copy is written, which edits no book.
+ *
+ * A book that HAS one of those in its provenance keeps it — the record is
+ * history and history is not rewritten. It simply reaches the versions page as
+ * a provenance badge (with its diff still reviewable) rather than as a star,
+ * which follows by construction from `starForPassKind` answering null.
+ */
 export type VersionStar =
-  | 'cast'
-  | 'detect'
-  | 'corrected'
-  | 'footnotes'
   | 'simplified'
   | 'translated';
 
-export const VERSION_STARS: readonly VersionStar[] = [
-  'cast', 'detect', 'corrected', 'footnotes', 'simplified', 'translated',
-];
+export const VERSION_STARS: readonly VersionStar[] = ['simplified', 'translated'];
 
 /** What each star is called in front of the user. */
 export const STAR_LABELS: Record<VersionStar, string> = {
-  cast: 'Cast',
-  detect: 'Detect',
-  corrected: 'Corrected',
-  footnotes: 'Footnotes',
   simplified: 'Simplified',
   translated: 'Translated',
 };
 
 /** What a lit star MEANS — the sentence its tooltip carries. */
 export const STAR_MEANINGS: Record<VersionStar, string> = {
-  cast: 'The words of the original are in this copy — you can select and search them.',
-  detect: 'Every block on every page has been found and labelled.',
-  corrected: 'OCR mistakes in the book have been corrected.',
-  footnotes: 'Footnote markers have been removed from the book.',
   simplified: 'The book has been rewritten in simpler language.',
   translated: 'The book has been translated.',
 };
@@ -58,39 +59,30 @@ export const STAR_MEANINGS: Record<VersionStar, string> = {
 /**
  * Which applied-pass kind lights which star.
  *
- * Only the EPUB passes are here. Cast and Detect are deliberately absent: they
- * are read from the BINDING's measured boundaries, not from the manifest's
- * record of what ran, because the working document is the authority on what has
- * landed in it. A book whose manifest remembers a `get-text` pass whose working
- * copy has since been reset must not show a Cast star.
+ * The two EPUB passes, and nothing else. A kind absent from here is not an
+ * omission: it is a pass that no longer runs, or one that PRODUCED the book
+ * rather than transforming it, and neither has a column on the EPUB row.
  */
 export const PASS_STARS: Record<string, VersionStar> = {
-  // The retired kind is the only one that has ever recorded a correction pass;
-  // `ocr-correct --epub` (Phase D) records the same kind.
-  'ocr-correction': 'corrected',
-  footnotes: 'footnotes',
   simplify: 'simplified',
   translate: 'translated',
-};
-
-/** Which recorded stage boundary lights which star. */
-const BOUNDARY_STARS: Record<string, VersionStar> = {
-  'get-text': 'cast',
-  blocks: 'detect',
 };
 
 /**
  * The star a pass kind lights, or null when it lights none.
  *
- * Null is a real answer: `get-text`, `blocks` and `reflow` are recorded against
- * the book as the passes that PRODUCED it, and the retired `tesseract` /
- * `detection` kinds belong to books processed before Aug 2026. None of them has
- * a column on the EPUB row.
+ * Null is a real answer and it is load-bearing. `vlm-convert`, `get-text`,
+ * `blocks` and `reflow` are recorded against the book as the passes that
+ * PRODUCED it; `ocr-correction`, `footnotes`, `tesseract` and `detection`
+ * belong to books processed before Aug 2026. None has a star, and answering
+ * null here is exactly what hands them to the provenance badges instead — so a
+ * historical book keeps its history and its reviewable diffs without a column
+ * that can never light for anything made today.
  *
- * This is exported because the star is now the way IN to a pass's diff (Owen,
- * third session: a diff "should be linked to the file it was applied to"), and
- * the provenance badges have to know which kinds the stars are already carrying
- * so the two do not both offer the same review.
+ * This is exported because the star is the way IN to a pass's diff (Owen, third
+ * session: a diff "should be linked to the file it was applied to"), and the
+ * provenance badges have to know which kinds the stars are already carrying so
+ * the two do not both offer the same review.
  */
 export function starForPassKind(kind: string): VersionStar | null {
   return PASS_STARS[kind] ?? null;
@@ -110,9 +102,11 @@ export type FamilyRowKind = 'archive' | 'working' | 'epub';
 export function starSlotsFor(kind: FamilyRowKind): VersionStar[] {
   switch (kind) {
     case 'archive':
-      return [];
+    // The working copy earns none either, and that is a fact about what runs
+    // rather than a gap: curation is a person editing a file, and there is no
+    // stage over it whose completion a star could report.
     case 'working':
-      return VERSION_STARS.filter((s) => Object.values(BOUNDARY_STARS).includes(s));
+      return [];
     case 'epub':
       return VERSION_STARS.filter((s) => Object.values(PASS_STARS).includes(s));
   }
@@ -153,18 +147,7 @@ export interface VersionFamilyInput {
     readonly modifiedAt: string | null;
   } | null;
   /** The book, when it is on disk. */
-  readonly epub: {
-    readonly id: string;
-    /**
-     * `binding.epub.writtenAt` — when REFLOW wrote this book.
-     *
-     * NOT the file's mtime and NOT `outputs.epub.modifiedAt`: a footnote pass
-     * rewrites the book in place and moves both, which would clear a staleness
-     * warning that is still true. Null when no build was recorded, and then
-     * nothing is claimed about staleness at all.
-     */
-    readonly builtAt: string | null;
-  } | null;
+  readonly epub: { readonly id: string } | null;
   /** `manifest.outputs.epub.appliedPasses`, verbatim, in execution order. */
   readonly appliedPasses: readonly PassRecord[];
 }
@@ -176,10 +159,15 @@ export interface VersionFamilyRow {
   readonly depth: 0 | 1;
   readonly stars: readonly VersionStar[];
   /**
-   * Set only on the EPUB row, and only when it can be PROVED from what is on
-   * disk. The sentence deliberately does not count the edits: nothing records
-   * them individually (curation is an append to the working document), so a
-   * number here would be invented. See docs/PIPELINE_V2_PLAN.md.
+   * Always null, and declared so the row shape does not change under a consumer
+   * if something provable turns up again.
+   *
+   * It used to say "built before your latest edits — rebuild to include them",
+   * measured from `binding.epub.writtenAt` against the working copy's mtime.
+   * Nothing writes that field any more (the reflow stage that did is gone), so
+   * the comparison had exactly one input and could never fire. A warning that
+   * cannot fire is worse than none: it reads as proof there is nothing to warn
+   * about.
    */
   readonly staleness: string | null;
 }
@@ -215,16 +203,10 @@ export function starsFor(kind: FamilyRowKind, input: VersionFamilyInput): Versio
   switch (kind) {
     case 'archive':
       return [];
-    case 'working': {
-      const working = input.working;
-      if (!working) return [];
-      const lit = new Set<VersionStar>();
-      for (const boundary of working.boundaries) {
-        const star = BOUNDARY_STARS[boundary.stage];
-        if (star) lit.add(star);
-      }
-      return VERSION_STARS.filter((s) => lit.has(s));
-    }
+    // Same construction, same guarantee: the working branch reads neither the
+    // boundaries nor the passes, so no input can light a star on it.
+    case 'working':
+      return [];
     case 'epub': {
       if (!input.epub) return [];
       const latest = latestPassByKind(input.appliedPasses);
@@ -236,32 +218,6 @@ export function starsFor(kind: FamilyRowKind, input: VersionFamilyInput): Versio
       return VERSION_STARS.filter((s) => lit.has(s));
     }
   }
-}
-
-/**
- * Whether the book was built before the working copy's latest edits, said in
- * the weakest form that is TRUE.
- *
- * "built before your last N edits" is what the plan asks for and what cannot be
- * honestly produced: curation lands as one append per batch and nothing on disk
- * records how many edits went into it, so N would be a number nobody measured.
- * The comparison itself IS measured — the working document's mtime against the
- * build time the binding recorded — so the sentence says that and stops.
- *
- * Both sides must be known. An unrecorded build time means the book predates
- * the binding recording one, and inventing a comparison against the EPUB's own
- * mtime would read a footnote pass (which rewrites the book in place) as
- * "rebuilt", clearing a warning that is still true.
- */
-export function epubStaleness(input: VersionFamilyInput): string | null {
-  const { epub, working } = input;
-  if (!epub || !working) return null;
-  if (!epub.builtAt || !working.modifiedAt) return null;
-  const built = Date.parse(epub.builtAt);
-  const curated = Date.parse(working.modifiedAt);
-  if (!Number.isFinite(built) || !Number.isFinite(curated)) return null;
-  if (curated <= built) return null;
-  return 'Built before your latest edits to the working copy — rebuild to include them.';
 }
 
 /**
@@ -299,8 +255,29 @@ export function versionFamily(input: VersionFamilyInput): VersionFamilyRow[] {
       kind: 'epub',
       depth: childDepth,
       stars: starsFor('epub', input),
-      staleness: epubStaleness(input),
+      staleness: null,
     });
   }
   return rows;
+}
+
+/**
+ * Why this book cannot be narrated, or null when it can.
+ *
+ * The versions page's per-row **Process** button and the picker's "Next →
+ * Narration" both ask this, and they must get the SAME sentence: one lock
+ * explained two ways is two locks as far as the user is concerned.
+ *
+ * The input is narrowed to the one fact the question turns on, and that
+ * narrowing is exact rather than partial: narration takes the book and nothing
+ * else (e2a accepts nothing but an EPUB), so a caller that knows whether the
+ * book exists knows everything this needs. Lives here because the family is
+ * where "does this project have a book" is already measured, from
+ * `manifestService.readExportEpub` having found one on disk.
+ */
+export function narrationRefusal(book: { readonly bookEpubExists: boolean }): string | null {
+  return book.bookEpubExists
+    ? null
+    : 'Narration reads the book, and this project does not have one yet — convert its PDF to an '
+      + 'EPUB from this page first.';
 }

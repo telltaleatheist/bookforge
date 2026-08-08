@@ -16,6 +16,11 @@
  *  - **The archive can never earn a star.** archive/ is never written to, so no
  *    stage has ever landed on it. Asserted here rather than commented, against
  *    an input carrying every boundary and every pass at once.
+ *  - **A star exists only for a pass that still RUNS.** Cast, Detect, Corrected
+ *    and Footnotes went in Aug 2026: nothing writes a stage boundary any more
+ *    and neither EPUB pass exists. A book that carries one of them in its
+ *    provenance keeps it — `starForPassKind` answers null, which is what hands
+ *    it to the provenance badges with its diff intact.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -33,7 +38,7 @@ const {
   latestPassByKind,
   starSlotsFor,
   starsFor,
-  epubStaleness,
+  starForPassKind,
   versionFamily,
 } = require(MODULE);
 
@@ -97,13 +102,13 @@ test('a working copy with no archive on disk is shown flat, not under nothing', 
 test('the book is a child too, and passes add no rows of their own', () => {
   const rows = versionFamily(bare({
     working: working(['get-text', 'blocks']),
-    epub: { id: 'exported', builtAt: BUILT },
+    epub: { id: 'exported' },
     // Three passes, two of them the same kind. A pass is not a version: the row
     // count must not move.
     appliedPasses: [
-      { kind: 'footnotes', at: '2026-08-05T02:00:00.000Z' },
-      { kind: 'footnotes', at: '2026-08-05T03:00:00.000Z' },
-      { kind: 'simplify', at: '2026-08-05T04:00:00.000Z' },
+      { kind: 'simplify', at: '2026-08-05T02:00:00.000Z' },
+      { kind: 'simplify', at: '2026-08-05T03:00:00.000Z' },
+      { kind: 'translate', at: '2026-08-05T04:00:00.000Z' },
     ],
   }));
   assert.deepStrictEqual(kinds(rows), ['archive', 'working', 'epub']);
@@ -112,24 +117,12 @@ test('the book is a child too, and passes add no rows of their own', () => {
 
 // ── Which stars are lit ─────────────────────────────────────────────────────
 
-test('cast and detect come from the binding boundaries, not from the manifest', () => {
+test('the working copy earns no star, whatever boundaries it carries', () => {
+  // Nothing writes a boundary any more — a working copy is a plain copy with a
+  // marker — so Cast and Detect could only ever be empty columns. A book minted
+  // before Aug 2026 still carries the old boundaries, and they light nothing.
   const rows = versionFamily(bare({
     working: working(['get-text', 'blocks']),
-    // The manifest remembers passes whose work has since been reset out of the
-    // document. The working copy is the authority on what has landed in it.
-    appliedPasses: [{ kind: 'get-text', at: CAST }, { kind: 'blocks', at: DETECT }],
-  }));
-  assert.deepStrictEqual(starsOf(rows, 'working'), ['cast', 'detect']);
-});
-
-test('a cast-but-undetected copy earns Cast only', () => {
-  const rows = versionFamily(bare({ working: working(['get-text']) }));
-  assert.deepStrictEqual(starsOf(rows, 'working'), ['cast']);
-});
-
-test('a manifest remembering a cast lights nothing without a boundary to prove it', () => {
-  const rows = versionFamily(bare({
-    working: working([]),
     appliedPasses: [{ kind: 'get-text', at: CAST }, { kind: 'blocks', at: DETECT }],
   }));
   assert.deepStrictEqual(starsOf(rows, 'working'), []);
@@ -138,36 +131,52 @@ test('a manifest remembering a cast lights nothing without a boundary to prove i
 test('the epub stars are the passes, collapsed by kind and in ladder order', () => {
   const rows = versionFamily(bare({
     working: working(['get-text', 'blocks']),
-    epub: { id: 'exported', builtAt: BUILT },
+    epub: { id: 'exported' },
     appliedPasses: [
       { kind: 'translate', at: '2026-08-05T05:00:00.000Z' },
-      { kind: 'footnotes', at: '2026-08-05T02:00:00.000Z' },
-      { kind: 'footnotes', at: '2026-08-05T03:00:00.000Z' },
-      { kind: 'ocr-correction', at: '2026-08-05T01:30:00.000Z' },
+      { kind: 'simplify', at: '2026-08-05T02:00:00.000Z' },
+      { kind: 'simplify', at: '2026-08-05T03:00:00.000Z' },
     ],
   }));
-  assert.deepStrictEqual(starsOf(rows, 'epub'), ['corrected', 'footnotes', 'translated']);
+  assert.deepStrictEqual(starsOf(rows, 'epub'), ['simplified', 'translated']);
 });
 
-test('the document passes light no star on the book — they are the working copy\'s', () => {
+test('a retired pass lights no star, and says so through starForPassKind', () => {
+  // The books are real and their diffs are still reviewable — that is exactly
+  // what the null answer buys: the versions page shows them as provenance
+  // badges instead, rather than as a column nothing made today can light.
+  for (const kind of ['ocr-correction', 'footnotes', 'tesseract', 'detection']) {
+    assert.strictEqual(starForPassKind(kind), null, `${kind} still lights a star`);
+  }
+  const rows = versionFamily(bare({
+    epub: { id: 'exported' },
+    appliedPasses: [
+      { kind: 'ocr-correction', at: '2026-08-05T01:30:00.000Z' },
+      { kind: 'footnotes', at: '2026-08-05T02:00:00.000Z' },
+    ],
+  }));
+  assert.deepStrictEqual(starsOf(rows, 'epub'), []);
+});
+
+test('the passes that PRODUCED the book light no star on it', () => {
   const rows = versionFamily(bare({
     working: working(['get-text']),
-    epub: { id: 'exported', builtAt: BUILT },
+    epub: { id: 'exported' },
     appliedPasses: [
       { kind: 'get-text', at: CAST }, { kind: 'blocks', at: DETECT },
-      { kind: 'reflow', at: BUILT },
+      { kind: 'reflow', at: BUILT }, { kind: 'vlm-convert', at: BUILT },
     ],
   }));
   assert.deepStrictEqual(starsOf(rows, 'epub'), []);
 });
 
 test('a book with no epub on disk has no epub row to hold its stars', () => {
-  // The Kershaw case: the manifest still records a footnote pass against a book
-  // that has since been deleted. No file, no row, no star.
+  // The Kershaw case: the manifest still records a pass against a book that has
+  // since been deleted. No file, no row, no star.
   const rows = versionFamily(bare({
     working: working(['get-text', 'blocks']),
     epub: null,
-    appliedPasses: [{ kind: 'footnotes', at: '2026-08-05T02:00:00.000Z' }],
+    appliedPasses: [{ kind: 'simplify', at: '2026-08-05T02:00:00.000Z' }],
   }));
   assert.deepStrictEqual(kinds(rows), ['archive', 'working']);
 });
@@ -181,10 +190,10 @@ test('the archive earns no star from ANY input', () => {
   const everything = {
     archive: { id: 'archive:archive/Book.pdf' },
     working: working(['get-text', 'blocks', 'footnotes']),
-    epub: { id: 'exported', builtAt: BUILT },
+    epub: { id: 'exported' },
     appliedPasses: [
-      'get-text', 'blocks', 'reflow', 'footnotes', 'simplify', 'translate',
-      'tesseract', 'ocr-correction', 'detection',
+      'get-text', 'blocks', 'reflow', 'vlm-convert', 'footnotes', 'simplify',
+      'translate', 'tesseract', 'ocr-correction', 'detection',
     ].map((kind) => ({ kind, at: BUILT })),
   };
   assert.deepStrictEqual(starsFor('archive', everything), []);
@@ -194,9 +203,11 @@ test('the archive earns no star from ANY input', () => {
 
 test('a row is only ever offered star columns it could actually earn', () => {
   // An unlit "Simplified" beside the working copy would read as work not done
-  // yet, when simplifying a working PDF is not a thing that exists.
-  assert.deepStrictEqual(starSlotsFor('working'), ['cast', 'detect']);
-  assert.deepStrictEqual(starSlotsFor('epub'), ['corrected', 'footnotes', 'simplified', 'translated']);
+  // yet, when simplifying a working PDF is not a thing that exists — and the
+  // working row has no column of its own left, because nothing runs over it
+  // whose completion a star could report.
+  assert.deepStrictEqual(starSlotsFor('working'), []);
+  assert.deepStrictEqual(starSlotsFor('epub'), ['simplified', 'translated']);
 });
 
 test('every star has a label', () => {
@@ -209,59 +220,28 @@ test('every star has a label', () => {
 
 test('latestPassByKind keeps the last run and counts them all', () => {
   const collapsed = latestPassByKind([
-    { kind: 'footnotes', at: 'first' },
-    { kind: 'simplify', at: 'only' },
-    { kind: 'footnotes', at: 'last' },
+    { kind: 'simplify', at: 'first' },
+    { kind: 'translate', at: 'only' },
+    { kind: 'simplify', at: 'last' },
   ]);
-  assert.strictEqual(collapsed.get('footnotes').latest.at, 'last');
-  assert.strictEqual(collapsed.get('footnotes').count, 2);
-  assert.strictEqual(collapsed.get('simplify').count, 1);
-  assert.strictEqual(collapsed.get('translate'), undefined);
+  assert.strictEqual(collapsed.get('simplify').latest.at, 'last');
+  assert.strictEqual(collapsed.get('simplify').count, 2);
+  assert.strictEqual(collapsed.get('translate').count, 1);
+  assert.strictEqual(collapsed.get('footnotes'), undefined);
 });
 
-// ── Staleness: said, and only when it can be proved ─────────────────────────
+// ── Staleness: nothing can prove it, so nothing claims it ───────────────────
 
-test('curation after the build says the book is behind', () => {
-  const stale = epubStaleness(bare({
-    working: working(['get-text', 'blocks'], '2026-08-05T09:00:00.000Z'),
-    epub: { id: 'exported', builtAt: BUILT },
-  }));
-  assert.ok(stale, 'expected a staleness sentence');
-  // No invented number: nothing on disk records the individual edits.
-  assert.ok(!/\d/.test(stale), `staleness must not claim a count: ${stale}`);
-});
-
-test('a book built after the last edit is not stale', () => {
-  assert.strictEqual(epubStaleness(bare({
-    working: working(['get-text', 'blocks'], '2026-08-05T00:30:00.000Z'),
-    epub: { id: 'exported', builtAt: BUILT },
-  })), null);
-});
-
-test('an unrecorded build time claims nothing at all', () => {
-  // Falling back to the EPUB's own mtime would read a footnote pass — which
-  // rewrites the book in place — as a rebuild, clearing a warning still true.
-  assert.strictEqual(epubStaleness(bare({
-    working: working(['get-text'], '2026-08-05T09:00:00.000Z'),
-    epub: { id: 'exported', builtAt: null },
-  })), null);
-});
-
-test('an unreadable timestamp claims nothing either', () => {
-  assert.strictEqual(epubStaleness(bare({
-    working: working(['get-text'], 'not a date'),
-    epub: { id: 'exported', builtAt: BUILT },
-  })), null);
-});
-
-test('staleness rides the epub row and nothing else', () => {
+test('no row ever claims the book is behind the working copy', () => {
+  // The comparison was `binding.epub.writtenAt` against the working copy's
+  // mtime, and nothing writes that field since the reflow stage went. A warning
+  // with one input can never fire, and a warning that cannot fire reads as
+  // proof there is nothing to warn about — so it says nothing at all.
   const rows = versionFamily(bare({
     working: working(['get-text', 'blocks'], '2026-08-05T09:00:00.000Z'),
-    epub: { id: 'exported', builtAt: BUILT },
+    epub: { id: 'exported' },
   }));
-  assert.strictEqual(rows.find((r) => r.kind === 'archive').staleness, null);
-  assert.strictEqual(rows.find((r) => r.kind === 'working').staleness, null);
-  assert.ok(rows.find((r) => r.kind === 'epub').staleness);
+  for (const row of rows) assert.strictEqual(row.staleness, null, `${row.kind} claimed staleness`);
 });
 
 for (const { name, fn } of tests) {
