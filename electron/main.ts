@@ -6905,6 +6905,24 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * Is the configured VLM endpoint up, and what is it serving?
+   *
+   * The Test button in Settings → AI → Reading pages. It runs here rather than
+   * in the renderer because a page fetching somebody's vLLM would be a
+   * cross-origin request and would fail for reasons that say nothing about
+   * whether the server is running.
+   */
+  ipcMain.handle('vlm:check-endpoint', async (
+    _event, config: import('../shared/vlm/conversion').VlmEndpointConfig) => {
+    try {
+      const { checkVlmEndpoint } = await import('./vlm-convert.js');
+      return { success: true, check: await checkVlmEndpoint(config) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   /** The book, whether a VLM read it, and what has been struck out of it. */
   ipcMain.handle('narration:state', async (_event, projectDir: string) => {
     try {

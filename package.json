@@ -55,6 +55,7 @@
     "test:page-types": "npx tsc -p tsconfig.electron.json && node tools/test-page-types.js",
     "test:epub-provenance": "npx tsc -p tsconfig.electron.json && node tools/test-epub-provenance.js",
     "test:narration-deletions": "npx tsc -p tsconfig.electron.json && node tools/test-narration-deletions.js",
+    "test:vlm-endpoint": "npx tsc -p tsconfig.electron.json && node tools/test-vlm-endpoint.js",
     "test:audiobook-analysis-protocol": "node scripts/test-audiobook-analysis-protocol.cjs",
     "test:audiobook-analysis-recovery": "node scripts/test-audiobook-analysis-recovery.cjs",
     "download:mupdf": "node scripts/download-mupdf.js",

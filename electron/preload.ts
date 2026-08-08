@@ -24,7 +24,12 @@ import type {
   ProcessingChainRequest,
 } from '../shared/processing/pass-types';
 import type { BookResetSummary } from '../shared/processing/reset-book';
-import type { VlmConvertRequest, VlmConvertResult } from '../shared/vlm/conversion';
+import type {
+  VlmConvertRequest,
+  VlmConvertResult,
+  VlmEndpointCheck,
+  VlmEndpointConfig,
+} from '../shared/vlm/conversion';
 import type { NarrationDeletions, NarrationState } from '../shared/vlm/narration-deletions';
 import type { TextLayerReport } from '../shared/pdf/text-layer';
 import type {
@@ -1419,6 +1424,9 @@ export interface ElectronAPI {
   vlm: {
     convert: (request: VlmConvertRequest) =>
       Promise<{ success: boolean; result?: VlmConvertResult; error?: string }>;
+    /** Is the configured endpoint up, and what is it serving? */
+    checkEndpoint: (config: VlmEndpointConfig) =>
+      Promise<{ success: boolean; check?: VlmEndpointCheck; error?: string }>;
     narrationState: (projectDir: string) =>
       Promise<{ success: boolean; state?: NarrationState; error?: string }>;
     saveNarrationDeletions: (projectDir: string, elements: string[]) =>
@@ -2457,6 +2465,14 @@ export interface ElectronAPI {
     }>;
   };
   platform: string;
+  /**
+   * `process.arch`. Beside `platform` because the pair is one fact, not two:
+   * darwin alone does not say whether MLX can run here (an Intel Mac is darwin
+   * and has no Metal runtime for it), and `navigator.platform` says "MacIntel"
+   * on both. Read by Settings so the page-reading card can state, before a
+   * ninety-minute run rather than after it, that this machine needs an endpoint.
+   */
+  arch: string;
 }
 
 const electronAPI: ElectronAPI = {
@@ -3273,6 +3289,8 @@ const electronAPI: ElectronAPI = {
   vlm: {
     convert: (request: VlmConvertRequest) =>
       ipcRenderer.invoke('vlm:convert', request),
+    checkEndpoint: (config: VlmEndpointConfig) =>
+      ipcRenderer.invoke('vlm:check-endpoint', config),
     narrationState: (projectDir: string) =>
       ipcRenderer.invoke('narration:state', projectDir),
     saveNarrationDeletions: (projectDir: string, elements: string[]) =>
@@ -4359,6 +4377,7 @@ const electronAPI: ElectronAPI = {
 
 
   platform: process.platform,
+  arch: process.arch,
 };
 
 contextBridge.exposeInMainWorld('electron', electronAPI);

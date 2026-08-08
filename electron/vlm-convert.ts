@@ -42,6 +42,22 @@
  * It is keyed by the PDF's sha256, so a re-imported or edited PDF gets a
  * different file without anything having to notice, and the answers can never be
  * about a different book than the pages being read.
+ *
+ * ── The two machines that can read the pages ────────────────────────────────
+ *
+ * MLX, here, is the default and on an Apple Silicon Mac it is the whole story.
+ * It is also the ONLY thing Apple silicon can do and the only place it can be
+ * done: mlx-vlm is Metal. So on every other machine there is no local route, and
+ * this module refuses BY NAME before it spawns anything rather than letting
+ * foundry's Python fail on `import mlx` — a traceback about a library the user
+ * never chose is not an answer to "why did my book not convert".
+ *
+ * The other machine is somebody else's: `--vlm-endpoint` at an OpenAI-compatible
+ * server (shared/vlm/conversion.ts `VlmEndpointConfig`). It is CONFIGURED, never
+ * inferred, and neither route is ever a fallback for the other — a run that
+ * quietly moved between them would be a run whose speed, cost and answers cannot
+ * be explained. Which one ran is in the result, in the progress lines, and in
+ * the provenance record.
  */
 
 import * as fs from 'fs';
@@ -58,8 +74,14 @@ import * as manifestService from './manifest-service';
 import {
   VLM_CONVERT_STAGE,
   parseVlmProgressLine,
+  resolveVlmEndpoint,
+  vlmEndpointArgs,
+  vlmEndpointModelsUrl,
+  vlmLocalReadingRefusal,
   type VlmConvertRequest,
   type VlmConvertResult,
+  type VlmEndpointCheck,
+  type VlmEndpointConfig,
 } from '../shared/vlm/conversion';
 
 const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
@@ -142,6 +164,17 @@ function inferredPagesFrom(stderr: string): number {
  *     it.
  */
 export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmConvertResult> {
+  // FIRST, before a project is resolved or 38 MB of foundry is fetched: whether
+  // there is a machine that can read these pages at all. `resolveVlmEndpoint`
+  // throws on a half-configured endpoint, and with no endpoint at all a machine
+  // that is not an Apple Silicon Mac has no local reader — both are the user's
+  // settings being wrong, and both are cheapest to say before anything starts.
+  const endpoint = resolveVlmEndpoint(request.endpoint);
+  if (endpoint === null) {
+    const refusal = vlmLocalReadingRefusal(process.platform, process.arch);
+    if (refusal !== null) throw new Error(refusal);
+  }
+
   const project = await resolveDocumentProject({
     projectDir: request.projectDir,
     ...(request.variantId ? { variantId: request.variantId } : {}),
@@ -180,6 +213,18 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     let done = 0;
     let total = 0;
 
+    // Said before the first page, on the same channel the progress lines use, so
+    // the modal states which GPU is about to be busy for the next ninety
+    // minutes rather than implying the local one.
+    opts.onProgress({
+      stage: 'vlm-convert',
+      message: endpoint === null
+        ? 'Loading the vision model on this machine…'
+        : `Reading the pages on ${endpoint.url}…`,
+      done: 0,
+      total: 0,
+    });
+
     const run = await runFoundry(
       [
         'vlm-convert',
@@ -187,6 +232,7 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
         '--out', stagedEpub,
         '--readings', readingsPath,
         '--language', language,
+        ...vlmEndpointArgs(endpoint),
       ],
       {
         signal: opts.signal,
@@ -235,6 +281,12 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
       language,
       totalPages,
       inferredPages,
+      // Which machine read the pages, recorded with the book it wrote. Two
+      // servers running two builds of the same model produce two different
+      // books from one PDF, and months later this record is the only thing that
+      // can tell them apart.
+      endpoint: endpoint === null ? null : endpoint.url,
+      ...(endpoint !== null && endpoint.model.length > 0 ? { endpointModel: endpoint.model } : {}),
       // Named in the record, not just in a log line: a page the model could not
       // read is a page of the user's book that is not in it, and the versions
       // page is where they would look for that months later.
@@ -243,10 +295,92 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
   });
 
   return {
+    endpoint: endpoint === null ? null : endpoint.url,
     epubPath: target.absPath,
     relPath: target.relPath,
     inferredPages,
     totalPages,
     unreadable,
+  };
+}
+
+/**
+ * Can this endpoint be reached, and what is it serving?
+ *
+ * A GET of the OpenAI model list — the cheapest question a server of this shape
+ * answers, and the one that distinguishes the four ways this setting is wrong
+ * from each other: nothing listening (connection refused), something listening
+ * that is not this (404, or HTML), the server up with no model loaded (an empty
+ * list), and the server up with a DIFFERENT model than the name configured
+ * here. All four are reported as themselves; none is repaired.
+ *
+ * It runs in MAIN because the renderer is a page on a different origin and a
+ * CORS preflight to somebody's vLLM would fail for reasons that have nothing to
+ * do with whether the server is up.
+ */
+export async function checkVlmEndpoint(config: VlmEndpointConfig): Promise<VlmEndpointCheck> {
+  // The same validation the run does, so Test and Convert cannot disagree about
+  // whether a setting is usable.
+  const endpoint = resolveVlmEndpoint(config);
+  if (endpoint === null) {
+    return {
+      reachable: false,
+      models: [],
+      error: 'No endpoint URL is set — the pages would be read on this machine with MLX.',
+    };
+  }
+
+  const url = vlmEndpointModelsUrl(endpoint.url);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'GET',
+      // Long enough for a loaded server on a slow link, short enough that a
+      // wrong address does not look like a hang.
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (err) {
+    return { reachable: false, models: [], error: `${url} — ${(err as Error).message}` };
+  }
+
+  if (!response.ok) {
+    return {
+      reachable: false,
+      models: [],
+      error: `${url} answered HTTP ${response.status} ${response.statusText}`.trim(),
+    };
+  }
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (err) {
+    return {
+      reachable: false,
+      models: [],
+      error:
+        `${url} answered, but not with JSON (${(err as Error).message}). It is probably not an `
+        + 'OpenAI-compatible server — the URL should end in /v1.',
+    };
+  }
+
+  const data = (body as { data?: unknown }).data;
+  if (!Array.isArray(data)) {
+    return {
+      reachable: false,
+      models: [],
+      error:
+        `${url} answered JSON with no "data" list in it, which is not the OpenAI model-list shape.`,
+    };
+  }
+  const models = data
+    .map((entry) => (entry as { id?: unknown }).id)
+    .filter((id): id is string => typeof id === 'string');
+
+  const missing = endpoint.model.length > 0 && !models.includes(endpoint.model);
+  return {
+    reachable: true,
+    models,
+    ...(missing ? { modelMissing: endpoint.model } : {}),
   };
 }
