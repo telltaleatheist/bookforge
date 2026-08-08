@@ -1,44 +1,31 @@
 /**
  * foundry-bridge — how BookForge talks to the `foundry` CLI.
  *
- * Foundry (github.com/telltaleatheist/foundry) is the extraction of this app's
- * page-layout model, OCR-repair contract and footnote-marker remover into a
- * standalone binary. BookForge drives it as a SUBPROCESS, the same way it drives
+ * Foundry (github.com/telltaleatheist/foundry) is a standalone document
+ * pipeline. BookForge drives it as a SUBPROCESS, the same way it drives
  * ebook2audiobook, and reads what it produces off disk.
  *
- * **The integration surface is files, not stdout.** Every foundry stage writes
- * its artifact to a documented path inside a run directory (foundry
- * docs/PIPELINE.md), and this module's `readRunDirectory` is the typed reader
- * for them. That is what lets pdf-picker paint its category layer from
- * `blocks/blocks.json`, let a user delete individual boxes, and re-export without
- * re-running a single model.
+ * This module is the TRANSPORT and nothing else: resolve the binary, download it
+ * if this machine has none, spawn it, report its lines, hand back its exit code.
+ * It has no opinion about what is being run.
  *
- * This module is the transport and the typed reader. The PIPELINE that drives it
- * lives in `electron/document-stages.ts`, where every stage is a transformation
- * of ONE document — the archive original cast into `<Original>.working.pdf`, the
- * text layer and the block annotations written into that file, and the book
- * reflowed out of it. A stage owns no state; which of them have run is read back
- * off the document itself.
+ * ── What is run ──
  *
- * ── How far the cutover has got ──
+ * One thing: `foundry vlm-convert` (electron/vlm-convert.ts), which hands each
+ * page picture to a document vision model and assembles the answers into an
+ * EPUB. That is the whole of BookForge's use of foundry.
  *
- * The WEIGHTS are fully foundry's. Every model stage is spawned with
+ * It used to be more. A run-directory pipeline — Tesseract scan, block
+ * labelling, OCR repair, footnote removal, reflow — wrote versioned JSON
+ * artifacts into a run directory, and this module carried the typed readers for
+ * every one of them. All of it went in Aug 2026 when `vlm-convert` became the
+ * only PDF→EPUB conversion, and the readers went with it: there is no run
+ * directory left to read.
+ *
+ * The WEIGHTS are foundry's and always were. A model stage is spawned with
  * `--llama-server <ours>` and nothing else, so foundry resolves base and adapter
- * from its own catalog; the `--base-model` overrides this app used to pass for
- * `ocr` and `blocks` — pointing at the unpublished ocr and blocks checkpoints
- * — are gone, and so is the file that held them. A model this machine lacks is
- * foundry's error to raise, naming the model id and `foundry models pull`.
- *
- * The CODE cutover is nearly done. The picker's own Detect panel — the second
- * detect path, and half the reason a second copy of the prompt format existed —
- * is gone: there is one detect, and it is `foundry blocks` writing annotations
- * into the working document. What is left in the tree is
- * `src/app/features/pdf-picker/services/blocks-encoder.ts` and the blocks
- * servers, for the one feature foundry does not replace: the Training tab's
- * corpus building, which drives the model page by page from a checkout rather
- * than as a batch. The extraction finishes when that copy is *deleted* too,
- * because two implementations of a prompt format is the failure it exists to
- * prevent; that deletion is a decision about that feature, not about this module.
+ * from its own catalog. A model this machine lacks is foundry's error to raise,
+ * naming the model id and `foundry models pull`.
  *
  * ── Resolution, and why there is no PATH lookup ──
  *
@@ -74,20 +61,6 @@ import {
   effectiveFoundryVersion,
 } from './components/foundry-cli-components';
 import { planUpgrade } from './components/component-upgrades';
-
-/** The artifact format versions this build of BookForge can read. */
-const SUPPORTED_FORMATS = {
-  run: 1,
-  scanPages: 1,
-  scanLines: 1,
-  // v2 (Aug 3 2026): blocks.json gained the required `formation` marker when
-  // para-split-v1 landed — block formation now cuts at paragraph openings, so
-  // a v2 artifact's blocks are a finer grouping of the same lines than v1's.
-  blocks: 2,
-  ocrLines: 1,
-  footnoteDeletions: 1,
-  exportExclusions: 1,
-} as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Resolution
@@ -510,327 +483,4 @@ export async function foundryVersion(): Promise<FoundryVersion> {
     );
   }
   return { path: binary, version: match[1], commit: match[2] ?? null, raw };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Reading a run directory
-//
-// The shapes below mirror foundry's `src/pipeline/artifacts.ts`. They are
-// re-declared rather than imported because the two programs ship separately —
-// but they are re-declared UNDER A VERSION CHECK, which is what makes that safe:
-// every file carries `formatVersion`, and a version this build does not know is
-// refused by name rather than read for the fields it recognizes. A silent
-// misread of a moved field is the failure the versioning exists to prevent.
-// ─────────────────────────────────────────────────────────────────────────────
-
-export class FoundryArtifactError extends Error {
-  constructor(readonly file: string, detail: string) {
-    super(`${file}: ${detail}`);
-    this.name = 'FoundryArtifactError';
-  }
-}
-
-export type FoundryStageName = 'scan' | 'blocks' | 'ocr' | 'footnotes' | 'export';
-export type FoundryStageStatus = 'pending' | 'running' | 'done' | 'failed';
-
-export interface FoundryStageState {
-  status: FoundryStageStatus;
-  startedAt?: string;
-  finishedAt?: string;
-  error?: string;
-}
-
-export interface FoundryRunFile {
-  formatVersion: number;
-  runId: string;
-  createdAt: string;
-  foundryVersion: string;
-  input: { path: string; sha256: string; pages: number };
-  tesseract: { version: string; binarySha256: string; tessdata: string[]; dpi: number };
-  models: { base?: string; blocks?: string; ocr?: string; footnotes?: string };
-  stages: Record<FoundryStageName, FoundryStageState>;
-}
-
-export interface FoundryScanPage {
-  page: number;
-  widthPx: number;
-  heightPx: number;
-  /** Straightening applied BEFORE the boxes were measured. Anything cropping the
-   *  render must apply the same rotation first, or every box is off by the tilt. */
-  deskewDeg: number;
-  dpi: number;
-}
-
-export interface FoundryScanLine {
-  id: string;
-  page: number;
-  /** [x0,y0,x1,y1], half-open, full-page px, deskewed. */
-  bbox: [number, number, number, number];
-  text: string;
-  conf: number | null;
-  psm?: number;
-}
-
-export interface FoundryBlock {
-  id: string;
-  page: number;
-  bbox: [number, number, number, number];
-  /** Ids into scan/lines.json, in reading order. Blocks carry no text of their own. */
-  lineIds: string[];
-  category: string;
-  continues?: { value: boolean; confidence?: number };
-  geometry: {
-    firstLineIndent: number;
-    gapAbove: number | null;
-    prevLineShort: boolean;
-    prevEndsWrapHyphen: boolean;
-  };
-}
-
-export interface FoundryCalibration {
-  convention: 'indent' | 'block' | 'none';
-  degraded: boolean;
-  bodyHeight: number;
-  pitch: number;
-  flushLeft: number;
-  measure: number;
-  bodyRight: number;
-  message: string;
-}
-
-/**
- * One line after the OCR-repair stage: the text that will SHIP.
- *
- * `text` is the corrected line when the model's answer survived the per-word
- * guard and could be expressed as contract-legal edits, and the ORIGINAL line
- * otherwise — foundry never ships a rewrite it could not prove, and it records
- * why in `rejected` rather than dropping it silently. So a consumer reads
- * `text` and gets the shipped words; it does not have to know which happened.
- */
-export interface FoundryOcrLine {
-  id: string;
-  text: string;
-  edits: Array<Record<string, unknown>>;
-  rejected: Array<{ before: string; why: string }>;
-}
-
-export interface FoundryFootnoteDeletion {
-  blockId: string;
-  applied: Array<{ before: string; after: string }>;
-  rejected: number;
-  text: string;
-}
-
-/**
- * Everything a run directory currently holds, with absent stages left undefined.
- *
- * `undefined` here means "that stage has not run", which the run record also
- * says — it is never a read that failed. A malformed or unreadable artifact
- * THROWS; it does not come back as a missing one.
- */
-export interface FoundryRunDirectory {
-  runDir: string;
-  run: FoundryRunFile;
-  pages?: FoundryScanPage[];
-  lines?: FoundryScanLine[];
-  calibration?: FoundryCalibration;
-  blocks?: FoundryBlock[];
-  /** Present once the ocr stage has run. One entry per scan line, same ids. */
-  ocrLines?: FoundryOcrLine[];
-  footnoteDeletions?: FoundryFootnoteDeletion[];
-  /** The EPUB, when the export stage has produced one. */
-  epubPath?: string;
-}
-
-function readJson(file: string): unknown {
-  let text: string;
-  try {
-    text = fs.readFileSync(file, 'utf-8');
-  } catch (err) {
-    throw new FoundryArtifactError(file, `could not be read — ${(err as Error).message}`);
-  }
-  try {
-    return JSON.parse(text);
-  } catch (err) {
-    throw new FoundryArtifactError(file, `is not valid JSON — ${(err as Error).message}`);
-  }
-}
-
-/**
- * The version gate, run before any field is touched.
- *
- * Loud on purpose, and it names the remedy: an artifact from a newer foundry is
- * a "these two are out of step" problem, and the fix is upgrading one of them,
- * not editing a number in a file.
- */
-function checkedRoot(file: string, expected: number): Record<string, unknown> {
-  const root = readJson(file);
-  if (root === null || typeof root !== 'object' || Array.isArray(root)) {
-    throw new FoundryArtifactError(file, 'is not a JSON object');
-  }
-  const found = (root as Record<string, unknown>)['formatVersion'];
-  if (found !== expected) {
-    throw new FoundryArtifactError(
-      file,
-      `formatVersion ${JSON.stringify(found)} cannot be read by this build of BookForge, `
-      + `which reads version ${expected}. The foundry binary and BookForge are out of step — `
-      + `upgrade one of them. Do not hand-edit the version.`
-    );
-  }
-  return root as Record<string, unknown>;
-}
-
-function requireArray(file: string, root: Record<string, unknown>, key: string): unknown[] {
-  const value = root[key];
-  if (!Array.isArray(value)) {
-    throw new FoundryArtifactError(file, `"${key}" must be an array`);
-  }
-  return value;
-}
-
-/**
- * Read a foundry run directory.
- *
- * `run.json` is required — without it this is not a run directory, and saying so
- * is more useful than an empty result. Every other artifact is read if present,
- * because a run directory is legitimately partial: that is the whole point of a
- * pipeline whose stages are separately runnable.
- */
-export function readRunDirectory(runDir: string): FoundryRunDirectory {
-  const runFile = path.join(runDir, 'run.json');
-  if (!fs.existsSync(runFile)) {
-    throw new FoundryArtifactError(
-      runFile,
-      `not found — ${runDir} is not a foundry run directory (run.json is written by \`foundry scan\`)`
-    );
-  }
-  const run = checkedRoot(runFile, SUPPORTED_FORMATS.run) as unknown as FoundryRunFile;
-
-  const out: FoundryRunDirectory = { runDir, run };
-
-  const pagesFile = path.join(runDir, 'scan', 'pages.json');
-  if (fs.existsSync(pagesFile)) {
-    const root = checkedRoot(pagesFile, SUPPORTED_FORMATS.scanPages);
-    out.pages = requireArray(pagesFile, root, 'pages') as FoundryScanPage[];
-  }
-
-  const linesFile = path.join(runDir, 'scan', 'lines.json');
-  if (fs.existsSync(linesFile)) {
-    const root = checkedRoot(linesFile, SUPPORTED_FORMATS.scanLines);
-    out.lines = requireArray(linesFile, root, 'lines') as FoundryScanLine[];
-  }
-
-  const blocksFile = path.join(runDir, 'blocks', 'blocks.json');
-  if (fs.existsSync(blocksFile)) {
-    const root = checkedRoot(blocksFile, SUPPORTED_FORMATS.blocks);
-    out.blocks = requireArray(blocksFile, root, 'blocks') as FoundryBlock[];
-    out.calibration = root['calibration'] as FoundryCalibration;
-  }
-
-  const ocrFile = path.join(runDir, 'ocr', 'lines.json');
-  if (fs.existsSync(ocrFile)) {
-    const root = checkedRoot(ocrFile, SUPPORTED_FORMATS.ocrLines);
-    out.ocrLines = requireArray(ocrFile, root, 'lines') as FoundryOcrLine[];
-  }
-
-  const deletionsFile = path.join(runDir, 'footnotes', 'deletions.json');
-  if (fs.existsSync(deletionsFile)) {
-    const root = checkedRoot(deletionsFile, SUPPORTED_FORMATS.footnoteDeletions);
-    out.footnoteDeletions = requireArray(deletionsFile, root, 'blocks') as FoundryFootnoteDeletion[];
-  }
-
-  const epub = path.join(runDir, 'export', 'book.epub');
-  if (fs.existsSync(epub)) out.epubPath = epub;
-
-  return out;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// `foundry footnotes --epub` — the review report
-//
-// The EPUB reading of the footnotes stage produces no run directory: it takes a
-// finished book and writes an edited copy plus ONE report file, named by
-// `--report`. The shape below mirrors foundry's `EpubFootnotesReport`
-// (src/epub/footnotes-stage.ts), narrowed to what BookForge reads.
-//
-// It carries no `formatVersion` — it is a review document rather than a
-// pipeline artifact — so the gate here is structural: the fields this app acts
-// on must be present and the right type, or the file is refused by name. A
-// report that cannot be read is a failed pass, never a pass with no findings.
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** One deletion foundry actually made, with the text around it. */
-export interface FoundryEpubFootnoteApplied {
-  /** Archive path of the document it happened in. */
-  document: string;
-  /** The characters removed. */
-  removed: string;
-  /** `…anchor [REMOVED: "1"] following…`, whitespace collapsed. */
-  context: string;
-  /** The model's anchor, verbatim: with the marker, and without it. */
-  before: string;
-  after: string;
-}
-
-export interface FoundryEpubFootnotesReport {
-  epub: string;
-  output: string | null;
-  dryRun: boolean;
-  model: string;
-  askEverything: boolean;
-  totals: {
-    documents: number;
-    documentsEdited: number;
-    units: number;
-    unitsAsked: number;
-    unitsFired: number;
-    deletionsApplied: number;
-    deletionsRejected: number;
-    elementsRemoved: number;
-  };
-  documents: Array<{ path: string; edited: boolean; indexDocument: boolean }>;
-  applied: FoundryEpubFootnoteApplied[];
-  rejected: Array<{ document: string; before: string; after: string; reason: string }>;
-}
-
-export function readEpubFootnotesReport(file: string): FoundryEpubFootnotesReport {
-  const root = readJson(file);
-  if (root === null || typeof root !== 'object' || Array.isArray(root)) {
-    throw new FoundryArtifactError(file, 'is not a JSON object');
-  }
-  const report = root as Record<string, unknown>;
-  if (typeof report['totals'] !== 'object' || report['totals'] === null) {
-    throw new FoundryArtifactError(
-      file,
-      'has no "totals" — this is not a `foundry footnotes --epub` report, or foundry and '
-      + 'BookForge are out of step'
-    );
-  }
-  for (const key of ['applied', 'rejected', 'documents']) {
-    if (!Array.isArray(report[key])) {
-      throw new FoundryArtifactError(file, `"${key}" must be an array`);
-    }
-  }
-  return report as unknown as FoundryEpubFootnotesReport;
-}
-
-/**
- * The text of a block, joined from the lines it was formed out of.
- *
- * Blocks deliberately carry no text: the words live in `scan/lines.json`, and a
- * block holding its own copy would be a second source of truth for what the book
- * says. Every consumer joins, so the join lives here once.
- */
-export function foundryBlockText(block: FoundryBlock, lines: readonly FoundryScanLine[]): string {
-  const byId = new Map(lines.map((l) => [l.id, l]));
-  return block.lineIds.map((id) => {
-    const line = byId.get(id);
-    if (!line) {
-      throw new FoundryArtifactError(
-        'blocks/blocks.json',
-        `block ${block.id} references line ${id}, which is not in scan/lines.json — the artifacts are out of step`
-      );
-    }
-    return line.text;
-  }).join('\n');
 }

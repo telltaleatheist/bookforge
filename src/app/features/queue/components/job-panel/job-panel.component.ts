@@ -35,10 +35,6 @@ const TYPE_ICONS: Record<JobType, string> = {
   'book-analysis': '\u{1F50D}',
   'generate-sentences': '\u{1F50A}',
   // Processing passes
-  'document-get-text': '\u{1F50D}',
-  'document-blocks': '\u{1F5C3}\u{FE0F}',
-  'document-reflow': '\u{1F4D6}',
-  'foundry-footnotes': '\u{2020}',
   'simplify': '\u{1F4D6}',
   'translate-pass': '\u{1F310}',
 };
@@ -55,10 +51,6 @@ const TYPE_LABELS: Record<JobType, string> = {
   'audiobook': 'Audiobook',
   'book-analysis': 'Book Analysis',
   'generate-sentences': 'Generate Sentences',
-  'document-get-text': 'Get Text',
-  'document-blocks': 'Detect Blocks',
-  'document-reflow': 'Build the Book',
-  'foundry-footnotes': 'Footnote Removal',
   'simplify': 'Simplify',
   'translate-pass': 'Translate',
 };

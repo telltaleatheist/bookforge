@@ -899,7 +899,6 @@ export interface ElectronAPI {
       coverPath?: string | null;
       error?: string;
     }>;
-    finalize: (projectDir: string) => Promise<{ success: boolean; epubPath?: string; error?: string }>;
   };
   library: {
     seedBookPath: () => Promise<string | null>;
@@ -2578,8 +2577,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('projects:load-from-path', filePath),
     exportInfo: (projectDir: string) =>
       ipcRenderer.invoke('projects:export-info', projectDir),
-    finalize: (projectDir: string) =>
-      ipcRenderer.invoke('projects:finalize', projectDir),
   },
   library: {
     seedBookPath: () =>

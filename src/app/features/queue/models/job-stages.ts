@@ -116,19 +116,6 @@ export function stagesFor(job: QueueJob): JobStageProgress[] {
     case 'reassembly':
       return job.stages ?? [];
 
-    // Get Text is one job over two stages with different units — BookForge
-    // rasterizing the pages, then foundry reading them — and MAIN reports which
-    // of them this run is on. Every bar starts empty: the cast REPLACES the
-    // working document, so there is no stage for this job to skip.
-    //
-    // The one-stage document passes (Detect blocks, Build the book) send no list
-    // and land on `?? []`, deliberately: a single bar under an identical overall
-    // bar is noise, not a breakdown. Same reason `foundry-footnotes` is absent.
-    case 'document-get-text':
-    case 'document-blocks':
-    case 'document-reflow':
-      return job.stages ?? [];
-
     // Bridge-reported when available (parallel-tts-bridge knows the model-load
     // boundary and, on Mac/MLX, reads completions off disk a batch earlier than
     // stdout reports them); the phase-derived list covers the first tick and any
