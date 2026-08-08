@@ -27,6 +27,7 @@ import { Component, HostListener, computed, inject, input, output } from '@angul
 import { CommonModule } from '@angular/common';
 
 import { BookConversionService, type ConversionRun } from '../../services/book-conversion.service';
+import { conversionEtaSeconds, formatEta, formatPageRate } from '@shared/vlm/eta';
 
 @Component({
   selector: 'app-studio-convert-modal',
@@ -68,6 +69,9 @@ import { BookConversionService, type ConversionRun } from '../../services/book-c
                 <span class="pages">Loading the model and rendering the first page…</span>
               }
             </div>
+            @if (rateLine(); as rate) {
+              <div class="counts eta"><span>{{ rate }}</span></div>
+            }
 
             <!-- foundry's own line, verbatim. It names the page, its size and how
                  many characters came back, which is the only running evidence
@@ -82,17 +86,27 @@ import { BookConversionService, type ConversionRun } from '../../services/book-c
             }
 
             <div class="note patience">
-              About eighteen seconds a page, so a 300-page book takes around ninety minutes. Every
-              page is banked as it is read — stopping costs only the page in flight, and converting
-              again resumes from there.
+              Every page is banked as it is read — stopping costs only the page in flight, and
+              converting again resumes from there.
             </div>
           </div>
 
           <footer class="modal-actions">
-            <button class="stop-btn" type="button" [disabled]="r.stopping" (click)="stop()">
-              {{ r.stopping ? 'Stopping…' : 'Stop' }}
-            </button>
-            <button class="bg-btn" type="button" (click)="close.emit()">Run in background</button>
+            @if (r.phase === 'ready') {
+              <!-- Nothing has been spawned. Closing throws the intent away, which
+                   is why neither of these is the close button. -->
+              <button class="stop-btn" type="button" (click)="dismiss()">Cancel</button>
+              <button class="queue-btn" type="button" (click)="addToQueue()">Add to queue</button>
+              <button class="bg-btn" type="button" (click)="begin()">Start</button>
+            } @else {
+              <button class="stop-btn" type="button" [disabled]="r.stopping" (click)="stop()">
+                {{ r.stopping ? 'Stopping…' : 'Cancel' }}
+              </button>
+              <!-- The stage belongs to main and broadcasts to every window, so
+                   this interrupts nothing: the queue row attaches to the run
+                   already happening and becomes where it is watched. -->
+              <button class="bg-btn" type="button" (click)="addToQueue()">Send to queue</button>
+            }
           </footer>
         } @else {
           <!-- The run ended while this window was open. It is not closed from
@@ -145,7 +159,9 @@ import { BookConversionService, type ConversionRun } from '../../services/book-c
     .modal-actions { display: flex; justify-content: flex-end; gap: 9px;
       padding: 14px 22px calc(14px + env(safe-area-inset-bottom));
       border-top: 1px solid var(--border-default); background: var(--bg-surface); }
-    .stop-btn, .bg-btn { padding: 9px 15px; border-radius: 8px; cursor: pointer; font-size: 0.78rem; font-weight: 650; }
+    .counts.eta { margin-top: 4px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+    .stop-btn, .bg-btn, .queue-btn { padding: 9px 15px; border-radius: 8px; cursor: pointer; font-size: 0.78rem; font-weight: 650; }
+    .queue-btn { color: var(--text-primary); border: 1px solid var(--border-default); background: var(--bg-elevated); }
     .stop-btn { color: #ef4444; border: 1px solid color-mix(in srgb, #ef4444 40%, var(--border-default));
       background: var(--bg-elevated); }
     .stop-btn:disabled { opacity: 0.48; cursor: default; }
@@ -185,4 +201,47 @@ export class StudioConvertModalComponent {
   onEscape(): void { this.close.emit(); }
 
   stop(): void { void this.conversions.stop(this.projectDir()); }
+
+  /** Start the prepared conversion here, in this window. */
+  begin(): void { void this.conversions.begin(this.projectDir()); }
+
+  /**
+   * Hand it to the Queue tab and close.
+   *
+   * Owen, 2026-08-08: "if the user hits run in background it should add it to the
+   * queue tab instead of minimizing." Before it has started this queues the work;
+   * once running it moves where the run is WATCHED without touching the run.
+   */
+  addToQueue(): void {
+    void this.conversions.sendToQueue(this.projectDir());
+    this.close.emit();
+  }
+
+  /** Throw away a conversion that was never started. Nothing is running. */
+  dismiss(): void {
+    this.conversions.discard(this.projectDir());
+    this.close.emit();
+  }
+
+  /**
+   * `4.8s/page · 22m 10s left`, measured — never the guess this window used to
+   * print ("about eighteen seconds a page"), which was an M1 Ultra figure shown
+   * to a machine reading four times faster through vLLM.
+   *
+   * Recomputed on the shared one-second tick so the ETA counts DOWN between page
+   * completions instead of standing still; the rate itself is only re-measured
+   * when a page lands. Null until the first page, because there is nothing to
+   * say and "calculating…" is not a measurement.
+   */
+  readonly rateLine = computed(() => {
+    const r = this.run();
+    if (!r || r.phase !== 'running') return null;
+    const now = this.conversions.tick();
+    const parts = [
+      formatPageRate(r.rate ?? null),
+      formatEta(conversionEtaSeconds(r.rate ?? null, now)),
+    ].filter(Boolean);
+    if (parts.length === 0) return null;
+    return parts.length === 2 ? `${parts[0]} · ${parts[1]} left` : parts[0];
+  });
 }

@@ -4197,6 +4197,7 @@ export class QueueService {
             {
               convertPdfToEpub: (r) => this.electron.convertPdfToEpub(r),
               onDocumentStageProgress: (cb) => this.electron.onDocumentStageProgress(cb),
+              onDocumentStageFinished: (cb) => this.electron.onDocumentStageFinished(cb),
               cancelDocumentStage: (dir) => this.electron.documentCancelStage(dir),
             },
           );

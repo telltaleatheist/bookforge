@@ -1501,10 +1501,11 @@ export class StudioVersionsComponent {
 
     const from: ConversionSource = row.family === 'working' ? 'working' : 'archive';
     this.convertModalOpen.set(true);
-    // NOT awaited. The run outlives this click and outlives the window that
-    // watches it — the service owns it, and everything the user has to be told
-    // is told from there.
-    void this.conversions.start({
+    // PREPARED, not started. The window opens on a conversion that has not
+    // spawned anything, so there is a moment in which to say "queue this
+    // instead" — which is what queueing a shelf of books overnight is made of.
+    // Start and Add to queue are both in that window; closing it discards.
+    const refused = await this.conversions.prepare({
       projectDir: dir,
       from,
       sourceLabel: row.v.label,
@@ -1515,6 +1516,14 @@ export class StudioVersionsComponent {
       ...(row.v.variantId ? { variantId: row.v.variantId } : {}),
       ...(!row.v.variantId && row.v.primaryPath ? { sourcePath: row.v.primaryPath } : {}),
     });
+    if (refused !== null) {
+      this.convertModalOpen.set(false);
+      await this.dialog.alert({
+        title: 'Nothing here can read the pages',
+        message: refused,
+        type: 'warning',
+      });
+    }
   }
 
   /** Re-open the window onto a conversion that is already running. */

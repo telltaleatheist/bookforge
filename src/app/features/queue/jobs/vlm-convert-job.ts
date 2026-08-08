@@ -64,6 +64,22 @@ export interface VlmConvertJobConfig {
    * a second copy, able to be a night out of date by the time the job runs.
    */
   skipDeletedPages?: boolean;
+  /**
+   * This row joined a conversion that is ALREADY RUNNING — "Send to queue"
+   * pressed on a book being read right now.
+   *
+   * It exists because the stage belongs to main and broadcasts to every window,
+   * so handing a running conversion to the queue does not have to interrupt it:
+   * the row attaches to the progress already being emitted and waits for the
+   * finish. Starting one would be worse than useless — main refuses a second
+   * stage on the same project BY NAME, so the row would fail instantly while the
+   * conversion it was supposed to represent carried on unwatched.
+   *
+   * NOT persisted usefully across a restart, and that is deliberate: a run this
+   * flag refers to died with the app, so `reviveAttachedRow` fails the row by
+   * name rather than leaving it waiting for progress that will never come.
+   */
+  attachToRunning?: boolean;
 }
 
 /** What the runner may do to the row it is running. Deliberately narrow. */
@@ -83,6 +99,7 @@ export interface ConversionJobElectron {
   onDocumentStageProgress(
     cb: (e: { projectDir: string; stage: string; message: string; done: number; total: number }) => void
   ): () => void;
+  onDocumentStageFinished(cb: (e: { projectDir: string; stage: string }) => void): () => void;
   cancelDocumentStage(projectDir: string): Promise<unknown>;
 }
 
@@ -171,6 +188,25 @@ export async function runConversionJob(
   ctx.signal.addEventListener('abort', onAbort, { once: true });
 
   try {
+    if (config.attachToRunning) {
+      // The conversion is already happening. Wait for main to say it finished —
+      // the progress subscription above is already reporting it. Starting one
+      // here would be refused by name and would fail this row while the run it
+      // represents carried on unwatched.
+      await new Promise<void>((resolve) => {
+        const stop = electron.onDocumentStageFinished((event) => {
+          if (!samePath(event.projectDir, config.projectDir)) return;
+          stop();
+          resolve();
+        });
+        ctx.signal.addEventListener('abort', () => { stop(); resolve(); }, { once: true });
+      });
+      ctx.report({ progress: 100, message: `Converted ${config.sourceLabel}`, etaSeconds: 0 });
+      // The path is main's to report and this row never learned it; the book is
+      // on the versions page either way. An invented path would be worse.
+      return { epubPath: '' };
+    }
+
     const result = await electron.convertPdfToEpub({
       projectDir: config.projectDir,
       ...(config.variantId ? { variantId: config.variantId } : {}),

@@ -12,16 +12,20 @@
  * versions row are two views of it. Closing the modal is closing a window onto
  * something that is still happening; re-opening it re-attaches to the same run.
  *
- * ── It is not the queue, and that is deliberate ─────────────────────────────
+ * ── This service, and the queue ─────────────────────────────────────────────
  *
- * The obvious home for "a long job you can watch" is the Queue tab. But the
- * queue OWNS execution: it holds pending rows, picks them up, and drives them
- * through `runJob`. A conversion is already running in MAIN before the renderer
- * could enqueue anything — `withProjectStage` claimed the project, foundry is
- * spawned, and an ng-serve reload does not touch it. Representing that as a
- * queue row means a row the queue must never start, never retry, never resume
- * and never persist, which is a second execution model wearing the first one's
- * clothes. The progress is shown where the button was pressed instead.
+ * Both, now, and the split is by WHEN rather than by what. This service owns the
+ * conversion you are looking at: prepared and not yet started, or running with
+ * this window watching it. The Queue tab owns the ones you have walked away from
+ * — `sendToQueue` moves a conversion across, and from that moment the queue row
+ * is the only view of it.
+ *
+ * The original argument for keeping them apart was that a running conversion is
+ * a row the queue must never start, retry or resume. That is still true and is
+ * why the crossing carries `attachToRunning`: such a row waits for main's finish
+ * event and starts nothing. What changed is batching — a shelf of books each
+ * costing ninety minutes of one GPU has to be able to run overnight in order,
+ * and only the queue sequences.
  *
  * ── Nothing here decides anything main also decides ─────────────────────────
  *
@@ -32,11 +36,12 @@
  * it — including `vlm:reader-status`, which only main can answer. A card that
  * promised a route the run then denied would be worse than no card.
  */
-import { Injectable, computed, inject, signal } from '@angular/core';
+import { DestroyRef, Injectable, computed, inject, signal } from '@angular/core';
 
 import { ElectronService } from '../../../core/services/electron.service';
 import { SettingsService } from '../../../core/services/settings.service';
 import { DialogService } from '../../../creamsicle-desktop';
+import { QueueService } from '../../queue/services/queue.service';
 import {
   VLM_CONVERT_STAGE,
   resolveVlmEndpoint,
@@ -47,6 +52,7 @@ import {
   type VlmRoute,
 } from '@shared/vlm/conversion';
 import { samePath } from '@shared/document/same-path';
+import { sampleConversionRate, type ConversionRateSample } from '@shared/vlm/eta';
 
 /** Which document the user pressed the button on. It is the whole difference. */
 export type ConversionSource = 'archive' | 'working';
@@ -66,6 +72,25 @@ export interface ConversionRun {
   total: number;
   /** A stop has been asked for and foundry has not exited yet. */
   stopping: boolean;
+  /**
+   * The throughput measurement, held between page completions.
+   *
+   * Carried ON the run so the modal and the versions row read ONE sample — the
+   * same reason JobEtaService holds TTS rates centrally rather than per
+   * component. A per-view sample would restart every time the modal was closed
+   * and reopened, which is exactly when someone wants the ETA.
+   */
+  rate?: ConversionRateSample | null;
+  /**
+   * Whether anything is actually happening yet.
+   *
+   * `ready` is a conversion the user has opened the window for and NOT started.
+   * It exists because pressing Convert used to spawn foundry immediately, which
+   * left no moment in which to say "queue this instead" — and queueing a shelf
+   * of books overnight is exactly a sequence of that moment. Nothing is spawned,
+   * no GPU is taken, and closing the window throws the intent away.
+   */
+  phase: 'ready' | 'running';
 }
 
 /** What starting one needs. Everything else is read from settings or measured. */
@@ -92,6 +117,13 @@ export class BookConversionService {
   private readonly electron = inject(ElectronService);
   private readonly settings = inject(SettingsService);
   private readonly dialog = inject(DialogService);
+  private readonly queue = inject(QueueService);
+
+  constructor() {
+    // Cheap and unconditional: one interval for the whole app, not one per run.
+    const timer = setInterval(() => this._tick.set(Date.now()), 1000);
+    inject(DestroyRef).onDestroy(() => clearInterval(timer));
+  }
 
   /**
    * The live runs, keyed by project directory.
@@ -102,6 +134,16 @@ export class BookConversionService {
    * quietly collapse into one bar.
    */
   private readonly _runs = signal<ReadonlyMap<string, ConversionRun>>(new Map());
+
+  /**
+   * One global one-second tick, read inside a computed to make it re-evaluate.
+   *
+   * A timer per component would restart whenever a modal opened, and two views
+   * of one run would count down out of step. This is the same arrangement
+   * JobEtaService uses for the queue's own ETAs, and for the same reason.
+   */
+  private readonly _tick = signal(Date.now());
+  readonly tick = this._tick.asReadonly();
 
   /** Anything converting anywhere. Cheap enough for a template to read. */
   readonly anyRunning = computed(() => this._runs().size > 0);
@@ -174,6 +216,96 @@ export class BookConversionService {
    * by name. It is refused here too, first, because the honest answer is already
    * in hand and there is no reason to make a round trip to be told it.
    */
+  /**
+   * Open the window on a conversion WITHOUT starting it.
+   *
+   * The route is resolved now, so the window can say which GPU would do the work
+   * before anyone commits to it — and a machine that cannot read pages at all
+   * says so here rather than after a button press. Nothing is spawned and no GPU
+   * is taken; `begin` does that, and `enqueue` does it later and elsewhere.
+   */
+  async prepare(request: ConversionRequest): Promise<string | null> {
+    const existing = this.runFor(request.projectDir);
+    if (existing) return null;
+
+    const route = await this.route();
+    if ('error' in route) return route.error;
+    if (route.kind === 'refused') return route.reason;
+
+    this.put({
+      projectDir: request.projectDir,
+      from: request.from,
+      sourceLabel: request.sourceLabel,
+      route: vlmRouteLabel(route),
+      message: 'Not started yet.',
+      done: 0,
+      total: 0,
+      stopping: false,
+      phase: 'ready',
+    });
+    this.pending.set(request.projectDir, request);
+    return null;
+  }
+
+  /** The request behind a prepared run, so Start and Add to queue agree on it. */
+  private readonly pending = new Map<string, ConversionRequest>();
+
+  /** Start a prepared conversion. */
+  async begin(projectDir: string): Promise<void> {
+    const request = this.pending.get(projectDir);
+    if (!request) return;
+    this.pending.delete(projectDir);
+    this.drop(projectDir);
+    await this.start(request);
+  }
+
+  /**
+   * Hand this conversion to the Queue tab.
+   *
+   * Works in both states, and the difference is one flag:
+   *
+   *  - PREPARED but not started — an ordinary queued row. It waits its turn and
+   *    the queue starts it, which is what makes an overnight shelf of books
+   *    possible: one GPU, one conversion at a time, in the order they were added.
+   *  - ALREADY RUNNING — the row ATTACHES (`attachToRunning`). The stage belongs
+   *    to main and broadcasts to every window, so nothing is interrupted and
+   *    nothing restarts; the queue row simply becomes where its progress is
+   *    watched. Starting a second would be refused by name and would fail the row
+   *    while the real run carried on unwatched.
+   *
+   * Either way the local run is dropped afterwards: one piece of work must not be
+   * represented twice, or Stop in one view leaves the other showing a conversion
+   * that is no longer happening.
+   */
+  async sendToQueue(projectDir: string): Promise<void> {
+    const run = this.runFor(projectDir);
+    if (!run) return;
+    const request = this.pending.get(projectDir);
+
+    await this.queue.addJob({
+      type: 'vlm-convert',
+      config: {
+        type: 'vlm-convert',
+        projectDir,
+        sourceLabel: run.sourceLabel,
+        ...(request?.variantId ? { variantId: request.variantId } : {}),
+        ...(request?.sourcePath ? { sourcePath: request.sourcePath } : {}),
+        ...(run.from === 'working' ? { skipDeletedPages: true } : {}),
+        ...(run.phase === 'running' ? { attachToRunning: true } : {}),
+      },
+    });
+
+    this.pending.delete(projectDir);
+    this.drop(projectDir);
+  }
+
+  /** Throw away a prepared, unstarted conversion. Nothing was running. */
+  discard(projectDir: string): void {
+    this.pending.delete(projectDir);
+    const run = this.runFor(projectDir);
+    if (run && run.phase === 'ready') this.drop(projectDir);
+  }
+
   async start(request: ConversionRequest): Promise<void> {
     const existing = this.runFor(request.projectDir);
     if (existing) {
@@ -213,6 +345,7 @@ export class BookConversionService {
       done: 0,
       total: 0,
       stopping: false,
+      phase: 'running',
     });
 
     // Filtered on the PROJECT and nothing else. `document:stage-progress` carries
@@ -222,10 +355,14 @@ export class BookConversionService {
     // a second by name — so the project IS the whole filter.
     const unwatch = this.electron.onDocumentStageProgress((event) => {
       if (!samePath(event.projectDir, request.projectDir)) return;
+      // Measured on the SAME event that moves the counts, so the rate and the
+      // page number can never describe different moments.
+      const previous = this.runFor(request.projectDir)?.rate ?? null;
       this.patch(request.projectDir, {
         message: event.message,
         done: event.done,
         total: event.total,
+        rate: sampleConversionRate(previous, event.done, event.total, Date.now()),
       });
     });
 

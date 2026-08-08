@@ -817,7 +817,11 @@ export interface AudiobookMetadata {
 export interface CreateJobRequest {
   type: JobType;
   epubPath?: string;  // Optional for bilingual-assembly and audiobook jobs
-  config?: Partial<ProcessingPassJobConfig> | Partial<TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig>;
+  // `Partial<JobConfig>` rather than the union re-listed by hand. The hand-copied
+  // copy is why adding a job type compiled everywhere except the places that
+  // create one — the same duplication that made buildJobConfig's return type go
+  // stale. One list, in one place.
+  config?: Partial<ProcessingPassJobConfig> | Partial<JobConfig>;
   metadata?: AudiobookMetadata;
   // Resume info for continuing interrupted TTS jobs
   resumeInfo?: ResumeCheckResult;
