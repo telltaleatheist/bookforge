@@ -7,6 +7,11 @@ import { DesktopButtonComponent } from '../../creamsicle-desktop';
 import { AiService, LocalModel, LocalSystemInfo, LocalModelProgress } from '../../core/services/ai.service';
 import { SettingsService } from '../../core/services/settings.service';
 import { ElectronService } from '../../core/services/electron.service';
+import {
+  DEFAULT_VLM_CONCURRENCY,
+  describeVlmEndpointCheck,
+  vlmLocalReadingRefusal,
+} from '@shared/vlm/conversion';
 
 /**
  * AI Setup wizard (WS2). One page, three sources of AI for OCR cleanup:
@@ -163,6 +168,68 @@ import { ElectronService } from '../../core/services/electron.service';
         </div>
       </section>
 
+      <!-- ── Reading pages (Convert to EPUB) ── -->
+      <section class="card">
+        <div class="card-head">
+          <h2>&#128441; Reading pages</h2>
+          <span class="tag">Convert to EPUB · document vision model</span>
+        </div>
+
+        @if (localReadingRefusal(); as refusal) {
+          <p class="muted warn-note">{{ refusal }}</p>
+        } @else {
+          <p class="muted">
+            Convert to EPUB reads every page picture with a document vision model. This machine can
+            do that itself (Apple Silicon, MLX) — leave the server URL empty and it will. Point it
+            at an OpenAI-compatible server (vLLM) instead when that machine has the faster GPU;
+            nothing switches by itself, and the conversion says which one it used.
+          </p>
+        }
+
+        <div class="ollama-url-row">
+          <label class="ollama-url-label">Server URL</label>
+          <input
+            class="key-input"
+            type="text"
+            [value]="vlmUrl()"
+            (change)="setVlmUrl($any($event.target).value)"
+            placeholder="http://127.0.0.1:8000/v1"
+          />
+          <desktop-button variant="ghost" size="sm" [disabled]="vlmTesting()" (click)="testVlmEndpoint()">
+            {{ vlmTesting() ? 'Testing…' : 'Test' }}
+          </desktop-button>
+        </div>
+
+        @if (vlmUrl().trim()) {
+          <div class="ollama-url-row">
+            <label class="ollama-url-label">Model name</label>
+            <input
+              class="key-input"
+              type="text"
+              [value]="vlmModel()"
+              (change)="setVlmModel($any($event.target).value)"
+              placeholder="the name the server was started with"
+            />
+          </div>
+          <div class="ollama-url-row">
+            <label class="ollama-url-label">Pages at once</label>
+            <input
+              class="key-input narrow"
+              type="number"
+              min="0"
+              [value]="vlmConcurrency()"
+              (change)="setVlmConcurrency($any($event.target).value)"
+              [placeholder]="defaultConcurrency"
+            />
+            <span class="muted inline-note">0 = foundry’s default of {{ defaultConcurrency }}</span>
+          </div>
+        }
+
+        @if (vlmStatus(); as status) {
+          <p class="vlm-status" [class.bad]="!status.ok">{{ status.message }}</p>
+        }
+      </section>
+
       <!-- ── API keys ── -->
       <section class="card">
         <div class="card-head">
@@ -215,7 +282,12 @@ import { ElectronService } from '../../core/services/electron.service';
     .wizard { max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem 3rem; overflow-y: auto; height: 100%; }
     .wizard.embedded { padding: 0; max-width: none; height: auto; overflow: visible; }
     .ollama-url-row { display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0 0.75rem; }
-    .ollama-url-label { flex: none; color: var(--text-secondary); font-size: 0.85rem; }
+    .ollama-url-label { flex: none; color: var(--text-secondary); font-size: 0.85rem; min-width: 6.5rem; }
+    .key-input.narrow { max-width: 7rem; }
+    .inline-note { font-size: 0.8rem; margin: 0; }
+    .warn-note { color: var(--warning, #d08b1e); }
+    .vlm-status { font-size: 0.85rem; color: var(--text-secondary); margin: 0.25rem 0 0; }
+    .vlm-status.bad { color: var(--error, #d05a5a); }
     .wizard-head { display: flex; gap: 1rem; align-items: flex-start; margin-bottom: 1.5rem; }
     .head-icon { font-size: 2.5rem; }
     h1 { font-size: 1.5rem; font-weight: 600; color: var(--text-primary); margin: 0 0 0.25rem; }
@@ -461,6 +533,98 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   }
   testOllama(): void {
     void this.ai.refresh();
+  }
+
+  // ── Reading pages: MLX here, or a server somewhere else ───────────────────
+  //
+  // The setting the Convert to EPUB action carries to main on every run
+  // (shared/vlm/conversion.ts). Written straight through to settings on change,
+  // like the Ollama URL above it: there is no Save button on this card and a
+  // draft that looked saved but was not would be discovered ninety minutes into
+  // a conversion.
+
+  /** foundry's own default pages-in-flight, shown as the placeholder. */
+  readonly defaultConcurrency = String(DEFAULT_VLM_CONCURRENCY);
+
+  /** The last Test result, as a sentence. */
+  readonly vlmStatus = signal<{ ok: boolean; message: string } | null>(null);
+  readonly vlmTesting = signal(false);
+
+  /**
+   * Why this machine cannot read the pages by itself, or null.
+   *
+   * The SAME function main refuses a conversion with, given this machine's
+   * platform and architecture — so the card cannot promise a local route that
+   * the run will then deny.
+   */
+  readonly localReadingRefusal = computed(() =>
+    vlmLocalReadingRefusal(this.electron.platform, this.electron.arch));
+
+  vlmUrl(): string { return this.settings.getVlmEndpointConfig().url; }
+  vlmModel(): string { return this.settings.getVlmEndpointConfig().model; }
+  vlmConcurrency(): number { return this.settings.getVlmEndpointConfig().concurrency; }
+
+  setVlmUrl(url: string): void {
+    this.settings.updateVlmEndpointConfig({ url: url.trim() });
+    this.vlmStatus.set(null);
+  }
+
+  setVlmModel(model: string): void {
+    this.settings.updateVlmEndpointConfig({ model: model.trim() });
+    this.vlmStatus.set(null);
+  }
+
+  /**
+   * Pages in flight. A blank box means "foundry's default", which is 0 here —
+   * never the remembered number, so clearing the field cannot leave a value
+   * behind that the placeholder denies.
+   */
+  setVlmConcurrency(value: string): void {
+    const trimmed = (value ?? '').trim();
+    if (trimmed.length === 0) {
+      this.settings.updateVlmEndpointConfig({ concurrency: 0 });
+      this.vlmStatus.set(null);
+      return;
+    }
+    const n = Number(trimmed);
+    if (!Number.isInteger(n) || n < 0) {
+      this.vlmStatus.set({
+        ok: false,
+        message: `"${trimmed}" is not a whole number of pages. Leave it empty for foundry's `
+          + `default of ${DEFAULT_VLM_CONCURRENCY}.`,
+      });
+      return;
+    }
+    this.settings.updateVlmEndpointConfig({ concurrency: n });
+    this.vlmStatus.set(null);
+  }
+
+  /** GET the server's model list and say exactly what came back. */
+  async testVlmEndpoint(): Promise<void> {
+    const config = this.settings.getVlmEndpointConfig();
+    if (!config.url.trim()) {
+      this.vlmStatus.set({
+        ok: !this.localReadingRefusal(),
+        message: this.localReadingRefusal()
+          ?? 'No server set — the pages are read on this machine with MLX.',
+      });
+      return;
+    }
+    this.vlmTesting.set(true);
+    try {
+      const answer = await this.electron.checkVlmEndpoint(config);
+      if (!answer.success || !answer.check) {
+        this.vlmStatus.set({ ok: false, message: answer.error || 'The check failed and said nothing about why.' });
+        return;
+      }
+      const { check } = answer;
+      this.vlmStatus.set({
+        ok: check.reachable && check.modelMissing === undefined,
+        message: describeVlmEndpointCheck(config.url.trim(), check),
+      });
+    } finally {
+      this.vlmTesting.set(false);
+    }
   }
 
   /** Remove a saved API key. Leaves the provider selection to the unified picker. */

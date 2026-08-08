@@ -11,7 +11,12 @@ import type {
   ProcessingChainRequest,
 } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
-import type { VlmConvertRequest, VlmConvertResult } from '@shared/vlm/conversion';
+import type {
+  VlmConvertRequest,
+  VlmConvertResult,
+  VlmEndpointCheck,
+  VlmEndpointConfig,
+} from '@shared/vlm/conversion';
 import type { NarrationDeletions, NarrationState } from '@shared/vlm/narration-deletions';
 import type {
   DocumentBlocksPayload,
@@ -927,6 +932,18 @@ export class ElectronService {
   get platform(): string {
     if (this.isElectron) {
       return (window as any).electron.platform;
+    }
+    return 'browser';
+  }
+
+  /**
+   * `process.arch` from main. Paired with {@link platform} because one without
+   * the other cannot answer "can this machine run MLX" — an Intel Mac is darwin
+   * too, and `navigator.platform` reports "MacIntel" on every Mac there is.
+   */
+  get arch(): string {
+    if (this.isElectron) {
+      return (window as any).electron.arch;
     }
     return 'browser';
   }
@@ -3127,6 +3144,22 @@ export class ElectronService {
   }> {
     if (this.isElectron) {
       return (window as any).electron.vlm.convert(request);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Is the configured VLM endpoint up, and what is it serving?
+   *
+   * Answered by MAIN — a renderer fetching somebody's vLLM is a cross-origin
+   * request, and its failure would say nothing about whether the server is
+   * running.
+   */
+  async checkVlmEndpoint(config: VlmEndpointConfig): Promise<{
+    success: boolean; check?: VlmEndpointCheck; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.checkEndpoint(config);
     }
     return { success: false, error: 'Not running in Electron' };
   }

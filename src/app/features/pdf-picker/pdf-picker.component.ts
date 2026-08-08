@@ -90,7 +90,12 @@ import {
   type EpubPassTaskId,
 } from '@shared/document/rail-tasks';
 import type { PassRecord } from '@shared/document/version-family';
-import { VLM_CONVERT_STAGE } from '@shared/vlm/conversion';
+import {
+  VLM_CONVERT_STAGE,
+  resolveVlmEndpoint,
+  vlmLocalReadingRefusal,
+  type VlmEndpointConfig,
+} from '@shared/vlm/conversion';
 import {
   narrationBlocksOnSourcePage,
   narrationDeletedBlockIds,
@@ -10139,16 +10144,60 @@ export class PdfPickerComponent implements OnInit {
     await this.electronService.documentCancelStage(dir);
   }
 
+  /**
+   * The endpoint setting, resolved — or a refusal to show instead of starting.
+   *
+   * The renderer owns the setting (it is in the same localStorage bundle as the
+   * Ollama URL) and hands it to main per run. Resolving it HERE as well is not a
+   * second authority: it is the same pure function main runs, called early so a
+   * half-typed URL is a sentence in the confirm dialog rather than a failure
+   * after the stage has been claimed.
+   */
+  private vlmEndpointOrRefusal(): { endpoint: VlmEndpointConfig | null } | { refusal: string } {
+    const config = this.settingsService.getVlmEndpointConfig();
+    let endpoint: VlmEndpointConfig | null;
+    try {
+      endpoint = resolveVlmEndpoint(config);
+    } catch (err) {
+      return { refusal: err instanceof Error ? err.message : String(err) };
+    }
+    if (endpoint === null) {
+      const refusal = vlmLocalReadingRefusal(this.electronService.platform, this.electronService.arch);
+      if (refusal !== null) return { refusal };
+    }
+    return { endpoint };
+  }
+
   private requestVlmConversion(): void {
     if (this.stationBusy()) return;
+
+    // Which machine would read the pages — asked BEFORE the dialog, because the
+    // dialog quotes a time per page and the two routes are nothing like each
+    // other, and because a machine with no reader at all should say so instead
+    // of offering a Convert button that cannot work.
+    const route = this.vlmEndpointOrRefusal();
+    if ('refusal' in route) {
+      this.showAlert({
+        title: 'Nothing here can read the pages',
+        message: route.refusal,
+        type: 'error',
+      });
+      return;
+    }
+    const { endpoint } = route;
+
     const hasBook = this.bookEpubPath() !== null;
     this.alertModal.set({
       title: 'Read the pages with a vision model?',
       message:
         'A document vision model reads every page picture and writes the whole book — footnotes '
-        + 'collected at the end of their chapter, figures and captions kept. It runs on this '
-        + 'machine\'s GPU at roughly eighteen seconds a page, so a 300-page book is about an hour '
-        + 'and a half. It can be interrupted and resumed: every page answered is banked, and a '
+        + 'collected at the end of their chapter, figures and captions kept. '
+        + (endpoint === null
+          ? 'It runs on this machine\'s GPU at roughly eighteen seconds a page, so a 300-page book '
+            + 'is about an hour and a half. '
+          : `The pages are sent to ${endpoint.url}, so how long it takes is that server's business `
+            + '— it reads several pages at once and is typically far faster than this machine. ')
+        + 'It can be interrupted and resumed: every page answered is banked, and a '
         + 'second run reads only what is missing.'
         + (hasBook
           ? '\n\nThis project already has a book. Converting REPLACES it, and the record of what '
@@ -10158,7 +10207,7 @@ export class PdfPickerComponent implements OnInit {
       type: 'warning',
       confirmText: 'Convert',
       cancelText: 'Cancel',
-      onConfirm: () => { void this.runVlmConversion(); },
+      onConfirm: () => { void this.runVlmConversion(endpoint); },
     });
   }
 
@@ -10170,7 +10219,7 @@ export class PdfPickerComponent implements OnInit {
    * stage registry refuses a second conversion of the same project by name, and
    * that refusal is main's sentence, shown verbatim.
    */
-  private async runVlmConversion(): Promise<void> {
+  private async runVlmConversion(endpoint: VlmEndpointConfig | null): Promise<void> {
     const dir = this.projectPath();
     if (!dir) return;
 
@@ -10178,7 +10227,9 @@ export class PdfPickerComponent implements OnInit {
     // sitting in the batch queue belong to the document as it was.
     await this.documentBlocks.flush();
     this.documentBlocks.stageRunning.set(VLM_CONVERT_STAGE);
-    this.documentBlocks.stageMessage.set('Loading the vision model…');
+    this.documentBlocks.stageMessage.set(endpoint === null
+      ? 'Loading the vision model on this machine…'
+      : `Reading the pages on ${endpoint.url}…`);
     this.documentBlocks.stageDone.set(0);
     this.documentBlocks.stageTotal.set(0);
     this.documentBlocks.lastError.set(null);
@@ -10200,7 +10251,13 @@ export class PdfPickerComponent implements OnInit {
       this.documentBlocks.stageTotal.set(event.total);
     });
     try {
-      const answer = await this.electronService.convertPdfToEpub({ projectDir: dir });
+      const answer = await this.electronService.convertPdfToEpub({
+        projectDir: dir,
+        // Handed over per run, exactly as `ollamaBaseUrl` travels on a job
+        // config: the setting lives in the renderer's storage and main has no
+        // copy of it. Main resolves it again and refuses the same things.
+        ...(endpoint !== null ? { endpoint } : {}),
+      });
       if (!answer.success || !answer.result) {
         throw new Error(answer.error || 'The conversion failed and said nothing about why.');
       }
@@ -10211,7 +10268,8 @@ export class PdfPickerComponent implements OnInit {
       this.showAlert({
         title: 'The book is built',
         message:
-          `${result.totalPages} page(s) read into ${result.relPath}.`
+          `${result.totalPages} page(s) read into ${result.relPath} by `
+          + `${result.endpoint === null ? 'this machine (MLX)' : result.endpoint}.`
           + (unreadable.length > 0
             // Said here and not only in the log: a page the model could not read
             // is a page of the user's book that is not in it.

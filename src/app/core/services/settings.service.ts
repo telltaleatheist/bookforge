@@ -8,6 +8,10 @@ import {
   CLAUDE_MODELS,
   OPENAI_MODELS
 } from '../models/ai-config.types';
+import {
+  DEFAULT_VLM_ENDPOINT_CONFIG,
+  type VlmEndpointConfig,
+} from '@shared/vlm/conversion';
 
 /**
  * Default selections the processing pipeline (LL wizard) seeds itself from, so a
@@ -629,6 +633,11 @@ export class SettingsService {
     // Initialize AI config with defaults
     defaults['aiConfig'] = { ...DEFAULT_AI_CONFIG };
 
+    // No endpoint: the pages are read on this machine, which is what an Apple
+    // Silicon Mac can do and what nothing else can. Settings → AI is where a
+    // server is named.
+    defaults['vlmEndpointConfig'] = { ...DEFAULT_VLM_ENDPOINT_CONFIG };
+
     // Initialize bookshelf server config with defaults.
     // Enabled by default: the Bookshelf server starts on launch so the library
     // is immediately browsable on the network. Users can stop it from the nav rail.
@@ -676,6 +685,33 @@ export class SettingsService {
   updateAIConfig(updates: Partial<AIConfig>): void {
     const current = this.getAIConfig();
     this.setAIConfig({ ...current, ...updates });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Reading pages with a document vision model (Convert to EPUB)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Which machine reads the pages, merged with the default (which is: this one).
+   *
+   * Lives beside the Ollama URL and travels the same way — the renderer owns the
+   * setting and hands it to main per run, because main has no copy of this
+   * bundle. Empty `url` means MLX here, and that is the default on Apple
+   * Silicon; every other machine has no local reader and the conversion refuses
+   * by name until an endpoint is set (shared/vlm/conversion.ts).
+   */
+  getVlmEndpointConfig(): VlmEndpointConfig {
+    const stored = this.values()['vlmEndpointConfig'] as Partial<VlmEndpointConfig> | undefined;
+    return { ...DEFAULT_VLM_ENDPOINT_CONFIG, ...(stored || {}) };
+  }
+
+  setVlmEndpointConfig(config: VlmEndpointConfig): void {
+    this.values.update(v => ({ ...v, vlmEndpointConfig: config }));
+    this.saveSettings();
+  }
+
+  updateVlmEndpointConfig(updates: Partial<VlmEndpointConfig>): void {
+    this.setVlmEndpointConfig({ ...this.getVlmEndpointConfig(), ...updates });
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
