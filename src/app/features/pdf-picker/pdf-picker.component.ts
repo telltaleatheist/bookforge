@@ -8493,12 +8493,24 @@ export class PdfPickerComponent implements OnInit {
       const unresolved = [result.unresolved]
         .filter((s): s is string => s !== null && s.length > 0);
 
+      // A document the strikes emptied is taken out of the copy rather than left
+      // in it as a blank page. Said, and said with NAMES, because this is the
+      // sentence that answers the question the user opens the copy to ask: they
+      // deleted 64 pages, and if two documents' worth of them are simply not in
+      // the book any more they need to be told that rather than left to wonder
+      // whether the pages went missing or the deletion went wrong.
+      const pruned = result.removedDocuments.length === 0
+        ? ''
+        : ` ${result.removedDocuments.length} document(s) your deletions emptied were removed `
+          + `from the copy rather than left as blank pages: `
+          + `${result.removedDocuments.map(d => d.split('/').pop()).join(', ')}.`;
+
       this.showAlert({
         title: 'TTS copy written',
         message:
           `${result.relPath} — ${result.removedElements} of ${result.totalElements} element(s) `
           + `left out${provenance}, ${result.removedSupMarkers} footnote marker(s) stripped. The book `
-          + 'itself is unchanged.'
+          + `itself is unchanged.${pruned}`
           + (unresolved.length > 0 ? `\n\n${unresolved.join('\n\n')}` : '')
           + '\n\nThe Process tab\'s narration step will offer this file.',
         type: unresolved.length > 0 ? 'warning' : 'info',

@@ -440,25 +440,44 @@ export async function renameBookChapter(
       const copyNav = await readNav(narration.absPath);
       const copyLink = copyNav.links.find((l) => l.file === chapterFile);
       if (copyLink === undefined) {
-        throw new Error(
-          `The book was renamed, but ${path.basename(narration.absPath)} — the narration copy cut `
-          + `from it — does not list ${chapterFile} in its table of contents. The two files have `
-          + 'come apart; export the narration copy again.'
-        );
+        // ── Two reasons this document is not in the copy, and only one is a bug ──
+        //
+        // A document the strikes EMPTIED is removed from the narration copy on
+        // purpose — file, OPF entry and table-of-contents entry together — so it
+        // being absent here is the pruning working, not the two files coming
+        // apart. The record says which documents went (`removedDocuments`), so
+        // the two cases are distinguished by asking it rather than by guessing
+        // from the absence, which looks identical either way.
+        //
+        // Renaming a chapter that is not IN the narration copy is not a failure
+        // at all: the book keeps the new title, and the copy has nothing to
+        // carry it on. Reported as `pruned` so the caller can say that instead
+        // of a sentence about corruption.
+        if ((manifest.removedDocuments ?? []).includes(chapterFile)) {
+          narrationCopy = 'chapter-pruned';
+        } else {
+          throw new Error(
+            `The book was renamed, but ${path.basename(narration.absPath)} — the narration copy cut `
+            + `from it — does not list ${chapterFile} in its table of contents. The two files have `
+            + 'come apart; export the narration copy again.'
+          );
+        }
+      } else {
+        const stagedCopy = path.join(STAGING_DIR, `retitle-tts-${before.slice(0, 16)}.epub`);
+        await rewriteChapterTitle(
+          narration.absPath, stagedCopy, copyNav.navFile, copyLink, chapterFile, title);
+        await moveIntoPlace(stagedCopy, narration.absPath);
+        await manifestService.registerNarrationEpub(projectDir, {
+          ...manifest,
+          modifiedAt: at,
+          // It is still the same cut of the same book — only the chapter's name
+          // has moved, in both files at once — so the record follows the book's
+          // new sha rather than declaring the copy stale over an edit it also
+          // received.
+          fromEpubSha256: after,
+        });
+        narrationCopy = 'updated';
       }
-      const stagedCopy = path.join(STAGING_DIR, `retitle-tts-${before.slice(0, 16)}.epub`);
-      await rewriteChapterTitle(
-        narration.absPath, stagedCopy, copyNav.navFile, copyLink, chapterFile, title);
-      await moveIntoPlace(stagedCopy, narration.absPath);
-      await manifestService.registerNarrationEpub(projectDir, {
-        ...manifest,
-        modifiedAt: at,
-        // It is still the same cut of the same book — only the chapter's name has
-        // moved, in both files at once — so the record follows the book's new sha
-        // rather than declaring the copy stale over an edit it also received.
-        fromEpubSha256: after,
-      });
-      narrationCopy = 'updated';
     } else {
       narrationCopy = 'already-stale';
     }

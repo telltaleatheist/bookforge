@@ -122,6 +122,15 @@ export interface NarrationExportResult {
   /** Digits-only `<sup>` footnote references removed on the way out. */
   removedSupMarkers: number;
   /**
+   * The spine documents the strikes emptied, which were taken out of the copy
+   * entirely rather than left as blank pages.
+   *
+   * NAMED, not counted: the user opens this file to check that what they deleted
+   * is gone, and "2 emptied document(s) removed" is a number they cannot act on
+   * while "copy.xhtml, toc.xhtml" is a sentence they can recognize.
+   */
+  removedDocuments: string[];
+  /**
    * How the removed elements were arrived at — the two records, counted apart.
    *
    * `fromStrikes` is what was on record before this export; `translated` is what
@@ -312,6 +321,7 @@ export async function exportNarrationEpub(
     fromEpubSha256: sha256,
     removedElements: written.removedElements,
     removedSupMarkers: written.removedSupMarkers,
+    removedDocuments: written.removedDocuments,
   });
 
   return {
@@ -320,6 +330,7 @@ export async function exportNarrationEpub(
     removedElements: written.removedElements,
     totalElements: written.totalElements,
     removedSupMarkers: written.removedSupMarkers,
+    removedDocuments: written.removedDocuments,
     fromStrikes: merged.fromStrikes,
     translated: merged.translated,
     unresolved: merged.unresolved,
