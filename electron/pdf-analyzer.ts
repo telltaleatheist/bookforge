@@ -39,7 +39,7 @@ export { TEXT_LAYER_MIN_CHARS_PER_PAGE, type TextLayerReport };
 const execAsync = promisify(exec);
 
 // Cache version - increment this when changing extraction logic to invalidate old caches
-const ANALYSIS_CACHE_VERSION = 13;  // v13: a converted book's blocks carry data-bf-cat / -page / element key
+const ANALYSIS_CACHE_VERSION = 14;  // v14: unaligned-block warnings name the block — warnings are cached WITH the analysis, so the text fix never reached a book analyzed under v13
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;
