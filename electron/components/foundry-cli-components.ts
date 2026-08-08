@@ -23,33 +23,40 @@
  * a developer running a build of their own, and an auto-download that quietly
  * replaced it would be this app overruling a deliberate choice.
  *
- * ── Bumping FOUNDRY_CLI_VERSION ──────────────────────────────────────────────
+ * ── There is no pinned version, and nothing to paste ─────────────────────────
  *
- * Publish the release, then change the version constant and paste the four
- * sha256s and byte counts out of that release's `checksums.txt`. The URLs derive
- * from the version, so they follow on their own; the hashes never can.
+ * THE NEWEST PUBLISHED RELEASE IS THE VERSION. This component has no constant to
+ * bump and no hashes committed beside it: `checkFoundryRelease` asks GitHub what
+ * the latest release is, reads every artifact's sha256 out of that release's own
+ * `checksums.txt`, and hands the result to `setDiscoveredFoundryRelease` below.
+ * From that moment this component describes that release — its version, its URLs
+ * and its hashes.
  *
- * A hash is only ever PASTED from a published artifact, never predicted. An
- * invented hash turns a clear failure — "this asset is not there" — into a
- * checksum mismatch, which reads as a corrupt transfer and sends the reader off
- * to investigate their network instead of the release they forgot to upload.
+ * It used to carry a pinned version and four pasted sha256s, and the pasted hash
+ * was a genuinely stronger guarantee: two independent assertions, one of them
+ * shipped inside the app binary where the release host cannot reach it. It was
+ * dropped deliberately (Owen, 2026-08-08) because foundry is rebuilt and
+ * republished several times a day and often several times an hour, and a scheme
+ * that needs a human to copy four hashes before the app can see a release is a
+ * scheme that guarantees the app is behind. The cost is stated plainly at the top
+ * of `foundry-release-check.ts`: verification still happens on every download,
+ * but it defends against a corrupt transfer rather than against a compromised
+ * repository.
  *
- * ── When a release is newer than the pin ─────────────────────────────────────
+ * Two consequences follow, and both are intended:
  *
- * The startup update check (electron/components/startup-upgrade-check.ts) can
- * discover a published release newer than FOUNDRY_CLI_VERSION and hand it to
- * `setDiscoveredFoundryRelease` below. From that moment this component describes
- * THAT release instead of the pin — its version, its URLs, and hashes read out of
- * its own `checksums.txt`. That is a weaker guarantee than the pasted hashes
- * above, and the trade-off is argued in full at the top of
- * `electron/components/foundry-release-check.ts`, which is the only thing that
- * ever calls the setter.
+ *  - **A rollback lands like an upgrade.** The rule is version INEQUALITY, not
+ *    "is newer" — if the newest release goes backwards because a bad build was
+ *    yanked, machines follow it. Nothing here can be "ahead" of the authority,
+ *    because the authority is whatever GitHub says right now.
+ *  - **Offline, this component has no artifacts and no version.** That is the
+ *    honest state rather than a stale constant pretending to be current: with no
+ *    release discovered there is nothing to download and nothing to compare
+ *    against, so `planUpgrade` leaves the installed copy alone (rule 6) and a
+ *    machine with no foundry at all is told it needs the network.
  *
- * `effectiveFoundryVersion()` is the SINGLE answer to "which foundry should be
- * on this machine". Everything that used to read FOUNDRY_CLI_VERSION to decide
- * whether an install is stale must read it instead — foundry-bridge's lazy
- * upgrade did, and had it kept reading the raw constant it would have reinstalled
- * the pin over a freshly-taken newer release on every pass.
+ * `effectiveFoundryVersion()` is the SINGLE answer to "which foundry should be on
+ * this machine", and everything deciding whether an install is stale reads it.
  */
 
 import type { OptionalComponent, Platform, Arch } from './component-types';
@@ -60,53 +67,27 @@ export const FOUNDRY_CLI_COMPONENT_ID = 'foundry-cli';
 /** Environment variable holding an explicit path to the binary. */
 export const FOUNDRY_CLI_ENV_VAR = 'FOUNDRY_CLI_PATH';
 
-/** The release these artifacts come from. Bumping it means new URLs and hashes. */
-export const FOUNDRY_CLI_VERSION = '0.7.1';
-
-const RELEASE_BASE =
-  `https://github.com/telltaleatheist/foundry/releases/download/v${FOUNDRY_CLI_VERSION}`;
-
 /**
- * The published assets, verbatim from the release's `checksums.txt` — pasted,
- * never predicted (see the header).
+ * What each platform's artifact is CALLED. Names only — no version, no hashes.
+ *
+ * This is the naming contract `tools/release-package.sh` produces and
+ * docs/DISTRIBUTION.md §2.3 documents: a program reads these, not just a person.
+ * It lives here so the release check reads the names from one place rather than
+ * re-deriving them, because two places composing the same filename is how one of
+ * them ends up subtly different and installs break on a single platform, quietly,
+ * until somebody on that platform tries.
  */
 export interface FoundryAsset {
   platform: Platform;
   arch: Arch;
   file: string;
-  sha256: string;
-  bytes: number;
 }
 
 const ASSETS: FoundryAsset[] = [
-  {
-    platform: 'darwin',
-    arch: 'arm64',
-    file: 'foundry-darwin-arm64.tar.gz',
-    sha256: '17b4b8c5e01e34646e867510b29ce9a703052f8bb3b4abece30c5d41f7e88ad6',
-    bytes: 25200037,
-  },
-  {
-    platform: 'darwin',
-    arch: 'x64',
-    file: 'foundry-darwin-x64.tar.gz',
-    sha256: '1dfbccdbaddb3d80096f39820631a8f832431d428779a77f1d897b15111485ef',
-    bytes: 27727514,
-  },
-  {
-    platform: 'linux',
-    arch: 'x64',
-    file: 'foundry-linux-x64.tar.gz',
-    sha256: 'e7731b154a8cd9778d735c1616400a3474eb6f44688f824dfeefdd52c582fd07',
-    bytes: 37190540,
-  },
-  {
-    platform: 'win32',
-    arch: 'x64',
-    file: 'foundry-windows-x64.tar.gz',
-    sha256: '628dfed90ebe204abf430869442461efdd7ea83e459b4c58b55915ede6544f34',
-    bytes: 39578881,
-  },
+  { platform: 'darwin', arch: 'arm64', file: 'foundry-darwin-arm64.tar.gz' },
+  { platform: 'darwin', arch: 'x64', file: 'foundry-darwin-x64.tar.gz' },
+  { platform: 'linux', arch: 'x64', file: 'foundry-linux-x64.tar.gz' },
+  { platform: 'win32', arch: 'x64', file: 'foundry-windows-x64.tar.gz' },
 ];
 
 /**
@@ -128,20 +109,19 @@ export interface FoundryReleaseArtifact {
   bytes: number;
 }
 
-/** A release newer than the pin, once one has been discovered and verified. */
+/** The newest published release, once it has been read off GitHub. */
 export interface DiscoveredRelease {
   version: string;
   artifacts: FoundryReleaseArtifact[];
 }
 
 /**
- * Process-wide, set at most once per launch by the startup update check.
+ * Process-wide, replaced by every successful release check.
  *
  * Deliberately NOT persisted. What survives a restart is the InstalledRecord —
- * the version actually on disk — and the "a downgrade is not an upgrade" rule in
- * component-upgrades.ts is what keeps a launch that starts offline (and so can
- * only see the pin) from dragging a newer install backwards. A second on-disk
- * copy of "what we last saw on GitHub" would be a second authority to go stale.
+ * the version actually on disk. A second on-disk copy of "what we last saw on
+ * GitHub" would be a second authority, able to go stale and able to disagree
+ * with the only two things that are real: the file on disk, and the release.
  */
 let discovered: DiscoveredRelease | null = null;
 
@@ -154,19 +134,22 @@ export function setDiscoveredFoundryRelease(release: DiscoveredRelease): void {
   discovered = release;
 }
 
-/** The discovered release, or null when the pin is still what this launch uses. */
+/** The newest release as last read off GitHub, or null if it has not been read. */
 export function getDiscoveredFoundryRelease(): DiscoveredRelease | null {
   return discovered;
 }
 
 /**
- * Which foundry should be on this machine — the discovered release if one was
- * adopted this launch, else the pin. The single authority: anything asking "is
- * the installed copy stale?" must compare against THIS, never against
- * FOUNDRY_CLI_VERSION directly.
+ * Which foundry should be on this machine.
+ *
+ * The newest published release, or `''` when GitHub has not been reached this
+ * launch. Empty is not a stand-in for a version — it is "unknown", and every
+ * rule that reads it treats it that way: `planUpgrade` rule 6 keeps an install
+ * whose target version is '' rather than guessing it is stale. Anything asking
+ * "is the installed copy out of date?" compares against THIS.
  */
 export function effectiveFoundryVersion(): string {
-  return discovered ? discovered.version : FOUNDRY_CLI_VERSION;
+  return discovered ? discovered.version : '';
 }
 
 /**
@@ -184,21 +167,17 @@ export function foundryCliComponent(): OptionalComponent {
   // The catalog is rebuilt on every getCatalog() call, so a release adopted
   // mid-launch is picked up by the very next install() without any invalidation.
   const version = effectiveFoundryVersion();
-  const artifacts = discovered
-    ? discovered.artifacts.map((a) => ({
-      platform: a.platform,
-      arch: a.arch,
-      url: a.url,
-      sha256: a.sha256,
-      bytes: a.bytes,
-    }))
-    : ASSETS.map((a) => ({
-      platform: a.platform,
-      arch: a.arch,
-      url: `${RELEASE_BASE}/${a.file}`,
-      sha256: a.sha256,
-      bytes: a.bytes,
-    }));
+  // No release read yet ⇒ NO artifacts. There is nothing to download that this
+  // process can name, and inventing URLs from a remembered version would be
+  // guessing at a release that may not exist. install() surfaces the empty list
+  // as "not available for download", which offline is the truth.
+  const artifacts = (discovered?.artifacts ?? []).map((a) => ({
+    platform: a.platform,
+    arch: a.arch,
+    url: a.url,
+    sha256: a.sha256,
+    bytes: a.bytes,
+  }));
   const mine = artifacts.find(
     (a) => a.platform === process.platform && a.arch === process.arch
   );
@@ -241,8 +220,11 @@ export function foundryCliComponent(): OptionalComponent {
     verify: { kind: 'exec', args: ['--version'], expect: 'foundry' },
     version,
     entryPath: entryName(),
-    // Derived, not written out: a hardcoded tag went stale the first time the
-    // version was bumped and pointed users at a release the app no longer ships.
-    externalHelpUrl: `https://github.com/telltaleatheist/foundry/releases/tag/v${version}`,
+    // The specific release when one has been read, else the releases page. Never
+    // a tag built from a remembered version: with nothing discovered that would
+    // link to a release this app has not seen and may not exist.
+    externalHelpUrl: version
+      ? `https://github.com/telltaleatheist/foundry/releases/tag/v${version}`
+      : 'https://github.com/telltaleatheist/foundry/releases',
   };
 }

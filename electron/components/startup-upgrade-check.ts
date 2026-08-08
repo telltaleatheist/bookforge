@@ -149,11 +149,6 @@ export async function checkForComponentUpgrades(): Promise<StartupUpgradeReport>
         : null,
       envPinned: envPinned(component),
       installing: isInstalling(component.id),
-      // Foundry alone can be ahead of the catalog: it is the one component whose
-      // version can come from a release discovered at runtime, so a launch that
-      // starts offline sees only the pin and must not drag it backwards. Every
-      // other component's version comes from the catalog and nowhere else.
-      mayBeAheadOfCatalog: component.id === FOUNDRY_CLI_COMPONENT_ID,
     };
   });
 

@@ -60,29 +60,24 @@
  *     when the fact needed to decide is missing, the answer is to do nothing and
  *     say so, not to assume the worse of the two possibilities.
  *  7. Versions equal → keep.
- *  8. The component can be legitimately AHEAD of the catalog, both versions are
- *     semver, and the installed one is newer → keep. A downgrade is not an
- *     upgrade. This is what keeps a machine that took a newer-than-the-pin GitHub
- *     release (see foundry-release-check.ts) from being dragged back to the pin
- *     on the next launch that starts offline, where the catalog can only offer
- *     the pin.
+ *  8. Otherwise → upgrade. Note this is version INEQUALITY, not "is newer": the
+ *     wanted version is whatever the catalog now names, and the catalog is the
+ *     authority for a copy BookForge itself put there. A deliberate ROLLBACK —
+ *     Owen moving `RVC_ENV_VERSION` back to a known-good tarball, or a bad
+ *     foundry release being yanked so an older tag becomes latest again — has to
+ *     reach machines, and it does so by exactly this rule.
  *
- *     Deliberately narrow on BOTH counts. It needs the caller to say the
- *     component has a runtime-discovery path at all (`mayBeAheadOfCatalog`),
- *     because for everything else the catalog is the only authority and an
- *     installed version it does not name is stale in either direction — Owen
- *     rolling `RVC_ENV_VERSION` back to a known-good tarball must still reach
- *     machines. And it needs both strings to be X.Y.Z, because most version
- *     constants here are not semver ('b7482' for llama.cpp) and ordering them
- *     would invent a meaning they do not have. Note that the date-stamped env
- *     versions ('2026.06.16') DO parse as X.Y.Z and order chronologically — which
- *     is why rule 8 is gated on the flag and not on the shape alone.
- *  9. Otherwise → upgrade. Note this is version INEQUALITY, not "is newer": a
- *     bump is whatever the catalog now names, and the catalog is the authority
- *     for a copy BookForge itself put there.
+ * There used to be a rule between 7 and 8: "a component that may legitimately be
+ * ahead of the catalog is left alone when the installed version is newer". It
+ * existed for one component, foundry, and for one situation — a launch that
+ * started offline could only see the PINNED foundry version, so without it a
+ * machine that had taken a newer release would be dragged back to the pin. The
+ * pin is gone (foundry-cli-components.ts): the newest published release is now
+ * foundry's only authority, and offline that component reports version '' and is
+ * kept by rule 6 instead. With no pin there is nothing to be "ahead" of, so the
+ * rule protected nothing and blocked rollbacks.
  */
 
-import { gt } from '../update/semver';
 import type { ComponentKind } from './component-types';
 
 /**
@@ -118,15 +113,6 @@ export interface UpgradeCandidate {
    * even a question worth asking about it. See rule 0.
    */
   kind: ComponentKind;
-  /**
-   * True when an installed version NEWER than the catalog's is a legitimate
-   * on-disk state — i.e. this component can adopt a release discovered at
-   * runtime, so the catalog is not its only authority. Today that is the foundry
-   * CLI alone. Leave it false for anything the catalog fully controls: there, an
-   * installed version the catalog does not name is stale in either direction,
-   * and a deliberate rollback of the pin has to reach machines.
-   */
-  mayBeAheadOfCatalog?: boolean;
 }
 
 export type UpgradeVerdict = 'upgrade' | 'keep';
@@ -146,37 +132,6 @@ export interface UpgradePlanItem {
 /** Does this string parse as an X.Y.Z version, so that ordering it means something? */
 export function isSemver(version: string): boolean {
   return /^v?\d+\.\d+\.\d+(?:[-+].*)?$/.test(version.trim());
-}
-
-/**
- * Pick the version to install for a component whose catalog pin may have been
- * superseded by a release discovered on the host.
- *
- * The pin WINS on a tie and whenever it is newer: a pin ahead of the newest
- * release is a version bump whose release is not published yet (or was rolled
- * back), and following the release there would be a downgrade. `release` is null
- * when nothing was discovered — offline, or nothing newer exists.
- */
-export function chooseTargetVersion(
-  pin: string,
-  release: string | null
-): { version: string; from: 'pin' | 'release'; reason: string } {
-  if (!release) {
-    return { version: pin, from: 'pin', reason: `no published release newer than the pinned ${pin}` };
-  }
-  if (!isSemver(pin) || !isSemver(release)) {
-    return {
-      version: pin,
-      from: 'pin',
-      reason:
-        `cannot order "${release}" against the pinned "${pin}" — one of them is not X.Y.Z, `
-        + 'so there is no way to tell which is newer; keeping the pin',
-    };
-  }
-  if (gt(release, pin)) {
-    return { version: release, from: 'release', reason: `release ${release} is newer than the pinned ${pin}` };
-  }
-  return { version: pin, from: 'pin', reason: `pinned ${pin} is at or ahead of the newest release ${release}` };
 }
 
 /** The verdict for one component. See the header for the ordered rules. */
@@ -227,16 +182,6 @@ export function planUpgrade(c: UpgradeCandidate): UpgradePlanItem {
   }
   if (c.installed.version === c.targetVersion) {
     return keep(`up to date at ${c.targetVersion}`);
-  }
-  if (
-    c.mayBeAheadOfCatalog === true
-    && isSemver(c.installed.version)
-    && isSemver(c.targetVersion)
-    && gt(c.installed.version, c.targetVersion)
-  ) {
-    return keep(
-      `installed ${c.installed.version} is newer than the catalog's ${c.targetVersion} — a downgrade is not an upgrade`
-    );
   }
   return {
     ...base,

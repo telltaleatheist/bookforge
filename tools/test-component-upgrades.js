@@ -39,9 +39,9 @@ for (const m of [UPGRADES, RELEASE, CATALOG]) {
   }
 }
 
-const { isSemver, chooseTargetVersion, planUpgrade, planUpgrades, upgradesFrom } = require(UPGRADES);
+const { isSemver, planUpgrade, planUpgrades, upgradesFrom } = require(UPGRADES);
 const { versionFromTag, parseChecksums, artifactsForRelease, CHECKSUMS_FILE } = require(RELEASE);
-const { FOUNDRY_ASSETS, FOUNDRY_CLI_VERSION } = require(CATALOG);
+const { FOUNDRY_ASSETS } = require(CATALOG);
 
 let passed = 0;
 const failures = [];
@@ -182,18 +182,32 @@ test('matching versions are up to date', () => {
   assert.match(v.reason, /up to date/);
 });
 
-// ── Rule 8: a downgrade is not an upgrade — but only where it can happen ────
+// ── Rule 8: inequality, in BOTH directions ─────────────────────────────────
 
-test('foundry installed NEWER than the catalog is left alone', () => {
-  // The offline-restart case: the machine took a discovered 0.6.0, and this
-  // launch can only see the 0.5.0 pin. It must not be dragged backwards.
+test('foundry follows the newest release DOWN when one is yanked', () => {
+  // There is no pin to be "ahead" of any more: the newest published release is
+  // foundry's only authority. A bad build pulled, so an older tag is latest
+  // again, must reach machines — which under a pin needed a code change, the
+  // slowest possible response to the one case that is actually urgent.
   const v = planUpgrade(candidate({
-    id: 'foundry-cli', name: 'Foundry CLI', mayBeAheadOfCatalog: true,
-    targetVersion: '0.5.0',
-    installed: { source: 'managed', version: '0.6.0' },
+    id: 'foundry-cli', name: 'Foundry CLI',
+    targetVersion: '0.7.0',
+    installed: { source: 'managed', version: '0.7.1' },
+  }));
+  assert.strictEqual(v.verdict, 'upgrade');
+});
+
+test('foundry with no release read this launch is left alone', () => {
+  // Offline, `effectiveFoundryVersion()` is '' — unknown, not zero. Rule 6
+  // keeps the install rather than guessing it is stale, which is what stops an
+  // unreachable GitHub from touching a working binary.
+  const v = planUpgrade(candidate({
+    id: 'foundry-cli', name: 'Foundry CLI',
+    targetVersion: '',
+    installed: { source: 'managed', version: '0.7.1' },
   }));
   assert.strictEqual(v.verdict, 'keep');
-  assert.match(v.reason, /downgrade is not an upgrade/);
+  assert.match(v.reason, /does not version/);
 });
 
 test('a catalog-only component IS rolled back when its pin moves backwards', () => {
@@ -211,7 +225,7 @@ test('a catalog-only component IS rolled back when its pin moves backwards', () 
 
 test('a version that is not semver at all is compared by inequality only', () => {
   const build = planUpgrade(candidate({
-    id: 'llama-cuda', mayBeAheadOfCatalog: true,
+    id: 'llama-cuda',
     targetVersion: 'b7000',
     installed: { source: 'managed', version: 'b7482' },
   }));
@@ -241,39 +255,6 @@ test('a realistic mixed machine yields exactly the managed+installed+stale ones'
   assert.deepStrictEqual(upgradesFrom(plan).map((p) => p.id), ['foundry-cli', 'whisperx-env']);
   // Every verdict explains itself — the reason is the log line a user will read.
   for (const item of plan) assert.ok(item.reason && item.reason.length > 0, `${item.id} has no reason`);
-});
-
-// ── chooseTargetVersion: the pin vs the release ─────────────────────────────
-
-test('a release NEWER than the pin wins', () => {
-  const t = chooseTargetVersion('0.5.0', '0.6.0');
-  assert.strictEqual(t.version, '0.6.0');
-  assert.strictEqual(t.from, 'release');
-});
-
-test('the pin wins on a tie', () => {
-  const t = chooseTargetVersion('0.5.0', '0.5.0');
-  assert.strictEqual(t.version, '0.5.0');
-  assert.strictEqual(t.from, 'pin');
-});
-
-test('the pin wins when it is AHEAD of the newest release — a downgrade is not an upgrade', () => {
-  const t = chooseTargetVersion('0.6.0', '0.5.0');
-  assert.strictEqual(t.version, '0.6.0');
-  assert.strictEqual(t.from, 'pin');
-});
-
-test('no release discovered (offline, or nothing newer) keeps the pin', () => {
-  const t = chooseTargetVersion('0.5.0', null);
-  assert.strictEqual(t.version, '0.5.0');
-  assert.strictEqual(t.from, 'pin');
-  assert.match(t.reason, /no published release newer/);
-});
-
-test('a version that cannot be ordered against the pin keeps the pin, and says why', () => {
-  const t = chooseTargetVersion('0.5.0', 'nightly');
-  assert.strictEqual(t.from, 'pin');
-  assert.match(t.reason, /not X\.Y\.Z/);
 });
 
 // ── versionFromTag ──────────────────────────────────────────────────────────
@@ -368,13 +349,14 @@ test('a platform absent from the release is skipped, not invented', () => {
   assert.ok(!arts.some((a) => a.platform === 'linux'));
 });
 
-test('a release with nothing for THIS machine refuses and names the pin it stays on', () => {
+test('a release with nothing for THIS machine refuses by name', () => {
   const noWindows = allFiles.filter((f) => f !== 'foundry-windows-x64.tar.gz');
   assert.throws(
     () => artifactsForRelease(releaseWith(noWindows), fullChecksums, '0.6.0', 'win32', 'x64'),
     (err) => {
       assert.match(err.message, /win32\/x64/);
-      assert.match(err.message, new RegExp(FOUNDRY_CLI_VERSION.replace(/\./g, '\\.')));
+      // It says what to do about it, and that the working install is untouched.
+      assert.match(err.message, /republish/i);
       return true;
     },
   );
@@ -398,8 +380,9 @@ test('adopting a release changes the component version, URLs, hashes and help li
   delete require.cache[require.resolve(CATALOG)];
   const cat = require(CATALOG);
   const before = cat.foundryCliComponent();
-  assert.strictEqual(before.version, cat.FOUNDRY_CLI_VERSION);
-  assert.strictEqual(cat.effectiveFoundryVersion(), cat.FOUNDRY_CLI_VERSION);
+  // Before anything is read off GitHub there is no version and nothing to fetch.
+  assert.strictEqual(before.version, '');
+  assert.strictEqual(cat.effectiveFoundryVersion(), '');
 
   cat.setDiscoveredFoundryRelease({
     version: '9.9.9',
@@ -428,19 +411,27 @@ test('adopting a release changes the component version, URLs, hashes and help li
   delete require.cache[require.resolve(CATALOG)];
 });
 
-test('the pinned entry still carries pasted hashes and pin-derived URLs', () => {
+test('with no release read, the entry offers nothing to download and says so', () => {
+  // The honest offline state. Inventing URLs from a remembered version would
+  // point the installer at a release this process has never seen.
   delete require.cache[require.resolve(CATALOG)];
   const cat = require(CATALOG);
   const comp = cat.foundryCliComponent();
-  assert.strictEqual(comp.artifacts.length, cat.FOUNDRY_ASSETS.length);
-  for (const a of cat.FOUNDRY_ASSETS) {
-    const art = comp.artifacts.find((x) => x.platform === a.platform && x.arch === a.arch);
-    assert.strictEqual(art.sha256, a.sha256);
-    assert.strictEqual(art.bytes, a.bytes);
-    assert.ok(art.url.endsWith(`/v${cat.FOUNDRY_CLI_VERSION}/${a.file}`));
-    assert.match(a.sha256, /^[0-9a-f]{64}$/, `${a.file} has no pasted hash`);
-  }
+  assert.deepStrictEqual(comp.artifacts, []);
+  assert.strictEqual(comp.sizeBytes, 0);
+  assert.strictEqual(comp.version, '');
+  // The help link degrades to the releases page rather than a tag that may not exist.
+  assert.ok(comp.externalHelpUrl.endsWith('/releases'), comp.externalHelpUrl);
   delete require.cache[require.resolve(CATALOG)];
+});
+
+test('no version or hash is committed beside the component any more', () => {
+  // The point of the change: publishing is the whole of deploying. If a pinned
+  // version or a pasted sha256 ever reappears here, this fails.
+  const src = fs.readFileSync(
+    path.join(REPO, 'electron', 'components', 'foundry-cli-components.ts'), 'utf8');
+  assert.ok(!/FOUNDRY_CLI_VERSION/.test(src), 'a pinned version came back');
+  assert.ok(!/[0-9a-f]{64}/.test(src), 'a pasted sha256 came back');
 });
 
 // ── Run ─────────────────────────────────────────────────────────────────────

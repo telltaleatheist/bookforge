@@ -1,11 +1,12 @@
 /**
- * Is there a published foundry release NEWER than the version this build pins?
+ * What is the newest published foundry release, and what are its artifacts?
  *
- * `electron/components/foundry-cli-components.ts` pins a version and carries a
- * PASTED sha256 per artifact. This module is the one place that can move past
- * that pin without a code change, and doing so costs something real. The
- * trade-off is stated here, at the decision, rather than left for a reader to
- * infer from the absence of a constant:
+ * This module is the ONLY authority on which foundry BookForge should be running.
+ * There is no pinned version and no committed hash to compare against: whatever
+ * GitHub says is the latest release is what this app wants, in either direction.
+ * That is a deliberate trade, and it costs something real. It is stated here, at
+ * the decision, rather than left for a reader to infer from the absence of a
+ * constant:
  *
  * ── The trust trade-off, deliberately made ──────────────────────────────────
  *
@@ -21,13 +22,15 @@
  * or truncated transfer — the failure this code actually sees — and it does not
  * defend against a compromised repository. That is the whole of the difference.
  *
- * It is taken here because the alternative was worse in practice: a foundry
- * release that BookForge cannot reach until someone bumps a constant, which is
- * how a machine ends up running a CLI two versions behind the document-stage
- * contract the app was built against. The repo is Owen's own, public, and read
- * over HTTPS with certificate validation, so the residual risk is "someone owns
- * the GitHub account", at which point the pasted hash in the next BookForge
- * release would be pasted from the same compromised artifact anyway.
+ * It is taken because the alternative was worse in practice, and then taken
+ * FURTHER for the same reason (Owen, 2026-08-08): foundry is rebuilt and
+ * republished several times a day, sometimes several times an hour, and any
+ * scheme requiring a human to bump a constant and copy four hashes before the app
+ * can see a release is a scheme that guarantees every machine runs a CLI behind
+ * the document-stage contract the app was built against. The repo is Owen's own,
+ * public, and read over HTTPS with certificate validation, so the residual risk
+ * is "someone owns the GitHub account" — at which point a pasted hash in the next
+ * BookForge release would have been pasted from the same compromised artifact.
  *
  * What is NOT traded away, and must never be:
  *
@@ -44,9 +47,23 @@
  *    no hash.
  *  - The asset naming is a CONTRACT — `foundry-<platform>-<arch>.tar.gz`,
  *    docs/DISTRIBUTION.md §2.3. This module does not re-derive those names; it
- *    reads them from `FOUNDRY_ASSETS`, the same list the pinned URLs are built
- *    from, so the two can never disagree about what a release is called.
- *  - A release OLDER than the pin is ignored. See `chooseTargetVersion`.
+ *    reads them from `FOUNDRY_ASSETS`, so nothing can disagree about what a
+ *    release is called.
+ *
+ * ── A release going BACKWARDS is followed, not ignored ──────────────────────
+ *
+ * There is no "is it newer" test any more. The newest release is the answer, and
+ * if a bad build is yanked and an older tag becomes latest again, machines follow
+ * it down. That is the point of having one authority: with a pin, a rollback
+ * reached nobody until someone edited a constant, which is the slowest possible
+ * response to the one situation that is actually urgent.
+ *
+ * ── Freshness ───────────────────────────────────────────────────────────────
+ *
+ * The answer is cached for {@link RELEASE_CACHE_MS} so a burst of passes does not
+ * mean a burst of API calls, and re-read after that. It is short on purpose: the
+ * publish-to-running-it loop is minutes, so a check that only happened at launch
+ * would mean restarting the app to pick up a release published two minutes ago.
  */
 
 import * as fs from 'fs';
@@ -56,8 +73,8 @@ import * as http from 'http';
 import * as https from 'https';
 
 import { downloadFile } from './downloader';
-import { FOUNDRY_ASSETS, FOUNDRY_CLI_VERSION, type FoundryReleaseArtifact } from './foundry-cli-components';
-import { chooseTargetVersion, isSemver } from './component-upgrades';
+import { FOUNDRY_ASSETS, type FoundryReleaseArtifact } from './foundry-cli-components';
+import { isSemver } from './component-upgrades';
 
 /** The releases API for the repo the pinned URLs point at. */
 export const FOUNDRY_RELEASES_API =
@@ -178,7 +195,8 @@ export function artifactsForRelease(
   if (!mine) {
     throw new Error(
       `foundry ${version} has no ${wantPlatform}/${wantArch} artifact, so this machine cannot take it. `
-      + `BookForge stays on the pinned ${FOUNDRY_CLI_VERSION}.`
+      + 'A target that failed to build is absent from the release; republish it with that platform '
+      + 'included. Whatever foundry is already installed is left alone.'
     );
   }
   return artifacts;
@@ -257,46 +275,59 @@ async function fetchChecksums(url: string, signal?: AbortSignal): Promise<Record
   }
 }
 
+/** How long a fetched release answer is reused before GitHub is asked again. */
+export const RELEASE_CACHE_MS = 90_000;
+
+/** The last successful answer and when it was taken. Failures are never cached. */
+let cached: { at: number; release: DiscoveredFoundryRelease } | null = null;
+
 /**
- * The newest published foundry release, when it is newer than the pin.
+ * The newest published foundry release, with a verified artifact for this machine.
  *
- * Returns null when there is nothing to do — the pin is at or ahead of the newest
- * release, or the tag is not a version this code can order against the pin.
- * THROWS when the release exists and cannot be trusted or used: no
- * `checksums.txt`, a tarball with no hash, no artifact for this machine. Those
- * are publishing faults, and a caller that swallowed them would be choosing to
- * stay silently behind.
+ * Returns null only when there is genuinely no answer: the latest release is a
+ * draft or prerelease, or its tag is not a version. THROWS when a release exists
+ * and cannot be used — no `checksums.txt`, a tarball with no hash line, no
+ * artifact for this platform. Those are publishing faults, and a caller that
+ * swallowed them would be choosing to stay silently behind.
+ *
+ * Note what is NOT here any more: a comparison against a pinned version. This
+ * answers "what is published", and `planUpgrade` answers "is that what is
+ * installed". Keeping those two questions in separate places is what lets a
+ * rollback reach machines without a code change.
  */
 export async function checkFoundryRelease(
   platform: string = process.platform,
   arch: string = process.arch,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  opts?: { force?: boolean }
 ): Promise<DiscoveredFoundryRelease | null> {
+  if (!opts?.force && cached && Date.now() - cached.at < RELEASE_CACHE_MS) {
+    return cached.release;
+  }
+
   const release = await fetchJson<GithubRelease>(FOUNDRY_RELEASES_API);
 
   // /releases/latest never returns a draft, and returns a prerelease only when
-  // it is the only release. Neither is something to auto-upgrade a user onto.
+  // it is the only release. Neither is something to move a user onto.
   if (release.draft || release.prerelease) return null;
 
   const version = versionFromTag(release.tag_name);
   if (!version) return null;
 
-  const target = chooseTargetVersion(FOUNDRY_CLI_VERSION, version);
-  if (target.from === 'pin') return null;
-
   const checksumAsset = release.assets.find((a) => a.name === CHECKSUMS_FILE);
   if (!checksumAsset) {
-    // Refusal by name, not a fallback to the pin: the release IS newer, and the
-    // reason BookForge is not taking it is that it shipped without the file that
-    // makes it verifiable.
+    // Refusal by name. Never a silent install of unverified bytes, and never a
+    // shrug that leaves the machine behind without saying why.
     throw new Error(
-      `foundry ${version} was published without a ${CHECKSUMS_FILE}, so none of its artifacts can be `
-      + 'verified. BookForge will not install unverified bytes and is staying on the pinned '
-      + `${FOUNDRY_CLI_VERSION}. Republish the release including ${CHECKSUMS_FILE}.`
+      `foundry ${version} was published without a ${CHECKSUMS_FILE}, so none of its artifacts can `
+      + 'be verified and BookForge will not install unverified bytes. Republish the release '
+      + `including ${CHECKSUMS_FILE}.`
     );
   }
 
   const checksums = await fetchChecksums(checksumAsset.browser_download_url, signal);
   const artifacts = artifactsForRelease(release, checksums, version, platform, arch);
-  return { version, artifacts };
+  const answer = { version, artifacts };
+  cached = { at: Date.now(), release: answer };
+  return answer;
 }

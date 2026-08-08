@@ -305,6 +305,24 @@ export async function ensureFoundryPath(
     );
   }
 
+  // What is published, asked before deciding whether what is installed is
+  // current. Foundry is rebuilt several times a day, so a check that only ran at
+  // launch would mean restarting BookForge to pick up a release published two
+  // minutes ago — and the answer is cached for RELEASE_CACHE_MS, so a chain of
+  // passes costs one call rather than one each.
+  //
+  // A failure here is NOT fatal and not even reported: offline, the effective
+  // version is '' and `planUpgrade` keeps whatever is installed. Being unable to
+  // ask what is newest is no reason to refuse to run the foundry already on disk.
+  try {
+    const { checkFoundryRelease } = await import('./components/foundry-release-check.js');
+    const { setDiscoveredFoundryRelease } = await import('./components/foundry-cli-components.js');
+    const release = await checkFoundryRelease();
+    if (release) setDiscoveredFoundryRelease(release);
+  } catch (err) {
+    console.warn(`[foundry] could not check for a newer release: ${(err as Error).message}`);
+  }
+
   // Loaded directly, not through resolveFoundryPath's try/catch: past this point
   // every answer needs the component registry (to read the record's source and
   // version), so a missing registry is a real error, not "nothing installed".
@@ -334,9 +352,6 @@ export async function ensureFoundryPath(
       // that — it must reach the shared-promise join below, where a concurrent
       // install is awaited rather than raced or answered with the stale binary.
       installing: false,
-      // Foundry's version can come from a release discovered at runtime, so an
-      // install NEWER than what this launch can see is a real state, not staleness.
-      mayBeAheadOfCatalog: true,
     });
     if (verdict.verdict === 'keep') {
       return entry;
