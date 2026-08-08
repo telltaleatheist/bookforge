@@ -161,6 +161,15 @@ async function buildEpub(name, chapterXhtml) {
     assert.strictEqual(blockCategoryForVlm('list-item', 'test'), 'list');
   });
 
+  // foundry's chapter stamp (Aug 2026). Its whole point is that it lands on the
+  // class the Chapter tab lists and the book splits at — a book stamped
+  // `chapter` that came out as `heading` would be a converted book with no
+  // chapters, which is what this stamp exists to stop.
+  await check('a chapter opening stamp is the chapter class, not a heading', () => {
+    assert.strictEqual(blockCategoryForVlm('chapter', 'test'), 'chapter');
+    assert.ok(VLM_CATEGORIES.includes('chapter'));
+  });
+
   await check('a category BookForge does not know throws naming it', () => {
     assert.throws(() => blockCategoryForVlm('page-header', 'the book'),
       /data-bf-cat="page-header"/);

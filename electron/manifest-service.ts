@@ -1172,6 +1172,44 @@ export async function appendAppliedPass(projectDir: string, pass: AppliedPass): 
 }
 
 /**
+ * The book's bytes changed in place, without the book becoming a different book.
+ *
+ * Exactly ONE kind of edit reaches this: a chapter retitle
+ * (electron/book-chapters.ts), which rewrites the nav entry and the chapter
+ * document's `<title>` and touches nothing a reader sees on the page. So the
+ * record is amended rather than replaced — `registerEpubExport` is the other
+ * shape of this and it is deliberately not what happens here: that one means a
+ * NEW book has taken the old one's place, and it drops `appliedPasses` and the
+ * narration copy with it. Neither is true of a retitle. The passes still ran
+ * against this file and the narration copy is still cut from it, so throwing
+ * either away would lose a true record to describe a change that did not happen.
+ *
+ * Refuses a project with no `outputs.epub` by name, for the same reason
+ * `appendAppliedPass` does: the caller believes it just wrote a book this
+ * project does not have.
+ */
+export async function touchBookEpub(projectDir: string, at: string): Promise<void> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  const saved = await modifyManifest(projectId, (m) => {
+    const epub = m.outputs?.epub;
+    if (!epub) {
+      throw new Error(
+        `Cannot record an edit to ${projectDir}'s book: the project has no outputs.epub, so there `
+        + 'is no book to have been edited.'
+      );
+    }
+    epub.modifiedAt = at;
+  });
+  if (!saved.success) {
+    throw new Error(
+      `The book was rewritten, but recording that in ${projectDir}'s manifest failed: ${saved.error}`
+    );
+  }
+}
+
+/**
  * What has been done to the project's book, in execution order.
  *
  * The manifest's own list, verbatim. An empty array is a real answer twice
@@ -1297,6 +1335,22 @@ export async function readNarrationEpub(projectDir: string): Promise<ExportEpubL
     absPath: toAbs(projectDir, recorded.path),
     modifiedAt: recorded.modifiedAt,
   };
+}
+
+/**
+ * The narration copy's WHOLE record, or null when it has never been exported.
+ *
+ * Separate from `readNarrationEpub` because that one answers "where is it",
+ * which is all most callers want, and this one answers "which book was it cut
+ * from and by how much" — the fields that say whether the copy still describes
+ * the book on disk. A caller about to edit the book (electron/book-chapters.ts)
+ * has to know that before it can decide whether the copy can come with it.
+ */
+export async function readNarrationEpubRecord(
+  projectDir: string
+): Promise<NarrationEpubOutput | null> {
+  const manifest = await readManifestAt(projectDir);
+  return manifest.outputs?.ttsEpub ?? null;
 }
 
 /** Record a written narration copy as `outputs.ttsEpub`. */

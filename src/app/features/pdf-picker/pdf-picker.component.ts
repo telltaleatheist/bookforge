@@ -20,6 +20,7 @@ import {
   DOCUMENT_STAGE_LABELS,
   DocumentNavComponent,
   DocumentNavTab,
+  type ChapterRow,
 } from './components/document-nav/document-nav.component';
 import type { DocumentRef, ResetTarget } from '@shared/document/pipeline-types';
 import { PdfViewerComponent, CropRect } from './components/pdf-viewer/pdf-viewer.component';
@@ -69,8 +70,10 @@ import {
   narrationBlocksOnSourcePage,
   narrationDeletedBlockIds,
   narrationElementsOf,
+  parseNarrationElementKey,
   type NarrationState,
 } from '@shared/vlm/narration-deletions';
+import type { BookChapterTitles } from '@shared/vlm/chapter-titles';
 import { parsePageRange } from './shared/page-range.util';
 
 interface OpenDocument {
@@ -671,7 +674,7 @@ interface AlertModal {
               <app-document-nav
                 [blocks]="textLayerFilteredBlocks()"
                 [selectedBlockIds]="selectedBlockIds()"
-                [chapterBlocks]="curationChapterBlocks()"
+                [chapterRows]="curationChapterRows()"
                 [state]="documentBlocks.state()"
                 [lastError]="documentBlocks.lastError()"
                 [hasDocument]="workingDocumentOpen()"
@@ -3174,6 +3177,10 @@ export class PdfPickerComponent implements OnInit {
       console.error('[picker] could not resolve this project\'s book EPUB:', message);
     }
     await this.refreshNarrationState();
+    // The book's own chapter names come off the same file, so they are re-read
+    // wherever it is: one round trip's worth of work, and no surface can be
+    // looking at the titles of a book that has since been replaced.
+    await this.refreshBookChapterTitles();
   }
 
   // ─── The converted book, and what is struck out of it for narration ───────
@@ -3312,17 +3319,207 @@ export class PdfPickerComponent implements OnInit {
   readonly curationLocked = computed(() => this.curationReadOnlyReason() !== null);
 
   /**
-   * The chapter rows the right-hand nav lists — the working copy's `chapter`
-   * blocks, and only while that document is what is on screen.
+   * The chapter rows the right-hand nav lists, for whichever artifact is on
+   * screen. Three sources, asked in the order of how much the artifact states.
    *
-   * The same artifact boundary as the block mirror, said where the OTHER thing
-   * that paints the document's blocks reads them. Listing the working PDF's
-   * chapters beside a book is the overlay wearing its third hat: a book's own
-   * chapters come from its navigation, not from a PDF's annotations, and an
-   * empty list under a file that has none says so honestly.
+   *  1. **The working PDF**, while its block layer is live. Its chapters ARE its
+   *     `chapter` blocks and the block's annotation text is the title — one
+   *     field, no mirror. Unchanged by everything below: the artifact boundary
+   *     is asked first, exactly as it is by the block mirror and by every
+   *     document write.
+   *  2. **A book with `chapter` blocks.** A conversion stamps
+   *     `data-bf-cat="chapter"` on the heading it split each chapter document
+   *     at, and those arrive as `chapter` blocks through the ONE category field
+   *     — so the Label tab's relabels add and remove rows here reactively,
+   *     exactly as they do for the working PDF. The TITLE is the book's own nav
+   *     entry rather than the block's text: see `bookChapterRows`.
+   *  3. **A book with none at all** — converted before foundry stamped the
+   *     class, or an EPUB from somewhere else entirely. Its chapters are what
+   *     `tryLoadOutline` read out of its navigation, and they have no block
+   *     behind them (`blockId: null`), so they are shown and not editable.
+   *
+   * 2 and 3 are exclusive on purpose. The moment a book has chapter blocks they
+   * ARE the list, because the nav rows describe the same chapters — listing both
+   * would show every chapter of the book twice.
    */
-  readonly curationChapterBlocks = computed(() =>
-    this.documentLayerLive() ? this.documentBlocks.chapterBlocks() : []);
+  readonly curationChapterRows = computed<readonly ChapterRow[]>(() => {
+    if (this.documentLayerLive()) {
+      return this.inReadingOrder(this.documentBlocks.chapterBlocks())
+        .map(b => ({
+          id: b.id, title: b.text.trim(), page: b.page, blockId: b.id, readOnlyReason: null,
+        }));
+    }
+
+    const openings = this.bookChapterOpeningBlocks();
+    if (openings.length > 0) return this.bookChapterRows(openings);
+
+    // `blockId: null` even for a chapter record that carries one. Those records
+    // are the legacy PDF chapter-marker path, whose blockId points into a
+    // document that is not live here; a row claiming to be backed by it would
+    // offer a selection the page would not paint.
+    return this.chapters().map(c => ({
+      id: c.id,
+      title: c.title,
+      page: c.page,
+      blockId: null,
+      readOnlyReason: 'read from this book\'s own table of contents, with no block on any page '
+        + 'behind it. Label the heading a chapter opening to edit it here.',
+    }));
+  });
+
+  /**
+   * The chapter-opening blocks of the book on screen, as rows.
+   *
+   * ── Which row carries the book's title ──────────────────────────────────
+   *
+   * A nav entry names a DOCUMENT, and a converted book is one document per
+   * chapter, so the title belongs to the block that OPENS that document — the
+   * first chapter-opening block in it, in reading order. That is the same
+   * decision foundry made when it split the book there, read back off the file.
+   *
+   * A later chapter-opening block in the same document is a split point the book
+   * does not have YET: the user has just labelled a heading mid-chapter to say
+   * "the next build should break here". It shows its own printed text and is not
+   * renameable, because the alternative — showing the document's one nav title on
+   * two rows and letting either overwrite it — would let a user rename a chapter
+   * from a row that is not that chapter.
+   *
+   * Every refusal is answered HERE and travels ON the row, so the pencil and the
+   * refusal cannot disagree and no affordance is offered that would be refused
+   * after the fact.
+   */
+  private bookChapterRows(openings: readonly TextBlock[]): ChapterRow[] {
+    const navTitles = this.bookChapterTitleByFile();
+    const isBook = this.viewingBook();
+    const claimed = new Set<string>();
+
+    return openings.map(block => {
+      const element = block.bf_element;
+      const file = element === undefined ? null : parseNarrationElementKey(element).file;
+      const opensDocument = file !== null && navTitles.has(file) && !claimed.has(file);
+      if (file !== null) claimed.add(file);
+
+      // The nav entry when this row owns it; the print otherwise. The print is
+      // never wrong — it is what the page says — it is just not the name the
+      // audiobook will use, which is why the nav wins where there is one.
+      const title = opensDocument ? navTitles.get(file)! : block.text.trim();
+
+      return {
+        id: block.id,
+        title,
+        page: block.page,
+        blockId: block.id,
+        readOnlyReason: this.bookRetitleRefusal(isBook, file, navTitles, opensDocument),
+      };
+    });
+  }
+
+  /**
+   * Why this row's title cannot be retyped, or null when it can be.
+   *
+   * Four answers, and each names a different thing that is missing rather than
+   * collapsing to "not available". They are asked in the order of how far the
+   * row gets: is this even the book, is there an element key, does the book's
+   * table of contents list that element's document, and is this the row that
+   * document's entry belongs to.
+   */
+  private bookRetitleRefusal(
+    isBook: boolean,
+    file: string | null,
+    navTitles: ReadonlyMap<string, string>,
+    opensDocument: boolean,
+  ): string | null {
+    if (!isBook) {
+      return 'a chapter title is written into the book\'s table of contents, and what is on screen '
+        + 'is not the book. Open the book to rename its chapters.';
+    }
+    if (file === null) {
+      return 'this heading could not be matched to the markup it was laid out from, so there is no '
+        + 'chapter document to rename.';
+    }
+    if (!navTitles.has(file)) {
+      return 'this book\'s table of contents does not list the document this heading is in, so the '
+        + 'chapter has no title there to change.';
+    }
+    if (!opensDocument) {
+      return 'this heading is not the one its chapter document opens with, so the book has no '
+        + 'separate chapter here yet. Build the book again to split at it.';
+    }
+    return null;
+  }
+
+  /** Page, then down the page — the one order a chapter list can be in. */
+  private inReadingOrder(blocks: readonly TextBlock[]): TextBlock[] {
+    return blocks.slice().sort((a, b) => a.page - b.page || a.y - b.y);
+  }
+
+  /**
+   * The blocks of the book on screen that are chapter openings, in reading
+   * order.
+   *
+   * The SAME question `documentBlocks.chapterBlocks` answers for the working
+   * PDF, asked of the editor's own block list — which is where a book's blocks
+   * live, and which already carries the effective category: the analyzer writes
+   * the stamped one (`readConversionCategories`) and `setCategoryCorrection`
+   * writes the user's relabel over it, both into `category_id`. So there is one
+   * field to read here too, and no correction map to overlay by hand.
+   */
+  private readonly bookChapterOpeningBlocks = computed<TextBlock[]>(() => {
+    const gone = this.deletedBlockIds();
+    return this.inReadingOrder(
+      this.blocks().filter(b => this.isChapterBlock(b) && !gone.has(b.id)));
+  });
+
+  /**
+   * Main's last answer about what the project's book calls its chapters,
+   * STAMPED with the project it was about — the same discipline, for the same
+   * reason, as `bookEpubAnswer`: a window moves between books, and an unstamped
+   * answer would put one book's chapter titles on another's pages.
+   *
+   * `titles: null` inside the answer is a real state — the project has no book
+   * on disk — and is kept apart from "no answer yet" so a project that has never
+   * been converted is not mistaken for one still being read.
+   */
+  private readonly bookChapterTitlesAnswer =
+    signal<{ dir: string; titles: BookChapterTitles | null } | null>(null);
+
+  /** Chapter document (zip entry) → the title the book navigates by. */
+  private readonly bookChapterTitleByFile = computed<ReadonlyMap<string, string>>(() => {
+    const answer = this.bookChapterTitlesAnswer();
+    const dir = this.projectPath();
+    if (!answer || !dir || answer.dir !== dir || answer.titles === null) return new Map();
+    return new Map(answer.titles.chapters.map(c => [c.file, c.navTitle]));
+  });
+
+  /**
+   * Ask main what the book calls its chapters. Called wherever the book itself
+   * is re-resolved, and again after a rename — the book is the only store, so
+   * re-reading it is the whole of "did that land".
+   */
+  private async refreshBookChapterTitles(): Promise<void> {
+    const dir = this.projectPath();
+    if (!dir) {
+      this.bookChapterTitlesAnswer.set(null);
+      return;
+    }
+    const answer = await this.electronService.bookChapterTitles(dir);
+    if (!answer.success) {
+      // The book is there and could not be read. Not a modal: the Chapter tab
+      // falls back to the printed headings, which is what it showed before this
+      // existed, and main's sentence is on the console for a damaged book.
+      this.bookChapterTitlesAnswer.set(null);
+      console.error('[picker] could not read this book\'s chapter titles:', answer.error);
+      return;
+    }
+    // Main answers `titles: null` for a project with no book. The `undefined`
+    // arm is the wire shape's optionality and not a second meaning — every
+    // successful answer carries the field — so the two collapse to the one state
+    // they both describe.
+    this.bookChapterTitlesAnswer.set({
+      dir,
+      titles: answer.titles === undefined ? null : answer.titles,
+    });
+  }
 
   // Search state
   readonly showSearch = signal(false);
@@ -11285,15 +11482,110 @@ export class PdfPickerComponent implements OnInit {
   // ── Curation, written into the document ───────────────────────────────────
 
   /**
-   * A chapter block's annotation text IS its title, so retitling is one edit to
-   * one field — there is no chapter record beside the block to keep in step.
+   * Retitle the chapter a block opens — in whichever file that title lives in.
+   *
+   * The artifact boundary decides, exactly as it does for every other write:
+   *
+   *  - **The working PDF.** The block's annotation text IS the title, so this is
+   *    one edit to one field and there is no chapter record beside the block to
+   *    keep in step.
+   *  - **The book.** The block's text is mupdf's rendering of the printed page
+   *    and cannot be edited — the print is the print. The title is the book's
+   *    own nav entry, so the edit goes into the book (electron/book-chapters.ts)
+   *    and the list re-reads it from there.
    */
   retitleChapterBlock(event: { blockId: string; title: string }): void {
-    // The Chapter tab is on screen for the book too, and its rows are then the
-    // BOOK's chapters — a retitle from there must not reach back into the
-    // working PDF's annotations. Same boundary as every other document write.
-    if (!this.documentLayerLive()) return;
-    this.documentBlocks.retitle(event.blockId, event.title);
+    if (this.documentLayerLive()) {
+      this.documentBlocks.retitle(event.blockId, event.title);
+      return;
+    }
+    void this.retitleBookChapter(event.blockId, event.title);
+  }
+
+  /**
+   * Rename, in the book itself, the chapter this block opens.
+   *
+   * The block is addressed by its SOURCE ELEMENT (`bf_element`,
+   * `<zip entry>#<index>`), whose first half is the chapter document — the same
+   * identity a narration strike carries. That is exact where a page number would
+   * be a guess: two chapters can open on one PDF page, and a book's laid-out
+   * pages are mupdf's, not the paper's.
+   *
+   * Nothing is stored on this side. The book is the only place the title lives,
+   * so the round trip that follows re-reads it from the book — which is also
+   * what makes a rename survive closing the window: there is no second record to
+   * have failed to save.
+   */
+  private async retitleBookChapter(blockId: string, title: string): Promise<void> {
+    const dir = this.projectPath();
+    if (!dir) {
+      this.showAlert({
+        title: 'This book is not in a project',
+        message: 'A chapter title is written into the project\'s book EPUB, and this document does '
+          + 'not belong to a project. Import it from Studio first.',
+        type: 'warning',
+      });
+      return;
+    }
+
+    const block = this.blocks().find(b => b.id === blockId);
+    if (!block) {
+      this.showAlert({
+        title: 'That chapter is no longer on screen',
+        message: `Block ${blockId} is not in this document any more, so there is no chapter to `
+          + 'rename. Re-open the book and try again.',
+        type: 'warning',
+      });
+      return;
+    }
+
+    const element = block.bf_element;
+    if (element === undefined) {
+      this.showAlert({
+        title: 'This heading could not be traced back to the book',
+        message: 'The chapter title lives in the book\'s table of contents, and this block was not '
+          + 'matched to the markup it was laid out from — so there is no chapter document to '
+          + 'rename. The warnings shown when this book opened name every block in that state.',
+        type: 'warning',
+      });
+      return;
+    }
+
+    const answer = await this.electronService.renameBookChapter(
+      dir, parseNarrationElementKey(element).file, title);
+    if (!answer.success || !answer.result) {
+      // Main's own sentence, verbatim: it names the file, the project or the
+      // table of contents that was missing, and this is the only place it is
+      // said.
+      this.showAlert({
+        title: 'That chapter was not renamed',
+        message: answer.error === undefined
+          ? 'The rename came back without a result and without a reason, which is a fault in '
+            + 'BookForge rather than anything about this book. Nothing was written.'
+          : answer.error,
+        type: 'error',
+      });
+      return;
+    }
+
+    // Re-read the book: the nav is the store, so this is both "show the new
+    // title" and "prove it landed". It also re-reads the narration state, whose
+    // record main re-stamped onto the book's new bytes.
+    await this.refreshBookEpub();
+
+    if (answer.result.narrationCopy === 'already-stale') {
+      // The one case the rename could not keep in step, said out loud. A stale
+      // narration copy is the file the audiobook would actually be built from,
+      // so silence here would mean a chapter announced under its old name with
+      // nothing on screen explaining why.
+      this.showAlert({
+        title: 'The narration copy still says the old title',
+        message: 'This project has an exported narration copy that was cut from a different '
+          + 'version of the book, so the rename was not applied to it. Export the narration copy '
+          + 'again before making the audiobook, or it will announce the old chapter title.',
+        type: 'warning',
+      });
+    }
   }
 
   /**

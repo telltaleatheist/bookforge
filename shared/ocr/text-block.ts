@@ -129,8 +129,8 @@ export interface TextBlock {
   /**
    * What the document VISION MODEL called this block's source element — the
    * `data-bf-cat` attribute `foundry vlm-convert` stamps, verbatim and
-   * lower-cased (`text`, `title`, `section-header`, `footnote`, `caption`,
-   * `table`, `picture`, `quote`, `formula`, `list-item`).
+   * lower-cased (`text`, `title`, `chapter`, `section-header`, `footnote`,
+   * `caption`, `table`, `picture`, `quote`, `formula`, `list-item`).
    *
    * The OTHER stamp, and it means the same thing `bf_group` means: this block's
    * `category_id` is the BOOK'S OWN record rather than the analyzer's font and

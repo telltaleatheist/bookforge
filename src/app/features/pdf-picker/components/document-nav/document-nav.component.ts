@@ -30,6 +30,65 @@ export const DOCUMENT_STAGE_LABELS: Record<ResetTarget, string> = {
 export type DocumentNavTab = 'select' | 'label' | 'chapter';
 
 /**
+ * One row of the Chapter tab: a chapter of whatever is on screen, and how to
+ * rename it.
+ *
+ * A ROW rather than a block, because the two books the picker shows answer
+ * "what is this chapter called?" from different places and only one of them is
+ * the block's own text:
+ *
+ *  - **A working PDF.** The chapter IS a `chapter` block, its annotation text is
+ *    the title, and the two are one field — there is nothing to reconcile. The
+ *    shell builds a row whose `title` is that text, so the single-authority rule
+ *    is unchanged: the row is a view of the block, never a second copy of it.
+ *  - **A converted book.** The chapter opening is a `chapter` block too (foundry
+ *    stamps `data-bf-cat="chapter"` on the heading it split at), but the block's
+ *    text is mupdf's rendering of the PRINTED page and cannot be edited — the
+ *    book is not rewritten to say something the page did not. The title lives in
+ *    the book's navigation, which is what an audiobook is built from, so `title`
+ *    comes from there and a rename lands there.
+ *  - **A book with no chapter blocks at all** — one converted before foundry
+ *    stamped the class, or an EPUB from anywhere else. Its chapters are read out
+ *    of its own navigation with no block behind them, so `blockId` is null:
+ *    nothing on any page corresponds to the row, so it cannot be selected and
+ *    there is no element key to rename it through.
+ *
+ * `title` is therefore always THE title, wherever that lives, and this component
+ * never has to know which of the three cases it is drawing.
+ */
+export interface ChapterRow {
+  /** Stable identity for tracking and for the range anchor. */
+  id: string;
+  /** What this chapter is called — see above for where that comes from. */
+  title: string;
+  /** Zero-based page the opening sits on. */
+  page: number;
+  /**
+   * The block this row is a view of, or null when the row was read out of the
+   * book's navigation and has no block on any page.
+   *
+   * This is what the row can be SELECTED by — the shell's one selection is a set
+   * of block ids, and the page overlay paints it — so a row with none is inert
+   * to a click rather than offering a gesture that quietly does nothing.
+   */
+  blockId: string | null;
+  /**
+   * Why this row's title cannot be retyped, in the user's words, or null when it
+   * can be.
+   *
+   * SEPARATE from `blockId` because being selectable and being renameable are
+   * genuinely different questions with different answers. A chapter block of a
+   * converted book that the aligner could not place in the markup is on the page
+   * and can be picked, but there is no chapter document to address a rename to; a
+   * `chapter` block on an archive PDF with no working copy is the same shape of
+   * answer for a different reason. The shell knows which case a row is and says
+   * so here, so this component never has to guess — and a user who tries gets a
+   * sentence instead of a pencil that does nothing.
+   */
+  readOnlyReason: string | null;
+}
+
+/**
  * The picker's right-side nav (docs/DOCUMENT_PIPELINE.md §"Picker UI").
  *
  * ONE mode — select — and three tabs over it, because the three things a person
@@ -142,25 +201,24 @@ export type DocumentNavTab = 'select' | 'label' | 'chapter';
 
         @case ('chapter') {
           <p class="tab-hint">
-            Every block labelled a chapter opening, in reading order. The text here
-            IS the chapter's title in the book — double-click one to retype it.
-            Ctrl/⌘-click or shift-click to pick several, then Merge.
+            Every chapter opening, in reading order — double-click one to retype
+            its title. Ctrl/⌘-click or shift-click to pick several, then Merge.
           </p>
-          @for (block of chapterBlocks(); track block.id) {
+          @for (row of chapterRows(); track row.id) {
             <div
               class="chapter-row"
-              [class.editing]="editingId() === block.id"
-              [class.selected]="isSelected(block.id)"
+              [class.editing]="editingId() === row.id"
+              [class.selected]="row.blockId !== null && isSelected(row.blockId)"
             >
-              @if (editingId() === block.id) {
+              @if (editingId() === row.id) {
                 <input
                   class="chapter-input"
                   type="text"
                   [value]="draftTitle()"
                   (input)="draftTitle.set($any($event.target).value)"
-                  (keydown.enter)="commitTitle(block)"
+                  (keydown.enter)="commitTitle(row)"
                   (keydown.escape)="cancelTitle()"
-                  (blur)="commitTitle(block)"
+                  (blur)="commitTitle(row)"
                 />
               } @else {
                 <!--
@@ -168,27 +226,34 @@ export type DocumentNavTab = 'select' | 'label' | 'chapter';
                   the page overlay paints), and a double-click opens the title
                   for typing. The pencil stays: it is the discoverable way in,
                   and a double-click is the fast one.
+
+                  A row whose title cannot be retyped says why on hover instead
+                  of showing a pencil that does nothing.
                 -->
                 <button
                   type="button"
                   class="chapter-title"
-                  (click)="onRowClick(block, $event)"
-                  (dblclick)="startEditing(block)"
-                >{{ block.text.trim() || '(no title)' }}</button>
-                <span class="chapter-page">p{{ block.page + 1 }}</span>
-                <button
-                  type="button"
-                  class="chapter-pencil"
-                  title="Edit this chapter's title"
-                  (click)="startEditing(block)"
-                >✎</button>
+                  [class.chapter-readonly]="row.readOnlyReason !== null"
+                  [title]="rowTooltip(row)"
+                  (click)="onRowClick(row, $event)"
+                  (dblclick)="startEditing(row)"
+                >{{ row.title || '(no title)' }}</button>
+                <span class="chapter-page">p{{ row.page + 1 }}</span>
+                @if (row.readOnlyReason === null) {
+                  <button
+                    type="button"
+                    class="chapter-pencil"
+                    title="Edit this chapter's title"
+                    (click)="startEditing(row)"
+                  >✎</button>
+                }
               }
             </div>
           }
-          @if (chapterBlocks().length === 0) {
+          @if (chapterRows().length === 0) {
             <p class="tab-empty">
-              No block is labelled a chapter opening. Label one in the Label tab and it
-              appears here.
+              No block is labelled a chapter opening, and this book's navigation
+              lists none either. Label one in the Label tab and it appears here.
             </p>
           }
 
@@ -419,6 +484,14 @@ export type DocumentNavTab = 'select' | 'label' | 'chapter';
       white-space: nowrap;
     }
 
+    /* A row the book states but no block backs. Still legible — it IS one of the
+       book's chapters — but visibly not a thing this list can act on. */
+    .chapter-readonly {
+      color: var(--text-secondary);
+      cursor: default;
+      font-style: italic;
+    }
+
     /* The pencil is what opens title editing, so it only appears on the row the
        pointer is on — a column of them would read as the list's own decoration. */
     .chapter-pencil {
@@ -476,7 +549,8 @@ export class DocumentNavComponent {
   /** Every live block, for the per-category counts the Select tab shows. */
   readonly blocks = input.required<readonly TextBlock[]>();
   readonly selectedBlockIds = input.required<readonly string[]>();
-  readonly chapterBlocks = input.required<readonly TextBlock[]>();
+  /** The chapters of whatever is on screen, in reading order. See {@link ChapterRow}. */
+  readonly chapterRows = input.required<readonly ChapterRow[]>();
   /** Null until a working document has been read for this book. */
   readonly state = input.required<DocumentPipelineState | null>();
   readonly lastError = input.required<string | null>();
@@ -505,6 +579,11 @@ export class DocumentNavComponent {
    * the shell re-derive the range would be a second copy of that order.
    */
   readonly chapterClick = output<{ blockIds: string[]; additive: boolean }>();
+  /**
+   * A chapter was retyped. Only ever emitted for a row with a block behind it —
+   * that block is how the shell knows which chapter of which artifact this is,
+   * and a row read out of a book's navigation has no such address.
+   */
   readonly retitle = output<{ blockId: string; title: string }>();
   readonly resetTo = output<ResetTarget>();
   readonly tabChange = output<DocumentNavTab>();
@@ -589,38 +668,56 @@ export class DocumentNavComponent {
     return this.selectedBlockIds().includes(blockId);
   }
 
+  /** Why a row cannot be retyped, or the plain "which chapter is this". */
+  rowTooltip(row: ChapterRow): string {
+    const reason = row.readOnlyReason;
+    return reason === null ? row.title : `${row.title} — ${reason}`;
+  }
+
   /**
    * A click on a chapter row, with the modifiers a list has always had.
    *
    * Plain click replaces the selection with this row. Ctrl/⌘ adds it (the shell
    * toggles, exactly as it does for a block on the page). Shift takes everything
    * between the anchor and here, in the list's own order.
+   *
+   * Rows with no block behind them are inert AND are skipped inside a shift
+   * range: a selection is a set of block ids, and a range that quietly stopped at
+   * the first navigation-only row would select a different span than the one the
+   * user dragged over.
    */
-  onRowClick(block: TextBlock, event: MouseEvent): void {
+  onRowClick(row: ChapterRow, event: MouseEvent): void {
+    if (row.blockId === null) return;
+    const blockId = row.blockId;
     const additive = event.metaKey || event.ctrlKey;
     if (event.shiftKey && this.rangeAnchor !== null) {
-      const list = this.chapterBlocks();
-      const from = list.findIndex(b => b.id === this.rangeAnchor);
-      const to = list.findIndex(b => b.id === block.id);
+      const list = this.chapterRows();
+      const from = list.findIndex(r => r.id === this.rangeAnchor);
+      const to = list.findIndex(r => r.id === row.id);
       // An anchor the list no longer carries — its block was relabelled away
       // from `chapter` since the click — is not a range. Fall to the plain
       // single-row answer rather than inventing an end for it.
       if (from >= 0 && to >= 0) {
         const [lo, hi] = from <= to ? [from, to] : [to, from];
         this.chapterClick.emit({
-          blockIds: list.slice(lo, hi + 1).map(b => b.id),
+          blockIds: list.slice(lo, hi + 1)
+            .map(r => r.blockId)
+            .filter((id): id is string => id !== null),
           additive: false,
         });
         return;
       }
     }
-    if (!event.shiftKey) this.rangeAnchor = block.id;
-    this.chapterClick.emit({ blockIds: [block.id], additive });
+    if (!event.shiftKey) this.rangeAnchor = row.id;
+    this.chapterClick.emit({ blockIds: [blockId], additive });
   }
 
-  startEditing(block: TextBlock): void {
-    this.editing.set(block.id);
-    this.draftTitle.set(block.text.trim());
+  startEditing(row: ChapterRow): void {
+    // The shell already said why this one cannot be retyped, and the row shows
+    // it on hover — see ChapterRow.readOnlyReason.
+    if (row.readOnlyReason !== null || row.blockId === null) return;
+    this.editing.set(row.id);
+    this.draftTitle.set(row.title);
   }
 
   cancelTitle(): void {
@@ -634,11 +731,12 @@ export class DocumentNavComponent {
    * one: a chapter with no words is a heading the book cannot navigate to, and
    * the way to say "this is not a chapter" is to relabel the block.
    */
-  commitTitle(block: TextBlock): void {
-    if (this.editing() !== block.id) return;
+  commitTitle(row: ChapterRow): void {
+    if (this.editing() !== row.id) return;
     this.editing.set(null);
+    if (row.blockId === null) return;
     const title = this.draftTitle().trim();
-    if (title.length === 0 || title === block.text.trim()) return;
-    this.retitle.emit({ blockId: block.id, title });
+    if (title.length === 0 || title === row.title) return;
+    this.retitle.emit({ blockId: row.blockId, title });
   }
 }

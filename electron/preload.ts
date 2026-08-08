@@ -31,6 +31,7 @@ import type {
   VlmEndpointConfig,
 } from '../shared/vlm/conversion';
 import type { NarrationDeletions, NarrationState } from '../shared/vlm/narration-deletions';
+import type { BookChapterRenameResult, BookChapterTitles } from '../shared/vlm/chapter-titles';
 import type { TextLayerReport } from '../shared/pdf/text-layer';
 import type {
   DocumentBlocksPayload,
@@ -1330,6 +1331,19 @@ export interface ElectronAPI {
       };
       error?: string;
     }>;
+    /**
+     * What the book calls each of its chapters — `titles: null` for a project
+     * that has no book yet, which is most of them for most of their life.
+     */
+    chapterTitles: (projectDir: string) =>
+      Promise<{ success: boolean; titles?: BookChapterTitles | null; error?: string }>;
+    /**
+     * Rename one chapter IN the book: its nav entry and its document's
+     * `<title>`, never the print on the page. `file` is the chapter document's
+     * zip entry name — the same identity a narration strike carries.
+     */
+    renameChapter: (projectDir: string, file: string, title: string) =>
+      Promise<{ success: boolean; result?: BookChapterRenameResult; error?: string }>;
   };
   window: {
     hide: () => Promise<{ success: boolean }>;
@@ -3084,6 +3098,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('narration:save-deletions', projectDir, elements),
     exportNarration: (projectDir: string, options?: { stripSupMarkers?: boolean }) =>
       ipcRenderer.invoke('narration:export', projectDir, options),
+    chapterTitles: (projectDir: string) =>
+      ipcRenderer.invoke('book:chapter-titles', projectDir),
+    renameChapter: (projectDir: string, file: string, title: string) =>
+      ipcRenderer.invoke('book:rename-chapter', projectDir, file, title),
   },
   play: {
     startSession: () =>
