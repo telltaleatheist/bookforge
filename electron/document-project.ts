@@ -280,10 +280,11 @@ export async function listWorkingDocuments(
 /**
  * Where Reflow writes the book: the manifest's own export target.
  *
- * Named after the original from birth (`exportEpubStem` takes the source file's
- * stem), which is the spec's rule — `book.epub` never exists on disk — and it is
- * the manifest that owns the name, so the export a user finds in the versions
- * page and the file Reflow writes are one file rather than two conventions.
+ * Named after the archive file from birth (`workingEpubStem` takes its
+ * basename), so what Reflow writes IS the project's working copy —
+ * `<archive basename>.working.epub` — rather than a second editable book beside
+ * it. The manifest owns that name, so the file a user finds in the versions page
+ * and the file Reflow writes are one file rather than two conventions.
  */
 export async function reflowOutputPath(projectDir: string): Promise<string> {
   const target = await manifestService.exportEpubTarget(projectDir);

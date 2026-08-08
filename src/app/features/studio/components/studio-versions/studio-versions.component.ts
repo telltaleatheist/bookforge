@@ -441,7 +441,16 @@ const AUDIO_EXTS = new Set([
                   <button class="act" [disabled]="narrationRefusalReason() !== null"
                           [title]="narrationTitle()" (click)="process.emit()">Process</button>
                 }
-                @if (row.v.editable) {
+                @if (row.v.editable || row.v.type === 'narration') {
+                  <!-- The narration copy is NOT editable and never becomes so —
+                       it is re-cut from the book and the strikes every time
+                       Export TTS copy runs, so anything typed into it would be
+                       gone at the next export. It is openable all the same
+                       (Owen, 2026-08-08: "the user should be able to look at the
+                       other files at least, if not edit them"), because it is
+                       the file TTS actually reads and previewing it is the only
+                       way to see what will be narrated. The picker shows it with
+                       the read-only banner and a way back to the working copy. -->
                   <button class="act" (click)="openDoc(row.v)" [title]="openTitle(row.v)">Open</button>
                 } @else if (row.v.type === 'archive') {
                   <!-- Shown DISABLED rather than omitted. Opening this book lands
@@ -1398,6 +1407,10 @@ export class StudioVersionsComponent {
       return 'Opening this book lands on your working copy — the row below. You never start on a '
         + 'read-only original, so there is nothing separate to open here.';
     }
+    if (v.type === 'narration') {
+      return 'Look at what narration will actually read. It is re-cut from your working copy every '
+        + 'time you export, so it opens read-only.';
+    }
     return 'Open this file in the editor';
   }
 
@@ -1463,8 +1476,24 @@ export class StudioVersionsComponent {
   }
 
   /** Only the archive can mint one, and only when there is not one already. */
-  canMintWorkingCopy(row: DocumentFamilyRow): boolean {
-    return row.family === 'archive' && row.v.extension === 'pdf' && !this.hasWorkingCopy();
+  /**
+   * Nobody mints a working PDF any more.
+   *
+   * Owen settled the artifact model on 2026-08-08: the working file is ALWAYS an
+   * EPUB. An archive EPUB gets an instant copy; an archive PDF reaches one
+   * through `vlm-convert`, always, even when it is born-digital — one path, no
+   * converter choice. `<Original>.working.pdf` was the other answer, and two
+   * answers to "which file do I edit" is the thing the model removes.
+   *
+   * The method stays, returning a constant, rather than the button being torn
+   * out of the template: the row it sat on is still there and still says what it
+   * is, and a reader of this file needs to find out here why the button is gone
+   * rather than by not finding it. Measured before deciding — the library holds
+   * 385 projects and ZERO `.working.pdf` files, so nothing anyone owns is
+   * stranded by this.
+   */
+  canMintWorkingCopy(_row: DocumentFamilyRow): boolean {
+    return false;
   }
 
   convertLabel(row: DocumentFamilyRow): string {

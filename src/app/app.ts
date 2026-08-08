@@ -14,6 +14,8 @@ import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
 import { SetupDownloadService } from './core/services/setup-download.service';
 import { NarrationHandoffService } from './core/services/narration-handoff.service';
+import { BookConversionService } from './features/studio/services/book-conversion.service';
+import { DialogService } from './creamsicle-desktop/services/dialog.service';
 
 @Component({
   selector: 'app-root',
@@ -293,6 +295,13 @@ export class App implements OnInit {
   private readonly destroyRef = inject(DestroyRef);
   private readonly setupDownloads = inject(SetupDownloadService);
   private readonly narrationHandoff = inject(NarrationHandoffService);
+  // The two halves of "queue this book's conversion": the service that knows how
+  // to describe the run, and the one that schedules it. Injected here rather
+  // than reached through Studio because the request arrives from another window
+  // and Studio may not be mounted — the same reason the narration hand-off is
+  // left with a service instead of delivered to a listener.
+  private readonly bookConversion = inject(BookConversionService);
+  private readonly dialog = inject(DialogService);
 
   // Lets the user dismiss the setup overlay (only reachable in the error state).
   private readonly setupDismissed = signal(false);
@@ -420,6 +429,23 @@ export class App implements OnInit {
     });
     this.destroyRef.onDestroy(unsubscribeNarration);
 
+    // The picker was showing a project's archive PDF, which under the artifact
+    // model is read-only, and the user pressed "Generate EPUB" on its banner.
+    // The working copy of a PDF is what `foundry vlm-convert` writes — always,
+    // even for a born-digital one, so there is one path and no converter choice —
+    // and that is an hour of GPU, so it belongs in the queue.
+    //
+    // It is enqueued HERE and nowhere else because the queue is this window's:
+    // QueueService is a renderer-side scheduler that persists its state through
+    // main, so a second window adding a job would write its own queue file over
+    // the one being watched. Main raised this window; this half does the work
+    // and then shows the user the queue, so the hand-off is witnessed rather
+    // than inferred — the same rule as the show-queue listener above.
+    const unsubscribeConversion = this.electron.onShowBookConversion((projectDir: string) => {
+      void this.queueBookConversion(projectDir);
+    });
+    this.destroyRef.onDestroy(unsubscribeConversion);
+
     // The main process checks at startup whether any INSTALLED component is
     // behind what the catalog names (and whether foundry has published a release
     // newer than the pin). Listening here — in the shell, beside the dock —
@@ -431,5 +457,37 @@ export class App implements OnInit {
     if (!this.isStandaloneWindow()) {
       this.destroyRef.onDestroy(this.setupDownloads.watchForUpgrades());
     }
+  }
+
+  /**
+   * Put this project's PDF→EPUB conversion in the queue, then show the queue.
+   *
+   * `prepare` is asked FIRST and its refusal is shown as a sentence, because the
+   * refusals it produces are about settings — no reader configured, no GPU this
+   * app can reach — and a user sent to a queue holding a job that will fail in
+   * four seconds has been told nothing. That is `BookConversionService`'s own
+   * rule ("asked BEFORE the modal opens"), followed here for the same reason.
+   *
+   * `from: 'archive'` because that is what the banner was over: the file the
+   * user handed us. There is deliberately no `skipDeletedPages` — that is the
+   * working-PDF path's option, and a PDF has no editable copy any more, so there
+   * are no page deletions of its own to skip.
+   */
+  private async queueBookConversion(projectDir: string): Promise<void> {
+    const refusal = await this.bookConversion.prepare({
+      projectDir,
+      from: 'archive',
+      sourceLabel: projectDir.split(/[\\/]/).filter(Boolean).pop() ?? projectDir,
+    });
+    if (refusal !== null) {
+      await this.dialog.alert({
+        title: 'The pages cannot be read yet',
+        message: refusal,
+        type: 'warning',
+      });
+      return;
+    }
+    await this.bookConversion.sendToQueue(projectDir);
+    await this.router.navigate(['/queue']);
   }
 }

@@ -63,10 +63,10 @@ import {
   railShortcutsFor,
   railTaskForDigit,
   viewedArtifactOf,
-  viewingWorkingCopy,
   type EpubPassTaskId,
   type ViewedArtifact,
 } from '@shared/document/rail-tasks';
+import { samePath } from '@shared/document/same-path';
 import { narrationRefusal, type PassRecord } from '@shared/document/version-family';
 import {
   deriveNarrationStrikes,
@@ -80,6 +80,23 @@ import {
 } from '@shared/vlm/narration-deletions';
 import type { BookChapterTitles } from '@shared/vlm/chapter-titles';
 import { parsePageRange } from './shared/page-range.util';
+
+/**
+ * The one thing a read-only artifact offers the user, or nothing.
+ *
+ * A closed set rather than a callback on the banner, so every arm is a compile
+ * error away from being forgotten and the template can name each button without
+ * knowing what it does.
+ */
+type ArtifactBannerAction = 'open-working' | 'generate-epub' | 'create-working';
+
+/** What the viewer says about a file that is not the working copy. */
+interface ArtifactBanner {
+  /** One sentence: what this file is, and where the editable one is. */
+  readonly reason: string;
+  /** What to do about it, or null when there is nothing to be done yet. */
+  readonly action: ArtifactBannerAction | null;
+}
 
 interface OpenDocument {
   id: string;
@@ -487,6 +504,24 @@ interface AlertModal {
                   <span class="menu-text">Re-render Pages</span>
                 </button>
               </div>
+
+              <!-- The way back to an untouched book. Last in the rail, on its
+                   own, because it undoes everything above it. -->
+              <div rail-footer class="rendering-section">
+                <div class="tools-label">Start over</div>
+                <button
+                  class="menu-item danger"
+                  [class.disabled]="eraseRefusal() !== null || erasing()"
+                  [disabled]="eraseRefusal() !== null || erasing()"
+                  [title]="eraseRefusal() ?? 'Throw away every edit made to this book'"
+                  (click)="eraseAllChanges()"
+                >
+                  <span class="menu-icon">🧹</span>
+                  <span class="menu-text">{{
+                    erasing() ? 'Erasing…' : 'Erase all changes and start over'
+                  }}</span>
+                </button>
+              </div>
             </app-task-rail>
 
             <!-- Resize Handle -->
@@ -501,11 +536,21 @@ interface AlertModal {
             <!-- Viewer -->
             <div class="viewer-pane">
               <!-- Said, never hidden: a document whose gestures silently do
-                   nothing is indistinguishable from a broken picker. -->
-              @if (curationReadOnlyReason(); as reason) {
+                   nothing is indistinguishable from a broken picker. The banner
+                   also carries the ONE thing that can be done about it, so the
+                   user is never told where the editable file is without being
+                   given a way to get there. -->
+              @if (artifactBanner(); as banner) {
                 <div class="review-banner">
                   <span class="review-banner-icon">🔒</span>
-                  <span class="review-banner-text">{{ reason }}</span>
+                  <span class="review-banner-text">{{ banner.reason }}</span>
+                  @if (artifactBannerActionLabel(); as label) {
+                    <button
+                      class="review-banner-action"
+                      [disabled]="artifactActionBusy()"
+                      (click)="runArtifactBannerAction()"
+                    >{{ artifactActionBusy() ? 'Working…' : label }}</button>
+                  }
                 </div>
               }
               @if (lightweightMode()) {
@@ -1186,6 +1231,27 @@ interface AlertModal {
     .review-banner-text { color: var(--text-primary); font-weight: 600; }
     .review-banner-hint { color: var(--text-tertiary); }
 
+    /* The one thing that can be done about a read-only artifact. Pushed to the
+       far end so the sentence reads first and the button is where the eye goes
+       after it. */
+    .review-banner-action {
+      margin-left: auto;
+      flex-shrink: 0;
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: var(--text-inverse);
+      font-size: var(--ui-font-sm);
+      font-weight: $font-weight-medium;
+      padding: 5px 12px;
+      border-radius: $radius-md;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background $duration-fast $ease-out;
+
+      &:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+      &:disabled { opacity: 0.55; cursor: default; }
+    }
+
     .page-timeline {
       display: flex;
       flex-direction: column;
@@ -1444,6 +1510,18 @@ interface AlertModal {
           font-weight: $font-weight-medium;
         }
       }
+
+      /* Destructive, and coloured as one only on hover: the row is read a
+         hundred times for every time it is pressed, and a permanently red row in
+         the rail reads as an error state rather than an available action. */
+      &.danger:hover:not(:disabled) {
+        background: color-mix(in srgb, var(--accent-danger) 12%, transparent);
+        border-color: var(--accent-danger);
+
+        .menu-text, .menu-icon { color: var(--accent-danger); }
+      }
+
+      &.disabled { opacity: 0.45; cursor: default; }
     }
 
     .viewer-pane {
@@ -3311,16 +3389,18 @@ export class PdfPickerComponent implements OnInit {
   /**
    * The book on screen can be struck through for narration.
    *
-   * The FILE, and nothing else. It used to also require `state.converted` — the
-   * book carrying `data-bf-cat` stamps — which was right while the only EPUB the
-   * picker ever showed was a `foundry vlm-convert` output. It is wrong now: a
-   * project that arrived AS an EPUB is curated on that EPUB, and its narration
-   * state reads `bookPath: null` until the first strike, because main mints the
-   * book copy lazily when it saves one (`ensureBookEpub`). Gating on either the
-   * stamps or the recorded book would leave those projects with an EPUB on
-   * screen and no gesture that does anything to it.
+   * THE WORKING COPY, and nothing else. This used to be "any EPUB is on screen",
+   * which was right while the picker only ever showed one EPUB per project. It
+   * is wrong under the artifact model: the archive EPUB and the `.tts.epub` are
+   * also EPUBs, they are also openable now, and striking through either would
+   * record positions inside a file nobody edits — silently, against a book the
+   * export does not read.
+   *
+   * A project with no working copy yet reads false, and that is not a gap: main
+   * makes the copy as the project opens (`projects:export-info`), and until it
+   * has, the banner over the viewer says so and offers to make it.
    */
-  readonly canStrikeForNarration = computed(() => this.viewingBook());
+  readonly canStrikeForNarration = computed(() => this.viewingWorkingEpub());
 
   private async refreshNarrationState(): Promise<void> {
     const dir = this.projectPath();
@@ -3350,31 +3430,15 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  /**
-   * The project's working copy, absolute, or null when it has none.
-   *
-   * Main's answer (`document:state`), which DERIVES the name from the archive
-   * original — so a window that matched `.working.pdf` itself would be a second
-   * derivation of a name that is settled once, on the other side of the process
-   * boundary.
-   */
-  private readonly workingCopyPath = computed<string | null>(() =>
-    this.documentBlocks.state()?.workingPath ?? null);
-
-  /**
-   * The PDF on screen IS the project's working copy — the file curation is
-   * written into.
-   *
-   * This is the whole of the archive-is-read-only rule. A project's archive
-   * original is never written to, so the gestures that would edit it are refused
-   * with a sentence pointing at the versions page, where a working copy is
-   * minted. A working copy has curation written into its own annotations, so
-   * every gesture lands.
-   */
-  readonly viewingWorkingCopy = computed(() => viewingWorkingCopy({
-    displayedPath: this.effectivePath(),
-    workingPath: this.workingCopyPath(),
-  }));
+  // The working PDF used to be here — `<Original>.working.pdf`, curated through
+  // annotations, and the answer to "can this page be edited" for a PDF project.
+  // It is gone with the model it belonged to (Owen, 2026-08-08: the working file
+  // is ALWAYS an EPUB, and a PDF reaches one through vlm-convert, always). The
+  // machinery that writes those annotations is still in main and still backs
+  // `documentBlocks` for a document that has one; what changed is that no path
+  // in this window mints one and no PDF on screen is editable. Measured before
+  // deciding: the library holds 385 projects and ZERO `.working.pdf` files, so
+  // this retires a path nothing was using rather than one somebody's book is in.
 
   /**
    * Why this document can run nothing that writes into a project, or null.
@@ -3389,25 +3453,127 @@ export class PdfPickerComponent implements OnInit {
         + 'one. Import it from Studio first.');
 
   /**
+   * The file on screen IS this project's working copy — the one editable file.
+   *
+   * ── The whole of the artifact model, in one comparison ──────────────────────
+   *
+   * Owen, 2026-08-08: "one working copy per archive file, ground truth and
+   * definitive, the only editable file… the user should be able to look at the
+   * other files at least, if not edit them." So there is exactly one editable
+   * artifact in a project and it is `outputs.epub` — `<archive basename>.working.epub`
+   * — and everything else the picker can show (the archive PDF, the archive
+   * EPUB, the `.tts.epub` cut for narration) is a thing to LOOK at.
+   *
+   * Compared against MAIN's answer for where the book is, never against a
+   * filename pattern: main derives that name (`exportEpubRelPath`) and a second
+   * derivation here is how two surfaces come to disagree about one file.
+   */
+  readonly viewingWorkingEpub = computed(() => {
+    const book = this.bookEpubPath();
+    if (book === null) return false;
+    return samePath(this.effectivePath(), book);
+  });
+
+  /**
+   * The `.tts.epub` is on screen — the narration cut, opened to be previewed.
+   *
+   * Main's answer again (`narration:state`), for the same reason.
+   */
+  private readonly viewingNarrationCopy = computed(() => {
+    const tts = this.narrationCopyPath();
+    if (tts === null) return false;
+    return samePath(this.effectivePath(), tts);
+  });
+
+  /**
+   * What a read-only artifact says about itself, and the one thing it offers.
+   *
+   * ── Said, and never silent ──────────────────────────────────────────────────
+   *
+   * A read-only page whose gestures quietly do nothing is indistinguishable from
+   * a broken picker, so every artifact that is not the working copy carries a
+   * banner naming what it is and where the editable file is. The banner is also
+   * the only explanation the disabled gestures get — `curationLocked` reads this
+   * same answer, so the refusal and the reason cannot drift apart.
+   *
+   * `action` is what the user can do about it, and there are exactly three:
+   *
+   *  - **open-working** — the project has a working copy. Go there.
+   *  - **generate-epub** — the archive is a PDF and nothing has read its pages.
+   *    The working copy of a PDF is what `foundry vlm-convert` writes, always,
+   *    even for a born-digital one: one path, no converter choice. It is an hour
+   *    of GPU, so it is a queued job the user starts, never a side effect.
+   *  - **create-working** — the archive is an EPUB and the instant byte copy has
+   *    not happened. It normally happens as the project opens
+   *    (`projects:export-info`), so reaching this means that failed or the window
+   *    got here first; either way the button does exactly what the automatic
+   *    path does.
+   */
+  readonly artifactBanner = computed<ArtifactBanner | null>(() => {
+    // A document that is still arriving has not said what it is: main's answers
+    // are round trips, so for that moment the working copy reads as an unknown
+    // file. Curation is refused for the duration, because "we do not know yet"
+    // is not "go ahead" — and no action is offered, because there is nothing yet
+    // to act on.
+    if (this.loading()) return { reason: 'This book is still opening.', action: null };
+
+    // A loose file belongs to no project, so there is no archive to protect and
+    // no working copy to point at. An EPUB opened on its own is edited on its
+    // own, exactly as it was before this model existed; a PDF is not, because
+    // nothing in this window writes into a PDF any more.
+    if (!this.projectPath()) {
+      if (this.viewingBook()) return null;
+      return {
+        reason: 'This PDF does not belong to a BookForge project. Import it from Studio, and its '
+          + 'pages can be read into a book you can edit.',
+        action: null,
+      };
+    }
+
+    if (this.viewingWorkingEpub()) return null;
+
+    const what = this.viewingNarrationCopy()
+      ? 'This is the narration copy — the book with what you struck out already removed. It is '
+        + 'rewritten from scratch every time you export it, so nothing edited here would survive.'
+      : this.viewingBook()
+        ? 'This is the archive original — the file you handed BookForge, which nothing may write to.'
+        : 'This is the archive PDF — the file you handed BookForge, which nothing may write to.';
+
+    if (this.bookEpubPath() !== null) {
+      return { reason: `${what} Your edits live in the working copy.`, action: 'open-working' };
+    }
+    if (this.viewingBook()) {
+      return {
+        reason: `${what} This project has no working copy yet.`,
+        action: 'create-working',
+      };
+    }
+    return {
+      reason: `${what} A PDF is edited by reading its pages into a book first.`,
+      action: 'generate-epub',
+    };
+  });
+
+  /** The banner's button, in words. Null when the banner only explains. */
+  readonly artifactBannerActionLabel = computed<string | null>(() => {
+    switch (this.artifactBanner()?.action) {
+      case 'open-working': return 'Open working copy';
+      case 'generate-epub': return 'Generate EPUB';
+      case 'create-working': return 'Create working copy';
+      default: return null;
+    }
+  });
+
+  /**
    * Why curation is refused on the file currently on screen, or null.
    *
-   * Three answers, one per kind of file, and each names where the work IS rather
-   * than only that it is not here — a read-only page whose gestures silently do
-   * nothing is indistinguishable from a broken picker.
+   * The banner's sentence, and only ever the banner's sentence. Every mutation
+   * entry point asks `curationLocked`, which asks this, which asks the banner —
+   * one answer, so a gesture can never be refused for a reason the screen does
+   * not show.
    */
-  readonly curationReadOnlyReason = computed<string | null>(() => {
-    // A book that is still arriving has not said what it is: `document:state`
-    // is a round trip, so for that moment an open working copy reads as the
-    // archive. Curation is refused for the duration, because "we do not know
-    // yet" is not "go ahead".
-    if (this.loading()) return 'This book is still opening.';
-    // An EPUB is curated by STRIKING elements out of it for narration — the file
-    // itself is never rewritten (shared/vlm/narration-deletions.ts) — so the
-    // gestures land and there is nothing to refuse.
-    if (this.viewingBook()) return null;
-    if (this.viewingWorkingCopy()) return null;
-    return 'This is the archive original — create a working copy from the versions page to edit.';
-  });
+  readonly curationReadOnlyReason = computed<string | null>(() =>
+    this.artifactBanner()?.reason ?? null);
 
   /** True when nothing on screen may be curated. Every mutation entry point asks. */
   readonly curationLocked = computed(() => this.curationReadOnlyReason() !== null);
@@ -7954,6 +8120,181 @@ export class PdfPickerComponent implements OnInit {
       console.info('[document] this project has no working document to re-measure:', err);
     }
     await this.refreshBookEpub();
+  }
+
+  // ─── Erase all changes ────────────────────────────────────────────────────
+
+  /** Set while the reset is in flight. */
+  readonly erasing = signal(false);
+
+  /**
+   * Why this book's edits cannot be thrown away from here, or null.
+   *
+   * A project is needed because the edits live in its manifest, and that is the
+   * whole of it. Deliberately NOT gated on the artifact being the working copy:
+   * a user looking at the archive and wanting to start over is asking for the
+   * same thing, the records are the project's rather than the open file's, and
+   * refusing them there would mean opening a different file to press a button
+   * about the project.
+   */
+  readonly eraseRefusal = computed<string | null>(() => this.noProjectReason());
+
+  /**
+   * Throw away every edit recorded against this project's book.
+   *
+   * ── One reset, not a second one ─────────────────────────────────────────────
+   *
+   * This is `pipeline:reset-editor-state` — the contract Studio's context menu
+   * and the Project Files panel already use — and nothing else. That handler
+   * clears `manifest.editor` WHOLESALE (undo/redo, block edits, category
+   * corrections, learned categories, paragraph breaks, splits, merges, crops),
+   * the deletion keys grafted onto `manifest.source`, the chapter markers, and —
+   * since this button existed — the narration strikes. A second reset shape
+   * here would be a second answer to "what counts as an edit", and the two would
+   * drift the first time the editor learned to record something new.
+   *
+   * ── What it does NOT touch, and why the dialog says so ──────────────────────
+   *
+   * The working copy FILE and the archive both stay exactly as they are. That
+   * distinction is the whole reason this is safe to offer: the edits are records
+   * ABOUT the book, the book itself is bytes, and starting over means forgetting
+   * the records rather than rebuilding anything. A user who has just spent an
+   * evening striking footnotes needs to read that sentence before saying yes.
+   *
+   * For a project made from a PDF the same call clears the inert PDF-side
+   * records — page and block deletions made against the scan, which never
+   * migrate into the book (electron/narration-editor-state.ts) and have been
+   * sitting there unused. They are edits the user made and they are cleared by
+   * the same act, because "erase all changes" that left some behind would be a
+   * lie about what it did.
+   *
+   * The window RELOADS the project afterwards rather than trying to unwind its
+   * own signals: main destroys any editor window for the project as it resets
+   * (so an autosave cannot undo it), and a window that kept its in-memory edit
+   * set would write it all back on the next save.
+   */
+  async eraseAllChanges(): Promise<void> {
+    if (this.eraseRefusal() !== null || this.erasing()) return;
+    const projectDir = this.projectPath();
+    if (!projectDir) return;
+
+    const strikes = this.narrationState()?.deletions?.elements.length ?? 0;
+    const detail = [
+      `• ${this.deletedBlockIds().size} deleted block(s) and ${this.deletedPages().size} deleted page(s)`,
+      `• ${strikes} element(s) struck out for narration`,
+      '• every category correction, chapter marker, text edit, merge, split and crop',
+      '',
+      'The working copy itself is NOT rewritten, and the archive original is not touched. '
+      + 'This forgets what was recorded about the book, not the book.',
+    ].join('\n');
+
+    const { confirmed } = await this.electronService.showConfirmDialog({
+      title: 'Erase all changes and start over',
+      message: 'Throw away every edit recorded against this book?',
+      detail,
+      confirmLabel: 'Erase everything',
+      cancelLabel: 'Cancel',
+      type: 'warning',
+    });
+    if (!confirmed) return;
+
+    this.erasing.set(true);
+    this.loading.set(true);
+    this.loadingText.set('Erasing every change...');
+    try {
+      const result = await this.electronService.resetEditorState(projectDir);
+      if (!result.success) {
+        throw new Error(result.error || 'The changes could not be erased.');
+      }
+      // Re-measure everything this window believes about the project from the
+      // files, in the order the open path does: what the book is, what is struck
+      // out of it, and then the document itself.
+      await this.refreshBookEpub();
+      await this.refreshNarrationState();
+      const book = this.bookEpubPath();
+      if (book !== null) await this.showBookEpub(book);
+      this.showAlert({
+        title: 'Everything was erased',
+        message: 'This book is back to the way it arrived. The file itself was never rewritten.',
+        type: 'info',
+      });
+    } catch (err) {
+      this.showAlert({
+        title: 'Could not erase the changes',
+        message: err instanceof Error ? err.message : String(err),
+        type: 'error',
+      });
+    } finally {
+      this.erasing.set(false);
+      this.loading.set(false);
+    }
+  }
+
+  /** Set while the banner's button is doing its one thing. */
+  readonly artifactActionBusy = signal(false);
+
+  /**
+   * The banner's button was pressed. Three arms, one per action, and the switch
+   * is exhaustive so a fourth action cannot be added without being handled.
+   *
+   * Every arm ends with the user somewhere they can work: on the working copy,
+   * or in front of the queue watching the job that will make one. None of them
+   * leaves the read-only file on screen having quietly done something.
+   */
+  async runArtifactBannerAction(): Promise<void> {
+    const action = this.artifactBanner()?.action;
+    if (!action || this.artifactActionBusy()) return;
+    const projectDir = this.projectPath();
+    if (!projectDir) return;  // the banner offers no action without one
+
+    this.artifactActionBusy.set(true);
+    try {
+      switch (action) {
+        case 'open-working': {
+          const book = this.bookEpubPath();
+          if (book === null) {
+            // Unreachable through the button — this arm is only offered when the
+            // path is there — but said rather than returned in silence.
+            throw new Error(
+              'This project reported a working copy a moment ago and does not now. Close the '
+              + 'window and open the book again.');
+          }
+          await this.showBookEpub(book);
+          return;
+        }
+        case 'create-working': {
+          const answer = await this.electronService.ensureWorkingEpub(projectDir);
+          if (!answer.success || !answer.path) {
+            throw new Error(answer.error || 'The working copy could not be made.');
+          }
+          await this.refreshBookEpub();
+          await this.showBookEpub(answer.path);
+          return;
+        }
+        case 'generate-epub': {
+          // Reading a PDF's pages is an hour of GPU and belongs in the queue, so
+          // this hands the job to the MAIN window — the one that owns the queue —
+          // exactly as `goToNarration` hands the finished book to the Process
+          // tab. This window is often its own BrowserWindow with no queue and no
+          // nav rail of its own; enqueueing here would put the job in a second
+          // queue nobody is watching.
+          await this.electronService.showBookConversion(projectDir);
+          return;
+        }
+        default: {
+          const unknown: never = action;
+          throw new Error(`There is no ${String(unknown)} action on the banner.`);
+        }
+      }
+    } catch (err) {
+      this.showAlert({
+        title: 'That could not be done',
+        message: err instanceof Error ? err.message : String(err),
+        type: 'error',
+      });
+    } finally {
+      this.artifactActionBusy.set(false);
+    }
   }
 
   /** Show this project's book, closing whatever is on screen for it. */
