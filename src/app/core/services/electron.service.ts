@@ -2678,14 +2678,25 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  /** Write the narration copy from the strikes as recorded. */
-  async exportNarrationEpub(projectDir: string): Promise<{
+  /**
+   * Write the narration copy from the strikes as recorded.
+   *
+   * `options` carries the one thing the strikes do NOT describe — whether the
+   * digits-only `<sup>` footnote references come out with it.
+   */
+  async exportNarrationEpub(
+    projectDir: string,
+    options?: { stripSupMarkers?: boolean }
+  ): Promise<{
     success: boolean;
-    result?: { epubPath: string; relPath: string; removedElements: number; totalElements: number };
+    result?: {
+      epubPath: string; relPath: string;
+      removedElements: number; totalElements: number; removedSupMarkers: number;
+    };
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.exportNarration(projectDir);
+      return (window as any).electron.vlm.exportNarration(projectDir, options);
     }
     return { success: false, error: 'Not running in Electron' };
   }

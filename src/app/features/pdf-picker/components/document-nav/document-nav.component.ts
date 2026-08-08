@@ -10,13 +10,17 @@ import { mergeRefusal } from '@shared/document/block-merge';
  * What each reset target is called in front of the user.
  *
  * Declared beside the control that offers them rather than in the wire types,
- * because these are the picker's words for the stages and not part of the
- * contract with main. `none` is the one that has to be spelled out: "before Get
- * Text" is a boundary rather than a stage, and "reset to none" reads as doing
- * nothing at all.
+ * because these are the picker's words and not part of the contract with main.
+ * `none` is the one that has to be spelled out: it is the working copy as it was
+ * minted — a fresh copy of the archive original — and "reset to none" reads as
+ * doing nothing at all.
+ *
+ * The other three are the Tesseract-era stages, which no longer run. They are
+ * still listed because a working document minted before Aug 2026 carries their
+ * recorded boundaries and a reset to one of them is still an exact truncate.
  */
 export const DOCUMENT_STAGE_LABELS: Record<ResetTarget, string> = {
-  none: 'before Get Text',
+  none: 'the untouched copy',
   'get-text': 'Get Text',
   blocks: 'Detect blocks',
   footnotes: 'Footnotes',
@@ -29,10 +33,10 @@ export type DocumentNavTab = 'select' | 'label' | 'chapter';
  * The picker's right-side nav (docs/DOCUMENT_PIPELINE.md §"Picker UI").
  *
  * ONE mode — select — and three tabs over it, because the three things a person
- * does to a detected book are choose blocks, say what they are, and fix the
- * chapter titles. Detect sits above the tabs rather than inside one: it is not a
- * way of curating, it is the thing that throws curation away and reads the pages
- * again, and it takes the one confirmation that says so.
+ * does to a book are choose blocks, say what they are, and fix the chapter
+ * titles. There is no Detect above them any more: the Tesseract stage that
+ * relabelled every block went with its pipeline (Aug 2026), so the categories on
+ * screen are the app's own analysis and the user's corrections to it.
  *
  * Every category swatch in both tabs comes from the ONE palette
  * (`shared/ocr/block-categories.ts`). A block has one category field, so
@@ -49,41 +53,16 @@ export type DocumentNavTab = 'select' | 'label' | 'chapter';
   imports: [CommonModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <div class="nav-head">
-      <button
-        type="button"
-        class="detect-btn"
-        [disabled]="!hasDocument() || !!stageRunning()"
-        [title]="detectTooltip()"
-        (click)="detect.emit()"
-      >
-        <span class="detect-icon">◳</span>
-        <span class="detect-label">Detect blocks</span>
-      </button>
-
-      @if (stageRunning(); as stage) {
-        <div class="stage-line">
-          <span class="stage-spinner"></span>
-          <span class="stage-name">{{ stage }}</span>
-          <button type="button" class="stage-cancel" (click)="cancelStage.emit()">Stop</button>
-        </div>
-        <!-- The stage's own words, verbatim. Summarizing them here would leave
-             the one place a person can see what it is actually doing empty. -->
-        @if (stageMessage()) {
-          <pre class="stage-message">{{ stageMessage() }}</pre>
-        }
-      }
-
-      <!-- Said once, where the work was asked for. There is no persistent error
-           state: a failed stage wrote nothing and deleted its own scratch, so
-           asking for it again is the whole recovery. -->
-      @if (lastError(); as failure) {
+    <!-- Said once, where the work was asked for. A refused curation edit is
+         re-read from the document, so the message here IS the whole recovery. -->
+    @if (lastError(); as failure) {
+      <div class="nav-head">
         <div class="nav-error">
-          <span class="nav-error-title">That did not run</span>
+          <span class="nav-error-title">That did not land</span>
           <pre class="nav-error-message">{{ failure }}</pre>
         </div>
-      }
-    </div>
+      </div>
+    }
 
     <div class="tab-strip" role="tablist">
       @for (entry of TABS; track entry.id) {
@@ -243,7 +222,7 @@ export type DocumentNavTab = 'select' | 'label' | 'chapter';
         <select
           id="reset-target"
           class="reset-select"
-          [disabled]="!hasDocument() || !!stageRunning()"
+          [disabled]="!hasDocument()"
           [value]="resetTarget()"
           (change)="resetTarget.set($any($event.target).value)"
         >
@@ -254,14 +233,14 @@ export type DocumentNavTab = 'select' | 'label' | 'chapter';
         <button
           type="button"
           class="action-btn"
-          [disabled]="!hasDocument() || !!stageRunning()"
+          [disabled]="!hasDocument()"
           (click)="resetTo.emit(resetTarget())"
         >Reset</button>
       </div>
       @if (!hasDocument()) {
         <p class="tab-empty">
-          This book has no working document, so there is nothing to detect into or
-          reset. Open it as a project to curate it.
+          This book has no working copy, so there is nothing to reset. Create one
+          from the versions page to curate it.
         </p>
       }
     </div>
@@ -285,57 +264,6 @@ export type DocumentNavTab = 'select' | 'label' | 'chapter';
       border-bottom: 1px solid var(--border-subtle);
     }
 
-    .detect-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: var(--ui-spacing-sm);
-      width: 100%;
-      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: var(--ui-font-sm);
-      font-weight: $font-weight-medium;
-    }
-
-    .detect-btn:hover:not(:disabled) { background: var(--accent-hover); }
-    .detect-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-
-    .stage-line {
-      display: flex;
-      align-items: center;
-      gap: var(--ui-spacing-sm);
-      font-size: var(--ui-font-xs);
-      color: var(--text-secondary);
-    }
-
-    .stage-spinner {
-      width: 10px;
-      height: 10px;
-      border: 2px solid var(--border-subtle);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: nav-spin 0.8s linear infinite;
-    }
-
-    @keyframes nav-spin { to { transform: rotate(360deg); } }
-
-    .stage-name { flex: 1; }
-
-    .stage-cancel {
-      background: none;
-      border: 1px solid var(--border-default);
-      border-radius: 3px;
-      color: var(--text-secondary);
-      cursor: pointer;
-      font-size: var(--ui-font-xs);
-      padding: 0 6px;
-    }
-
-    .stage-message,
     .nav-error-message {
       margin: 0;
       max-height: 8em;
@@ -551,10 +479,8 @@ export class DocumentNavComponent {
   readonly chapterBlocks = input.required<readonly TextBlock[]>();
   /** Null until a working document has been read for this book. */
   readonly state = input.required<DocumentPipelineState | null>();
-  readonly stageRunning = input.required<string | null>();
-  readonly stageMessage = input.required<string>();
   readonly lastError = input.required<string | null>();
-  /** False for a book that has no working document — a corpus book, a loose file. */
+  /** False for a book that has no working copy — an archive original, a loose file. */
   readonly hasDocument = input.required<boolean>();
   /**
    * Which tab is open. Owned by the shell rather than here, because the Label
@@ -564,8 +490,6 @@ export class DocumentNavComponent {
    */
   readonly tab = input.required<DocumentNavTab>();
 
-  readonly detect = output<void>();
-  readonly cancelStage = output<void>();
   readonly selectCategory = output<string>();
   readonly assignCategory = output<string>();
   readonly selectAll = output<void>();
@@ -628,8 +552,8 @@ export class DocumentNavComponent {
 
   /**
    * Where a reset can land: the stages with a recorded boundary, plus the one
-   * that always exists. "Before Get Text" needs no boundary — it is a re-copy of
-   * the archive primary — so it is offered whenever there is a document at all.
+   * that always exists. "The untouched copy" needs no boundary — it is a re-copy
+   * of the archive primary — so it is offered whenever there is a document.
    */
   readonly resetTargets = computed<ResetTarget[]>(() => {
     const recorded = this.state()?.resetTargets ?? [];
@@ -641,15 +565,6 @@ export class DocumentNavComponent {
 
   labelFor(target: ResetTarget): string {
     return DOCUMENT_STAGE_LABELS[target];
-  }
-
-  detectTooltip(): string {
-    if (!this.hasDocument()) {
-      return 'This book has no working document to detect into.';
-    }
-    const running = this.stageRunning();
-    if (running) return `${running} is running.`;
-    return 'Read the pages again and replace every block with what they say.';
   }
 
   /**
@@ -664,7 +579,7 @@ export class DocumentNavComponent {
   });
 
   mergeTooltip(): string {
-    if (!this.hasDocument()) return 'Merging is an edit to the working document, and there is none.';
+    if (!this.hasDocument()) return 'Merging is an edit to the working copy, and there is none.';
     const refusal = this.mergeRefusal();
     if (refusal) return refusal;
     return `Merge ${this.selectedBlockIds().length} blocks into one.`;

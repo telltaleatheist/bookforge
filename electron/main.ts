@@ -6873,13 +6873,17 @@ function setupIpcHandlers(): void {
   /**
    * Write the narration copy from the strikes as recorded.
    *
-   * Takes no list: the manifest is the state (see `exportNarrationEpub`), so
-   * the file's contents are always explained by a record.
+   * Takes no deletion list: the manifest is the state (see
+   * `exportNarrationEpub`), so the file's contents are always explained by a
+   * record. `options` carries the one thing the record does NOT describe —
+   * whether the digits-only `<sup>` footnote references come out.
    */
-  ipcMain.handle('narration:export', async (_event, projectDir: string) => {
+  ipcMain.handle('narration:export', async (
+    _event, projectDir: string, options?: { stripSupMarkers?: boolean }
+  ) => {
     try {
       const { exportNarrationEpub } = await import('./narration-export.js');
-      const result = await exportNarrationEpub(projectDir);
+      const result = await exportNarrationEpub(projectDir, options);
       broadcastToAllWindows('project:files-changed', projectDir);
       return { success: true, result };
     } catch (err) {

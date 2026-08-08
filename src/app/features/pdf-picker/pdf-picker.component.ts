@@ -2,13 +2,13 @@ import { Component, inject, signal, computed, untracked, HostListener, ViewChild
 import { CommonModule } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
-import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits, CorpusBookInfo, CorpusFileChanged, CorpusOcrRunState } from '../../core/services/electron.service';
+import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits } from '../../core/services/electron.service';
 import { PdfEditorStateService, HistoryAction, BlockEdit, SplitDefinition, MergeDefinition, CropRegion } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
 import { ExportService, DeletedHighlight, ExportResult as EpubExportResult } from './services/export.service';
 import { PageRenderService } from './services/page-render.service';
-import { OcrPostProcessorService } from './services/ocr-post-processor.service';
 import { DesktopThemeService } from '../../creamsicle-desktop/services/theme.service';
+import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
 import {
   SplitPaneComponent,
   ToolbarComponent,
@@ -28,51 +28,24 @@ import { MergePanelComponent } from './components/merge-panel/merge-panel.compon
 import { RegexCriteria, defaultRegexCriteria } from './components/regex-category-builder/regex-category-builder.component';
 import { FilePickerComponent } from './components/file-picker/file-picker.component';
 import { CropPanelComponent } from './components/crop-panel/crop-panel.component';
-import { StationBarComponent, StationTab, StationAction } from './components/station-bar/station-bar.component';
 import {
   PassOptionsModalComponent,
   type PassAiChoice,
   type PassOptionsKind,
   type PassOptionsResult,
 } from './components/pass-options-modal/pass-options-modal.component';
-import { FootnotesModalComponent } from './components/footnotes-modal/footnotes-modal.component';
-import {
-  STATIONS,
-  STATION_LABELS,
-  existingStations,
-  nextStationFromViewed,
-  stationForArtifact,
-  stationPresence,
-  viewedArtifactOf,
-  type BookDocuments,
-  type StationId,
-  type ViewedArtifact,
-} from '@shared/document/stations';
-import { decideArrival } from '@shared/document/arrival';
-import type { DocumentClass } from '@shared/document/pipeline-types';
 import type { ChainPassRequest } from '@shared/processing/pass-types';
 import { QueueService } from '../queue/services/queue.service';
 import { SettingsService } from '../../core/services/settings.service';
 import { computeBaselines, learnFromBreaks, detectParagraphBreaks, getDefaultConfig, type DetectionConfig } from './services/paragraph-detector';
-import { recategorize as recategorizeBlocksFromLearner, classifyBlockHeuristic, computeBaselines as computeCategoryBaselines, isDefaultThresholds, detectMergeableGroups, createMergedBlock, type BlockAssignment, type CategoryBaselines, type ClassificationThresholds, type MergeGroup } from './services/category-learner';
-import { TrainingExportService } from './services/training-export.service';
-import { TabBarComponent, DocumentTab } from './components/tab-bar/tab-bar.component';
-import { OcrSettingsModalComponent, OcrSettings, OcrPageResult, OcrCompletionEvent } from './components/ocr-settings-modal/ocr-settings-modal.component';
-import { ExportSettingsModalComponent, ExportSettings, ExportResult, ExportFormat } from './components/export-settings-modal/export-settings-modal.component';
-import { BackgroundProgressComponent, BackgroundJob } from './components/background-progress/background-progress.component';
-import { OcrJobService, OcrJob } from './services/ocr-job.service';
+import { recategorize as recategorizeBlocksFromLearner, classifyBlockHeuristic, computeBaselines as computeCategoryBaselines, isDefaultThresholds, detectMergeableGroups, createMergedBlock, type BlockAssignment, type ClassificationThresholds, type MergeGroup } from './services/category-learner';
+import { ExportSettingsModalComponent, ExportSettings, ExportResult } from './components/export-settings-modal/export-settings-modal.component';
 import { TaskRailComponent } from './components/task-rail/task-rail.component';
 import { BLOCK_CATEGORIES, normalizeCategories, UNLABEL_CATEGORY } from '@shared/ocr/block-categories';
-import { OCR_RENDER_SCALE } from '@shared/ocr/ocr-render';
-import {
-  CORPUS_PAGE_TYPE_NAMES, bookModalFontSize, planPageTypeLabels, type CorpusPageType,
-} from '@shared/ocr/page-types';
-import { OcrPanelComponent } from './components/ocr-panel/ocr-panel.component';
 import {
   TASK_ORDER,
   TASK_LABELS,
   STATUS_GLYPH,
-  CHAPTERS_EXPORT_MINIMUM,
   EPUB_PASS_IDS,
   TaskId,
   TaskGroup,
@@ -80,22 +53,18 @@ import {
   TaskStatus,
   isEpubPassId,
   deriveAllTaskStatuses,
-  countPagesWithoutText,
   isBlockFullyOutside,
 } from './tasks/task.model';
 import {
   railGroupsForArtifact,
   railShortcutsFor,
   railTaskForDigit,
+  viewedArtifactOf,
+  viewingWorkingCopy,
   type EpubPassTaskId,
+  type ViewedArtifact,
 } from '@shared/document/rail-tasks';
-import type { PassRecord } from '@shared/document/version-family';
-import {
-  VLM_CONVERT_STAGE,
-  resolveVlmEndpoint,
-  resolveVlmRoute,
-  type VlmEndpointConfig,
-} from '@shared/vlm/conversion';
+import { narrationRefusal, type PassRecord } from '@shared/document/version-family';
 import {
   narrationBlocksOnSourcePage,
   narrationDeletedBlockIds,
@@ -309,11 +278,12 @@ interface MatchRect {
 type CategoryHighlights = Map<string, Record<number, MatchRect[]>>;
 
 /**
- * Single-key category assignment, active only while blocks are selected.
+ * Single-key category assignment, active only while the Label tab is open and
+ * blocks are selected.
  *
- * Labelling a book by right-clicking into a submenu costs seconds per block;
- * across a training set that is the dominant time sink. The scheme is
- * base key = primary category, Shift = its paired variant.
+ * Correcting a book's categories by right-clicking into a submenu costs seconds
+ * per block, and a curation pass is hundreds of them. The scheme is base key =
+ * primary category, Shift = its paired variant.
  */
 const CATEGORY_SHORTCUTS: Record<string, string> = {
   'b': 'body',
@@ -335,28 +305,9 @@ const CATEGORY_SHORTCUTS: Record<string, string> = {
 // Fourteen keys for fourteen classes (plus `u` to unlabel). `m`/`shift+m`
 // (front_matter/back_matter) and `shift+f` (footnote_ref) are deliberately
 // absent, not merely unbound: those classes were retired Jul 2026 and a live
-// shortcut is the easiest way to put one back into the corpus by accident.
+// shortcut is the easiest way to put one back by accident.
 // See autoDetectedCategoryList.
 
-// The resolution every OCR pass runs at (OCR_RENDER_SCALE = OCR_DPI / 72, since PDF
-// user space is 72 dpi) comes from shared/ocr/ocr-render.ts — imported above, no
-// longer a hand-kept mirror of the main process's copy. That mirror is exactly how
-// the bug it warned about happened in reverse: the constant stayed in step, but the
-// picker converted OCR boxes back to points with a DIFFERENT scale derived from the
-// document's page count. See OCR_RENDER_SCALE's own comment.
-
-/** Below this classifier confidence a block is worth a human look. */
-const UNCERTAIN_CONFIDENCE = 0.15;
-
-/**
- * Stations on the embedded audiobook-prep path, in order.
- *
- * There is one editing station: everything the user does to the book — modes,
- * crop, chapters, paragraphs — happens in the rail while 'select' is the step.
- * Chapters used to be a station of its own, which forced every book through a
- * chapter-marking screen whether or not it needed one; it is a rail row now,
- * and the export gate is what makes sure it was not simply forgotten.
- */
 // Alert modal
 interface AlertModal {
   title: string;
@@ -383,15 +334,9 @@ interface AlertModal {
     FilePickerComponent,
     CropPanelComponent,
     DocumentNavComponent,
-    StationBarComponent,
     PassOptionsModalComponent,
-    FootnotesModalComponent,
-    TabBarComponent,
-    OcrSettingsModalComponent,
     ExportSettingsModalComponent,
-    BackgroundProgressComponent,
     TaskRailComponent,
-    OcrPanelComponent,
   ],
   template: `
     <!-- Toolbar -->
@@ -400,57 +345,6 @@ interface AlertModal {
       (itemClicked)="onToolbarAction($event)"
     >
     </desktop-toolbar>
-
-    <!--
-      Corpus banner. Permanent and unmissable, because the one thing that must
-      never happen here is mistaking a corpus book for a library project and
-      expecting an audiobook out of it.
-    -->
-    @if (corpusMode()) {
-      <div class="corpus-banner" [class.corpus-banner-blocked]="!!corpusReadOnlyReason()">
-        <span class="corpus-tag">TRAINING CORPUS</span>
-        @if (corpusBook(); as book) {
-          <span class="corpus-slug">{{ book.slug }}</span>
-          @if (book.from === 'book.json') {
-            <!--
-              Added but never OCR'd: book.json and a referenced PDF, no blocks.
-              A normal starting state rather than a fault, so it is stated as a
-              next step and NOT as the read-only/blocked style — nothing is
-              wrong here, there is simply nothing recorded yet.
-            -->
-            <span class="corpus-detail">
-              Not OCR'd yet — run OCR to record blocks.json for this book.
-            </span>
-          } @else {
-            <span class="corpus-detail">
-              <!--
-                Counted from the blocks on screen rather than from the loaded
-                snapshot: after an OCR pass the two are the same set, and the
-                snapshot field is whatever was read at open time.
-              -->
-              {{ blocks().length | number }} blocks ·
-              {{ editorState.categoryCorrections().size | number }} labelled ·
-              from {{ book.from }}
-              @if (!book.labelled) { <em>(never labelled — saving creates labels.json)</em> }
-              @if (corpusRetiredLabelCount() > 0) {
-                · <em>{{ corpusRetiredLabelCount() }} use a retired class and show as
-                unlabelled; they are preserved when you save</em>
-              }
-            </span>
-          }
-        } @else {
-          <span class="corpus-detail">Loading…</span>
-        }
-        @if (corpusReadOnlyReason()) {
-          <span class="corpus-blocked">Read-only — {{ corpusReadOnlyReason() }}</span>
-        } @else if (hasUnsavedChanges()) {
-          <!-- No autosave here, so "unsaved" has to be visible at all times. -->
-          <span class="corpus-unsaved">● Unsaved label edits — ⌘S to write them</span>
-        } @else {
-          <span class="corpus-detail">Not a library project — nothing here is imported.</span>
-        }
-      </div>
-    }
 
     <!-- Search Bar -->
     @if (showSearch()) {
@@ -494,17 +388,6 @@ interface AlertModal {
         </div>
         <button class="search-close" (click)="closeSearch()" title="Close (Esc)">×</button>
       </div>
-    }
-
-    <!-- Tab Bar for open documents (hidden in embedded mode) -->
-    @if (!embedded()) {
-      <app-tab-bar
-        [tabs]="documentTabs()"
-        [activeTabId]="activeTabId()"
-        (tabSelected)="onTabSelected($event)"
-        (tabClosed)="onTabClosed($event)"
-        (newTab)="showFilePicker.set(true)"
-      />
     }
 
     <!-- Main Layout -->
@@ -609,7 +492,7 @@ interface AlertModal {
           <div class="viewer-timeline-wrapper">
             <!-- Viewer -->
             <div class="viewer-pane">
-              <!-- Said, never hidden: a station whose gestures silently do
+              <!-- Said, never hidden: a document whose gestures silently do
                    nothing is indistinguishable from a broken picker. -->
               @if (curationReadOnlyReason(); as reason) {
                 <div class="review-banner">
@@ -625,7 +508,6 @@ interface AlertModal {
                     <p>Pages are not rendered to save memory for large files.</p>
                     <p>Available actions:</p>
                     <ul>
-                      <li>• OCR text extraction</li>
                       <li>• Remove backgrounds</li>
                       <li>• Export to various formats</li>
                     </ul>
@@ -633,7 +515,7 @@ interface AlertModal {
                 </div>
               } @else {
                 <app-pdf-viewer
-                [blocks]="stationBlocks()"
+                [blocks]="blocks()"
                 [categories]="categoriesWithPreview()"
                 [hiddenCategoryIds]="hiddenCategoryIds()"
               [categoryHighlights]="combinedHighlights()"
@@ -675,10 +557,7 @@ interface AlertModal {
               [paragraphBreaks]="editorState.paragraphBreaks()"
               [categoryList]="autoDetectedCategoryList()"
               [categoryCorrections]="editorState.categoryCorrections()"
-              [pageTypes]="editorState.pageTypes()"
-              [canMarkPageTypes]="canMarkPageTypes()"
               [showCategoryColors]="showCategoryColors()"
-              [labelMode]="labelMode()"
               (blockClick)="onBlockClick($event)"
               (chapterFromBlocks)="onChapterFromBlocks($event)"
               (pageDeleteToggle)="togglePageDeleted($event)"
@@ -699,7 +578,6 @@ interface AlertModal {
               (zoomChange)="onZoomChange($event)"
               (selectAllOnPage)="selectAllOnPage($event)"
               (deselectAllOnPage)="deselectAllOnPage($event)"
-              (markPageType)="onMarkPageType($event)"
               (cropComplete)="onCropComplete($event)"
               (marqueeSelect)="onMarqueeSelect($event)"
               (pageReorder)="onPageReorder($event)"
@@ -767,15 +645,6 @@ interface AlertModal {
                 (clearCrop)="clearCropFromPanel($event)"
               />
             }
-            @case ('ocr') {
-              <app-ocr-panel
-                [status]="ocrStatus()"
-                [pagesWithoutText]="ocrPagesWithoutText()"
-                [jobRunning]="ocrJobRunning()"
-                (close)="activatePanel(null)"
-                (openSettings)="showOcrSettings.set(true)"
-              />
-            }
             @case ('analysis') {
               <app-analysis-panel
                 [flags]="analysisFlags()"
@@ -795,24 +664,19 @@ interface AlertModal {
             }
             @default {
               <!--
-                The default nav, and the one the spec calls THE right-side nav:
-                Detect over Select / Label / Chapter. Everything else in this
-                switch is a tool that takes over the pointer for a while and
+                The default nav: Select / Label / Chapter. Everything else in
+                this switch is a tool that takes over the pointer for a while and
                 hands it back.
               -->
               <app-document-nav
                 [blocks]="textLayerFilteredBlocks()"
                 [selectedBlockIds]="selectedBlockIds()"
-                [chapterBlocks]="stationChapterBlocks()"
+                [chapterBlocks]="curationChapterBlocks()"
                 [state]="documentBlocks.state()"
-                [stageRunning]="documentBlocks.stageRunning()"
-                [stageMessage]="documentBlocks.stageMessage()"
                 [lastError]="documentBlocks.lastError()"
                 [hasDocument]="workingDocumentOpen()"
                 [tab]="navTab()"
                 (tabChange)="setNavTab($event)"
-                (detect)="runDetect()"
-                (cancelStage)="documentBlocks.cancelStage()"
                 (selectCategory)="selectAllOfCategory({ categoryId: $event, additive: false })"
                 (assignCategory)="assignSelectedToCategory($event)"
                 (selectAll)="selectAllBlocks()"
@@ -827,89 +691,6 @@ interface AlertModal {
         </div>
       </desktop-split-pane>
 
-      <!-- The ladder. Never for a corpus book — every station of it writes into
-           a project, and a corpus book is deliberately not one. -->
-      @if (embedded() && !corpusMode()) {
-        <div class="station-foot">
-          <!--
-            The conversion's own bar, above the button that started it.
-
-            It is here rather than in a modal because the run is ninety minutes
-            and the window stays usable throughout - it is owned by MAIN, so
-            closing this window does not stop it. The bar is INDETERMINATE until
-            the run reports a page count: the first minutes are the model
-            loading, and a bar pinned at 0% for two minutes is indistinguishable
-            from a broken one.
-          -->
-          @if (converting()) {
-            <div class="convert-progress">
-              <div class="convert-progress-head">
-                <span class="convert-progress-label">Reading the pages with a vision model…</span>
-                @if (convertPercent() !== null) {
-                  <span class="convert-progress-count">
-                    {{ documentBlocks.stageDone() }} / {{ documentBlocks.stageTotal() }} pages
-                  </span>
-                }
-                <button
-                  type="button"
-                  class="convert-progress-stop"
-                  title="Stop reading. Every page already answered is kept, and converting again reads only what is missing."
-                  (click)="stopConversion()"
-                >Stop</button>
-              </div>
-              <div class="convert-progress-track" [class.indeterminate]="convertPercent() === null">
-                <div
-                  class="convert-progress-fill"
-                  [style.width.%]="convertPercent() ?? 100"
-                ></div>
-              </div>
-              <!-- foundry's own line, verbatim. It names the page, the token
-                   count and the seconds, which is what tells a person watching a
-                   forty-minute run that it is still working. -->
-              <p class="convert-progress-line">{{ documentBlocks.stageMessage() }}</p>
-            </div>
-          }
-          <app-station-bar
-            [tabs]="stationTabs()"
-            [actions]="stationActions()"
-            [contextLine]="stationContext()"
-            [nextLabel]="stationNextLabel()"
-            [nextReason]="stationNextStep().lockedReason"
-            [busy]="stationBusy()"
-            (stationClick)="openStation($event)"
-            (actionClick)="onStationAction($event)"
-            (next)="stationNext()"
-          />
-          <!--
-            How a long operation is WATCHED, never what it does. The stage runs
-            in main either way; these say whether the queue watches it and
-            whether this window follows the artifact it makes.
-          -->
-          <div class="long-run-options">
-            <label
-              class="long-run-option"
-              [class.refused]="runInBackgroundRefusal() !== null"
-              [title]="runInBackgroundRefusal() ?? 'Hand the run to the queue and stop watching it.'"
-            >
-              <input
-                type="checkbox"
-                [disabled]="runInBackgroundRefusal() !== null"
-                [checked]="effectiveRunInBackground()"
-                (change)="setRunInBackground($any($event.target).checked)"
-              />
-              <span>Run in background</span>
-            </label>
-            <label class="long-run-option">
-              <input
-                type="checkbox"
-                [checked]="openWhenFinished()"
-                (change)="setOpenWhenFinished($any($event.target).checked)"
-              />
-              <span>Open when finished</span>
-            </label>
-          </div>
-        </div>
-      }
     } @else if (embedded()) {
       <!-- Loading state for embedded mode -->
       <div class="embedded-loading">
@@ -927,14 +708,6 @@ interface AlertModal {
         </div>
       </div>
     }
-
-    <!-- Background Progress Indicator (fixed position, always visible) -->
-    <app-background-progress
-      [jobs]="backgroundJobs()"
-      (dismiss)="onDismissBackgroundJob($event)"
-      (cancel)="onCancelBackgroundJob($event)"
-      (restore)="onRestoreBackgroundJob($event)"
-    />
 
     <!-- File Picker Modal (not shown in embedded mode) -->
     @if (showFilePicker() && !embedded()) {
@@ -1132,46 +905,6 @@ interface AlertModal {
       </div>
     }
 
-    <!-- OCR Modal -->
-    @if (showOcrSettings()) {
-      <app-ocr-settings-modal
-        [currentSettings]="ocrSettings()"
-        [totalPages]="totalPages()"
-        [currentPage]="currentPageIndex()"
-        [getPageImage]="getPageImageForOcrFn"
-        [documentId]="activeDocumentId() || 'unknown'"
-        [documentName]="pdfName()"
-        [lightweightMode]="lightweightMode()"
-        [pdfPath]="effectivePath()"
-        [bookKey]="bookKey()"
-        [projectDir]="projectPath() || ''"
-        [corpusBookDir]="corpusBook()?.dir || ''"
-        [runInBackground]="runInBackground()"
-        [openWhenFinished]="openWhenFinished()"
-        (close)="showOcrSettings.set(false)"
-        (runInBackgroundChange)="setRunInBackground($event)"
-        (openWhenFinishedChange)="setOpenWhenFinished($event)"
-        (ocrCompleted)="onOcrCompleted($event)"
-        (documentReadyToPaint)="onDocumentReadyToPaint()"
-        (handOffToQueue)="handOffToQueue()"
-        (backgroundJobStarted)="onBackgroundOcrStarted($event)"
-      />
-    }
-
-    <!-- Footnote removal: minutes, so it runs HERE with a bar rather than in
-         the queue — with the same hand-off if the user would rather it did. -->
-    @if (showFootnotesModal()) {
-      <app-footnotes-modal
-        [projectDir]="projectPath() || ''"
-        [appliedPasses]="bookAppliedPasses()"
-        [runInBackground]="runInBackground()"
-        (close)="showFootnotesModal.set(false)"
-        (runInBackgroundChange)="setRunInBackground($event)"
-        (handOffToQueue)="onFootnotesHandedToQueue()"
-        (bookReplaced)="onBookReplacedByPass()"
-      />
-    }
-
     <!-- The two EPUB passes that cannot start from a button alone. -->
     @if (passOptionsKind(); as kind) {
       <app-pass-options-modal
@@ -1284,59 +1017,6 @@ interface AlertModal {
     /* Toolbar should not shrink */
     desktop-toolbar {
       flex-shrink: 0;
-    }
-
-    /* Corpus banner — deliberately loud, and deliberately not the app's accent
-       colour, so a corpus window can never be mistaken for a project window. */
-    .corpus-banner {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: var(--ui-spacing-sm) var(--ui-spacing-md);
-      padding: var(--ui-spacing-sm) var(--ui-spacing-lg);
-      background: #4a3a10;
-      color: #ffe9a8;
-      border-bottom: 2px solid #d8a12a;
-      font-size: 12px;
-      flex-shrink: 0;
-    }
-
-    .corpus-banner-blocked {
-      background: #4a1414;
-      color: #ffd4d4;
-      border-bottom-color: #d84a4a;
-    }
-
-    .corpus-tag {
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      padding: 2px 8px;
-      border-radius: 4px;
-      background: #d8a12a;
-      color: #2a1e00;
-      white-space: nowrap;
-    }
-
-    .corpus-banner-blocked .corpus-tag {
-      background: #d84a4a;
-      color: #2a0000;
-    }
-
-    .corpus-slug {
-      font-weight: 600;
-    }
-
-    .corpus-detail {
-      opacity: 0.85;
-    }
-
-    .corpus-blocked {
-      font-weight: 600;
-    }
-
-    .corpus-unsaved {
-      font-weight: 600;
-      color: #fff3d0;
     }
 
     /* Search bar */
@@ -1454,110 +1134,6 @@ interface AlertModal {
       flex: 1;
       min-height: 0; /* Critical for flex children to respect parent bounds */
       overflow: hidden;
-    }
-
-    .station-foot {
-      display: flex;
-      flex-direction: column;
-      flex-shrink: 0;
-      border-top: 1px solid var(--border-subtle);
-    }
-
-    .convert-progress {
-      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
-      background: var(--bg-toolbar);
-      border-bottom: 1px solid var(--border-subtle);
-    }
-
-    .convert-progress-head {
-      display: flex;
-      align-items: center;
-      gap: var(--ui-spacing-sm);
-      margin-bottom: 6px;
-    }
-
-    .convert-progress-label {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text-primary);
-    }
-
-    .convert-progress-count {
-      font-size: 11px;
-      color: var(--text-secondary);
-      font-variant-numeric: tabular-nums;
-    }
-
-    .convert-progress-stop {
-      margin-left: auto;
-      font-size: 11px;
-      padding: 2px 10px;
-      border: 1px solid var(--border-subtle);
-      border-radius: 4px;
-      background: transparent;
-      color: var(--text-secondary);
-      cursor: pointer;
-    }
-
-    .convert-progress-stop:hover { color: var(--text-primary); }
-
-    .convert-progress-track {
-      height: 6px;
-      border-radius: 3px;
-      background: var(--bg-inset, rgba(127, 127, 127, 0.2));
-      overflow: hidden;
-    }
-
-    .convert-progress-fill {
-      height: 100%;
-      background: var(--accent-primary, #ff8c42);
-      transition: width 200ms linear;
-    }
-
-    /* No page count yet: the model is still loading, and a bar that showed a
-       number here would be showing one it does not have. */
-    .convert-progress-track.indeterminate .convert-progress-fill {
-      animation: convert-progress-sweep 1.4s ease-in-out infinite;
-      width: 35% !important;
-    }
-
-    @keyframes convert-progress-sweep {
-      0%   { margin-left: -35%; }
-      100% { margin-left: 100%; }
-    }
-
-    .convert-progress-line {
-      margin: 6px 0 0;
-      font-size: 11px;
-      color: var(--text-secondary);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .long-run-options {
-      display: flex;
-      gap: var(--ui-spacing-lg);
-      padding: var(--ui-spacing-xs) var(--ui-spacing-md);
-      background: var(--bg-toolbar);
-      border-top: 1px solid var(--border-subtle);
-    }
-
-    .long-run-option {
-      display: flex;
-      align-items: center;
-      gap: var(--ui-spacing-xs);
-      font-size: var(--ui-font-xs);
-      color: var(--text-secondary);
-      cursor: pointer;
-
-      input { accent-color: var(--accent); }
-    }
-
-    /* Refused for this book, and hovering says why. */
-    .long-run-option.refused {
-      color: var(--text-tertiary);
-      cursor: not-allowed;
     }
 
     /* The sentence saying why the artifact on screen is not curated here */
@@ -2732,20 +2308,6 @@ export class PdfPickerComponent implements OnInit {
    */
   readonly librarySourcePath = input<string | null>(null);
 
-  /**
-   * Optional: the absolute path of a TRAINING-CORPUS book folder
-   * (/Volumes/Callisto/training/rubric/<slug>/), set only by the File menu's
-   * "Open Corpus Book…".
-   *
-   * A corpus book is opened to review and correct its labels and NOTHING else.
-   * It is not a project, it must not become one, and every path in this
-   * component that creates, binds to or writes a project is gated on
-   * `corpusMode()` — see `loadCorpusBook`. Its blocks come from the corpus
-   * snapshot rather than from the PDF, because the labels are keyed to those
-   * exact block ids.
-   */
-  readonly corpusPath = input<string | null>(null);
-
   /** Emitted when Finalize is clicked in embedded mode */
   readonly finalized = output<{ success: boolean; epubPath?: string; error?: string }>();
 
@@ -2783,9 +2345,8 @@ export class PdfPickerComponent implements OnInit {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   readonly pageRenderService = inject(PageRenderService);
-  private readonly ocrPostProcessor = inject(OcrPostProcessorService);
-  private readonly ocrJobService = inject(OcrJobService);
   readonly themeService = inject(DesktopThemeService);
+  private readonly dialogService = inject(DialogService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly queueService = inject(QueueService);
   private readonly settingsService = inject(SettingsService);
@@ -2819,7 +2380,7 @@ export class PdfPickerComponent implements OnInit {
    *
    * Keyed to the ref rather than run once, because one window opens many books
    * — a tab switch, the pipeline's swap to the review EPUB — and each of them
-   * has its own documents. A book with no ref (a corpus book, a loose file) is
+   * has its own documents. A book with no ref (a loose file) is
    * not a failure to open: `loadWorkingDocument` reads that as "there is nothing
    * to open" and leaves the editor's own block list alone.
    */
@@ -2859,7 +2420,7 @@ export class PdfPickerComponent implements OnInit {
    */
   private appliedNarrationKey = '';
   private readonly narrationRestoreEffect = effect(() => {
-    if (!this.pdfLoaded() || !this.viewingConvertedBook()) return;
+    if (!this.pdfLoaded() || !this.canStrikeForNarration()) return;
     const recorded = this.narrationState()?.deletions;
     const docId = this.activeDocumentId() ?? '';
     // Read so the effect re-runs when the segmenter replaces the block list —
@@ -2886,7 +2447,7 @@ export class PdfPickerComponent implements OnInit {
   private readonly narrationSaveEffect = effect(() => {
     // Tracked: the set the user is looking at.
     const struck = this.deletedBlockIds();
-    if (!this.pdfLoaded() || !this.viewingConvertedBook()) return;
+    if (!this.pdfLoaded() || !this.canStrikeForNarration()) return;
     // The restore has to land before the first save, or an empty editor would
     // be recorded over a book's worth of strikes.
     if (this.appliedNarrationKey === '') return;
@@ -2974,26 +2535,6 @@ export class PdfPickerComponent implements OnInit {
     });
   })();
 
-  // Global OCR job completion callback (stored as a stable reference so it can
-  // be unregistered on destroy)
-  private readonly ocrJobCompleteCallback = (job: OcrJob): void => {
-    // Convert OcrJobResult to OcrPageResult and process
-    const results: OcrPageResult[] = job.results.map(r => ({
-      page: r.page,
-      text: r.text,
-      confidence: r.confidence,
-      textLines: r.textLines
-    }));
-    if (results.length > 0) {
-      this.onOcrCompleted(results);
-    }
-  };
-
-  // Register global OCR job completion handler
-  private readonly ocrJobCompletionHandler = (() => {
-    this.ocrJobService.onJobComplete(this.ocrJobCompleteCallback);
-  })();
-
   // Component teardown — release event subscriptions, timers, and global callbacks
   private readonly destroyCleanup = (() => {
     this.destroyRef.onDestroy(() => {
@@ -3020,10 +2561,6 @@ export class PdfPickerComponent implements OnInit {
         clearTimeout(this.autoSaveTimeout);
         this.autoSaveTimeout = null;
       }
-
-      // Unregister the global OCR completion callback so the destroyed
-      // component isn't retained and invoked against stale state
-      this.ocrJobService.offJobComplete(this.ocrJobCompleteCallback);
     });
   })();
 
@@ -3178,30 +2715,17 @@ export class PdfPickerComponent implements OnInit {
    * Initialize component - handles embedded mode auto-loading and tab restoration
    */
   ngOnInit(): void {
-    // A stage's own most recent line, as it runs, for the nav to show verbatim.
-    // Torn down with the component so a second window's stages are not narrated
-    // into this one's.
-    const unwatch = this.documentBlocks.watchProgress();
-    this.destroyRef.onDestroy(unwatch);
-
-    this.restoreLongRunOptions();
-
-    // A stage this window did not start still changes what this book HAS — the
-    // OCR dialog submits to the queue, and the queue's worker is a different
-    // process's business. So the station tabs are re-measured whenever any stage
-    // for THIS project lands, rather than only after a stage this window awaited.
+    // A stage this window did not start still changes what this project HAS —
+    // Studio mints working copies and converts PDFs into books, and those run in
+    // MAIN. So what is on screen is re-measured whenever any stage for THIS
+    // project lands.
     const unwatchFinished = this.electronService.onDocumentStageFinished((event) => {
       if (event.projectDir !== this.projectPath()) return;
-      void this.onProjectStageFinished(event.stage);
+      void this.onProjectStageFinished();
     });
     this.destroyRef.onDestroy(unwatchFinished);
 
-    const corpusDir = this.corpusPath();
-    if (corpusDir) {
-      // Training-corpus book: blocks and labels come from the corpus folder,
-      // never from a project. Checked FIRST so no project path can run for it.
-      setTimeout(() => void this.loadCorpusBook(corpusDir), 0);
-    } else if (this.embedded() && this.projectDir()) {
+    if (this.embedded() && this.projectDir()) {
       // Embedded mode - load whatever projectDir() points at (see openTarget)
       const filePath = this.projectDir();
       setTimeout(() => void this.openTarget(filePath), 0);
@@ -3361,23 +2885,13 @@ export class PdfPickerComponent implements OnInit {
       this.closeCurrentTabOrHideWindow();
     }
 
-    // Ctrl/Cmd + E for export (not while typing in a field). Corpus books have
-    // nothing to export — they are label data, not a book being produced.
+    // Ctrl/Cmd + E for export (not while typing in a field).
     if ((event.metaKey || event.ctrlKey) && event.key === 'e'
         && !this.isTextInputTarget(event.target)) {
       event.preventDefault();
-      if (this.pdfLoaded() && !this.corpusMode()) {
+      if (this.pdfLoaded()) {
         this.showExportSettings.set(true);
       }
-    }
-
-    // Ctrl/Cmd + S writes a corpus book's labels. Only in corpus mode — an
-    // ordinary document autosaves, so binding it there would mean nothing.
-    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key === 's'
-        && this.corpusMode() && !this.isTextInputTarget(event.target)) {
-      event.preventDefault();
-      void this.saveCorpusLabels();
-      return;
     }
 
     // Ctrl/Cmd + Shift + S for Save EPUB As
@@ -3425,23 +2939,17 @@ export class PdfPickerComponent implements OnInit {
         return;
       }
 
-      // Category assignment — label mode only. Normal editing keeps these keys
-      // free: someone cleaning a book shouldn't be able to reassign a category
-      // by brushing a letter key with blocks selected.
-      if (this.labelMode() && this.selectedBlockIds().length > 0 && !this.curationLocked()) {
+      // Category assignment — only with the Label tab open. Normal editing keeps
+      // these keys free: someone cleaning a book shouldn't be able to reassign a
+      // category by brushing a letter key with blocks selected.
+      if (this.navTab() === 'label' && this.selectedBlockIds().length > 0
+          && !this.curationLocked()) {
         const categoryId = CATEGORY_SHORTCUTS[event.shiftKey ? `shift+${key}` : key];
         if (categoryId) {
           event.preventDefault();
           this.onSetBlockCategory({ blockIds: [...this.selectedBlockIds()], categoryId });
           return;
         }
-      }
-
-      // Walk the blocks the classifier was least sure about.
-      if (key === 'n' && this.labelMode()) {
-        event.preventDefault();
-        this.goToUncertainBlock(event.shiftKey ? -1 : 1);
-        return;
       }
 
       switch (key) {
@@ -3525,177 +3033,53 @@ export class PdfPickerComponent implements OnInit {
   readonly lightweightMode = signal(false);  // Process without rendering pages
 
   // ───────────────────────────────────────────────────────────────────────────
-  // THE LADDER — Archive → Working → EPUB → Narration
+  // ONE SCREEN — the file on screen decides the tools
   // ───────────────────────────────────────────────────────────────────────────
   //
-  // Pipeline V2 (docs/PIPELINE_V2_PLAN.md). Processing is not a place: every
-  // operation is a button on the station where its INPUT lives, and every step
-  // produces a visible artifact you can open. What replaced what is worth saying
-  // once, because the difference is the whole design:
+  // Owen, 2026-08-07. There is no station bar, no ladder and no walk: this
+  // window shows a file and offers what that file can be given. Three kinds,
+  // and the difference between them is a MEASUREMENT rather than a state:
   //
-  // The old model was a two-station wizard — Prepare, then Review — with a
-  // `pipelineStep` signal, a `visitedStations` set and a "generate" button that
-  // both did work and navigated. That meant the app REMEMBERED where a book was,
-  // and the memory could be wrong: a set that said 'epub-review' was visited
-  // said nothing about whether the EPUB was still on disk, and the Back button
-  // had to reload the source because the review had swapped the document out
-  // from under the editor.
+  //  - the **archive original** (a PDF the project has no working copy of, or
+  //    the copy is not what is open) — read-only. Analysis and Search, and a
+  //    sentence pointing at the versions page for the copy that can be edited.
+  //  - the **working copy** (`<Original>.working.pdf`, named by main and
+  //    reported on `document:state`) — full curation, written into that file as
+  //    PDF annotations.
+  //  - an **EPUB** — the project's book, or the original of a project that
+  //    arrived as one. Struck through for narration, chaptered, and rewritten by
+  //    the text passes.
   //
-  // Now nothing is remembered. `viewedStation` is which file is in the viewer —
-  // a fact about this window, not about the book — and everything else is
-  // derived from the binding record every time it is asked
-  // (`shared/document/stations.ts`). A station exists because its artifact is on
-  // disk, so the tabs cannot disagree with the project folder.
+  // Everything below is derived from the path in the viewer and main's answers
+  // about the project. Nothing is remembered, so nothing can disagree with the
+  // files: that was the whole failure of the ladder this replaced, which kept a
+  // station in a signal and could show the built book while claiming to be
+  // standing on the working copy.
 
-  private stationSwapping = false; // guard: a station load is not the user leaving
-
-  // ── How a long operation is watched ───────────────────────────────────────
-  //
-  // Neither of these decides anything about the WORK. A document stage runs in
-  // the main process either way, and closing this window changes nothing about
-  // it; these two say whether the queue is what watches it, and whether this
-  // window follows the artifact it produces.
-  //
-  // Persisted in localStorage rather than in Settings, because they are a habit
-  // about this window rather than a fact about the pipeline — and localStorage
-  // is where the picker already keeps its rail state. One key for both
-  // surfaces (the OCR dialog and the station bar): they are the same preference
-  // asked in two places, and two records of it would answer differently.
-  private static readonly LONG_RUN_KEY = 'bookforge-picker-long-run';
-
-  readonly runInBackground = signal(false);
-  readonly openWhenFinished = signal(true);
+  /** Set while this window swaps one artifact for another — not the user leaving. */
+  private artifactSwapping = false;
 
   /**
-   * Why this book cannot be built in the background, or null.
+   * Which KIND of file is in the viewer, measured from its own extension.
    *
-   * The queue runs PASSES, and its pass kinds are get-text, blocks, reflow,
-   * footnotes, simplify and translate. There is no pass for the
-   * markup-preserving export: it aligns the editor's own view of the book
-   * against the source, and that view lives in this window. So for a book that
-   * arrived as an EPUB the checkbox is refused BY NAME rather than accepted and
-   * quietly ignored — a "run in background" that silently runs in the foreground
-   * is exactly the kind of lie this phase exists to remove.
+   * The whole of the rule is `shared/document/rail-tasks.ts`'s, and it is one
+   * fact: an EPUB is a book, anything else is a source document. The rail is
+   * keyed by it and so is everything that asks "can this be struck through".
    */
-  readonly runInBackgroundRefusal = computed<string | null>(() => {
-    if (!this.buildsByPreservingMarkup()) return null;
-    return 'This book keeps its own markup, and that export aligns against the editor\'s view of '
-      + 'it — there is no queue pass that can carry it. Building it happens here, with the book '
-      + 'on screen.';
-  });
+  readonly viewedArtifact = computed<ViewedArtifact>(() =>
+    viewedArtifactOf(this.effectivePath()));
+
+  /** An EPUB is on screen — the book, whichever of the project's it is. */
+  readonly viewingBook = computed(() => this.viewedArtifact() === 'book');
 
   /**
-   * Whether the NEXT build actually goes to the queue.
+   * The project's book EPUB, as MAIN answers for it (`projects:export-info`),
+   * never composed here. The export is named after the book — the manifest owns
+   * that name — and it is located by its manifest record rather than by scanning
+   * `source/`, so an unrecorded stray is not adopted as a project's book.
+   * Existence is checked on that side too, so a record pointing at a deleted
+   * file reads as null.
    *
-   * One value drives the checkbox and the branch, so the box cannot show ticked
-   * for a book that will build in the foreground regardless.
-   */
-  readonly effectiveRunInBackground = computed(() =>
-    this.runInBackgroundRefusal() === null && this.runInBackground());
-
-  setRunInBackground(on: boolean): void {
-    this.runInBackground.set(on);
-    this.persistLongRunOptions();
-  }
-
-  setOpenWhenFinished(on: boolean): void {
-    this.openWhenFinished.set(on);
-    this.persistLongRunOptions();
-  }
-
-  private persistLongRunOptions(): void {
-    try {
-      localStorage.setItem(PdfPickerComponent.LONG_RUN_KEY, JSON.stringify({
-        runInBackground: this.runInBackground(),
-        openWhenFinished: this.openWhenFinished(),
-      }));
-    } catch (err) {
-      // A storage that refuses a write is not a reason to stop working; the
-      // choice still holds for this session, and it is said once here.
-      console.warn('[picker] could not remember the long-run options:', err);
-    }
-  }
-
-  private restoreLongRunOptions(): void {
-    let raw: string | null;
-    try {
-      raw = localStorage.getItem(PdfPickerComponent.LONG_RUN_KEY);
-    } catch (err) {
-      console.warn('[picker] could not read the long-run options:', err);
-      return;
-    }
-    // Nothing stored is the ordinary first-run state, not a failure.
-    if (!raw) return;
-    let stored: { runInBackground?: unknown; openWhenFinished?: unknown };
-    try {
-      stored = JSON.parse(raw) as typeof stored;
-    } catch (err) {
-      // Unreadable storage is a storage failure, exactly like the read above,
-      // and it is handled the same way. This is not a pipeline value standing in
-      // for a missing one — it is a habit about two checkboxes, and letting it
-      // throw here would take the whole picker down on startup over them.
-      console.warn('[picker] the stored long-run options were unreadable:', err);
-      return;
-    }
-    if (typeof stored.runInBackground === 'boolean') this.runInBackground.set(stored.runInBackground);
-    if (typeof stored.openWhenFinished === 'boolean') this.openWhenFinished.set(stored.openWhenFinished);
-  }
-
-  /**
-   * The station this window has ASKED to stand on.
-   *
-   * Not the answer. Every path that shows an artifact writes here, and the
-   * artifact that actually arrives has the last word (`viewedStation` below) —
-   * because a window asks and a file loads in whichever order the round trips
-   * happen to complete, and the one that can be MEASURED is the file.
-   */
-  private readonly requestedStation = signal<StationId>('archive');
-
-  /**
-   * Which artifact is in the viewer, measured from the paths.
-   *
-   * The whole of the rule is in `shared/document/stations.ts`; this is the three
-   * facts it needs, and all three are already answers this window holds.
-   */
-  readonly viewedArtifact = computed<ViewedArtifact>(() => viewedArtifactOf({
-    displayedPath: this.effectivePath(),
-    curatedPdfPath: this.curatedPdfPath(),
-    bookEpubPath: this.bookEpubPath(),
-  }));
-
-  /**
-   * The station in the viewer. Which FILE is on screen, and nothing more.
-   *
-   * DERIVED, as of the second real session (2026-08-04). It used to be a plain
-   * signal every load path set, and the two could disagree: `showEpubStation`
-   * put the book on screen through `loadPdf`, which sets the station home unless
-   * a swap flag happens to be up, and a window opened straight onto the book
-   * from the versions page set no station at all. A window showing the book
-   * while its station said "Working" then offered Next: Working, unlocked
-   * curation over an EPUB, and painted the working PDF's blocks onto the book.
-   * One fact, derived once, and none of those can recur.
-   */
-  readonly viewedStation = computed<StationId>(() =>
-    stationForArtifact(this.requestedStation(), this.viewedArtifact()));
-
-  /** A stage is running for this book, so nothing on the bar should be pressable. */
-  readonly stationBusy = computed(() =>
-    this.documentBlocks.stageRunning() !== null || this.loading());
-
-  /**
-   * The project's book EPUB, absolute, or null when it has never been exported.
-   *
-   * MAIN'S ANSWER, asked for (`projects:export-info`) and never composed here.
-   * The export is named after the book — the manifest owns that name — and it is
-   * located by its manifest record rather than by scanning `source/`, so an
-   * unrecorded stray is not adopted as a project's book. Existence is checked on
-   * that side too, so a record pointing at a deleted file reads as null.
-   *
-   * This, not the binding's `stages.reflow`, is what the EPUB station's presence
-   * is measured by: a book that arrived as an EPUB has no binding record at all,
-   * and it still has a book once it has been built.
-   */
-  /**
    * Main's last answer, STAMPED with the project it was about.
    *
    * The stamp is the whole point. A window moves between books, the ask is a
@@ -3723,8 +3107,8 @@ export class PdfPickerComponent implements OnInit {
    *
    * Kept apart from the path because "we could not ask" and "there is none" are
    * different states, and collapsing them would tell somebody with a damaged
-   * manifest to press Build the book — which fails the same way, without saying
-   * so.
+   * manifest that its project simply has no book yet, which is a different
+   * thing and points nowhere useful.
    */
   private readonly bookEpubErrorAnswer = signal<{ dir: string; message: string } | null>(null);
 
@@ -3815,25 +3199,27 @@ export class PdfPickerComponent implements OnInit {
   });
 
   /**
-   * This project's book was written by a document vision model, so its elements
-   * say what they ARE and can be struck out by category and by source page.
+   * The narration copy this project already has, or null.
    *
-   * Measured by main off the book's own markup (`data-bf-cat`), never inferred
-   * from the provenance record: a book carries its stamps whether or not a
-   * manifest remembers how it was made.
+   * Main's answer, so the rail entry says "written" from the file on disk rather
+   * than from anything this window remembers doing.
    */
-  readonly bookIsConverted = computed(() => this.narrationState()?.converted === true);
+  readonly narrationCopyPath = computed<string | null>(() =>
+    this.narrationState()?.narrationPath ?? null);
 
   /**
-   * The book on screen IS this project's converted book — the one artifact whose
-   * curation is narration curation.
+   * The book on screen can be struck through for narration.
    *
-   * Both halves are needed. `viewedArtifact` says an EPUB is on screen; without
-   * `bookIsConverted` an ordinary reflowed book would unlock a strike list whose
-   * elements state nothing.
+   * The FILE, and nothing else. It used to also require `state.converted` — the
+   * book carrying `data-bf-cat` stamps — which was right while the only EPUB the
+   * picker ever showed was a `foundry vlm-convert` output. It is wrong now: a
+   * project that arrived AS an EPUB is curated on that EPUB, and its narration
+   * state reads `bookPath: null` until the first strike, because main mints the
+   * book copy lazily when it saves one (`ensureBookEpub`). Gating on either the
+   * stamps or the recorded book would leave those projects with an EPUB on
+   * screen and no gesture that does anything to it.
    */
-  readonly viewingConvertedBook = computed(() =>
-    this.viewedArtifact() === 'book' && this.bookIsConverted());
+  readonly canStrikeForNarration = computed(() => this.viewingBook());
 
   private async refreshNarrationState(): Promise<void> {
     const dir = this.projectPath();
@@ -3864,343 +3250,78 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
-   * This book's documents, as the ladder needs them: three facts from three
-   * different authorities, deliberately not conflated.
+   * The project's working copy, absolute, or null when it has none.
    *
-   * `hasPdfOriginal` is the one that makes an EPUB-native book work. The
-   * document pipeline casts a working PDF from the book's ORIGINAL, and main
-   * refuses an EPUB there by name — so such a book has no binding record at all,
-   * `documentBlocks.state()` is null forever, and its Working station is NOT
-   * APPLICABLE rather than not-yet. Reading that as "not yet" is what left those
-   * books standing at a locked Next pointing to a button that would refuse them.
+   * Main's answer (`document:state`), which DERIVES the name from the archive
+   * original — so a window that matched `.working.pdf` itself would be a second
+   * derivation of a name that is settled once, on the other side of the process
+   * boundary.
    */
-  readonly bookDocuments = computed<BookDocuments>(() => ({
-    // TWO proofs of one fact, and either is enough — not a value standing in for
-    // a missing one. `curatedPdfPath` is a PDF this window has DISPLAYED; a
-    // document state is main having RESOLVED this project's PDF primary, which
-    // it refuses to do for a book that arrived as an EPUB, by name
-    // (`resolveDocumentProject`). A window opened straight onto the built book
-    // has only the second, and reading that as "no PDF ancestor" made a reflowed
-    // PDF book report itself as EPUB-native: its Working tab went dead and its
-    // Build button switched to the markup-preserving exporter, which has no
-    // markup to preserve.
-    hasPdfOriginal: this.curatedPdfPath() !== null || this.documentBlocks.state() !== null,
-    workingStages: this.documentBlocks.state()?.stages ?? null,
-    // Main's existence-checked manifest record, never the binding's
-    // `stages.reflow`: a book with no PDF ancestor has no binding to ask, and it
-    // still has a book once it has been exported.
-    bookEpubExists: this.bookEpubPath() !== null,
+  private readonly workingCopyPath = computed<string | null>(() =>
+    this.documentBlocks.state()?.workingPath ?? null);
+
+  /**
+   * The PDF on screen IS the project's working copy — the file curation is
+   * written into.
+   *
+   * This is the whole of the archive-is-read-only rule. A project's archive
+   * original is never written to, so the gestures that would edit it are refused
+   * with a sentence pointing at the versions page, where a working copy is
+   * minted. A working copy has curation written into its own annotations, so
+   * every gesture lands.
+   */
+  readonly viewingWorkingCopy = computed(() => viewingWorkingCopy({
+    displayedPath: this.effectivePath(),
+    workingPath: this.workingCopyPath(),
   }));
-
-  /** The stations this book HAS, measured. */
-  readonly presentStations = computed<StationId[]>(() =>
-    existingStations(this.bookDocuments()));
-
-  /**
-   * This BOOK is built by preserving its own markup rather than by reflow.
-   *
-   * Deliberately not `useEpubPreservingExport()`, which asks whether the file
-   * ON SCREEN is an EPUB. That is the right question for Save As and for the
-   * legacy export paths — they act on what you are looking at — and the wrong
-   * one for the station bar, which is about the book: at the EPUB station of a
-   * reflowed PDF book the file on screen is an EPUB too, and asking there would
-   * put a markup-preserving build on a book that has no markup to preserve.
-   *
-   * The book-level fact is whether it has a PDF ancestor. It does not change
-   * when the viewer does.
-   */
-  readonly buildsByPreservingMarkup = computed(() =>
-    !!this.projectPath() && !this.bookDocuments().hasPdfOriginal);
-
-  /**
-   * What is missing between the station on screen and the next one, or null.
-   *
-   * Read by BOTH the Next button and the disabled action buttons, so a lock is
-   * explained with one sentence rather than two that can drift.
-   */
-  readonly stationNextStep = computed(() =>
-    // Forward from where the viewer is, always. A window showing a station the
-    // book does not currently measure as present is a real state — a reset
-    // removed the working copy while it was open, main has not answered yet
-    // about the book — and it is not a reason to point back down the ladder.
-    // Asking `nextStation('archive', book)` in that case is what put "Next:
-    // Working" on the screen while the built book was on it.
-    nextStationFromViewed(this.viewedStation(), this.bookDocuments()));
-
-  readonly stationTabs = computed<StationTab[]>(() => {
-    const book = this.bookDocuments();
-    const at = this.viewedStation();
-    return STATIONS.map(id => ({
-      id,
-      label: STATION_LABELS[id],
-      presence: stationPresence(id, book),
-      current: id === at,
-      reason: this.stationAbsenceReason(id, book),
-    }));
-  });
-
-  /** One line saying what the station on screen IS. */
-  readonly stationContext = computed(() => {
-    const book = this.bookDocuments();
-    switch (this.viewedStation()) {
-      case 'archive':
-        // Still never written to, either way. What changes is where the edits go
-        // in the meantime: into a working copy's annotations for a cast book,
-        // into the project for one that is applied at build time.
-        if (this.hasWorkingCopy()) {
-          return 'The archived original, exactly as it was imported. Nothing is ever written to it.';
-        }
-        // A book that COULD have a working copy and does not is standing here
-        // because making one costs minutes — say that, rather than leaving a
-        // read-only page with no explanation for why curation is refused.
-        if (book.hasPdfOriginal && this.originalClass() === 'scanned') {
-          return 'The archived original. This book is a scan, so it has to be read before it can be '
-            + 'curated — press OCR / Cast. Until then nothing here can be edited, and the original '
-            + 'is never written to.';
-        }
-        return 'The archived original — read-only on disk, and where this book is curated. '
-          + 'What you delete here is applied when the book is built.';
-      case 'working':
-        return book.workingStages?.blocks === false
-          ? 'The working copy: the book has been read, and nothing is labelled yet. '
-            + 'Press Detect — it is what turns the text into blocks you can curate.'
-          : 'The working copy: the cast text and the block annotations. Curate here, then build the book.';
-      case 'epub':
-        return 'The book. Every text transformation happens here, on screen, where you can read the result.';
-      case 'tts':
-        return 'The finished book, handed to narration.';
-    }
-  });
-
-  /**
-   * The buttons this station offers.
-   *
-   * Each one lives where its INPUT lives, which is the whole of the V2 idea, and
-   * each carries the sentence it is disabled WITH rather than being hidden — a
-   * button that vanishes teaches nothing about how to get it back.
-   */
-  readonly stationActions = computed<StationAction[]>(() => {
-    const book = this.bookDocuments();
-    const noProject = this.noProjectReason();
-    // Said here rather than discovered when the stage refuses: the document
-    // pipeline casts a working PDF from the book's original, so a project that
-    // arrived as an EPUB has nothing to cast FROM. Main refuses it by name; a
-    // button that has to be pressed to find that out is a worse way to hear it.
-    const noPdf = this.curatedPdfPath() ? null
-      : 'This book arrived as an EPUB, so there is no PDF to cast a working copy from. '
-        + 'Curate it here and the text passes run on the book itself.';
-    switch (this.viewedStation()) {
-      case 'archive': {
-        const actions: StationAction[] = [
-          { id: 'cast', label: 'OCR / Cast', reason: noProject ?? noPdf, primary: noPdf === null },
-          // Detect no longer implies the cast. The OCR dialog submits the cast
-          // and ONLY the cast (Owen's ruling, 2026-08-04), so a book with no
-          // working copy has nothing here to detect — said by name rather than
-          // discovered by pressing it.
-          {
-            id: 'detect-from-archive',
-            label: 'Detect',
-            reason: noProject ?? noPdf ?? (stationPresence('working', book) === 'present' ? null
-              : 'Detect labels the blocks in the working copy, and this book has not been read '
-                + 'yet — press OCR / Cast first.'),
-          },
-        ];
-        // A book with no working copy to build FROM is built HERE, because here
-        // is where it is curated. Cast and Detect stay beside it, refused by
-        // name: they are what this station offers a book that has a PDF, and a
-        // control that vanishes teaches nothing about why.
-        if (this.buildsByPreservingMarkup()) {
-          actions.push({ id: 'reflow', label: 'Build the book', reason: noProject, primary: true });
-        }
-        // The OTHER route to a book, offered beside the first because the archive
-        // PDF is the input to both. It reads the pages with a document vision
-        // model and writes the whole book in one act — no cast, no detect, no
-        // build — so it belongs on the station where those three start rather
-        // than at the end of them.
-        actions.push({
-          id: 'vlm-convert',
-          label: 'Convert to EPUB',
-          reason: noProject ?? noPdf,
-          // Primary when there is nothing else here to press: a scanned book
-          // with no working copy has two ways forward and neither is the
-          // obvious one, so neither claims the primary.
-          primary: noPdf === null && !this.buildsByPreservingMarkup()
-            && stationPresence('working', book) !== 'present',
-        });
-        return actions;
-      }
-      case 'working': {
-        // A cast leaves the working document carrying no annotations at all —
-        // that is what a cast IS — so a book that has been read and not yet
-        // detected has exactly one next move, and Detect is it. Making that the
-        // primary action is what replaces the OCR dialog quietly buying a Detect
-        // nobody asked for (Owen's ruling, 2026-08-04).
-        const undetected = book.workingStages?.blocks === false;
-        return [
-          { id: 'detect', label: 'Detect', reason: noProject, primary: undetected },
-          {
-            id: 'reflow',
-            label: 'Build the book',
-            reason: noProject
-              ?? (stationPresence('working', book) === 'present' ? null
-                : 'There is no working copy to build from — press OCR / Cast.')
-              ?? (undetected
-                ? 'Build the book reads the block labels, and nothing is labelled yet — press Detect.'
-                : null),
-            primary: !undetected,
-          },
-        ];
-      }
-      case 'epub':
-        // The book's three passes MOVED to the left rail on 2026-08-04 (Owen:
-        // "lets move translate/simplify/footnotes to a left side nav just like
-        // the select/edit modes were when in a pdf"), so the station bar here
-        // carries the tabs and Next and nothing else. They are rail entries with
-        // derived statuses now — see `taskGroups` — and there is exactly one of
-        // each: a button here as well would be a second door to one pass.
-        //
-        // The exception is the narration copy, and it is not a pass: it writes a
-        // SECOND file rather than rewriting the book, so it has no rail entry and
-        // no provenance record to hang one off. It belongs here because here is
-        // where the strikes it is cut by are made.
-        return this.bookIsConverted()
-          ? [{
-            id: 'export-narration',
-            label: 'Export narration copy',
-            reason: noProject,
-            primary: true,
-          }]
-          : [];
-      case 'tts':
-        return [];
-    }
-  });
 
   /**
    * Why this document can run nothing that writes into a project, or null.
    *
-   * One sentence, read by the station buttons and by the rail's pass entries:
-   * two wordings of the same refusal is two answers to "why is this off".
+   * One sentence, read by every rail entry that needs a project: two wordings of
+   * the same refusal is two answers to "why is this off".
    */
-  private readonly noProjectReason = computed<string | null>(() => {
-    if (this.projectPath()) return null;
-    // A training-corpus book is refused a project ON PURPOSE (loadCorpusBook),
-    // so "does not belong to a project" is true but useless — it reads as a
-    // fault to be fixed. Say which rule is speaking.
-    if (this.corpusMode()) {
-      return 'This is a training-corpus book, which never becomes a library project — '
-        + 'the stations write into one, so they are closed here. Open the library copy '
-        + 'from Studio to convert or curate it.';
-    }
-    return 'This document does not belong to a BookForge project, and every station writes into one.';
-  });
-
-  readonly stationNextLabel = computed(() => {
-    const next = this.stationNextStep().next;
-    if (next === null) return 'Next';
-    return `Next: ${STATION_LABELS[next]} →`;
-  });
+  private readonly noProjectReason = computed<string | null>(() =>
+    this.projectPath()
+      ? null
+      : 'This document does not belong to a BookForge project, and everything here writes into '
+        + 'one. Import it from Studio first.');
 
   /**
-   * This book has a working copy, so there is a station that is not the archive.
+   * Why curation is refused on the file currently on screen, or null.
    *
-   * The whole of the archive-is-read-only rule hangs on this. A book that HAS a
-   * working copy has somewhere else to be edited, so editing the original is
-   * both forbidden and unnecessary. A book that has none — one that arrived as
-   * an EPUB (main refuses to cast a working PDF from a book, by name), a loose
-   * file, a PDF nobody has cast yet — has nowhere else, and its curation is the
-   * editor's own block list: recorded in the manifest and applied by the
-   * markup-preserving EPUB export. Locking those books would leave them with no
-   * editable station at all.
-   */
-  private readonly hasWorkingCopy = computed(() => this.presentStations().includes('working'));
-
-  /**
-   * Why curation is refused on the artifact currently on screen, or null.
-   *
-   * For a cast book, curation is an edit to the WORKING copy's annotations, so
-   * it is offered at exactly one station and the others say so rather than
-   * silently doing nothing — an archive whose gestures vanish is
-   * indistinguishable from a broken picker.
-   *
-   * For a book with no working copy there is no such division: the station on
-   * screen is the only one it has, and it is edited the way it always was.
+   * Three answers, one per kind of file, and each names where the work IS rather
+   * than only that it is not here — a read-only page whose gestures silently do
+   * nothing is indistinguishable from a broken picker.
    */
   readonly curationReadOnlyReason = computed<string | null>(() => {
-    // A book that is still arriving has not yet said what it is. A window opened
-    // straight onto a built book knows neither where the project's book lives
-    // (main has not answered) nor that the project has a PDF ancestor (no PDF
-    // has been displayed), so for that one round trip the artifact reads as the
-    // source and the archive's own lock — which asks whether there is a working
-    // copy — reads false. Curation is refused for the duration, because "we do
-    // not know yet" is not "go ahead", and this is the only station whose answer
-    // can change under the user between one frame and the next.
+    // A book that is still arriving has not said what it is: `document:state`
+    // is a round trip, so for that moment an open working copy reads as the
+    // archive. Curation is refused for the duration, because "we do not know
+    // yet" is not "go ahead".
     if (this.loading()) return 'This book is still opening.';
-    switch (this.viewedStation()) {
-      case 'archive':
-        return this.hasWorkingCopy()
-          ? 'This is the archived original — switch to the Working copy to edit.'
-          : null;
-      case 'epub':
-        // A CONVERTED book is the exception, and it is the whole design of the
-        // vlm route rather than a loosening of this rule. There is no upstream
-        // to curate: the vision model read the pages and wrote the book in one
-        // act, so this file IS where its content decisions are made. And they do
-        // not rewrite it — striking a footnote here records a strike, and the
-        // narration copy is cut from them (Export narration copy, on this
-        // station's bar). The complete book stays complete.
-        if (this.bookIsConverted()) return null;
-        // The built book is derived either way, so curation belongs upstream of
-        // it — and where upstream IS differs by the kind of book.
-        return this.hasWorkingCopy()
-          ? 'This is the built book. Curation happens on the working copy; the text passes happen here.'
-          : 'This is the built book. Curation happens on the original at the Archive station; '
-            + 'the text passes happen here.';
-      case 'tts':
-        return 'The book has been handed to narration.';
-      case 'working':
-        return null;
-    }
+    // An EPUB is curated by STRIKING elements out of it for narration — the file
+    // itself is never rewritten (shared/vlm/narration-deletions.ts) — so the
+    // gestures land and there is nothing to refuse.
+    if (this.viewingBook()) return null;
+    if (this.viewingWorkingCopy()) return null;
+    return 'This is the archive original — create a working copy from the versions page to edit.';
   });
 
   /** True when nothing on screen may be curated. Every mutation entry point asks. */
   readonly curationLocked = computed(() => this.curationReadOnlyReason() !== null);
 
   /**
-   * The blocks the viewer paints — empty at the Archive station.
-   *
-   * Archive and Working show the same PAGES, because the working document is a
-   * copy of the archive original with an invisible text layer and the block
-   * annotations added: rendering the original and painting the annotations over
-   * it IS the working document on screen, and it costs no second analysis of a
-   * 300 MB scan. What separates the two stations is therefore exactly what the
-   * annotations are: the archive is the pages with nothing drawn on them, which
-   * is what "the archived original, untouched" looks like.
-   *
-   * It also keeps `<Original>.working.pdf` out of the tab strip, which
-   * docs/DOCUMENT_PIPELINE.md requires — it is a system file and gets no
-   * user-facing listing.
-   *
-   * The blank archive is what the archive means only when there is a working
-   * copy to mean it against. A book with none — an EPUB, a loose file — is
-   * being read at its one and only station, and painting nothing there would
-   * hide the blocks it is curated through.
-   */
-  readonly stationBlocks = computed(() =>
-    this.viewedStation() === 'archive' && this.hasWorkingCopy() ? [] : this.blocks());
-
-  /**
-   * The chapter rows the right-hand nav lists — the working document's `chapter`
+   * The chapter rows the right-hand nav lists — the working copy's `chapter`
    * blocks, and only while that document is what is on screen.
    *
    * The same artifact boundary as the block mirror, said where the OTHER thing
    * that paints the document's blocks reads them. Listing the working PDF's
-   * chapters beside the built book is the overlay wearing its third hat, and it
-   * is the one the Chapter tab shows: the book's own chapters come from its
-   * navigation, not from the PDF's annotations, and an empty list under a
-   * station where curation is refused says so honestly.
+   * chapters beside a book is the overlay wearing its third hat: a book's own
+   * chapters come from its navigation, not from a PDF's annotations, and an
+   * empty list under a file that has none says so honestly.
    */
-  readonly stationChapterBlocks = computed(() =>
+  readonly curationChapterBlocks = computed(() =>
     this.documentLayerLive() ? this.documentBlocks.chapterBlocks() : []);
 
   // Search state
@@ -4255,106 +3376,6 @@ export class PdfPickerComponent implements OnInit {
   // over the block's text (by line breaks, else by word boundaries) and child
   // block geometry is synthesised from the original block's bounding box.
   readonly splitPopoverTextMode = signal<boolean>(false);
-
-  // OCR settings state
-  readonly showOcrSettings = signal(false);
-  readonly ocrSettings = signal<OcrSettings>({
-    engine: 'tesseract',
-    language: 'eng',
-    tesseractPsm: 3
-  });
-
-  /**
-   * The main-owned OCR run for the corpus book on screen, if there is one.
-   *
-   * Kept here rather than only in the OCR panel so the minimized progress bar
-   * has something to show once the panel is closed — closing the panel is the
-   * normal way to watch a long run, and a bar that vanished with it would be
-   * reporting the window instead of the work.
-   */
-  readonly corpusOcrRun = signal<CorpusOcrRunState | null>(null);
-
-  /**
-   * Follow the run for the book on screen, and take its result when it lands.
-   *
-   * The completion handler lives HERE, on the window, and not on the OCR panel.
-   * The panel is destroyed the moment it is closed — which is the normal way to
-   * watch a long run — so a run that finished while it was closed emitted its
-   * completion into nothing. The editor then kept the block set it had loaded
-   * when the book was opened: a 532-page book that had finished every page still
-   * showed the 197 pages it knew about at open time, and looked for all the
-   * world like OCR had stopped early.
-   */
-  private readonly corpusOcrWatcher = (() => {
-    let wasRunning = false;
-    const unsubscribe = this.electronService.onCorpusOcrProgress((state) => {
-      if (state.bookDir !== this.corpusBook()?.dir) return;
-      const running = state.status === 'running';
-      this.corpusOcrRun.set(running ? state : null);
-      // Only on the running -> finished edge: main emits a final state for
-      // cancelled and error too, and re-reading on every one of them would
-      // reload the book repeatedly for no change.
-      if (wasRunning && !running && state.status !== 'error') {
-        void this.onCorpusOcrFinished();
-      }
-      wasRunning = running;
-    });
-    this.destroyRef.onDestroy(unsubscribe);
-  })();
-
-  // Background OCR jobs - convert OcrJob[] to BackgroundJob[] for the progress component
-  readonly backgroundJobs = computed<BackgroundJob[]>(() => {
-    const corpusRun = this.corpusOcrRun();
-    const corpusEntry: BackgroundJob[] = corpusRun ? [{
-      id: `corpus-ocr:${corpusRun.bookDir}`,
-      type: 'ocr' as const,
-      title: `OCR: ${this.pdfName()}`,
-      // Over the BOOK, so a resumed run reads "197 of 532" and climbs from
-      // there. Counting the run's own pages is what made this restart at zero.
-      progress: corpusRun.bookPages > 0
-        ? Math.round((corpusRun.journalPages / corpusRun.bookPages) * 100)
-        : 0,
-      current: corpusRun.journalPages,
-      total: corpusRun.bookPages,
-      status: 'running' as const,
-    }] : [];
-
-    return corpusEntry.concat(this.ocrJobService.jobs().map(job => {
-      // Map OcrJob status to BackgroundJob status
-      let status: BackgroundJob['status'];
-      switch (job.status) {
-        case 'queued':
-        case 'pending':
-          status = 'queued';
-          break;
-        case 'running':
-          status = 'running';
-          break;
-        case 'completed':
-          status = 'completed';
-          break;
-        case 'cancelled':
-          status = 'cancelled';
-          break;
-        case 'error':
-        default:
-          status = 'error';
-          break;
-      }
-
-      return {
-        id: job.id,
-        type: 'ocr' as const,
-        title: `OCR: ${job.documentName}`,
-        progress: job.progress,
-        current: job.processedCount,
-        total: job.totalPages,
-        status,
-        error: job.error,
-        queuePosition: job.queuePosition
-      };
-    }));
-  });
 
   // Sample mode state (for creating custom categories by drawing boxes)
   readonly sampleMode = signal(false);
@@ -4913,7 +3934,7 @@ export class PdfPickerComponent implements OnInit {
    * whether curation is allowed: what the rail CONTAINS is a fact about which
    * file is in the viewer, and what is PRESSABLE is `disabledTasks`, with its
    * own sentence per entry. Asking those as one question is what hid the rail
-   * at the EPUB station, which is where the passes now live.
+   * over the book, which is where the passes live.
    */
   readonly taskGroups = computed<readonly TaskGroup[]>(() =>
     railGroupsForArtifact(this.viewedArtifact()) as readonly TaskGroup[]);
@@ -4934,8 +3955,8 @@ export class PdfPickerComponent implements OnInit {
   // passes (Owen, 2026-08-04 — "lets move translate/simplify/footnotes to a
   // left side nav just like the select/edit modes were when in a pdf").
   //
-  // It used to be gated on `!curationLocked()`, which hid it at exactly the
-  // station the passes live on. The lock has not gone anywhere: it now disables
+  // It used to be gated on `!curationLocked()`, which hid it over exactly the
+  // artifact the passes live on. The lock has not gone anywhere: it now disables
   // the CURATION entries and carries the same sentence onto each of them
   // (`disabledTasks`), so a curation tool is never live over an artifact that
   // refuses it — said, rather than achieved by leaving nothing on screen to say
@@ -4971,9 +3992,8 @@ export class PdfPickerComponent implements OnInit {
   readonly analysisMode = computed(() => this.activePanel() === 'analysis');
 
   // Paragraph breaks are no longer curated by hand. They are detected on the way
-  // into a merge and read by the merge grouping and the EPUB exporter; reflow
-  // decides paragraph structure for a working document, so there is nothing here
-  // for the user to set.
+  // into a merge and read by the merge grouping and the EPUB exporter, and
+  // nothing here is for the user to set.
 
   // Chapter state. The list is DERIVED from the `chapter` blocks in the working
   // document (documentChaptersEffect) and set directly only by the books that
@@ -5095,7 +4115,7 @@ export class PdfPickerComponent implements OnInit {
   // pointer (crop/split/analysis do).
   readonly organizeMode = computed(() => {
     const panel = this.activePanel();
-    return panel === null || panel === 'ocr' || panel === 'merge';
+    return panel === null || panel === 'merge';
   });
   readonly selectedPageNumbers = signal<Set<number>>(new Set());  // Selected pages for bulk operations
   private lastSelectedPage: number | null = null;  // For shift-click range selection
@@ -5107,20 +4127,6 @@ export class PdfPickerComponent implements OnInit {
   // Multi-document support
   readonly openDocuments = signal<OpenDocument[]>([]);
   readonly activeDocumentId = signal<string | null>(null);
-
-  // Computed: active tab ID for tab bar
-  readonly activeTabId = computed(() => this.activeDocumentId());
-
-  // Computed: tabs for tab bar (open documents only)
-  readonly documentTabs = computed<DocumentTab[]>(() => {
-    return this.openDocuments().map(doc => ({
-      id: doc.id,
-      name: doc.name,
-      path: doc.path,
-      hasUnsavedChanges: doc.hasUnsavedChanges,
-      closable: true
-    }));
-  });
 
   // Toolbar items (computed based on state)
   readonly toolbarItems = computed<ToolbarItem[]>(() => {
@@ -5137,20 +4143,23 @@ export class PdfPickerComponent implements OnInit {
 
     // Items only shown when PDF is open
     if (pdfIsOpen) {
-      // The embedded audiobook-prep path (Back / Next / Generate / Approve) now
-      // lives in the bottom control bar, not the top toolbar — both embedded and
-      // standalone keep just Export up here.
-      // A corpus book is opened to correct its labels; there is no EPUB to make
-      // and nowhere for one to go, so it gets the Save-labels action instead.
-      const actionItems: ToolbarItem[] = this.corpusMode()
-        ? [
-            { id: 'saveCorpusLabels', type: 'button', icon: '💾', label: 'Save labels',
-              tooltip: 'Write labels back to this corpus book (Cmd+S)',
-              disabled: !!this.corpusReadOnlyReason() },
-          ]
-        : [
-            { id: 'export', type: 'button', icon: '📤', label: 'Export', tooltip: 'Export document (Cmd+E)' },
-          ];
+      // Next → Narration is a plain toolbar button now, not the last rung of a
+      // station bar. It is offered while the BOOK is on screen — narration takes
+      // an EPUB — and disabled with its own sentence otherwise, because a
+      // control that vanishes teaches nothing about how to reach it.
+      const narrationRefusalText = this.narrationRefusalReason();
+      const actionItems: ToolbarItem[] = [
+        { id: 'export', type: 'button', icon: '📤', label: 'Export', tooltip: 'Export document (Cmd+E)' },
+        {
+          id: 'narrate',
+          type: 'button',
+          icon: '🎧',
+          label: 'Next: Narration',
+          tooltip: narrationRefusalText
+            ?? 'Hand this book to narration — opens the Process tab in the main window',
+          disabled: narrationRefusalText !== null,
+        },
+      ];
 
       return [
         ...baseItems,
@@ -5207,8 +4216,10 @@ export class PdfPickerComponent implements OnInit {
     return deriveAllTaskStatuses({
       removedBlockCount: deletedBlockIds.size,
       crop: { croppedPageCount: this.editorState.cropRegions().size },
-      ocr: { blocks, deletedBlockIds, totalPages: this.totalPages() },
       mergeCount: this.editorState.blockMerges().size,
+      // The narration copy is a FILE, not a pass: it records nothing against the
+      // book, so the only honest thing it can say is whether it is there.
+      narrationCopyExists: this.narrationCopyPath() !== null,
       // The book's own record of what has been run over it. A pass that has run
       // says so, and it says it from the manifest rather than from anything this
       // window remembers doing.
@@ -5231,51 +4242,6 @@ export class PdfPickerComponent implements OnInit {
     const isEpub = this.isCurrentDocumentEpub();
     const lightweight = this.lightweightMode();
 
-    // A corpus book is open for two jobs: recognizing its blocks, and checking
-    // and correcting the labels on them. Everything else on the rail produces
-    // project output there is no project to hold.
-    //
-    // OCR is allowed because it is how a book that has only been ADDED gets any
-    // blocks at all, and `persistCorpusOcr` writes the result straight back to
-    // the book's own folder. It is refused the moment labels exist, though: a
-    // fresh OCR pass mints new block ids (`ocr_p3_k2x9f1_17` — the suffix is per
-    // run), so it does not move those labels onto new blocks, it orphans every
-    // one of them. The backend refuses the same case, and this gate exists so
-    // the user is told before the pass runs rather than after.
-    //
-    // Both the file on disk and the editor count. Normally they are the same
-    // set — the snapshot's labels ARE the editor's corrections — but they come
-    // apart in the two cases that matter: labels typed since the last save, and
-    // a snapshot that could not be applied because it describes a different
-    // document. Labels typed since the last save are exactly as easy to destroy
-    // as saved ones, so either being non-empty closes the door.
-    if (this.corpusMode()) {
-      // Reviewed closes the book; nothing else does. OCR rewrites what the
-      // labels are keyed to, so it answers to the same flag, and the flag is
-      // the one thing here a human sets deliberately.
-      //
-      // This used to gate on label COUNT, which was wrong in the direction that
-      // costs work: a book became un-OCR-able the moment anything was written to
-      // it, so a 532-page novel with 60 labelled pages could not have the other
-      // 472 recognised at all. Labels are cheap — a model produces thousands in
-      // a pass. The review is a person reading every page, and that is what must
-      // not be overwritten by accident.
-      const reviewedAt = this.corpusBook()?.reviewedAt ?? null;
-      for (const id of TASK_ORDER) {
-        if (id === 'select') continue;
-        if (id === 'ocr') {
-          if (!reviewedAt) continue;
-          disabled.set(
-            id,
-            'This book is marked reviewed — un-mark it in the Training tab to run OCR again',
-          );
-          continue;
-        }
-        disabled.set(id, 'Not available for a training-corpus book');
-      }
-      return disabled;
-    }
-
     // The book's passes answer to the BOOK, not to the viewer: they rewrite the
     // file main has recorded, and neither the page renderer nor the block layer
     // is involved. So they are refused for the two reasons that are actually
@@ -5285,24 +4251,32 @@ export class PdfPickerComponent implements OnInit {
       for (const id of EPUB_PASS_IDS) disabled.set(id, passRefusal);
     }
 
+    // The narration copy is not a pass — it writes a second file and records
+    // nothing — but it answers to the same one of the two questions: it needs a
+    // project to write into. It does NOT need a recorded book, and that is the
+    // whole of the EPUB-native case: main mints the book copy as it saves the
+    // first strike (`ensureBookEpub`), so a project whose only EPUB is its
+    // original still has something to cut a narration copy from.
+    const noProject = this.noProjectReason();
+    if (noProject) disabled.set('export-tts', noProject);
+
     for (const id of TASK_ORDER) {
       if (id === 'select') continue;
-      if (isEpubPassId(id)) continue;
-      // Curation is refused on the artifact on screen — the archived original of
-      // a cast book, the built book, a book handed to narration. The rail says
-      // so on each entry rather than vanishing: the reason is the same sentence
-      // the banner over the viewer carries, so there is one explanation and not
-      // two that can drift.
+      if (isEpubPassId(id) || id === 'export-tts') continue;
+      // Curation is refused on the artifact on screen — the archive original,
+      // a book handed to narration. The rail says so on each entry rather than
+      // vanishing: the reason is the same sentence the banner over the viewer
+      // carries, so there is one explanation and not two that can drift.
       const curation = this.curationReadOnlyReason();
       if (curation) {
         disabled.set(id, curation);
         continue;
       }
-      if (isEpub && (id === 'crop' || id === 'ocr')) {
+      if (isEpub && id === 'crop') {
         disabled.set(id, 'PDF only — not available for EPUB');
         continue;
       }
-      if (lightweight && id !== 'ocr') {
+      if (lightweight) {
         disabled.set(id, 'Not available in lightweight mode');
         continue;
       }
@@ -5322,8 +4296,8 @@ export class PdfPickerComponent implements OnInit {
     const noProject = this.noProjectReason();
     if (noProject) return noProject;
     if (this.bookEpubPath() === null) {
-      return 'This project has no book yet, and the text passes rewrite the book — press '
-        + 'Build the book first.';
+      return 'This project has no book yet, and the text passes rewrite the book — convert its '
+        + 'PDF to an EPUB from the versions page first.';
     }
     return null;
   });
@@ -5351,31 +4325,6 @@ export class PdfPickerComponent implements OnInit {
     }
     return lines;
   });
-
-  /** OCR task status, for the OCR panel (invariant: always derived). */
-  readonly ocrStatus = computed<TaskStatus>(() => {
-    const status = this.taskStatuses().get('ocr');
-    if (!status) {
-      throw new Error('taskStatuses is missing the ocr entry');
-    }
-    return status;
-  });
-
-  /** Count of pages with no live text block, for the OCR panel. */
-  readonly ocrPagesWithoutText = computed(() =>
-    countPagesWithoutText({
-      blocks: this.blocks(),
-      deletedBlockIds: this.deletedBlockIds(),
-      totalPages: this.totalPages(),
-    })
-  );
-
-  /** True while an OCR job is queued or running. */
-  readonly ocrJobRunning = computed(() =>
-    this.ocrJobService.jobs().some(
-      j => j.status === 'running' || j.status === 'queued' || j.status === 'pending'
-    )
-  );
 
   // Computed values
   readonly visibleBlocks = computed(() => {
@@ -5503,8 +4452,8 @@ export class PdfPickerComponent implements OnInit {
       case 'export':
         this.showExportSettings.set(true);
         break;
-      case 'saveCorpusLabels':
-        void this.saveCorpusLabels();
+      case 'narrate':
+        void this.goToNarration();
         break;
       case 'search':
         this.toggleSearch();
@@ -5830,8 +4779,6 @@ export class PdfPickerComponent implements OnInit {
   // Stable function references for template inputs — avoids creating a new
   // function identity on every change-detection pass (defeats OnPush children)
   readonly getPageImageUrlFn = (pageNum: number): string => this.getPageImageUrl(pageNum);
-  readonly getPageImageForOcrFn = (pageNum: number): Promise<string | null> => this.getPageImageForOcr(pageNum);
-
   private getRenderScale(pageCount: number): number {
     return this.pageRenderService.getRenderScale(pageCount);
   }
@@ -5984,16 +4931,15 @@ export class PdfPickerComponent implements OnInit {
     this.editorState.reset();
     this.pageRenderService.closeDocument(); // Also frees the backend cached render doc
     this.electronService.closePdf(); // Free the main analysis document WASM memory
-    // The PROJECT survives a station swap. A swap changes which of this book's
-    // artifacts is in the viewer; it does not change which book the window is
-    // on, and dropping the project here is what left the EPUB station with no
-    // project at all — Footnotes, Simplify and Translate greyed out reading
-    // "this document does not belong to a BookForge project", and the book's own
-    // station measured as absent so Next pointed back at the working copy
-    // (second real session, 2026-08-04). `loadPdf` cannot put it back either:
-    // `autoCreateProject` is skipped during a swap, precisely so the window
-    // stays bound to the manifest project rather than rebinding to the artifact.
-    if (!this.stationSwapping) this.projectService.reset();
+    // The PROJECT survives an artifact swap. A swap changes which of this
+    // project's files is in the viewer; it does not change which project the
+    // window is on, and dropping it here is what left the book with no project
+    // at all — Simplify and Translate greyed out reading "this document does not
+    // belong to a BookForge project" (second real session, 2026-08-04).
+    // `loadPdf` cannot put it back either: `autoCreateProject` is skipped during
+    // a swap, precisely so the window stays bound to the manifest project rather
+    // than rebinding to the artifact.
+    if (!this.artifactSwapping) this.projectService.reset();
 
     // Clear blanked pages tracking
     this.blankedPages.set(new Set());
@@ -6017,9 +4963,6 @@ export class PdfPickerComponent implements OnInit {
 
   async loadPdf(path: string, lightweight: boolean = false): Promise<void> {
     this.showFilePicker.set(false);
-    // A station swap is this window changing which artifact it shows, not the
-    // user opening a different book, so it does not send the ladder home.
-    if (!this.stationSwapping) this.requestedStation.set('archive');
 
     const lowerPath = path.toLowerCase();
     let effectivePath = path;
@@ -6085,9 +5028,7 @@ export class PdfPickerComponent implements OnInit {
     try {
       // In embedded mode, skip library import - just use the file directly
       // The file is already part of a project.
-      // A corpus book is never imported either: importing is what "open it
-      // without importing it into BookForge" exists to avoid.
-      if (this.embedded() || this.corpusMode()) {
+      if (this.embedded()) {
         this.loadingText.set('Analyzing document...');
         libraryPath = effectivePath;
       } else {
@@ -6171,10 +5112,10 @@ export class PdfPickerComponent implements OnInit {
         fileHash: fileHash
       });
       this.pageRenderService.clear();
-      // Same rule as closePdf: a station swap keeps the book's project. Every
-      // other caller of loadPdf really is opening a different document, and for
-      // those the binding is rebuilt below by autoCreateProject.
-      if (!this.stationSwapping) this.projectService.reset();
+      // Same rule as closePdf: an artifact swap keeps the project. Every other
+      // caller of loadPdf really is opening a different document, and for those
+      // the binding is rebuilt below by autoCreateProject.
+      if (!this.artifactSwapping) this.projectService.reset();
       this.blankedPages.set(new Set());  // Clear blanked pages for new document
       this.metadata.set({});  // Clear metadata for new document
       // Clear remaining per-document component state so the previous tab's
@@ -6194,12 +5135,7 @@ export class PdfPickerComponent implements OnInit {
       // autoCreateProject → restoreProjectState (below) sets this if it has to.
       this.projectStateNotApplied.set(false);
 
-      // A corpus book is not something the user "has open" in the library sense —
-      // listing it under recent books is the first step towards it looking like
-      // a project.
-      if (!this.corpusMode()) {
-        this.saveRecentFile(path, quickResult.pdf_name);
-      }
+      this.saveRecentFile(path, quickResult.pdf_name);
 
       // Set lightweight mode
       this.lightweightMode.set(lightweight);
@@ -6228,7 +5164,7 @@ export class PdfPickerComponent implements OnInit {
       // Also skip during pipeline transitions (review / paragraph-fix reloads of a
       // DERIVED epub) — projectPath already points at the manifest project and must
       // stay bound to it, not rebind to the exported artifact's (absent) project.
-      if (!this.stationSwapping) {
+      if (!this.artifactSwapping) {
         if (!this.embedded()) {
           await this.autoCreateProject(path, quickResult.pdf_name);
         } else if (!this.projectPath()) {
@@ -6236,7 +5172,7 @@ export class PdfPickerComponent implements OnInit {
           // an archive variant hands the picker the variant's path, and
           // `openTarget` only binds when the target IS the folder. The window
           // then stood in a project it had not been told about, and every
-          // station action refused with "this document does not belong to a
+          // rail entry refused with "this document does not belong to a
           // BookForge project" — which was false; the file was inside one.
           // Bind, never create: an embedded window edits a book that already
           // has a project, and minting a second is the phantom-project bug.
@@ -6260,14 +5196,7 @@ export class PdfPickerComponent implements OnInit {
       // When text IS ready and this is a freshly-opened EPUB, consolidate its
       // per-line blocks into paragraph blocks (the not-ready case does this in
       // the text-ready callback instead).
-      //
-      // Skipped for a corpus book: its blocks come from the corpus snapshot the
-      // labels are keyed to, and a late text-ready event would replace them with
-      // freshly extracted ones that no label matches.
-      if (this.corpusMode()) {
-        // Nothing is extracting, so the spinner must not be left running.
-        this.editorState.textLoading.set(false);
-      } else if (!quickResult.textReady) {
+      if (!quickResult.textReady) {
         this.startBackgroundTextExtraction(libraryPath, docId);
       } else if (libraryPath.toLowerCase().endsWith('.epub')) {
         this.autoSegmentEpubParagraphs();
@@ -6864,132 +5793,6 @@ export class PdfPickerComponent implements OnInit {
     }
   });
 
-  /**
-   * Align the current OCR blocks against a paired EPUB and apply the derived
-   * labels. Hand-set labels always win: any block the user has already
-   * categorized is excluded before the aligner's answer is applied, so a
-   * re-run can never overwrite review work. Weak-tier labels (island captions,
-   * unmarked below-flow footnotes) land with low confidence so the N-walk
-   * takes the user straight to them.
-   */
-  async alignFromEpub(): Promise<void> {
-    // The paired EPUB is usually attached to the project as an edition — offer
-    // that first, one click, before falling back to a file picker (which still
-    // opens in the project's archive so a manual pick is short).
-    const projectDir = this.trainingProjectDir();
-    let epubPath: string | null = null;
-    if (projectDir) {
-      const listed = await this.electronService.trainingListEpubs(projectDir);
-      const epubs = listed.epubs ?? [];
-      if (epubs.length === 1) {
-        const name = epubs[0].split(/[/\\]/).pop();
-        const { confirmed } = await this.electronService.showConfirmDialog({
-          title: 'Align against this edition?',
-          message: `${name}`,
-          detail: 'This EPUB is attached to the project. Choose Cancel to pick a different file.',
-          confirmLabel: 'Align',
-          cancelLabel: 'Pick another…',
-          type: 'question',
-        });
-        if (confirmed) epubPath = epubs[0];
-      }
-      if (!epubPath) {
-        const picked = await this.electronService.trainingPickEpub(
-          epubs[0] ?? `${projectDir}/archive`);
-        if (!picked.success || !picked.path) return;
-        epubPath = picked.path;
-      }
-    } else {
-      const picked = await this.electronService.trainingPickEpub();
-      if (!picked.success || !picked.path) return;
-      epubPath = picked.path;
-    }
-
-    const blocks = this.blocks().filter(b => !b.is_image);
-    if (blocks.length === 0) {
-      this.showAlert({ title: 'Nothing to align', message: 'Run OCR first — alignment labels the OCR blocks.' });
-      return;
-    }
-
-    this.loading.set(true);
-    this.loadingText.set('Aligning against EPUB…');
-    let result;
-    try {
-      result = await this.electronService.trainingAlign({
-        epubPath,
-        blocks: blocks.map(b => ({
-          id: b.id, page: b.page, x: b.x, y: b.y, width: b.width, height: b.height,
-          text: b.text, font_size: b.font_size, line_count: b.line_count,
-          ocr_confidence: b.ocr_confidence,
-        })),
-        pageDimensions: this.pageDimensions(),
-      });
-    } finally {
-      this.loading.set(false);
-      this.loadingText.set('');
-    }
-
-    if (!result.success || !result.labels) {
-      this.showAlert({ title: 'Alignment failed', message: result.error || 'Unknown error', type: 'error' });
-      return;
-    }
-
-    // The health metric is PROSE matches — blocks whose text was actually
-    // found in the EPUB stream. Elimination labels (headers, footnotes,
-    // captions) are derived FROM the prose envelope, so counting them as
-    // "matched" once masked a total collapse: a scan whose embedded text
-    // layer was garbage OCR reported 75.8% "matched" with zero body labels,
-    // and the title page came out labelled footnote.
-    const proseMatches = result.tierCount?.['matched'] ?? 0;
-    const prosePct = result.total ? (100 * proseMatches / result.total) : 0;
-    if (prosePct < 30) {
-      const hasOcrBlocks = blocks.some(b => b.is_ocr);
-      this.showAlert({
-        title: 'Alignment refused — the texts barely match',
-        message:
-          `Only ${prosePct.toFixed(0)}% of blocks matched the EPUB's prose, so no labels were applied. ` +
-          (hasOcrBlocks
-            ? 'That usually means a translation, a different edition, or the wrong book.'
-            : 'OCR has not been run — this aligned the PDF\'s embedded text layer, which in scanned ' +
-              'books is often broken OCR from whoever made the file. Run OCR (all pages), Merge, ' +
-              'then align again.'),
-        type: 'warning',
-      });
-      return;
-    }
-    const matchedPct = prosePct;
-
-    const existing = this.editorState.categoryCorrections();
-    const entries: Array<{ blockId: string; categoryId: string }> = [];
-    const weakIds: string[] = [];
-    for (const [blockId, info] of Object.entries(result.labels)) {
-      if (existing.has(blockId)) continue;         // hand labels are inviolable
-      entries.push({ blockId, categoryId: info.category });
-      if (info.tier.startsWith('weak:')) weakIds.push(blockId);
-    }
-    if (entries.length > 0) {
-      this.editorState.setBulkCategoryCorrections(entries);
-    }
-    // Weak labels surface through the uncertainty walk.
-    this.editorState.categoryConfidence.update(map => {
-      const next = new Map(map);
-      for (const id of weakIds) next.set(id, 0.05);
-      return next;
-    });
-    // Aligner labels are project state like any other label; the ordinary
-    // autosave persists them.
-    this.scheduleAutoSave();
-
-    const skipped = Object.keys(result.labels).length - entries.length;
-    this.showAlert({
-      title: 'Alignment applied',
-      message:
-        `${entries.length} blocks labeled from the EPUB (${matchedPct.toFixed(1)}% matched).` +
-        (weakIds.length ? `\n${weakIds.length} weak guesses — press N to review them.` : '') +
-        (skipped ? `\n${skipped} kept your existing hand labels.` : ''),
-    });
-  }
-
   /** Apply a category to the current selection (label-mode palette click). */
   assignSelectedToCategory(categoryId: string): void {
     const selected = this.selectedBlockIds();
@@ -7001,51 +5804,11 @@ export class PdfPickerComponent implements OnInit {
     this.editorState.clearAllCategoryCorrections();
   }
 
-  onThresholdChange(event: { path: string; value: number }): void {
-    this.editorState.updateThreshold(event.path, event.value);
-  }
-
   resetThresholds(): void {
     this.editorState.resetThresholdsToDefault();
   }
 
 
-  /**
-   * The run key for this document, shared with the foundry OCR pipeline.
-   *
-   * THE FILE ON SCREEN, and nothing else. `effectivePath()` is the document this
-   * session actually analyzed and is painting — the override the version picker
-   * chose, the library copy, the corpus book — so a run found under it is by
-   * construction a reading of that document. It is stable across a reload (a
-   * path is not minted per session), which is the property this key was chosen
-   * for.
-   *
-   * Neither of the alternatives says that:
-   *
-   *  - `editorState.fileHash()` means two different things on the two load
-   *    paths. From `loadPdf` it is the hash of the file being shown; from
-   *    `loadProjectFromPath` it is `manifest.source.fileHash`, the PROJECT's
-   *    original, which is not the file being shown when a derived version was
-   *    opened.
-   *  - `pdfPath()` is documented as "original path (for display)" and is set to
-   *    `project.source_path` no matter which version was loaded, so it names the
-   *    source PDF even while the export EPUB is on screen.
-   *
-   * That is exactly how opening a project's export EPUB came up wearing the
-   * source PDF's blocks: the key resolved to the PDF's archive path, the
-   * PDF's finished run was found under it, and 17 pages of PDF-geometry OCR
-   * blocks (JSTOR cover page included) were painted over the EPUB's reflowed
-   * pages — with every manifest guard doing its job, because the manifest was
-   * never the leak (Aug 3 2026).
-   *
-   * It is also the value main already expects: the OCR dialog submits
-   * `{ bookKey, sourcePath: effectivePath() }` and `processing-passes` falls
-   * back to `config.pdfPath` when no bookKey is given, so "the run key is the
-   * path of the document the run reads" is the contract on both sides.
-   */
-  private detectBookKey(): string {
-    return this.effectivePath() || 'unknown';
-  }
 
   recategorizeBlocks(): void {
     const blocks = this.blocks();
@@ -8113,6 +6876,58 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
+   * Apply saved category corrections to the blocks AND make sure the categories
+   * they name exist on the document.
+   *
+   * Both halves are required and only one of them was ever done. A correction
+   * sets `block.category_id`, but the viewer resolves a block's COLOUR by
+   * looking that id up in `categories()` — so a label naming a category the
+   * document does not define paints nothing at all. The labels are present,
+   * correct, and invisible, which is indistinguishable from having lost them.
+   *
+   * It bites on reload specifically: `categories()` is rebuilt from what the
+   * analyzer detects in the document, and the classes a HUMAN assigns are
+   * exactly the ones the heuristic never assigns and therefore never registers —
+   * `title`, `table`, `subheading`. A book labelled with 1,516 corrections came
+   * back looking blank because of this.
+   *
+   * Self-healing rather than a persistence fix, deliberately: it repairs books
+   * already saved in this state instead of only new ones.
+   */
+  private applyCorrectionsWithCategories(): void {
+    this.editorState.applyCategoryCorrections();
+
+    const defined = this.categories();
+    const needed = new Set<string>([
+      ...this.editorState.categoryCorrections().values(),
+      ...this.editorState.learnedCategories().values(),
+    ]);
+    let added = 0;
+    for (const categoryId of needed) {
+      if (defined[categoryId]) continue;
+      const info = this.autoDetectedCategoryList().find(c => c.id === categoryId);
+      if (!info) continue;   // retired class from an old session — leave it alone
+      this.editorState.addCategory({
+        id: info.id,
+        name: info.name,
+        description: '',
+        color: info.color,
+        block_count: 0,
+        char_count: 0,
+        font_size: 0,
+        region: 'body',
+        sample_text: '',
+      });
+      added++;
+    }
+    if (added) {
+      console.log(`[categories] registered ${added} category definition(s) named by `
+        + `saved labels but missing from the document`);
+    }
+    this.editorState.updateCategoryStats();
+  }
+
+  /**
    * The blocks a page-wide gesture acts on.
    *
    * Shared by "select all on page" and by page marking, because they are the
@@ -8154,103 +6969,6 @@ export class PdfPickerComponent implements OnInit {
     // Remove page blocks from selection
     const newSelection = this.selectedBlockIds().filter(id => !pageBlockIds.has(id));
     this.setSelectionWithHistory(newSelection);
-  }
-
-  // ─── Page-level marking (label mode, corpus books) ──────────────────────
-  //
-  // Corpus-only because labels.json is the only file that carries the marks.
-  // Offering the gesture on a library project would label the page and then
-  // drop the record of having done it, which is worse than not offering it.
-
-  readonly canMarkPageTypes = computed(() =>
-    this.labelMode() && this.corpusMode() && !this.curationLocked());
-
-  /**
-   * The book's modal body type size — what the speck floor is measured against.
-   *
-   * A computed so the whole-book pass runs on the gesture that needs it and not
-   * once per block edit, and so it is recomputed when the blocks change.
-   */
-  private readonly pageTypeModalFontSize = computed(() =>
-    bookModalFontSize(this.blocks(), this.pageDimensions()));
-
-  /**
-   * Declare a whole page a title page or a copyright page.
-   *
-   * The labels go through `setBulkCategoryCorrections` — one history entry, so
-   * one undo takes the whole page back — and overwrite whatever was there: the
-   * gesture is the judgement, and undo is the way out of a misfire.
-   */
-  async onMarkPageType(event: { pageNum: number; pageType: CorpusPageType }): Promise<void> {
-    if (!this.canMarkPageTypes()) return;
-    const { pageNum, pageType } = event;
-    const name = CORPUS_PAGE_TYPE_NAMES[pageType];
-    const marks = this.editorState.pageTypes();
-
-    // Marked as this already: the gesture becomes the way to take it back.
-    if (marks.get(pageNum) === pageType) {
-      const choice = await this.electronService.showConfirmDialog({
-        title: `Clear the ${name} mark?`,
-        message: `Page ${pageNum + 1} is marked as the ${name}.`,
-        detail: 'The labels on its blocks stay exactly as they are — they are your judgements '
-          + 'now. Only the record that this page was marked is removed.',
-        confirmLabel: 'Clear the mark',
-        cancelLabel: 'Keep it',
-        type: 'question',
-      });
-      if (choice.confirmed) this.editorState.setPageType(pageNum, null);
-      return;
-    }
-
-    // A heads-up, not a gate: part dividers are title pages too, so a book
-    // legitimately carries several.
-    const others = [...marks.entries()]
-      .filter(([page, type]) => type === pageType && page !== pageNum)
-      .map(([page]) => page + 1)
-      .sort((a, b) => a - b);
-    if (others.length > 0) {
-      const choice = await this.electronService.showConfirmDialog({
-        title: `Another page is already the ${name}`,
-        message: others.length === 1
-          ? `Page ${others[0]} is already marked as the ${name}.`
-          : `Pages ${others.join(', ')} are already marked as the ${name}.`,
-        detail: 'Part dividers are title pages too, so more than one is often right. Marking '
-          + 'this page as well leaves the others alone.',
-        confirmLabel: `Mark page ${pageNum + 1} too`,
-        cancelLabel: 'Cancel',
-        type: 'info',
-      });
-      if (!choice.confirmed) return;
-    }
-
-    const pageBlocks = this.blocksOnPage(pageNum);
-    if (pageBlocks.length === 0) {
-      this.showAlert({
-        title: 'Nothing to mark',
-        message: `Page ${pageNum + 1} has no blocks, so there is nothing to label as a ${name}.`,
-        type: 'warning',
-      });
-      return;
-    }
-
-    let entries: Array<{ blockId: string; categoryId: string }>;
-    try {
-      entries = planPageTypeLabels(pageType, pageBlocks, this.pageTypeModalFontSize());
-    } catch (err) {
-      this.showAlert({
-        title: `Could not mark page ${pageNum + 1}`,
-        message: (err as Error).message
-          + '\n\nSpecks are told from type by the book\'s body type size, so nothing was labelled.',
-        type: 'error',
-      });
-      return;
-    }
-
-    for (const categoryId of new Set(entries.map(e => e.categoryId))) {
-      this.ensureCategoryDefined(categoryId);
-    }
-    this.editorState.setBulkCategoryCorrections(entries);
-    this.editorState.setPageType(pageNum, pageType);
   }
 
   // Scroll to a specific page (used by timeline)
@@ -8467,887 +7185,6 @@ export class PdfPickerComponent implements OnInit {
     this.navigateToSearchResult(prevIndex);
   }
 
-  // ─── Training-label sessions ────────────────────────────────────────────
-
-  private readonly trainingExport = inject(TrainingExportService);
-
-  /**
-   * The directory this book's training artifacts live in, or null for a
-   * standalone file that has neither.
-   *
-   * For a project this is the project directory, which training-data.ts maps to
-   * /Volumes/Callisto/training/rubric/<basename>/. For a corpus book that mapping
-   * is the identity — the corpus folder IS <trainingRoot>/<slug> — so the
-   * snapshot, correction-log and dataset writers all land in the book's own
-   * folder without knowing corpus mode exists.
-   */
-  private trainingProjectDir(): string | null {
-    return this.corpusPath() || this.projectDir() || null;
-  }
-
-  // ─── Corpus books ───────────────────────────────────────────────────────
-
-  /** The corpus book on screen, or null when this is an ordinary document. */
-  readonly corpusBook = signal<CorpusBookInfo | null>(null);
-
-  /**
-   * True from the moment the component is told it is showing a corpus book —
-   * derived from the INPUT, not from `corpusBook()`, so every project-creating
-   * path is already gated while the book is still loading.
-   */
-  readonly corpusMode = computed(() => !!this.corpusPath());
-
-  /**
-   * Why this corpus book cannot be saved, or null when it can.
-   *
-   * Set when the snapshot and the PDF disagree about the book. Labelling still
-   * works in the sense that the UI responds, but saving is refused and the
-   * banner says so — silently accepting edits that can never be written is
-   * worse than not accepting them.
-   */
-  readonly corpusReadOnlyReason = signal<string | null>(null);
-
-  /**
-   * Labels in this corpus book that name a class the current set no longer has
-   * (`front_matter` and `back_matter` were retired in Jul 2026).
-   *
-   * They are preserved on save but cannot be shown — nothing paints them and
-   * nothing can assign them — so the banner states the count rather than
-   * letting those blocks read as unlabelled.
-   */
-  readonly corpusRetiredLabelCount = computed(() => {
-    if (!this.corpusBook()) return 0;
-    const legal = new Set(BLOCK_CATEGORIES.map(c => c.id));
-    let count = 0;
-    for (const categoryId of this.editorState.categoryCorrections().values()) {
-      if (!legal.has(categoryId)) count++;
-    }
-    return count;
-  });
-
-  /**
-   * The labels exactly as they last came off disk — loaded, or written by a save.
-   *
-   * The baseline for "what has this session changed": the corrections map is the
-   * whole label set, so without something to diff against there is no way to
-   * tell a label the user just added from one that was already in labels.json.
-   * That difference is the entire content of a carry-over after a forced reload.
-   */
-  private corpusBaselineLabels = new Map<string, string>();
-
-  /** Guards against a second file-changed event landing mid-reload. */
-  private corpusReloading = false;
-
-  /**
-   * Main is polling the file this session was loaded from; act the moment it
-   * changes.
-   *
-   * A MODAL with one action, deliberately. The failure this exists to kill is a
-   * session that stayed open for hours against a labels.json some other tool had
-   * already rewritten: every label added after that names a block id the file no
-   * longer has, and the save guard refuses the lot at the end. A toast would be
-   * the same failure with a notification on top of it, and an "keep editing"
-   * button would be an option to go on producing labels that cannot be saved —
-   * which is the bug, not a choice.
-   */
-  private readonly corpusFileWatcher = (() => {
-    const unsubscribe = this.electronService.onCorpusFileChanged((change) => {
-      void this.onCorpusFileChangedExternally(change);
-    });
-    this.destroyRef.onDestroy(() => {
-      unsubscribe();
-      // Window teardown stops the poll on main's side too, but a picker that is
-      // destroyed while its window lives on (navigating away) would otherwise
-      // leave main statting a file nobody is looking at.
-      if (this.corpusMode()) void this.electronService.corpusUnwatch();
-    });
-  })();
-
-  /**
-   * The label edits this session has made and not yet written.
-   *
-   * A null category is a deletion — clearing a label is a real edit to the
-   * corpus (it means "unjudged, never trains"), so it carries across a reload
-   * like any other.
-   */
-  private pendingCorpusLabelEdits(): Array<{ blockId: string; categoryId: string | null }> {
-    const current = this.editorState.categoryCorrections();
-    const edits: Array<{ blockId: string; categoryId: string | null }> = [];
-    for (const [blockId, categoryId] of current) {
-      if (this.corpusBaselineLabels.get(blockId) !== categoryId) edits.push({ blockId, categoryId });
-    }
-    for (const blockId of this.corpusBaselineLabels.keys()) {
-      if (!current.has(blockId)) edits.push({ blockId, categoryId: null });
-    }
-    return edits;
-  }
-
-  /**
-   * The file under this session was rewritten: say so, reload it, and carry the
-   * unsaved labels that still have a block to sit on.
-   *
-   * Carried edits are RE-APPLIED, never remapped: a block id is the only thing
-   * that identifies a block, and guessing which merged unit a swallowed id
-   * became would be inventing labels. What cannot be carried is named, with its
-   * text where the old snapshot still has it, so the user can redo those few by
-   * hand instead of discovering the hole later.
-   */
-  private async onCorpusFileChangedExternally(change: CorpusFileChanged): Promise<void> {
-    const book = this.corpusBook();
-    if (!book || change.dir !== book.dir || this.corpusReloading) return;
-    this.corpusReloading = true;
-    try {
-      const pending = this.pendingCorpusLabelEdits();
-      // Taken BEFORE the reload: after it, the blocks that were swallowed are
-      // exactly the ones whose text is no longer available anywhere.
-      const textById = new Map(this.blocks().map(b => [b.id, b.text]));
-      const fileName = change.file.split(/[/\\]/).pop() ?? change.file;
-
-      await this.electronService.showMessageDialog({
-        title: 'This book changed on disk',
-        message:
-          `${fileName} for ${change.slug} was rewritten on disk by another tool, so the blocks ` +
-          'in this editor are no longer the blocks that file describes. The editor must reload it.',
-        detail:
-          `${change.detail}\n\n` +
-          (pending.length > 0
-            ? `Your ${pending.length} unsaved label change(s) will be carried onto the blocks that ` +
-              'still exist; anything that cannot be carried is listed next.'
-            : 'You have no unsaved label changes.'),
-        type: 'warning',
-        confirmLabel: 'Reload now',
-      });
-
-      const previous = this.corpusBook();
-      await this.loadCorpusBook(book.dir);
-      if (this.corpusBook() === previous) {
-        // loadCorpusBook has already said why it failed. The blocks on screen
-        // are still the stale ones, so labelling on them can only produce labels
-        // the save guard will refuse — close the door on saving instead of
-        // leaving the session looking healthy.
-        this.corpusReadOnlyReason.set(
-          `${fileName} was rewritten on disk and could not be re-read, so the blocks in this ` +
-          'editor are not the ones that file describes. Nothing can be saved from this session. ' +
-          'Close the window and reopen the book from the Training tab.'
-        );
-        return;
-      }
-
-      const universe = new Set(this.blocks().map(b => b.id));
-      const carried = pending.filter(e => universe.has(e.blockId));
-      const lost = pending.filter(e => !universe.has(e.blockId));
-
-      const sets = carried
-        .filter((e): e is { blockId: string; categoryId: string } => e.categoryId !== null)
-        .map(e => ({ blockId: e.blockId, categoryId: e.categoryId }));
-      const clears = carried.filter(e => e.categoryId === null).map(e => e.blockId);
-      if (sets.length > 0) this.editorState.setBulkCategoryCorrections(sets);
-      if (clears.length > 0) this.editorState.clearCategoryCorrections(clears);
-      if (sets.length > 0 || clears.length > 0) this.applyCorrectionsWithCategories();
-
-      const named = lost.slice(0, 5).map(e => {
-        const text = (textById.get(e.blockId) ?? '').replace(/\s+/g, ' ').trim();
-        return text ? `${e.blockId} — "${text.slice(0, 80)}"` : e.blockId;
-      });
-      await this.electronService.showMessageDialog({
-        title: 'Reloaded from disk',
-        message: pending.length === 0
-          ? `${change.slug} was reloaded. There were no unsaved labels to carry over.`
-          : `Carried over ${carried.length} unsaved label(s); ${lost.length} could not be carried ` +
-            '(those blocks no longer exist).',
-        detail: lost.length > 0
-          ? named.join('\n')
-            + (lost.length > named.length ? `\n…and ${lost.length - named.length} more` : '')
-            + '\n\nThose labels are gone from this session and nothing was written for them. '
-            + 'Nothing has been saved yet — press Save labels when you are done.'
-          : (carried.length > 0
-            ? 'Nothing has been saved yet — press Save labels when you are done.'
-            : undefined),
-        type: lost.length > 0 ? 'warning' : 'info',
-      });
-    } finally {
-      this.corpusReloading = false;
-    }
-  }
-
-  /**
-   * Open a training-corpus book: the PDF for its pages, the corpus snapshot for
-   * its blocks and labels.
-   *
-   * The PDF is loaded through the ordinary `loadPdf` path because that is what
-   * sets up page rendering, but every project side effect of that path is gated
-   * on `corpusMode()`: no library import, no project binding, no auto-created
-   * manifest, no autosave. The blocks it extracts are then REPLACED by the
-   * snapshot's, which is the only block set the labels are keyed to.
-   *
-   * Unless there is no snapshot. A book that has only been ADDED carries
-   * book.json and a referenced PDF and nothing else (`session === null`,
-   * `from === 'book.json'`), and in that state `loadPdf`'s own extraction is
-   * the correct block set precisely because no labels exist yet for a different
-   * segmentation to orphan. OCR is what moves the book on from there, and
-   * `persistCorpusOcr` is what records the result.
-   */
-  async loadCorpusBook(dir: string): Promise<void> {
-    this.loading.set(true);
-    this.loadingText.set('Reading corpus book...');
-
-    const result = await this.electronService.corpusLoad(dir);
-    if (!result.success || !result.book) {
-      this.loading.set(false);
-      // No quiet start-from-empty: a missing or corrupt labels.json looks
-      // exactly like a book that has never been labelled, and the difference is
-      // hours of work.
-      this.showAlert({
-        title: 'Could not open this corpus book',
-        message: result.error || `Nothing was loaded from ${dir}.`,
-        type: 'error',
-      });
-      return;
-    }
-
-    const book = result.book;
-    this.corpusBook.set(book);
-    await this.loadPdf(book.pdfPath);
-
-    // No snapshot means nothing to pin the editor to, so the snapshot step is
-    // skipped entirely and `corpusReadOnlyReason` stays null: this book is
-    // perfectly writable, it just has nothing written yet. Marking it read-only
-    // would report a normal starting state as a fault.
-    const session = book.session;
-    // A book with no snapshot has no labels on disk, so everything the session
-    // produces is an unsaved change — an empty baseline is literally true.
-    this.corpusBaselineLabels = new Map();
-    // A fresh read: whatever made the LAST session unsavable is not this
-    // session's fact until this session establishes it. Cleared before the
-    // snapshot is applied, because applying it is what can set it again.
-    this.corpusReadOnlyReason.set(null);
-    if (session) this.applyCorpusSnapshot(book, session);
-
-
-    // Open on the work that is actually available. With a snapshot on screen
-    // that is labelling. Without one the only thing that can happen next is an
-    // OCR pass — the Label panel would be a labelling UI over blocks the corpus
-    // has never recorded — so go to OCR instead.
-    //
-    // Via the rail handler rather than `activatePanel`, because OCR is not a
-    // panel: the rail entry opens the settings modal (see `onRailPanelClick`).
-    // Going through it also means this cannot open a modal the rail forbids.
-    if (session) {
-      this.setNavTab('label');
-    } else {
-      this.onRailPanelClick('ocr');
-    }
-  }
-
-  /**
-   * A main-owned OCR run finished; take its result off disk.
-   *
-   * There is nothing to "receive" here. Under the old design the renderer held
-   * every page and handed the pile over at the end, which is why losing the
-   * window lost the work. Now blocks.json IS the run's output and this just
-   * re-reads it — which also means a window that was closed for the whole run
-   * gets the same result as one that watched it.
-   *
-   * Deliberately not `loadCorpusBook`: the PDF is already open, and re-loading
-   * it would throw away the view for a file that has not changed.
-   */
-  async onCorpusOcrFinished(): Promise<void> {
-    const current = this.corpusBook();
-    if (!current) return;
-
-    const result = await this.electronService.corpusLoad(current.dir);
-    if (!result.success || !result.book) {
-      this.showAlert({
-        title: 'OCR finished, but the result could not be read back',
-        message:
-          (result.error || `Nothing was loaded from ${current.dir}.`)
-          + '\n\nThe pages are on disk — reopen the book from the Training tab.',
-        type: 'error',
-      });
-      return;
-    }
-
-    const book = result.book;
-    this.corpusBook.set(book);
-    if (book.session) {
-      this.applyCorpusSnapshot(book, book.session);
-      this.setNavTab('label');
-    }
-  }
-
-  /**
-   * Put the corpus snapshot's blocks, page geometry and labels on screen.
-   *
-   * Page geometry comes from the snapshot too: block coordinates were recorded
-   * against those page boxes, and mixing them with the PDF's own would place
-   * every rectangle slightly wrong on any page whose crop box differs.
-   *
-   * The snapshot is passed in separately from the book rather than read off it,
-   * so that "there is no snapshot" is handled by the ONE caller that knows what
-   * to do about it instead of being re-checked (or missed) here.
-   */
-  private applyCorpusSnapshot(
-    book: CorpusBookInfo,
-    session: NonNullable<CorpusBookInfo['session']>,
-  ): void {
-    const dims = session.pageDimensions;
-    if (dims.length !== this.totalPages()) {
-      // Different page count means this is not the document these blocks came
-      // from. Show the pages, refuse the write, and say which is which.
-      const reason =
-        `${book.from} describes ${dims.length} pages but ${book.pdfPath.split(/[/\\]/).pop()} has ` +
-        `${this.totalPages()}. These blocks were not recognized from this file, so nothing ` +
-        'can be saved back.';
-      this.corpusReadOnlyReason.set(reason);
-      this.showAlert({ title: 'Corpus book does not match this PDF', message: reason, type: 'error' });
-      return;
-    }
-
-    this.editorState.pageDimensions.set(dims);
-    this.editorState.blocks.set(session.blocks as TextBlock[]);
-    // The blocks on screen are the corpus book's own from here on, and nothing
-    // may paint a working document's over them: a corpus book's ids are what its
-    // labels.json is keyed to, and any other segmentation makes every label the
-    // user then sets worthless. `workingDocumentRef` already refuses a corpus
-    // book; this is the same statement said where the blocks are set.
-    this.blockLayerRead.set(false);
-    this.workingDocumentOpen.set(false);
-    this.editorState.categoryCorrections.set(new Map(Object.entries(session.labels)));
-    this.editorState.pageTypes.set(new Map(
-      Object.entries(session.pageTypes ?? {}).map(([page, type]) => [Number(page), type])
-    ));
-    // What is on disk, so a later reload can tell this session's work apart from
-    // the file's own contents.
-    this.corpusBaselineLabels = new Map(Object.entries(session.labels));
-    this.applyCorrectionsWithCategories();
-    // Loading is not an edit. Nothing can autosave in corpus mode anyway, but
-    // leaving the document dirty would make the unsaved-changes indicator lie.
-    this.editorState.markSaved();
-
-    console.log(
-      `[corpus] ${book.slug}: ${session.blocks.length} blocks, ` +
-      `${Object.keys(session.labels).length} labels from ${book.from} ` +
-      `(pages from ${book.pdfSource === 'recorded' ? 'the recorded source' : 'a PDF in the corpus folder'})`
-    );
-  }
-
-  /**
-   * The block universe Label mode is allowed to write labels against, restored
-   * if something has replaced it — or `false`, meaning do not enter Label mode.
-   *
-   * A label is a (block id → category) pair and it is worth nothing unless the
-   * id exists in the corpus book's own blocks.json, which is what labels.json is
-   * keyed to and what training reads. Anything else on screen — a foundry run
-   * that attached itself, with merged marker units sitting on ids the corpus has
-   * never seen — is a universe whose labels the save guard refuses at the END of
-   * the session, after the labelling is done.
-   *
-   * A book with no snapshot is a book that has been added and not yet OCR'd: the
-   * PDF's own extraction is its universe, because no labels exist for a
-   * different segmentation to orphan. That is the ONE case where the blocks on
-   * screen are legitimately not the corpus book's own.
-   */
-  private ensureCorpusLabelUniverse(): boolean {
-    const book = this.corpusBook();
-    if (!book) {
-      this.showAlert({
-        title: 'Corpus book not loaded',
-        message: `Nothing was loaded from ${this.corpusPath()}, so there is no block universe to `
-          + 'label against. Reopen the book from the Training tab.',
-        type: 'error',
-      });
-      return false;
-    }
-
-    if (!book.session) {
-      if (this.blockLayerRead()) {
-        this.showAlert({
-          title: 'These are not this book\'s blocks',
-          message: `${book.dir} has no OCR snapshot yet, and the blocks on screen came from a `
-            + 'working document. Run OCR from the corpus book itself, so that the labels key to '
-            + 'blocks the corpus records.',
-          type: 'error',
-        });
-        return false;
-      }
-      return true;
-    }
-
-    const corpusIds = new Set((book.session.blocks as TextBlock[]).map(b => b.id));
-    const intact = (): boolean => {
-      const blocks = this.blocks();
-      return blocks.length === corpusIds.size && blocks.every(b => corpusIds.has(b.id));
-    };
-    if (intact()) return true;
-
-    // Something replaced the universe after the book was opened. Put the corpus
-    // one back rather than refusing outright — the snapshot is in hand and the
-    // labels are already keyed to it.
-    console.warn('[corpus] the blocks on screen are not this book\'s; re-applying the snapshot');
-    this.applyCorpusSnapshot(book, book.session);
-
-    const blocked = this.corpusReadOnlyReason();
-    if (blocked || !intact()) {
-      this.showAlert({
-        title: 'Cannot label this book',
-        message: `The blocks recorded in ${book.dir} (${book.from}) could not be put back on `
-          + `screen${blocked ? `: ${blocked}` : '.'}\n\nLabel mode is not available for this book — `
-          + 'labelling anything else would produce labels for ids the corpus does not have.',
-        type: 'error',
-      });
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * Cmd+W with unsaved label edits: save, discard, or stay.
-   *
-   * There is ALWAYS a way out. A save can refuse for reasons no amount of
-   * clicking will change — the commonest is a book whose editor blocks are
-   * foundry ids while its labels.json speaks the Tesseract labelling ids, which
-   * the segmentation guard rejects — and offering only "save and close" then
-   * traps the user in the window: every close loops save → fail → stay. So a
-   * failed save is followed by an explicit discard-and-close, which writes
-   * nothing and abandons the edits in memory.
-   */
-  private async confirmCloseCorpusBook(): Promise<void> {
-    const labelCount = this.editorState.categoryCorrections().size;
-    const choice = await this.electronService.showConfirmDialog({
-      title: 'Save labels before closing?',
-      message: `${labelCount} labels are in this book, and your `
-        + 'changes have not been written yet.',
-      detail: 'Corpus books are not saved automatically.',
-      confirmLabel: 'Save and close',
-      cancelLabel: 'Keep editing',
-      type: 'warning',
-    });
-    if (!choice.confirmed) return;
-
-    const failure = await this.saveCorpusLabels();
-    if (!this.hasUnsavedChanges()) {
-      this.exitRequested.emit();
-      return;
-    }
-
-    // Two dialogs rather than three buttons because the dialog service takes
-    // exactly two, and inventing a third would mean new dialog infrastructure
-    // for one prompt.
-    const discard = await this.electronService.showConfirmDialog({
-      title: 'Labels could not be saved',
-      message: `The save failed, so closing now loses your changes to all ${labelCount} `
-        + 'labels in this book. Nothing will be written to labels.json.',
-      detail: failure ?? 'The save reported no reason.',
-      confirmLabel: 'Discard changes and close',
-      cancelLabel: 'Keep editing',
-      type: 'warning',
-    });
-    if (!discard.confirmed) return;
-    // Only the dirty flag is cleared — no write, and the corpus book on disk is
-    // exactly as it was before the session.
-    this.editorState.markSaved();
-    this.exitRequested.emit();
-  }
-
-  /**
-   * Write the labels back to the corpus book's own labels.json.
-   *
-   * Explicit, because there is no autosave in corpus mode: the corpus is the
-   * project's most expensive artifact and a background write over it — on a
-   * book that may have loaded wrong — is not something to do on a timer.
-   *
-   * Returns the reason the save refused, or null when it wrote. The reason is
-   * already on screen as an alert; it is RETURNED as well so the close guard can
-   * repeat it next to the discard choice instead of asking the user to remember
-   * a dialog they just dismissed.
-   */
-  async saveCorpusLabels(): Promise<string | null> {
-    const book = this.corpusBook();
-    if (!book) return 'No corpus book is open.';
-
-    const blocked = this.corpusReadOnlyReason();
-    if (blocked) {
-      this.showAlert({ title: 'Not saved', message: blocked, type: 'error' });
-      return blocked;
-    }
-
-    const labels = Object.fromEntries(this.editorState.categoryCorrections());
-    // The fingerprint travels with the write: main refuses it if the file has
-    // moved on since this session read it, and says so as the cause rather than
-    // leaving the id guard to report it as a segmentation mismatch.
-    // Always sent, empty map included: that is how the last page mark in a book
-    // is cleared from the file rather than surviving as a stale entry.
-    const pageTypes = Object.fromEntries(
-      [...this.editorState.pageTypes()].map(([page, type]) => [String(page), type])
-    );
-    const result = await this.electronService.corpusSaveLabels(book.dir, {
-      labels,
-      labelSet: this.autoDetectedCategoryList().map(c => c.id),
-      pageTypes,
-    }, book.fingerprint);
-
-    if (!result.success || !result.result) {
-      const reason = result.error || 'Writing labels.json failed. Nothing was changed.';
-      this.showAlert({
-        title: 'Could not save labels',
-        message: reason,
-        type: 'error',
-      });
-      return reason;
-    }
-
-    const { path: written, labelCount, added, changed, removed, fingerprint } = result.result;
-    // The file this session is pinned to is now the one it just wrote — both for
-    // the next save's check and for the poll, which main has already retargeted.
-    this.corpusBook.set({ ...book, fingerprint });
-    this.corpusBaselineLabels = new Map(Object.entries(labels));
-    this.editorState.markSaved();
-    // `removed` is stated rather than left implicit: clearing a label is a real
-    // edit to the corpus and the count is how the user notices an accident.
-    this.showAlert({
-      title: 'Labels saved',
-      message:
-        `${labelCount} labels in this book — ${added} added, ${changed} changed, ${removed} removed.` +
-        `\n\n${written}`,
-    });
-    return null;
-  }
-
-  /**
-   * Apply saved category corrections to the blocks AND make sure the categories
-   * they name exist on the document.
-   *
-   * Both halves are required and only one of them was ever done. A correction
-   * sets `block.category_id`, but the viewer resolves a block's COLOUR by
-   * looking that id up in `categories()` — so a label naming a category the
-   * document does not define paints nothing at all. The labels are present,
-   * correct, and invisible, which is indistinguishable from having lost them.
-   *
-   * It bites on reload specifically: `categories()` is rebuilt from what the
-   * analyzer detects in the document, and the classes a HUMAN assigns are
-   * exactly the ones the heuristic never assigns and therefore never registers —
-   * `title`, `table`, `subheading`. A book labelled with 1,516 corrections came
-   * back looking blank because of this.
-   *
-   * Self-healing rather than a persistence fix, deliberately: it repairs books
-   * already saved in this state instead of only new ones.
-   */
-  private applyCorrectionsWithCategories(): void {
-    this.editorState.applyCategoryCorrections();
-
-    const defined = this.categories();
-    const needed = new Set<string>([
-      ...this.editorState.categoryCorrections().values(),
-      ...this.editorState.learnedCategories().values(),
-    ]);
-    let added = 0;
-    for (const categoryId of needed) {
-      if (defined[categoryId]) continue;
-      const info = this.autoDetectedCategoryList().find(c => c.id === categoryId);
-      if (!info) continue;   // retired class from an old session — leave it alone
-      this.editorState.addCategory({
-        id: info.id,
-        name: info.name,
-        description: '',
-        color: info.color,
-        block_count: 0,
-        char_count: 0,
-        font_size: 0,
-        region: 'body',
-        sample_text: '',
-      });
-      added++;
-    }
-    if (added) {
-      console.log(`[categories] registered ${added} category definition(s) named by `
-        + `saved labels but missing from the document`);
-    }
-    this.editorState.updateCategoryStats();
-  }
-
-  /** The document the current labelling session applies to. */
-  private currentTrainingSource(): string | null {
-    return this.overrideSourcePath() || this.editorState.effectivePath() || null;
-  }
-
-  /** Basename of the labelled document, for the panel's binding notice. */
-  readonly labelSourceBasename = computed(() => {
-    const src = this.overrideSourcePath() || this.editorState.effectivePath();
-    return src ? src.split(/[/\\]/).pop() ?? '' : '';
-  });
-
-  /**
-   * Copy a previous labelling session's labels into this project, ONCE.
-   *
-   * Labels are project state now, so the sessions under
-   * /Volumes/Callisto/training/rubric/ are history: hand-labelling work that was
-   * accurate when it was done and is the only copy of itself. They are read
-   * here and never written, and the import only runs for a project that has no
-   * labels of its own — so it can never overwrite newer work in the editor.
-   *
-   * Labels are keyed by block id. OCR block IDs carry a random per-run suffix,
-   * so ids from a session recorded against a different OCR run will not match
-   * the blocks on screen; unmatched labels are reported rather than quietly
-   * dropped, because "0 labels imported" and "this book has no labels" look
-   * identical from the outside.
-   */
-  async importTrainingLabelsOnce(): Promise<void> {
-    const projectDir = this.trainingProjectDir();
-    if (!projectDir) return;
-
-    // The project already carries labels — nothing to migrate into.
-    if (this.editorState.categoryCorrections().size > 0) return;
-
-    // Blocks arrive asynchronously for a PDF. With none loaded there is nothing
-    // for archived labels to key to; the text-ready path calls this again.
-    if (this.blocks().length === 0) return;
-
-    const result = await this.electronService.trainingLoad(projectDir);
-    if (!result.success) {
-      console.error('[Training] Failed to read the archived session:', result.error);
-      return;
-    }
-    if (!result.session) return;
-
-    const session = result.session;
-
-    // The session is bound to the file it was labelled against. Importing it
-    // into an editor showing any OTHER file would key labels to the wrong
-    // pages, so leave it alone and say why.
-    const current = this.currentTrainingSource();
-    if (session.sourceFile && current && session.sourceFile !== current) {
-      const boundName = session.sourceFile.split(/[/\\]/).pop();
-      const currentName = current.split(/[/\\]/).pop();
-      console.warn(
-        `[Training] Archived labels were made against "${boundName}" but "${currentName}" is open — ` +
-        'not imported (the pages do not correspond). The archived session is untouched.'
-      );
-      return;
-    }
-
-    const archived = Object.entries(session.labels || {}) as Array<[string, string]>;
-    if (archived.length === 0) return;
-
-    const liveIds = new Set(this.blocks().map(b => b.id));
-    const matched = archived.filter(([blockId]) => liveIds.has(blockId));
-
-    if (matched.length === 0) {
-      console.warn(
-        `[Training] ${archived.length} archived labels found for this book, but none of their ` +
-        `block ids exist in the document that is open (session blocks: ` +
-        `${session.blockSource ?? 'unknown'}${session.ocrEngine ? '/' + session.ocrEngine : ''}). ` +
-        'Nothing was imported and the archived session is untouched.'
-      );
-      return;
-    }
-
-    this.editorState.categoryCorrections.set(new Map(matched));
-    this.applyCorrectionsWithCategories();
-
-    const missing = (this.autoDetectedCategoryList().map(c => c.id))
-      .filter(id => !(session.labelSet || []).includes(id));
-    if (missing.length > 0) {
-      console.warn(
-        `[Training] Session predates these categories: ${missing.join(', ')} — ` +
-        'blocks belonging to them were not distinguishable when this book was labelled.'
-      );
-    }
-
-    console.log(
-      `[Training] Imported ${matched.length} of ${archived.length} archived labels ` +
-      `(from ${session.savedAt}) into this project.`
-    );
-
-    // The import is a migration, not a view: persist it so the labels belong to
-    // the book from here on and the archive is never needed again.
-    this.scheduleAutoSave();
-  }
-
-  /**
-   * Write this book's labels to the training corpus — but never over a session
-   * that is already there.
-   *
-   * Existing sessions are the original hand-labelling work and the corpus
-   * gatherer's input; replacing one with a derived snapshot would silently
-   * rewrite ground truth. Returns false (with the reason surfaced) when a
-   * session already exists, which leaves the caller's dataset export to decide
-   * whether it still has something worth writing.
-   */
-  async saveTrainingSession(): Promise<boolean> {
-    const projectDir = this.trainingProjectDir();
-    if (!projectDir) {
-      console.error('[Training] No project directory — labels cannot be exported. ' +
-        'Open the book from Studio so the book folder is known.');
-      return false;
-    }
-
-    const session = {
-      version: 1,
-      labelSet: this.autoDetectedCategoryList().map(c => c.id),
-      savedAt: new Date().toISOString(),
-      sourceFile: this.currentTrainingSource() || undefined,
-      // Where the blocks came from. Feature values depend on how the page was
-      // segmented, and an embedded text layer carries real font metadata that
-      // Tesseract's LSTM engine cannot produce — so a corpus that silently
-      // mixes the two trains on one distribution and runs on another.
-      blockSource: this.blocks().some(b => b.is_ocr) ? 'ocr' : 'embedded',
-      ocrEngine: this.blocks().some(b => b.is_ocr) ? this.ocrSettings().engine : null,
-      pageDimensions: this.pageDimensions(),
-      blocks: this.blocks(),
-      labels: Object.fromEntries(this.editorState.categoryCorrections()),
-    };
-
-    const result = await this.electronService.trainingSave(projectDir, session);
-    if (result.skipped) {
-      console.log('[Training] An archived session already exists — left untouched:', result.path);
-      return false;
-    }
-    if (!result.success) {
-      this.showAlert({
-        title: 'Could not write the training snapshot',
-        message: result.error || 'Writing labels.json failed.',
-        type: 'error',
-      });
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * Clear this book's hand-set categories so it can be labelled from scratch.
-   *
-   * This clears PROJECT state only. Any archived session under
-   * /Volumes/Callisto/training/rubric/ stays exactly as it is — it is the original
-   * hand-labelling work, and a reset in the editor is not a reason to destroy
-   * it. (Re-opening a project with no labels will offer those archived labels
-   * back; that import is the only thing that reads them.)
-   */
-  async resetTrainingSession(): Promise<void> {
-    const labelCount = this.editorState.categoryCorrections().size;
-    if (labelCount === 0) return;
-
-    const choice = await this.electronService.showConfirmDialog({
-      title: 'Clear labels?',
-      message: `This clears the ${labelCount} categor${labelCount === 1 ? 'y' : 'ies'} you set by hand for this book, so you can start over.`,
-      detail: 'Your exported EPUB, cleaned EPUB, audiobook and any archived training data are not affected.',
-      confirmLabel: 'Clear labels',
-      cancelLabel: 'Cancel',
-      type: 'warning',
-    });
-    if (!choice.confirmed) return;
-
-    this.editorState.clearAllCategoryCorrections();
-    this.editorState.categoryConfidence.set(new Map());
-    this.showAlert({ title: 'Labels cleared', message: 'This book is ready to label from scratch.' });
-  }
-
-  /** Write dataset.jsonl to the training corpus from the current labels. */
-  async exportTrainingData(): Promise<void> {
-    const projectDir = this.trainingProjectDir();
-    if (!projectDir) return;
-
-    const labels = this.editorState.categoryCorrections();
-    if (labels.size === 0) {
-      this.showAlert({
-        title: 'Nothing to export',
-        message: 'No blocks have been categorized by hand yet.',
-      });
-      return;
-    }
-
-    // Snapshot the labels alongside the dataset so the records stay traceable
-    // to the blocks they were built from. A book that already has an archived
-    // session keeps it (saveTrainingSession refuses to overwrite) and the
-    // dataset export continues regardless — the snapshot is provenance, not a
-    // precondition.
-    await this.saveTrainingSession();
-
-    const records = this.trainingExport.buildRecords(
-      projectDir.split(/[/\\]/).pop() || 'book',
-      this.blocks(),
-      this.pageDimensions(),
-      labels,
-    );
-
-    const result = await this.electronService.trainingExport(projectDir, records);
-    if (!result.success) {
-      this.showAlert({
-        title: 'Export failed',
-        message: result.error || 'Writing training/dataset.jsonl failed.',
-        type: 'error',
-      });
-      return;
-    }
-
-    this.showAlert({
-      title: 'Training data exported',
-      message:
-        `${result.count} page record${result.count === 1 ? '' : 's'} from ${labels.size} ` +
-        `hand-set label${labels.size === 1 ? '' : 's'}.\n\n${result.path}`,
-    });
-  }
-
-  // ─── Uncertain-block review ─────────────────────────────────────────────
-
-  /**
-   * Blocks the classifier was least sure about, in reading order.
-   *
-   * Reviewing these instead of scanning every page is the difference between
-   * reading a book and checking its hard cases: after a re-categorize the
-   * heuristic is right about most blocks, and confidence marks the ones where
-   * it nearly went the other way. Hand-corrected blocks are excluded — they're
-   * settled — as are deleted ones.
-   */
-  readonly uncertainBlocks = computed(() => {
-    const confidence = this.editorState.categoryConfidence();
-    if (confidence.size === 0) return [];
-    const corrections = this.editorState.categoryCorrections();
-    const deleted = this.deletedBlockIds();
-
-    return this.blocks()
-      .filter(b =>
-        !b.is_image &&
-        !corrections.has(b.id) &&
-        !deleted.has(b.id) &&
-        (confidence.get(b.id) ?? 1) < UNCERTAIN_CONFIDENCE
-      )
-      .sort((a, b) => a.page - b.page || a.y - b.y);
-  });
-
-  private uncertainCursor = -1;
-
-  /**
-   * Select and scroll to the next (or previous) low-confidence block.
-   * Wraps at both ends so the review loop never dead-ends mid-book.
-   */
-  goToUncertainBlock(direction: 1 | -1): void {
-    const candidates = this.uncertainBlocks();
-    if (candidates.length === 0) {
-      this.showAlert({
-        title: 'No uncertain blocks',
-        message: this.editorState.categoryConfidence().size === 0
-          ? 'Run Re-categorize first — confidence is recorded when the classifier runs.'
-          : 'Every block the classifier was unsure about has been reviewed.',
-      });
-      return;
-    }
-
-    // Resume from wherever the current selection sits, so the cursor survives
-    // corrections shrinking the list underneath it.
-    const selected = this.selectedBlockIds();
-    if (selected.length === 1) {
-      const at = candidates.findIndex(b => b.id === selected[0]);
-      if (at >= 0) this.uncertainCursor = at;
-    }
-
-    const next = (this.uncertainCursor + direction + candidates.length) % candidates.length;
-    this.uncertainCursor = next;
-
-    const block = candidates[next];
-    this.editorState.selectedBlockIds.set([block.id]);
-    this.pdfViewer?.scrollToPage(block.page);
-  }
-
   private navigateToSearchResult(index: number): void {
     const results = this.searchResults();
     if (index < 0 || index >= results.length) return;
@@ -9482,15 +7319,15 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    // The book itself. Reflow reads the working document and writes
-    // `<Original>.epub` into the project, named after the book from birth —
-    // there is no blob to hand the browser and no filename to invent here.
-    this.loadingText.set('Building the book...');
-    const epubPath = await this.reflowToEpub();
+    // A PDF has no book in it that this window can write. Said by name rather
+    // than by a button that does nothing: the one route from a PDF to an EPUB is
+    // the conversion, and it is not here.
     this.showAlert({
-      title: 'Book built',
-      message: `Written to ${epubPath}`,
-      type: 'success',
+      title: 'This document cannot be exported as an EPUB',
+      message: 'A book is made from a PDF by reading its pages with a document vision model, which is '
+          + 'Convert to EPUB on this project\'s versions page in Studio. There is no exporter here '
+          + 'that can turn a PDF into one.',
+      type: 'warning',
     });
   }
 
@@ -9507,10 +7344,9 @@ export class PdfPickerComponent implements OnInit {
     this.loadingText.set('Preparing audiobook export...');
 
     // EPUB source: edit the book's own markup instead of rebuilding it from block
-    // text, exactly as finalizeProject() and Build the book do. Same
-    // destination either way — the book-named export recorded in
-    // manifest.outputs.epub — and the same navigation to the producer that
-    // navigateAfter: true gives below.
+    // text, exactly as finalizeProject() does. Same destination either way —
+    // the book-named export recorded in manifest.outputs.epub — and the same
+    // navigation to the producer that navigateAfter: true gives below.
     if (this.useEpubPreservingExport()) {
       const projectPath = this.projectPath();
       if (!projectPath) {
@@ -9539,11 +7375,15 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    // Everything else IS Reflow. The book it writes is the one the producer
-    // takes: `<Original>.epub`, in the project, named after the book.
-    const epubPath = await this.reflowToEpub();
-    console.log('[exportToAudiobook] Reflow wrote', epubPath);
-    await this.router.navigate(['/studio']);
+    // Everything else is a PDF, and a PDF has no book in it that this window can
+    // write. The producer takes an EPUB, so there is nothing to hand it.
+    this.showAlert({
+      title: 'This document has no book to produce from',
+      message: 'A book is made from a PDF by reading its pages with a document vision model, which is '
+          + 'Convert to EPUB on this project\'s versions page in Studio. There is no exporter here '
+          + 'that can turn a PDF into one.',
+      type: 'warning',
+    });
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -9715,12 +7555,15 @@ export class PdfPickerComponent implements OnInit {
           result = await this.runEpubPreservingExport(null, chosen.filePath);
         }
       } else {
-        // A book that is not an EPUB already has exactly one book made of it,
-        // and Reflow names and places it: `<Original>.epub` in the project. So
-        // Save As here is Reflow, and it says where the file went rather than
-        // asking the user to choose a location it would then not be found at.
-        const epubPath = await this.reflowToEpub();
-        result = { success: true, message: `Written to ${epubPath}`, epubPath };
+        // A PDF has no markup to preserve and no exporter here that can make one
+        // out of it. Refused by name rather than writing something that is not
+        // the book: the conversion is what makes a book from pages.
+        result = {
+          success: false,
+          message: 'A book is made from a PDF by reading its pages with a document vision model, which is '
+          + 'Convert to EPUB on this project\'s versions page in Studio. There is no exporter here '
+          + 'that can turn a PDF into one.',
+        };
       }
 
       if (result.message === 'Canceled') {
@@ -9763,16 +7606,24 @@ export class PdfPickerComponent implements OnInit {
 
     // EPUB source: edit the book's own markup instead of rebuilding it.
     //
-    // This is not a second exporter. Reflow makes a book out of a PDF's text
-    // layer and annotations; there is no PDF here, and the file the user opened
-    // is the ALIGNMENT BASELINE — every block id in the edit set was resolved
-    // against its bytes. So the book's own XHTML is edited in place, in main,
-    // and the canonical export is the target. Save As is how the user writes a
-    // preserved EPUB anywhere else.
+    // The file the user opened is the ALIGNMENT BASELINE — every block id in the
+    // edit set was resolved against its bytes. So the book's own XHTML is edited
+    // in place, in main, and the canonical export is the target. Save As is how
+    // the user writes a preserved EPUB anywhere else.
+    if (!this.useEpubPreservingExport()) {
+      // A PDF has no markup to preserve, and nothing here makes a book out of
+      // one. The conversion does, and it lives on the versions page.
+      this.loading.set(false);
+      const refusal = 'A book is made from a PDF by reading its pages with a document vision model, which is '
+          + 'Convert to EPUB on this project\'s versions page in Studio. There is no exporter here '
+          + 'that can turn a PDF into one.';
+      this.finalized.emit({ success: false, error: refusal });
+      this.showAlert({ title: 'There is no book to save', message: refusal, type: 'warning' });
+      return;
+    }
+
     try {
-      const result = this.useEpubPreservingExport()
-        ? await this.runEpubPreservingExport(projectPath, null)
-        : { success: true, message: '', epubPath: await this.reflowToEpub() };
+      const result = await this.runEpubPreservingExport(projectPath, null);
 
       if (result.success && result.epubPath) {
         this.finalized.emit({ success: true, epubPath: result.epubPath });
@@ -9795,161 +7646,49 @@ export class PdfPickerComponent implements OnInit {
     }
   }
   // ─────────────────────────────────────────────────────────────────────────
-  // The ladder: walking it, and the buttons on each rung
+  // Opening the book, and handing it on
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * A stage for this project finished — anywhere. Re-measure, then maybe follow.
+   * A stage for this project finished — anywhere. Re-measure.
    *
-   * "Open when finished" is no longer this component's promise to keep: it is
-   * held in main, keyed by project and station, and taken here once the
-   * documents have been re-measured (`payOpenWhenFinished`). The old version
-   * lived entirely in this handler, which meant the checkbox paid out only for a
-   * user who had stayed in the picker and watched — the one case where it was
-   * not needed. `stage` is still what re-measures, because a stage that landed
-   * changed this book whether or not anybody is following it.
+   * A conversion started from Studio writes this project's book, and a working
+   * copy minted there appears under this window's feet. Neither is this
+   * component's work, and both change what it is looking at, so both are
+   * measured again rather than remembered.
    */
-  private async onProjectStageFinished(stage: string): Promise<void> {
+  private async onProjectStageFinished(): Promise<void> {
     const projectDir = this.projectPath();
     if (!projectDir) return;
 
-    // The measurement first, always: the tabs are what the documents say, and a
-    // stage that landed changed them whether or not anybody is following it.
-    // Both measurements, because a reflow moves the second one and a cast the
-    // first, and this handler does not know which stage it is being told about
-    // until the line below.
-    //
     // `refreshState` throws for a project with no PDF original — main refuses to
     // resolve a working document for a book — and that is an ordinary state for
-    // exactly the books whose stages this handler cannot be about. So it is
-    // asked for separately and its refusal does not stop the book measurement.
+    // exactly the projects whose stages this handler cannot be about. So its
+    // refusal does not stop the book measurement.
     try {
       await this.documentBlocks.refreshState();
     } catch (err) {
       console.info('[document] this project has no working document to re-measure:', err);
     }
     await this.refreshBookEpub();
-
-    // Re-read the project directory: two awaits have passed, and the window may
-    // have been pointed at another book in the meantime.
-    if (this.projectPath() !== projectDir) return;
-    await this.payOpenWhenFinished();
   }
 
-  /**
-   * Why a station cannot be opened, or null. The tab's tooltip IS this.
-   *
-   * Every sentence names where the button is, and never names a button that
-   * would refuse the user when they got there — which is the whole reason the
-   * Working station distinguishes "not yet" from "this book never has one".
-   */
-  private stationAbsenceReason(id: StationId, book: BookDocuments): string | null {
-    if (stationPresence(id, book) === 'present') return null;
-    // "Build the book" is on the Working station for a cast book and on the
-    // Archive station for one that has no working copy to build FROM. Said once,
-    // here, so no sentence can point at the wrong tab.
-    const buildStation = book.hasPdfOriginal ? 'Working' : 'Archive';
-    switch (id) {
-      case 'archive':
-        return null;  // A book on screen has an original, by construction.
-      case 'working':
-        return book.hasPdfOriginal
-          ? 'There is no working copy yet — press OCR / Cast on the Archive station.'
-          : 'This book arrived as an EPUB, so it has no working PDF to curate through. '
-            + 'It is curated on the book itself, at the Archive station.';
-      case 'epub': {
-        const failure = this.bookEpubError();
-        // "We could not ask" beats "it is not there": one is a fault in the
-        // project, the other is an ordinary book before its first build, and
-        // reporting the second for the first would send the user to press a
-        // button that fails the same way.
-        if (failure) return failure;
-        return `This book has not been built yet — press Build the book on the ${buildStation} station.`;
-      }
-      case 'tts':
-        return 'Narration reads the book, and there is not one yet — press Build the book on the '
-          + `${buildStation} station.`;
-    }
-  }
-
-  /**
-   * Show a station's artifact.
-   *
-   * Archive and Working are the same pages with and without the annotations
-   * painted (see `stationBlocks`), so switching between them changes no file.
-   * The EPUB is a different document and is loaded; coming back from it reloads
-   * the project, because the picker curates the PDF and not the book.
-   */
-  async openStation(id: StationId): Promise<void> {
-    // The guard is on the GESTURE, not on the move. A user switching tabs while
-    // a stage writes into the document would be reading a file that is changing
-    // under them; the app following a run it was asked to follow happens after
-    // the stage has stopped, and has its own way in (`goToStation`).
-    if (this.stationBusy()) return;
-    await this.goToStation(id);
-  }
-
-  /** Show a station, whether or not the window is otherwise busy. */
-  private async goToStation(id: StationId): Promise<void> {
-    const at = this.viewedStation();
-    if (id === at) return;
-
-    if (id === 'tts') {
-      const bookPath = this.stationEpubPath();
-      // Unreachable through the tab, which is disabled without a book and
-      // already carries the sentence saying so (`stationAbsenceReason`).
-      if (bookPath === null) return;
-      // Narration is handed the BOOK, so the book is what the window is showing
-      // when it hands it over. Jumping straight here from a PDF station used to
-      // leave the viewer on the PDF with the station claiming Narration — the
-      // exact disagreement `viewedStation` is now derived to prevent.
-      if (this.viewedArtifact() !== 'book') await this.showEpubStation(bookPath);
-      await this.handOffToNarration();
-      return;
-    }
-
-    if (id === 'epub') {
-      const epubPath = this.stationEpubPath();
-      if (!epubPath) {
-        // Unreachable through the tab (it is disabled without an EPUB), and
-        // stated rather than ignored if some other caller gets here: a station
-        // that silently does nothing is indistinguishable from a broken one.
-        this.showAlert({
-          title: 'There is no book yet',
-          message: 'Build the book on the Working station first — the EPUB station shows the file it writes.',
-          type: 'warning',
-        });
-        return;
-      }
-      await this.showEpubStation(epubPath);
-      return;
-    }
-
-    // Back to the PDF stations. Only a reload when the EPUB is what is on
-    // screen; otherwise this is purely which overlay is painted.
-    if (at === 'epub' || at === 'tts') {
-      await this.reloadProjectDocument();
-    }
-    this.requestedStation.set(id);
-  }
-
-  /** Load the project's book and stand at the EPUB station. */
-  private async showEpubStation(epubPath: string): Promise<void> {
+  /** Show this project's book, closing whatever is on screen for it. */
+  private async showBookEpub(epubPath: string): Promise<void> {
     this.loading.set(true);
     this.loadingText.set('Opening the book...');
     try {
       // The tab is dropped first because `loadPdf` refuses a document that is
-      // already open, and `stationSwapping` is what keeps the close-then-open
+      // already open, and `artifactSwapping` is what keeps the close-then-open
       // from being read as the user leaving the project.
       const currentDocId = this.activeDocumentId();
       if (currentDocId) {
         this.openDocuments.update(docs => docs.filter(d => d.id !== currentDocId));
       }
-      this.stationSwapping = true;
+      this.artifactSwapping = true;
       this.closePdf();
       await this.loadPdf(epubPath);
       this.activatePanel(null);
-      this.requestedStation.set('epub');
     } catch (error) {
       this.showAlert({
         title: 'Could not open the book',
@@ -9957,71 +7696,35 @@ export class PdfPickerComponent implements OnInit {
         type: 'error',
       });
     } finally {
-      this.stationSwapping = false;
-      this.loading.set(false);
-    }
-  }
-
-  /** Put the project's own document back on screen after the EPUB was shown. */
-  private async reloadProjectDocument(): Promise<void> {
-    const dir = this.projectDir();
-    if (!dir) return;
-    this.loading.set(true);
-    this.loadingText.set('Reloading the document...');
-    try {
-      const currentDocId = this.activeDocumentId();
-      if (currentDocId) {
-        this.openDocuments.update(docs => docs.filter(d => d.id !== currentDocId));
-      }
-      this.stationSwapping = true;
-      this.closePdf();
-      await this.openTarget(dir);
-      this.activatePanel(null);
-    } catch (error) {
-      this.showAlert({
-        title: 'Could not reopen the document',
-        message: error instanceof Error ? error.message : String(error),
-        type: 'error',
-      });
-    } finally {
-      this.stationSwapping = false;
+      this.artifactSwapping = false;
       this.loading.set(false);
     }
   }
 
   /**
-   * The project's book, absolute, or null when it has never been built.
+   * Why this window cannot hand its book to narration, or null.
    *
-   * The same signal the EPUB station's presence is measured by, so the tab
-   * cannot be live while the file it would open is unknown.
+   * Read by the Next button and by its tooltip, so a lock is explained with one
+   * sentence rather than two that can drift. Narration takes a BOOK, so this is
+   * offered only while one is on screen — from a PDF there is nothing to hand.
    */
-  private stationEpubPath(): string | null {
-    return this.bookEpubPath();
-  }
-
-  /**
-   * Next. Pure navigation — it never starts work.
-   *
-   * When it is locked it does nothing at all, because the sentence explaining
-   * why is already on the button and beneath the bar. A Next that ran the
-   * missing step would be the wizard again, one press further along.
-   */
-  async stationNext(): Promise<void> {
-    const step = this.stationNextStep();
-    if (step.lockedReason !== null || step.next === null) return;
-    await this.openStation(step.next);
-  }
+  readonly narrationRefusalReason = computed<string | null>(() => {
+    if (!this.viewingBook()) {
+      return 'Narration reads the book. Open this project\'s EPUB to hand it on.';
+    }
+    const noProject = this.noProjectReason();
+    if (noProject) return noProject;
+    return narrationRefusal({ bookEpubExists: this.bookEpubPath() !== null });
+  });
 
   /**
    * Hand the finished book on: put the user in front of narration, then close.
    *
-   * The destination used to be "Phase C's business" — it is Phase C now. Three
-   * acts, and the ORDER is the design:
+   * Three acts, and the ORDER is the design:
    *
    *  1. Ask MAIN to raise the main window and open narration for this project
-   *     (`app:show-narration`). The picker is always its own BrowserWindow and
-   *     has no reach into the main window's router — the same reason "run in
-   *     background" goes through main to get to the Queue.
+   *     (`app:show-narration`). The picker is often its own BrowserWindow and
+   *     has no reach into the main window's router.
    *  2. A refusal is SAID, and the window stays open. Closing on a failed
    *     hand-off would leave the user with no picker, no narration and no
    *     explanation of where their book went.
@@ -10032,17 +7735,17 @@ export class PdfPickerComponent implements OnInit {
    *     addressed to nobody and the delay is a window lingering over a book the
    *     user has left.
    */
-  private async handOffToNarration(): Promise<void> {
-    const epubPath = this.stationEpubPath();
+  async goToNarration(): Promise<void> {
+    if (this.narrationRefusalReason() !== null) return;
+    const epubPath = this.bookEpubPath();
     const projectDir = this.projectPath();
     if (epubPath === null || !projectDir) {
-      // Not reachable as a pair: `bookEpubPath` answers null unless this window
-      // is on a project, so a book path implies a project directory. Said out
-      // loud rather than returned in silence — the user pressed Next, and
-      // something has to answer them.
+      // Unreachable through the button, which is disabled with the sentence that
+      // says so. Said out loud rather than returned in silence if some other
+      // caller gets here.
       this.showAlert({
         title: 'Narration could not be opened',
-        message: 'This window is not on a project with a built book, so there is nothing to narrate.',
+        message: 'This window is not on a project with a book, so there is nothing to narrate.',
         type: 'error',
       });
       return;
@@ -10061,283 +7764,99 @@ export class PdfPickerComponent implements OnInit {
     }
 
     // The window holds no unsaved book state: every curation edit is already an
-    // incremental update in the working document, and the EPUB on disk is what
-    // reflow wrote. Cleared only now, once the hand-off has been accepted.
+    // incremental update in the working document, and the strikes on a book are
+    // saved before this. Cleared only now, once the hand-off has been accepted.
     this.editorState.hasUnsavedChanges.set(false);
-    this.requestedStation.set('tts');
     this.handedOffToNarration.emit({ projectDir, epubPath });
   }
 
-  /** A station button was pressed. Each one belongs to the artifact on screen. */
-  onStationAction(actionId: string): void {
-    switch (actionId) {
-      case 'cast':
-        this.showOcrSettings.set(true);
-        return;
-      // Detect from the Archive station is the SAME detect. It is offered here
-      // because a user standing on the original may want to re-read the labels
-      // without walking to the Working tab first — and it is disabled by name
-      // when the book has no working copy, because the dialog no longer buys one
-      // on the way past.
-      case 'detect-from-archive':
-      case 'detect':
-        void this.runDetect();
-        return;
-      case 'reflow':
-        this.requestBuildTheBook();
-        return;
-      case 'vlm-convert':
-        void this.requestVlmConversion();
-        return;
-      case 'export-narration':
-        void this.exportNarrationCopy();
-        return;
-      default:
-        throw new Error(`The station bar offered an action this window does not know: ${actionId}`);
-    }
-  }
-
-  // ─── Convert to EPUB ──────────────────────────────────────────────────────
-
-  /** True while the vision model is reading this book's pages. */
-  readonly converting = computed(() =>
-    this.documentBlocks.stageRunning() === VLM_CONVERT_STAGE);
-
   /**
-   * How far the conversion has got, as a percentage, or null when the run has
-   * not said yet.
+   * A pass replaced the book in place — show the file that is there NOW.
    *
-   * Null rather than zero, and the bar is indeterminate for it: the first
-   * minutes of a run are the model loading, which reports no page count at all,
-   * and a bar pinned at 0% for two minutes is indistinguishable from a bar that
-   * is broken.
+   * The passes rewrite `outputs.epub` at its own path, so nothing about the
+   * window's idea of where the book is has changed and nothing would prompt it
+   * to re-read: a picker showing the book would go on rendering the bytes it
+   * loaded before the run. So the provenance is re-asked (the rail's pass
+   * statuses come from it) and, when the book is what is on screen, the file is
+   * loaded again. `showBookEpub` closes the tab and re-opens it, and the
+   * analysis cache is keyed by the file's SHA-256, so the rewritten book is
+   * analysed afresh rather than served from the old one's entry.
    */
-  readonly convertPercent = computed<number | null>(() => {
-    const total = this.documentBlocks.stageTotal();
-    if (total <= 0) return null;
-    return Math.min(100, Math.round((this.documentBlocks.stageDone() / total) * 100));
-  });
-
-  /**
-   * Ask before spending an hour of GPU, and say what it will cost.
-   *
-   * The confirmation is not ceremony. A 300-page book is about ninety minutes on
-   * an M1 Ultra, it REPLACES whatever book the project already has, and it ends
-   * the provenance of that book — three consequences a user cannot see from a
-   * button labelled "Convert to EPUB".
-   */
-  /**
-   * Stop the conversion.
-   *
-   * Addressed to the PROJECT, not through `documentBlocks.cancelStage()`: that
-   * one needs a working-document ref, and a scanned PDF that has never been cast
-   * has none — which is exactly the book somebody is most likely to be
-   * converting. Main's stage registry is keyed by project directory and aborts
-   * whatever stage holds it.
-   *
-   * Nothing is lost. Every page the model has answered is banked in the readings
-   * file, so converting again reads only what is missing.
-   */
-  async stopConversion(): Promise<void> {
-    const dir = this.projectPath();
-    if (!dir) return;
-    await this.electronService.documentCancelStage(dir);
-  }
-
-  /**
-   * The endpoint setting, resolved — or a refusal to show instead of starting.
-   *
-   * The renderer owns the setting (it is in the same localStorage bundle as the
-   * Ollama URL) and hands it to main per run. Resolving it HERE as well is not a
-   * second authority: it is the same pure function main runs, called early so a
-   * half-typed URL is a sentence in the confirm dialog rather than a failure
-   * after the stage has been claimed.
-   */
-  private async vlmEndpointOrRefusal():
-    Promise<{ endpoint: VlmEndpointConfig | null } | { refusal: string }> {
-    const config = this.settingsService.getVlmEndpointConfig();
-    let endpoint: VlmEndpointConfig | null;
-    try {
-      endpoint = resolveVlmEndpoint(config);
-    } catch (err) {
-      return { refusal: err instanceof Error ? err.message : String(err) };
-    }
-    // Asked of main every time rather than cached: the WSL toggle and env name
-    // live in Settings, and a user who just filled them in must not have to
-    // restart the window before Convert believes them.
-    const status = await this.electronService.vlmReaderStatus();
-    if (!status.success) {
-      return { refusal: `BookForge could not check the WSL page reader: ${status.error}` };
-    }
-    const route = resolveVlmRoute({
-      platform: this.electronService.platform,
-      arch: this.electronService.arch,
-      endpoint,
-      wslReaderRefusal: status.wslRefusal ?? null,
-    });
-    if (route.kind === 'refused') return { refusal: route.reason };
-    // `endpoint` stays null for both local routes — MLX here, or the WSL server
-    // main starts and names itself. Main resolves the route a second time and is
-    // the one that knows the URL its own server came up on; a URL guessed here
-    // would be this window's idea of where that server will be.
-    return { endpoint };
-  }
-
-  private async requestVlmConversion(): Promise<void> {
-    if (this.stationBusy()) return;
-
-    // Which machine would read the pages — asked BEFORE the dialog, because the
-    // dialog quotes a time per page and the two routes are nothing like each
-    // other, and because a machine with no reader at all should say so instead
-    // of offering a Convert button that cannot work.
-    const route = await this.vlmEndpointOrRefusal();
-    if ('refusal' in route) {
+  async onBookReplacedByPass(): Promise<void> {
+    await this.refreshBookEpub();
+    if (!this.viewingBook()) return;
+    const epubPath = this.bookEpubPath();
+    // Unreachable in practice — a pass that landed recorded the book it wrote —
+    // and said rather than ignored if main has stopped answering for it.
+    if (!epubPath) {
       this.showAlert({
-        title: 'Nothing here can read the pages',
-        message: route.refusal,
-        type: 'error',
+        title: 'The book was rewritten, but this window cannot find it',
+        message: 'The pass finished and recorded its work, but this project no longer reports '
+          + 'where its book is. Reopen the book from the versions page.',
+        type: 'warning',
       });
       return;
     }
-    const { endpoint } = route;
-
-    const hasBook = this.bookEpubPath() !== null;
-    this.alertModal.set({
-      title: 'Read the pages with a vision model?',
-      message:
-        'A document vision model reads every page picture and writes the whole book — footnotes '
-        + 'collected at the end of their chapter, figures and captions kept. '
-        + (endpoint === null
-          ? 'It runs on this machine\'s GPU at roughly eighteen seconds a page, so a 300-page book '
-            + 'is about an hour and a half. '
-          : `The pages are sent to ${endpoint.url}, so how long it takes is that server's business `
-            + '— it reads several pages at once and is typically far faster than this machine. ')
-        + 'It can be interrupted and resumed: every page answered is banked, and a '
-        + 'second run reads only what is missing.'
-        + (hasBook
-          ? '\n\nThis project already has a book. Converting REPLACES it, and the record of what '
-            + 'has been run over it — footnote removal, simplify, translate — goes with it, because '
-            + 'none of that happened to the new file.'
-          : ''),
-      type: 'warning',
-      confirmText: 'Convert',
-      cancelText: 'Cancel',
-      onConfirm: () => { void this.runVlmConversion(endpoint); },
-    });
-  }
-
-  /**
-   * Run the conversion, and show the book when it lands.
-   *
-   * MAIN owns the run — this window can be reloaded or closed and the pages keep
-   * being read — so what happens here is only the waiting and the reporting. The
-   * stage registry refuses a second conversion of the same project by name, and
-   * that refusal is main's sentence, shown verbatim.
-   */
-  private async runVlmConversion(endpoint: VlmEndpointConfig | null): Promise<void> {
-    const dir = this.projectPath();
-    if (!dir) return;
-
-    // Flushed first: the conversion writes the project's book, and edits still
-    // sitting in the batch queue belong to the document as it was.
-    await this.documentBlocks.flush();
-    this.documentBlocks.stageRunning.set(VLM_CONVERT_STAGE);
-    this.documentBlocks.stageMessage.set(endpoint === null
-      ? 'Loading the vision model on this machine…'
-      : `Reading the pages on ${endpoint.url}…`);
-    this.documentBlocks.stageDone.set(0);
-    this.documentBlocks.stageTotal.set(0);
-    this.documentBlocks.lastError.set(null);
-    // Its OWN subscription, keyed on the project, rather than the block
-    // service's: that one filters on the working-document ref, and a scanned PDF
-    // that has never been cast has none — which is exactly the book somebody is
-    // most likely to be converting. Torn down in the `finally`, so a window that
-    // converts twice does not accumulate listeners.
-    // Filtered on the PROJECT and nothing else. `document:stage-progress` carries
-    // the pipeline stage id (`vlm-convert`) while `-started` and `-finished`
-    // carry the user-facing label, and a filter that matched the wrong one of
-    // those would drop every line silently. The project can only hold one stage
-    // at a time — `beginStage` refuses a second by name — so the project IS the
-    // whole filter.
-    const unwatch = this.electronService.onDocumentStageProgress((event) => {
-      if (event.projectDir !== dir) return;
-      this.documentBlocks.stageMessage.set(event.message);
-      this.documentBlocks.stageDone.set(event.done);
-      this.documentBlocks.stageTotal.set(event.total);
-    });
-    try {
-      const answer = await this.electronService.convertPdfToEpub({
-        projectDir: dir,
-        // Handed over per run, exactly as `ollamaBaseUrl` travels on a job
-        // config: the setting lives in the renderer's storage and main has no
-        // copy of it. Main resolves it again and refuses the same things.
-        ...(endpoint !== null ? { endpoint } : {}),
-      });
-      if (!answer.success || !answer.result) {
-        throw new Error(answer.error || 'The conversion failed and said nothing about why.');
-      }
-      const { result } = answer;
-      await this.refreshBookEpub();
-
-      const unreadable = result.unreadable;
-      this.showAlert({
-        title: 'The book is built',
-        message:
-          `${result.totalPages} page(s) read into ${result.relPath} by `
-          + `${result.endpoint === null ? 'this machine (MLX)' : result.endpoint}.`
-          + (unreadable.length > 0
-            // Said here and not only in the log: a page the model could not read
-            // is a page of the user's book that is not in it.
-            ? `\n\n${unreadable.length} page(s) are NOT in the book: `
-              + `${unreadable.map(p => p.page).join(', ')}. The first reason given was `
-              + `"${unreadable[0].reason}". Converting again re-reads only those pages.`
-            : '')
-          + '\n\nOpen it at the EPUB station to strike out what you do not want narrated.',
-        type: unreadable.length > 0 ? 'warning' : 'info',
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.documentBlocks.lastError.set(message);
-      this.showAlert({ title: 'The conversion failed', message, type: 'error' });
-    } finally {
-      unwatch();
-      this.documentBlocks.stageRunning.set(null);
-    }
+    await this.showBookEpub(epubPath);
   }
 
   // ─── The narration copy ───────────────────────────────────────────────────
 
   /**
-   * Write the narration copy: the book minus what is struck out of it.
+   * Write the TTS copy: the book minus what is struck out of it.
    *
-   * The strikes are SAVED first and the export then reads them off the manifest
-   * rather than being handed a list — so the file that lands is always explained
-   * by a record, and there is no way to produce one that is not.
+   * ONE option is asked, because it is the one thing the copy does that the
+   * strikes do not describe: a `<sup>55</sup>` left in the markup is read aloud
+   * as "fifty-five", and that is not something the user can see struck through
+   * on the page. It DEFAULTS ON — every audiobook wants it — and it is offered
+   * rather than assumed because a book of numbered chapter epigraphs is a real
+   * book and the strip cannot tell one from a footnote reference.
+   *
+   * The strikes are SAVED first, synchronously, and the export then reads them
+   * off the manifest rather than being handed a list — so the file that lands is
+   * always explained by a record, and there is no way to produce one that is not.
    */
-  private async exportNarrationCopy(): Promise<void> {
+  private async exportTtsCopy(): Promise<void> {
     const dir = this.projectPath();
     if (!dir) return;
+
+    const choice = await this.dialogService.confirmWithCheckbox({
+      title: 'Export TTS copy',
+      message:
+        'The narration copy is the book minus what you have struck out. The book itself is never '
+        + 'rewritten — this writes a second file beside it.',
+      checkboxLabel: 'Remove footnote reference numbers',
+      checkboxChecked: true,
+      confirmLabel: 'Export',
+      cancelLabel: 'Cancel',
+      type: 'question',
+    });
+    if (!choice.confirmed) return;
+
     this.loading.set(true);
-    this.loadingText.set('Writing the narration copy...');
+    this.loadingText.set('Writing the TTS copy...');
     try {
       await this.saveNarrationDeletions();
-      const answer = await this.electronService.exportNarrationEpub(dir);
+      const answer = await this.electronService.exportNarrationEpub(dir, {
+        stripSupMarkers: choice.checkboxChecked,
+      });
       if (!answer.success || !answer.result) {
-        throw new Error(answer.error || 'The narration copy could not be written.');
+        throw new Error(answer.error || 'The TTS copy could not be written.');
       }
       const { result } = answer;
       await this.refreshNarrationState();
       this.showAlert({
-        title: 'Narration copy written',
+        title: 'TTS copy written',
         message:
           `${result.relPath} — ${result.removedElements} of ${result.totalElements} element(s) `
-          + 'left out. The book itself is unchanged.'
+          + `left out, ${result.removedSupMarkers} footnote marker(s) stripped. The book itself is `
+          + 'unchanged.'
           + '\n\nThe Process tab\'s narration step will offer this file.',
         type: 'info',
       });
     } catch (err) {
       this.showAlert({
-        title: 'Could not write the narration copy',
+        title: 'Could not write the TTS copy',
         message: err instanceof Error ? err.message : String(err),
         type: 'error',
       });
@@ -10357,7 +7876,7 @@ export class PdfPickerComponent implements OnInit {
    */
   private async saveNarrationDeletions(): Promise<void> {
     const dir = this.projectPath();
-    if (!dir || !this.bookIsConverted()) return;
+    if (!dir || !this.canStrikeForNarration()) return;
     const elements = narrationElementsOf(
       this.blocks().map(b => ({
         id: b.id,
@@ -10403,20 +7922,11 @@ export class PdfPickerComponent implements OnInit {
   /**
    * A rail entry that runs a pass over the book was pressed.
    *
-   * Where each one goes is the pass's own business, and the difference is how
-   * long the run is rather than how it is launched. Footnote removal is minutes
-   * at most and runs INLINE in its own modal with a progress bar (Owen,
-   * 2026-08-04: "footnote removal is pretty fast. instead of adding to the queue
-   * lets have it do it quickly in a modal with a progress bar, just like the OCR
-   * modal on pdfs"), with the same "run in background" hand-off the OCR dialog
-   * has. Simplify and Translate are AI runs over a whole book — hours — so they
-   * stay queued, and their options dialog is where their settings are chosen.
+   * Both are AI runs over a whole book — hours — so both go to the queue, and
+   * their options dialog is where their settings are chosen.
    */
   private startEpubPass(kind: EpubPassTaskId): void {
     switch (kind) {
-      case 'footnotes':
-        this.showFootnotesModal.set(true);
-        return;
       case 'simplify':
         this.passOptionsKind.set('simplify');
         return;
@@ -10431,196 +7941,10 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
-   * Build the book, after making sure chapters were not simply forgotten.
-   *
-   * The check is a warning, not a gate: an article or a single essay really is
-   * one chapter, and a hard block would strand those books. But an unchaptered
-   * book produces one enormous audiobook file with no navigation, and that is
-   * discovered hours later at TTS time — so it is worth one interruption here.
-   */
-  private requestBuildTheBook(): void {
-    if (this.stationBusy()) return;
-
-    // Two kinds of book, two authorities, and neither stands in for the other. A
-    // cast book's chapters ARE its `chapter` blocks, read off the working
-    // document. A book that arrived as an EPUB has no block layer at all — its
-    // chapters are the ones read out of its own navigation, and those are what
-    // the markup-preserving export carries through.
-    const count = this.buildsByPreservingMarkup()
-      ? this.chapters().length
-      : this.documentBlocks.chapterBlocks().length;
-    if (count >= CHAPTERS_EXPORT_MINIMUM) {
-      void this.buildTheBook();
-      return;
-    }
-
-    this.alertModal.set({
-      title: count === 0 ? 'No chapters marked' : 'Only one chapter marked',
-      message:
-        (count === 0
-          ? 'This book has no chapter markers, so the audiobook will be one continuous file with nothing to skip between.'
-          : 'This book has a single chapter, so the audiobook will be one continuous file with nothing to skip between.') +
-        '\n\nLabel the blocks that open each chapter and they appear in the Chapter tab.',
-      type: 'warning',
-      confirmText: 'Go to Chapters',
-      cancelText: 'Build it anyway',
-      // The modal closes itself around these (see onAlertConfirm/onAlertCancel).
-      onConfirm: () => this.setNavTab('chapter'),
-      onCancel: () => { void this.buildTheBook(); },
-    });
-  }
-
-  /**
-   * Build the book. TWO exporters, and which one runs is a fact about the
-   * SOURCE rather than a preference.
-   *
-   *  - A book that arrived as an EPUB keeps its own markup. The
-   *    markup-preserving export aligns the editor's view against
-   *    `archive/<Original>.epub` and writes `source/<stem>.epub` with the
-   *    deletions applied — which is how a table of contents, an index or a
-   *    notes section is dropped from a book nobody ever wants narrated. Rebuilding
-   *    such a book from block text would flatten every `<sup>`, `<em>` and list
-   *    the file shipped with.
-   *  - Everything else is Reflow: the working document in, the book out.
-   *
-   * Neither is a fallback for the other. The question they answer is what the
-   * source is, and the source cannot be both.
-   *
-   * Two checkboxes decide how it is WATCHED and never what it does — except that
-   * "run in background" has no meaning for the preserving export, which no queue
-   * pass covers; that is said on the checkbox rather than silently ignored (see
-   * `runInBackgroundRefusal`).
-   */
-  private async buildTheBook(): Promise<void> {
-    const projectDir = this.projectPath();
-    if (!projectDir) {
-      this.showAlert({
-        title: 'No project',
-        message: 'Building the book writes into a project, and this document does not belong to one. '
-          + 'Import it from Studio first.',
-        type: 'error',
-      });
-      return;
-    }
-
-    // Nothing consolidates paragraphs here any more. `autoMergeForPipeline()`
-    // was written for the client-side exporter, which built the book out of the
-    // editor's block TEXT and therefore needed one block per paragraph before it
-    // ran. Reflow forms paragraphs itself, from the working document's
-    // lines-with-geometry (docs/DOCUMENT_PIPELINE.md §Reflow step 3), and the
-    // markup-preserving export carries the source book's own <p> structure —
-    // neither reads a merge the picker made on its behalf. Owen, 2026-08-04:
-    // "that logic was designed to solve a problem that doesnt exist anymore."
-    // Merge as a USER gesture (Select mode, the Chapter tab) is untouched.
-    if (this.buildsByPreservingMarkup()) {
-      await this.buildPreservedBook(projectDir);
-      return;
-    }
-
-    if (this.effectiveRunInBackground()) {
-      // The batched edits are landed BEFORE the job is submitted. `reflow()`
-      // flushes for the foreground route; nothing flushes for this one, and a
-      // queue that reached the stage inside the batching window would reflow a
-      // document that is missing the last few seconds of curation.
-      await this.documentBlocks.flush();
-      // Asked for before the run is submitted and held in MAIN, so it pays out
-      // even after this window has been closed. Reflow mints the EPUB station.
-      if (this.openWhenFinished()) {
-        await this.electronService.documentRequestOpenWhenFinished(projectDir, 'epub');
-      }
-      // Queued rather than run here: one reflow pass over this project's
-      // working document.
-      const queued = await this.submitPassRun(projectDir, [{ kind: 'reflow' }]);
-      // A refused run will never finish, so the promise it staged comes back off
-      // the shelf rather than being cashed by whatever runs over this book next.
-      if (!queued) await this.electronService.documentCancelOpenWhenFinished(projectDir);
-      // The user asked to stop watching, so the window goes where the work went.
-      if (queued) await this.handOffToQueue();
-      return;
-    }
-
-    this.loading.set(true);
-    this.loadingText.set('Building the book...');
-    try {
-      const epubPath = await this.reflowToEpub();
-      await this.refreshBookEpub();
-      if (this.openWhenFinished()) {
-        await this.showEpubStation(epubPath);
-      }
-    } catch (error) {
-      this.showAlert({
-        title: 'The book was not built',
-        message: error instanceof Error ? error.message : String(error),
-        type: 'error',
-      });
-    } finally {
-      this.loading.set(false);
-    }
-  }
-
-  /**
-   * The markup-preserving export: `archive/<Original>.epub` in, the deletions
-   * applied, `source/<stem>.epub` out.
-   *
-   * The project is SAVED first, and that is not tidiness. An EPUB-native book's
-   * deletions live in the project file — the editor's `deletedBlockIds` and
-   * `deletedPages`, autosaved into the manifest — and the exporter re-applies
-   * them against the archive original. Exporting before the save would export
-   * the previous session's set: the book would come out missing the wrong
-   * things, and look like a success.
-   *
-   * The archive original is READ and never written; the export lands in
-   * `source/`, and main refuses outright to write onto the file the edits were
-   * aligned against.
-   *
-   * An unaligned block that carries a deletion makes the exporter THROW rather
-   * than quietly leave that block in the book. That property is the whole reason
-   * this export can be trusted, and nothing here softens it — main's message
-   * names the offending block and is passed through verbatim.
-   */
-  private async buildPreservedBook(projectDir: string): Promise<void> {
-    this.loading.set(true);
-    this.loadingText.set('Building the book...');
-    try {
-      await this.saveProjectToPath(projectDir, true);
-
-      const result = await this.runEpubPreservingExport(projectDir, null);
-      if (!result.success || !result.epubPath) {
-        this.showAlert({
-          title: 'The book was not built',
-          message: result.message || 'The export did not report where the book was written.',
-          type: 'error',
-        });
-        return;
-      }
-
-      // Main registered it in the manifest; this is asking main where it is,
-      // which is what the EPUB station's presence is measured by.
-      await this.refreshBookEpub();
-      if (this.openWhenFinished()) {
-        await this.showEpubStation(result.epubPath);
-      } else {
-        this.showAlert({ title: 'Built', message: result.message, type: 'success' });
-      }
-    } catch (error) {
-      this.showAlert({
-        title: 'The book was not built',
-        message: error instanceof Error ? error.message : String(error),
-        type: 'error',
-      });
-    } finally {
-      this.loading.set(false);
-    }
-  }
-
-  /**
    * Queue one text pass over this project's book.
    *
    * Simplify and Translate: AI rewrites of a whole book, hours each, so the
-   * queue is where they are watched and cancelled. Footnote removal is minutes
-   * and has its own modal (`FootnotesModalComponent`) that runs it inline —
-   * and that modal queues it through the same `submitProcessingRun` when the
-   * user asks for the background instead.
+   * queue is where they are watched and cancelled.
    */
   private async enqueueEpubPass(pass: ChainPassRequest): Promise<void> {
     const projectDir = this.projectPath();
@@ -10643,10 +7967,8 @@ export class PdfPickerComponent implements OnInit {
   /**
    * Submit passes to the queue, surfacing main's own refusal verbatim.
    *
-   * Answers whether the run was QUEUED, because the caller has a promise to
-   * withdraw if it was not — a refused run never finishes, and an
-   * "open when finished" left standing would be cashed by whatever ran over this
-   * book next.
+   * Answers whether the run was QUEUED so a caller can tell a refusal from a
+   * submission — the refusal itself is main's own sentence, shown verbatim.
    */
   private async submitPassRun(projectDir: string, passes: ChainPassRequest[]): Promise<boolean> {
     try {
@@ -10668,80 +7990,6 @@ export class PdfPickerComponent implements OnInit {
       });
       return false;
     }
-  }
-
-  /**
-   * The run went to the queue, and so does the user.
-   *
-   * RULED 2026-08-04: "if the user hits the process in background button, it
-   * should move it to the queue and move focus from the current page (pdf
-   * picker) to the main page and jump to the queue so they can see it was moved
-   * there." A job that silently vanishes from one place and silently appears in
-   * another is how work gets lost, so the hand-off is witnessed.
-   *
-   * The picker is its own BrowserWindow (`openEditorWindow` in main), and the
-   * queue only ever lives in the MAIN window — `processing:submit-chain` sends
-   * the plan there and nowhere else. So this raises that window and routes it,
-   * which is the same action whether the picker is detached or embedded: main
-   * knows which window is the main one, and this component does not have to.
-   * The book is left open behind the user; they asked to stop watching a run,
-   * not to shut the book.
-   */
-  async handOffToQueue(): Promise<void> {
-    this.showOcrSettings.set(false);
-    try {
-      await this.electronService.showQueue();
-    } catch (err) {
-      // Said, never swallowed: the whole point of the hand-off is that the user
-      // sees where the work went, so a hand-off that did not happen has to be
-      // the one thing they are told about.
-      this.showAlert({
-        title: 'The run is queued, but this window could not follow it',
-        message: (err instanceof Error ? err.message : String(err))
-          + '\n\nThe run is in the queue and continues either way — open the main window\'s Queue '
-          + 'tab to watch it.',
-        type: 'warning',
-      });
-    }
-  }
-
-  /** The footnote-removal dialog is open. It runs the pass, not just sets it up. */
-  readonly showFootnotesModal = signal(false);
-
-  /** The run went to the queue instead, and the user goes with it. */
-  async onFootnotesHandedToQueue(): Promise<void> {
-    this.showFootnotesModal.set(false);
-    await this.handOffToQueue();
-  }
-
-  /**
-   * A pass replaced the book in place — show the file that is there NOW.
-   *
-   * The passes rewrite `outputs.epub` at its own path, so nothing about the
-   * window's idea of where the book is has changed and nothing would prompt it
-   * to re-read: a picker standing at the EPUB station would go on rendering the
-   * bytes it loaded before the run. So the provenance is re-asked (the rail's
-   * pass statuses come from it) and, when the book is what is on screen, the
-   * file is loaded again. `showEpubStation` closes the tab and re-opens it, and
-   * the analysis cache is keyed by the file's SHA-256, so the rewritten book is
-   * analysed afresh rather than served from the old one's entry.
-   */
-  async onBookReplacedByPass(): Promise<void> {
-    await this.refreshBookEpub();
-    if (this.viewedArtifact() !== 'book') return;
-    const epubPath = this.stationEpubPath();
-    // Unreachable in practice — a pass that landed recorded the book it wrote —
-    // and said rather than ignored if main has stopped answering for it.
-    if (!epubPath) {
-      this.showAlert({
-        title: 'The book was rewritten, but this window cannot find it',
-        message: 'The pass finished and recorded its work, but this project no longer reports '
-          + 'where its book is. Reopen the book from the versions page.',
-        type: 'warning',
-      });
-      return;
-    }
-    await this.showEpubStation(epubPath);
   }
 
   /** The simplify/translate dialog is open for this pass, or null. */
@@ -11032,33 +8280,15 @@ export class PdfPickerComponent implements OnInit {
 
   // Auto-create project when PDF is opened
   /**
-   * The last line of defence for corpus isolation.
-   *
-   * Every entry point that could put a corpus book into {library}/projects/ ends
-   * up in one of the project writers below, so each of them asks here first.
-   * Loud rather than silent: reaching one of these means a new code path found
-   * its way past the gates upstream, and that is a bug worth seeing.
-   */
-  private refuseProjectWriteForCorpus(what: string): boolean {
-    if (!this.corpusMode()) return false;
-    console.error(
-      `[corpus] Refused "${what}": a training-corpus book must never become a library project. ` +
-      'Its labels are saved to its own folder under /Volumes/Callisto/training/rubric/.'
-    );
-    return true;
-  }
-
-  /**
    * Bind an embedded window to the project that CONTAINS the file it opened.
    *
    * The matcher's first rule is directory containment, so a variant opened out
    * of `projects/<slug>/archive/` resolves to `<slug>` without touching a hash
    * or a filename. A file that belongs to no project leaves the window
-   * unbound, which is the honest answer — the stations then refuse by name and
-   * nothing is invented.
+   * unbound, which is the honest answer — the rail entries then refuse by name
+   * and nothing is invented.
    */
   private async bindContainingProject(filePath: string): Promise<void> {
-    if (this.refuseProjectWriteForCorpus('Bind project')) return;
     if (this.bindingProject) return;   // restoreProjectState re-enters loadPdf
     this.bindingProject = true;
     try {
@@ -11075,7 +8305,6 @@ export class PdfPickerComponent implements OnInit {
   private bindingProject = false;
 
   private async autoCreateProject(pdfPath: string, pdfName: string): Promise<void> {
-    if (this.refuseProjectWriteForCorpus('Create project')) return;
 
     const currentFileHash = this.fileHash();
     const currentLibraryPath = this.libraryPath();
@@ -11390,11 +8619,6 @@ export class PdfPickerComponent implements OnInit {
 
   // Schedule auto-save (debounced)
   private scheduleAutoSave(): void {
-    // A corpus book has no project to save into, and autosave is the path that
-    // would CREATE one (performAutoSave → autoCreateProject → import into the
-    // library). Labels are written explicitly to the corpus folder instead.
-    if (this.corpusMode()) return;
-
     // A session that declined to load the project's edits must not autosave over
     // them — see projectStateNotApplied. Silent by design: the user was told once,
     // with an alert, when the document was bound.
@@ -11403,15 +8627,15 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    // The EPUB station shows a DERIVED artifact — the book reflow wrote — and
-    // the manifest describes the SOURCE. An auto-save here either writes that
-    // session's state (reflowed blocks, no deletions, no merges) over the
-    // source's edit set, or, with the binding dropped by the document swap,
-    // reaches autoCreateProject, rebinds to the owning project and pulls the
-    // source's deletions, pages and OCR blocks onto the book (Working Towards
-    // The Führer, Aug 2 2026 — both arms of this actually happened). The book
-    // is edited by the EPUB passes, on disk, never through the project file.
-    if (this.viewedStation() === 'epub') return;
+    // A BOOK on screen is a DERIVED artifact and the manifest describes the
+    // SOURCE. An auto-save here either writes this session's state (the book's
+    // own blocks, no deletions, no merges) over the source's edit set, or,
+    // with the binding dropped by the document swap, reaches autoCreateProject,
+    // rebinds to the owning project and pulls the source's deletions and pages
+    // onto the book (Working Towards The Führer, Aug 2 2026 — both arms of this
+    // actually happened). A book is edited by the passes, on disk, and by the
+    // narration strikes, in the manifest's own record — never through this.
+    if (this.viewingBook()) return;
 
     if (this.autoSaveTimeout) {
       clearTimeout(this.autoSaveTimeout);
@@ -11425,11 +8649,10 @@ export class PdfPickerComponent implements OnInit {
   // Perform the actual auto-save
   private async performAutoSave(): Promise<void> {
     if (!this.pdfLoaded()) return;
-    if (this.corpusMode()) return;   // see scheduleAutoSave
-    // Checked again at fire time: a save scheduled at the editing station can
-    // reach this timer AFTER the export swapped the review EPUB in, and it
-    // would run against the wrong document — see scheduleAutoSave.
-    if (this.viewedStation() === 'epub') return;
+    // Checked again at fire time: a save scheduled over the working copy can
+    // reach this timer AFTER a swap put the book on screen, and it would then
+    // run against the wrong document — see scheduleAutoSave.
+    if (this.viewingBook()) return;
 
     const projectPath = this.projectPath();
     if (projectPath) {
@@ -11447,7 +8670,6 @@ export class PdfPickerComponent implements OnInit {
   // Project save/load methods (kept for export functionality)
   async saveProject(): Promise<void> {
     if (!this.pdfLoaded()) return;
-    if (this.refuseProjectWriteForCorpus('Save project')) return;
 
     const projectPath = this.projectPath();
     if (projectPath) {
@@ -11552,12 +8774,11 @@ export class PdfPickerComponent implements OnInit {
   }
 
   private async saveProjectToPath(filePath: string, silent: boolean = false): Promise<void> {
-    if (this.refuseProjectWriteForCorpus(`Write project state to ${filePath}`)) return;
 
     // The one place every project-state write goes through, so the one place that
     // can guarantee a session which declined to load the project's edits cannot
     // overwrite them (see projectStateNotApplied). Callers that export as well as
-    // save — finalizeProject, Build the book — still export: the export
+    // save — finalizeProject — still export: the export
     // describes the file in front of the user, only the project write is refused.
     if (this.projectStateNotApplied()) {
       console.error(
@@ -11721,9 +8942,6 @@ export class PdfPickerComponent implements OnInit {
   async loadProjectFromPath(filePath: string, lightweight: boolean = false): Promise<void> {
     // Clear sourceFilePath when opening a project - finalize must use the project export flow
     this.sourceFilePath.set(null);
-    // A station swap is this window changing which artifact it shows, not the
-    // user opening a different book, so it does not send the ladder home.
-    if (!this.stationSwapping) this.requestedStation.set('archive');
 
     // Check if this project is already open
     const existingDoc = this.openDocuments().find(d => d.projectPath === filePath);
@@ -11794,12 +9012,12 @@ export class PdfPickerComponent implements OnInit {
 
     // First, check if an override source path was provided (from version picker).
     //
-    // With ONE exception, and it is a station move rather than an open: a window
+    // With ONE exception, and it is an artifact swap rather than an open: a window
     // opened straight onto the built book (versions page → EPUB row → the
     // editor's `?source=`) carries that book in `overrideSourcePath` for its
     // whole life. Re-resolving it when the user presses the Working tab would
     // reload the book they are already looking at and call it going back — the
-    // tab would look broken, and the ladder's one way back down would be gone.
+    // window would look broken, and the one way back to the source would be gone.
     // So a swap away from the book resolves the project's SOURCE instead.
     //
     // Narrowed to the project's own EXPORT on purpose: an EPUB-native book is
@@ -11807,7 +9025,7 @@ export class PdfPickerComponent implements OnInit {
     // and the markup-preserving build aligns against exactly that file.
     const chosenPath = this.overrideSourcePath();
     const overridePath =
-      chosenPath && this.stationSwapping && this.isProjectOwnExport(chosenPath, project)
+      chosenPath && this.artifactSwapping && this.isProjectOwnExport(chosenPath, project)
         ? null
         : chosenPath;
     if (overridePath) {
@@ -12274,12 +9492,6 @@ export class PdfPickerComponent implements OnInit {
             return d;
           }));
 
-          // Archived labels can only be matched once the blocks they key to
-          // exist, which for a PDF is here rather than at the end of the load.
-          if (this.activeDocumentId() === docId) {
-            await this.importTrainingLabelsOnce();
-          }
-
           // Run deferred analysis matching now that text/spans are ready
           if (this.pendingAnalysisMatch()) {
             this.pendingAnalysisMatch.set(false);
@@ -12309,10 +9521,6 @@ export class PdfPickerComponent implements OnInit {
       // Load analysis results (fire-and-forget — highlights appear when ready)
       this.loadAnalysisResults(actualProjectPath);
 
-      // A book labelled before labels became project state keeps that work in
-      // an archived session. Bring it in when this project has none of its own;
-      // the archive itself is only ever read.
-      await this.importTrainingLabelsOnce();
     } catch (err) {
       console.error('Failed to load project source file:', err);
       const errorMsg = (err as Error).message || String(err);
@@ -13031,13 +10239,8 @@ export class PdfPickerComponent implements OnInit {
    * nav is where the pointer belongs — a Label tab you cannot click a block from
    * is a palette, not a mode.
    *
-   * For a corpus book, Label may only open over the corpus book's OWN blocks,
-   * and that is checked before anything changes so a refusal leaves the window
-   * exactly as it was. A session's labelling is otherwise only discovered to be
-   * worthless when the save is refused at the end of it.
    */
   setNavTab(tab: DocumentNavTab): void {
-    if (tab === 'label' && this.corpusMode() && !this.ensureCorpusLabelUniverse()) return;
     this.navTab.set(tab);
     this.activatePanel(null);
   }
@@ -13057,11 +10260,15 @@ export class PdfPickerComponent implements OnInit {
     // bypass used to sit in front of the check.
     if (this.disabledTasks().has(id as TaskId)) return;
 
-    // The book's passes are entries that START WORK rather than open a panel.
-    // They keep no `activePanel` for the same reason Select and OCR do not: what
-    // they leave behind is a record on the book, and the rail reads it back.
+    // The book's entries START WORK rather than open a panel. They keep no
+    // `activePanel` for the same reason Select does not: what they leave behind
+    // is a file or a record, and the rail reads that back.
     if (id !== 'analysis' && isEpubPassId(id)) {
       this.startEpubPass(id);
+      return;
+    }
+    if (id === 'export-tts') {
+      void this.exportTtsCopy();
       return;
     }
 
@@ -13069,14 +10276,6 @@ export class PdfPickerComponent implements OnInit {
     // pointer, so the click does what it looks like it does.
     if (id === 'select') {
       this.setNavTab('select');
-      return;
-    }
-
-    // OCR has no state worth parking in a side panel — the panel existed only
-    // to host a "Run OCR…" button. Open the settings modal straight from the
-    // rail instead of making the user cross the window to reach it.
-    if (id === 'ocr') {
-      this.showOcrSettings.set(true);
       return;
     }
 
@@ -13733,42 +10932,6 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  // OCR methods
-  /**
-   * Supply a page image to OCR, rendering it if it isn't already.
-   *
-   * Pages render lazily as you scroll, so `pageImages` only holds what you
-   * have actually looked at. OCR over a whole book used to ask for pages that
-   * had never been rendered, get null for every one, skip them all, and finish
-   * instantly having done nothing — which reads as "the button did nothing".
-   */
-  async getPageImageForOcr(pageNum: number): Promise<string | null> {
-    // Lightweight mode has no renderer attached — OCR routes to the headless path.
-    if (this.lightweightMode()) return null;
-
-    // Render at a FIXED resolution, and never reuse the display cache.
-    //
-    // The display scale is adaptive by page count (1.5 over 500 pages, 2.0 over
-    // 200, else 2.5 — i.e. 108, 144 or 180 dpi) because display rendering trades
-    // resolution for memory. Feeding that to OCR made a book's OCR resolution
-    // depend on its LENGTH, and — because a scrolled page was served from the
-    // display cache — on which pages you happened to look at.
-    //
-    // Both matter beyond image quality. Tesseract's paragraph grouping shifts
-    // with resolution, and the whole training corpus was OCR'd at 200 dpi, so
-    // anything else produces blocks that do not correspond to the labels or to
-    // what the model was trained on. Measured: identical settings at 200 dpi
-    // reproduce an archived session's blocks exactly, 206/206 bbox and text.
-    try {
-      const rendered = await this.electronService.renderPage(pageNum, OCR_RENDER_SCALE);
-      if (rendered) return rendered;
-      console.warn(`getPageImageForOcr(${pageNum}): render produced no image`);
-    } catch (err) {
-      console.error(`getPageImageForOcr(${pageNum}): render failed`, err);
-    }
-    return null;
-  }
-
   // ───────────────────────────────────────────────────────────────────────────
   // The working document
   //
@@ -13795,21 +10958,19 @@ export class PdfPickerComponent implements OnInit {
    * The documents for the book on screen, or null when there are none.
    *
    * A working document is cast into a PROJECT directory and named after the
-   * project's primary, so a book with no project has none — a corpus book (which
-   * is deliberately not a project), a loose file opened from the library, a
-   * review EPUB. That is a real state and not a missing value: those books are
+   * project's primary, so a book with no project has none — a loose file opened
+   * from the library, a book. That is a real state and not a missing value: those books are
    * edited through the editor's own block list and never through annotations, so
    * the affordances that need a document say so rather than guessing.
    */
   readonly workingDocumentRef = computed<DocumentRef | null>(() => {
-    if (this.corpusMode()) return null;
     const projectDir = this.projectPath();
     if (!projectDir) return null;
-    // The PDF, never whatever artifact is on screen. The EPUB station puts this
-    // project's book in the viewer, and main refuses an EPUB here BY NAME ("the
-    // document pipeline casts a working PDF from the book's original") — so a
-    // ref built from the displayed file would tear the block layer down every
-    // time the user looked at the book they had just built.
+    // The PDF, never whatever artifact is on screen. Opening this project's book
+    // puts an EPUB in the viewer, and main refuses an EPUB here BY NAME (a
+    // working copy is cast from the book's PDF original) — so a ref built from
+    // the displayed file would tear the block layer down every time the user
+    // looked at the book.
     const sourcePath = this.curatedPdfPath();
     return sourcePath ? { projectDir, sourcePath } : { projectDir };
   });
@@ -13819,8 +10980,8 @@ export class PdfPickerComponent implements OnInit {
    *
    * Tracked rather than read off the viewer because the two are different
    * questions — "which file am I looking at" and "which file are the documents
-   * cast from" — and they stopped having the same answer the moment the EPUB
-   * became a station you can stand on. Null is a real state: a project that
+   * cast from" — and they stopped having the same answer the moment the book
+   * became something this window can show. Null is a real state: a project that
    * arrived as a book has no PDF, and main says exactly that when asked.
    */
   private readonly curatedPdfPath = signal<string | null>(null);
@@ -13860,19 +11021,17 @@ export class PdfPickerComponent implements OnInit {
    * that original and paints the annotations over it — so "is the working
    * document on screen" is exactly "is the project's PDF on screen".
    *
-   * Measured from the path rather than from the station, deliberately: this is
-   * what the station is DERIVED from, and a gate that read the station back
-   * would be answering with its own answer. It is also synchronous — no round
-   * trip to main can leave a window painting one book's blocks over another's
-   * while it waits.
+   * Measured from the path, deliberately, and synchronously: no round trip to
+   * main can leave a window painting one book's blocks over another's while it
+   * waits.
    *
-   * WHAT IT IS FOR (second real session, 2026-08-04). Phase B keeps the block
-   * layer OPEN at the EPUB station on purpose: `workingDocumentRef` tracks the
-   * PROJECT's PDF rather than the file on screen, because building it from the
-   * displayed file tore the layer down every time the user looked at the book
-   * they had just built (commit acd6eaa2). But an open layer was also a MIRRORED
-   * one, so standing on the book painted the working PDF's blocks, deletions and
-   * categories over the EPUB's own analysis — Owen: "it shouldnt be overlaying
+   * WHAT IT IS FOR (second real session, 2026-08-04). The block layer stays OPEN
+   * while the book is on screen, on purpose: `workingDocumentRef` tracks the
+   * PROJECT's PDF rather than the file in the viewer, because building it from
+   * the displayed file tore the layer down every time the user looked at the
+   * book (commit acd6eaa2). But an open layer was also a MIRRORED one, so
+   * showing the book painted the working PDF's blocks, deletions and categories
+   * over the EPUB's own analysis — Owen: "it shouldnt be overlaying
    * changes/blocks from the pdf on top of the epub. this is a separate entity
    * now". The layer stays open; the mirroring, and every write that rides it,
    * stops at the artifact boundary.
@@ -14054,35 +11213,18 @@ export class PdfPickerComponent implements OnInit {
     return block.category_id === 'chapter' && !block.is_image;
   }
 
-  /** The run key for this document — see `detectBookKey`. */
-  bookKey(): string {
-    return this.detectBookKey();
-  }
-
-  /**
-   * A stage the queue ran for this book has finished: read the document again.
-   *
-   * The dialog that submitted it is destroyed when it closes, which is exactly
-   * when a thirty-minute pass is most likely to finish, so the component that
-   * outlives it does the reading.
-   */
-  async onDocumentReadyToPaint(): Promise<void> {
-    await this.loadWorkingDocument();
-  }
-
   /**
    * Read the working document and put its blocks on the pages.
    *
    * Three outcomes, and they are three different facts:
    *
-   *  - **No ref.** The book is not a project (a corpus book, a loose file), so
-   *    there are no documents and nothing failed. The editor's own block list
-   *    stands.
-   *  - **A ref, and no block layer to read yet.** Every book is in this state
-   *    until Detect has run. The pipeline is still reachable — that is what
-   *    `workingDocumentOpen` says — and main's own sentence goes to the console,
-   *    because opening a book is not the moment to interrupt somebody about a
-   *    stage they have not asked for.
+   *  - **No ref.** The document is not a project's (a loose file), so there are
+   *    no documents and nothing failed. The editor's own block list stands.
+   *  - **A ref, and no block layer to read yet.** Every project is in this state
+   *    until a working copy has been minted and curated. It is still reachable —
+   *    that is what `workingDocumentOpen` says — and main's own sentence goes to
+   *    the console, because opening a book is not the moment to interrupt
+   *    somebody about a file they have not asked for.
    *  - **A block layer.** It replaces what is on screen. It is the document.
    */
   private async loadWorkingDocument(): Promise<void> {
@@ -14100,279 +11242,43 @@ export class PdfPickerComponent implements OnInit {
       // proof main answered about this book's documents and only the block layer
       // is absent.
       this.workingDocumentOpen.set(this.documentBlocks.state() !== null);
-      void this.landOnArrival();
       console.info('[document] no block layer for this book yet:', err);
       return;
     }
     this.workingDocumentOpen.set(true);
     this.blockLayerRead.set(true);
     this.selectedBlockIds.set([]);
-    void this.landOnArrival();
     this.saveCurrentDocumentState();
   }
 
-  /**
-   * The ARCHIVE ORIGINAL's measured class, or null until main has answered.
-   *
-   * Stamped with the project it was measured for, like every other main answer
-   * this window holds: a window moves between books and the ask is a round trip,
-   * so an unstamped answer about book B would be read as book A's — and this one
-   * decides whether a book is cast without asking.
-   */
-  private readonly originalClassAnswer =
-    signal<{ dir: string; documentClass: DocumentClass } | null>(null);
-
-  /** The measured class for THIS project, or null. */
-  private readonly originalClass = computed<DocumentClass | null>(() => {
-    const answer = this.originalClassAnswer();
-    const dir = this.projectPath();
-    return answer && dir && answer.dir === dir ? answer.documentClass : null;
-  });
+  // ── Reset, the one thing the working document's append-only shape powers ──
 
   /**
-   * Ask main which pipeline this book's original belongs to.
-   *
-   * Only for a book that has not been cast — once there is a working document
-   * its marker is the authority, and re-measuring the original would be a second
-   * answer to a settled question. A refusal leaves the class UNKNOWN, which
-   * `decideArrival` reads as "stand still": there is no safe guess here, because
-   * both wrong answers cost the user real time.
-   */
-  private async measureOriginalClass(): Promise<void> {
-    const ref = this.workingDocumentRef();
-    const dir = this.projectPath();
-    if (!ref || !dir) return;
-    try {
-      const documentClass = await this.electronService.documentMeasureClass(ref);
-      this.originalClassAnswer.set({ dir, documentClass });
-    } catch (err) {
-      // Ordinary for a book with no PDF original — main refuses that by name —
-      // and a real fault for a damaged one. Either way nothing is assumed.
-      this.originalClassAnswer.set(null);
-      console.info('[document] could not measure this book\'s original:', (err as Error).message);
-    }
-  }
-
-  /**
-   * Stand where this book actually is — and, for a book that has nowhere to
-   * stand yet, make somewhere.
-   *
-   * RULED 2026-08-04: you never START on a read-only book
-   * (`shared/document/arrival.ts` holds the whole rule and why). This is the
-   * window's half — measure, decide, act — and every branch is derived from the
-   * documents rather than remembered from last session.
-   *
-   * A station swap is this window changing artifacts, and it decides for itself.
-   */
-  private async landOnArrival(): Promise<void> {
-    if (this.stationSwapping) return;
-
-    // The cheap answer first: a book that already has a working copy needs no
-    // measurement at all, and asking for one on every open would put a
-    // page-sampling read in front of every book in the library.
-    if (this.presentStations().includes('working')) {
-      this.requestedStation.set('working');
-      await this.payOpenWhenFinished();
-      return;
-    }
-    this.requestedStation.set('archive');
-
-    const projectDir = this.projectPath();
-    if (projectDir && this.autoCastAttemptedFor === projectDir) return;
-    await this.measureOriginalClass();
-
-    const action = decideArrival({
-      hasProject: !!this.projectPath(),
-      isCorpusBook: this.corpusMode(),
-      book: this.bookDocuments(),
-      documentClass: this.originalClass(),
-      // The DOCUMENT stage, not `stationBusy()`. `stationBusy` also counts
-      // `loading()` — the picker rendering pages — and this runs while a book is
-      // still opening, so reading it here would skip the cast on the ordinary
-      // path and leave every text PDF standing on its archive.
-      //
-      // A stage the QUEUE started is not visible from here, and it does not need
-      // to be: `beginStage` refuses a second writer on one project BY NAME, and
-      // that refusal lands on `lastError` where the nav shows it verbatim.
-      stageRunning: this.documentBlocks.stageRunning() !== null,
-    });
-
-    switch (action) {
-      case 'stand-on-working':
-      case 'stand-on-archive':
-        return;
-      case 'offer-cast':
-        // A scan costs minutes and 1.4 GB of page renders, so it is OFFERED and
-        // never taken: the dialog opens with the run one press away and its
-        // progress inline, and the archive stays on screen until it lands.
-        this.autoCastAttemptedFor = projectDir;
-        this.showOcrSettings.set(true);
-        return;
-      case 'cast-now':
-        // Seconds, on the publisher's own text layer. Nothing is asked because
-        // there is nothing worth interrupting somebody about.
-        this.autoCastAttemptedFor = projectDir;
-        await this.castOnArrival();
-        return;
-    }
-  }
-
-  /**
-   * The project this window has already tried to cast on arrival, or null.
-   *
-   * Once per BOOK per window. `open()` runs again after every stage and after
-   * every reload, and a cast that FAILED — foundry missing, a damaged original —
-   * would otherwise be retried on every one of them, forever, with the window
-   * unusable in between.
-   *
-   * Keyed by project rather than a bare flag, because one window opens many
-   * books: a flag set by the first book would follow the window to the next one
-   * and leave every book after it standing on a read-only archive — the exact
-   * thing this arrival rule exists to prevent.
-   */
-  private autoCastAttemptedFor: string | null = null;
-
-  /**
-   * Mint the working copy and stand on it. The text-PDF path, on open.
-   *
-   * `documentBlocks.getText()` and not a queue submission: this run is seconds
-   * long, the window is right here to show it, and a queue row for it would be
-   * gone before anyone looked. Its failure lands on `lastError`, which the
-   * document nav shows verbatim — the same place every other stage's failure is
-   * said.
-   */
-  private async castOnArrival(): Promise<void> {
-    console.log('[document] casting the working copy on open (text PDF — seconds, not minutes)');
-    await this.documentBlocks.getText();
-    const failure = this.documentBlocks.lastError();
-    if (failure) {
-      console.error('[document] the cast on open did not land:', failure);
-      return;
-    }
-    // Measured, not assumed: the cast is what makes the station exist, and the
-    // station list is read off the documents `getText()` just re-read.
-    if (this.presentStations().includes('working')) {
-      this.blockLayerRead.set(true);
-      this.requestedStation.set('working');
-    }
-  }
-
-  /**
-   * Pay out an "open when finished" promise, if this book is carrying one.
-   *
-   * The promise lives in MAIN (`electron/document-open-when-finished.ts`) so it
-   * outlives the window that made it — the old version was a listener on this
-   * component filtered to the project it happened to be showing, which meant it
-   * only ever paid out for a user who had stayed and watched. Taking it is
-   * atomic, so a book open in two windows is opened by one of them.
-   *
-   * Whether the station is actually THERE is answered here, from the measurement
-   * already in hand: `document:stage-finished` fires from a `finally`, so a
-   * stage that failed or was cancelled reaches this point too, and opening a
-   * station that does not exist would show the user a document the run never
-   * wrote.
-   */
-  private async payOpenWhenFinished(): Promise<void> {
-    const projectDir = this.projectPath();
-    if (!projectDir) return;
-    const station = await this.electronService.documentTakeOpenWhenFinished(projectDir);
-    if (station === null) return;
-    // The window may have been pointed at another book across the round trip.
-    if (this.projectPath() !== projectDir) return;
-    if (!STATIONS.includes(station as StationId)) {
-      throw new Error(
-        `Main handed back "${station}" as a station to open, and this pipeline has no such `
-        + 'station. Nothing is opened rather than guessing which one was meant.'
-      );
-    }
-    const target = station as StationId;
-    if (!this.presentStations().includes(target)) {
-      console.log(
-        `[open-when-finished] not opening the ${target} station for ${projectDir}: the run ended `
-        + 'without writing it.'
-      );
-      return;
-    }
-    // `goToStation`, not `openStation`: this is the app keeping a promise the
-    // user made, and the busy guard is there to stop a user changing artifacts
-    // mid-stage. A window that is still painting its first page would otherwise
-    // swallow the payout it was opened to deliver.
-    await this.goToStation(target);
-  }
-
-  // ── The stages, as the picker offers them ─────────────────────────────────
-
-  /**
-   * Detect. ONE confirmation, because it overwrites hand curation.
-   *
-   * Nothing here stages or previews the result: if it ran, the annotations in
-   * the PDF are the new truth, and the picker shows them because it re-reads the
-   * document afterwards.
-   */
-  async runDetect(): Promise<void> {
-    const state = this.documentBlocks.state();
-    if (state && state.blockCount > 0) {
-      const choice = await this.electronService.showConfirmDialog({
-        title: 'Detect blocks again?',
-        message:
-          `This book already has ${state.blockCount} blocks, and detecting replaces all of them `
-          + 'with a fresh reading of the pages.',
-        detail:
-          'Every label, deletion, merge and chapter title you have set by hand goes with them. '
-          + 'Everything the pages say stays — this is a re-reading, not a loss of text.',
-        confirmLabel: 'Detect blocks',
-        cancelLabel: 'Keep what is there',
-        type: 'warning',
-      });
-      if (!choice.confirmed) return;
-    }
-    await this.documentBlocks.detect();
-    // The service re-reads the document after the stage and reports a failure on
-    // `lastError` rather than throwing, so a clean run IS a block layer in hand.
-    if (!this.documentBlocks.lastError()) this.blockLayerRead.set(true);
-  }
-
-  /**
-   * Build the book. Reflow reads the working document and writes
-   * `<Original>.epub`, properly named, in one pass.
-   *
-   * There is no second exporter to fall through to and no gate in front of this:
-   * the documents on disk are the whole of the input, so a missing one is an
-   * error naming the stage that writes it rather than a reason to rebuild a
-   * different book out of the editor's block text.
-   */
-  private async reflowToEpub(): Promise<string> {
-    const epubPath = await this.documentBlocks.reflow();
-    const failure = this.documentBlocks.lastError();
-    if (failure) throw new Error(failure);
-    return epubPath;
-  }
-
-  /**
-   * Put the working document back to how it stood at the end of a stage.
+   * Put the working copy back to how it stood at a recorded boundary — or, with
+   * `none`, to the copy as it was minted.
    *
    * One truncate of an append-only file: no GPU, no re-run, and the result is
    * not an approximation of that document but that document. Confirmed first,
-   * because everything appended after the boundary — including every hand
-   * correction — is what is being cut off.
+   * because everything appended after the boundary — every hand correction — is
+   * what is being cut off.
    */
   async resetToStage(target: ResetTarget): Promise<void> {
     const label = DOCUMENT_STAGE_LABELS[target];
     const choice = await this.electronService.showConfirmDialog({
       title: `Reset to ${label}?`,
-      message: `The working document goes back to exactly how it stood ${target === 'none'
-        ? 'before any of the pages had been read'
+      message: `The working copy goes back to exactly how it stood ${target === 'none'
+        ? 'when it was made'
         : `when ${label} finished`}.`,
       detail: 'Everything done to it since then — labels, deletions, merges, chapter titles — is '
-        + 'discarded. The original in archive/ is untouched either way.',
+        + 'discarded. The archive original is untouched either way.',
       confirmLabel: `Reset to ${label}`,
       cancelLabel: 'Leave it alone',
       type: 'warning',
     });
     if (!choice.confirmed) return;
     await this.documentBlocks.resetTo(target);
-    // Resetting past Get Text re-copies the archive primary, so there is no
-    // block layer on the other side of it — only a document waiting to be read.
+    // A reset to the minted copy leaves a document with no block layer at all —
+    // only pages waiting to be analysed again.
     if (target === 'none') this.blockLayerRead.set(false);
   }
 
@@ -14448,449 +11354,32 @@ export class PdfPickerComponent implements OnInit {
     this.selectedBlockIds.set([survivor]);
   }
 
-  onOcrCompleted(event: OcrCompletionEvent | OcrPageResult[]): void {
-    // Handle both old format (array) and new format (event object)
-    const results = Array.isArray(event) ? event : event.results;
-
-    // Count total text lines with bboxes
-    const totalLines = results.reduce((sum, r) => sum + (r.textLines?.length || 0), 0);
-
-    if (totalLines === 0) {
-      // No bounding box data - just show success message
-      this.showAlert({
-        title: 'OCR Complete',
-        message: `Processed ${results.length} pages. No bounding boxes available for block creation.`,
-        type: 'success'
-      });
-      return;
-    }
-
-    const pageDims = this.pageDimensions();
-
-    // Recognized lines → categorized paragraph blocks, in ONE shared call.
-    //
-    // Building the per-line blocks used to happen here, inline: ~120 lines that
-    // converted each OCR box to page points, estimated a font size, guessed a
-    // region, and assigned a placeholder category — every one of which the
-    // post-processor then discarded and recomputed. The CLI could not reach any of
-    // it, so `cli/ocr-pdf.js` grouped Tesseract's own paragraphs instead and
-    // produced a DIFFERENT segmentation for the same page. Both callers now enter
-    // at `processOcrPageResults`, so the blocks the CLI writes into a manifest are
-    // the blocks this picker would have produced, down to the id shape the hand
-    // labels are keyed to.
-    //
-    // The pixel→point conversion moved with it, and that fixed a live bug: this
-    // code divided OCR boxes by a scale derived from the document's PAGE COUNT
-    // (1.5 / 2.0 / 2.5), left over from when OCR reused the display raster. OCR has
-    // rendered at OCR_RENDER_SCALE (2.78) since, so every OCR block's geometry was
-    // inflated by up to 1.85x — which moved `y / pageHeight` and with it every
-    // footnote, footer and caption verdict.
-    const processedResult = this.ocrPostProcessor.processOcrPageResults(results, pageDims);
-    const pagesWithOcrResults = processedResult.pages;
-    const newCategories = processedResult.categories;
-
-    // Respect existing crop regions: OCR reads the untouched raster, so it would
-    // otherwise re-introduce text that a crop deleted. Drop incoming blocks that
-    // fall fully outside a cropped page's rect (same geometry test as apply).
-    let processedBlocks = processedResult.blocks;
-    const cropRegions = this.editorState.cropRegions();
-    if (cropRegions.size > 0) {
-      let dropped = 0;
-      processedBlocks = processedBlocks.filter(b => {
-        const region = cropRegions.get(b.page);
-        if (region && isBlockFullyOutside(b, region.rect)) {
-          dropped++;
-          return false;
-        }
-        return true;
-      });
-      if (dropped > 0) {
-        console.info(`[crop] dropped ${dropped} OCR block(s) that fell outside an existing crop region`);
-      }
-    }
-
-    // Merge new OCR categories with existing categories
-    const existingCategories = this.categories();
-    const mergedCategories = { ...existingCategories, ...newCategories };
-    this.editorState.categories.set(normalizeCategories(mergedCategories));
-
-    // Only replace blocks on pages that have OCR results
-    // Pages with no OCR results keep their existing blocks
-    if (pagesWithOcrResults.length > 0) {
-      // OCR mints brand-new block IDs, so any hand-set category on a replaced
-      // page now points at a block that no longer exists. Drop those instead of
-      // leaving them: an orphaned correction can never re-apply, but it would
-      // still be counted as a label and written into training data as one.
-      const replacedPages = new Set(pagesWithOcrResults);
-      const orphaned = this.blocks()
-        .filter(b => replacedPages.has(b.page) && !b.is_image)
-        .map(b => b.id)
-        .filter(id => this.editorState.categoryCorrections().has(id));
-      if (orphaned.length > 0) {
-        this.editorState.categoryCorrections.update(map => {
-          const next = new Map(map);
-          for (const id of orphaned) next.delete(id);
-          return next;
-        });
-        console.warn(`[OCR] Dropped ${orphaned.length} label(s) on re-OCR'd pages — their blocks were replaced.`);
-      }
-
-      // Replace blocks with processed OCR blocks
-      this.editorState.replaceTextBlocksOnPages(pagesWithOcrResults, processedBlocks);
-
-      // Update spans for OCR pages so custom category matching searches OCR text
-      for (const pageNum of pagesWithOcrResults) {
-        const pageBlocks = processedBlocks.filter(b => b.page === pageNum);
-        const ocrBlocksForSpans = pageBlocks.map(b => ({
-          x: b.x,
-          y: b.y,
-          width: b.width,
-          height: b.height,
-          text: b.text,
-          font_size: b.font_size,
-          id: b.id
-        }));
-        this.electronService.updateSpansForOcr(pageNum, ocrBlocksForSpans);
-      }
-
-      // Clear selection since old block IDs no longer exist
-      this.selectedBlockIds.set([]);
-
-      // Note: OCR fill regions (white backgrounds behind OCR text) are rendered as
-      // SVG overlays in the pdf-viewer, not baked into the page image. This allows
-      // toggling OCR text off to reveal the original scanned page underneath.
-    }
-
-    // Update category stats
-    this.editorState.updateCategoryStats();
-
-    // Update the open document's blocks
-    this.saveCurrentDocumentState();
-
-    // A corpus book has no project and no autosave, so nothing else in this
-    // method's wake will write these blocks anywhere. `persistCorpusOcr` is the
-    // whole of persistence for them; it is fired here, after the blocks are on
-    // screen, so that what gets written is exactly what the user is looking at.
-    //
-    // THE WHOLE DOCUMENT, not `processedBlocks`. This method is called once per
-    // batch of OCR results, and blocks.json is written by REPLACEMENT — so
-    // persisting the batch means the last batch is the only one that survives.
-    // "Continue in background" splits a run in two at whatever page the user
-    // pressed it on, and the second half silently deleted the first half from
-    // disk. A single run over a whole book hides this perfectly, because there
-    // the batch IS the document.
-    //
-    // Same filter as the project save above: OCR output only, never a hand-typed
-    // chapter box, which is an authored artifact and not something a model should
-    // be trained to reproduce.
-    if (this.corpusMode()) {
-      void this.persistCorpusOcr(this.blocks().filter(b => b.is_ocr && !b.is_manual));
-    }
-
-    // Log results for debugging
-    if (processedBlocks.length > 0) {
-    } else {
-    }
-  }
-
   /**
-   * Write an OCR pass into the corpus book's own blocks.json.
+   * Close one of the open documents, by id.
    *
-   * THE ONLY thing that persists OCR for a corpus book. The project autosave is
-   * refused in corpus mode (`refuseProjectWriteForCorpus` — there is no project
-   * to save into, and minting one is the thing corpus mode exists to prevent),
-   * so a failure here that says nothing means the user's OCR pass is gone the
-   * moment the window closes, with nothing on screen having hinted at it. Every
-   * outcome therefore ends in a dialog, success included: "did that save?" is
-   * the question this whole path exists to answer.
-   *
-   * One refusal is not an error but a decision. Re-OCR mints new block ids
-   * (`ocr_p3_k2x9f1_17` — the suffix is per run), so on a book that already
-   * carries hand labels it does not move them onto the new blocks, it orphans
-   * every one. Only the user can weigh that, so it is put to them in as many
-   * words — including that the old labels are MOVED ASIDE to
-   * labels.orphaned-<timestamp>.json rather than deleted — and retried with
-   * `force` only if they say yes.
-   *
-   * The rail already refuses OCR on a labelled book, so that refusal should not
-   * normally be reachable. "Should not" is why it is handled: OCR also arrives
-   * here from the job service and the headless path, and a pass that has ALREADY
-   * RUN is far too late to start discarding.
+   * The tab STRIP is gone with the station bar — the picker is one screen — but
+   * a window still holds several documents (a project's PDF, its book), and
+   * Cmd+W still closes the one on screen.
    */
-  private async persistCorpusOcr(blocks: TextBlock[]): Promise<void> {
-    const book = this.corpusBook();
-    if (!book) {
-      // corpusMode() is true (it is derived from the input path) and yet no book
-      // is loaded, so the pass that just ran has nowhere to go. Loud, because the
-      // alternative is losing it in silence.
-      this.showAlert({
-        title: 'OCR was not saved',
-        message:
-          'This window is in corpus mode but no training book is loaded, so there is no blocks.json '
-          + 'to write to. The OCR on screen has not been saved anywhere. Re-open the book from the '
-          + 'Training tab and run it again.',
-        type: 'error',
-      });
-      return;
-    }
-
-    const input = {
-      blocks,
-      pageDimensions: this.pageDimensions(),
-      // The file the pages on screen came from, as main resolved it — not
-      // whatever path the editor happens to consider "current".
-      sourceFile: book.pdfPath,
-      ocrEngine: this.ocrSettings().engine,
-    };
-
-    let result = await this.electronService.trainingSaveBlocks(book.dir, input);
-
-    if (!result.success && this.isCorpusOrphanRefusal(result.error)) {
-      const choice = await this.electronService.showConfirmDialog({
-        title: 'This book already has hand labels',
-        message:
-          'Saving this OCR pass replaces the blocks those labels point at. Block ids are minted '
-          + 'per OCR run, so none of the existing labels will match the new blocks — they cannot '
-          + 'be carried over.',
-        detail:
-          'The existing labels.json is MOVED ASIDE to labels.orphaned-<timestamp>.json in the '
-          + 'book\'s folder, not deleted, so the work is still there to read. The book itself '
-          + 'goes back to having no labels and has to be labelled again from the new blocks.\n\n'
-          + `${book.dir}`,
-        confirmLabel: 'Save OCR and orphan the labels',
-        cancelLabel: 'Keep the labels — discard this OCR',
-        type: 'warning',
-      });
-      if (!choice.confirmed) {
-        this.showAlert({
-          title: 'OCR was not saved',
-          message:
-            'The existing labels were kept, so this OCR pass was not written. The blocks on screen '
-            + 'are not saved anywhere — close the book without saving to get its recorded blocks '
-            + 'back.',
-        });
-        return;
-      }
-      result = await this.electronService.trainingSaveBlocks(book.dir, input, { force: true });
-    }
-
-    if (!result.success || !result.result) {
-      this.showAlert({
-        title: 'OCR was not saved',
-        message:
-          (result.error || `Writing blocks.json under ${book.dir} failed.`)
-          + '\n\nNothing was written, and corpus books are not autosaved, so the OCR on screen '
-          + 'exists only in this window.',
-        type: 'error',
-      });
-      return;
-    }
-
-    const { path: written, blocks: count, orphanedLabels } = result.result;
-
-    // The book has moved from 'added' to 'ocr' (or been re-OCR'd). Re-read it
-    // from main rather than patching the signal by hand: `from`, `labelled` and
-    // the snapshot are all derived from what is on disk, and a locally invented
-    // CorpusBookInfo would be this renderer's opinion of a file main owns. The
-    // editor is NOT re-pinned to the re-read snapshot — it is the same block set
-    // that was just written, and replacing it would throw away the selection and
-    // the categories for nothing.
-    let staleBanner: string | null = null;
-    const reloaded = await this.electronService.corpusLoad(book.dir);
-    if (reloaded.success && reloaded.book) {
-      this.corpusBook.set(reloaded.book);
-      if (orphanedLabels) {
-        // Forced write: labels.json is gone from under the editor, so the
-        // corrections still in it are no longer backed by anything on disk.
-        this.editorState.categoryCorrections.set(new Map());
-        this.editorState.categoryConfidence.set(new Map());
-      }
-    } else {
-      staleBanner = reloaded.error || 'the book could not be re-read';
-      console.error('[corpus] blocks.json was written but the book could not be re-read:', staleBanner);
-    }
-
-    // Everything on screen is now on disk, so the unsaved-changes indicator has
-    // nothing left to be about — unless labels are open in the editor, which
-    // only blocks.json's write does not cover.
-    if (this.editorState.categoryCorrections().size === 0) {
-      this.editorState.markSaved();
-    }
-
-    this.showAlert({
-      title: 'OCR saved to the training corpus',
-      message:
-        `${count.toLocaleString()} blocks written to ${written}.`
-        + (orphanedLabels ? `\n\nThe previous labels were moved to ${orphanedLabels}.` : '')
-        + (staleBanner
-          ? `\n\nThe write succeeded, but re-reading the book afterwards failed (${staleBanner}), `
-            + 'so the banner above may be out of date until you re-open it.'
-          : ''),
-      type: 'success',
-    });
-  }
-
-  /**
-   * Is this the backend's "already carries hand labels" refusal?
-   *
-   * Matched on the message because the API returns a string and nothing else —
-   * see `saveTrainingBlocks` in electron/corpus-book.ts, which is the only
-   * producer of it. A miss here degrades to showing the error as-is, which is
-   * the correct outcome for every OTHER failure anyway; it can never degrade
-   * into forcing a write the user was not asked about.
-   */
-  private isCorpusOrphanRefusal(error: string | undefined): boolean {
-    return /already carries \d+ hand labels/.test(error ?? '');
-  }
-
-  /**
-   * Called when an OCR job starts in the background
-   */
-  async onBackgroundOcrStarted(jobId: string): Promise<void> {
-    // Check if this is a headless OCR job (lightweight mode)
-    if (jobId.startsWith('headless_')) {
-      console.log(`[OCR] Starting headless OCR job: ${jobId}`);
-
-      // Parse parameters from the special job ID
-      // Format: headless_timestamp_engine_language_page1,page2,page3
-      const parts = jobId.split('_');
-      const engine = parts[2];
-      const language = parts[3];
-      const pagesStr = parts[4] || '';
-      const pages = pagesStr ? pagesStr.split(',').map(p => parseInt(p, 10)) : [];
-
-      if (pages.length === 0) {
-        // No pages specified, process all
-        const totalPages = this.totalPages();
-        for (let i = 0; i < totalPages; i++) {
-          pages.push(i);
-        }
-      }
-
-      const outcome = await this.runHeadlessOcr(engine, language, pages);
-      if (outcome.ok) {
-        this.showAlert({
-          title: 'OCR Complete',
-          message: `Successfully processed ${outcome.pages} pages with ${engine}`,
-          type: 'success'
-        });
-      } else {
-        this.showAlert({ title: 'OCR Failed', message: outcome.error, type: 'error' });
-      }
-
-      return; // Don't continue with regular job processing
-    }
-
-    // Regular OCR job (non-lightweight mode)
-    // The job will continue running and call onOcrCompleted when done
-    // via the completion callback registered in the OcrJobService
-  }
-
-  /**
-   * OCR the whole PDF in the main process and apply the result, resolving only
-   * once the blocks are in the document.
-   *
-   * Reports its outcome instead of alerting, because it has two callers that
-   * want to say different things: the OCR modal announces the run it started,
-   * while the import-time chain has a second stage to get to and must not stop
-   * on a dialog nobody is sitting in front of.
-   */
-  private async runHeadlessOcr(
-    engine: string,
-    language: string,
-    pages: number[],
-  ): Promise<{ ok: true; pages: number } | { ok: false; error: string }> {
-    this.loading.set(true);
-    this.loadingText.set(`Initializing OCR for ${pages.length} pages...`);
-
-    const unsubscribe = this.electronService.onHeadlessOcrProgress((data) => {
-      this.loadingText.set(`Processing OCR: ${data.current}/${data.total} pages`);
-    });
-
-    try {
-      const results = await this.electronService.ocrProcessPdfHeadless(
-        this.effectivePath(),
-        { engine, language, pages }
-      );
-
-      if (!results || results.length === 0) {
-        return { ok: false, error: 'No text was detected in the document' };
-      }
-
-      this.onOcrCompleted({
-        results: results.map(r => ({
-          page: r.page,
-          text: r.text,
-          confidence: r.confidence,
-          textLines: r.textLines,
-        })),
-      });
-      return { ok: true, pages: results.length };
-    } catch (err) {
-      console.error('[OCR] Headless OCR failed:', err);
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : 'Unknown error during OCR processing',
-      };
-    } finally {
-      unsubscribe();
-      this.loading.set(false);
-    }
-  }
-
-  /**
-   * Dismiss a completed/errored background job
-   */
-  onDismissBackgroundJob(jobId: string): void {
-    this.ocrJobService.dismissJob(jobId);
-  }
-
-  /**
-   * Cancel a running or queued background job
-   */
-  onCancelBackgroundJob(jobId: string): void {
-    this.ocrJobService.cancelJob(jobId);
-  }
-
-  /**
-   * Restore a background job by reopening the OCR settings modal
-   */
-  onRestoreBackgroundJob(_jobId: string): void {
-    this.showOcrSettings.set(true);
-  }
-
-  // Tab management methods
-  onTabSelected(tab: DocumentTab): void {
-    if (tab.id === this.activeDocumentId()) return;
-
-    // Save current document state
-    this.saveCurrentDocumentState();
-
-    // Restore selected document state
-    this.restoreDocumentState(tab.id);
-  }
-
-  onTabClosed(tab: DocumentTab): void {
+  closeDocument(docId: string): void {
     const docs = this.openDocuments();
-    const docIndex = docs.findIndex(d => d.id === tab.id);
-    if (docIndex === -1) return;
-
-    const doc = docs[docIndex];
+    const doc = docs.find(d => d.id === docId);
+    if (!doc) return;
 
     // Auto-save if there are unsaved changes — but only when closing the
-    // ACTIVE document. saveProject() serializes the active tab's editor state,
-    // so saving for a background tab would write the wrong document's data.
+    // ACTIVE document. saveProject() serializes the active document's editor
+    // state, so saving for a background one would write the wrong data.
     if (doc.hasUnsavedChanges) {
-      if (tab.id !== this.activeDocumentId()) {
-        // Background tab with unsaved changes: we CANNOT save it (see above),
-        // and closing would silently drop the changes. Make the user decide.
+      if (docId !== this.activeDocumentId()) {
+        // Not on screen, and it CANNOT be saved (see above); closing would
+        // silently drop the changes. Make the user decide.
         this.showAlert({
           title: 'Unsaved Changes',
-          message: `"${doc.name}" has unsaved changes that cannot be saved while it is in the background. Switch to that tab to save it, or discard the changes and close it.`,
+          message: `"${doc.name}" has unsaved changes that cannot be saved while it is in the background. Switch to it to save, or discard the changes and close it.`,
           type: 'warning',
           confirmText: 'Discard Changes',
           cancelText: 'Cancel',
-          onConfirm: () => this.removeClosedTab(tab)
+          onConfirm: () => this.removeClosedDocument(docId)
         });
         return;
       }
@@ -14900,25 +11389,26 @@ export class PdfPickerComponent implements OnInit {
       }
     }
 
-    this.removeClosedTab(tab);
+    this.removeClosedDocument(docId);
   }
 
-  /** Actually remove a tab from the open-documents list (after any unsaved-changes handling). */
-  private removeClosedTab(tab: DocumentTab): void {
+  /** Actually drop a document (after any unsaved-changes handling). */
+  private removeClosedDocument(docId: string): void {
     const docs = this.openDocuments();
-    const docIndex = docs.findIndex(d => d.id === tab.id);
+    const docIndex = docs.findIndex(d => d.id === docId);
     if (docIndex === -1) return;
 
     // Clean up background text extraction subscription
-    this.textReadyUnsubs.get(tab.id)?.();
-    this.textReadyUnsubs.delete(tab.id);
+    this.textReadyUnsubs.get(docId)?.();
+    this.textReadyUnsubs.delete(docId);
 
     // Remove from list
-    const newDocs = docs.filter(d => d.id !== tab.id);
+    const newDocs = docs.filter(d => d.id !== docId);
     this.openDocuments.set(newDocs);
 
-    // If closing active tab, switch to another or show library view
-    if (tab.id === this.activeDocumentId()) {
+    // If closing the document on screen, switch to another or show the empty
+    // workspace.
+    if (docId === this.activeDocumentId()) {
       if (newDocs.length > 0) {
         // Switch to previous tab or first available
         const newIndex = Math.max(0, docIndex - 1);
@@ -14932,14 +11422,6 @@ export class PdfPickerComponent implements OnInit {
   }
 
   closeCurrentTabOrHideWindow(): void {
-    // A corpus book has no autosave, so closing is the one moment label edits
-    // can be lost. Ask, rather than discarding them the way every other document
-    // gets away with because a timer already wrote it.
-    if (this.corpusMode() && this.hasUnsavedChanges()) {
-      void this.confirmCloseCorpusBook();
-      return;
-    }
-
     // In embedded mode, Cmd+W should emit exit request (let parent handle it)
     if (this.embedded()) {
       this.exitRequested.emit();
@@ -14954,11 +11436,8 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    // Otherwise close the current document tab
-    const currentTab = this.documentTabs().find(t => t.id === activeId);
-    if (currentTab) {
-      this.onTabClosed(currentTab);
-    }
+    // Otherwise close the document on screen.
+    this.closeDocument(activeId);
   }
 
   private saveCurrentDocumentState(): void {

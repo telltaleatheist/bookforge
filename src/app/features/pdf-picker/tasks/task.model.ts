@@ -1,4 +1,3 @@
-import type { TextBlock } from '../services/pdf.service';
 import type { PassRecord } from '@shared/document/version-family';
 import {
   ALL_RAIL_TASK_IDS,
@@ -18,8 +17,9 @@ import {
  * A *task* is a discrete piece of book-prep work with a factual, derivable
  * status. WHICH tasks the rail carries is a fact about the artifact on screen
  * and lives in `shared/document/rail-tasks.ts` — the source file gets the
- * curation modes and their tasks, the book gets its text passes — so this file
- * is the STATUS half: what each entry currently says about the document.
+ * curation modes and their tasks, the book gets its text passes and the
+ * narration copy — so this file is the STATUS half: what each entry currently
+ * says about the document.
  * `analysis` is a PanelId but NOT a TaskId — it is a status-less tool (flags +
  * search), not a checklist item.
  *
@@ -164,45 +164,6 @@ export function deriveCropStatus(i: CropStatusInput): TaskStatus {
   return { kind: 'untouched', detail: 'not applied' };
 }
 
-// ── OCR ───────────────────────────────────────────────────────────────────
-
-export interface OcrStatusInput {
-  readonly blocks: readonly TextBlock[];
-  readonly deletedBlockIds: ReadonlySet<string>;
-  readonly totalPages: number;
-}
-
-export function deriveOcrStatus(i: OcrStatusInput): TaskStatus {
-  const ocrPages = new Set<number>();
-  const pagesWithText = new Set<number>();
-  for (const b of i.blocks) {
-    if (b.is_ocr) ocrPages.add(b.page);
-    // A page "has text" if it holds a live (non-deleted) non-image block.
-    if (!i.deletedBlockIds.has(b.id) && b.is_image !== true) {
-      pagesWithText.add(b.page);
-    }
-  }
-  if (ocrPages.size > 0) {
-    return { kind: 'done', detail: `run on ${ocrPages.size} ${plural(ocrPages.size, 'page')}` };
-  }
-  const pagesWithoutText = Math.max(0, i.totalPages - pagesWithText.size);
-  if (pagesWithoutText > 0) {
-    return { kind: 'suggested', detail: `${pagesWithoutText} ${plural(pagesWithoutText, 'page')} have no text` };
-  }
-  return { kind: 'untouched', detail: 'not run' };
-}
-
-/** Count of pages with no live text block — exposed for the OCR panel. */
-export function countPagesWithoutText(i: OcrStatusInput): number {
-  const pagesWithText = new Set<number>();
-  for (const b of i.blocks) {
-    if (!i.deletedBlockIds.has(b.id) && b.is_image !== true) {
-      pagesWithText.add(b.page);
-    }
-  }
-  return Math.max(0, i.totalPages - pagesWithText.size);
-}
-
 // ── Merge ─────────────────────────────────────────────────────────────────
 
 export function deriveMergeStatus(mergeCount: number): TaskStatus {
@@ -212,15 +173,21 @@ export function deriveMergeStatus(mergeCount: number): TaskStatus {
   return { kind: 'untouched', detail: 'not applied' };
 }
 
+// ── Export TTS copy ───────────────────────────────────────────────────────
+
 /**
- * The count below which building the book is worth one interruption.
+ * The narration copy: written, or not written yet.
  *
- * Not a gate: an article or a single essay really is one chapter, and refusing
- * those books outright would strand them. But an unchaptered book produces one
- * enormous audiobook file with nothing to skip between, and that is discovered
- * hours later at TTS time.
+ * Deliberately not "up to date". The copy is cut from strikes recorded against
+ * the book's sha256, and a book that has moved on VOIDS those strikes at export
+ * (shared/vlm/narration-deletions.ts) — so the export refuses by name rather
+ * than a rail entry guessing at staleness it cannot measure from here.
  */
-export const CHAPTERS_EXPORT_MINIMUM = 2;
+export function deriveNarrationCopyStatus(exists: boolean): TaskStatus {
+  return exists
+    ? { kind: 'done', detail: 'written' }
+    : { kind: 'untouched', detail: 'not written' };
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Exhaustive dispatcher
@@ -230,8 +197,15 @@ export interface TaskStatusContext {
   /** Blocks the user removed (deleted) — what Select mode is for. */
   readonly removedBlockCount: number;
   readonly crop: CropStatusInput;
-  readonly ocr: OcrStatusInput;
   readonly mergeCount: number;
+  /**
+   * The narration copy exists on disk for the book on screen.
+   *
+   * Not a pass and not provenance: `Export TTS copy` writes a SECOND file and
+   * records nothing against the book, so the only honest thing it can say about
+   * itself is whether that file is there.
+   */
+  readonly narrationCopyExists: boolean;
   /**
    * `manifest.outputs.epub.appliedPasses` for the book this window is on, in
    * execution order. An empty list is a real value — a book nothing has been
@@ -251,16 +225,15 @@ export function deriveTaskStatus(id: TaskId, ctx: TaskStatusContext): TaskStatus
       return deriveSelectStatus(ctx.removedBlockCount);
     case 'crop':
       return deriveCropStatus(ctx.crop);
-    case 'ocr':
-      return deriveOcrStatus(ctx.ocr);
     case 'merge':
       return deriveMergeStatus(ctx.mergeCount);
     // The book's own passes: what a pass says about itself is what the book
-    // RECORDS about it, so all three read the one provenance list.
-    case 'footnotes':
+    // RECORDS about it, so both read the one provenance list.
     case 'simplify':
     case 'translate':
       return derivePassStatus(id, ctx.appliedPasses);
+    case 'export-tts':
+      return deriveNarrationCopyStatus(ctx.narrationCopyExists);
     default:
       return assertNever(id);
   }

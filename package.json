@@ -51,7 +51,6 @@
     "test:working-document-writer": "npx tsc -p tsconfig.electron.json && node tools/test-working-document-writer.js",
     "test:reset-book": "npx tsc -p tsconfig.electron.json && node tools/test-reset-book.js",
     "test:display-run-merge": "npx tsc -p tsconfig.electron.json && node tools/test-display-run-merge.js",
-    "test:page-types": "npx tsc -p tsconfig.electron.json && node tools/test-page-types.js",
     "test:epub-provenance": "npx tsc -p tsconfig.electron.json && node tools/test-epub-provenance.js",
     "test:narration-deletions": "npx tsc -p tsconfig.electron.json && node tools/test-narration-deletions.js",
     "test:vlm-endpoint": "npx tsc -p tsconfig.electron.json && node tools/test-vlm-endpoint.js",
@@ -61,7 +60,6 @@
     "download:llama": "node scripts/download-llama-cpp.js",
     "postinstall": "npm run download:mupdf || echo 'MuPDF download skipped (run npm run download:mupdf manually if needed)'",
     "migrate:sidecars": "node scripts/run-sidecar-migration.cjs",
-    "test:station-ladder": "npx tsc -p tsconfig.electron.json && node tools/test-station-ladder.js",
     "test:version-family": "npx tsc -p tsconfig.electron.json && node tools/test-version-family.js",
     "test:rail-tasks": "npx tsc -p tsconfig.electron.json && node tools/test-rail-tasks.js",
     "test:component-upgrades": "npx tsc -p tsconfig.electron.json && node tools/test-component-upgrades.js"

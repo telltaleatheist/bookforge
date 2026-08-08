@@ -1306,9 +1306,15 @@ export interface ElectronAPI {
       Promise<{ success: boolean; state?: NarrationState; error?: string }>;
     saveNarrationDeletions: (projectDir: string, elements: string[]) =>
       Promise<{ success: boolean; deletions?: NarrationDeletions; error?: string }>;
-    exportNarration: (projectDir: string) => Promise<{
+    exportNarration: (
+      projectDir: string,
+      options?: { stripSupMarkers?: boolean }
+    ) => Promise<{
       success: boolean;
-      result?: { epubPath: string; relPath: string; removedElements: number; totalElements: number };
+      result?: {
+        epubPath: string; relPath: string;
+        removedElements: number; totalElements: number; removedSupMarkers: number;
+      };
       error?: string;
     }>;
   };
@@ -3061,8 +3067,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('narration:state', projectDir),
     saveNarrationDeletions: (projectDir: string, elements: string[]) =>
       ipcRenderer.invoke('narration:save-deletions', projectDir, elements),
-    exportNarration: (projectDir: string) =>
-      ipcRenderer.invoke('narration:export', projectDir),
+    exportNarration: (projectDir: string, options?: { stripSupMarkers?: boolean }) =>
+      ipcRenderer.invoke('narration:export', projectDir, options),
   },
   play: {
     startSession: () =>

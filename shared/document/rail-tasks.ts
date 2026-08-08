@@ -1,34 +1,79 @@
 /**
  * rail-tasks — what the picker's left rail offers, and why it differs per file.
  *
- * The rail used to be "the curation tools", shown exactly where curation was
- * possible. That made it disappear at the EPUB station — which is precisely
- * where the book's own passes now live (Owen, 2026-08-04: "lets move
- * translate/simplify/footnotes to a left side nav just like the select/edit
- * modes were when in a pdf").
+ * The picker is ONE SCREEN (Owen, 2026-08-07). There is no station bar, no
+ * bottom tabs and no archive → working → epub ladder to walk: **the file on
+ * screen decides the tools**, and this module is the whole of that decision.
  *
- * So the rule changed, and this module is the whole of it:
- *
- *  - **The rail's CONTENTS are a fact about the ARTIFACT on screen.** The source
- *    (the archive original and its working copy — the same pages, painted or
- *    not) offers the curation modes and their tasks. The book offers the text
- *    passes that rewrite it. `ViewedArtifact` is already the measured answer to
- *    "which file is in the viewer" (shared/document/stations.ts), so the table
- *    below is keyed by it and by nothing else.
+ *  - **The rail's CONTENTS are a fact about the ARTIFACT on screen.** A PDF —
+ *    the archive original or the working copy, the same pages either way —
+ *    offers the curation modes and their tasks. An EPUB offers the passes that
+ *    rewrite the book, and the narration copy cut from it. `ViewedArtifact` is
+ *    the measured answer to "which kind of file is in the viewer", and it is
+ *    measured from the file's own extension: a `.epub` is a book, anything else
+ *    is a source document. Nothing else is consulted, because nothing else can
+ *    change what a file IS.
  *  - **Whether an entry is ALLOWED is a separate question**, answered by the
  *    picker with its own sentence per entry (curation is refused on the archive
- *    of a cast book, and on a book that is still opening). The two must not be
- *    conflated again: hiding the rail answered the second question by deleting
- *    the first, which is how the passes ended up with nowhere to live.
+ *    original, and every pass is refused on a document with no project). The two
+ *    must not be conflated: hiding the rail answered the second question by
+ *    deleting the first, which is how the passes once ended up with nowhere to
+ *    live.
  *
  * The task ids are DERIVED from the table, so a new entry is a compile error at
  * every site that switches on one (see `deriveTaskStatus`'s `assertNever` in
- * the picker's task.model.ts). Phase D's fourth EPUB entry (`ocr-correct
- * --epub`) is one line here plus the sites the compiler then names.
+ * the picker's task.model.ts).
  */
 
-import type { ViewedArtifact } from './stations';
+import { samePath } from './same-path';
 import { latestPassByKind, type PassRecord } from './version-family';
+
+/**
+ * What the file in the viewer IS.
+ *
+ * `source` is the document being curated — the project's archive PDF and the
+ * working copy cast from it are the same PAGES, and the difference between them
+ * is whether curation is allowed rather than what the rail carries. `book` is an
+ * EPUB: the project's own book, or the original of a project that arrived as
+ * one.
+ */
+export type ViewedArtifact = 'source' | 'book';
+
+/**
+ * Which artifact the viewer is showing — measured from the file's extension, and
+ * nothing else.
+ *
+ * An EPUB is a book. There is no case in which the picker holds an EPUB that is
+ * not one: a project's export, a project's EPUB original and a loose ebook are
+ * all read the same way and offer the same tools. Everything else is a source
+ * document.
+ *
+ * Empty is `source`, and that is not a fallback — a window with nothing loaded
+ * renders no rail at all, and `source` is what it will be showing the instant it
+ * does have a file, since a book is only ever reached by opening one.
+ */
+export function viewedArtifactOf(displayedPath: string): ViewedArtifact {
+  return /\.epub$/i.test(displayedPath) ? 'book' : 'source';
+}
+
+/**
+ * Is the PDF on screen the project's WORKING COPY — the file curation is
+ * written into?
+ *
+ * The project record, not a filename pattern: main derives the working copy's
+ * name from the original's and reports it on `document:state`, so a window that
+ * matched `.working.pdf` itself would be a second derivation of a name that is
+ * settled once. Null on either side means "not it" — a project with no working
+ * copy, or a window with nothing open.
+ */
+export function viewingWorkingCopy(args: {
+  readonly displayedPath: string;
+  readonly workingPath: string | null;
+}): boolean {
+  const { displayedPath, workingPath } = args;
+  if (displayedPath === '' || workingPath === null) return false;
+  return samePath(displayedPath, workingPath);
+}
 
 /** One labelled group of rail entries. */
 export interface RailGroup {
@@ -38,24 +83,36 @@ export interface RailGroup {
 }
 
 /**
+ * The book's text passes: the two runs that rewrite `outputs.epub` in place.
+ *
+ * Declared apart from the table so `EpubPassTaskId` can be derived from THIS and
+ * not from "everything on the book's rail" — the narration copy sits beside them
+ * and is not a pass. It writes a second file and records no provenance, so a
+ * type that swept it in would demand a pass kind for it.
+ */
+const BOOK_PASS_GROUP = {
+  id: 'passes',
+  label: 'Text passes',
+  tasks: ['simplify', 'translate'],
+} as const;
+
+/**
  * The rail, per artifact, in rail order.
  *
- * `source` is unchanged from the rail as it stood: the modes first (the rail IS
- * the mode switcher, so there is no second control that can disagree with it),
- * then the tasks. `book` is the EPUB station's passes, in the plan's preferred
- * order — correction → footnotes → simplify → translate, minus the correction
- * pass that does not exist yet (docs/PIPELINE_V2_PLAN.md, "Stations and their
- * actions"). That order is a default and not a gate: any is runnable whenever
- * there is a book.
+ * `source` is the pointer modes first (the rail IS the mode switcher, so there
+ * is no second control that can disagree with it), then the tasks. The Setup/OCR
+ * group is gone with the Tesseract pipeline it belonged to (Aug 2026): reading
+ * the pages is `foundry vlm-convert`, which produces a BOOK and is started from
+ * Studio's versions page rather than from a curation rail.
  */
 export const ARTIFACT_RAIL_GROUPS = {
   source: [
     { id: 'modes', label: 'Mode', tasks: ['select', 'crop'] },
-    { id: 'setup', label: 'Setup', tasks: ['ocr'] },
     { id: 'cleanup', label: 'Clean up', tasks: ['merge'] },
   ],
   book: [
-    { id: 'passes', label: 'Text passes', tasks: ['footnotes', 'simplify', 'translate'] },
+    BOOK_PASS_GROUP,
+    { id: 'narration', label: 'Narration', tasks: ['export-tts'] },
   ],
 } as const satisfies Record<ViewedArtifact, readonly RailGroup[]>;
 
@@ -65,25 +122,20 @@ type ArtifactRailGroups = typeof ARTIFACT_RAIL_GROUPS;
 export type RailTaskId =
   ArtifactRailGroups[keyof ArtifactRailGroups][number]['tasks'][number];
 
-/** The entries that rewrite the BOOK. Derived, so the table stays the authority. */
-export type EpubPassTaskId = ArtifactRailGroups['book'][number]['tasks'][number];
+/** The entries that run a PASS over the book. Derived from the pass group alone. */
+export type EpubPassTaskId = typeof BOOK_PASS_GROUP['tasks'][number];
 
-/**
- * The entries that run a pass over the book, in rail order — the table's `book`
- * rail, read at runtime so a pass added there joins this set by construction.
- */
-export const EPUB_PASS_TASK_IDS: readonly EpubPassTaskId[] =
-  ARTIFACT_RAIL_GROUPS.book.flatMap((g) => [...g.tasks]);
+/** Those entries, in rail order. */
+export const EPUB_PASS_TASK_IDS: readonly EpubPassTaskId[] = [...BOOK_PASS_GROUP.tasks];
 
 /** Human, sentence-case labels shown in the rail. */
 export const RAIL_TASK_LABELS: Record<RailTaskId, string> = {
   select: 'Select',
   crop: 'Crop',
-  ocr: 'OCR text',
   merge: 'Merge blocks',
-  footnotes: 'Remove footnotes',
   simplify: 'Simplify',
   translate: 'Translate',
+  'export-tts': 'Export TTS copy',
 };
 
 /** The rail the artifact on screen gets. */
@@ -175,7 +227,6 @@ export interface RailTaskStatus {
  * status.
  */
 const PASS_KIND_OF: Record<EpubPassTaskId, string> = {
-  footnotes: 'footnotes',
   simplify: 'simplify',
   translate: 'translate',
 };
@@ -203,7 +254,7 @@ function recordedDay(at: string): string | null {
  * provenance.
  *
  * `latestPassByKind` is the ONE implementation of latest-wins (the versions
- * page's stars and the provenance badges read it too), so a book footnoted
+ * page's stars and the provenance badges read it too), so a book simplified
  * twice reads here exactly as it reads there.
  *
  * `passes` is `manifest.outputs.epub.appliedPasses`, verbatim. An empty list is

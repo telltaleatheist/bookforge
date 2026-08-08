@@ -90,30 +90,13 @@ export class DocumentBlocksService {
   readonly chapterBlocks = computed<TextBlock[]>(() =>
     this.visibleBlocks().filter(b => b.category_id === 'chapter'));
 
-  /** A stage is running; the picker disables what would write under it. */
-  readonly stageRunning = signal<string | null>(null);
-  /** The stage's own most recent line, verbatim. */
-  readonly stageMessage = signal<string>('');
   /**
-   * How far the running stage has got, as the stage itself counts it — pages
-   * read, blocks labelled — and zero when it has not said.
+   * What the last edit said when it was refused.
    *
-   * Kept beside the message rather than parsed back out of it by whoever draws
-   * a bar: main already read the number off the stage's own line
-   * (`document:stage-progress` carries `done` and `total`), and a second parse
-   * in the renderer is a second thing to get wrong. `total === 0` means the
-   * stage has not said how much work there is, and a bar drawn from that would
-   * be a bar making one up.
-   */
-  readonly stageDone = signal(0);
-  readonly stageTotal = signal(0);
-  /**
-   * What the last stage or edit said when it failed.
-   *
-   * Surfaced ONCE, where the user asked for the work, and cleared the moment
+   * Surfaced ONCE, where the user made the gesture, and cleared the moment
    * anything is asked for again. There is no persistent error state to attach or
-   * trip over later: a failed stage wrote nothing and deleted its own scratch, so
-   * the recovery is to run it again.
+   * trip over later: a refused write left the document exactly as it was, and
+   * the picker re-reads from it, so the recovery is to try again.
    */
   readonly lastError = signal<string | null>(null);
 
@@ -313,38 +296,19 @@ export class DocumentBlocksService {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Stages
+  // Reset
+  //
+  // The one thing left here that is not a read or a curation edit. The four
+  // foundry STAGES this service used to drive — Get Text, Detect blocks, Build
+  // the book, and footnote removal — went with the Tesseract pipeline in Aug
+  // 2026. A working copy is minted by `document:create-working-copy` (a copy and
+  // a marker, seconds) and a BOOK comes from `foundry vlm-convert`, which is a
+  // document stage owned by main and started from Studio.
   // ───────────────────────────────────────────────────────────────────────────
 
   /**
-   * Detect. There is one, and it REPLACES the annotations.
-   *
-   * The confirmation belongs to the caller — this is where hand curation is
-   * overwritten — and once it has been given, nothing here stages or previews
-   * the result: if it ran, the annotations in the PDF are the new truth.
-   */
-  async detect(): Promise<void> {
-    await this.runStage('Detect blocks', () => this.electron.documentDetect(this.requireRef()));
-  }
-
-  /** Read the pages again from scratch. Casting REPLACES the working document. */
-  async getText(): Promise<void> {
-    await this.runStage('Get Text', () => this.electron.documentGetText(this.requireRef()));
-  }
-
-  async reflow(excludeCategories: string[] = []): Promise<string> {
-    const ref = this.requireRef();
-    await this.flush();
-    let epubPath = '';
-    await this.runStage('Build the book', async () => {
-      epubPath = await this.electron.documentReflow(
-        ref, excludeCategories.length > 0 ? { excludeCategories } : undefined);
-    });
-    return epubPath;
-  }
-
-  /**
-   * Put the working document back to how it stood at the end of a stage.
+   * Put the working document back to how it stood at a recorded boundary — or,
+   * with `none`, to the copy as it was minted.
    *
    * One truncate: zero GPU, no re-run, and the result is not an approximation of
    * that document but that document.
@@ -370,41 +334,6 @@ export class DocumentBlocksService {
     await this.reload();
   }
 
-  async cancelStage(): Promise<void> {
-    const ref = this.ref();
-    if (ref) await this.electron.documentCancelStage(ref.projectDir);
-  }
-
-  private async runStage(label: string, run: () => Promise<unknown>): Promise<void> {
-    await this.flush();
-    this.lastError.set(null);
-    this.stageRunning.set(label);
-    this.stageMessage.set('');
-    this.stageDone.set(0);
-    this.stageTotal.set(0);
-    try {
-      await run();
-      await this.refreshState();
-      await this.reload();
-    } catch (err) {
-      // Surfaced once, here, where the work was asked for. Nothing is written to
-      // disk about it: the stage left the document untouched and deleted its own
-      // scratch, so running it again is the whole recovery.
-      this.lastError.set(err instanceof Error ? err.message : String(err));
-    } finally {
-      this.stageRunning.set(null);
-    }
-  }
-
-  /** Subscribe to stage progress for the open book. Returns the unsubscribe. */
-  watchProgress(): () => void {
-    return this.electron.onDocumentStageProgress(event => {
-      if (event.projectDir !== this.ref()?.projectDir) return;
-      this.stageMessage.set(event.message);
-      this.stageDone.set(event.done);
-      this.stageTotal.set(event.total);
-    });
-  }
 }
 
 /**

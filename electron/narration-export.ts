@@ -119,6 +119,20 @@ export interface NarrationExportResult {
   removedSupMarkers: number;
 }
 
+export interface NarrationExportOptions {
+  /**
+   * Remove digits-only `<sup>` footnote references as the copy is written.
+   *
+   * The ONE thing the copy does that the strikes do not describe — a
+   * `<sup>55</sup>` left in the markup is read aloud as "fifty-five", and that
+   * is not something a user can see struck through on the page. Defaults ON
+   * (`writeNarrationEpub`'s own default) because every audiobook wants it; the
+   * picker asks anyway, because a book of numbered chapter epigraphs is a real
+   * book and the strip cannot tell one from a footnote reference.
+   */
+  stripSupMarkers?: boolean;
+}
+
 /**
  * Write the narration copy from the strikes as recorded, and record it.
  *
@@ -131,7 +145,10 @@ export interface NarrationExportResult {
  * that is all of it. The TTS step then has a file to point at either way, and
  * the two records never disagree about whether one exists.
  */
-export async function exportNarrationEpub(projectDir: string): Promise<NarrationExportResult> {
+export async function exportNarrationEpub(
+  projectDir: string,
+  options?: NarrationExportOptions
+): Promise<NarrationExportResult> {
   const book = await manifestService.readExportEpub(projectDir);
   if (!book || !fs.existsSync(book.absPath)) {
     throw new Error(
@@ -151,11 +168,13 @@ export async function exportNarrationEpub(projectDir: string): Promise<Narration
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
   const staged = path.join(STAGING_DIR, `narration-${sha256.slice(0, 16)}.epub`);
 
-  // The footnote-marker strip is ON, and it is not a choice made here: it is
-  // `writeNarrationEpub`'s default, because a narration copy that keeps
-  // `<sup>55</sup>` is a copy the narrator reads "fifty-five" out of. This is
-  // also the ONLY place those markers are removed — no pass edits the book.
-  const written = await writeNarrationEpub(book.absPath, staged, recorded?.elements ?? []);
+  // The footnote-marker strip is ON unless the caller says otherwise, because a
+  // narration copy that keeps `<sup>55</sup>` is a copy the narrator reads
+  // "fifty-five" out of. This is also the ONLY place those markers are removed —
+  // no pass edits the book.
+  const written = await writeNarrationEpub(
+    book.absPath, staged, recorded?.elements ?? [],
+    options?.stripSupMarkers === undefined ? undefined : { stripSupMarkers: options.stripSupMarkers });
   await moveIntoPlace(staged, target.absPath);
 
   await manifestService.registerNarrationEpub(projectDir, {

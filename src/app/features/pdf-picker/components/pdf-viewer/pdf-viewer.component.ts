@@ -3,7 +3,6 @@ import { CommonModule } from '@angular/common';
 import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { TextBlock, Category, PageDimension } from '../../services/pdf.service';
 import { blockCategoryColor, UNLABEL_CATEGORY } from '@shared/ocr/block-categories';
-import { CORPUS_PAGE_TYPE_NAMES, type CorpusPageType } from '@shared/ocr/page-types';
 import { mergeRefusal } from '@shared/document/block-merge';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { Chapter } from '../../../../core/services/electron.service';
@@ -858,14 +857,6 @@ export interface CropRect {
         } @else {
           <div class="menu-item" (click)="onSelectAllOnPage()">Select all on page {{ pageMenuPageNum() + 1 }}</div>
           <div class="menu-item" (click)="onDeselectAllOnPage()">Deselect all on page {{ pageMenuPageNum() + 1 }}</div>
-          @if (canMarkPageTypes()) {
-            <div class="menu-divider"></div>
-            @for (pageType of pageTypeChoices; track pageType) {
-              <div class="menu-item" (click)="onMarkPageType(pageType)">
-                {{ pageTypeMenuLabel(pageType) }}
-              </div>
-            }
-          }
         }
       </div>
     }
@@ -1855,8 +1846,6 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   // Page-level marking (label mode over a corpus book). The marks already made,
   // and whether this document is one that can carry them at all.
-  pageTypes = input<Map<number, CorpusPageType>>(new Map());
-  canMarkPageTypes = input<boolean>(false);
 
   // Paint every block with its category colour. The labelling workflow depends
   // on seeing category assignments at a glance rather than one block at a time.
@@ -1904,7 +1893,6 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   selectAllOnPage = output<number>();
   deselectAllOnPage = output<number>();
   /** A page was named a title/copyright page — or named again, to take it back. */
-  markPageType = output<{ pageNum: number; pageType: CorpusPageType }>();
   cropComplete = output<CropRect>();
   pageReorder = output<number[]>(); // Emitted when pages are reordered
 
@@ -3879,22 +3867,6 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   onSelectAllOnPage(): void {
     this.selectAllOnPage.emit(this.pageMenuPageNum());
-    this.closePageMenu();
-  }
-
-  // Page-level marking. The parent owns every decision — the duplicate warning,
-  // the offer to clear, and the labels themselves; this only names the page.
-  readonly pageTypeChoices: readonly CorpusPageType[] = ['title', 'copyright'];
-
-  pageTypeMenuLabel(pageType: CorpusPageType): string {
-    const name = CORPUS_PAGE_TYPE_NAMES[pageType];
-    return this.pageTypes().get(this.pageMenuPageNum()) === pageType
-      ? `Clear ${name} mark`
-      : `Mark as ${name}`;
-  }
-
-  onMarkPageType(pageType: CorpusPageType): void {
-    this.markPageType.emit({ pageNum: this.pageMenuPageNum(), pageType });
     this.closePageMenu();
   }
 
