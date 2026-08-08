@@ -1,0 +1,132 @@
+eval-guard — 1232 units from C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/data/slice.jsonl
+  generated 2026-08-05T00:50:05-0400 in 200.0s on http://127.0.0.1:8771
+  server args: llama-server.exe -m foundry-4b-f16.gguf -c 32768 -np 16 -ngl 99 --no-webui --lora-scaled ../../../../AppData/Local/foundry/models/foundry-ocr-v1-4b.gguf:0.0 [b7482 CUDA 12.4, RTX 3090 Ti]
+
+================================================================================================
+THE NUMBER THAT DECIDES: units the model made WORSE (`degraded`), and what it repaired
+================================================================================================
+
+policy        CER before  CER after  degraded  deg/100k  rep/100k  falseEdit  corrections   exact
+  do nothing     0.331%     0.331%         0       0.0       0.0      0.00%            0   89.2%
+  no-guard       0.331%     0.276%        30      82.1     136.9      1.73%          128   93.3%
+  whole-unit     0.331%     0.239%        10      16.9     109.5      0.64%           94   93.7%
+  per-run        0.331%     0.232%        11      18.2     117.3      0.64%          100   93.7%
+
+  1232 units, 76722 gold characters, 1099 already correct (89.2%)
+  model C:/Users/tellt/AppData/Local/foundry/models/foundry-4b-f16.gguf
+
+  A model only beats "do nothing" by moving CER down without moving degraded
+  and falseEdit up. `degraded` counts UNITS — compare it only within one unit
+  size; deg/100k and rep/100k are characters and compare across sizes.
+
+PER BOOK
+  policy      book                    units  CER before  CER after  WORSE  deg/100k  falseEdit
+  no-guard    michelle-remembers        631      0.380%     0.369%     20     108.8      2.26%
+  no-guard    deathstalker-coda         601      0.284%     0.187%     10      56.3      1.14%
+  whole-unit  michelle-remembers        631      0.380%     0.318%      8      29.2      1.05%
+  whole-unit  deathstalker-coda         601      0.284%     0.161%      2       5.1      0.19%
+  per-run     michelle-remembers        631      0.380%     0.308%      9      31.8      1.05%
+  per-run     deathstalker-coda         601      0.284%     0.159%      2       5.1      0.19%
+
+WHERE THE WORK IS — already-correct units vs damaged units
+  policy      population      units  CER before  CER after   impr  WORSE  deg/100k  rep/100k
+  no-guard    already-correct   1099      0.000%     0.057%      0     19      57.1       0.0
+  no-guard    damaged           133      3.026%     2.061%     87     11     285.9    1250.7
+  whole-unit  already-correct   1099      0.000%     0.013%      0      7      13.2       0.0
+  whole-unit  damaged           133      3.026%     2.073%     77      3      47.6    1000.6
+  per-run     already-correct   1099      0.000%     0.013%      0      7      13.2       0.0
+  per-run     damaged           133      3.026%     2.013%     81      4      59.6    1072.1
+
+GENERATION HEALTH — the RAW answer, before any guard
+  answers under 90% of the input length        1  (0.08%)
+  answers over 110% of the input length        0  (0.00%)
+  empty answers                                0
+  answers spanning more than one line          0   (only the first is kept)
+  answers near the n_predict ceiling           0
+
+WHAT THE GUARD REFUSED
+  units with at least one illegal run   34
+  illegal runs                          37
+  legal runs in those same units        6   <- what whole-unit throws away and per-run keeps
+
+WHERE THE TWO POLICIES DISAGREE (same generation, different blast radius)
+  units where the shipped text differs  6
+    per-run CLOSER to the truth         4   (6 characters recovered)
+    per-run FURTHER from the truth      1   (1 characters lost)
+    same distance, different text       1
+
+  PER-RUN DEGRADED A UNIT THAT WHOLE-UNIT DID NOT: 1
+    [michelle-remembers p315 l8748] dist 1 -> 2
+      SRC       "\"Au nom du Pere et du Fils et du Saint Esprit,\" Michael said,"
+      MODEL     "\" Au nom du Père et du Fils et du Saint Esprit,\" Michael said,"
+      PER-RUN   "\"Au nom du Père et du Fils et du Saint Esprit,\" Michael said,"
+      GOLD      "\"Au nom du Pere et du Fils et du Saint Esprit, \" Michael said,"
+      refused   unbalanced change: ["Au] -> [" Au] (1 word -> 2)
+
+WORST DAMAGE UNDER no-guard (5 of 30) — read these, do not average them
+  [michelle-remembers p118 l3142] dist 0 -> 5  (was already correct)
+    IN   "had given me away. I. . . I must be . . . a really rotten child."
+    OUT  "had given me away. I... I must be... a really rotten child."
+    GOLD "had given me away. I. . . I must be . . . a really rotten child."
+  [michelle-remembers p174 l4896] dist 2 -> 7
+    IN   "dress Michelle beforehand; they just left her in the efhgy and let her"
+    OUT  "dress Michelle beforehand; they just left her in the elevator and let her"
+    GOLD "dress Michelle beforehand; they just left her in the effigy and let her"
+  [michelle-remembers p58 l1217] dist 0 -> 4  (was already correct)
+    IN   "look there anyway. I don't know. . . . I think I went down the"
+    OUT  "look there anyway. I don't know... I think I went down the"
+    GOLD "look there anyway. I don't know. . . . I think I went down the"
+  [deathstalker-coda p33 l944] dist 3 -> 6
+    IN   "been our greatest hero... Everything we did, we did for you. We built a"
+    OUT  "been our greatest hero . . . Everything we did, we did for you. We built a"
+    GOLD "been our greatest hero Everything we did, we did for you. We built a"
+  [deathstalker-coda p42 l1242] dist 0 -> 3  (was already correct)
+    IN   "\"No, just round the corner... My lord! Are the dark times over? Have"
+    OUT  "\"No, just round the corner . . . My lord! Are the dark times over? Have"
+    GOLD "\"No, just round the corner... My lord! Are the dark times over? Have"
+
+WORST DAMAGE UNDER whole-unit (5 of 10) — read these, do not average them
+  [michelle-remembers p169 l4742] dist 0 -> 2  (was already correct)
+    IN   "individual lives and through prayer to fight him.\""
+    OUT  "individual lives and through prayer to !ght him.\""
+    GOLD "individual lives and through prayer to fight him.\""
+  [michelle-remembers p199 l5674] dist 0 -> 2  (was already correct)
+    IN   "Now Pazder told Michelle that it was desperately important that"
+    OUT  "Now Páder told Michelle that it was desperately important that"
+    GOLD "Now Pazder told Michelle that it was desperately important that"
+  [michelle-remembers p336 l9394] dist 2 -> 4
+    IN   "finished, he asked a priest and scholar, Father Amédée Dupas, to make"
+    OUT  "finished, he asked a priest and scholar, Father Améthée Dupas, to make"
+    GOLD "finished, he asked a priest and scholar, Father Amedee Dupas, to make"
+  [deathstalker-coda p57 l1770] dist 1 -> 2
+    IN   "the Emperor first learned that the fleet hed sent to Haden to kill Lewis"
+    OUT  "the Emperor first learned that the fleet had sent to Haden to kill Lewis"
+    GOLD "the Emperor first learned that the fleet he'd sent to Haden to kill Lewis"
+  [deathstalker-coda p304 l10415] dist 0 -> 1  (was already correct)
+    IN   "talk about. \"We have peacekeepers, to take care of the criminal element,"
+    OUT  "talk about. 'We have peacekeepers, to take care of the criminal element,"
+    GOLD "talk about. \"We have peacekeepers, to take care of the criminal element,"
+
+WORST DAMAGE UNDER per-run (5 of 11) — read these, do not average them
+  [michelle-remembers p169 l4742] dist 0 -> 2  (was already correct)
+    IN   "individual lives and through prayer to fight him.\""
+    OUT  "individual lives and through prayer to !ght him.\""
+    GOLD "individual lives and through prayer to fight him.\""
+  [michelle-remembers p199 l5674] dist 0 -> 2  (was already correct)
+    IN   "Now Pazder told Michelle that it was desperately important that"
+    OUT  "Now Páder told Michelle that it was desperately important that"
+    GOLD "Now Pazder told Michelle that it was desperately important that"
+  [michelle-remembers p336 l9394] dist 2 -> 4
+    IN   "finished, he asked a priest and scholar, Father Amédée Dupas, to make"
+    OUT  "finished, he asked a priest and scholar, Father Améthée Dupas, to make"
+    GOLD "finished, he asked a priest and scholar, Father Amedee Dupas, to make"
+  [deathstalker-coda p57 l1770] dist 1 -> 2
+    IN   "the Emperor first learned that the fleet hed sent to Haden to kill Lewis"
+    OUT  "the Emperor first learned that the fleet had sent to Haden to kill Lewis"
+    GOLD "the Emperor first learned that the fleet he'd sent to Haden to kill Lewis"
+  [deathstalker-coda p304 l10415] dist 0 -> 1  (was already correct)
+    IN   "talk about. \"We have peacekeepers, to take care of the criminal element,"
+    OUT  "talk about. 'We have peacekeepers, to take care of the criminal element,"
+    GOLD "talk about. \"We have peacekeepers, to take care of the criminal element,"
+
+wrote C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/data/slice.stats.json

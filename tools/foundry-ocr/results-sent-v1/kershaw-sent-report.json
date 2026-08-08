@@ -1,0 +1,247 @@
+{
+  "epub": "/Volumes/Callisto/Shared/BookForge/projects/Working_Towards_The_Fuhrer_-_Ian_Kershaw_-_1993/source/Working Towards The Fuhrer. Kershaw, Ian. (1993).epub",
+  "output": "/private/tmp/claude-501/-Volumes-Callisto-Projects-BookForgeApp/94a903b9-0a89-47af-b1e4-d71dda0f2bab/scratchpad/kershaw-real/kershaw-sent-corrected.epub",
+  "dryRun": false,
+  "generatedAt": "2026-08-05T17:52:40.482Z",
+  "model": "adapter foundry-ocr-sent-v1-4b.gguf on base foundry:4b",
+  "unitMaxChars": 400,
+  "guardPolicy": "per-run",
+  "caveat": "Correction is offered on every book. If this EPUB's text is the publisher's own, it has no OCR errors to repair and every change below is the model editing an author. Provenance is not knowable from the file — a book converted from a PDF before import looks the same — so the run is not refused; read the report.",
+  "totals": {
+    "units": 4,
+    "unitsNavigation": 0,
+    "unitsEmpty": 0,
+    "unitsAsked": 4,
+    "sentences": 145,
+    "sentencesOverCap": 0,
+    "sentencesCorrected": 7,
+    "sentencesPartlyReverted": 1,
+    "sentencesRefused": 9,
+    "editsApplied": 15,
+    "editsRejected": 0,
+    "documents": 1,
+    "documentsEdited": 1
+  },
+  "skipped": [],
+  "documents": [
+    {
+      "path": "EPUB/text/s0001.xhtml",
+      "edited": true,
+      "units": 4,
+      "unitsNavigation": 0,
+      "unitsEmpty": 0,
+      "unitsAsked": 4,
+      "sentences": 145,
+      "sentencesOverCap": 0,
+      "sentencesCorrected": 7,
+      "sentencesPartlyReverted": 1,
+      "sentencesRefused": 9,
+      "editsApplied": 15,
+      "editsRejected": 0
+    }
+  ],
+  "applied": [
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "before": "—",
+      "after": "-",
+      "context": "…from modernisation concepts and thereby to claim that Hitler’s regime, too, was [was \"—\" now \"-\"] and intentionally so - a ‘modernis ing dictatorship’.2 Implicit in all this is …"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "before": "3—",
+      "after": "3-",
+      "context": "…s. The Four-Year Plan Memoran dum of 1936 is a unique example from the years 193[was \"3—\" now \"3-\"]45 of a major policy document composed by Hitler himself — written in frustratio…"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "before": "f — w",
+      "after": "f - w",
+      "context": "…mple from the years 1933—45 of a major policy document composed by Hitler himsel[was \"f — w\" now \"f - w\"]ritten in frustration and fury at the stance adopted during the economic crisis …"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "before": "5—",
+      "after": "5-",
+      "context": "… in frustration and fury at the stance adopted during the economic crisis of 193[was \"5—\" now \"5-\"]6 by Schacht and some sectors of business and industry. Strikingly, Hitler only …"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "before": "i92o",
+      "after": "1920",
+      "context": "…y distinguishable from, the Nazi Movement and its Weltanschauung. Since the mid-[was \"i92o\" now \"1920\"]s, ideological orthodoxy was synonymous with adherence to Hitler. ‘For us the Id…"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "before": "i93o",
+      "after": "1930",
+      "context": "…et Union. Rather, there was even the ‘great retreat’ from radicalism by the mid-[was \"i93o\" now \"1930\"]s and a reversion towards some forms of social conservativism before the war bro…"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "before": "—",
+      "after": "-",
+      "context": "…ative organs of power, a stage reached at the latest by 1938. After the Blomberg[was \"—\" now \"-\"]Fritsch affair of February 1938 it is difficult to see where the structures or t…"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "before": "—",
+      "after": "-",
+      "context": "…imar ‘system’. In all these ways, the utopian ‘vision’ bound up with the Führer [was \"—\" now \"-\"] undefined and largely undefinable - provided ‘guidelines for action’ which were…"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "before": "y — r",
+      "after": "y - r",
+      "context": "…ed difficulties. Objections were raised that it would be hard to maintain secrec[was \"y — r\" now \"y - r\"]eference was made here to the impact of the earlier ‘euthanasia programme’ in Ge…"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "before": "r ‘e",
+      "after": "r 'e",
+      "context": "…e hard to maintain secrecy — reference was made here to the impact of the earlie[was \"r ‘e\" now \"r 'e\"]uthanasia programme’ in Germany itself — and was likely, therefore, to arouse un…"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "before": "e’",
+      "after": "e'",
+      "context": "…recy — reference was made here to the impact of the earlier ‘euthanasia programm[was \"e’\" now \"e'\"] in Germany itself — and was likely, therefore, to arouse unrest among the Polis…"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "before": "f — a",
+      "after": "f - a",
+      "context": "…s made here to the impact of the earlier ‘euthanasia programme’ in Germany itsel[was \"f — a\" now \"f - a\"]nd was likely, therefore, to arouse unrest among the Polish population as well a…"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "before": "‘action’",
+      "after": "'action'",
+      "context": "…anda with a gift. It was regarded as necessary to consult Hitler himself if the [was \"‘action’\" now \"'action'\"] were to go ahead. Greiser’s enlightening response ran: ‘I myself do not believe…"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0014b004",
+      "category": "quote",
+      "before": "e — i",
+      "after": "e - i",
+      "context": "…k, worked towards the Führer. Very often and in many spheres it has been the cas[was \"e — i\" now \"e - i\"]n previous years as well — that individuals have simply waited for orders and in…"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0014b004",
+      "category": "quote",
+      "before": "l — t",
+      "after": "l - t",
+      "context": "…. Very often and in many spheres it has been the case — in previous years as wel[was \"l — t\" now \"l - t\"]hat individuals have simply waited for orders and instructions. Unfortu nately, …"
+    }
+  ],
+  "rejected": [
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "asked": "But the fundamental problem with the term ‘totalitarianism’ — leaving aside its non-scholarly usage — is that is a descriptive concept, not a theory, and has little or no explanatory power. It presumes that Stalinism and Hitlerism were more like each other than different from each other. But the basis of comparison is a shallow one, largely confined to the apparatus of rule.",
+      "answer": "But the fundamental problem with the term ‘totalitarianism’ — leaving aside its non-scholarly usage — is that it is a descriptive concept, not a theory, and has little or no explanatory power. It presumes that Stalinism and Hitlerism were more like each other than different from each other. But the basis of comparison is a shallow one, largely confined to the apparatus of rule.",
+      "reason": "per-word guard: unbalanced change: [] → [it] (0 words → 1)"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "asked": "The Four-Year Plan Memoran dum of 1936 is a unique example from the years 1933—45 of a major policy document composed by Hitler himself — written in frustration and fury at the stance adopted during the economic crisis of 1935—6 by Schacht and some sectors of business and industry.",
+      "answer": "The Four-Year Plan Memorandum of 1936 is a unique example from the years 1933-45 of a major policy document composed by Hitler himself - written in frustration and fury at the stance adopted during the economic crisis of 1935-6 by Schacht and some sectors of business and industry.",
+      "reason": "per-word guard reverted 1 run(s): unbalanced change: [Memoran dum] → [Memorandum] (2 words → 1)"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "asked": "policies, to have presided over an inexorable erosion of ‘rational’ forms of government. And while the metaphor of‘feudal anarchy’ might be applied to both systems, it seems more apt as a depiction of the Hitler regime, where bonds of personal loyalty were from the beginning the crucial determinants of power, wholly overriding functional position and status.",
+      "answer": "policies, to have presided over an inexorable erosion of ‘rational’ forms of government. And while the metaphor of ‘feudal anarchy’ might be applied to both systems, it seems more apt as a depiction of the Hitler regime, where bonds of personal loyalty were from the beginning the crucial determinants of power, wholly overriding functional position and status.",
+      "reason": "per-word guard: unbalanced change: [of‘feudal] → [of ‘feudal] (1 word → 2)"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "asked": "The main features of‘charismatic authority’ as outlined by Max Weber need no embroidering here: the perceptions of a heroic ‘mission’ and presumed greatness in the leader by his ‘following’; the tendency to arise in crisis conditions as an ‘emergency’ solution; the innate instability under the double constant threat of collapse of ‘charisma’ through failure to meet expectations and of",
+      "answer": "The main features of ‘charismatic authority’ as outlined by Max Weber need no embroidering here: the perceptions of a heroic ‘mission’ and presumed greatness in the leader by his ‘following’; the tendency to arise in crisis conditions as an ‘emergency’ solution; the innate instability under the double constant threat of collapse of ‘charisma’ through failure to meet expectations and of",
+      "reason": "per-word guard: unbalanced change: [of‘charismatic] → [of ‘charismatic] (1 word → 2)"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "asked": "In this sense, there was a striking contrast with the personality cult of Hitler, which was inseparable from the ‘mission’ embodied in his name practically from the begin ning, a ‘mission’ which from the mid-ipzos at the latest did not exist as a doctrine independent of the leader.",
+      "answer": "In this sense, there was a striking contrast with the personality cult of Hitler, which was inseparable from the ‘mission’ embodied in his name practically from the begin ning, a ‘mission’ which from the mid-1920s at the latest did not exist as a doctrine independent of the leader.",
+      "reason": "per-word guard: word changed beyond distance 2: \"mid-ipzos\" → \"mid-1920s\" (distance 4)"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "asked": "Weber’s model of‘charismatic authority’ is an abstraction, a descriptive concept which says nothing in itself of the content of any specific manifestation of‘charisma tic authority’. This is determined by the relationship of the leadership claim to the particular circumstances and ‘political culture’ in which it arises and which give it shape.",
+      "answer": "Weber’s model of ‘charismatic authority’ is an abstraction, a descriptive concept which says nothing in itself of the content of any specific manifestation of ‘charisma tic authority’. This is determined by the relationship of the leadership claim to the particular circumstances and ‘political culture’ in which it arises and which give it shape.",
+      "reason": "per-word guard: unbalanced change: [of‘charismatic] → [of ‘charismatic] (1 word → 2)"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "asked": "Where constitutional law could now be interpreted as no more than ‘the legal formulation of the historic will of the Führer’ — seen as deriving from his ‘outstanding achievements’ — and where Germany’s leading constitutional lawyer could speak of‘state power’ being replaced by unrestrained ‘Führer power’, the result could only be the undermining of the basis of impersonal law on which modern",
+      "answer": "Where constitutional law could now be interpreted as no more than ‘the legal formulation of the historic will of the Führer’ — seen as deriving from his ‘outstanding achievements’ — and where Germany’s leading constitutional lawyer could speak of ‘state power’ being replaced by unrestrained ‘Führer power’, the result could only be the undermining of the basis of impersonal law on which modern",
+      "reason": "per-word guard: unbalanced change: [of‘state] → [of ‘state] (1 word → 2)"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "asked": "It was not in itself simply the undermining of‘rational’ structures of government and proliferation of chaotic, ‘polycratic’ agencies that mattered.",
+      "answer": "It was not in itself simply the undermining of ‘rational’ structures of government and proliferation of chaotic, ‘polycratic’ agencies that mattered.",
+      "reason": "per-word guard: unbalanced change: [of‘rational’] → [of ‘rational’] (1 word → 2)"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0001b001 p0001b002 p0002b001 p0002b002 p0002b003 p0002b004 p0002b005 p0003b001 p0003b002 p0003b003 p0003b004 p0003b005 p0004b001 p0004b002 p0004b003 p0004b004 p0004b005 p0005b001 p0005b002 p0005b003 p0005b004 p0006b001 p0006b002 p0006b003 p0006b004 p0006b005 p0007b001 p0007b002 p0007b003 p0007b004 p0007b005 p0008b001 p0008b002 p0008b003 p0008b004 p0008b005 p0009b001 p0009b002 p0009b003 p0009b004 p0010b001 p0010b002 p0010b003 p0011b001 p0011b002 p0011b003 p0011b004 p0011b005 p0011b006 p0011b007 p0012b001 p0012b002 p0012b003 p0012b004 p0013b001 p0013b002 p0013b003 p0013b004 p0014b001 p0014b002 p0014b003",
+      "category": "body",
+      "asked": "Crucial to this ‘progress into barbarism’ was the fact that in 1933 the barriers to state-sanctioned measures of gross inhumanity were removed almost overnight. What had previously been unthinkable suddenly became feasible. Opportunities rapidly presented themselves; and they were readily grasped. The Sterilisation Law ofJuly 1933 is an early instance of such a dropping of barriers.",
+      "answer": "Crucial to this ‘progress into barbarism’ was the fact that in 1933 the barriers to state-sanctioned measures of gross inhumanity were removed almost overnight. What had previously been unthinkable suddenly became feasible. Opportunities rapidly presented themselves; and they were readily grasped. The Sterilisation Law of July 1933 is an early instance of such a dropping of barriers.",
+      "reason": "per-word guard: unbalanced change: [ofJuly] → [of July] (1 word → 2)"
+    },
+    {
+      "document": "EPUB/text/s0001.xhtml",
+      "blocks": "p0014b005 p0015b001 p0015b002 p0015b003 p0015b004 p0016b001 p0016b002 p0016b003 p0016b004 p0016b005",
+      "category": "body",
+      "asked": "Through the metaphor of‘working towards the Führer’, I have tried to suggest here that the ‘vision’ embodied in Hitler’s leadership claim served to funnel a variety of social motivations, at times contradictory and conflicting, into furthering — intentionally or unwittingly — Nazi aims closely associated with Hitler’s own ideological obsessions.",
+      "answer": "Through the metaphor of ‘working towards the Führer’, I have tried to suggest here that the ‘vision’ embodied in Hitler’s leadership claim served to funnel a variety of social motivations, at times contradictory and conflicting, into furthering — intentionally or unwittingly — Nazi aims closely associated with Hitler’s own ideological obsessions.",
+      "reason": "per-word guard: unbalanced change: [of‘working] → [of ‘working] (1 word → 2)"
+    }
+  ]
+}

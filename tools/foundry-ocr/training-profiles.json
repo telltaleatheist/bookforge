@@ -1,0 +1,106 @@
+{
+ "_comment": [
+  "ocr training profiles. The rig's training_profiles.json lives on the WSL box and is NOT",
+  "version controlled; these are the reviewable source of truth, merged in before a run.",
+  "",
+  "Do NOT reuse the rig's existing `ocr_repair` profile. It predates this design and is wrong",
+  "in three ways: it targets Qwen2.5-3B (ocr shares Qwen3-4B AND the bundled llama-server",
+  "with blocks, so we serve one stack, not two), it omits enable_thinking:false (on Qwen3 that",
+  "inserts an empty <think></think> block -- train without it and every served prompt is a",
+  "shape the model never saw, the exact trap documented for blocks), and its description says",
+  "'target = corrected text' from before the output became an edit list.",
+  "",
+  "What IS worth keeping from it, and why both profiles below set load_in_4bit false: this is",
+  "near-verbatim string copying, and quantization costs character fidelity. A 4B in bf16 is",
+  "~8GB; there is nothing to save that is worth paying for in accuracy.",
+  "",
+  "max_seq_length 1536 is MEASURED, not guessed: 9,016 rows through the Qwen3 tokenizer with",
+  "enable_thinking=false give median 188, p99 538, max 1204. Zero rows exceed 1536. This",
+  "matters because text_sft refuses to truncate -- an undersized window kills the run partway",
+  "through on whichever example happens to be long.",
+  "",
+  "JUDGE BY tools/foundry-ocr/score.js, NEVER BY LOSS. The two opposite failures -- a model that",
+  "never edits and a model that rewrites the author -- are indistinguishable from a loss curve.",
+  "The eval baseline to beat is CER 1.129% across 7 held-out books; 'always answer none' scores",
+  "exactly that with a perfect false-edit rate, which is why the pair of numbers is the headline."
+ ],
+ "profiles": {
+  "ocr_v1_4b": {
+   "kind": "text_sft",
+   "description": "ocr v1: OCR corrector, Qwen3-4B, 16-bit LoRA (Jul 31 2026). Input = one OCR block; output = an edit list ('before -> after' per line) or the word 'none'. A deterministic applier (tools/foundry-ocr/edits.mjs) does the editing and rejects any anchor it cannot find verbatim, that occurs more than once, that overlaps another edit, or that exceeds the block's change budget -- so the model cannot invent prose, and the corpus was round-trip verified against that same applier (9,016/9,016 gold rows satisfy it). Corpus: 7,525 train / 1,491 eval blocks over 61 books, exactly 50% identity rows because restraint is the whole game. Degradation is mandatory and measured: clean publisher renders are 0.45% CER of which two-thirds is ligature/quote normalisation, so training on them alone builds a Unicode normaliser rather than an OCR repairer; speckle0.8 inverts the error mix to three-quarters glyph damage. ICDAR is deliberately EXCLUDED from this mix (it was 27% of rows but 70% of edits -- the model would mostly learn Victorian typesetting) and is a separate pretraining stage. 16-bit because near-verbatim copying is where quantization costs fidelity. max_seq_length 1536 against a MEASURED max of 1204 tokens. batch 2 x accum 8 = the house effective 16.",
+   "model": {
+    "id": "Qwen/Qwen3-4B",
+    "max_seq_length": 1536,
+    "load_in_4bit": false
+   },
+   "lora": {
+    "r": 32,
+    "alpha": 32,
+    "dropout": 0.0,
+    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+   },
+   "training": {
+    "learning_rate": 0.0001,
+    "optimizer": "adamw_8bit",
+    "per_device_train_batch_size": 2,
+    "gradient_accumulation_steps": 8,
+    "max_epochs": 3,
+    "early_stopping_patience": 2,
+    "save_total_limit": 3,
+    "warmup_ratio": 0.05,
+    "weight_decay": 0.01,
+    "lr_scheduler_type": "cosine",
+    "seed": 3407
+   },
+   "output": {
+    "lora_dir_template": "{run_name}_lora",
+    "merged_dir_template": "{run_name}_merged"
+   },
+   "dataset": {
+    "format": "chat_jsonl",
+    "messages_field": "messages",
+    "assistant_only_loss": true,
+    "template_kwargs": { "enable_thinking": false }
+   }
+  },
+
+  "ocr_v1_06b": {
+   "kind": "text_sft",
+   "description": "SIZE CONTROL for ocr_v1_4b. Identical corpus and recipe, Qwen3-0.6B instead of 4B, so the size question is measured rather than argued. The prior is that 4B is needed and 0.6B is not enough, for a reason that does not apply to dagger: dagger's job is POSITIONAL (find a marker at a word boundary) and needs no idea what a word means, which is why 0.6B suffices there. ocr's job is LEXICAL -- 'bistory'->'history', 'edi- tion'->'edition', 'Baden-Wiirttemberg'->'Baden-Wurttemberg' -- and the corpus holds 8,589 distinct capitalised non-common tokens, 315 of them German-marked. A thin language prior does not merely miss those, it 'corrects' them toward something more English-looking, which is worse than doing nothing and ships into the narration. The asymmetry is why 4B is primary: too small silently mangles proper nouns in a finished audiobook, too big only wastes inference time. But this run is cheap (short sequences, small corpus) and if it lands within noise on BOTH CER and false-edit rate it saves real money on every book, so it is worth knowing. batch 4 x accum 4: the OOM ceiling is the lm_head logits tensor (batch x seq x 151936 vocab), which does not shrink with the model -- 4 x 1536 asks ~1.9GB.",
+   "model": {
+    "id": "Qwen/Qwen3-0.6B",
+    "max_seq_length": 1536,
+    "load_in_4bit": false
+   },
+   "lora": {
+    "r": 32,
+    "alpha": 32,
+    "dropout": 0.0,
+    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+   },
+   "training": {
+    "learning_rate": 0.0001,
+    "optimizer": "adamw_8bit",
+    "per_device_train_batch_size": 4,
+    "gradient_accumulation_steps": 4,
+    "max_epochs": 3,
+    "early_stopping_patience": 2,
+    "save_total_limit": 3,
+    "warmup_ratio": 0.05,
+    "weight_decay": 0.01,
+    "lr_scheduler_type": "cosine",
+    "seed": 3407
+   },
+   "output": {
+    "lora_dir_template": "{run_name}_lora",
+    "merged_dir_template": "{run_name}_merged"
+   },
+   "dataset": {
+    "format": "chat_jsonl",
+    "messages_field": "messages",
+    "assistant_only_loss": true,
+    "template_kwargs": { "enable_thinking": false }
+   }
+  }
+ }
+}
