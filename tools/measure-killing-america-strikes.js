@@ -52,6 +52,7 @@ const {
 } = require(path.join(DIST, 'electron', 'epub-processor.js'));
 const {
   deriveNarrationStrikes, describeUnstruckDeletions, narrationDeletedPages,
+  narrationDeletedBlockIds, narrationDeletionEdit, splitNarrationDeletions,
 } = require(path.join(DIST, 'shared', 'vlm', 'narration-deletions.js'));
 
 const sha = (p) => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
@@ -190,6 +191,104 @@ async function documentsOf(epubPath) {
     console.log(`\nimage blocks refused (no element, reported, not guessed): ${refused.length}`);
     for (const b of refused) console.log(`  page ${b.page}: ${b.text}`);
   }
+
+  // ── Session B: the plate gallery, struck as DOCUMENTS ────────────────────
+  //
+  // The other half of the same evening, measured on its own so the escalation
+  // is legible. The user deletes the pages of the two back-matter documents;
+  // `bm01.xhtml` states 3 image elements and mupdf laid 6 picture blocks out of
+  // it, `back.xhtml` states 4 and laid out 3, so no ordinal can settle any of
+  // the nine and every one of those deletions used to reach nothing. Every
+  // ALIGNED block of both documents is struck, so both escalate to one
+  // `<zip entry>#doc` key each — and the nine pictures go with the documents
+  // without ever being identified.
+  console.log('\n── the plate gallery, struck as documents ──────────────────────');
+  const GALLERY = ['bm01.xhtml', 'back.xhtml'];
+  const inGallery = (b) => GALLERY.some((f) => fileOf(b).endsWith(`/${f}`) || fileOf(b) === f);
+  const galleryAligned = blocks.filter(inGallery);
+  // The page SPAN the user selects on screen: from the first page holding one of
+  // these documents' aligned blocks to the last. The pages between hold nothing
+  // but pictures — no aligned block names a document on them at all — and they
+  // are part of the gallery on screen, so they are part of the gesture.
+  const first = Math.min(...galleryAligned.map((b) => b.page));
+  const last = Math.max(...galleryAligned.map((b) => b.page));
+  const galleryPages = new Set();
+  for (let p = first; p <= last; p++) galleryPages.add(p);
+  console.log(
+    `session: pages ${first}–${last} (${galleryPages.size}), holding `
+    + `${galleryAligned.length} aligned block(s) and `
+    + `${blocks.filter((b) => galleryPages.has(b.page) && b.bf_element === undefined).length} `
+    + 'block(s) nothing could be struck for');
+
+  const gallery = deriveNarrationStrikes(laid, new Set(), galleryPages);
+  const galleryReport = describeUnstruckDeletions(gallery);
+  console.log(`strikes: ${JSON.stringify(gallery.elements)}`);
+  console.log(`unresolved: ${galleryReport === null ? '(none)' : galleryReport}`);
+
+  const galleryDocs = splitNarrationDeletions(gallery.elements);
+  assert.deepStrictEqual(galleryDocs.elements, [],
+    'the gallery produced element keys as well as document keys');
+  assert.strictEqual(galleryDocs.documents.length, 2,
+    `expected two struck documents, got ${JSON.stringify(galleryDocs.documents)}`);
+  for (const f of GALLERY) {
+    assert.ok(galleryDocs.documents.some((d) => d.endsWith(`/${f}`) || d === f),
+      `${f} was not struck as a document`);
+  }
+  assert.strictEqual(galleryReport, null,
+    'the gallery deletions still report something they could not reach');
+
+  // The round trip: the record, projected back into the view, derives back to
+  // the same two keys — so re-opening the book does not rewrite the record.
+  const galleryStruckIds = new Set(narrationDeletedBlockIds(laid, gallery.elements));
+  const galleryViewPages = narrationDeletedPages(laid, galleryStruckIds);
+  const pageOfBlock = new Map(laid.map((b) => [b.id, b.page]));
+  for (const id of [...galleryStruckIds]) {
+    if (galleryViewPages.has(pageOfBlock.get(id))) galleryStruckIds.delete(id);
+  }
+  const galleryAgain = deriveNarrationStrikes(laid, galleryStruckIds, galleryViewPages);
+  assert.deepStrictEqual(
+    narrationDeletionEdit(new Set(gallery.elements), new Set(galleryAgain.elements)),
+    { strike: [], unstrike: [] },
+    'reloading the book would have rewritten the record');
+  console.log(
+    `view: ${galleryViewPages.size} page(s) read as deleted; re-derivation `
+    + `${JSON.stringify(galleryAgain.elements)}`);
+
+  const galleryOut = path.join(path.dirname(BOOK), 'measured-gallery.tts.epub');
+  const galleryWritten = await writeNarrationEpub(BOOK, galleryOut, gallery.elements);
+  const galleryAfter = await documentsOf(galleryOut);
+  console.log(
+    `\ncut: ${galleryWritten.removedElements}/${galleryWritten.totalElements} element(s) removed, `
+    + `${galleryWritten.removedDocuments.length} document(s) pruned`);
+  console.log(`pruned: ${galleryWritten.removedDocuments.join(', ') || '(none)'}`);
+  console.log(
+    `documents ${before.length} → ${galleryAfter.length}; `
+    + `file ${fs.statSync(BOOK).size} → ${fs.statSync(galleryOut).size} bytes`);
+
+  for (const f of GALLERY) {
+    const entry = named(f);
+    assert.ok(entry, `${f} is not in this book at all`);
+    assert.ok(galleryWritten.removedDocuments.includes(entry), `${f} was NOT removed`);
+    assert.ok(!galleryAfter.some((d) => d.entry === entry), `${f} is still in the zip`);
+  }
+  assert.strictEqual(galleryWritten.removedDocuments.length, 2,
+    `${galleryWritten.removedDocuments.join(', ')} — more than the gallery went`);
+
+  // The nine pictures, gone with their documents. Asked of the CUT book the way
+  // the picker asks it: lay it out and count what is left.
+  const galleryAnalyzer = new PDFAnalyzer();
+  const galleryQuick = await galleryAnalyzer.analyzeQuick(galleryOut);
+  const galleryCut = galleryQuick.textReady && galleryQuick.blocks !== undefined
+    ? galleryQuick
+    : await galleryAnalyzer.analyzeText(galleryOut);
+  const refusedBefore = blocks.filter((b) => b.is_image && b.bf_element === undefined);
+  const refusedAfter = galleryCut.blocks.filter((b) => b.is_image && b.bf_element === undefined);
+  console.log(
+    `pictures no ordinal could settle: ${refusedBefore.length} in the book → `
+    + `${refusedAfter.length} in the copy`);
+  assert.strictEqual(refusedAfter.length, 0,
+    'the unmatchable pictures survived into the narration copy');
+  for (const w of galleryCut.warnings ?? []) console.log(`copy WARNING ${w}`);
 
   assert.strictEqual(sha(BOOK), beforeSha, 'THE BOOK WAS REWRITTEN');
   console.log('\nthe book on disk is byte-identical to what it was.');

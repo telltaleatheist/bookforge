@@ -16,9 +16,11 @@ import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
 import { blockCategoryForVlm } from '../shared/vlm/conversion';
 import { stripFootnoteMarkerSups } from '../shared/text/sup-markers';
 import {
+  narrationDocumentKey,
   narrationElementKey,
   narrationImageElementKey,
   planNarrationRemoval,
+  splitNarrationDeletions,
   type NarrationElementKey,
   type NarrationUnit,
 } from '../shared/vlm/narration-deletions';
@@ -5709,8 +5711,8 @@ export interface NarrationEpubWriteResult {
   /** The spine documents that were rewritten. */
   rewrittenFiles: string[];
   /**
-   * The spine documents that were REMOVED because the strikes emptied them, by
-   * zip entry name.
+   * The spine documents that were REMOVED, by zip entry name — the ones the
+   * strikes emptied, and the ones a `<zip entry>#doc` key struck by name.
    *
    * Reported rather than counted quietly because it is the difference between
    * "your deletions worked" and "your deletions worked and the blank pages they
@@ -5956,9 +5958,11 @@ function neutralizeLinksToPruned(doc: any, pruned: ReadonlySet<string>, entry: s
  * the user imported (manifest-service `ensureBookEpub`), whose archive original
  * is never opened for writing either.
  *
- * `planNarrationRemoval` decides WHAT comes out and refuses a key the book does
- * not have; this function only carries that out. The output is written to
- * `outputPath` and the caller is responsible for moving it into place.
+ * `planNarrationRemoval` decides WHICH ELEMENTS come out and refuses a key the
+ * book does not have; the document keys are answered here, against the spine,
+ * because the spine is what says which documents the book has. The output is
+ * written to `outputPath` and the caller is responsible for moving it into
+ * place.
  */
 export async function writeNarrationEpub(
   inputPath: string,
@@ -6023,14 +6027,54 @@ export async function writeNarrationEpub(
     processor.close();
   }
 
-  const plan = planNarrationRemoval(units, deletions);
+  // ── The documents struck BY NAME ──────────────────────────────────────────
+  //
+  // `<zip entry>#doc` says the whole document goes. It is checked against the
+  // SPINE — the one authority on which documents this book has — and a key
+  // naming a document the book does not contain is refused by name, exactly as
+  // an element key that names no element is. The sha gate on the record should
+  // make that unreachable; a positional record and a file that moved under it
+  // cannot be reconciled by guessing whichever way the key is expressed.
+  const split = splitNarrationDeletions(deletions);
+  const struckDocuments = new Set(split.documents);
+  const absent = split.documents.filter((file) => !perFile.has(file));
+  if (absent.length > 0) {
+    throw new Error(
+      `${absent.length} of the document(s) struck out of this book are not in its spine any more — `
+      + `the first is ${narrationDocumentKey(absent[0])}. A book that has been rewritten since (a `
+      + 'simplify or translate pass) voids the record. Open the book in the editor, strike what you '
+      + 'want left out again, and export.'
+    );
+  }
+
+  const plan = planNarrationRemoval(units, split.elements);
   const struck = new Set(plan.remove);
+  // Everything inside a struck document counts as removed, because the document
+  // it is in is not going to be in the copy. Counted through the set so an
+  // element named both individually and by its document is one removal.
+  for (const file of struckDocuments) {
+    for (const unit of perFile.get(file)!.units) struck.add(unit.key);
+  }
 
   const rewrittenFiles: string[] = [];
   const emptied: string[] = [];
   /** Serialized survivors, held until the pruning set is known. */
   const replacementsFromDoc = new Map<string, string>();
   for (const [file, { doc, body, units: fileUnits }] of perFile) {
+    // A document struck by name goes WITHOUT being asked whether removing its
+    // elements happened to leave the body empty. `bodyIsEmpty` answers a
+    // question about the unit walk — did everything it collects come out — and
+    // the whole reason a document can be struck is that the unit walk does not
+    // account for everything in it (the plate gallery's unmatchable pictures).
+    //
+    // The NAV is the one document that is never dropped, here for the same
+    // reason it is exempt below: it is structure rather than content, and e2a
+    // reads the book's chapter titles out of it. Striking it whole empties it,
+    // which is what striking every element of it does today.
+    if (struckDocuments.has(file) && file !== navEntry) {
+      emptied.push(file);
+      continue;
+    }
     const toRemove = fileUnits.filter((u) => struck.has(u.key));
     if (toRemove.length === 0) continue;
     for (const unit of toRemove) {
@@ -6162,7 +6206,7 @@ export async function writeNarrationEpub(
   }
 
   return {
-    removedElements: plan.remove.length,
+    removedElements: struck.size,
     totalElements: plan.total,
     removedSupMarkers,
     rewrittenFiles,

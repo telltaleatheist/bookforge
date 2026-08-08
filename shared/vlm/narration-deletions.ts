@@ -38,7 +38,7 @@
  */
 
 /**
- * One element struck out of the book. TWO forms, in TWO SEPARATE NAMESPACES:
+ * One thing struck out of the book. THREE forms, in THREE SEPARATE NAMESPACES:
  *
  *  - `<zip entry>#<index>` — a TEXT unit, indexed into that document's unit list
  *    (`collectExportUnits`, electron/epub-processor.ts).
@@ -46,6 +46,25 @@
  *    list in flow order (`collectImageElements`, same file): `<img>`, `<svg>`,
  *    and a bare `<image>`, which is exactly the set `bodyIsEmpty` counts as
  *    content.
+ *  - `<zip entry>#doc` — the WHOLE DOCUMENT, struck by name rather than by any
+ *    position inside it.
+ *
+ * ── Why a document is a thing you can strike ────────────────────────────────
+ *
+ * Owen, 2026-08-09: when the identity of individual pieces is ambiguous,
+ * escalate to the enclosing container whose identity is CERTAIN. A spine
+ * document's identity always is — it is a zip entry name, and the book is never
+ * rewritten — while the identity of a picture inside it is an ordinal the
+ * matcher can refuse (`alignImageBlocks`) and the identity of a unit is an index
+ * into a traversal.
+ *
+ * Measured on Killing America: `bm01.xhtml` states 3 image elements and mupdf
+ * laid 6 picture blocks out of it, `back.xhtml` states 4 and laid out 3. Nine
+ * blocks that no ordinal can settle, so nine deletions that reached nothing —
+ * the user struck the plate gallery out and the plates were still in the
+ * narration copy. Striking the two DOCUMENTS removes all nine without a single
+ * one of them ever being identified, because the container they are in is not
+ * in doubt.
  *
  * ── Why images get their own numbering rather than a place in the unit list ──
  *
@@ -69,8 +88,26 @@ export type NarrationElementKey = string;
 /** The prefix that puts a key in the IMAGE namespace rather than the unit one. */
 const IMAGE_KEY_PREFIX = 'img';
 
-/** Which of the two things a key names. */
-export type NarrationElementKind = 'unit' | 'image';
+/**
+ * What follows the `#` when the key names the DOCUMENT itself.
+ *
+ * A word rather than a number, so it cannot collide with either of the two
+ * numbered namespaces — and it is checked before them, because `img` and a
+ * digit run are the only other things that may follow the `#`.
+ */
+const DOCUMENT_KEY_SUFFIX = 'doc';
+
+/** Which of the three things a key names. */
+export type NarrationElementKind = 'unit' | 'image' | 'doc';
+
+/**
+ * A key, taken apart. A DISCRIMINATED UNION because a document key has no index
+ * and inventing one for it (0, -1) would be a position that names an element.
+ */
+export type ParsedNarrationElementKey =
+  | { file: string; kind: 'unit'; index: number }
+  | { file: string; kind: 'image'; index: number }
+  | { file: string; kind: 'doc' };
 
 export interface NarrationDeletions {
   /**
@@ -105,12 +142,13 @@ export interface NarrationEpubOutput {
    */
   removedSupMarkers?: number;
   /**
-   * The spine documents that were removed because the strikes emptied them, by
-   * zip entry name.
+   * The spine documents that were removed, by zip entry name.
    *
    * A document whose every element was struck is left as a blank page in the
    * copy, so it is taken out of the book entirely (electron/epub-processor.ts,
-   * `writeNarrationEpub`). The LIST rather than a count, because it is the only
+   * `writeNarrationEpub`) — as is a document a `<zip entry>#doc` key struck by
+   * name, which goes whole whatever the unit walk did or did not account for.
+   * The LIST rather than a count, because it is the only
    * record of which documents this copy does not have — a later reader that
    * cannot find one needs to be able to tell "pruned on purpose" from "the two
    * files have come apart", and those get very different sentences.
@@ -137,11 +175,26 @@ export function narrationImageElementKey(file: string, ordinal: number): Narrati
   return `${file}#${IMAGE_KEY_PREFIX}${ordinal}`;
 }
 
-export function parseNarrationElementKey(
-  key: NarrationElementKey
-): { file: string; index: number; kind: NarrationElementKind } {
+/** The key of a WHOLE spine document — everything in it, struck by name. */
+export function narrationDocumentKey(file: string): NarrationElementKey {
+  if (file.length === 0) {
+    throw new Error('A narration document key names a zip entry, and "" is not one.');
+  }
+  if (file.includes('#')) {
+    throw new Error(
+      `"${file}" already carries a "#", so it is a key rather than the zip entry name a document `
+      + 'key is made from.'
+    );
+  }
+  return `${file}#${DOCUMENT_KEY_SUFFIX}`;
+}
+
+export function parseNarrationElementKey(key: NarrationElementKey): ParsedNarrationElementKey {
   const at = key.lastIndexOf('#');
   const rest = at < 0 ? '' : key.slice(at + 1);
+  const file = key.slice(0, at);
+  if (at > 0 && rest === DOCUMENT_KEY_SUFFIX) return { file, kind: 'doc' };
+
   const isImage = rest.startsWith(IMAGE_KEY_PREFIX);
   const digits = isImage ? rest.slice(IMAGE_KEY_PREFIX.length) : rest;
   // `Number('')` is 0, which would read `x#` and `x#img` as index 0 — so the
@@ -150,11 +203,12 @@ export function parseNarrationElementKey(
   if (at <= 0 || !Number.isInteger(index)) {
     throw new Error(
       `"${key}" is not a narration element key. The shape is <zip entry>#<index> for a text `
-      + 'element (e.g. OEBPS/chapter-01.xhtml#12) or <zip entry>#img<N> for a picture (e.g. '
-      + 'OEBPS/cover.xhtml#img0).'
+      + 'element (e.g. OEBPS/chapter-01.xhtml#12), <zip entry>#img<N> for a picture (e.g. '
+      + 'OEBPS/cover.xhtml#img0), or <zip entry>#doc for a whole document (e.g. '
+      + 'OEBPS/bm01.xhtml#doc).'
     );
   }
-  return { file: key.slice(0, at), index, kind: isImage ? 'image' : 'unit' };
+  return isImage ? { file, kind: 'image', index } : { file, kind: 'unit', index };
 }
 
 /**
@@ -274,34 +328,95 @@ export interface NarrationStrikes {
  * than carrying a per-gesture element list is what makes overlapping gestures
  * come out right: an element two blocks name stays struck when only one of them
  * is restored, because it is still in the AFTER set.
+ *
+ * ── The escalation to the DOCUMENT ──────────────────────────────────────────
+ *
+ * A document EVERY strikeable block of which is struck comes out as the single
+ * key `<zip entry>#doc` instead of its elements, one for one. The condition is
+ * read off ALIGNED content only — a block carrying an element key is certain
+ * evidence, and it is the only evidence there is — while the EFFECT reaches
+ * further than the condition can see: `writeNarrationEpub` drops the whole
+ * document, so the pictures the ordinal matcher REFUSED to identify die with it
+ * without ever being named. That asymmetry is the point of the escalation, not
+ * an accident of it: the user deletes the plate gallery's pages, its captions
+ * all strike, the document escalates, and the six plates no ordinal could
+ * settle go too.
+ *
+ * A document with NO strikeable blocks at all cannot escalate. Vacuous truth
+ * would say "every one of its zero blocks is struck" about a document nobody
+ * touched, and there would be no certain evidence anywhere that the user meant
+ * it — so its deletions stay in the unstruck report, which is the honest answer.
+ *
+ * ── Reading order is a CONSTRAINT on the block list ─────────────────────────
+ *
+ * Attributing a block that carries NO element to a document (below, for the
+ * report) is done from the aligned blocks either side of it, which is only
+ * meaningful if the list is in the book's own reading order. It is: the list
+ * comes from the analyzer's flow-order layout. Pages are sorted here anyway
+ * because that half of the order can be checked; within a page the given order
+ * is the layout's.
  */
 export function deriveNarrationStrikes(
   blocks: readonly NarrationLaidOutBlock[],
   deletedBlockIds: ReadonlySet<string>,
   deletedPages: ReadonlySet<number>
 ): NarrationStrikes {
+  const inReadingOrder = [...blocks].sort((a, b) => a.page - b.page);
+
   const fromBlocks = new Set<NarrationElementKey>();
   const fromPages = new Set<NarrationElementKey>();
-  const unstruck: UnstruckDeletion[] = [];
+  /** Deletions that reached nothing — before document coverage is considered. */
+  const candidateUnstruck: Array<UnstruckDeletion & { at: number }> = [];
   const seenBlockIds = new Set<string>();
   const struckOnPage = new Map<number, number>();
   for (const page of deletedPages) struckOnPage.set(page, 0);
 
-  for (const block of blocks) {
+  /** Element-carrying blocks per document, and how many of them are struck. */
+  const strikeableInDocument = new Map<string, number>();
+  const struckInDocument = new Map<string, number>();
+  /** The document of the nearest aligned block at or before each position. */
+  const documentBefore: Array<string | null> = new Array(inReadingOrder.length).fill(null);
+  const documentAfter: Array<string | null> = new Array(inReadingOrder.length).fill(null);
+
+  {
+    let running: string | null = null;
+    for (let i = 0; i < inReadingOrder.length; i++) {
+      documentBefore[i] = running;
+      const element = inReadingOrder[i].element;
+      if (element !== undefined) running = parseNarrationElementKey(element).file;
+    }
+    running = null;
+    for (let i = inReadingOrder.length - 1; i >= 0; i--) {
+      documentAfter[i] = running;
+      const element = inReadingOrder[i].element;
+      if (element !== undefined) running = parseNarrationElementKey(element).file;
+    }
+  }
+
+  for (let i = 0; i < inReadingOrder.length; i++) {
+    const block = inReadingOrder[i];
     seenBlockIds.add(block.id);
     const byBlock = deletedBlockIds.has(block.id);
     const byPage = deletedPages.has(block.page);
+
+    if (block.element !== undefined) {
+      const file = parseNarrationElementKey(block.element).file;
+      strikeableInDocument.set(file, (strikeableInDocument.get(file) ?? 0) + 1);
+      if (byBlock || byPage) struckInDocument.set(file, (struckInDocument.get(file) ?? 0) + 1);
+    }
+
     if (!byBlock && !byPage) continue;
 
     if (block.element === undefined) {
       // Furniture has no element by construction — see `unplaceable`. Naming it
       // would be reporting the absence of something that was never there.
       if (block.unplaceable) continue;
-      unstruck.push({
+      candidateUnstruck.push({
         blockId: block.id,
         page: block.page,
         via: byBlock ? 'block' : 'page',
         excerpt: block.excerpt,
+        at: i,
       });
       continue;
     }
@@ -317,6 +432,59 @@ export function deriveNarrationStrikes(
   // An element named by a block AND (through a different block) by a page is a
   // block strike, so the two counts partition the set they sum to.
   for (const key of fromBlocks) fromPages.delete(key);
+
+  // ── Escalation ────────────────────────────────────────────────────────────
+  const struckDocuments = new Set<string>();
+  for (const [file, strikeable] of strikeableInDocument) {
+    if (strikeable > 0 && struckInDocument.get(file) === strikeable) struckDocuments.add(file);
+  }
+  for (const file of struckDocuments) {
+    const key = narrationDocumentKey(file);
+    // The document key inherits the gesture that named the document: a block
+    // strike if ANY of its elements was named individually, exactly as one
+    // element struck both ways counts as a block strike.
+    let namedByBlock = false;
+    for (const set of [fromBlocks, fromPages]) {
+      for (const element of [...set]) {
+        if (parseNarrationElementKey(element).file !== file) continue;
+        set.delete(element);
+        if (set === fromBlocks) namedByBlock = true;
+      }
+    }
+    (namedByBlock ? fromBlocks : fromPages).add(key);
+  }
+
+  // ── What a struck document COVERS ─────────────────────────────────────────
+  //
+  // A deletion that reached no element of its own is nevertheless carried out
+  // when the document it is inside is struck whole, because the document goes
+  // whole. The document of such a block is read from the aligned blocks either
+  // side of it — the same window `alignImageBlocks` bounds a picture by — and
+  // the block is covered only when BOTH ends name struck documents, so a block
+  // that could be in a document nobody struck is still reported.
+  //
+  // Its page is credited too: a page holding nothing but covered blocks (the
+  // plate gallery's middle pages hold no text at all) is a page whose content
+  // is going, and reporting it as "nothing could be struck" would be false.
+  const unstruck: UnstruckDeletion[] = [];
+  for (const candidate of candidateUnstruck) {
+    const before = documentBefore[candidate.at];
+    const after = documentAfter[candidate.at];
+    const covered = before !== null && after !== null
+      && struckDocuments.has(before) && struckDocuments.has(after);
+    if (covered) {
+      if (deletedPages.has(candidate.page)) {
+        struckOnPage.set(candidate.page, (struckOnPage.get(candidate.page) ?? 0) + 1);
+      }
+      continue;
+    }
+    unstruck.push({
+      blockId: candidate.blockId,
+      page: candidate.page,
+      via: candidate.via,
+      excerpt: candidate.excerpt,
+    });
+  }
 
   return {
     elements: [...new Set([...fromBlocks, ...fromPages])].sort(),
@@ -381,13 +549,30 @@ export function describeUnstruckDeletions(strikes: NarrationStrikes): string | n
  * ONE element can own SEVERAL blocks — mupdf re-lays the book out at its own
  * page size and a paragraph becomes one block per visual line — so this is a
  * fan-out, not a lookup, and every block of a struck element is struck.
+ *
+ * A `<zip entry>#doc` key fans out further still: every block of that document
+ * is struck. That is the exact INVERSE of the escalation in
+ * `deriveNarrationStrikes` — which emits the document key precisely when every
+ * such block is struck — so a round trip through the record and back into the
+ * view returns the same document key rather than fanning out into elements and
+ * rewriting the record's shape on every reload.
  */
 export function narrationDeletedBlockIds(
   blocks: readonly NarrationBlock[],
   elements: readonly NarrationElementKey[]
 ): string[] {
-  const struck = new Set(elements);
-  return blocks.filter((b) => b.element !== undefined && struck.has(b.element)).map((b) => b.id);
+  const struck = new Set<NarrationElementKey>();
+  const struckDocuments = new Set<string>();
+  for (const key of elements) {
+    const parsed = parseNarrationElementKey(key);
+    if (parsed.kind === 'doc') struckDocuments.add(parsed.file);
+    else struck.add(key);
+  }
+  return blocks
+    .filter((b) => b.element !== undefined
+      && (struck.has(b.element)
+        || struckDocuments.has(parseNarrationElementKey(b.element).file)))
+    .map((b) => b.id);
 }
 
 /**
@@ -398,12 +583,17 @@ export function narrationDeletedBlockIds(
  * nothing left on the page that could be read aloud, which is exactly "every
  * strikeable block on it is struck".
  *
- * A page with NO strikeable blocks at all (a page of footnote markers, a blank)
+ * A page with NO strikeable blocks at all (a page of footnote markers, a blank,
+ * a plate gallery's middle page holding only pictures no ordinal could settle)
  * is not deleted: vacuous truth would strike every empty page in the book the
- * moment anything else was. And a page shown as deleted must not ALSO have its
- * blocks listed individually — the caller takes those out — because restoring
- * the page has to be one gesture that puts the whole page back, not one that
- * leaves several hundred block deletions the user never made.
+ * moment anything else was. That holds inside a document struck WHOLE too —
+ * such a page carries no block that names the document, so nothing here is
+ * evidence about it, and the cut removes its content by removing the document
+ * rather than by anything this projection says. And a page shown as deleted
+ * must not ALSO have its blocks listed individually — the caller takes those
+ * out — because restoring the page has to be one gesture that puts the whole
+ * page back, not one that leaves several hundred block deletions the user never
+ * made.
  */
 export function narrationDeletedPages(
   blocks: readonly NarrationLaidOutBlock[],
@@ -529,10 +719,41 @@ export interface NarrationRemovalPlan {
  * something, and quietly dropping it would remove a different paragraph or none
  * at all, in a book nobody would think to check.
  */
+/**
+ * A recorded deletion set, sorted into the two things it can name: whole
+ * documents and individual elements.
+ *
+ * Split HERE rather than at each reader because the two are answered by
+ * different authorities — a document key is checked against the book's spine
+ * and an element key against the unit list — and a reader that let a `#doc` key
+ * fall through to the element check would refuse it as a missing element, which
+ * is a true refusal with a false reason.
+ */
+export function splitNarrationDeletions(
+  deletions: readonly NarrationElementKey[]
+): { documents: string[]; elements: NarrationElementKey[] } {
+  const documents = new Set<string>();
+  const elements: NarrationElementKey[] = [];
+  for (const key of deletions) {
+    const parsed = parseNarrationElementKey(key);
+    if (parsed.kind === 'doc') documents.add(parsed.file);
+    else elements.push(key);
+  }
+  return { documents: [...documents].sort(), elements };
+}
+
 export function planNarrationRemoval(
   units: readonly NarrationUnit[],
   deletions: readonly NarrationElementKey[]
 ): NarrationRemovalPlan {
+  const documents = deletions.filter((key) => parseNarrationElementKey(key).kind === 'doc');
+  if (documents.length > 0) {
+    throw new Error(
+      `${documents.length} of these keys name a whole document (the first is ${documents[0]}), and `
+      + 'a document is not in the unit list — it is checked against the book\'s spine. Split the '
+      + 'record with splitNarrationDeletions before planning the element removals.'
+    );
+  }
   const present = new Set(units.map((u) => u.key));
   const missing = deletions.filter((key) => !present.has(key));
   if (missing.length > 0) {
