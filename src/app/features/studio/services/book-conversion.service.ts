@@ -72,8 +72,18 @@ export interface ConversionRequest {
   projectDir: string;
   from: ConversionSource;
   sourceLabel: string;
-  /** The PDF variant, when the project holds more than one. */
+  /** The PDF variant, when the row carries one — the archive row does. */
   variantId?: string;
+  /**
+   * The archive PDF itself, for a row that names a file rather than a variant.
+   *
+   * The working-copy row is that row: it is a sidecar, not a version of the
+   * book, so it has no variant id — only the original it was copied from. With
+   * neither, `resolveDocumentProject` falls back to "the project's single PDF"
+   * and REFUSES a project holding two, which would turn Create EPUB into a
+   * question for exactly the users who curated one of two editions.
+   */
+  sourcePath?: string;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -200,6 +210,7 @@ export class BookConversionService {
       const answer = await this.electron.convertPdfToEpub({
         projectDir: request.projectDir,
         ...(request.variantId ? { variantId: request.variantId } : {}),
+        ...(request.sourcePath ? { sourcePath: request.sourcePath } : {}),
         ...(endpoint !== null ? { endpoint } : {}),
         // The whole difference between the two buttons. Main reads WHICH pages
         // that is off the working document itself.

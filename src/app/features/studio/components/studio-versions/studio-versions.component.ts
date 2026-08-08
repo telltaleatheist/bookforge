@@ -1507,7 +1507,12 @@ export class StudioVersionsComponent {
       projectDir: dir,
       from,
       sourceLabel: row.v.label,
+      // Which document, said as precisely as the row can say it. The archive row
+      // carries its variant id; the working row is a sidecar with no variant of
+      // its own and carries the original it was copied from. Either is enough to
+      // stop a project with two PDFs having to be asked which one this is.
       ...(row.v.variantId ? { variantId: row.v.variantId } : {}),
+      ...(!row.v.variantId && row.v.primaryPath ? { sourcePath: row.v.primaryPath } : {}),
     });
   }
 
