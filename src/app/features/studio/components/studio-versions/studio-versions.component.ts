@@ -2244,6 +2244,9 @@ export class StudioVersionsComponent {
       });
     }
     if (this.projectId() !== pid) return;
+    // Both halves of the page: the variant list AND the Documents family —
+    // an added PDF mints an archive row, and Convert to EPUB stands on it.
+    await this.load();
     await this.loadVariants();
     // Open the newly-added version's metadata editor so the user can describe it.
     if (lastAddedId) {
