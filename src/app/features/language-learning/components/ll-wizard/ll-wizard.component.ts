@@ -1037,7 +1037,7 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                     <button
                       type="button"
                       class="variant-card"
-                      [class.selected]="ttsInput() === 'book'"
+                      [class.selected]="effectiveTtsInput() === 'book'"
                       [disabled]="!bookEpubPath() || passes().length > 0"
                       (click)="ttsInput.set('book')"
                     >
@@ -1048,10 +1048,31 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                         <span class="variant-note">The passes rewrite this file.</span>
                       }
                     </button>
+                    <!--
+                      The narration copy: the book minus what was struck out of
+                      it in the editor. Offered only when one exists, because a
+                      card that names no file teaches nothing - and the whole
+                      book stays on offer beside it, so choosing is a choice and
+                      never a redirection.
+                    -->
+                    @if (narrationEpubPath()) {
+                      <button
+                        type="button"
+                        class="variant-card"
+                        [class.selected]="effectiveTtsInput() === 'narration'"
+                        [disabled]="passes().length > 0"
+                        (click)="ttsInput.set('narration')"
+                      >
+                        <span class="variant-format">EPUB</span>
+                        <span class="variant-title">The narration copy</span>
+                        <span class="variant-file">{{ getFilenameFromPath(narrationEpubPath()!) }}</span>
+                        <span class="variant-note">What you left in, in the editor.</span>
+                      </button>
+                    }
                     <button
                       type="button"
                       class="variant-card"
-                      [class.selected]="ttsInput() === 'run'"
+                      [class.selected]="effectiveTtsInput() === 'run'"
                       [disabled]="!runProducesEpub()"
                       (click)="ttsInput.set('run')"
                     >
@@ -3441,8 +3462,25 @@ export class LLWizardComponent implements OnInit {
   readonly passFootnotesAskEverything = signal(false);
   /** The project's book EPUB (manifest `outputs.epub`) when it is on disk. */
   readonly bookEpubPath = signal<string | null>(null);
-  /** Which EPUB the standard TTS job reads. See ttsInputPath. */
-  readonly ttsInput = signal<'book' | 'run'>('book');
+  /**
+   * The project's NARRATION COPY (manifest `outputs.ttsEpub`) when it is on disk.
+   *
+   * A SECOND file, cut from the book by what the user struck out of it in the
+   * editor — footnotes, captions, a table of contents. The book itself stays
+   * complete. See shared/vlm/narration-deletions.ts.
+   */
+  readonly narrationEpubPath = signal<string | null>(null);
+  /**
+   * Which EPUB the standard TTS job reads.
+   *
+   * Three answers, and the user always sees which one is chosen — nothing is
+   * ever silently redirected. `narration` is PREFERRED on arrival when the copy
+   * exists, because a project that has one has been through the editor for the
+   * express purpose of deciding what gets read aloud, and narrating the complete
+   * book instead would ignore that work. It is a default, not a lock: the card
+   * for the whole book is right beside it.
+   */
+  readonly ttsInput = signal<'book' | 'narration' | 'run'>('book');
   private passUid = 0;
   private planTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -3555,10 +3593,31 @@ export class LLWizardComponent implements OnInit {
    * are any (they rewrite the book in place, so it is the same path either way),
    * else the book as it stands.
    */
+  /**
+   * Which of the three the run will ACTUALLY read.
+   *
+   * The passes rewrite the book in place, so while any are queued the only
+   * honest answer is what they leave behind — whatever the cards were last set
+   * to. Derived rather than written back into `ttsInput`, so the user's own
+   * choice is still there when the last pass is removed, and so the card that
+   * lights up is always the file that will be narrated.
+   */
+  readonly effectiveTtsInput = computed<'book' | 'narration' | 'run'>(() => {
+    if (this.runProducesEpub()) return 'run';
+    if (this.ttsInput() === 'narration' && this.narrationEpubPath()) return 'narration';
+    if (this.ttsInput() === 'book' && this.bookEpubPath()) return 'book';
+    // The chosen file is not there. Whichever of the other two IS, named — not
+    // an empty path handed to a TTS job that would fail an hour later.
+    if (this.narrationEpubPath()) return 'narration';
+    return 'book';
+  });
+
   readonly ttsInputPath = computed<string>(() => {
-    const plan = this.chainPlan();
-    if (this.passes().length > 0 && plan && !this.chainError()) return plan.bookEpubPath;
-    return this.bookEpubPath() ?? '';
+    switch (this.effectiveTtsInput()) {
+      case 'run': return this.chainPlan()!.bookEpubPath;
+      case 'narration': return this.narrationEpubPath() ?? '';
+      case 'book': return this.bookEpubPath() ?? '';
+    }
   });
 
   /**
@@ -3568,7 +3627,7 @@ export class LLWizardComponent implements OnInit {
   readonly ttsBlockedReason = computed<string | null>(() => {
     // Sentence-aligned rows resolve their own per-language EPUBs at run time.
     if (this.pipelineMode() === 'bilingual') return null;
-    if (this.runProducesEpub() || this.bookEpubPath()) return null;
+    if (this.runProducesEpub() || this.bookEpubPath() || this.narrationEpubPath()) return null;
     return 'This book has no EPUB to narrate, and no pass in this run produces one. '
       + 'Add an OCR-correction pass over the PDF on the first page, or export the book from the editor.';
   });
@@ -4392,6 +4451,7 @@ export class LLWizardComponent implements OnInit {
       const hasPasses = this.passes().length > 0;
       untracked(() => {
         if (hasPasses && producing) this.ttsInput.set('run');
+        else if (this.narrationEpubPath()) this.ttsInput.set('narration');
         else if (book) this.ttsInput.set('book');
       });
     });
@@ -5812,6 +5872,15 @@ export class LLWizardComponent implements OnInit {
         console.warn('[LL-WIZARD] Could not resolve the project export:', (err as Error).message);
       }
       this.bookEpubPath.set(bookAbs);
+
+      // The narration copy, asked for separately because it is a separate record
+      // (`outputs.ttsEpub`) and a project can have either, both or neither. A
+      // project that HAS one has already had somebody decide what gets read
+      // aloud, so it becomes the selected input — visibly, on its own card.
+      const narration = await this.electronService.narrationState(projectDir);
+      const narrationAbs = narration.success ? (narration.state?.narrationPath ?? null) : null;
+      this.narrationEpubPath.set(narrationAbs);
+      if (narrationAbs && this.passes().length === 0) this.ttsInput.set('narration');
 
       const cards: PassVariantCard[] = [];
       const result = await this.electronService.variantList(projectId);

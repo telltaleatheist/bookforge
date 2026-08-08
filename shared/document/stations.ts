@@ -336,6 +336,13 @@ export function stationMintedBy(stage: string): StationId | null {
     case 'Reflow':
     case 'Build the book':
     case 'reflow':
+    // The other route to a book mints the same artifact — it just gets there
+    // without a working copy. `VLM_CONVERT_STAGE` in shared/vlm/conversion.ts is
+    // where this string is declared; it is spelled out here for the same reason
+    // every other name in this switch is, because these are the strings that
+    // actually travel on `document:stage-finished`.
+    case 'Convert to EPUB':
+    case 'vlm-convert':
       return 'epub';
     default:
       return null;

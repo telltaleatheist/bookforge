@@ -743,6 +743,22 @@ export interface CropRect {
           <desktop-button variant="ghost" size="xs" (click)="onDeleteBlock()">Delete</desktop-button>
           <desktop-button variant="secondary" size="xs" (click)="onSelectLikeThis()">Select like this</desktop-button>
           <desktop-button variant="danger" size="xs" (click)="onDeleteLikeThis()">Delete all like this</desktop-button>
+          <!--
+            The SOURCE page: the page of the PDF this element was read off, which
+            a converted book states on every element (data-bf-page) and an EPUB
+            otherwise has no memory of. Offered only where a block carries one,
+            because on every other book the question has no answer - block.page
+            is the page mupdf invented at its own page size, and deleting
+            everything on it would delete an arbitrary window of the text.
+          -->
+          @if (hoveredBlock()!.bf_source_page !== undefined) {
+            <desktop-button variant="secondary" size="xs" (click)="onSelectSourcePage()">
+              Select page {{ hoveredBlock()!.bf_source_page }}
+            </desktop-button>
+            <desktop-button variant="danger" size="xs" (click)="onDeleteSourcePage()">
+              Delete page {{ hoveredBlock()!.bf_source_page }}
+            </desktop-button>
+          }
           @if (hasCorrectedText(hoveredBlock()!.id)) {
             <desktop-button variant="ghost" size="xs" (click)="onRevertBlock()">Revert to original</desktop-button>
           }
@@ -1867,6 +1883,16 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   blockHover = output<TextBlock | null>();
   selectLikeThis = output<TextBlock>();
   deleteLikeThis = output<TextBlock>();
+  /**
+   * Every element read off one page of the source PDF — `data-bf-page`.
+   *
+   * The same shape as `selectLikeThis` / `deleteLikeThis` and deliberately so:
+   * "everything like this one" and "everything that was on this one's page" are
+   * the same gesture over two different groupings, and the shell resolves both
+   * the way the screen paints them.
+   */
+  selectSourcePage = output<TextBlock>();
+  deleteSourcePage = output<TextBlock>();
   deleteBlock = output<string>();
   /** Merge the current multi-selection into one block. */
   mergeSelection = output<void>();
@@ -3606,6 +3632,22 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     const block = this.contextMenuBlock();
     if (block) {
       this.deleteLikeThis.emit(block);
+      this.closeAllContextMenus();
+    }
+  }
+
+  onSelectSourcePage(): void {
+    const block = this.contextMenuBlock();
+    if (block?.bf_source_page !== undefined) {
+      this.selectSourcePage.emit(block);
+      this.closeAllContextMenus();
+    }
+  }
+
+  onDeleteSourcePage(): void {
+    const block = this.contextMenuBlock();
+    if (block?.bf_source_page !== undefined) {
+      this.deleteSourcePage.emit(block);
       this.closeAllContextMenus();
     }
   }

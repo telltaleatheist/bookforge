@@ -95,6 +95,19 @@ export class DocumentBlocksService {
   /** The stage's own most recent line, verbatim. */
   readonly stageMessage = signal<string>('');
   /**
+   * How far the running stage has got, as the stage itself counts it — pages
+   * read, blocks labelled — and zero when it has not said.
+   *
+   * Kept beside the message rather than parsed back out of it by whoever draws
+   * a bar: main already read the number off the stage's own line
+   * (`document:stage-progress` carries `done` and `total`), and a second parse
+   * in the renderer is a second thing to get wrong. `total === 0` means the
+   * stage has not said how much work there is, and a bar drawn from that would
+   * be a bar making one up.
+   */
+  readonly stageDone = signal(0);
+  readonly stageTotal = signal(0);
+  /**
    * What the last stage or edit said when it failed.
    *
    * Surfaced ONCE, where the user asked for the work, and cleared the moment
@@ -367,6 +380,8 @@ export class DocumentBlocksService {
     this.lastError.set(null);
     this.stageRunning.set(label);
     this.stageMessage.set('');
+    this.stageDone.set(0);
+    this.stageTotal.set(0);
     try {
       await run();
       await this.refreshState();
@@ -386,6 +401,8 @@ export class DocumentBlocksService {
     return this.electron.onDocumentStageProgress(event => {
       if (event.projectDir !== this.ref()?.projectDir) return;
       this.stageMessage.set(event.message);
+      this.stageDone.set(event.done);
+      this.stageTotal.set(event.total);
     });
   }
 }

@@ -90,6 +90,13 @@ import {
   type EpubPassTaskId,
 } from '@shared/document/rail-tasks';
 import type { PassRecord } from '@shared/document/version-family';
+import { VLM_CONVERT_STAGE } from '@shared/vlm/conversion';
+import {
+  narrationBlocksOnSourcePage,
+  narrationDeletedBlockIds,
+  narrationElementsOf,
+  type NarrationState,
+} from '@shared/vlm/narration-deletions';
 import { parsePageRange } from './shared/page-range.util';
 
 interface OpenDocument {
@@ -676,6 +683,8 @@ interface AlertModal {
               (blockHover)="onBlockHover($event)"
               (selectLikeThis)="selectLikeThis($event)"
               (deleteLikeThis)="deleteLikeThis($event)"
+              (selectSourcePage)="selectSourcePage($event)"
+              (deleteSourcePage)="deleteSourcePage($event)"
               (deleteBlock)="deleteBlock($event)"
               (mergeSelection)="mergeSelectedBlocks()"
               (highlightClick)="onHighlightClick($event)"
@@ -817,6 +826,44 @@ interface AlertModal {
            a project, and a corpus book is deliberately not one. -->
       @if (embedded() && !corpusMode()) {
         <div class="station-foot">
+          <!--
+            The conversion's own bar, above the button that started it.
+
+            It is here rather than in a modal because the run is ninety minutes
+            and the window stays usable throughout - it is owned by MAIN, so
+            closing this window does not stop it. The bar is INDETERMINATE until
+            the run reports a page count: the first minutes are the model
+            loading, and a bar pinned at 0% for two minutes is indistinguishable
+            from a broken one.
+          -->
+          @if (converting()) {
+            <div class="convert-progress">
+              <div class="convert-progress-head">
+                <span class="convert-progress-label">Reading the pages with a vision model…</span>
+                @if (convertPercent() !== null) {
+                  <span class="convert-progress-count">
+                    {{ documentBlocks.stageDone() }} / {{ documentBlocks.stageTotal() }} pages
+                  </span>
+                }
+                <button
+                  type="button"
+                  class="convert-progress-stop"
+                  title="Stop reading. Every page already answered is kept, and converting again reads only what is missing."
+                  (click)="stopConversion()"
+                >Stop</button>
+              </div>
+              <div class="convert-progress-track" [class.indeterminate]="convertPercent() === null">
+                <div
+                  class="convert-progress-fill"
+                  [style.width.%]="convertPercent() ?? 100"
+                ></div>
+              </div>
+              <!-- foundry's own line, verbatim. It names the page, the token
+                   count and the seconds, which is what tells a person watching a
+                   forty-minute run that it is still working. -->
+              <p class="convert-progress-line">{{ documentBlocks.stageMessage() }}</p>
+            </div>
+          }
           <app-station-bar
             [tabs]="stationTabs()"
             [actions]="stationActions()"
@@ -1409,6 +1456,78 @@ interface AlertModal {
       flex-direction: column;
       flex-shrink: 0;
       border-top: 1px solid var(--border-subtle);
+    }
+
+    .convert-progress {
+      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
+      background: var(--bg-toolbar);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .convert-progress-head {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-sm);
+      margin-bottom: 6px;
+    }
+
+    .convert-progress-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .convert-progress-count {
+      font-size: 11px;
+      color: var(--text-secondary);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .convert-progress-stop {
+      margin-left: auto;
+      font-size: 11px;
+      padding: 2px 10px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+
+    .convert-progress-stop:hover { color: var(--text-primary); }
+
+    .convert-progress-track {
+      height: 6px;
+      border-radius: 3px;
+      background: var(--bg-inset, rgba(127, 127, 127, 0.2));
+      overflow: hidden;
+    }
+
+    .convert-progress-fill {
+      height: 100%;
+      background: var(--accent-primary, #ff8c42);
+      transition: width 200ms linear;
+    }
+
+    /* No page count yet: the model is still loading, and a bar that showed a
+       number here would be showing one it does not have. */
+    .convert-progress-track.indeterminate .convert-progress-fill {
+      animation: convert-progress-sweep 1.4s ease-in-out infinite;
+      width: 35% !important;
+    }
+
+    @keyframes convert-progress-sweep {
+      0%   { margin-left: -35%; }
+      100% { margin-left: 100%; }
+    }
+
+    .convert-progress-line {
+      margin: 6px 0 0;
+      font-size: 11px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .long-run-options {
@@ -2724,6 +2843,58 @@ export class PdfPickerComponent implements OnInit {
     void this.refreshBookEpub();
   });
 
+  /**
+   * Put the recorded narration strikes back on screen once the converted book's
+   * blocks are in the editor.
+   *
+   * Keyed on the DOCUMENT plus the record's own timestamp, so it fires once per
+   * book per record and not on every block list the segmenter rewrites. It only
+   * ever ADDS: the record says what the user struck, and a strike they have
+   * since undone in this session is theirs to undo.
+   */
+  private appliedNarrationKey = '';
+  private readonly narrationRestoreEffect = effect(() => {
+    if (!this.pdfLoaded() || !this.viewingConvertedBook()) return;
+    const recorded = this.narrationState()?.deletions;
+    const docId = this.activeDocumentId() ?? '';
+    // Read so the effect re-runs when the segmenter replaces the block list —
+    // the blocks the record names may not have existed a moment ago.
+    const blockCount = this.blocks().length;
+    if (blockCount === 0) return;
+    const key = `${docId}|${recorded?.updatedAt ?? ''}|${blockCount}`;
+    if (this.appliedNarrationKey === key) return;
+    this.appliedNarrationKey = key;
+    this.applyNarrationDeletions();
+  });
+
+  /**
+   * Record the strikes as they are made.
+   *
+   * Debounced, because a "delete all like this" over a book's footnotes is one
+   * gesture and hundreds of blocks, and a manifest write per block would be
+   * hundreds of writes into a Syncthing-synced folder. It is a WRITE SCHEDULE
+   * and not a cache: the export saves synchronously before it reads the record
+   * (`exportNarrationCopy`), so the file that lands can never be cut by strikes
+   * that were still in flight.
+   */
+  private narrationSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly narrationSaveEffect = effect(() => {
+    // Tracked: the set the user is looking at.
+    const struck = this.deletedBlockIds();
+    if (!this.pdfLoaded() || !this.viewingConvertedBook()) return;
+    // The restore has to land before the first save, or an empty editor would
+    // be recorded over a book's worth of strikes.
+    if (this.appliedNarrationKey === '') return;
+    void struck;
+    if (this.narrationSaveTimer) clearTimeout(this.narrationSaveTimer);
+    this.narrationSaveTimer = setTimeout(() => {
+      this.narrationSaveTimer = null;
+      void this.saveNarrationDeletions().catch((err) => {
+        console.error('[picker] could not record the narration deletions:', err);
+      });
+    }, 600);
+  });
+
   // Tab persistence - localStorage keys
   private readonly OPEN_TABS_KEY = 'bookforge-open-tabs';
   private readonly ACTIVE_TAB_KEY = 'bookforge-active-tab';
@@ -3613,6 +3784,78 @@ export class PdfPickerComponent implements OnInit {
       this.bookEpubErrorAnswer.set({ dir, message });
       console.error('[picker] could not resolve this project\'s book EPUB:', message);
     }
+    await this.refreshNarrationState();
+  }
+
+  // ─── The converted book, and what is struck out of it for narration ───────
+  //
+  // `foundry vlm-convert` writes the COMPLETE book — footnotes at the end of
+  // their chapter, figures, captions. What a listener does not want to hear is
+  // struck out here, and exported as a SECOND file; the book itself is never
+  // rewritten. See shared/vlm/narration-deletions.ts for the whole contract.
+
+  /**
+   * Main's answer about the project's book and its strikes, STAMPED with the
+   * project it was about — the same discipline, for the same reason, as
+   * `bookEpubAnswer`: a window moves between books and an unstamped answer would
+   * put one book's strikes on another.
+   */
+  private readonly narrationAnswer = signal<{ dir: string; state: NarrationState } | null>(null);
+
+  /** Main's answer for THIS project, or null while it is about another. */
+  readonly narrationState = computed<NarrationState | null>(() => {
+    const answer = this.narrationAnswer();
+    const dir = this.projectPath();
+    return answer && dir && answer.dir === dir ? answer.state : null;
+  });
+
+  /**
+   * This project's book was written by a document vision model, so its elements
+   * say what they ARE and can be struck out by category and by source page.
+   *
+   * Measured by main off the book's own markup (`data-bf-cat`), never inferred
+   * from the provenance record: a book carries its stamps whether or not a
+   * manifest remembers how it was made.
+   */
+  readonly bookIsConverted = computed(() => this.narrationState()?.converted === true);
+
+  /**
+   * The book on screen IS this project's converted book — the one artifact whose
+   * curation is narration curation.
+   *
+   * Both halves are needed. `viewedArtifact` says an EPUB is on screen; without
+   * `bookIsConverted` an ordinary reflowed book would unlock a strike list whose
+   * elements state nothing.
+   */
+  readonly viewingConvertedBook = computed(() =>
+    this.viewedArtifact() === 'book' && this.bookIsConverted());
+
+  private async refreshNarrationState(): Promise<void> {
+    const dir = this.projectPath();
+    if (!dir) {
+      this.narrationAnswer.set(null);
+      return;
+    }
+    const answer = await this.electronService.narrationState(dir);
+    if (!answer.success || !answer.state) {
+      // Not a failure worth a modal: a project with no book has no strikes, and
+      // main's sentence is on the console for a damaged one. The stamp keeps a
+      // stale answer from being read as this project's.
+      this.narrationAnswer.set(null);
+      if (answer.error) console.error('[picker] narration state:', answer.error);
+      return;
+    }
+    this.narrationAnswer.set({ dir, state: answer.state });
+    // A record that no longer describes the book was CLEARED by main, and the
+    // user is told once — their strikes are gone and they need to know before
+    // they export a narration copy that has everything in it.
+    if (answer.state.staleReason) {
+      this.showAlert({
+        title: 'Your narration deletions were cleared',
+        message: answer.state.staleReason,
+        type: 'warning',
+      });
+    }
   }
 
   /**
@@ -3764,6 +4007,21 @@ export class PdfPickerComponent implements OnInit {
         if (this.buildsByPreservingMarkup()) {
           actions.push({ id: 'reflow', label: 'Build the book', reason: noProject, primary: true });
         }
+        // The OTHER route to a book, offered beside the first because the archive
+        // PDF is the input to both. It reads the pages with a document vision
+        // model and writes the whole book in one act — no cast, no detect, no
+        // build — so it belongs on the station where those three start rather
+        // than at the end of them.
+        actions.push({
+          id: 'vlm-convert',
+          label: 'Convert to EPUB',
+          reason: noProject ?? noPdf,
+          // Primary when there is nothing else here to press: a scanned book
+          // with no working copy has two ways forward and neither is the
+          // obvious one, so neither claims the primary.
+          primary: noPdf === null && !this.buildsByPreservingMarkup()
+            && stationPresence('working', book) !== 'present',
+        });
         return actions;
       }
       case 'working': {
@@ -3795,7 +4053,19 @@ export class PdfPickerComponent implements OnInit {
         // carries the tabs and Next and nothing else. They are rail entries with
         // derived statuses now — see `taskGroups` — and there is exactly one of
         // each: a button here as well would be a second door to one pass.
-        return [];
+        //
+        // The exception is the narration copy, and it is not a pass: it writes a
+        // SECOND file rather than rewriting the book, so it has no rail entry and
+        // no provenance record to hang one off. It belongs here because here is
+        // where the strikes it is cut by are made.
+        return this.bookIsConverted()
+          ? [{
+            id: 'export-narration',
+            label: 'Export narration copy',
+            reason: noProject,
+            primary: true,
+          }]
+          : [];
       case 'tts':
         return [];
     }
@@ -3858,6 +4128,14 @@ export class PdfPickerComponent implements OnInit {
           ? 'This is the archived original — switch to the Working copy to edit.'
           : null;
       case 'epub':
+        // A CONVERTED book is the exception, and it is the whole design of the
+        // vlm route rather than a loosening of this rule. There is no upstream
+        // to curate: the vision model read the pages and wrote the book in one
+        // act, so this file IS where its content decisions are made. And they do
+        // not rewrite it — striking a footnote here records a strike, and the
+        // narration copy is cut from them (Export narration copy, on this
+        // station's bar). The complete book stays complete.
+        if (this.bookIsConverted()) return null;
         // The built book is derived either way, so curation belongs upstream of
         // it — and where upstream IS differs by the kind of book.
         return this.hasWorkingCopy()
@@ -6253,6 +6531,60 @@ export class PdfPickerComponent implements OnInit {
       // Replace selection
       this.setSelectionWithHistory(matching);
     }
+  }
+
+  /**
+   * Select everything that was read off this block's SOURCE page.
+   *
+   * The page of the PDF, stated on every element of a converted book
+   * (`data-bf-page`), and never `block.page` — that is the page mupdf invented
+   * when it laid the EPUB out at its own size, and it has no relationship to the
+   * paper. Selecting by it is what makes "this whole page was a table of
+   * contents" a thing a user can act on in a book that has no pages.
+   */
+  selectSourcePage(block: TextBlock, additive: boolean = false): void {
+    if (block.bf_source_page === undefined) return;
+    const deleted = this.deletedBlockIds();
+    const matching = narrationBlocksOnSourcePage(
+      this.blocks().map(b => ({
+        id: b.id,
+        ...(b.bf_source_page !== undefined ? { sourcePage: b.bf_source_page } : {}),
+      })),
+      block.bf_source_page
+    ).filter(id => !deleted.has(id));
+
+    if (additive) {
+      const current = new Set(this.selectedBlockIds());
+      matching.forEach(id => current.add(id));
+      this.setSelectionWithHistory([...current]);
+    } else {
+      this.setSelectionWithHistory(matching);
+    }
+  }
+
+  /**
+   * The destructive twin, resolving the page the same way the selection does —
+   * a delete that reached a different set than the one Select would light up
+   * would be far worse than a selection that did.
+   */
+  deleteSourcePage(block: TextBlock): void {
+    if (this.curationLocked()) return;  // the artifact on screen is not curated here
+    if (block.bf_source_page === undefined) return;
+    const deleted = this.deletedBlockIds();
+    const ids = narrationBlocksOnSourcePage(
+      this.blocks().map(b => ({
+        id: b.id,
+        ...(b.bf_source_page !== undefined ? { sourcePage: b.bf_source_page } : {}),
+      })),
+      block.bf_source_page
+    ).filter(id => !deleted.has(id));
+    if (ids.length === 0) return;
+
+    const affectedPages = new Set(
+      this.blocks().filter(b => ids.includes(b.id)).map(b => b.page));
+    this.landBlockDeletions(this.editorState.deleteBlocks(ids), true);
+    this.editorState.clearSelection();
+    for (const pageNum of affectedPages) this.rerenderPageWithEdits(pageNum);
   }
 
   onMarqueeSelect(event: { blockIds: string[]; additive: boolean }): void {
@@ -9728,9 +10060,232 @@ export class PdfPickerComponent implements OnInit {
       case 'reflow':
         this.requestBuildTheBook();
         return;
+      case 'vlm-convert':
+        this.requestVlmConversion();
+        return;
+      case 'export-narration':
+        void this.exportNarrationCopy();
+        return;
       default:
         throw new Error(`The station bar offered an action this window does not know: ${actionId}`);
     }
+  }
+
+  // ─── Convert to EPUB ──────────────────────────────────────────────────────
+
+  /** True while the vision model is reading this book's pages. */
+  readonly converting = computed(() =>
+    this.documentBlocks.stageRunning() === VLM_CONVERT_STAGE);
+
+  /**
+   * How far the conversion has got, as a percentage, or null when the run has
+   * not said yet.
+   *
+   * Null rather than zero, and the bar is indeterminate for it: the first
+   * minutes of a run are the model loading, which reports no page count at all,
+   * and a bar pinned at 0% for two minutes is indistinguishable from a bar that
+   * is broken.
+   */
+  readonly convertPercent = computed<number | null>(() => {
+    const total = this.documentBlocks.stageTotal();
+    if (total <= 0) return null;
+    return Math.min(100, Math.round((this.documentBlocks.stageDone() / total) * 100));
+  });
+
+  /**
+   * Ask before spending an hour of GPU, and say what it will cost.
+   *
+   * The confirmation is not ceremony. A 300-page book is about ninety minutes on
+   * an M1 Ultra, it REPLACES whatever book the project already has, and it ends
+   * the provenance of that book — three consequences a user cannot see from a
+   * button labelled "Convert to EPUB".
+   */
+  /**
+   * Stop the conversion.
+   *
+   * Addressed to the PROJECT, not through `documentBlocks.cancelStage()`: that
+   * one needs a working-document ref, and a scanned PDF that has never been cast
+   * has none — which is exactly the book somebody is most likely to be
+   * converting. Main's stage registry is keyed by project directory and aborts
+   * whatever stage holds it.
+   *
+   * Nothing is lost. Every page the model has answered is banked in the readings
+   * file, so converting again reads only what is missing.
+   */
+  async stopConversion(): Promise<void> {
+    const dir = this.projectPath();
+    if (!dir) return;
+    await this.electronService.documentCancelStage(dir);
+  }
+
+  private requestVlmConversion(): void {
+    if (this.stationBusy()) return;
+    const hasBook = this.bookEpubPath() !== null;
+    this.alertModal.set({
+      title: 'Read the pages with a vision model?',
+      message:
+        'A document vision model reads every page picture and writes the whole book — footnotes '
+        + 'collected at the end of their chapter, figures and captions kept. It runs on this '
+        + 'machine\'s GPU at roughly eighteen seconds a page, so a 300-page book is about an hour '
+        + 'and a half. It can be interrupted and resumed: every page answered is banked, and a '
+        + 'second run reads only what is missing.'
+        + (hasBook
+          ? '\n\nThis project already has a book. Converting REPLACES it, and the record of what '
+            + 'has been run over it — footnote removal, simplify, translate — goes with it, because '
+            + 'none of that happened to the new file.'
+          : ''),
+      type: 'warning',
+      confirmText: 'Convert',
+      cancelText: 'Cancel',
+      onConfirm: () => { void this.runVlmConversion(); },
+    });
+  }
+
+  /**
+   * Run the conversion, and show the book when it lands.
+   *
+   * MAIN owns the run — this window can be reloaded or closed and the pages keep
+   * being read — so what happens here is only the waiting and the reporting. The
+   * stage registry refuses a second conversion of the same project by name, and
+   * that refusal is main's sentence, shown verbatim.
+   */
+  private async runVlmConversion(): Promise<void> {
+    const dir = this.projectPath();
+    if (!dir) return;
+
+    // Flushed first: the conversion writes the project's book, and edits still
+    // sitting in the batch queue belong to the document as it was.
+    await this.documentBlocks.flush();
+    this.documentBlocks.stageRunning.set(VLM_CONVERT_STAGE);
+    this.documentBlocks.stageMessage.set('Loading the vision model…');
+    this.documentBlocks.stageDone.set(0);
+    this.documentBlocks.stageTotal.set(0);
+    this.documentBlocks.lastError.set(null);
+    try {
+      const answer = await this.electronService.convertPdfToEpub({ projectDir: dir });
+      if (!answer.success || !answer.result) {
+        throw new Error(answer.error || 'The conversion failed and said nothing about why.');
+      }
+      const { result } = answer;
+      await this.refreshBookEpub();
+
+      const unreadable = result.unreadable;
+      this.showAlert({
+        title: 'The book is built',
+        message:
+          `${result.totalPages} page(s) read into ${result.relPath}.`
+          + (unreadable.length > 0
+            // Said here and not only in the log: a page the model could not read
+            // is a page of the user's book that is not in it.
+            ? `\n\n${unreadable.length} page(s) are NOT in the book: `
+              + `${unreadable.map(p => p.page).join(', ')}. The first reason given was `
+              + `"${unreadable[0].reason}". Converting again re-reads only those pages.`
+            : '')
+          + '\n\nOpen it at the EPUB station to strike out what you do not want narrated.',
+        type: unreadable.length > 0 ? 'warning' : 'info',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.documentBlocks.lastError.set(message);
+      this.showAlert({ title: 'The conversion failed', message, type: 'error' });
+    } finally {
+      this.documentBlocks.stageRunning.set(null);
+    }
+  }
+
+  // ─── The narration copy ───────────────────────────────────────────────────
+
+  /**
+   * Write the narration copy: the book minus what is struck out of it.
+   *
+   * The strikes are SAVED first and the export then reads them off the manifest
+   * rather than being handed a list — so the file that lands is always explained
+   * by a record, and there is no way to produce one that is not.
+   */
+  private async exportNarrationCopy(): Promise<void> {
+    const dir = this.projectPath();
+    if (!dir) return;
+    this.loading.set(true);
+    this.loadingText.set('Writing the narration copy...');
+    try {
+      await this.saveNarrationDeletions();
+      const answer = await this.electronService.exportNarrationEpub(dir);
+      if (!answer.success || !answer.result) {
+        throw new Error(answer.error || 'The narration copy could not be written.');
+      }
+      const { result } = answer;
+      await this.refreshNarrationState();
+      this.showAlert({
+        title: 'Narration copy written',
+        message:
+          `${result.relPath} — ${result.removedElements} of ${result.totalElements} element(s) `
+          + 'left out. The book itself is unchanged.'
+          + '\n\nThe Process tab\'s narration step will offer this file.',
+        type: 'info',
+      });
+    } catch (err) {
+      this.showAlert({
+        title: 'Could not write the narration copy',
+        message: err instanceof Error ? err.message : String(err),
+        type: 'error',
+      });
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  /**
+   * Record what is struck out, derived from the blocks the editor has deleted.
+   *
+   * Derived, never accumulated: the editor's deletion set is the state the user
+   * is looking at, and a second list maintained alongside it would be a second
+   * answer to "what is struck". Blocks the aligner could not place carry no
+   * element key and are skipped — they cannot be struck, and
+   * `readConversionCategories` already warned about them by count.
+   */
+  private async saveNarrationDeletions(): Promise<void> {
+    const dir = this.projectPath();
+    if (!dir || !this.bookIsConverted()) return;
+    const elements = narrationElementsOf(
+      this.blocks().map(b => ({
+        id: b.id,
+        ...(b.bf_element !== undefined ? { element: b.bf_element } : {}),
+        ...(b.bf_source_page !== undefined ? { sourcePage: b.bf_source_page } : {}),
+      })),
+      this.deletedBlockIds()
+    );
+    const answer = await this.electronService.saveNarrationDeletions(dir, elements);
+    if (!answer.success) {
+      throw new Error(answer.error || 'The narration deletions could not be recorded.');
+    }
+    const state = this.narrationAnswer();
+    if (state && state.dir === dir && answer.deletions) {
+      this.narrationAnswer.set({ dir, state: { ...state.state, deletions: answer.deletions } });
+    }
+  }
+
+  /**
+   * Put the recorded strikes back on screen after the book is opened.
+   *
+   * ONE element can own SEVERAL blocks — mupdf re-lays the book out and a
+   * paragraph becomes one block per visual line — so this is a fan-out and every
+   * block of a struck element is struck. Nothing is written: this restores what
+   * the record already says.
+   */
+  private applyNarrationDeletions(): void {
+    const recorded = this.narrationState()?.deletions;
+    if (!recorded || recorded.elements.length === 0) return;
+    const ids = narrationDeletedBlockIds(
+      this.blocks().map(b => ({
+        id: b.id,
+        ...(b.bf_element !== undefined ? { element: b.bf_element } : {}),
+      })),
+      recorded.elements
+    );
+    const already = this.deletedBlockIds();
+    const missing = ids.filter(id => !already.has(id));
+    if (missing.length === 0) return;
+    this.editorState.deleteBlocks(missing);
   }
 
   /**
