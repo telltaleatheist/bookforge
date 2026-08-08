@@ -36,10 +36,68 @@ function heuristicProvenance(): BlockCategoryProvenance {
 
 export { TEXT_LAYER_MIN_CHARS_PER_PAGE, type TextLayerReport };
 
+/** One unaligned block, in the user's terms — shared by the warning and the log. */
+function describeUnaligned(u: UnalignedBlock): string {
+  return `page ${u.page}, "${u.excerpt.trim()}" — ${u.reason}`;
+}
+
+/**
+ * The warnings a result carries, rendered NOW.
+ *
+ * `runWarnings` are facts about the run that produced the payload (an analysis
+ * without images) and pass through as recorded. The unaligned-block sentence is
+ * rendered fresh from the cached facts on every call — cache hit and fresh
+ * analysis take the same path through here, so the two can never say different
+ * things about the same book, and a wording change needs no cache invalidation.
+ *
+ * A handful of blocks are listed in full; beyond that the list itself becomes
+ * the noise, so the rest are counted and the console log of the original run
+ * keeps the complete record.
+ */
+function presentedWarnings(
+  runWarnings: readonly string[] | undefined,
+  unaligned: readonly UnalignedBlock[] | undefined,
+  stated: boolean,
+): { warnings?: string[] } {
+  const warnings = [...(runWarnings ?? [])];
+  if (unaligned !== undefined && unaligned.length > 0) {
+    const SHOWN = 3;
+    const listed = unaligned.slice(0, SHOWN).map(describeUnaligned).join('; ');
+    const rest = unaligned.length - SHOWN;
+    warnings.push(
+      `${unaligned.length} block(s) of this book could not be matched to the markup they were laid `
+      + `out from, so they cannot be struck out of the narration copy`
+      + (stated
+        ? `, and their categories are this app's guess rather than the book's own record`
+        : '')
+      + `. ${listed}${rest > 0 ? `; and ${rest} more (see the log)` : ''}.`,
+    );
+  }
+  return warnings.length > 0 ? { warnings } : {};
+}
+
+/**
+ * The alarm for the exact bug this layout of the cache replaces: a payload
+ * whose provenance counts unaligned blocks but which carries no list of them
+ * was written by code whose shape disagrees with this reader's, and serving it
+ * would silently drop the warning. That can only happen when the payload shape
+ * changes without a version bump — so it refuses loudly, naming the fix,
+ * instead of letting the count and the list drift apart in silence.
+ */
+function requireUnalignedFacts(cached: CachedAnalysis, pdfPath: string): void {
+  if ((cached.categoryProvenance?.unalignedBlocks ?? 0) > 0 && cached.unaligned === undefined) {
+    throw new Error(
+      `The cached analysis of ${path.basename(pdfPath)} counts unaligned blocks but records no `
+      + 'detail for them — it was written by a build whose cache shape differs from this one. '
+      + 'Bump ANALYSIS_CACHE_VERSION, or clear the analysis cache for this file and re-open it.',
+    );
+  }
+}
+
 const execAsync = promisify(exec);
 
 // Cache version - increment this when changing extraction logic to invalidate old caches
-const ANALYSIS_CACHE_VERSION = 14;  // v14: unaligned-block warnings name the block — warnings are cached WITH the analysis, so the text fix never reached a book analyzed under v13
+const ANALYSIS_CACHE_VERSION = 15;  // v15: unaligned blocks cached as FACTS (payload.unaligned); the warning sentence is rendered at read time, never cached — see presentedWarnings
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;
@@ -223,10 +281,35 @@ export interface AnalyzeResult {
   page_dimensions: PageDimension[];
   pdf_name: string;
   spans: TextSpan[];  // All extracted spans for sample picking
-  // Non-fatal problems during analysis (e.g. image extraction failed) the
-  // renderer should surface to the user. Cached with the analysis: a cached
-  // result genuinely lacks the affected data, so the warning replays too.
+  /**
+   * Non-fatal problems during analysis (e.g. image extraction failed) the
+   * renderer should surface to the user. Cached with the analysis, and the test
+   * for whether a warning may live here is whether it describes THE RUN: an
+   * analysis that ran without images genuinely lacks that data, so its sentence
+   * is a fact about the cached payload and replays with it.
+   *
+   * A warning that is merely a RENDERING of cached facts must NOT be pushed
+   * here — it goes in `unaligned` below as data and is rendered on every read.
+   * That distinction exists because it was violated once: the unaligned-block
+   * warning was cached as a finished sentence, its wording was improved, and
+   * every already-analyzed book kept serving the old sentence — stale output
+   * silently substituting for current, which is exactly the failure mode this
+   * codebase bans. Text rendered at read time cannot go stale.
+   */
   warnings?: string[];
+  /**
+   * The blocks the aligner could not place in the source markup — FACTS, not a
+   * sentence. The user-facing warning is rendered from these on every read
+   * (cache hit or fresh) by `presentedWarnings`, so a wording change reaches
+   * every book instantly with no cache invalidation.
+   */
+  unaligned?: UnalignedBlock[];
+  /**
+   * Whether the book STATED its categories (data-bf stamps) — the rendered
+   * warning carries one more clause then, because those blocks also lost their
+   * stated category. Meaningless when `unaligned` is absent or empty.
+   */
+  unalignedStated?: boolean;
   /**
    * Where `category_id` came from: the document's own record, or this file's
    * font/geometry classifier. See BlockCategoryProvenance — the two are
@@ -406,6 +489,10 @@ export class PDFAnalyzer {
   // Non-fatal analysis problems collected during analyze()/analyzeText(),
   // surfaced on the result so the renderer can show them (see AnalyzeResult.warnings)
   private analysisWarnings: string[] = [];
+  // The unaligned-block FACTS for the analysis in progress — cached as data and
+  // rendered into a sentence at read time, never pushed into analysisWarnings.
+  private unalignedBlocks: UnalignedBlock[] = [];
+  private unalignedStated = false;
   // Where the last analysis's categories came from — see AnalyzeResult.categoryProvenance.
   private categoryProvenance: BlockCategoryProvenance = heuristicProvenance();
   private doc: any = null; // mupdf.PDFDocument | mupdf.Document
@@ -573,7 +660,12 @@ export class PDFAnalyzer {
           return d;
         });
 
-        return { ...cached, sourceSha256 };
+        requireUnalignedFacts(cached, pdfPath);
+        return {
+          ...cached,
+          sourceSha256,
+          ...presentedWarnings(cached.warnings, cached.unaligned, cached.unalignedStated === true),
+        };
       }
     }
 
@@ -583,6 +675,8 @@ export class PDFAnalyzer {
     this.categories = {};
     this.pageDimensions = [];
     this.analysisWarnings = [];
+    this.unalignedBlocks = [];
+    this.unalignedStated = false;
     this.categoryProvenance = heuristicProvenance();
 
     // Read document file asynchronously to avoid blocking the main thread
@@ -763,6 +857,9 @@ export class PDFAnalyzer {
       spans: this.spans,
       categoryProvenance: this.categoryProvenance,
       ...(this.analysisWarnings.length > 0 ? { warnings: [...this.analysisWarnings] } : {}),
+      ...(this.unalignedBlocks.length > 0
+        ? { unaligned: this.unalignedBlocks, unalignedStated: this.unalignedStated }
+        : {}),
     };
 
     // Cache the analysis (only for full document analysis)
@@ -770,7 +867,11 @@ export class PDFAnalyzer {
       await this.saveAnalysisToCache(fileHash, cacheable);
     }
 
-    return { ...cacheable, sourceSha256 };
+    return {
+      ...cacheable,
+      sourceSha256,
+      ...presentedWarnings(cacheable.warnings, cacheable.unaligned, this.unalignedStated),
+    };
   }
 
   /**
@@ -824,6 +925,7 @@ export class PDFAnalyzer {
           return d;
         });
 
+        requireUnalignedFacts(cached, pdfPath);
         return {
           page_count: cached.page_count,
           page_dimensions: cached.page_dimensions,
@@ -834,9 +936,10 @@ export class PDFAnalyzer {
           spans: this.spans,
           categoryProvenance: this.categoryProvenance,
           sourceSha256,
-          // A cached analysis that was produced with (e.g.) failed image
-          // extraction genuinely lacks that data — replay its warnings.
-          ...(cached.warnings && cached.warnings.length > 0 ? { warnings: cached.warnings } : {}),
+          // Run warnings replay as recorded (a cached analysis produced with
+          // failed image extraction genuinely lacks that data); the unaligned
+          // sentence renders fresh from the cached facts.
+          ...presentedWarnings(cached.warnings, cached.unaligned, cached.unalignedStated === true),
         };
       }
     }
@@ -848,6 +951,8 @@ export class PDFAnalyzer {
     this.categories = {};
     this.pageDimensions = [];
     this.analysisWarnings = [];
+    this.unalignedBlocks = [];
+    this.unalignedStated = false;
     this.categoryProvenance = heuristicProvenance();
 
     sendProgress('loading', 'Reading document file...');
@@ -936,6 +1041,8 @@ export class PDFAnalyzer {
     }
 
     this.analysisWarnings = [];
+    this.unalignedBlocks = [];
+    this.unalignedStated = false;
     this.categoryProvenance = heuristicProvenance();
 
     // This method re-extracts the whole document, so it starts from nothing.
@@ -1058,6 +1165,9 @@ export class PDFAnalyzer {
         spans: this.spans,
         categoryProvenance: this.categoryProvenance,
         ...(this.analysisWarnings.length > 0 ? { warnings: [...this.analysisWarnings] } : {}),
+        ...(this.unalignedBlocks.length > 0
+          ? { unaligned: this.unalignedBlocks, unalignedStated: this.unalignedStated }
+          : {}),
       };
       await this.saveAnalysisToCache(this.analysisCacheKey(sourceSha256), cacheable);
     }
@@ -1068,7 +1178,7 @@ export class PDFAnalyzer {
       spans: this.spans,
       sourceSha256,
       categoryProvenance: this.categoryProvenance,
-      ...(this.analysisWarnings.length > 0 ? { warnings: [...this.analysisWarnings] } : {}),
+      ...presentedWarnings(this.analysisWarnings, this.unalignedBlocks, this.unalignedStated),
     };
   }
 
@@ -1735,29 +1845,13 @@ export class PDFAnalyzer {
    * loses those for the same blocks, so it has one thing more to say.
    */
   private warnUnalignedBlocks(unaligned: UnalignedBlock[], stated: boolean): void {
-    if (unaligned.length === 0) return;
-
-    // The aligner knows the page, the opening text and the reason it gave up.
-    // Say them: "1 block(s) failed" is a fact no reader can act on, and this
-    // warning is shown every time the book is opened. A handful are listed in
-    // full; beyond that the list itself becomes the noise, so the rest are
-    // counted and the console keeps the complete record.
-    const SHOWN = 3;
-    const describe = (u: UnalignedBlock): string =>
-      `page ${u.page}, "${u.excerpt.trim()}" — ${u.reason}`;
-    const listed = unaligned.slice(0, SHOWN).map(describe).join('; ');
-    const rest = unaligned.length - SHOWN;
-
-    this.analysisWarnings.push(
-      `${unaligned.length} block(s) of this book could not be matched to the markup they were laid `
-      + `out from, so they cannot be struck out of the narration copy`
-      + (stated
-        ? `, and their categories are this app's guess rather than the book's own record`
-        : '')
-      + `. ${listed}${rest > 0 ? `; and ${rest} more (see the log)` : ''}.`,
-    );
+    this.unalignedBlocks = unaligned;
+    this.unalignedStated = stated;
+    // The console keeps the complete record of THE RUN, block ids included —
+    // the user-facing sentence is rendered at read time (`presentedWarnings`),
+    // never stored, so a wording change reaches already-analyzed books.
     for (const u of unaligned) {
-      console.warn(`[PDF Analyzer] unaligned block ${u.blockId}: ${describe(u)}`);
+      console.warn(`[PDF Analyzer] unaligned block ${u.blockId}: ${describeUnaligned(u)}`);
     }
   }
 
