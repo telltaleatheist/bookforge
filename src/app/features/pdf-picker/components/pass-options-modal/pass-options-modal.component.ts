@@ -29,10 +29,9 @@ export type PassOptionsResult =
   | { kind: 'translate'; translate: TranslatePassParams };
 
 /**
- * The two EPUB passes that cannot be started from a button alone.
+ * The two EPUB passes, and neither can be started from a button alone.
  *
- * Footnote removal has nothing to ask (its one option belongs to a case this
- * station does not offer), so it has no dialog. Simplify has to know WHICH
+ * Simplify has to know WHICH
  * simplification — de-jargon and language-learner produce different books out of
  * the same chapter — and Translate has to know the languages. Neither is
  * defaulted: a pass that quietly picked one would rewrite somebody's book into a
