@@ -108,18 +108,186 @@ export interface NarrationBlock {
   sourcePage?: number;
 }
 
-/** The struck elements, derived from which blocks the editor has deleted. */
-export function narrationElementsOf(
-  blocks: readonly NarrationBlock[],
-  deletedBlockIds: ReadonlySet<string>
-): NarrationElementKey[] {
-  const keys = new Set<NarrationElementKey>();
+/**
+ * A block of the book AS LAID OUT, with everything the strike derivation needs
+ * to turn an editor deletion into an element key — or to say why it cannot.
+ *
+ * `page` is the page of the LAID-OUT book the block was drawn on (mupdf's own
+ * pagination at 600×900), which is the number a page deletion is recorded
+ * under. It is deliberately not `sourcePage`: that is `data-bf-page`, the page
+ * of the PDF a converted book was READ from, and a publisher's EPUB has none at
+ * all. The two are different numbers about different pieces of paper and the
+ * one the user deleted is this one.
+ */
+export interface NarrationLaidOutBlock {
+  id: string;
+  page: number;
+  /** The element it was laid out FROM, absent when the aligner could not place it. */
+  element?: NarrationElementKey;
+  /**
+   * True for the two classes the aligner NEVER places, by design rather than by
+   * failure: an image block (mupdf's `[Image 528x815]` furniture, which exists
+   * in no DOM text node) and a footnote-marker block (whose text duplicates its
+   * parent's, so aligning it would double-count). Both are skipped outright by
+   * `alignBlocksToEpub` — `if (b.isImage || b.isFootnoteMarker) continue` — so
+   * their having no element is a STATE and not a problem, and reporting them
+   * beside genuinely unaligned prose would bury the prose in furniture.
+   */
+  unplaceable: boolean;
+  /** The opening of the block's text, so an unstruck deletion can be NAMED. */
+  excerpt: string;
+}
+
+/** Which gesture asked for a block to go. */
+export type NarrationDeletionVia = 'block' | 'page';
+
+/**
+ * A deletion the user made that NOTHING can be struck for — the block carries no
+ * element key, so the narration copy has no way to leave it out.
+ *
+ * These are surfaced rather than dropped. A deletion that silently does nothing
+ * is indistinguishable from one that worked, and the user finds out by hearing
+ * the paragraph read aloud in a finished audiobook.
+ */
+export interface UnstruckDeletion {
+  blockId: string;
+  page: number;
+  via: NarrationDeletionVia;
+  excerpt: string;
+}
+
+/** What a deletion set comes to, once resolved against the book's elements. */
+export interface NarrationStrikes {
+  /** The struck elements, sorted, without duplicates. */
+  elements: NarrationElementKey[];
+  /** How many of them a struck BLOCK named. */
+  fromBlocks: number;
+  /** How many of them ONLY a struck PAGE named — i.e. what block deletion missed. */
+  fromPages: number;
+  /** Deletions that name a placeable block carrying no element key. */
+  unstruck: UnstruckDeletion[];
+  /** Deleted block ids that name no block in this layout at all. */
+  unknownBlockIds: string[];
+  /** Deleted pages on which nothing at all could be struck. */
+  pagesWithNothingStruck: number[];
+}
+
+/**
+ * Everything the user has deleted, as ELEMENT STRIKES.
+ *
+ * ── Why pages are in here ───────────────────────────────────────────────────
+ *
+ * There were two deletion records and the export read one. A block deletion
+ * landed in `deletedBlockIds` and a PAGE deletion landed in `deletedPages`, and
+ * the strike derivation this replaces looked only at the first — so a user who
+ * deleted 64 pages and 58 blocks got a narration copy explained by the 58, and
+ * every page he had struck was read aloud. A page deletion is the same
+ * statement as striking every block on it, said in one gesture, so it resolves
+ * the same way: through the blocks that were laid out on that page.
+ *
+ * DERIVED, never accumulated. The editor's two sets are the state the user is
+ * looking at; this reads them and produces the one record the export cuts by.
+ * That is also what makes UNDO work with nothing added for it: restoring a page
+ * or a block puts it back in those sets, and the next derivation simply does not
+ * name its elements.
+ */
+export function deriveNarrationStrikes(
+  blocks: readonly NarrationLaidOutBlock[],
+  deletedBlockIds: ReadonlySet<string>,
+  deletedPages: ReadonlySet<number>
+): NarrationStrikes {
+  const fromBlocks = new Set<NarrationElementKey>();
+  const fromPages = new Set<NarrationElementKey>();
+  const unstruck: UnstruckDeletion[] = [];
+  const seenBlockIds = new Set<string>();
+  const struckOnPage = new Map<number, number>();
+  for (const page of deletedPages) struckOnPage.set(page, 0);
+
   for (const block of blocks) {
-    if (!block.element) continue;
-    if (!deletedBlockIds.has(block.id)) continue;
-    keys.add(block.element);
+    seenBlockIds.add(block.id);
+    const byBlock = deletedBlockIds.has(block.id);
+    const byPage = deletedPages.has(block.page);
+    if (!byBlock && !byPage) continue;
+
+    if (block.element === undefined) {
+      // Furniture has no element by construction — see `unplaceable`. Naming it
+      // would be reporting the absence of something that was never there.
+      if (block.unplaceable) continue;
+      unstruck.push({
+        blockId: block.id,
+        page: block.page,
+        via: byBlock ? 'block' : 'page',
+        excerpt: block.excerpt,
+      });
+      continue;
+    }
+
+    // A block struck BOTH ways counts as a block strike: that is the gesture
+    // that names it individually, and counting it twice would make the two
+    // numbers add up to more than the set they describe.
+    if (byBlock) fromBlocks.add(block.element);
+    else fromPages.add(block.element);
+    if (byPage) struckOnPage.set(block.page, (struckOnPage.get(block.page) ?? 0) + 1);
   }
-  return [...keys].sort();
+
+  // An element named by a block AND (through a different block) by a page is a
+  // block strike, so the two counts partition the set they sum to.
+  for (const key of fromBlocks) fromPages.delete(key);
+
+  return {
+    elements: [...new Set([...fromBlocks, ...fromPages])].sort(),
+    fromBlocks: fromBlocks.size,
+    fromPages: fromPages.size,
+    unstruck,
+    unknownBlockIds: [...deletedBlockIds].filter((id) => !seenBlockIds.has(id)).sort(),
+    pagesWithNothingStruck: [...struckOnPage.entries()]
+      .filter(([, struck]) => struck === 0)
+      .map(([page]) => page)
+      .sort((a, b) => a - b),
+  };
+}
+
+/**
+ * What could NOT be struck, in one sentence, or null when everything could.
+ *
+ * The same shape as the analyzer's unaligned-block warning: a handful named in
+ * full, the rest counted, because past a few the list itself becomes the noise.
+ */
+export function describeUnstruckDeletions(strikes: NarrationStrikes): string | null {
+  const parts: string[] = [];
+
+  if (strikes.unstruck.length > 0) {
+    const SHOWN = 3;
+    const listed = strikes.unstruck
+      .slice(0, SHOWN)
+      .map((u) => `page ${u.page + 1}, "${u.excerpt.trim()}"`)
+      .join('; ');
+    const rest = strikes.unstruck.length - SHOWN;
+    parts.push(
+      `${strikes.unstruck.length} deleted block(s) could not be matched to the markup they were laid `
+      + `out from, so they stay in the narration copy: ${listed}`
+      + `${rest > 0 ? `; and ${rest} more` : ''}.`
+    );
+  }
+
+  if (strikes.unknownBlockIds.length > 0) {
+    parts.push(
+      `${strikes.unknownBlockIds.length} deleted block id(s) name no block in this book at all — the `
+      + `first is ${strikes.unknownBlockIds[0]}. They were recorded against a different layout of it.`
+    );
+  }
+
+  if (strikes.pagesWithNothingStruck.length > 0) {
+    const shown = strikes.pagesWithNothingStruck.slice(0, 5).map((p) => p + 1).join(', ');
+    const rest = strikes.pagesWithNothingStruck.length - 5;
+    parts.push(
+      `${strikes.pagesWithNothingStruck.length} deleted page(s) had nothing on them that could be `
+      + `struck (page ${shown}${rest > 0 ? `, and ${rest} more` : ''}) — a blank page, or one holding `
+      + 'nothing but an image.'
+    );
+  }
+
+  return parts.length === 0 ? null : parts.join(' ');
 }
 
 /**

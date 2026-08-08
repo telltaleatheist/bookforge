@@ -2692,6 +2692,12 @@ export class ElectronService {
     result?: {
       epubPath: string; relPath: string;
       removedElements: number; totalElements: number; removedSupMarkers: number;
+      /**
+       * How the removed elements were arrived at, and what was left behind.
+       * `fromStrikes + translated === removedElements`; `unresolved` names the
+       * deletions that reached nothing (electron/narration-export.ts).
+       */
+      fromStrikes: number; translated: number; unresolved: string | null;
     };
     error?: string;
   }> {

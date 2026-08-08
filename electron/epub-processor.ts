@@ -4680,7 +4680,7 @@ export async function readEpubConversionUnits(epubSourcePath: string): Promise<N
  * this used to do, by returning before the aligner ever ran, and it broke
  * striking for narration on every publisher EPUB: the picker enables the gesture
  * on any book on screen (`canStrikeForNarration`), the user strikes a paragraph,
- * `narrationElementsOf` skips every block with no `element`, and NOTHING is
+ * the strike derivation skips every block with no `element`, and NOTHING is
  * recorded — silently, looking exactly like it worked. So the gate is now only
  * on what it can honestly gate: the stamps.
  */

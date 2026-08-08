@@ -13,9 +13,9 @@
  *    A `.epub` is a book wherever it came from; anything else is a source
  *    document to curate.
  *  - the rail's CONTENTS follow from that and nothing else. The source gets the
- *    curation modes; the book gets its text passes and the narration copy;
- *    neither ever gets the other's, which is what stops a curation tool from
- *    appearing over a file that has no pages to curate.
+ *    curation modes; the book gets its text passes; neither ever gets the
+ *    other's, which is what stops a curation tool from appearing over a file
+ *    that has no pages to curate.
  *  - a pass entry's STATUS is derived from the book's own provenance
  *    (`appliedPasses`), through the ONE latest-wins implementation the versions
  *    page reads. A pass that has run says so; one that has not says "not run".
@@ -34,6 +34,7 @@ const {
   ARTIFACT_RAIL_GROUPS,
   ALL_RAIL_TASK_IDS,
   EPUB_PASS_TASK_IDS,
+  NARRATION_EXPORT_LABEL,
   RAIL_TASK_LABELS,
   railGroupsForArtifact,
   railTaskIdsFor,
@@ -108,9 +109,22 @@ test('the source rail carries no OCR entry', () => {
   assert.ok(!ALL_RAIL_TASK_IDS.includes('ocr'));
 });
 
-test('the book rail is the text passes, then the narration copy', () => {
+test('the book rail is the text passes, and nothing else', () => {
   const ids = railTaskIdsFor('book');
-  assert.deepStrictEqual([...ids], ['simplify', 'translate', 'export-tts']);
+  assert.deepStrictEqual([...ids], ['simplify', 'translate']);
+});
+
+test('the narration copy is NOT a rail entry', () => {
+  // Owen's call, 2026-08-08: the rail is a checklist of work you do TO the
+  // book, and writing the narration copy is what you do when you are done with
+  // it. It is the primary action at the bottom-right of the viewer now, owned
+  // by the picker directly — so nothing derives a status, a digit shortcut or a
+  // disabled-reason for it through the rail, and an id that reappeared here
+  // would be a second control for the same act.
+  assert.ok(!ALL_RAIL_TASK_IDS.includes('export-tts'));
+  assert.ok(!railTaskIdsFor('book').includes('export-tts'));
+  assert.strictEqual(typeof NARRATION_EXPORT_LABEL, 'string');
+  assert.ok(NARRATION_EXPORT_LABEL.length > 0);
 });
 
 test('the AI footnote pass is gone from every rail', () => {
@@ -134,11 +148,9 @@ test('no book entry is ever offered over the source', () => {
 });
 
 test('the pass ids are the pass group, and NOT the whole book rail', () => {
-  // Export TTS copy sits beside them and is not a pass: it writes a second file
-  // and records no provenance, so nothing may ask it for a pass status.
+  // Derived from the pass group alone, so a future non-pass entry on the book's
+  // rail can never be asked for a pass status.
   assert.deepStrictEqual([...EPUB_PASS_TASK_IDS], ['simplify', 'translate']);
-  assert.ok(!EPUB_PASS_TASK_IDS.includes('export-tts'));
-  assert.ok(railTaskIdsFor('book').includes('export-tts'));
 });
 
 test('every entry on every rail has a label', () => {
@@ -165,7 +177,8 @@ test('the digits run over the rows that are actually on screen', () => {
   // have put it, advertising keys 1-2 that do nothing on that rail.
   assert.strictEqual(railTaskForDigit('book', 1), 'simplify');
   assert.strictEqual(railTaskForDigit('book', 2), 'translate');
-  assert.strictEqual(railTaskForDigit('book', 3), 'export-tts');
+  assert.strictEqual(railTaskForDigit('book', 3), undefined,
+    'the book rail has two rows, so 3 reaches nothing');
   assert.strictEqual(railShortcutsFor('book').simplify, '1');
 });
 

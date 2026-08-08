@@ -31,6 +31,7 @@ import type {
   NarrationFlags,
   AppliedPass,
   AppliedPassKind,
+  SourceType,
 } from './manifest-types.js';
 import { passesAfterEpubEvent } from '../shared/document/pass-lifecycle';
 import {
@@ -1259,6 +1260,53 @@ export async function readNarrationDeletions(
 ): Promise<NarrationDeletions | null> {
   const manifest = await readManifestAt(projectDir);
   return manifest.outputs?.epub?.narrationDeletions ?? null;
+}
+
+/**
+ * What the PICKER's editor state says has been deleted — the OTHER deletion
+ * record, and the reason this reader exists.
+ *
+ * There have been two records of the same intent for as long as the narration
+ * copy has existed. A Select-mode block deletion and a page deletion land here,
+ * in `manifest.source`, because that is where the picker's edit set is saved
+ * and where the OCR/rebuild path reads it from. Element strikes land in
+ * `outputs.epub.narrationDeletions`, because that is what the narration cut is
+ * expressed in. The cut read only the second, so everything a user did in
+ * Select mode on a book was invisible to it.
+ *
+ * `sourceType` travels with the answer because it is what says whether these
+ * numbers are ABOUT the book at all: a project made from a PDF is curated on
+ * the PDF, where a deleted page is a page of paper and a block id belongs to the
+ * scan's layout — neither means anything in the book's mupdf pagination.
+ */
+export interface EditorStateDeletions {
+  /** Block ids, in the layout they were struck in. */
+  blockIds: string[];
+  /** Page numbers, in that same layout. */
+  pages: number[];
+  /** What the project was made from. */
+  sourceType: SourceType;
+}
+
+export async function readEditorStateDeletions(
+  projectDir: string
+): Promise<EditorStateDeletions> {
+  const manifest = await readManifestAt(projectDir);
+  const source = manifest.source;
+  if (!source) {
+    throw new Error(
+      `${path.basename(projectDir)}'s manifest has no source record, so it cannot say what the `
+      + 'editor deleted or what the project was made from.'
+    );
+  }
+  return {
+    // An absent list is a real state — a project nothing has been deleted in —
+    // and is the only thing an empty array can honestly mean here, because the
+    // picker writes both keys on every save (main's `project:save-to-path`).
+    blockIds: source.deletedBlockIds ?? [],
+    pages: source.deletedPages ?? [],
+    sourceType: source.type,
+  };
 }
 
 /**
