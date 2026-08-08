@@ -26,7 +26,7 @@
 
 import { BrowserWindow } from 'electron';
 
-import { beginStage } from './document-stage-registry';
+import { beginStage, recordStageProgress } from './document-stage-registry';
 import type { DocumentStageProgress } from './document-stages';
 
 /** Send a message to every live window. A project's files belong to no one window. */
@@ -65,6 +65,10 @@ export async function withProjectStage<T>(
     return await run({
       signal: controller.signal,
       onProgress: (progress) => {
+        // Recorded BEFORE it is broadcast: the registry's copy is what a window
+        // that missed this line gets when it comes back and asks, so it must
+        // never be the one thing that did not happen.
+        recordStageProgress(projectDir, { ...progress, at: Date.now() });
         broadcastToAllWindows('document:stage-progress', { projectDir, ...progress });
       },
     });

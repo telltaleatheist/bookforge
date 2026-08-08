@@ -101,6 +101,8 @@ export interface ConversionJobElectron {
   ): () => void;
   onDocumentStageFinished(cb: (e: { projectDir: string; stage: string }) => void): () => void;
   cancelDocumentStage(projectDir: string): Promise<unknown>;
+  /** Stages running right now — how an attaching row checks it has not already missed the end. */
+  listActiveStages(): Promise<Array<{ projectDir: string }>>;
 }
 
 /**
@@ -200,6 +202,22 @@ export async function runConversionJob(
           resolve();
         });
         ctx.signal.addEventListener('abort', () => { stop(); resolve(); }, { once: true });
+
+        // `document:stage-finished` is a broadcast, so it is only heard by a
+        // listener that already exists. A stage that ended between the decision
+        // to attach and the line above would never be heard from again and this
+        // row would wait for it forever. Asking once, AFTER subscribing, closes
+        // that: either the stage is still there (and the subscription will hear
+        // its finish) or it is gone (and there is nothing left to wait for).
+        void electron.listActiveStages().then((stages) => {
+          if (stages.some(s => samePath(s.projectDir, config.projectDir))) return;
+          stop();
+          resolve();
+        }).catch(() => {
+          // Unanswerable — keep waiting on the subscription, which is the normal
+          // path. Resolving here would report a conversion finished on the
+          // strength of a failed question.
+        });
       });
       ctx.report({ progress: 100, message: `Converted ${config.sourceLabel}`, etaSeconds: 0 });
       // The path is main's to report and this row never learned it; the book is

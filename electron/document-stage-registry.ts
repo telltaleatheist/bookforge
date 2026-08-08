@@ -33,6 +33,33 @@ export interface ActiveStage {
   label: string;
   startedAt: number;
   abort: AbortController;
+  /**
+   * The most recent progress line this stage emitted, or null before its first.
+   *
+   * Held for ONE reason: `document:stage-progress` is a broadcast, and a window
+   * that reloads mid-stage has missed every line already sent. It comes back
+   * subscribed to a channel that will not speak again until the next page is
+   * read, so its queue row sat frozen at whatever percentage happened to be on
+   * screen when the reload hit — with the elapsed timer still counting, which
+   * made it look like a run that had hung (Owen, Aug 8 2026). A live TTS session
+   * has never had this problem because main holds its progress and the renderer
+   * asks for it on load (`parallelTts.listActive`); this is the same answer for
+   * a document stage.
+   *
+   * It is the LAST LINE, not a history: what a reattaching window needs is where
+   * the run is now, and the lines it missed are on the console either way.
+   */
+  lastProgress: StageProgressLine | null;
+}
+
+/** A stage's most recent progress line, in the shape a window can be handed. */
+export interface StageProgressLine {
+  stage: string;
+  message: string;
+  done: number;
+  total: number;
+  /** When this line was emitted — an ETA reattaches to a rate, not to a count. */
+  at: number;
 }
 
 const active = new Map<string, ActiveStage>();
@@ -57,12 +84,25 @@ export function beginStage(
       + `starting ${label} — both would write into the same working document.`
     );
   }
-  active.set(projectDir, { projectDir, label, startedAt: Date.now(), abort });
+  active.set(projectDir, { projectDir, label, startedAt: Date.now(), abort, lastProgress: null });
   return () => {
     // Only if it is still OURS. A release that fired after the entry had been
     // replaced would hand the project to nobody while a stage was still running.
     if (active.get(projectDir)?.abort === abort) active.delete(projectDir);
   };
+}
+
+/**
+ * Remember this stage's latest line, so a window that reloads can be told where
+ * the run is instead of waiting for the next broadcast.
+ *
+ * Silently ignored when the project holds no stage: progress arriving after the
+ * release is a line already in flight when the run unwound, and recording it
+ * would resurrect an entry `beginStage` would then refuse to replace.
+ */
+export function recordStageProgress(projectDir: string, line: StageProgressLine): void {
+  const held = active.get(projectDir);
+  if (held) held.lastProgress = line;
 }
 
 /** The stage working on this project, or null. The sentence a refusal needs. */

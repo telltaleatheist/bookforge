@@ -43,6 +43,7 @@ import {
   runConversionJob,
   type VlmConvertJobConfig,
 } from '../jobs/vlm-convert-job';
+import { samePath } from '@shared/document/same-path';
 import { AIProvider } from '../../../core/models/ai-config.types';
 import { collapseFilenameDots } from '../../../core/utils/filename-utils';
 import { StudioService } from '../../studio/services/studio.service';
@@ -1673,10 +1674,33 @@ export class QueueService {
         filename = 'Bilingual Assembly';
       } else if (request.type === 'audiobook') {
         filename = request.metadata?.title || 'Audiobook';
+      } else if (request.type === 'vlm-convert') {
+        // A conversion has no `epubPath` — the EPUB is what it is about to WRITE
+        // — so it named itself from the one field that is always absent and every
+        // row in an overnight batch read "unknown.epub" (Owen, Aug 8 2026). The
+        // book's name is in the config, where the row's own title already comes
+        // from, and a conversion request without it is refused at build time.
+        const config = request.config as Partial<VlmConvertJobConfig> | undefined;
+        if (!config?.sourceLabel) {
+          throw new Error(
+            'This conversion request does not say which book it is for, so the queue would show a '
+            + 'row nobody can identify. sourceLabel is required on a vlm-convert config.'
+          );
+        }
+        filename = config.sourceLabel;
       } else {
         filename = 'unknown.epub';
       }
     }
+
+    // The queue's row heading is `metadata.title` — not epubFilename, which no
+    // component renders. A conversion carried no metadata at all, so every row
+    // in the list said "Untitled" and an overnight batch was unreadable. The
+    // book's name is in the config; this reads it rather than inventing one, and
+    // an explicit title from the caller still wins.
+    const metadata = request.type === 'vlm-convert' && !request.metadata?.title
+      ? { ...request.metadata, title: filename }
+      : request.metadata;
 
     const job: QueueJob = {
       id: this.generateId(),
@@ -1685,7 +1709,7 @@ export class QueueService {
       epubFilename: filename,
       status: 'pending',
       addedAt: new Date(),
-      metadata: request.metadata,
+      metadata,
       projectDir: request.projectDir,  // For LL jobs
       parentJobId: request.parentJobId,  // For workflow grouping
       workflowId: request.workflowId,    // For workflow grouping
@@ -4199,6 +4223,7 @@ export class QueueService {
               onDocumentStageProgress: (cb) => this.electron.onDocumentStageProgress(cb),
               onDocumentStageFinished: (cb) => this.electron.onDocumentStageFinished(cb),
               cancelDocumentStage: (dir) => this.electron.documentCancelStage(dir),
+              listActiveStages: () => this.electron.documentActiveStages(),
             },
           );
 
@@ -4698,6 +4723,16 @@ export class QueueService {
    * Used to re-sync UI after app rebuild when jobs are still running in background.
    */
   async refreshFromBackend(): Promise<void> {
+    // TWO kinds of work outlive a renderer, and each is asked about separately.
+    // They were one method that returned early when TTS was unavailable, which
+    // meant a document stage could only be re-synced on a build that also had
+    // parallel TTS — an accident of order, not a rule.
+    await this.refreshTtsFromBackend();
+    await this.reattachDocumentStages();
+  }
+
+  /** Live TTS sessions: main holds their progress, so ask it for the truth. */
+  private async refreshTtsFromBackend(): Promise<void> {
     const electron = window.electron;
     if (!electron?.parallelTts?.listActive) {
       console.log('[QUEUE] No parallelTts.listActive available');
@@ -4782,6 +4817,95 @@ export class QueueService {
       }
     } catch (err) {
       console.error('[QUEUE] Error refreshing from backend:', err);
+    }
+  }
+
+  /**
+   * Put conversion rows back on the stage that is still running them.
+   *
+   * A `vlm-convert` row schedules work it does not own: main runs the stage and
+   * broadcasts every line, and the row listens. A renderer reload kills the
+   * listener and nothing else — the conversion carries on, unwatched, while the
+   * row keeps whatever percentage was on screen at the moment the reload landed
+   * and its elapsed timer keeps counting. That reads as a hung job, which is
+   * what Owen saw on Aug 8 2026.
+   *
+   * So on load every interrupted conversion is asked about by name:
+   *
+   *  - the project's stage is STILL RUNNING → the row goes back to 'processing'
+   *    with main's own last line, and re-attaches (`attachToRunning`) so it
+   *    follows the run to its finish instead of starting a second one that main
+   *    would refuse.
+   *  - the project has NO stage → the run died with the app. The row is FAILED,
+   *    saying that, rather than left pending for progress that can never arrive.
+   *    Converting again is one press of Start on a row that now says why.
+   */
+  private async reattachDocumentStages(): Promise<void> {
+    const interrupted = this._jobs().filter(j =>
+      j.type === 'vlm-convert' && j.wasInterrupted && j.status === 'pending');
+    if (interrupted.length === 0) return;
+
+    let stages: Awaited<ReturnType<ElectronService['documentActiveStages']>>;
+    try {
+      stages = await this.electron.documentActiveStages();
+    } catch (err) {
+      // Main could not be asked, so nothing here can be decided. The rows keep
+      // the pending state loadQueueState gave them; guessing "it died" would
+      // fail a conversion that is very likely still running.
+      console.error('[QUEUE] Could not ask main which document stages are running:', err);
+      return;
+    }
+
+    for (const job of interrupted) {
+      const config = job.config as VlmConvertJobConfig | undefined;
+      if (!config?.projectDir) continue;
+      const live = stages.find(s => samePath(s.projectDir, config.projectDir));
+
+      if (!live) {
+        this._jobs.update(jobs => jobs.map(j => j.id === job.id
+          ? {
+            ...j,
+            status: 'error' as JobStatus,
+            error: `The conversion of ${config.sourceLabel} was interrupted when the app reloaded, `
+              + 'and it is no longer running. Press Start to convert it again.',
+            wasInterrupted: false,
+          }
+          : j));
+        continue;
+      }
+
+      // The row stays PENDING, and that is the whole mechanism: `processNext`
+      // picks up pending rows and nothing else, and running this one is what
+      // re-subscribes it to `document:stage-progress`. Marking it 'processing'
+      // here would look right for one frame and then freeze exactly as before,
+      // because no runner would ever claim it.
+      //
+      // What is seeded is what the row SHOWS in the moment before the next line
+      // arrives: main's own last progress, so the percentage picks up where the
+      // run actually is instead of resetting to zero. `total` is 0 until foundry
+      // states the page count, and 0% is the honest reading of that.
+      const p = live.lastProgress;
+      const progress = p && p.total > 0 ? Math.min(Math.round((p.done / p.total) * 100), 100) : 0;
+      this._jobs.update(jobs => jobs.map(j => j.id === job.id
+        ? {
+          ...j,
+          progress,
+          progressMessage: p?.message ?? `${live.label} is running`,
+          startedAt: new Date(live.startedAt),
+          wasInterrupted: false,
+          // It must not START a conversion — one is already running, and main
+          // refuses a second by name. It attaches to the one in flight.
+          config: { ...config, attachToRunning: true },
+        }
+        : j));
+      console.log(`[QUEUE] Re-attaching conversion row ${job.id} to the running stage on ${config.projectDir} at ${progress}%`);
+    }
+
+    // A conversion is in flight and a row is now waiting to follow it, so the
+    // queue has to be running for its runner to claim it.
+    if (stages.length > 0) {
+      this._isRunning.set(true);
+      void this.processNext();
     }
   }
 

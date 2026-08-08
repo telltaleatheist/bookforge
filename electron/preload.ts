@@ -1237,6 +1237,16 @@ export interface ElectronAPI {
     applyEdits: (ref: DocumentRef, edits: WorkingDocumentEdit[]) =>
       Promise<{ success: boolean; bytes?: number; appended?: number; error?: string }>;
     cancelStage: (projectDir: string) => Promise<{ success: boolean; stopped?: boolean }>;
+    /** Stages running right now, with the last line each emitted. */
+    activeStages: () => Promise<{
+      success: boolean;
+      stages: Array<{
+        projectDir: string;
+        label: string;
+        startedAt: number;
+        lastProgress: { stage: string; message: string; done: number; total: number; at: number } | null;
+      }>;
+    }>;
     resetTo: (ref: DocumentRef, target: ResetTarget) =>
       Promise<{ success: boolean; error?: string }>;
     discard: (ref: DocumentRef) => Promise<{ success: boolean; error?: string }>;
@@ -2863,6 +2873,8 @@ const electronAPI: ElectronAPI = {
     applyEdits: (ref: DocumentRef, edits: WorkingDocumentEdit[]) =>
       ipcRenderer.invoke('document:apply-edits', ref, edits),
     cancelStage: (projectDir: string) => ipcRenderer.invoke('document:cancel-stage', projectDir),
+    /** Stages running right now and where they have got to — what a reloaded window asks for. */
+    activeStages: () => ipcRenderer.invoke('document:active-stages'),
     resetTo: (ref: DocumentRef, target: ResetTarget) =>
       ipcRenderer.invoke('document:reset-to', ref, target),
     discard: (ref: DocumentRef) => ipcRenderer.invoke('document:discard', ref),

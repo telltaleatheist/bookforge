@@ -597,6 +597,8 @@ export class JobListComponent {
         return 'Bilingual Assembly';
       case 'generate-sentences':
         return 'Sentences';
+      case 'vlm-convert':
+        return 'Convert to EPUB';
       default:
         return type;
     }

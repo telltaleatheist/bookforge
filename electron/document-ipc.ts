@@ -48,7 +48,7 @@ import {
 import { createWorkingCopy } from './working-copy';
 import { readWorkingDocumentBlocks } from './working-document';
 import { applyWorkingDocumentEdits, type WorkingDocumentEdit } from './working-document-writer';
-import { abortStageFor } from './document-stage-registry';
+import { abortStageFor, activeStages } from './document-stage-registry';
 import { broadcastToAllWindows, withProjectStage } from './document-stage-run';
 import {
   documentBindingPath,
@@ -263,6 +263,30 @@ export function registerDocumentIpc(): void {
 
   ipcMain.handle('document:cancel-stage', async (_event, projectDir: string) => {
     return { success: true, stopped: abortStageFor(projectDir) };
+  });
+
+  /**
+   * Every stage running right now, with where it has got to.
+   *
+   * The answer a window asks for when it STARTS, because a renderer reload does
+   * not stop a stage — main owns it — but it does lose every broadcast the stage
+   * has already made. Without this a reloaded window can only wait for the next
+   * line, which is a whole page away, so its queue row sits frozen while the
+   * elapsed timer keeps counting and the run looks hung.
+   *
+   * The AbortController is not sent: it is a handle on a process in this
+   * process, and the way a window stops a stage is `document:cancel-stage`.
+   */
+  ipcMain.handle('document:active-stages', async () => {
+    return {
+      success: true,
+      stages: activeStages().map((s) => ({
+        projectDir: s.projectDir,
+        label: s.label,
+        startedAt: s.startedAt,
+        lastProgress: s.lastProgress,
+      })),
+    };
   });
 
   /**

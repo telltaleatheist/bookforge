@@ -2112,6 +2112,24 @@ export class ElectronService {
     return result?.stopped === true;
   }
 
+  /**
+   * Every document stage running right now, and where it has got to.
+   *
+   * What a window asks main after a reload: the stage kept running (main owns
+   * it) but every `document:stage-progress` broadcast sent meanwhile is gone, so
+   * a row that only listens sits frozen until the next page turns.
+   */
+  async documentActiveStages(): Promise<Array<{
+    projectDir: string;
+    label: string;
+    startedAt: number;
+    lastProgress: { stage: string; message: string; done: number; total: number; at: number } | null;
+  }>> {
+    if (!this.isElectron) return [];
+    const result = await (window as any).electron.document.activeStages();
+    return result?.stages ?? [];
+  }
+
   /** Reset to the end of a stage — one truncate, no GPU, no re-run. */
   async documentResetTo(ref: DocumentRef, target: ResetTarget): Promise<void> {
     if (!this.isElectron) throw new Error('The document pipeline needs the desktop app.');
