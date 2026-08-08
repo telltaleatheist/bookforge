@@ -27,6 +27,10 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { writeNarrationEpub, epubCarriesConversionStamps } from './epub-processor';
+import {
+  editorStateTranslationRefusal,
+  translateEditorStateDeletions,
+} from './narration-editor-state';
 import { moveIntoPlace } from './processing-passes';
 import { sha256File } from './sidecar-binding';
 import * as manifestService from './manifest-service';
@@ -117,6 +121,23 @@ export interface NarrationExportResult {
   totalElements: number;
   /** Digits-only `<sup>` footnote references removed on the way out. */
   removedSupMarkers: number;
+  /**
+   * How the removed elements were arrived at — the two records, counted apart.
+   *
+   * `fromStrikes` is what was on record before this export; `translated` is what
+   * the editor's own page and block deletions added to it that the record did
+   * not already name. They sum to `removedElements`, and they are reported
+   * rather than merged silently because "your 122 edits are in this file" and
+   * "your 122 edits were already in the record" are different facts and the
+   * user has spent an evening being told the first when the second was false.
+   */
+  fromStrikes: number;
+  translated: number;
+  /**
+   * Why some of the editor's deletions reached nothing, or null when they all
+   * did. Named, never swallowed — see shared/vlm/narration-deletions.ts.
+   */
+  unresolved: string | null;
 }
 
 export interface NarrationExportOptions {
@@ -164,6 +185,11 @@ export async function exportNarrationEpub(
     throw new Error(stale);
   }
 
+  // The OTHER deletion record, folded in before anything is cut. Everything
+  // about why there are two, and why this one has to be translated rather than
+  // read, is in electron/narration-editor-state.ts.
+  const merged = await mergeEditorStateDeletions(projectDir, book.absPath, sha256, recorded);
+
   const target = await manifestService.narrationEpubTarget(projectDir);
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
   const staged = path.join(STAGING_DIR, `narration-${sha256.slice(0, 16)}.epub`);
@@ -173,7 +199,7 @@ export async function exportNarrationEpub(
   // "fifty-five" out of. This is also the ONLY place those markers are removed —
   // no pass edits the book.
   const written = await writeNarrationEpub(
-    book.absPath, staged, recorded?.elements ?? [],
+    book.absPath, staged, merged.elements,
     options?.stripSupMarkers === undefined ? undefined : { stripSupMarkers: options.stripSupMarkers });
   await moveIntoPlace(staged, target.absPath);
 
@@ -191,5 +217,97 @@ export async function exportNarrationEpub(
     removedElements: written.removedElements,
     totalElements: written.totalElements,
     removedSupMarkers: written.removedSupMarkers,
+    fromStrikes: merged.fromStrikes,
+    translated: merged.translated,
+    unresolved: merged.unresolved,
+  };
+}
+
+interface MergedNarrationDeletions {
+  /** What the copy is cut by: the strikes plus whatever the editor added. */
+  elements: readonly NarrationElementKey[];
+  /** How many of them were already on record. */
+  fromStrikes: number;
+  /** How many the editor's page and block deletions added. */
+  translated: number;
+  /** Why some of the editor's deletions reached nothing, or null. */
+  unresolved: string | null;
+}
+
+/**
+ * The strikes on record, plus what the picker's editor state says was deleted.
+ *
+ * ── Why this is at EXPORT time and not a one-off script ─────────────────────
+ *
+ * Because the file is what has to be right. Every project in the library that
+ * was curated before the picker recorded page deletions has intent stranded in
+ * `manifest.source`, and the only moment we can be sure it matters is the moment
+ * somebody asks for the book it feeds. Doing it here means the next export of
+ * every one of those projects carries the user's work, with nothing to run and
+ * nothing to remember.
+ *
+ * ── The merged set is WRITTEN BACK, and that is not optional ────────────────
+ *
+ * `exportNarrationEpub` deliberately takes no deletion list: the manifest is the
+ * state, so the file that lands is always explained by a record. Cutting by a
+ * set that only existed inside this function would break exactly that — the
+ * `.tts.epub` would be missing 418 elements and the record would say 46. So the
+ * merge is recorded first and the cut reads the recorded answer.
+ *
+ * A project whose record already names everything the editor deleted gets an
+ * identical set, nothing is written, and the only cost is the book's block layer
+ * — an analysis-cache hit, because the picker laid the same book out to show it.
+ */
+async function mergeEditorStateDeletions(
+  projectDir: string,
+  bookAbsPath: string,
+  bookSha256: string,
+  recorded: NarrationDeletions | null,
+): Promise<MergedNarrationDeletions> {
+  const onRecord = recorded?.elements ?? [];
+  const editor = await manifestService.readEditorStateDeletions(projectDir);
+
+  if (editor.blockIds.length === 0 && editor.pages.length === 0) {
+    return { elements: onRecord, fromStrikes: onRecord.length, translated: 0, unresolved: null };
+  }
+
+  const refusal = editorStateTranslationRefusal(editor, projectDir);
+  if (refusal !== null) {
+    console.log(`[narration-export] ${refusal}`);
+    return {
+      elements: onRecord, fromStrikes: onRecord.length, translated: 0, unresolved: refusal,
+    };
+  }
+
+  const translation = await translateEditorStateDeletions(editor, bookAbsPath);
+  const struck = new Set(onRecord);
+  const added = translation.elements.filter((key) => !struck.has(key));
+  console.log(
+    `[narration-export] ${path.basename(projectDir)}: ${onRecord.length} element(s) on record, `
+    + `${editor.pages.length} deleted page(s) and ${editor.blockIds.length} deleted block(s) resolve `
+    + `to ${translation.elements.length} element(s) (${translation.strikes.fromBlocks} from blocks, `
+    + `${translation.strikes.fromPages} from pages alone), of which ${added.length} were not already `
+    + 'struck.'
+  );
+  if (added.length === 0) {
+    return {
+      elements: onRecord,
+      fromStrikes: onRecord.length,
+      translated: 0,
+      unresolved: translation.unstruckReport,
+    };
+  }
+
+  const elements = [...struck, ...added].sort();
+  await manifestService.writeNarrationDeletions(projectDir, {
+    epubSha256: bookSha256,
+    elements,
+    updatedAt: new Date().toISOString(),
+  });
+  return {
+    elements,
+    fromStrikes: onRecord.length,
+    translated: added.length,
+    unresolved: translation.unstruckReport,
   };
 }

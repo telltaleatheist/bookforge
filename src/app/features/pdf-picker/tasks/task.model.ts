@@ -181,7 +181,13 @@ export function deriveMergeStatus(mergeCount: number): TaskStatus {
  * Deliberately not "up to date". The copy is cut from strikes recorded against
  * the book's sha256, and a book that has moved on VOIDS those strikes at export
  * (shared/vlm/narration-deletions.ts) — so the export refuses by name rather
- * than a rail entry guessing at staleness it cannot measure from here.
+ * than a control guessing at staleness it cannot measure from here.
+ *
+ * No longer a rail task (2026-08-08): the export is the primary action at the
+ * bottom-right of the viewer, and this is what it says under its own label. It
+ * keeps the `TaskStatus` shape because that is the app's one vocabulary for
+ * "what does this control currently say about itself", and inventing a second
+ * one for a single button would be a second vocabulary.
  */
 export function deriveNarrationCopyStatus(exists: boolean): TaskStatus {
   return exists
@@ -198,14 +204,6 @@ export interface TaskStatusContext {
   readonly removedBlockCount: number;
   readonly crop: CropStatusInput;
   readonly mergeCount: number;
-  /**
-   * The narration copy exists on disk for the book on screen.
-   *
-   * Not a pass and not provenance: `Export TTS copy` writes a SECOND file and
-   * records nothing against the book, so the only honest thing it can say about
-   * itself is whether that file is there.
-   */
-  readonly narrationCopyExists: boolean;
   /**
    * `manifest.outputs.epub.appliedPasses` for the book this window is on, in
    * execution order. An empty list is a real value — a book nothing has been
@@ -232,8 +230,6 @@ export function deriveTaskStatus(id: TaskId, ctx: TaskStatusContext): TaskStatus
     case 'simplify':
     case 'translate':
       return derivePassStatus(id, ctx.appliedPasses);
-    case 'export-tts':
-      return deriveNarrationCopyStatus(ctx.narrationCopyExists);
     default:
       return assertNever(id);
   }

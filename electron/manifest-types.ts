@@ -163,6 +163,18 @@ export interface ManifestSource {
    */
   foundryAutoDiscardedLines?: { scanId: string; lineIds: string[] };
   pageOrder?: number[];
+  /**
+   * Pages the picker struck out, by the page number of the LAYOUT they were
+   * struck in — the PDF's own pages for a PDF project, mupdf's pagination of the
+   * book for a project curated on an EPUB.
+   *
+   * Written by the project save (main's `project:save-to-path`) since long
+   * before this declaration existed; declared now because the narration export
+   * reads it (electron/narration-editor-state.ts), and a field the type refused
+   * to admit would have to be read through a cast, which is how it went
+   * unnoticed that nothing read it at all.
+   */
+  deletedPages?: number[];
   /** Written by the markup-preserving EPUB export — see ExportProvenance. */
   exportProvenance?: ExportProvenance;
 }

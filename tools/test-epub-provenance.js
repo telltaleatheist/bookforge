@@ -179,7 +179,9 @@ const FIXTURE_BLOCKS = [
   await check('every stamped element hands its category to the blocks laid out from it', async () => {
     const reading = await readEpubBlockProvenance(stampedEpub, FIXTURE_BLOCKS);
     assert.strictEqual(reading.stamped, true);
-    assert.strictEqual(reading.unaligned, 0, 'every fixture block should align');
+    // `unaligned` is the LIST of blocks that could not be placed, and has been
+    // since the aligner started saying which ones and why.
+    assert.deepStrictEqual(reading.unaligned, [], 'every fixture block should align');
     const cat = (id) => reading.byBlockId.get(id).category;
     assert.strictEqual(cat('b1'), 'chapter',
       'the heading is the book\'s own `chapter` — the heuristic calls this a `title`');
@@ -246,7 +248,7 @@ const FIXTURE_BLOCKS = [
     const reading = await readEpubBlockProvenance(unstampedEpub, FIXTURE_BLOCKS);
     assert.strictEqual(reading.stamped, false);
     assert.strictEqual(reading.byBlockId.size, 0);
-    assert.strictEqual(reading.unaligned, 0,
+    assert.deepStrictEqual(reading.unaligned, [],
       'nothing was attempted, so nothing failed — an unstamped book must not report alignment damage');
   });
 

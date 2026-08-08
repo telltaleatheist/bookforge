@@ -52,7 +52,8 @@ const {
 const {
   narrationElementKey,
   parseNarrationElementKey,
-  narrationElementsOf,
+  deriveNarrationStrikes,
+  describeUnstruckDeletions,
   narrationDeletedBlockIds,
   narrationBlocksOnSourcePage,
   narrationEpubRelPath,
@@ -204,18 +205,97 @@ async function buildEpub(name, chapterXhtml) {
   });
 
   // ── deriving the record from the editor ───────────────────────────────────
+  //
+  // The laid-out block shape the derivation reads: a page (mupdf's own
+  // pagination of the book), the element it was laid out from, and whether it is
+  // furniture the aligner never places.
+  const laid = (id, page, element, extra) => ({
+    id, page, excerpt: `${id} text`, unplaceable: false,
+    ...(element === null ? {} : { element }), ...extra,
+  });
+
   await check('the record is the deleted blocks\' elements, deduped and sorted', () => {
     const blocks = [
-      { id: 'b1', element: 'OEBPS/c1.xhtml#0', sourcePage: 1 },
-      { id: 'b2', element: 'OEBPS/c1.xhtml#1', sourcePage: 1 },
+      laid('b1', 0, 'OEBPS/c1.xhtml#0'),
+      laid('b2', 0, 'OEBPS/c1.xhtml#1'),
       // Two blocks of ONE element — mupdf lays a paragraph out per visual line.
-      { id: 'b3', element: 'OEBPS/c1.xhtml#1', sourcePage: 1 },
-      { id: 'b4', element: 'OEBPS/c1.xhtml#2', sourcePage: 2 },
+      laid('b3', 0, 'OEBPS/c1.xhtml#1'),
+      laid('b4', 1, 'OEBPS/c1.xhtml#2'),
       // No element: the aligner could not place it. Not deletable through this.
-      { id: 'b5', sourcePage: 2 },
+      laid('b5', 1, null),
     ];
-    const deleted = new Set(['b2', 'b3', 'b5']);
-    assert.deepStrictEqual(narrationElementsOf(blocks, deleted), ['OEBPS/c1.xhtml#1']);
+    const strikes = deriveNarrationStrikes(blocks, new Set(['b2', 'b3', 'b5']), new Set());
+    assert.deepStrictEqual(strikes.elements, ['OEBPS/c1.xhtml#1']);
+    assert.strictEqual(strikes.fromBlocks, 1);
+    assert.strictEqual(strikes.fromPages, 0);
+  });
+
+  // The bug this whole change exists for: 64 deleted pages and 58 deleted
+  // blocks, and an export that read only the blocks. A page deletion is the
+  // same statement as striking every block on it, and it has to reach the
+  // record the cut is made from.
+  await check('a deleted PAGE strikes every element laid out on it', () => {
+    const blocks = [
+      laid('b1', 0, 'OEBPS/c1.xhtml#0'),
+      laid('b2', 3, 'OEBPS/c1.xhtml#7'),
+      laid('b3', 3, 'OEBPS/c1.xhtml#8'),
+      laid('b4', 4, 'OEBPS/c1.xhtml#9'),
+    ];
+    const strikes = deriveNarrationStrikes(blocks, new Set(['b1']), new Set([3]));
+    assert.deepStrictEqual(strikes.elements,
+      ['OEBPS/c1.xhtml#0', 'OEBPS/c1.xhtml#7', 'OEBPS/c1.xhtml#8']);
+    assert.strictEqual(strikes.fromBlocks, 1, 'the block strike is counted as one');
+    assert.strictEqual(strikes.fromPages, 2, 'the page added two the blocks did not name');
+    assert.strictEqual(strikes.fromBlocks + strikes.fromPages, strikes.elements.length,
+      'the two counts partition the set they describe');
+  });
+
+  await check('an element struck BOTH ways is counted once, as a block strike', () => {
+    const blocks = [
+      // One element, two laid-out lines: one of them individually struck, and
+      // the page they are both on struck as well.
+      laid('b1', 2, 'OEBPS/c1.xhtml#4'),
+      laid('b2', 2, 'OEBPS/c1.xhtml#4'),
+    ];
+    const strikes = deriveNarrationStrikes(blocks, new Set(['b1']), new Set([2]));
+    assert.deepStrictEqual(strikes.elements, ['OEBPS/c1.xhtml#4']);
+    assert.strictEqual(strikes.fromBlocks, 1);
+    assert.strictEqual(strikes.fromPages, 0);
+  });
+
+  await check('a deletion that can strike NOTHING is named, never dropped', () => {
+    const blocks = [
+      // Prose the aligner could not place: a real problem, and the user has to
+      // be told, because the paragraph will be read aloud.
+      laid('b1', 5, null),
+      // Furniture: an image block and a footnote marker have no element BY
+      // DESIGN, so they are not reported as failures.
+      laid('b2', 5, null, { unplaceable: true }),
+      laid('b3', 6, null, { unplaceable: true }),
+    ];
+    const strikes = deriveNarrationStrikes(blocks, new Set(['b1', 'b2']), new Set([6, 9]));
+
+    assert.deepStrictEqual(strikes.elements, []);
+    assert.strictEqual(strikes.unstruck.length, 1, 'only the prose block is a problem');
+    assert.strictEqual(strikes.unstruck[0].blockId, 'b1');
+    assert.strictEqual(strikes.unstruck[0].via, 'block');
+    // Page 6 held nothing but furniture, and page 9 held nothing at all.
+    assert.deepStrictEqual(strikes.pagesWithNothingStruck, [6, 9]);
+
+    const said = describeUnstruckDeletions(strikes);
+    assert.ok(/could not be matched/.test(said), said);
+    assert.ok(/page 6/.test(said), said);  // 1-based in the user's terms
+    assert.ok(/nothing on them that could be struck/.test(said), said);
+    assert.strictEqual(describeUnstruckDeletions(
+      deriveNarrationStrikes([laid('b1', 0, 'e#0')], new Set(['b1']), new Set())), null);
+  });
+
+  await check('a deleted block id this layout does not have is named', () => {
+    const strikes = deriveNarrationStrikes(
+      [laid('b1', 0, 'e#0')], new Set(['b1', 'ghost']), new Set());
+    assert.deepStrictEqual(strikes.elements, ['e#0']);
+    assert.deepStrictEqual(strikes.unknownBlockIds, ['ghost']);
+    assert.ok(/ghost/.test(describeUnstruckDeletions(strikes)));
   });
 
   await check('re-opening strikes EVERY block of a struck element', () => {
@@ -271,7 +351,7 @@ async function buildEpub(name, chapterXhtml) {
     // The hole this closes: element keys used to be minted only for a book
     // carrying `data-bf-cat`, because the reader returned before the aligner
     // ever ran. So on a publisher's EPUB every block came back with no element,
-    // `narrationElementsOf` skipped all of them, and striking a paragraph
+    // the strike derivation skipped all of them, and striking a paragraph
     // recorded NOTHING — silently, looking exactly like it had worked.
     const laidOut = (text, i) => ({
       id: `b${i}`, page: 0, y: i * 20, text,
@@ -290,16 +370,22 @@ async function buildEpub(name, chapterXhtml) {
     const plainReading = await readEpubConversionStamps(plain, blocks);
     assert.strictEqual(plainReading.converted, false, 'a plain book states no categories');
     assert.strictEqual(plainReading.byBlockId.size, 0, 'and therefore no stamps');
-    assert.strictEqual(plainReading.unaligned, 0, 'every block was placed in the markup');
+    // `unaligned` is the LIST of blocks that could not be placed, and has been
+    // since the aligner started saying which ones and why — this assertion had
+    // been comparing that list to the number 0 and failing ever since.
+    assert.deepStrictEqual(plainReading.unaligned, [], 'every block was placed in the markup');
     assert.strictEqual(plainReading.elementByBlockId.size, blocks.length,
       'but EVERY block knows which element it came from');
     assert.strictEqual(
       plainReading.elementByBlockId.get('b0'), 'OEBPS/chapter-01.xhtml#0');
     // Which is exactly what the picker needs to record a strike.
     assert.deepStrictEqual(
-      narrationElementsOf(
-        blocks.map((b) => ({ id: b.id, element: plainReading.elementByBlockId.get(b.id) })),
-        new Set(['b5'])),
+      deriveNarrationStrikes(
+        blocks.map((b) => ({
+          id: b.id, page: b.page, excerpt: b.text.slice(0, 80), unplaceable: false,
+          element: plainReading.elementByBlockId.get(b.id),
+        })),
+        new Set(['b5']), new Set()).elements,
       [plainReading.elementByBlockId.get('b5')]);
 
     // The converted book answers the same keys AND its stamps.

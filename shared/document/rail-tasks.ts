@@ -104,6 +104,15 @@ const BOOK_PASS_GROUP = {
  * group is gone with the Tesseract pipeline it belonged to (Aug 2026): reading
  * the pages is `foundry vlm-convert`, which produces a BOOK and is started from
  * Studio's versions page rather than from a curation rail.
+ *
+ * "Export TTS copy" left this table on 2026-08-08 (Owen's call). The rail is a
+ * checklist of work you do TO the book; writing the narration copy is what you
+ * do WHEN YOU ARE DONE with it, and sitting it among the modes made the last
+ * step of the flow look like another tool to try. It is now the primary action
+ * in the bottom-right of the viewer, where a next/continue action goes, and the
+ * picker owns it directly — so it is deliberately NOT a rail task id any more,
+ * and nothing derives a status, a digit shortcut or a disabled-reason for it
+ * through the rail.
  */
 export const ARTIFACT_RAIL_GROUPS = {
   source: [
@@ -112,7 +121,6 @@ export const ARTIFACT_RAIL_GROUPS = {
   ],
   book: [
     BOOK_PASS_GROUP,
-    { id: 'narration', label: 'Narration', tasks: ['export-tts'] },
   ],
 } as const satisfies Record<ViewedArtifact, readonly RailGroup[]>;
 
@@ -135,8 +143,16 @@ export const RAIL_TASK_LABELS: Record<RailTaskId, string> = {
   merge: 'Merge blocks',
   simplify: 'Simplify',
   translate: 'Translate',
-  'export-tts': 'Export TTS copy',
 };
+
+/**
+ * What the primary action at the bottom of the viewer is called.
+ *
+ * Here rather than in the picker because it is the same kind of fact as every
+ * label above it — what a control is called — and the export dialog's title has
+ * to say the same words as the button that opened it.
+ */
+export const NARRATION_EXPORT_LABEL = 'Export TTS copy';
 
 /** The rail the artifact on screen gets. */
 export function railGroupsForArtifact(artifact: ViewedArtifact): readonly RailGroup[] {

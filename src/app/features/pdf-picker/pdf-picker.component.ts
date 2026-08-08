@@ -54,9 +54,11 @@ import {
   TaskStatus,
   isEpubPassId,
   deriveAllTaskStatuses,
+  deriveNarrationCopyStatus,
   isBlockFullyOutside,
 } from './tasks/task.model';
 import {
+  NARRATION_EXPORT_LABEL,
   railGroupsForArtifact,
   railShortcutsFor,
   railTaskForDigit,
@@ -67,11 +69,14 @@ import {
 } from '@shared/document/rail-tasks';
 import { narrationRefusal, type PassRecord } from '@shared/document/version-family';
 import {
+  deriveNarrationStrikes,
+  describeUnstruckDeletions,
   narrationBlocksOnSourcePage,
   narrationDeletedBlockIds,
-  narrationElementsOf,
   parseNarrationElementKey,
+  type NarrationLaidOutBlock,
   type NarrationState,
+  type NarrationStrikes,
 } from '@shared/vlm/narration-deletions';
 import type { BookChapterTitles } from '@shared/vlm/chapter-titles';
 import { parsePageRange } from './shared/page-range.util';
@@ -591,6 +596,33 @@ interface AlertModal {
             />
               }
             </div>
+
+            <!-- The last step of the flow, in the bottom-right where a
+                 next/continue action goes. A real row rather than a floating
+                 overlay, so it can never sit on top of the page timeline it
+                 shares the bottom of the window with.
+
+                 Shown for every book and DISABLED with its own sentence when it
+                 cannot run, for the same reason the rail says why a row is off:
+                 a control that vanishes teaches nothing about how to reach
+                 it. -->
+            @if (showNarrationExport()) {
+              <div
+                class="narration-export-bar"
+                [title]="narrationExportRefusal() ?? 'Write the book minus what you have struck out'"
+              >
+                <span class="narration-export-status">
+                  {{ narrationExportLabel }} — {{ narrationCopyStatus().detail }}
+                </span>
+                <desktop-button
+                  variant="primary"
+                  size="lg"
+                  iconRight="→"
+                  [disabled]="narrationExportRefusal() !== null"
+                  (click)="exportTtsCopy()"
+                >{{ narrationExportLabel }}</desktop-button>
+              </div>
+            }
 
             <!-- Page Timeline (bottom of viewer) -->
             <div class="page-timeline">
@@ -1421,6 +1453,29 @@ interface AlertModal {
       overflow: auto;
       background: var(--bg-sunken);
       position: relative;
+    }
+
+    /* The narration copy: the one primary action of the book's flow, bottom-right.
+       A flex row of the viewer/timeline column rather than an absolutely
+       positioned overlay — it shares the bottom of the window with the page
+       timeline, and a float would cover the thumbnails at the end of the book. */
+    .narration-export-bar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: var(--ui-spacing-md);
+      flex-shrink: 0;
+      padding: var(--ui-spacing-sm) var(--ui-spacing-lg);
+      background: var(--bg-elevated);
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .narration-export-status {
+      font-size: var(--ui-font-sm);
+      color: var(--text-tertiary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .empty-workspace {
@@ -2448,13 +2503,18 @@ export class PdfPickerComponent implements OnInit {
    */
   private narrationSaveTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly narrationSaveEffect = effect(() => {
-    // Tracked: the set the user is looking at.
+    // Tracked: BOTH sets the user is looking at. Reading only the block set is
+    // what left page deletions out of the record entirely — the strikes were
+    // re-derived on every block gesture and never on a page one, so a session
+    // that deleted only pages recorded nothing at all.
     const struck = this.deletedBlockIds();
+    const struckPages = this.deletedPages();
     if (!this.pdfLoaded() || !this.canStrikeForNarration()) return;
     // The restore has to land before the first save, or an empty editor would
     // be recorded over a book's worth of strikes.
     if (this.appliedNarrationKey === '') return;
     void struck;
+    void struckPages;
     if (this.narrationSaveTimer) clearTimeout(this.narrationSaveTimer);
     this.narrationSaveTimer = setTimeout(() => {
       this.narrationSaveTimer = null;
@@ -3208,11 +3268,45 @@ export class PdfPickerComponent implements OnInit {
   /**
    * The narration copy this project already has, or null.
    *
-   * Main's answer, so the rail entry says "written" from the file on disk rather
+   * Main's answer, so the button says "written" from the file on disk rather
    * than from anything this window remembers doing.
    */
   readonly narrationCopyPath = computed<string | null>(() =>
     this.narrationState()?.narrationPath ?? null);
+
+  /** What the export button is called. One name, stated once. */
+  readonly narrationExportLabel = NARRATION_EXPORT_LABEL;
+
+  /**
+   * The bottom-right primary action is OFFERED — i.e. the artifact on screen is
+   * the kind of thing a narration copy is cut from.
+   *
+   * Presence is a fact about the FILE (an EPUB is a book), exactly as the rail's
+   * contents are. Whether it can be PRESSED is the separate question below, and
+   * conflating them is what put the passes somewhere they could not live: a
+   * control that vanishes teaches nothing about how to reach it, so the button
+   * is shown for every book and says why when it is off.
+   */
+  readonly showNarrationExport = computed(() => this.viewingBook());
+
+  /**
+   * Why the narration copy cannot be written from here, or null.
+   *
+   * ONE reason: it needs a project to write into. It does NOT need a recorded
+   * book, and that is the whole of the EPUB-native case — main mints the book
+   * copy as it saves the first strike (`ensureBookEpub`), so a project whose
+   * only EPUB is its original still has something to cut a copy from.
+   */
+  readonly narrationExportRefusal = computed<string | null>(() => this.noProjectReason());
+
+  /**
+   * What the button says under its label: written, or not written yet.
+   *
+   * The same derivation the rail used when it carried this entry — moving a
+   * control is not a reason for it to start answering differently.
+   */
+  readonly narrationCopyStatus = computed<TaskStatus>(() =>
+    deriveNarrationCopyStatus(this.narrationCopyPath() !== null));
 
   /**
    * The book on screen can be struck through for narration.
@@ -4414,9 +4508,6 @@ export class PdfPickerComponent implements OnInit {
       removedBlockCount: deletedBlockIds.size,
       crop: { croppedPageCount: this.editorState.cropRegions().size },
       mergeCount: this.editorState.blockMerges().size,
-      // The narration copy is a FILE, not a pass: it records nothing against the
-      // book, so the only honest thing it can say is whether it is there.
-      narrationCopyExists: this.narrationCopyPath() !== null,
       // The book's own record of what has been run over it. A pass that has run
       // says so, and it says it from the manifest rather than from anything this
       // window remembers doing.
@@ -4448,18 +4539,13 @@ export class PdfPickerComponent implements OnInit {
       for (const id of EPUB_PASS_IDS) disabled.set(id, passRefusal);
     }
 
-    // The narration copy is not a pass — it writes a second file and records
-    // nothing — but it answers to the same one of the two questions: it needs a
-    // project to write into. It does NOT need a recorded book, and that is the
-    // whole of the EPUB-native case: main mints the book copy as it saves the
-    // first strike (`ensureBookEpub`), so a project whose only EPUB is its
-    // original still has something to cut a narration copy from.
-    const noProject = this.noProjectReason();
-    if (noProject) disabled.set('export-tts', noProject);
+    // The narration copy is not on this map any more: it left the rail on
+    // 2026-08-08 for the bottom-right primary action, and its own refusal is
+    // `narrationExportRefusal` below.
 
     for (const id of TASK_ORDER) {
       if (id === 'select') continue;
-      if (isEpubPassId(id) || id === 'export-tts') continue;
+      if (isEpubPassId(id)) continue;
       // Curation is refused on the artifact on screen — the archive original,
       // a book handed to narration. The rail says so on each entry rather than
       // vanishing: the reason is the same sentence the banner over the viewer
@@ -8012,13 +8098,19 @@ export class PdfPickerComponent implements OnInit {
    * The strikes are SAVED first, synchronously, and the export then reads them
    * off the manifest rather than being handed a list — so the file that lands is
    * always explained by a record, and there is no way to produce one that is not.
+   *
+   * Public because the bottom-right primary action calls it directly. It is no
+   * longer reachable through the rail (2026-08-08), so the rail's disabled-task
+   * gate no longer stands in front of it — the refusal it has to honour is its
+   * own, and it is asked for here.
    */
-  private async exportTtsCopy(): Promise<void> {
+  async exportTtsCopy(): Promise<void> {
+    if (this.narrationExportRefusal() !== null) return;
     const dir = this.projectPath();
     if (!dir) return;
 
     const choice = await this.dialogService.confirmWithCheckbox({
-      title: 'Export TTS copy',
+      title: NARRATION_EXPORT_LABEL,
       message:
         'The narration copy is the book minus what you have struck out. The book itself is never '
         + 'rewritten — this writes a second file beside it.',
@@ -8042,14 +8134,29 @@ export class PdfPickerComponent implements OnInit {
       }
       const { result } = answer;
       await this.refreshNarrationState();
+
+      // The two records, counted apart. `translated` is what the editor's own
+      // page and block deletions added that the strike record did not already
+      // name — it is zero for a book curated since the picker recorded both,
+      // and it is the whole story for one curated before.
+      const provenance = result.translated > 0
+        ? ` (${result.fromStrikes} already struck, ${result.translated} translated from pages and `
+          + 'blocks deleted in the editor)'
+        : '';
+      // The picker's own derivation and main's translation can each have found
+      // something they could not strike. Both are said, and neither is dropped.
+      const unresolved = [this.narrationUnstruckReport(), result.unresolved]
+        .filter((s): s is string => s !== null && s.length > 0);
+
       this.showAlert({
         title: 'TTS copy written',
         message:
           `${result.relPath} — ${result.removedElements} of ${result.totalElements} element(s) `
-          + `left out, ${result.removedSupMarkers} footnote marker(s) stripped. The book itself is `
-          + 'unchanged.'
+          + `left out${provenance}, ${result.removedSupMarkers} footnote marker(s) stripped. The book `
+          + 'itself is unchanged.'
+          + (unresolved.length > 0 ? `\n\n${unresolved.join('\n\n')}` : '')
           + '\n\nThe Process tab\'s narration step will offer this file.',
-        type: 'info',
+        type: unresolved.length > 0 ? 'warning' : 'info',
       });
     } catch (err) {
       this.showAlert({
@@ -8063,26 +8170,70 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
-   * Record what is struck out, derived from the blocks the editor has deleted.
+   * The blocks of the book on screen, in the shape the strike derivation reads.
    *
-   * Derived, never accumulated: the editor's deletion set is the state the user
-   * is looking at, and a second list maintained alongside it would be a second
-   * answer to "what is struck". Blocks the aligner could not place carry no
-   * element key and are skipped — they cannot be struck, and
-   * `readConversionCategories` already warned about them by count.
+   * One place, because the derivation and the restore both need it and two
+   * mappings of the same block list is two answers to "what did the aligner
+   * place this block on".
    */
-  private async saveNarrationDeletions(): Promise<void> {
+  private narrationLaidOutBlocks(): NarrationLaidOutBlock[] {
+    return this.blocks().map(b => ({
+      id: b.id,
+      page: b.page,
+      ...(b.bf_element !== undefined ? { element: b.bf_element } : {}),
+      // The two classes the aligner skips outright, read off the block's own
+      // flags — see NarrationLaidOutBlock.unplaceable. Both are declared
+      // optional on TextBlock and an absent one means the block is not of that
+      // class: they are set on every block the analyzer produces, and the
+      // picker's own constructed blocks set them literally false. That is a
+      // real state and not a missing fact, which is why it is read as one here
+      // (same reading as `isFootnoteMarker: !!b.is_footnote_marker` at the
+      // export aligner's call site).
+      unplaceable: b.is_image === true || b.is_footnote_marker === true,
+      excerpt: b.text.slice(0, 80),
+    }));
+  }
+
+  /**
+   * What the last derivation could NOT strike, or null when it struck
+   * everything the user deleted.
+   *
+   * Held so the export can say it at the moment the user asks for the file. The
+   * save itself runs on a debounce behind every deletion gesture, and a modal
+   * per gesture would make the picker unusable — but a deletion that quietly
+   * does nothing is exactly the failure this whole change is about, so it is
+   * said on the console as it happens and in front of the user at export.
+   */
+  private readonly narrationUnstruckReport = signal<string | null>(null);
+
+  /**
+   * Record what is struck out, derived from what the editor has deleted —
+   * BLOCKS and PAGES both.
+   *
+   * Derived, never accumulated: the editor's deletion sets are the state the
+   * user is looking at, and a second list maintained alongside them would be a
+   * second answer to "what is struck". Pages are in here because a page
+   * deletion is the same statement as striking every block on it: leaving them
+   * out is what made 64 struck pages reach a finished audiobook
+   * (shared/vlm/narration-deletions.ts, `deriveNarrationStrikes`).
+   *
+   * Returns the derivation so a caller that is about to write a file can report
+   * what it did — and what it could not.
+   */
+  private async saveNarrationDeletions(): Promise<NarrationStrikes | null> {
     const dir = this.projectPath();
-    if (!dir || !this.canStrikeForNarration()) return;
-    const elements = narrationElementsOf(
-      this.blocks().map(b => ({
-        id: b.id,
-        ...(b.bf_element !== undefined ? { element: b.bf_element } : {}),
-        ...(b.bf_source_page !== undefined ? { sourcePage: b.bf_source_page } : {}),
-      })),
-      this.deletedBlockIds()
+    if (!dir || !this.canStrikeForNarration()) return null;
+    const strikes = deriveNarrationStrikes(
+      this.narrationLaidOutBlocks(),
+      this.deletedBlockIds(),
+      this.deletedPages()
     );
-    const answer = await this.electronService.saveNarrationDeletions(dir, elements);
+
+    const unstruck = describeUnstruckDeletions(strikes);
+    this.narrationUnstruckReport.set(unstruck);
+    if (unstruck) console.warn('[picker] narration strikes:', unstruck);
+
+    const answer = await this.electronService.saveNarrationDeletions(dir, strikes.elements);
     if (!answer.success) {
       throw new Error(answer.error || 'The narration deletions could not be recorded.');
     }
@@ -8090,6 +8241,7 @@ export class PdfPickerComponent implements OnInit {
     if (state && state.dir === dir && answer.deletions) {
       this.narrationAnswer.set({ dir, state: { ...state.state, deletions: answer.deletions } });
     }
+    return strikes;
   }
 
   /**
@@ -8110,8 +8262,25 @@ export class PdfPickerComponent implements OnInit {
       })),
       recorded.elements
     );
+
+    // A block on a page the user has already struck is NOT re-struck as a block.
+    // The record does not say which gesture named an element and it does not
+    // need to — both derive to the same strike — but fanning a page's elements
+    // back out into individual block deletions would turn one undoable page
+    // deletion into several hundred block deletions the user never made, and
+    // restoring the page afterwards would leave them all struck.
+    //
+    // If the project's page set has not landed yet this skips nothing, which is
+    // exactly the behaviour that was here before — never worse, and correct the
+    // moment the pages are known.
+    const onDeletedPage = this.deletedPages();
+    const pageOf = new Map(this.blocks().map(b => [b.id, b.page]));
     const already = this.deletedBlockIds();
-    const missing = ids.filter(id => !already.has(id));
+    const missing = ids.filter(id => {
+      if (already.has(id)) return false;
+      const page = pageOf.get(id);
+      return page === undefined || !onDeletedPage.has(page);
+    });
     if (missing.length === 0) return;
     this.editorState.deleteBlocks(missing);
   }
@@ -10464,11 +10633,6 @@ export class PdfPickerComponent implements OnInit {
       this.startEpubPass(id);
       return;
     }
-    if (id === 'export-tts') {
-      void this.exportTtsCopy();
-      return;
-    }
-
     // Select owns no panel: choosing it closes whatever panel had taken over the
     // pointer, so the click does what it looks like it does.
     if (id === 'select') {
