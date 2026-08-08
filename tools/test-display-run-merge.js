@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /**
- * Tests for shared/ocr/display-run-merge.ts — the display-run merge rule — and
- * for its wiring into the OCR post-processor.
+ * Tests for shared/ocr/display-run-merge.ts — the display-run merge rule.
  *
  *   npx tsc -p tsconfig.electron.json && node tools/test-display-run-merge.js
  *
@@ -21,9 +20,14 @@
  * replayed there by `test/blocks/display-run-merge.test.ts`. Change the rule in
  * one repo and the OTHER repo's test goes red.
  *
- * Beyond the replay: order-independence, idempotence, that malformed geometry
- * throws naming the block, and that a chapter opening cut into pieces by
- * paragraph grouping comes back out of `processOcrPageResults` as one block.
+ * Beyond the replay: order-independence, idempotence, and that malformed
+ * geometry throws naming the block.
+ *
+ * It used to also drive the rule through `processOcrPageResults`. That module —
+ * with `ocr-line.ts` and `ocr-render.ts` — went with the Tesseract pipeline in
+ * Aug 2026, and this test was its last consumer. The replay stayed: it is the
+ * BookForge half of a drift alarm that lives in two repositories, and the rule
+ * it guards is checked in verbatim on both sides.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -38,8 +42,6 @@ if (!fs.existsSync(path.join(DIST, 'display-run-merge.js'))) {
 
 const { planDisplayRuns, DisplayRunInputError, DISPLAY_RUN_RULE } =
   require(path.join(DIST, 'display-run-merge.js'));
-const { processOcrPageResults } = require(path.join(DIST, 'ocr-post-processing.js'));
-const { OCR_RENDER_SCALE } = require(path.join(DIST, 'ocr-render.js'));
 
 const fixture = JSON.parse(
   fs.readFileSync(path.join(REPO, 'shared', 'ocr', 'display-run-merge.fixture.json'), 'utf-8')
@@ -153,73 +155,6 @@ test('a book with no type size at all is refused, not guessed at', () => {
     id: 'sizeless', page: 0, x: 0, y: 0, width: 100, height: 20,
     fontSize: 0, lineCount: 0, pageWidth: 450, pageHeight: 666, text: '[Image 100x20]',
   }]), DisplayRunInputError);
-});
-
-// ── the wiring: grouping cuts a heading up, the merge puts it back ──────────
-
-const S = OCR_RENDER_SCALE;
-/** One recognized line, given in PAGE POINTS and converted the way OCR reports. */
-function line(x, y, w, h, text, fontSize) {
-  return {
-    text,
-    confidence: 92,
-    bbox: [x * S, y * S, (x + w) * S, (y + h) * S],
-    fontSize,
-    boldFrac: 0,
-    italicFrac: 0,
-  };
-}
-
-test('a chapter opening cut into pieces comes back as one block', () => {
-  const dims = [];
-  const results = [];
-  for (let p = 0; p < 6; p++) {
-    dims.push({ width: 450, height: 666 });
-    const textLines = [];
-    if (p === 0) {
-      // The heading: a small tracked kicker, then the title over two lines, set
-      // far enough apart that paragraph grouping cuts all three apart.
-      textLines.push(line(150, 90, 90, 10, 'CHAPTER 1', 9));
-      textLines.push(line(60, 130, 250, 26, 'One Reich, One People,', 17));
-      textLines.push(line(60, 175, 250, 26, 'One Church!', 17));
-    }
-    // Body on every page, so the modal type size and the body measure are the
-    // book's rather than one page's.
-    for (let i = 0; i < 10; i++) {
-      textLines.push(line(60, 300 + i * 14, 325, 11, `body line ${i} of page ${p} running on`, 10));
-    }
-    results.push({ page: p, text: '', confidence: 92, textLines });
-  }
-
-  const { blocks } = processOcrPageResults(results, dims);
-  const page0 = blocks.filter(b => b.page === 0).sort((a, b) => a.y - b.y);
-  const heading = page0[0];
-
-  assert.strictEqual(heading.line_count, 3, 'the kicker and both title lines are one block');
-  assert.ok(
-    heading.text.startsWith('CHAPTER 1') && heading.text.includes('One Church!'),
-    `heading text is the whole heading, got ${JSON.stringify(heading.text)}`
-  );
-  // Rebuilt through finalizeGroup, so the box covers every line it swallowed and
-  // the line boxes came along — which is what makes a bad merge repairable.
-  assert.strictEqual(Math.round(heading.y), 90);
-  assert.strictEqual(Math.round(heading.y + heading.height), 201);
-  assert.strictEqual(heading.line_boxes.length, 3);
-});
-
-test('body text on its own is left exactly as grouping left it', () => {
-  const dims = [];
-  const results = [];
-  for (let p = 0; p < 6; p++) {
-    dims.push({ width: 450, height: 666 });
-    const textLines = [];
-    for (let i = 0; i < 10; i++) {
-      textLines.push(line(60, 300 + i * 14, 325, 11, `body line ${i} of page ${p} running on`, 10));
-    }
-    results.push({ page: p, text: '', confidence: 92, textLines });
-  }
-  const { blocks } = processOcrPageResults(results, dims);
-  assert.strictEqual(blocks.length, 6, 'one paragraph per page, nothing merged across');
 });
 
 if (failures.length) {

@@ -1327,23 +1327,6 @@ export class ElectronService {
     };
   }
 
-  /**
-   * Finalize a project for audiobook processing.
-   * Exports EPUB to the project folder and updates the manifest.
-   *
-   * @param projectDir - Absolute project directory
-   * @returns Result with success status, EPUB path, or error
-   */
-  async projectFinalize(projectDir: string): Promise<{
-    success: boolean;
-    epubPath?: string;
-    error?: string;
-  }> {
-    if (this.isElectron) {
-      return (window as any).electron.projects.finalize(projectDir);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
   // ─────────────────────────────────────────────────────────────────────────────
   // Editor Window - Opens PDF picker in a separate window for editing
   // ─────────────────────────────────────────────────────────────────────────────
@@ -2057,28 +2040,6 @@ export class ElectronService {
       throw new Error(result.error || 'Reading the document pipeline failed with no message.');
     }
     return result.state;
-  }
-
-  /**
-   * Which pipeline this book's ARCHIVE ORIGINAL belongs to, measured.
-   *
-   * Asked before a cast exists, which is exactly when `documentState` cannot
-   * answer it — the class it reports is the one recorded in the working
-   * document's marker. A window opening a book needs the answer NOW, because it
-   * is the difference between a cast that finishes in seconds (a PDF carrying
-   * the publisher's own text) and one that renders every page and runs Tesseract
-   * over it (minutes, and never unasked).
-   *
-   * Throws main's own sentence. A caller must not guess a class from a failure:
-   * both guesses are wrong in a way the user pays for.
-   */
-  async documentMeasureClass(ref: DocumentRef): Promise<'scanned' | 'text'> {
-    if (!this.isElectron) throw new Error('The document pipeline needs the desktop app.');
-    const result = await (window as any).electron.document.measureClass(ref);
-    if (!result.success || !result.documentClass) {
-      throw new Error(result.error || 'Measuring the document class failed with no message.');
-    }
-    return result.documentClass;
   }
 
   /**

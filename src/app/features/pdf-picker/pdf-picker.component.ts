@@ -25,7 +25,7 @@ import type { DocumentRef, ResetTarget } from '@shared/document/pipeline-types';
 import { PdfViewerComponent, CropRect } from './components/pdf-viewer/pdf-viewer.component';
 import { AnalysisPanelComponent } from './components/analysis-panel/analysis-panel.component';
 import { MergePanelComponent } from './components/merge-panel/merge-panel.component';
-import { RegexCriteria, defaultRegexCriteria } from './components/regex-category-builder/regex-category-builder.component';
+import { RegexCriteria, defaultRegexCriteria } from './shared/regex-criteria';
 import { FilePickerComponent } from './components/file-picker/file-picker.component';
 import { CropPanelComponent } from './components/crop-panel/crop-panel.component';
 import {

@@ -1200,9 +1200,10 @@ export class StudioVersionsComponent {
    *
    * Measured off the family — its EPUB member is `manifestService.readExportEpub`
    * having found the book on disk, which is the SAME measure the picker's ladder
-   * calls `bookEpubExists`. So Process refuses exactly the books the picker's
-   * Next refuses, in the same words (`narrationRefusal`, shared/document/stations.ts),
-   * and there is no second notion of "this project has a book" anywhere.
+   * calls `bookEpubExists`. So Process refuses exactly the books the picker
+   * refuses, in the same words (`narrationRefusal`, imported above from
+   * shared/document/version-family.ts), and there is no second notion of "this
+   * project has a book" anywhere.
    */
   readonly narrationRefusalReason = computed<string | null>(() =>
     narrationRefusal({ bookEpubExists: this.familyInput().epub !== null }));
