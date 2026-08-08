@@ -1322,6 +1322,18 @@ export interface ElectronAPI {
      */
     ensureWorkingEpub: (projectDir: string) =>
       Promise<{ success: boolean; path?: string; relPath?: string; error?: string }>;
+    /**
+     * The file TTS reads — `<archive basename>.tts.epub` — cut from the working
+     * copy if there is none or the one on record is stale. Refuses a project
+     * with no working copy by name.
+     */
+    ensureNarrationEpub: (projectDir: string) => Promise<{
+      success: boolean;
+      narration?: {
+        epubPath: string; relPath: string; removedElements: number; cutReason: string | null;
+      };
+      error?: string;
+    }>;
     narrationState: (projectDir: string) =>
       Promise<{ success: boolean; state?: NarrationState; error?: string }>;
     saveNarrationDeletions: (projectDir: string, elements: string[]) =>
@@ -3115,6 +3127,8 @@ const electronAPI: ElectronAPI = {
     readerStatus: () => ipcRenderer.invoke('vlm:reader-status'),
     ensureWorkingEpub: (projectDir: string) =>
       ipcRenderer.invoke('book:ensure-working-copy', projectDir),
+    ensureNarrationEpub: (projectDir: string) =>
+      ipcRenderer.invoke('narration:ensure-copy', projectDir),
     narrationState: (projectDir: string) =>
       ipcRenderer.invoke('narration:state', projectDir),
     saveNarrationDeletions: (projectDir: string, elements: string[]) =>

@@ -6931,6 +6931,24 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * The file TTS reads, cut from the working copy if there is not a current one.
+   *
+   * The Process flow's first act. It replaced a control asking WHICH EPUB to
+   * narrate: there is one answer (`ensureNarrationEpub`), so the question was
+   * only ever a way to narrate the wrong file.
+   */
+  ipcMain.handle('narration:ensure-copy', async (_event, projectDir: string) => {
+    try {
+      const { ensureNarrationEpub } = await import('./narration-export.js');
+      const answer = await ensureNarrationEpub(projectDir);
+      if (answer.cutReason !== null) broadcastToAllWindows('project:files-changed', projectDir);
+      return { success: true, narration: answer };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   /** The book, whether a VLM read it, and what has been struck out of it. */
   ipcMain.handle('narration:state', async (_event, projectDir: string) => {
     try {

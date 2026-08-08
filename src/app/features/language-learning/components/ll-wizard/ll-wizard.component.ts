@@ -55,16 +55,10 @@ import {
 } from '../../models/language-learning.types';
 import { TTS_ENGINES, engineCaps, type TtsEngineCaps } from '../../models/tts-engine-registry';
 import { AIProvider } from '../../../../core/models/ai-config.types';
-import type {
-  ChainPassRequest,
-  ProcessingChainPlan,
-  ProcessingChainRequest,
-  ProcessingPassKind,
-  SimplifyPassParams,
-  TranslatePassParams,
-} from '@shared/processing/pass-types';
+import type { ChainPassRequest } from '@shared/processing/pass-types';
 import type { SourceType } from '../../../../core/models/manifest.types';
 import {
+  DesktopButtonComponent,
   DesktopSelectComponent,
   DesktopSelectItems,
   DesktopSelectOptionGroup,
@@ -82,69 +76,12 @@ interface SourceStage {
   path: string;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Pass builder types
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** A file the passes can be pointed at: a project version, or the book EPUB. */
-interface PassVariantCard {
-  /** The variant id sent to the planner. '' means "the project's book EPUB". */
-  id: string;
-  label: string;
-  format: string;
-  filename: string;
-  /** The file itself. Compared against the recorded book, never used to build a path. */
-  absPath: string;
-  /** Non-empty when this file cannot be processed — and says why, on the card. */
-  disabledReason: string;
-}
-
-/**
- * One pass in the sidebar. `uid` exists only so @for can track a row across
- * reorders and duplicates; nothing downstream ever sees it.
- */
-interface BuilderPass {
-  uid: string;
-  kind: ProcessingPassKind;
-  simplify?: SimplifyPassParams;
-  translate?: TranslatePassParams;
-}
-
-/** What the palette offers. Both passes apply to any book, so nothing is closed. */
-interface PalettteEntry {
-  kind: ProcessingPassKind;
-  label: string;
-  desc: string;
-}
-
-/**
- * The pass names the user sees. MIRRORS `LABEL_OF` in electron/processing-chain.ts:
- * the planner's per-pass refusals are sentences of the form "The <label> pass
- * needs …", and `chainErrorAt` matches on that to put the message on the right
- * row. Change one, change both.
- */
-const PASS_LABELS: Record<ProcessingPassKind, string> = {
-  simplify: 'Simplify',
-  translate: 'Translate',
-};
-
-/**
- * The palette, in the order it is offered. A constant rather than a computed:
- * both passes read the project's book EPUB and rewrite it in place, so there is
- * nothing about the chosen file that can open or close an entry. The filtering
- * that used to be here separated the passes that read a PDF from the passes that
- * read a book, and no pass reads a PDF any more — Convert to EPUB does.
- */
-const PASS_PALETTE: readonly PalettteEntry[] = [
-  {
-    kind: 'simplify', label: PASS_LABELS['simplify'],
-    desc: 'Rewrite the prose: de-jargon, de-stiffen, or for language learners.',
-  },
-  {
-    kind: 'translate', label: PASS_LABELS['translate'],
-    desc: 'Translate the whole book into another language.',
-  },
-];
+// The pass-builder's types were here: the file cards, a pass row, the palette
+// entries and the labels that matched the planner's per-pass refusals to the row
+// they were about. Nothing constructs any of them now — the page that did is
+// gone. The planner's own labels live where they always did, in
+// electron/processing-chain.ts, which no longer has a second copy here to drift
+// from.
 
 /** A queue submission as the wizard builds it, before the queue stamps its ids. */
 type QueueJobRequest = Parameters<QueueService['addJob']>[0];
@@ -156,31 +93,31 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
 @Component({
   selector: 'app-ll-wizard',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopSelectComponent, AssembleAuditionPlayerComponent],
+  imports: [
+    CommonModule,
+    FormsModule,
+    DesktopSelectComponent,
+    DesktopButtonComponent,
+    AssembleAuditionPlayerComponent,
+  ],
   template: `
     <div class="wizard">
       <!-- Step Indicator -->
       <div class="step-indicator">
-        <div class="step" [class.active]="currentStep() === 'passes'" [class.completed]="isStepCompleted('passes')" [class.skipped]="isStepSkipped('passes')" [class.has-data]="hasStageData('cleanup')">
-          <span class="step-num">1</span>
-          <span class="step-label">{{ pipelineMode() === 'mono' ? 'Passes' : 'Text' }}</span>
-          @if (hasStageData('cleanup')) { <span class="data-dot" title="Data exists"></span> }
-        </div>
-        <div class="step-connector"></div>
         <div class="step" [class.active]="currentStep() === 'tts'" [class.completed]="isStepCompleted('tts')" [class.skipped]="isStepSkipped('tts')" [class.has-data]="hasStageData('tts')">
-          <span class="step-num">2</span>
+          <span class="step-num">1</span>
           <span class="step-label">TTS</span>
           @if (hasStageData('tts')) { <span class="data-dot" title="Data exists"></span> }
         </div>
         <div class="step-connector"></div>
         <div class="step" [class.active]="currentStep() === 'assembly'" [class.completed]="isStepCompleted('assembly')" [class.skipped]="isStepSkipped('assembly')" [class.has-data]="hasStageData('assembly')">
-          <span class="step-num">3</span>
+          <span class="step-num">2</span>
           <span class="step-label">Enhance &amp; Assemble</span>
           @if (hasStageData('assembly')) { <span class="data-dot" title="Data exists"></span> }
         </div>
         <div class="step-connector"></div>
         <div class="step" [class.active]="currentStep() === 'review'" [class.completed]="isStepCompleted('review')">
-          <span class="step-num">4</span>
+          <span class="step-num">3</span>
           <span class="step-label">Review</span>
         </div>
       </div>
@@ -188,552 +125,31 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
       <!-- Step Content -->
       <div class="step-content">
         @switch (currentStep()) {
-          <!-- ─────────────────────────────────────────────────────────────── -->
-          <!-- Step 1: the pass builder (standard) / text prep (sentence-aligned) -->
-          <!-- ─────────────────────────────────────────────────────────────── -->
-          @case ('passes') {
-            <div class="step-panel scrollable">
-              <!-- Run type. Standard composes a list of passes over ONE book.
-                   Language learning is a different product — two books read in
-                   sentence-aligned pairs — and is not expressible as passes over
-                   one, so it keeps its own configuration below. -->
-              <div class="config-section">
-                <label class="field-label">Run type</label>
-                <div class="provider-buttons">
-                  <button
-                    class="provider-btn"
-                    [class.selected]="pipelineMode() === 'mono'"
-                    (click)="selectRunType('standard')"
-                  >
-                    <span class="provider-name">Standard</span>
-                    <span class="provider-status">One book, one narration</span>
-                  </button>
-                  <button
-                    class="provider-btn"
-                    [class.selected]="pipelineMode() === 'bilingual'"
-                    (click)="selectRunType('language-learning')"
-                  >
-                    <span class="provider-name">Language learning</span>
-                    <span class="provider-status">Sentence-aligned pair</span>
-                  </button>
-                </div>
-              </div>
+          <!-- ───────────────────────────────────────────────────────────────
+               THE PASS PAGE IS GONE (Owen, 2026-08-08).
 
-              @if (pipelineMode() === 'mono') {
-                <h3>Processing passes</h3>
-                <p class="step-desc">Pick the book, then stack the passes to run over it. They run top to bottom.</p>
+               "It isn't a pipeline anymore really. The user is just defining tts
+               and assembly instructions. It used to be a pipeline when it was
+               creating new copies of things and moving stuff around, but by the
+               time they reach that point everything is already moved and
+               organized."
 
-                <!-- Simplify and Translate need a model → same layover the cleanup step used -->
-                @if (ai.checkedOnce() && !ai.available()) {
-                  <div class="ai-layover">
-                    <div class="ai-layover-card">
-                      <div class="ai-layover-icon">&#129302;</div>
-                      <h4>AI isn't set up yet</h4>
-                      <p>Use the AI Setup wizard to enable the simplify &amp; translate passes — add a bundled local model, connect Ollama, or save a Claude/OpenAI key.</p>
-                      <button class="ai-layover-btn" (click)="openAiSetup()">Open AI Setup wizard</button>
-                    </div>
-                  </div>
-                }
+               That is the working-copy model talking. A project now has one
+               editable file — <archive basename>.working.epub — the passes that
+               rewrite it are started from the picker's own rail, and what they
+               did is recorded on the book itself. So by the time anybody presses
+               Process there is nothing left to compose: the book is the book, and
+               the only questions left are what voice reads it and how the result
+               is assembled.
 
-                <!-- The book the passes apply to: this project's versions, as the
-                     metadata page lists them, plus its own book EPUB. -->
-                <div class="config-section">
-                  <label class="field-label">Which book</label>
-                  @if (variantCards().length === 0) {
-                    <div class="no-models">
-                      @if (loadingVariants()) {
-                        Looking for this project's files…
-                      } @else {
-                        <span class="error-text">This project has no PDF or EPUB to process.</span> Add one on the Versions tab.
-                      }
-                    </div>
-                  } @else {
-                    <div class="variant-cards">
-                      @for (card of variantCards(); track card.id) {
-                        <button
-                          type="button"
-                          class="variant-card"
-                          [class.selected]="selectedVariantId() === card.id"
-                          [disabled]="!!card.disabledReason"
-                          (click)="selectVariant(card)"
-                        >
-                          <span class="variant-format">{{ card.format.toUpperCase() }}</span>
-                          <span class="variant-title">{{ card.label }}</span>
-                          <span class="variant-file">{{ card.filename }}</span>
-                          @if (card.disabledReason) {
-                            <span class="variant-note">{{ card.disabledReason }}</span>
-                          }
-                        </button>
-                      }
-                    </div>
-                  }
-                </div>
-
-                <div class="pass-builder">
-                  <!-- Every pass rewrites the book, so the palette is the same list
-                       whatever is selected; the variant cards above are what decide
-                       whether there is a book to run it over. -->
-                  <div class="pass-palette">
-                    <label class="field-label">Add a pass</label>
-                    @for (opt of passPalette; track opt.kind) {
-                      <button
-                        type="button"
-                        class="palette-btn"
-                        [class.open]="palettePanel() === opt.kind"
-                        (click)="onPaletteClick(opt.kind)"
-                      >
-                        <span class="palette-name">{{ opt.label }}</span>
-                        <span class="palette-desc">{{ opt.desc }}</span>
-                      </button>
-
-                      @if (palettePanel() === opt.kind && opt.kind === 'simplify') {
-                        <div class="palette-panel">
-                          <label class="field-label">AI model</label>
-                          @if (aiSourceGroups().length > 0) {
-                            <desktop-select
-                              class="select-input"
-                              [options]="aiModelGroups()"
-                              [ngModel]="cleanupSelection()"
-                              (ngModelChange)="onCleanupModelChange($event)"
-                            />
-                          } @else {
-                            <div class="no-models"><span class="error-text">No AI configured.</span></div>
-                          }
-                          <div class="mode-options">
-                            @for (m of simplifyModeOptions; track m.value) {
-                              <button
-                                type="button"
-                                class="mode-option"
-                                [disabled]="!cleanupModel()"
-                                (click)="addSimplifyPass(m.value)"
-                              >
-                                <span class="mode-label">{{ m.label }}</span>
-                                <span class="mode-desc">{{ m.desc }}</span>
-                              </button>
-                            }
-                          </div>
-                          <span class="hint">Pick a mode to add the pass. Add it twice for two modes.</span>
-                        </div>
-                      }
-
-                      @if (palettePanel() === opt.kind && opt.kind === 'translate') {
-                        <div class="palette-panel">
-                          <label class="field-label">AI model</label>
-                          @if (aiSourceGroups().length > 0) {
-                            <desktop-select
-                              class="select-input"
-                              [options]="aiModelGroups()"
-                              [ngModel]="translateSelection()"
-                              (ngModelChange)="onTranslateModelChange($event)"
-                            />
-                          } @else {
-                            <div class="no-models"><span class="error-text">No AI configured.</span></div>
-                          }
-                          <div class="lang-pair">
-                            <div class="lang-pair-field">
-                              <label class="field-label">From</label>
-                              <desktop-select
-                                class="select-input"
-                                [options]="languageOptions()"
-                                [ngModel]="passTranslateSource()"
-                                (ngModelChange)="passTranslateSource.set($event)"
-                              />
-                            </div>
-                            <div class="lang-pair-field">
-                              <label class="field-label">Into</label>
-                              <desktop-select
-                                class="select-input"
-                                [options]="languageOptions()"
-                                [ngModel]="passTranslateTarget()"
-                                (ngModelChange)="passTranslateTarget.set($event)"
-                              />
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            class="palette-add-btn"
-                            [disabled]="passTranslateSource() === passTranslateTarget() || !translateModel()"
-                            (click)="addTranslatePass()"
-                          >
-                            Add translate pass
-                          </button>
-                          <span class="hint">Translation leaves no diff — the whole text changes.</span>
-                        </div>
-                      }
-                    }
-
-                    <div class="config-section">
-                      <label class="field-label">Custom Instructions</label>
-                      <textarea
-                        class="custom-instructions"
-                        [value]="customInstructions()"
-                        (input)="customInstructions.set($any($event.target).value)"
-                        placeholder="Optional: Add specific instructions for the AI (e.g., 'Keep chapter epigraphs as they are')"
-                        rows="3"
-                      ></textarea>
-                      <span class="hint">Carried by every simplify/translate pass added after you type it.</span>
-                    </div>
-                  </div>
-
-                  <!-- The run itself, in execution order -->
-                  <div class="pass-sidebar">
-                    <label class="field-label">This run</label>
-
-                    @if (passes().length === 0) {
-                      <p class="hint">No passes yet. Add one, or go straight to narration with the book as it is.</p>
-                    }
-
-                    <!-- A refusal that names no pass (no book EPUB, a file that is
-                         not one) belongs to the run as a whole, not to a row. -->
-                    @if (chainError() && chainErrorAt() < 0) {
-                      <div class="pass-error">{{ chainError() }}</div>
-                    }
-
-                    @for (pass of passes(); track pass.uid; let i = $index) {
-                      <div class="pass-card" [class.invalid]="chainErrorAt() === i">
-                        <div class="pass-card-head">
-                          <span class="pass-index">{{ i + 1 }}</span>
-                          <span class="pass-name">{{ passLabel(pass) }}</span>
-                          <button type="button" class="pass-btn" title="Move up" [disabled]="i === 0" (click)="movePass(i, -1)">↑</button>
-                          <button type="button" class="pass-btn" title="Move down" [disabled]="i === passes().length - 1" (click)="movePass(i, 1)">↓</button>
-                          <button
-                            type="button"
-                            class="pass-btn remove"
-                            title="Remove"
-                            (click)="removePass(i)"
-                          >✕</button>
-                        </div>
-                        @if (passDetail(pass)) {
-                          <span class="pass-detail">{{ passDetail(pass) }}</span>
-                        }
-                        @if (chainErrorAt() === i) {
-                          <div class="pass-error">{{ chainError() }}</div>
-                        }
-                      </div>
-                    }
-
-                    @if (passes().length > 0) {
-                      @if (planning()) {
-                        <span class="hint">Checking this order…</span>
-                      } @else if (!chainError() && chainPlan()) {
-                        <span class="hint">Rewrites the book EPUB in place, one pass at a time.</span>
-                      }
-                    }
-                  </div>
-                </div>
-              } @else {
-                <h3>AI Cleanup</h3>
-                <p class="step-desc">Clean up OCR artifacts and formatting issues using AI.</p>
-
-                <!-- No AI configured → gray out behind a layover that links to the wizard -->
-                @if (ai.checkedOnce() && !ai.available()) {
-                  <div class="ai-layover">
-                    <div class="ai-layover-card">
-                      <div class="ai-layover-icon">&#129302;</div>
-                      <h4>AI isn't set up yet</h4>
-                      <p>Use the AI Setup wizard to enable cleanup &amp; simplify — add a bundled local model, connect Ollama, or save a Claude/OpenAI key.</p>
-                      <button class="ai-layover-btn" (click)="openAiSetup()">Open AI Setup wizard</button>
-                    </div>
-                  </div>
-                }
-
-                <!-- Existing cleanup notice -->
-                @if (hasExistingCleanup()) {
-                  <div class="existing-cleanup-banner">
-                    <span>Previous cleanup found. Running again will resume where it left off.</span>
-                    <button class="start-over-btn" (click)="clearCleanupStage()">Start Over</button>
-                  </div>
-                }
-
-                <!-- Source EPUB Selection -->
-                <div class="config-section">
-                  <label class="field-label">Source EPUB</label>
-                  <div class="source-stages">
-                    @for (stage of cleanupSourceStages(); track stage.id) {
-                      <button
-                        class="stage-btn"
-                        [class.selected]="isStageSelected('cleanup', stage)"
-                        [class.completed]="stage.completed"
-                        [disabled]="!stage.completed"
-                        (click)="selectStage('cleanup', stage)"
-                      >
-                        {{ stage.label }}
-                        @if (stage.completed) {
-                          <span class="stage-check">&#10003;</span>
-                        }
-                      </button>
-                    }
-                  </div>
-                </div>
-
-                <!-- AI Model — unified selector: only configured sources, grouped by provider -->
-                <div class="config-section">
-                  <label class="field-label">AI Model</label>
-                  @if (aiSourceGroups().length > 0) {
-                    <desktop-select
-                      class="select-input"
-                      [options]="aiModelGroups()"
-                      [ngModel]="cleanupSelection()"
-                      (ngModelChange)="onCleanupModelChange($event)"
-                    />
-                  } @else {
-                    <div class="no-models">
-                      @if (checkingConnection()) {
-                        Checking for available AI…
-                      } @else {
-                        <span class="error-text">No AI configured.</span> Set up a local model, Ollama, or an API key.
-                      }
-                    </div>
-                  }
-                  @if (!allAiConfigured()) {
-                    <button class="configure-ai-btn" (click)="openAiSetup()">⚙ Configure AI</button>
-                  }
-                </div>
-
-                <!-- Start Fresh / Use Existing removed — source picker handles input selection,
-                     backend always overwrites output (startFresh defaults to true) -->
-
-                <!-- Processing Options -->
-                <div class="processing-options">
-                  <label class="field-label">Processing Options</label>
-
-                  <!-- AI Cleanup Option -->
-                  <div class="toggle-section-inline">
-                    <button
-                      class="option-toggle"
-                      [class.active]="enableAiCleanup()"
-                      (click)="toggleAiCleanup()"
-                    >
-                      <span class="toggle-icon">🔧</span>
-                      <span class="toggle-label">AI Cleanup</span>
-                      <span class="toggle-sublabel">Fix OCR errors & formatting</span>
-                    </button>
-
-                    <!-- Simplify for Language Learning Option -->
-                    <button
-                      class="option-toggle"
-                      [class.active]="simplifyForLearning()"
-                      (click)="toggleSimplify()"
-                    >
-                      <span class="toggle-icon">📖</span>
-                      <span class="toggle-label">Simplify</span>
-                      <span class="toggle-sublabel">Rewrite into clearer English</span>
-                    </button>
-                  </div>
-
-                  <!-- The two cleanup passes are independent products, so they are picked
-                       explicitly rather than inferred. Defaulted from the project's ORIGINAL
-                       source (PDF → Both, anything born-digital → TTS only) and left to the
-                       user from there. -->
-                  @if (enableAiCleanup() && simplifyForLearning()) {
-                    <div class="ocr-repair-note">
-                      Cleanup + Simplify runs as one rewrite pass, where the two stages can't be
-                      separated. Turn Simplify off to choose between them.
-                    </div>
-                  }
-                  @if (enableAiCleanup() && !simplifyForLearning()) {
-                    <div class="simplify-mode-selector">
-                      <label class="field-label">
-                        Cleanup stages
-                        <span class="stage-origin">{{ ocrRepairOriginHint() }}</span>
-                      </label>
-                      <div class="mode-options">
-                        @for (opt of cleanupStageOptions; track opt.value) {
-                          <button
-                            type="button"
-                            class="mode-option"
-                            [class.active]="cleanupStages() === opt.value"
-                            (click)="selectCleanupStages(opt.value)"
-                          >
-                            <span class="mode-label">{{ opt.label }}</span>
-                            <span class="mode-desc">{{ opt.desc }}</span>
-                          </button>
-                        }
-                      </div>
-
-                    </div>
-                  }
-
-                  @if (simplifyForLearning()) {
-                    <div class="simplify-mode-selector">
-                      <label class="field-label">Simplify mode</label>
-                      <div class="mode-options">
-                        @for (opt of simplifyModeOptions; track opt.value) {
-                          <button
-                            type="button"
-                            class="mode-option"
-                            [class.active]="simplifyMode() === opt.value"
-                            (click)="simplifyMode.set(opt.value)"
-                          >
-                            <span class="mode-label">{{ opt.label }}</span>
-                            <span class="mode-desc">{{ opt.desc }}</span>
-                          </button>
-                        }
-                      </div>
-                    </div>
-                  }
-
-                  @if (!enableAiCleanup() && !simplifyForLearning()) {
-                    <div class="warning-banner">
-                      No processing selected. Enable at least one option or skip this step.
-                    </div>
-                  }
-                </div>
-
-                <!-- Custom Instructions -->
-                <div class="config-section">
-                  <label class="field-label">Custom Instructions</label>
-                  <textarea
-                    class="custom-instructions"
-                    [value]="customInstructions()"
-                    (input)="customInstructions.set($any($event.target).value)"
-                    placeholder="Optional: Add specific instructions for the AI (e.g., 'Format numbered lists with periods at the end of each item')"
-                    rows="3"
-                  ></textarea>
-                  <span class="hint">Appended to the AI prompt for both cleanup and simplify</span>
-                </div>
-
-                <!-- AI Prompt Editor -->
-                <div class="accordion" [class.open]="promptAccordionOpen()">
-                  <button class="accordion-header" (click)="togglePromptAccordion()">
-                    <span class="accordion-title">AI Prompt</span>
-                    <span class="accordion-icon">{{ promptAccordionOpen() ? '▼' : '▶' }}</span>
-                  </button>
-                  @if (promptAccordionOpen()) {
-                    <div class="accordion-content">
-                      @if (loadingPrompt()) {
-                        <div class="hint">Loading prompt...</div>
-                      } @else {
-                        <textarea
-                          class="prompt-textarea"
-                          [value]="promptText()"
-                          (input)="onPromptChange($event)"
-                          placeholder="Enter the AI cleanup prompt..."
-                        ></textarea>
-                        @if (promptModified()) {
-                          <div class="prompt-footer">
-                            <button class="btn-save-prompt" [disabled]="savingPrompt()" (click)="savePrompt()">
-                              {{ savingPrompt() ? 'Saving...' : 'Save Prompt' }}
-                            </button>
-                          </div>
-                        }
-                      }
-                    </div>
-                  }
-                </div>
-
-                <!-- Sentence-aligned translation: one EPUB per target language,
-                     which is what the interleaved assembly pairs up. -->
-                <h3>Translation</h3>
-                <p class="step-desc">Select target languages for a bilingual audiobook. Multiple selections allowed.</p>
-
-                <div class="config-section">
-                  <label class="field-label">Source EPUB</label>
-                  <div class="source-stages">
-                    @for (stage of translateSourceStages(); track stage.id) {
-                      <button
-                        class="stage-btn"
-                        [class.selected]="isStageSelected('translate', stage)"
-                        [class.completed]="stage.completed"
-                        [disabled]="!stage.completed"
-                        (click)="selectStage('translate', stage)"
-                      >
-                        {{ stage.label }}
-                        @if (stage.completed) {
-                          <span class="stage-check">&#10003;</span>
-                        }
-                      </button>
-                    }
-                  </div>
-                </div>
-
-                <div class="config-section">
-                  <label class="field-label">AI Model</label>
-                  @if (aiSourceGroups().length > 0) {
-                    <desktop-select
-                      class="select-input"
-                      [options]="aiModelGroups()"
-                      [ngModel]="translateSelection()"
-                      (ngModelChange)="onTranslateModelChange($event)"
-                    />
-                  } @else {
-                    <div class="no-models">
-                      @if (checkingConnection()) {
-                        Checking for available AI…
-                      } @else {
-                        <span class="error-text">No AI configured.</span> Set up a local model, Ollama, or an API key.
-                      }
-                    </div>
-                  }
-                </div>
-
-                <div class="config-section">
-                  <label class="field-label">Custom Instructions</label>
-                  <textarea
-                    class="custom-instructions"
-                    [value]="translateCustomInstructions()"
-                    (input)="translateCustomInstructions.set($any($event.target).value)"
-                    placeholder="Optional: Add specific instructions for the AI (e.g., 'If you encounter English text, return it unchanged')"
-                    rows="3"
-                  ></textarea>
-                  <span class="hint">Appended to the translation prompt for each batch</span>
-                </div>
-
-                <div class="source-lang-display">
-                  <span class="label">Detected source language:</span>
-                  <span class="value">{{ getLanguageName(detectedSourceLang()) }}</span>
-                </div>
-
-                <div class="config-section">
-                  <label class="field-label">Target Languages (select multiple)</label>
-                  <div class="language-grid">
-                    @for (lang of supportedLanguages; track lang.code) {
-                      @if (lang.code !== detectedSourceLang()) {
-                        <button
-                          class="language-btn"
-                          [class.selected]="isTargetLangSelected(lang.code)"
-                          (click)="toggleTargetLang(lang.code)"
-                        >
-                          <span class="lang-flag" [style.background]="getFlagCss(lang.code)"></span>
-                          <span class="lang-code">{{ lang.code.toUpperCase() }}</span>
-                          <span class="lang-name">{{ lang.name }}</span>
-                          @if (isTargetLangSelected(lang.code)) {
-                            <span class="lang-check">✓</span>
-                          }
-                        </button>
-                      }
-                    }
-                  </div>
-
-                  @if (targetLangs().size === 0) {
-                    <div class="hint">Select at least one target language, or leave empty to use existing translations.</div>
-                  } @else {
-                    <div class="selection-summary">
-                      Selected: {{ Array.from(targetLangs()).map(getLanguageName.bind(this)).join(', ') }}
-                    </div>
-                  }
-                </div>
-
-                @if (existingTranslationEpubs().length > 0) {
-                  <div class="config-section">
-                    <label class="field-label">Existing Translations</label>
-                    <div class="existing-translations">
-                      @for (epub of existingTranslationEpubs(); track epub.path) {
-                        <div class="existing-translation-row">
-                          <span class="existing-translation-label">{{ epub.lang.toUpperCase() }} — {{ getLanguageName(epub.lang) }}</span>
-                          <button class="existing-translation-delete" (click)="deleteTranslationEpub(epub)">Delete</button>
-                        </div>
-                      }
-                      @if (existingTranslationEpubs().length > 1) {
-                        <button class="existing-translation-clear-all" (click)="deleteAllTranslationEpubs()">Clear All Translations</button>
-                      }
-                    </div>
-                  </div>
-                }
-              }
-            </div>
-          }
-
+               The pass MACHINERY is untouched — processing:plan-chain,
+               processing:submit-chain, appliedPasses in the manifest, the
+               picker's Simplify and Translate entries. What was deleted is the
+               wizard page that offered to compose a run, and the wizard state
+               that existed only to feed it. If it is wanted back it gets rebuilt
+               against whatever it is for then, rather than kept alive as a page
+               nobody lands on.
+               ─────────────────────────────────────────────────────────────── -->
           <!-- ─────────────────────────────────────────────────────────────── -->
           <!-- Step 3: TTS -->
           <!-- ─────────────────────────────────────────────────────────────── -->
@@ -973,60 +389,60 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
               }
 
               @if (pipelineMode() === 'mono') {
-                <!-- What gets narrated. Two answers only: the book as it is on disk,
-                     or the book this run's passes produce. A pass rewrites the book
-                     in place, so "as it is" is not on offer while passes are queued —
-                     it would name the same file and mean something else. -->
+                <!-- WHAT GETS NARRATED, stated rather than asked.
+
+                     This was three cards — the book as it is, the narration copy,
+                     what this run produces — and the user picked one. Owen,
+                     2026-08-08: "by that time the system will know which one."
+
+                     It does. The artifact chain has exactly one answer at every
+                     link: the archive is the file you handed us, the working copy
+                     is the one file you edit, and the narration copy is that
+                     working copy with what you struck out taken out. TTS reads the
+                     last of those. There was never really a second candidate — the
+                     other two cards offered a file the user had already decided
+                     against (the whole book, footnotes and all) and a file that
+                     only existed while the pass page did.
+
+                     ensureNarrationEpub cuts it when there is not a current one,
+                     which is not a hidden side effect: the narration copy is
+                     DERIVED, so "there isn't one yet" and "the one on record was
+                     cut from an older book" are work with one correct answer
+                     rather than questions to put to somebody.
+
+                     The Open button is why this can be a statement instead of a
+                     choice — the user VERIFIES the document rather than selecting
+                     it. It opens read-only in the picker, which says so and offers
+                     the way back to the working copy. -->
                 <div class="config-section">
-                  <label class="field-label">Narrate</label>
-                  <div class="variant-cards">
-                    <button
-                      type="button"
-                      class="variant-card"
-                      [class.selected]="effectiveTtsInput() === 'book'"
-                      [disabled]="!bookEpubPath() || passes().length > 0"
-                      (click)="ttsInput.set('book')"
-                    >
-                      <span class="variant-format">EPUB</span>
-                      <span class="variant-title">The book as it is</span>
-                      <span class="variant-file">{{ bookEpubPath() ? getFilenameFromPath(bookEpubPath()!) : 'not exported yet' }}</span>
-                      @if (bookEpubPath() && passes().length > 0) {
-                        <span class="variant-note">The passes rewrite this file.</span>
-                      }
-                    </button>
-                    <!--
-                      The narration copy: the book minus what was struck out of
-                      it in the editor. Offered only when one exists, because a
-                      card that names no file teaches nothing - and the whole
-                      book stays on offer beside it, so choosing is a choice and
-                      never a redirection.
-                    -->
-                    @if (narrationEpubPath()) {
-                      <button
-                        type="button"
-                        class="variant-card"
-                        [class.selected]="effectiveTtsInput() === 'narration'"
-                        [disabled]="passes().length > 0"
-                        (click)="ttsInput.set('narration')"
-                      >
-                        <span class="variant-format">EPUB</span>
-                        <span class="variant-title">The narration copy</span>
-                        <span class="variant-file">{{ getFilenameFromPath(narrationEpubPath()!) }}</span>
-                        <span class="variant-note">What you left in, in the editor.</span>
-                      </button>
-                    }
-                    <button
-                      type="button"
-                      class="variant-card"
-                      [class.selected]="effectiveTtsInput() === 'run'"
-                      [disabled]="!runRewritesBook()"
-                      (click)="ttsInput.set('run')"
-                    >
-                      <span class="variant-format">EPUB</span>
-                      <span class="variant-title">What this run produces</span>
-                      <span class="variant-file">{{ runRewritesBook() ? getFilenameFromPath(chainPlan()!.bookEpubPath) : 'no passes configured' }}</span>
-                    </button>
-                  </div>
+                  <label class="field-label">Narrating</label>
+                  @if (narrationEpubPath(); as narrationPath) {
+                    <div class="narration-input">
+                      <div class="narration-input-text">
+                        <span class="narration-input-file">{{ getFilenameFromPath(narrationPath) }}</span>
+                        <span class="narration-input-note">
+                          Your working copy, with what you struck out removed.
+                          @if (narrationCutReason(); as why) { {{ why }} }
+                        </span>
+                      </div>
+                      <desktop-button
+                        variant="secondary"
+                        size="sm"
+                        [disabled]="openingNarration()"
+                        (click)="openNarrationCopy()"
+                      >{{ openingNarration() ? 'Opening…' : 'Open' }}</desktop-button>
+                    </div>
+                  } @else if (narrationBlockedReason(); as reason) {
+                    <!-- No file picker. A project with no working copy has nothing
+                         to narrate, and the answer is the act that makes one. -->
+                    <div class="narration-input blocked">
+                      <span class="narration-input-note">{{ reason }}</span>
+                    </div>
+                  } @else {
+                    <div class="narration-input">
+                      <span class="narration-input-note">Preparing the narration copy…</span>
+                    </div>
+                  }
                 </div>
 
                 <!-- Single Voice -->
@@ -1449,40 +865,6 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
               <p class="step-desc">Review your pipeline configuration before adding to queue.</p>
 
               <div class="review-cards">
-                <!-- Passes card (standard run). The sentence-aligned pipeline keeps
-                     its own cleanup/translation cards below. -->
-                @if (pipelineMode() === 'mono') {
-                  @if (passes().length > 0) {
-                    <div class="review-card">
-                      <div class="review-card-header">
-                        <span class="review-card-icon">🧩</span>
-                        <span class="review-card-title">Passes</span>
-                        <span class="job-count">{{ passes().length }} job{{ passes().length > 1 ? 's' : '' }}</span>
-                      </div>
-                      <div class="review-card-content">
-                        <div class="review-row">
-                          <span class="review-label">Book:</span>
-                          <span class="review-value">{{ selectedVariantLabel() }}</span>
-                        </div>
-                        @for (pass of passes(); track pass.uid; let i = $index) {
-                          <div class="review-row">
-                            <span class="review-label">{{ i + 1 }}.</span>
-                            <span class="review-value">{{ passLabel(pass) }}{{ passDetail(pass) ? ' — ' + passDetail(pass) : '' }}</span>
-                          </div>
-                        }
-                      </div>
-                    </div>
-                  } @else {
-                    <div class="review-card skipped">
-                      <div class="review-card-header">
-                        <span class="review-card-icon">🧩</span>
-                        <span class="review-card-title">Passes</span>
-                        <span class="skipped-badge">None</span>
-                      </div>
-                    </div>
-                  }
-                }
-
                 <!-- Cleanup Card (sentence-aligned only) -->
                 @if (pipelineMode() === 'bilingual' && !isStepSkipped('cleanup') && (enableAiCleanup() || simplifyForLearning())) {
                   <div class="review-card">
@@ -1660,33 +1042,47 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
       </div>
 
       <!-- Navigation -->
+      <!-- Navigation.
+
+           All four controls are the app's own desktop-button now (Owen,
+           2026-08-08: match the nav buttons to Add to Queue). They used to be
+           bare <button class="btn-back|btn-skip|btn-next"> with hand-written
+           background/border rules that matched nothing else in the app, so the
+           end of the flow looked like a different product from the middle of it.
+
+           The variants are the design system's own and carry the emphasis: the
+           action that moves you forward is primary, the one that goes around it
+           is secondary, and going back is ghost. Add to Queue keeps primary
+           at lg — it is the same kind of act as Next, one page further on and
+           committing the run, which is exactly what a larger primary says. -->
       <div class="wizard-nav">
         @if (continueMode() && currentStep() === 'tts') {
-          <!-- Continue mode is pinned to TTS→Assembly→Review; the pass builder is
-               disabled, so there's nowhere to go Back to from here. -->
+          <!-- Continue mode is pinned to TTS→Assembly→Review, and TTS is the
+               first page, so there is nowhere to go Back to from here. -->
           <span></span>
-        } @else if (currentStep() !== 'passes') {
-          <button class="btn-back" (click)="goBack()">
-            ← Back
-          </button>
+        } @else if (isFirstStep()) {
+          <!-- Back off the FIRST page leaves the wizard entirely — the host owns
+               where that goes. Keyed on the step being first rather than on its
+               name, so the page that happens to be first is a fact this reads
+               instead of a literal that has to be found and changed. -->
+          <desktop-button variant="ghost" icon="←" (click)="back.emit()">Back</desktop-button>
         } @else {
-          <button class="btn-back" (click)="back.emit()">
-            ← Back
-          </button>
+          <desktop-button variant="ghost" icon="←" (click)="goBack()">Back</desktop-button>
         }
 
         <div class="nav-right">
           @if (currentStep() !== 'review') {
-            <button class="btn-skip" (click)="skipStep()">
-              Skip
-            </button>
-            <button class="btn-next" (click)="goNext()" [disabled]="!canProceed()">
-              Next →
-            </button>
+            <desktop-button variant="secondary" (click)="skipStep()">Skip</desktop-button>
+            <desktop-button
+              variant="primary"
+              iconRight="→"
+              [disabled]="!canProceed()"
+              (click)="goNext()"
+            >Next</desktop-button>
           } @else {
-            <button
-              class="btn-queue"
-              [class.added]="addedToQueue()"
+            <desktop-button
+              variant="primary"
+              size="lg"
               [disabled]="getTotalJobCount() === 0 || addingToQueue() || addedToQueue()"
               (click)="addToQueue()"
             >
@@ -1697,7 +1093,7 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
               } @else {
                 Add to Queue ({{ getTotalJobCount() }} jobs)
               }
-            </button>
+            </desktop-button>
             @if (voiceDownloadMsg(); as msg) {
               <span class="voice-download-msg">{{ msg }}</span>
             }
@@ -2929,11 +2325,54 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
       gap: 8px;
     }
 
-    .btn-back,
-    .btn-skip,
-    .btn-next,
-    /* ── Pass builder ──────────────────────────────────────────────────── */
+    /* The file a standard run narrates, STATED. One row: the filename, what it
+       is, and a way to look at it. It replaced a grid of cards the user chose
+       between — see the template. Laid out as a statement rather than a control,
+       because that is what it is. */
+    .narration-input {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      background: var(--bg-elevated);
 
+      /* Nothing to narrate is a fact about the project, so it reads as a notice
+         rather than as a field that failed to fill in. */
+      &.blocked {
+        border-style: dashed;
+        background: transparent;
+      }
+    }
+
+    .narration-input-text {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .narration-input-file {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .narration-input-note {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    /* The nav buttons' rules used to be joined to this one by a stray trailing
+       comma before the comment, which made .btn-back, .btn-skip, .btn-next,
+       .variant-cards a single selector list — so every nav button was quietly
+       display: grid. They are desktop-buttons now and the dangling half of
+       the selector went with them. */
     .variant-cards {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
@@ -3186,77 +2625,17 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
       padding: 16px;
     }
 
-    .btn-queue {
-      padding: 10px 20px;
-      border-radius: 6px;
-      font-size: 14px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-
     .voice-download-msg {
       margin-left: 12px;
       font-size: 13px;
       color: var(--text-secondary);
     }
 
-    .btn-back {
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default);
-      color: var(--text-secondary);
-
-      &:hover {
-        background: var(--bg-hover);
-        color: var(--text-primary);
-      }
-    }
-
-    .btn-skip {
-      background: transparent;
-      border: 1px solid var(--border-default);
-      color: var(--text-secondary);
-
-      &:hover {
-        background: var(--bg-hover);
-        color: var(--text-primary);
-      }
-    }
-
-    .btn-next {
-      background: #06b6d4;
-      border: none;
-      color: white;
-
-      &:hover:not(:disabled) {
-        background: #0891b2;
-      }
-
-      &:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
-    }
-
-    .btn-queue {
-      background: var(--accent);
-      border: none;
-      color: var(--bg-primary);
-
-      &:hover:not(:disabled) {
-        background: #16a34a;
-      }
-
-      &:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
-
-      &.added {
-        background: var(--accent);
-        opacity: 0.8;
-      }
-    }
+    /* No .btn-back / .btn-skip / .btn-next / .btn-queue rules any more. Those
+       four hand-written skins — one of which hard-coded #06b6d4 and #0891b2
+       rather than reading the accent tokens — are what made the end of this flow
+       look like a different app from the rest of it. The buttons are
+       desktop-buttons and take the design system's own variants. */
   `]
 })
 export class LLWizardComponent implements OnInit {
@@ -3369,7 +2748,9 @@ export class LLWizardComponent implements OnInit {
   // Navigation State
   // ─────────────────────────────────────────────────────────────────────────
 
-  readonly currentStep = signal<LLWizardStep>('passes');
+  // TTS is the first page. Process used to land on the pass builder, which by
+  // then had nothing to ask (see the template's note where that page was).
+  readonly currentStep = signal<LLWizardStep>('tts');
   private completedSteps = new Set<LLWizardStep>();
   private _skippedSteps = new Set<LLWizardStep>();
 
@@ -3383,19 +2764,11 @@ export class LLWizardComponent implements OnInit {
   // submission refuses can never drift apart.
   // ─────────────────────────────────────────────────────────────────────────
 
-  readonly variantCards = signal<PassVariantCard[]>([]);
-  readonly loadingVariants = signal(false);
-  /** '' is a real value: the project's book EPUB, which is not a variant. */
-  readonly selectedVariantId = signal<string>('');
-  readonly passes = signal<BuilderPass[]>([]);
-  /** Which palette entry has its configuration open, if any. */
-  readonly palettePanel = signal<ProcessingPassKind | null>(null);
-  readonly planning = signal(false);
-  readonly chainPlan = signal<ProcessingChainPlan | null>(null);
-  readonly chainError = signal<string | null>(null);
-  /** The languages the NEXT translate pass will carry (the palette's draft). */
-  readonly passTranslateSource = signal<string>('en');
-  readonly passTranslateTarget = signal<string>('en');
+  // The pass builder's state used to be here — the variant cards, the ordered
+  // pass list, the palette, and the plan main answered for it. All of it existed
+  // to render one page, and that page is gone (see the template's note where it
+  // was). What replaced it is nothing: a run is not composed in this wizard any
+  // more, so there is no run to hold.
   /** The project's book EPUB (manifest `outputs.epub`) when it is on disk. */
   readonly bookEpubPath = signal<string | null>(null);
   /**
@@ -3407,65 +2780,37 @@ export class LLWizardComponent implements OnInit {
    */
   readonly narrationEpubPath = signal<string | null>(null);
   /**
-   * Which EPUB the standard TTS job reads.
+   * Why there is nothing for this project to narrate, or null.
    *
-   * Three answers, and the user always sees which one is chosen — nothing is
-   * ever silently redirected. `narration` is PREFERRED on arrival when the copy
-   * exists, because a project that has one has been through the editor for the
-   * express purpose of deciding what gets read aloud, and narrating the complete
-   * book instead would ignore that work. It is a default, not a lock: the card
-   * for the whole book is right beside it.
+   * `ensureNarrationEpub`'s own refusal, verbatim — it names the act that
+   * produces a working copy (open the book, or Generate EPUB for a PDF) rather
+   * than offering a file picker, which is the whole point: there is one editable
+   * file, and if it does not exist yet the answer is to make it.
    */
-  readonly ttsInput = signal<'book' | 'narration' | 'run'>('book');
-  private passUid = 0;
-  private planTimer: ReturnType<typeof setTimeout> | null = null;
-
-  readonly selectedVariant = computed<PassVariantCard | null>(() =>
-    this.variantCards().find(c => c.id === this.selectedVariantId()) ?? null);
-
-  readonly selectedVariantLabel = computed(() => {
-    const card = this.selectedVariant();
-    return card ? `${card.label} (${card.format.toUpperCase()})` : 'the project book';
-  });
-
-  readonly passPalette = PASS_PALETTE;
+  readonly narrationBlockedReason = signal<string | null>(null);
 
   /**
-   * This run rewrites the book, so what gets narrated is what it leaves behind.
+   * Why the narration copy was cut just now, or null when the one on record
+   * already described the book.
    *
-   * Not "produces a book": no pass makes one. Both read `outputs.epub` and rename
-   * their result back onto it, so a planned run means that same path is about to
-   * hold different text.
+   * Shown beside the filename because "this was rebuilt a moment ago" is worth
+   * the user pressing Open over, and "the one from Tuesday still matches" is not.
    */
-  readonly runRewritesBook = computed(() =>
-    this.passes().length > 0 && !!this.chainPlan() && !this.chainError());
+  readonly narrationCutReason = signal<string | null>(null);
 
+  /** Set while the Open button is putting the narration copy on screen. */
+  readonly openingNarration = signal(false);
   /**
-   * Which of the three the run will ACTUALLY read.
+   * The file a standard run will read, or null when there is none.
    *
-   * The passes rewrite the book in place, so while any are queued the only
-   * honest answer is what they leave behind — whatever the cards were last set
-   * to. Derived rather than written back into `ttsInput`, so the user's own
-   * choice is still there when the last pass is removed, and so the card that
-   * lights up is always the file that will be narrated.
+   * One line, where there used to be a three-way chooser, a preference rule and
+   * a fallback ladder resolving between them. The chain has one answer at this
+   * link and `resolveNarrationInput` is what asks main for it.
    */
-  readonly effectiveTtsInput = computed<'book' | 'narration' | 'run'>(() => {
-    if (this.runRewritesBook()) return 'run';
-    if (this.ttsInput() === 'narration' && this.narrationEpubPath()) return 'narration';
-    if (this.ttsInput() === 'book' && this.bookEpubPath()) return 'book';
-    // The chosen file is not there. Whichever of the other two IS, named — not
-    // an empty path handed to a TTS job that would fail an hour later.
-    if (this.narrationEpubPath()) return 'narration';
-    return 'book';
-  });
+  readonly ttsInputPath = computed<string>(() => this.narrationEpubPath() ?? '');
 
-  readonly ttsInputPath = computed<string>(() => {
-    switch (this.effectiveTtsInput()) {
-      case 'run': return this.chainPlan()!.bookEpubPath;
-      case 'narration': return this.narrationEpubPath() ?? '';
-      case 'book': return this.bookEpubPath() ?? '';
-    }
-  });
+  /** The wizard's first page — what Back leaves the wizard from. */
+  readonly isFirstStep = computed(() => this.currentStep() === 'tts');
 
   /**
    * Why narration cannot be configured, or null. Nothing to read is a fact about
@@ -3479,19 +2824,6 @@ export class LLWizardComponent implements OnInit {
     if (this.bookEpubPath() || this.narrationEpubPath()) return null;
     return 'This book has no EPUB to narrate. Open it in the editor and run Convert to EPUB '
       + 'from the Archive station — that is what turns the pages into a book.';
-  });
-
-  /**
-   * Where the planner's refusal belongs: the row it names, or -1 for the run.
-   *
-   * The planner's per-pass refusals are the two "The <label> pass needs …"
-   * sentences in electron/processing-chain.ts; everything else it says is about
-   * the run — no book, or a file that is not one — and belongs above the rows.
-   */
-  readonly chainErrorAt = computed<number>(() => {
-    const message = this.chainError();
-    if (!message) return -1;
-    return this.passes().findIndex(p => message.startsWith(`The ${PASS_LABELS[p.kind]} pass `));
   });
 
   /** Every language, for the translate pass's from/into pickers. */
@@ -3880,13 +3212,15 @@ export class LLWizardComponent implements OnInit {
   });
 
   /**
-   * The language the narration is in: what the LAST translate pass leaves the book
-   * in, or the book's own language when no pass translates it.
+   * The language the narration is in: the book's own.
+   *
+   * It used to also ask what the last translate pass in the composed run would
+   * leave the book in. Nothing composes a run here now, and a Translate started
+   * from the picker rewrites the working copy in place — so the language of the
+   * file about to be narrated is simply the language of the file on disk, which
+   * is what `detectedSourceLang` measures.
    */
-  readonly monoTtsLanguage = computed(() => {
-    const lastTranslate = [...this.passes()].reverse().find(p => p.translate);
-    return lastTranslate?.translate?.targetLang ?? this.detectedSourceLang();
-  });
+  readonly monoTtsLanguage = computed(() => this.detectedSourceLang());
   readonly partialTtsSessions = signal<{ language: string; completedSentences: number; totalSentences: number; sessionDir: string; sentencesDir: string }[]>([]);
 
   // Voices selectable for audiobook generation, loaded from the main process
@@ -4271,55 +3605,19 @@ export class LLWizardComponent implements OnInit {
       if (dir) this.scanProjectEpubs();
     });
 
-    // The pass builder's book list, from the same place the metadata page reads it.
+    // Which file a standard run narrates, resolved as soon as there is a project.
+    //
+    // ON THE PROJECT, not on arriving at the TTS step, because TTS IS the first
+    // step now — `advanceFrom` never enters it, so the resolution that used to
+    // ride along with that entry would never run. It re-runs on `refreshTrigger`
+    // with the scan above, which is what the host bumps after a pass finishes or
+    // the book is rebuilt: the narration copy is cut from the book, so a book
+    // that has changed makes the recorded cut stale and this is where that is
+    // noticed.
     effect(() => {
       const dir = this.effectiveProjectDir();
-      this.projectId();
       this.refreshTrigger();
-      if (dir) void untracked(() => this.loadVariantCards());
-    });
-
-    // Re-plan on every edit to the run, debounced: the answer comes from main and
-    // a keystroke-rate round trip would show a refusal for an order the user is
-    // still in the middle of typing.
-    effect(() => {
-      const dir = this.effectiveProjectDir();
-      const variantId = this.selectedVariantId();
-      const list = this.passes();
-      const mono = this.pipelineMode() === 'mono';
-      if (this.planTimer) clearTimeout(this.planTimer);
-      if (!mono || !dir || list.length === 0) {
-        this.chainPlan.set(null);
-        this.chainError.set(null);
-        this.planning.set(false);
-        return;
-      }
-      this.planning.set(true);
-      this.planTimer = setTimeout(() => void this.replanChain(dir, variantId, list), 350);
-    });
-
-    // Keep the narration source honest: a queued pass rewrites the book, so once
-    // there are passes the only coherent input is what they produce.
-    effect(() => {
-      const producing = this.runRewritesBook();
-      const book = this.bookEpubPath();
-      const hasPasses = this.passes().length > 0;
-      untracked(() => {
-        if (hasPasses && producing) this.ttsInput.set('run');
-        else if (this.narrationEpubPath()) this.ttsInput.set('narration');
-        else if (book) this.ttsInput.set('book');
-      });
-    });
-
-    // The translate pass's default direction: out of the book's own language.
-    effect(() => {
-      const detected = this.detectedSourceLang();
-      untracked(() => {
-        this.passTranslateSource.set(detected);
-        if (this.passTranslateTarget() === detected) {
-          this.passTranslateTarget.set(detected === 'en' ? 'de' : 'en');
-        }
-      });
+      if (dir) void untracked(() => this.resolveNarrationInput());
     });
 
     // Default the cleanup stage picker from the project's import provenance. Keyed on
@@ -4593,6 +3891,84 @@ export class LLWizardComponent implements OnInit {
       console.error('Failed to fetch OpenAI models:', err);
     } finally {
       this.loadingModels.set(false);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // The one file a standard run narrates
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Ask main for the project's narration copy, cutting one if there is not a
+   * current one, and record the answer for the page to state.
+   *
+   * ── Why this is `ensure` and not `read` ─────────────────────────────────────
+   *
+   * The page used to read `narration:state` — a report of whatever was on record
+   * — and offer that answer as one card among three. A report is a snapshot: it
+   * goes stale the moment a pass rewrites the book, and it is empty for a project
+   * nobody has exported a narration copy from yet, which is most of them. Both
+   * cases used to be handled by the user picking a different card, which is to
+   * say by narrating the wrong file.
+   *
+   * `narration:ensure-copy` answers the question the page actually has — WHICH
+   * FILE WILL BE NARRATED — and makes it true, cutting from the working copy when
+   * the record is missing or was stamped with a book that has changed since. See
+   * `ensureNarrationEpub` for why that is derivation rather than a side effect.
+   *
+   * A refusal is KEPT rather than thrown away: it is the sentence the page shows
+   * in place of a filename, and it names the act that fixes it.
+   */
+  private async resolveNarrationInput(): Promise<void> {
+    const projectDir = this.effectiveProjectDir();
+    if (!projectDir) {
+      this.narrationEpubPath.set(null);
+      this.narrationCutReason.set(null);
+      this.narrationBlockedReason.set(null);
+      return;
+    }
+
+    const answer = await this.electronService.ensureNarrationEpub(projectDir);
+    if (!answer.success || !answer.narration) {
+      this.narrationEpubPath.set(null);
+      this.narrationCutReason.set(null);
+      this.narrationBlockedReason.set(
+        answer.error ?? 'This project could not say which file to narrate.');
+      return;
+    }
+    this.narrationEpubPath.set(answer.narration.epubPath);
+    this.narrationCutReason.set(answer.narration.cutReason);
+    this.narrationBlockedReason.set(null);
+  }
+
+  /**
+   * Put the narration copy on screen so the user can see what will be read.
+   *
+   * Navigation, not viewer work: the picker already knows this file is not the
+   * working copy and shows it read-only under a banner offering the way back
+   * (`artifactBanner`). Opening the PROJECT and naming the file inside it is all
+   * there is to do — the same call the versions page's own Open makes, so a file
+   * opened from here arrives with the project's state exactly as it does there.
+   */
+  async openNarrationCopy(): Promise<void> {
+    const projectDir = this.effectiveProjectDir();
+    const narrationPath = this.narrationEpubPath();
+    if (!projectDir || narrationPath === null || this.openingNarration()) return;
+
+    this.openingNarration.set(true);
+    try {
+      const result = await this.electronService.editorOpenWindowWithBfp(projectDir, narrationPath);
+      if (!result.success) {
+        throw new Error(result.error || 'The narration copy could not be opened.');
+      }
+    } catch (err) {
+      await this.dialog.alert({
+        title: 'Could not open the narration copy',
+        message: err instanceof Error ? err.message : String(err),
+        type: 'error',
+      });
+    } finally {
+      this.openingNarration.set(false);
     }
   }
 
@@ -5277,35 +4653,28 @@ export class LLWizardComponent implements OnInit {
     await this.prefillFromPartials(partials);
     this.continueTts.set(true);
     this.continueMode.set(true);
-    this.passes.set([]);
-    this._skippedSteps.add('passes');
     this._skippedSteps.add('cleanup');
     this._skippedSteps.add('translate');
+    // Already the first page — set explicitly all the same, because Continue can
+    // be pressed while the wizard sits on Assembly or Review.
     this.currentStep.set('tts');
   }
 
   /**
    * Stand on the TTS step, because the book has been handed over to be narrated.
    *
-   * The pass step is SKIPPED rather than answered, and that is the honest word
-   * for it: the picker's ladder is where this book's passes were composed and
-   * run, so the wizard's pass page has nothing left to ask. `skipStep` is the
-   * wizard's own mover — it settles the skip marks and enters TTS through
-   * `advanceFrom`, which re-scans the project's EPUBs and its partial sessions —
-   * so nothing here reimplements the step change.
+   * TTS is the first page now, so a fresh arrival is ALREADY here and this does
+   * nothing — which is the whole shape of the simplification: the hand-off used
+   * to have to skip a pass page that had nothing to ask.
    *
-   * From past narration, `goBack` walks one rung at a time for the same reason.
-   * That case is rare (the Process tab destroys this component when the user
-   * leaves it, so a fresh arrival is always on the pass step) but it is real:
-   * the picker is a separate window, and Next can be pressed while the wizard
-   * sits on Review. The equality check makes the walk terminate on a Back that
+   * It is still a walk rather than a `set`, because the case it exists for is
+   * real: the picker is a separate window and can hand a book over while the
+   * wizard sits on Assembly or Review. `goBack` is the wizard's own mover — it
+   * re-scans the partial sessions on the way — so nothing here reimplements the
+   * step change, and the equality check makes the walk terminate on a Back that
    * refuses instead of spinning.
    */
   landOnNarration(): void {
-    if (this.currentStep() === 'passes') {
-      this.skipStep();
-      return;
-    }
     while (this.currentStep() !== 'tts') {
       const before = this.currentStep();
       this.goBack();
@@ -5320,8 +4689,6 @@ export class LLWizardComponent implements OnInit {
     await this.prefillFromPartials(this.partialTtsSessions());
     this.continueTts.set(true);
     this.continueMode.set(true);
-    this.passes.set([]);
-    this._skippedSteps.add('passes');
     this._skippedSteps.add('cleanup');
     this._skippedSteps.add('translate');
   }
@@ -5475,234 +4842,14 @@ export class LLWizardComponent implements OnInit {
     this._skippedSteps.add('translate');
   }
 
-  /** Point the run at a different file. */
-  selectVariant(card: PassVariantCard): void {
-    if (card.disabledReason) return;
-    this.selectedVariantId.set(card.id);
-    this.palettePanel.set(null);
-  }
-
-  /**
-   * Both passes carry settings, so a palette click opens their panel rather than
-   * adding anything: the pass is added from inside it, with what was chosen.
-   */
-  onPaletteClick(kind: ProcessingPassKind): void {
-    this.palettePanel.set(this.palettePanel() === kind ? null : kind);
-  }
-
-  addSimplifyPass(mode: 'dejargon' | 'destiffen' | 'learner'): void {
-    // Snapshotted, not referenced: two Simplify passes in one run are legal and
-    // may want different models, so each carries the settings it was added with.
-    this.addPass({
-      uid: this.nextPassUid(),
-      kind: 'simplify',
-      simplify: {
-        mode,
-        aiProvider: this.cleanupProvider(),
-        aiModel: this.cleanupModel(),
-        customInstructions: this.customInstructions() || undefined,
-      },
-    });
-    this.palettePanel.set(null);
-  }
-
-  addTranslatePass(): void {
-    this.addPass({
-      uid: this.nextPassUid(),
-      kind: 'translate',
-      translate: {
-        sourceLang: this.passTranslateSource(),
-        targetLang: this.passTranslateTarget(),
-        aiProvider: this.translateProvider(),
-        aiModel: this.translateModel(),
-        customInstructions: this.translateCustomInstructions() || undefined,
-      },
-    });
-    this.palettePanel.set(null);
-  }
-
-  private addPass(pass: BuilderPass): void {
-    this.passes.update(list => [...list, pass]);
-  }
-
-  private nextPassUid(): string {
-    this.passUid += 1;
-    return `pass-${this.passUid}`;
-  }
-
-  movePass(index: number, delta: number): void {
-    this.passes.update(list => {
-      const to = index + delta;
-      if (to < 0 || to >= list.length) return list;
-      const next = [...list];
-      const [moved] = next.splice(index, 1);
-      next.splice(to, 0, moved);
-      return next;
-    });
-  }
-
-  removePass(index: number): void {
-    this.passes.update(list => list.filter((_, i) => i !== index));
-  }
-
-  passLabel(pass: BuilderPass): string {
-    return PASS_LABELS[pass.kind];
-  }
-
-  passDetail(pass: BuilderPass): string {
-    if (pass.simplify) {
-      const mode = this.simplifyModeOptions.find(m => m.value === pass.simplify!.mode);
-      return `${mode?.label ?? pass.simplify.mode} · ${pass.simplify.aiModel || 'no model'}`;
-    }
-    if (pass.translate) {
-      const t = pass.translate;
-      return `${this.getLanguageName(t.sourceLang)} → ${this.getLanguageName(t.targetLang)} · ${t.aiModel || 'no model'}`;
-    }
-    return '';
-  }
-
-  /**
-   * The project's files, as the metadata page lists them, plus its book EPUB.
-   *
-   * An ebook variant that is NOT the recorded book is listed but closed: the text
-   * passes rewrite `outputs.epub` in place, so offering another edition as their
-   * input would promise something the run does not do.
-   */
-  private async loadVariantCards(): Promise<void> {
-    const projectDir = this.effectiveProjectDir();
-    // `variant:list` resolves {library}/projects/<id>/manifest.json, so it needs the
-    // FOLDER SLUG. What arrives in `projectId` is not always one: Studio binds a
-    // book's `StudioItem.id`, which is its absolute project directory (articles
-    // bind a bare manifest id) — the same split `studioManifestProjectId` exists
-    // for, and taking the last segment is the identity for a value that is already
-    // an id. Without this the join produced /…/projects/Volumes/…/manifest.json,
-    // no variants came back, and page 1 declared a project with a PDF to have
-    // nothing to process.
-    const projectId = (this.projectId() || projectDir).split(/[\\/]/).filter(Boolean).pop() || '';
-    if (!projectId) {
-      this.variantCards.set([]);
-      this.bookEpubPath.set(null);
-      return;
-    }
-
-    this.loadingVariants.set(true);
-    try {
-      let bookAbs: string | null = null;
-      try {
-        const info = await this.electronService.projectsExportInfo(projectDir);
-        bookAbs = info.exported?.absPath ?? null;
-      } catch (err) {
-        console.warn('[LL-WIZARD] Could not resolve the project export:', (err as Error).message);
-      }
-      this.bookEpubPath.set(bookAbs);
-
-      // The narration copy, asked for separately because it is a separate record
-      // (`outputs.ttsEpub`) and a project can have either, both or neither. A
-      // project that HAS one has already had somebody decide what gets read
-      // aloud, so it becomes the selected input — visibly, on its own card.
-      const narration = await this.electronService.narrationState(projectDir);
-      const narrationAbs = narration.success ? (narration.state?.narrationPath ?? null) : null;
-      this.narrationEpubPath.set(narrationAbs);
-      if (narrationAbs && this.passes().length === 0) this.ttsInput.set('narration');
-
-      const cards: PassVariantCard[] = [];
-      const result = await this.electronService.variantList(projectId);
-      for (const v of result.variants ?? []) {
-        if (v.kind !== 'ebook' || !v.exists) continue;
-        const format = (v.format || '').toLowerCase();
-        const isBook = !!bookAbs && this.samePath(v.absPath, bookAbs);
-        cards.push({
-          id: isBook ? '' : v.id,
-          label: v.descriptor || v.metadata?.title || this.title() || 'Untitled edition',
-          format,
-          filename: this.getFilenameFromPath(v.absPath),
-          absPath: v.absPath,
-          disabledReason: isBook
-            ? ''
-            : format === 'pdf'
-              ? 'A pass reads a book. Run Convert to EPUB over this PDF first.'
-              : 'The text passes rewrite the project\'s own book EPUB, not this edition.',
-        });
-      }
-      if (bookAbs && !cards.some(c => c.id === '')) {
-        cards.push({
-          id: '',
-          label: 'Book EPUB',
-          format: 'epub',
-          filename: this.getFilenameFromPath(bookAbs),
-          absPath: bookAbs,
-          disabledReason: '',
-        });
-      }
-      this.variantCards.set(cards);
-
-      // Keep the selection on something real. The book EPUB is the only subject a
-      // run can have; a project with none has every card closed, and the planner
-      // says why as soon as a pass is added.
-      const current = cards.find(c => c.id === this.selectedVariantId() && !c.disabledReason);
-      if (!current) {
-        const book = cards.find(c => c.id === '' && !c.disabledReason);
-        const first = book ?? cards.find(c => !c.disabledReason);
-        this.selectedVariantId.set(first ? first.id : '');
-      }
-    } finally {
-      this.loadingVariants.set(false);
-    }
-  }
-
-  /** Path equality for display/selection only — never to build a path. */
-  private samePath(a: string, b: string): boolean {
-    const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
-    return norm(a) === norm(b);
-  }
-
-  /**
-   * The run as the planner wants it: ONE request pass per sidebar row.
-   *
-   * API keys and the Ollama URL are filled in here, at the last moment, so no
-   * secret is ever held in the sidebar's state.
-   */
-  private chainRequest(projectDir: string, variantId: string, list: BuilderPass[]): ProcessingChainRequest {
-    const ai = this.settingsService.getAIConfig();
-    const withCredentials = <T extends SimplifyPassParams | TranslatePassParams>(params: T): T => ({
-      ...params,
-      ollamaBaseUrl: ai.ollama?.baseUrl,
-      claudeApiKey: ai.claude?.apiKey,
-      openaiApiKey: ai.openai?.apiKey,
-    });
-    const passes: ChainPassRequest[] = list.map(p => ({
-      kind: p.kind,
-      ...(p.simplify ? { simplify: withCredentials(p.simplify) } : {}),
-      ...(p.translate ? { translate: withCredentials(p.translate) } : {}),
-    }));
-    return {
-      projectDir,
-      ...(variantId ? { variantId } : {}),
-      passes,
-    };
-  }
-
-  /** Ask main what this order would do. The answer is the sidebar's feedback. */
-  private async replanChain(projectDir: string, variantId: string, list: BuilderPass[]): Promise<void> {
-    try {
-      const result = await this.electronService.planProcessingChain(
-        this.chainRequest(projectDir, variantId, list));
-      // A later edit already re-planned; this answer is about a run that is gone.
-      if (this.passes() !== list) return;
-      if (result.success && result.plan) {
-        this.chainPlan.set(result.plan);
-        this.chainError.set(null);
-      } else {
-        this.chainPlan.set(null);
-        this.chainError.set(result.error || 'This run could not be planned, and no reason came back.');
-      }
-    } catch (err) {
-      this.chainPlan.set(null);
-      this.chainError.set((err as Error).message);
-    } finally {
-      this.planning.set(false);
-    }
-  }
+  // The builder's gestures used to be here: pick the file the run reads, open a
+  // palette entry, add / configure / remove a pass, and the debounced round trip
+  // to `processing:plan-chain` that validated the order as it was typed. They
+  // went with the page that offered them.
+  //
+  // `processing:plan-chain` and `processing:submit-chain` are untouched in main —
+  // the picker's Simplify and Translate entries are what call them now, over a
+  // book that is already the project's working copy.
 
   /** True when this run renders narration (as opposed to reusing a cached one). */
   ttsInThisRun(): boolean {
@@ -5859,27 +5006,11 @@ export class LLWizardComponent implements OnInit {
 
   canProceed(): boolean {
     const step = this.currentStep();
-    if (step === 'passes') {
-      if (this.pipelineMode() === 'mono') {
-        if (this.passes().length === 0) return true;  // narration-only run
-        // An order main has refused cannot be submitted, and saying so at the
-        // Next button (as well as on the row) is the whole point of pre-planning.
-        return !this.chainError() && !this.planning();
-      }
-      // Sentence-aligned: the cleanup and translation gates that used to guard two
-      // separate steps, now both on this page.
-      if (this.enableAiCleanup() || this.simplifyForLearning()) {
-        if (this.cleanupProvider() === 'ollama' && !this.ollamaConnected()) return false;
-        if (!this.cleanupModel()) return false;
-      }
-      if (this.targetLangs().size > 0) {
-        if (this.translateProvider() === 'ollama' && !this.ollamaConnected()) return false;
-        if (!this.translateModel()) return false;
-      }
-      return true;
-    }
     if (step === 'tts') {
-      if (this.pipelineMode() === 'mono') return true; // single voice always configured
+      // A standard run reads ONE file and the system knows which: the project's
+      // narration copy. If it could not be resolved there is nothing to narrate
+      // and Next is refused with the reason on the page beside it.
+      if (this.pipelineMode() === 'mono') return this.narrationEpubPath() !== null;
       return this.ttsLanguageRows().length > 0;
     }
     if (step === 'assembly') {
@@ -5895,10 +5026,6 @@ export class LLWizardComponent implements OnInit {
    */
   private isStepConfigured(step: LLWizardStep): boolean {
     switch (step) {
-      case 'passes':
-        return this.pipelineMode() === 'mono'
-          ? this.passes().length > 0
-          : (this.enableAiCleanup() || this.simplifyForLearning() || this.targetLangs().size > 0);
       case 'tts':
         if (this.ttsBlockedReason()) return false;
         return this.pipelineMode() === 'mono' || this.ttsLanguageRows().length > 0;
@@ -5917,10 +5044,6 @@ export class LLWizardComponent implements OnInit {
     // downstream reconciliation (e.g. entering Review) can't silently un-skip it.
     this._skippedSteps.add(step);
     this.completedSteps.delete(step);
-    if (step === 'passes') {
-      this._skippedSteps.add('cleanup');
-      this._skippedSteps.add('translate');
-    }
     void this.advanceFrom(step);
   }
 
@@ -5937,9 +5060,6 @@ export class LLWizardComponent implements OnInit {
       this._skippedSteps.add(step);
       this.completedSteps.delete(step);
     }
-    // The sentence-aligned pipeline submits a cleanup job and per-language
-    // translation jobs separately, so leaving page 1 settles each on its own.
-    if (step === 'passes') this.reconcileTextSubStages();
     await this.advanceFrom(step);
   }
 
@@ -5964,7 +5084,7 @@ export class LLWizardComponent implements OnInit {
   }
 
   private async advanceFrom(step: LLWizardStep): Promise<void> {
-    const stepOrder: LLWizardStep[] = ['passes', 'tts', 'assembly', 'review'];
+    const stepOrder: LLWizardStep[] = ['tts', 'assembly', 'review'];
     const currentIndex = stepOrder.indexOf(step);
     if (currentIndex < stepOrder.length - 1) {
       const nextStep = stepOrder[currentIndex + 1];
@@ -6030,7 +5150,7 @@ export class LLWizardComponent implements OnInit {
   }
 
   goBack(): void {
-    const stepOrder: LLWizardStep[] = ['passes', 'tts', 'assembly', 'review'];
+    const stepOrder: LLWizardStep[] = ['tts', 'assembly', 'review'];
     let idx = stepOrder.indexOf(this.currentStep()) - 1;
     // In Continue mode, Cleanup + Translate are disabled (nothing to re-run) — walk
     // past them so Back never drops the user into a disabled step. From TTS this
@@ -6052,9 +5172,10 @@ export class LLWizardComponent implements OnInit {
 
   getTotalJobCount(): number {
     if (this.pipelineMode() === 'mono') {
-      // One queue row per pass, plus narration and assembly. The workflow's own
-      // master row is not counted — it is the grouping, not a job.
-      let count = this.passes().length;
+      // Narration and assembly. The workflow's own master row is not counted —
+      // it is the grouping, not a job. Passes used to contribute a row each;
+      // they are not composed here any more.
+      let count = 0;
       const hasTts = this.ttsInThisRun();
       if (hasTts) count += 1;
       const hasAssembly = !this._skippedSteps.has('assembly') && !this.assemblyBlockedReason();
@@ -6092,7 +5213,6 @@ export class LLWizardComponent implements OnInit {
   getReviewWarnings(): string[] {
     if (this.pipelineMode() === 'mono') {
       const warnings: string[] = [];
-      if (this.chainError()) warnings.push(this.chainError()!);
       const blocked = this.assemblyBlockedReason();
       if (!this._skippedSteps.has('assembly') && blocked) warnings.push(blocked);
       return warnings;
@@ -6759,24 +5879,20 @@ export class LLWizardComponent implements OnInit {
     };
 
     try {
-      const passes = this.passes();
       const downstream = await this.buildDownstreamJobs(projectDir);
 
-      if (passes.length === 0 && downstream.length === 0) {
-        throw new Error('There is nothing to queue: no passes, no narration and no assembly.');
+      if (downstream.length === 0) {
+        throw new Error('There is nothing to queue: no narration and no assembly.');
       }
 
-      if (passes.length > 0) {
-        const result = await this.queueService.submitProcessingRun(
-          this.chainRequest(projectDir, this.selectedVariantId(), passes),
-          downstream,
-        );
-        if (!result.success) {
-          throw new Error(result.error || 'The processing run was refused, and no reason came back.');
-        }
-        console.log('[PipelineWizard] Submitted processing run:',
-          result.plan?.jobs.map(j => j.jobType).join(' → '), '+', downstream.map(j => j.type).join(' → '));
-      } else {
+      // No `submitProcessingRun` branch any more. A processing CHAIN is a run of
+      // passes over the book with the narration and assembly jobs hung off the
+      // end of it, and passes are not composed here — they are started from the
+      // picker's own rail, over a book that is already the project's working
+      // copy. `processing:submit-chain` and everything behind it is untouched and
+      // still what the picker uses; what went is this wizard's ability to compose
+      // one, which is the page that was deleted.
+      {
         const workflowId = this.generateWorkflowId();
         const isArticle = this.itemType() === 'article';
         const master = await addJobTracked({
