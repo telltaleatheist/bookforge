@@ -305,23 +305,19 @@ export async function ensureFoundryPath(
     );
   }
 
-  // What is published, asked before deciding whether what is installed is
-  // current. Foundry is rebuilt several times a day, so a check that only ran at
-  // launch would mean restarting BookForge to pick up a release published two
-  // minutes ago — and the answer is cached for RELEASE_CACHE_MS, so a chain of
-  // passes costs one call rather than one each.
+  // NOTHING is checked for here. Which foundry should be on this machine is
+  // decided ONCE, by the startup sweep (electron/components/startup-upgrade-check.ts),
+  // and this function only acts on what that decided.
   //
-  // A failure here is NOT fatal and not even reported: offline, the effective
-  // version is '' and `planUpgrade` keeps whatever is installed. Being unable to
-  // ask what is newest is no reason to refuse to run the foundry already on disk.
-  try {
-    const { checkFoundryRelease } = await import('./components/foundry-release-check.js');
-    const { setDiscoveredFoundryRelease } = await import('./components/foundry-cli-components.js');
-    const release = await checkFoundryRelease();
-    if (release) setDiscoveredFoundryRelease(release);
-  } catch (err) {
-    console.warn(`[foundry] could not check for a newer release: ${(err as Error).message}`);
-  }
+  // Owen, 2026-08-08: "make sure it only downloads the latest version on
+  // bookforge startup, not while its running." This briefly did ask GitHub on
+  // every pass, so a release published mid-session was picked up without a
+  // restart. That is the wrong trade. A pass that needs foundry is a pass about
+  // to RUN it, and swapping the binary underneath a session means the run that
+  // starts is not the one whose version was reported — worse on Windows, where
+  // replacing a running .exe fails outright and the failure lands on whichever
+  // book happened to be converting. A version that changes only at launch is a
+  // version that holds still for as long as anyone is working.
 
   // Loaded directly, not through resolveFoundryPath's try/catch: past this point
   // every answer needs the component registry (to read the record's source and

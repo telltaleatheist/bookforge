@@ -60,12 +60,16 @@
  * the provenance record.
  */
 
+import { spawnSync } from 'child_process';
+import { app } from 'electron';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
 import { ensureFoundryPath, runFoundry } from './foundry-bridge';
 import { ensureVlmPageServer, wslVlmRefusal } from './vlm-page-server';
+import { getActiveBundledEnvPath, relocatablePythonPath } from './e2a-env-bootstrap';
+import { getDefaultE2aPath } from './e2a-paths';
 import { resolveDocumentProject } from './document-project';
 import { primaryAbsPath, workingAbsPath, type DocumentProject } from './document-stages';
 import { readWorkingDocumentState } from './working-document';
@@ -88,6 +92,80 @@ import {
 } from '../shared/vlm/conversion';
 
 const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
+
+/**
+ * `--python`, pointing at an interpreter that can RENDER the pages.
+ *
+ * Needed on EVERY route, including the endpoint one, and that is the part which
+ * is easy to get wrong: `--vlm-endpoint` moves the model somewhere else, not the
+ * rasteriser. foundry embeds pdf.js for text extraction only — its canvas layer
+ * cannot survive `bun build --compile`, and every drawing method on the shim
+ * throws on purpose — so a page becomes a picture in PyMuPDF, on this machine,
+ * whichever GPU is going to read it (foundry src/vlm/vlm_page.py).
+ *
+ * ── Why the candidate is VERIFIED rather than assumed ───────────────────────
+ *
+ * The first version of this asked `getActiveBundledEnvPath()` and passed nothing
+ * when it answered null. That function returns null in DEV on purpose — dev is
+ * meant to use the live conda env, not the packaged relocatable copy — so under
+ * `electron:dev` the flag was silently dropped and foundry fell back to hunting
+ * for a conda env of its own, failing with four paths that mean nothing on this
+ * machine (one of them under /opt/homebrew, because its candidate list is
+ * written for the Mac it was built on). A silently omitted flag turned a missing
+ * dependency into a message about somebody else's computer.
+ *
+ * So each candidate is TESTED — `python -c "import fitz"` — and the first that
+ * answers is used. It costs about a second, once, at the front of a run that
+ * takes minutes.
+ */
+function renderPythonCandidates(): string[] {
+  const userData = app.getPath('userData');
+  const bundled = getActiveBundledEnvPath();
+  return [
+    // Packaged: the relocatable env this app installed.
+    ...(bundled ? [relocatablePythonPath(bundled)] : []),
+    // The same env by path, which exists in DEV too — it is where the packaged
+    // build unpacks, and a dev machine that has ever run one still has it. This
+    // is the entry that makes Convert to EPUB work under `electron:dev`.
+    relocatablePythonPath(path.join(userData, 'runtime', 'e2a-env')),
+    // e2a's own env, for a checkout-driven dev machine that has no unpacked copy.
+    relocatablePythonPath(path.join(getDefaultE2aPath(), 'python_env')),
+  ];
+}
+
+/** Can this interpreter turn a page into a picture? */
+function hasPyMuPDF(python: string): boolean {
+  if (!fs.existsSync(python)) return false;
+  const probe = spawnSync(python, ['-c', 'import fitz'], { timeout: 30_000, windowsHide: true });
+  return probe.status === 0;
+}
+
+/**
+ * The `--python` flag, or a REFUSAL naming every interpreter that was tried.
+ *
+ * Never an empty list quietly: without this flag foundry looks for an env that
+ * was never going to exist here, and the user reads a sentence about MLX — a
+ * library they did not choose and, on the endpoint route, do not need.
+ */
+function renderPythonArgs(): string[] {
+  const declared = process.env['FOUNDRY_VLM_PYTHON']?.trim();
+  // Somebody set it deliberately; foundry reads the same variable, so let it,
+  // and let its refusal be about the path they chose.
+  if (declared) return [];
+
+  const tried = renderPythonCandidates();
+  const found = tried.find(hasPyMuPDF);
+  if (!found) {
+    throw new Error([
+      'Converting a PDF needs a Python with PyMuPDF in it to turn each page into a picture — '
+      + 'that happens on this machine even when a server reads the pages. None of these has it:',
+      ...tried.map((t) => `  ${t}`),
+      'Install the bundled environment in Settings → Add-ons, or set FOUNDRY_VLM_PYTHON to an '
+      + 'interpreter that has PyMuPDF. Nothing was converted.',
+    ].join('\n'));
+  }
+  return ['--python', found];
+}
 
 /**
  * Where this PDF's banked page answers live — machine-local, derived, never
@@ -301,6 +379,7 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
         '--out', stagedEpub,
         '--readings', readingsPath,
         '--language', language,
+        ...renderPythonArgs(),
         // Never stripped and retried on a foundry that does not know the flag:
         // that foundry would read every page, and a book silently containing the
         // pages the user deleted is the failure this is meant to prevent. Its own
