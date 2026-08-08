@@ -312,15 +312,34 @@ const FIXTURE_BLOCKS = [
     assert.strictEqual(list.category_id, 'list', 'dots says list-item; the palette says list');
   });
 
-  await check('the same book without stamps is classified, and says so', async () => {
+  // The same book with the stamps stripped. It is still an EPUB, so it still
+  // states its structure — the `<h1>` is a heading and the nav document names
+  // s0001.xhtml, which makes that heading the document's chapter opening. What
+  // it no longer states is the GROUP and the working PDF's block ids, and those
+  // are the difference between the two classes: see tools/test-epub-markup-categories.js
+  // for the markup reader itself.
+  await check('the same book without stamps is read off its markup, and says so', async () => {
     const result = await analyzed(unstampedEpub);
-    assert.strictEqual(result.categoryProvenance.source, 'heuristic');
-    assert.strictEqual(result.categoryProvenance.stampedBlocks, 0);
+    assert.strictEqual(result.categoryProvenance.source, 'markup');
+    assert.ok(result.categoryProvenance.stampedBlocks > 0,
+      'every aligned block gets a category from the markup it came out of');
     const h = heading(result);
-    assert.strictEqual(h.category_id, 'title',
-      'THE BUG: large type that does not start with the word "chapter" reads as a title');
+    assert.strictEqual(h.category_id, 'chapter',
+      'THE OLD BUG: large type that does not start with the word "chapter" used to read as a '
+      + '`title`. The tag says heading and the nav names the document, so it is a chapter opening');
+    // The categories are the book's typesetting, not our own record of intent —
+    // which is exactly what the absent group and block ids say.
     assert.strictEqual(h.bf_group, undefined);
     assert.strictEqual(h.bf_blocks, undefined);
+    const quote = result.blocks.find((b) => /along the lines he would wish/.test(b.text));
+    assert.strictEqual(quote.category_id, 'quote', 'a <p> inside a <blockquote> is the quote');
+    const list = result.blocks.find((b) => /German Dictatorship/.test(b.text));
+    assert.strictEqual(list.category_id, 'list', 'an <li> is its <ul>');
+    // The stamped book calls this one `footnote`. Unstamped it is a bare <p>
+    // that nothing links to, so the markup says body text — and body text is
+    // what a bare <p> is, not a stand-in for an answer that went missing.
+    const note = result.blocks.find((b) => /Nazi Dictatorship, chapter four/.test(b.text));
+    assert.strictEqual(note.category_id, 'body');
   });
 
   // Regression: found by the provenance counters themselves, which reported 30
