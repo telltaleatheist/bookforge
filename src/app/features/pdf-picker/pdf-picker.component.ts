@@ -4077,9 +4077,18 @@ export class PdfPickerComponent implements OnInit {
    * One sentence, read by the station buttons and by the rail's pass entries:
    * two wordings of the same refusal is two answers to "why is this off".
    */
-  private readonly noProjectReason = computed<string | null>(() =>
-    this.projectPath() ? null
-      : 'This document does not belong to a BookForge project, and every station writes into one.');
+  private readonly noProjectReason = computed<string | null>(() => {
+    if (this.projectPath()) return null;
+    // A training-corpus book is refused a project ON PURPOSE (loadCorpusBook),
+    // so "does not belong to a project" is true but useless — it reads as a
+    // fault to be fixed. Say which rule is speaking.
+    if (this.corpusMode()) {
+      return 'This is a training-corpus book, which never becomes a library project — '
+        + 'the stations write into one, so they are closed here. Open the library copy '
+        + 'from Studio to convert or curate it.';
+    }
+    return 'This document does not belong to a BookForge project, and every station writes into one.';
+  });
 
   readonly stationNextLabel = computed(() => {
     const next = this.stationNextStep().next;
@@ -6214,8 +6223,20 @@ export class PdfPickerComponent implements OnInit {
       // Also skip during pipeline transitions (review / paragraph-fix reloads of a
       // DERIVED epub) — projectPath already points at the manifest project and must
       // stay bound to it, not rebind to the exported artifact's (absent) project.
-      if (!this.embedded() && !this.stationSwapping) {
-        await this.autoCreateProject(path, quickResult.pdf_name);
+      if (!this.stationSwapping) {
+        if (!this.embedded()) {
+          await this.autoCreateProject(path, quickResult.pdf_name);
+        } else if (!this.projectPath()) {
+          // Embedded on a FILE rather than a project folder: Studio's "Open" on
+          // an archive variant hands the picker the variant's path, and
+          // `openTarget` only binds when the target IS the folder. The window
+          // then stood in a project it had not been told about, and every
+          // station action refused with "this document does not belong to a
+          // BookForge project" — which was false; the file was inside one.
+          // Bind, never create: an embedded window edits a book that already
+          // has a project, and minting a second is the phantom-project bug.
+          await this.bindContainingProject(path);
+        }
       }
 
       // Auto-extract chapters from EPUBs (they have nav.xhtml with TOC)
@@ -10953,6 +10974,32 @@ export class PdfPickerComponent implements OnInit {
     );
     return true;
   }
+
+  /**
+   * Bind an embedded window to the project that CONTAINS the file it opened.
+   *
+   * The matcher's first rule is directory containment, so a variant opened out
+   * of `projects/<slug>/archive/` resolves to `<slug>` without touching a hash
+   * or a filename. A file that belongs to no project leaves the window
+   * unbound, which is the honest answer — the stations then refuse by name and
+   * nothing is invented.
+   */
+  private async bindContainingProject(filePath: string): Promise<void> {
+    if (this.refuseProjectWriteForCorpus('Bind project')) return;
+    if (this.bindingProject) return;   // restoreProjectState re-enters loadPdf
+    this.bindingProject = true;
+    try {
+      const match = await this.electronService.findManifestProjectBySource(
+        this.fileHash(), filePath);
+      if (match.found && match.projectPath) {
+        await this.restoreProjectState(match.projectPath);
+      }
+    } finally {
+      this.bindingProject = false;
+    }
+  }
+
+  private bindingProject = false;
 
   private async autoCreateProject(pdfPath: string, pdfName: string): Promise<void> {
     if (this.refuseProjectWriteForCorpus('Create project')) return;
