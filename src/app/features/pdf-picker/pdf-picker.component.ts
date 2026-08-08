@@ -8484,9 +8484,13 @@ export class PdfPickerComponent implements OnInit {
         ? ` (${result.fromStrikes} already struck, ${result.translated} translated from pages and `
           + 'blocks deleted in the editor)'
         : '';
-      // The picker's own derivation and main's translation can each have found
-      // something they could not strike. Both are said, and neither is dropped.
-      const unresolved = [this.narrationUnstruckReport(), result.unresolved]
+      // Main's own report of what the cut could not strike, alone. The picker's
+      // derivation (`narrationUnstruckReport`) computes the SAME facts from the
+      // same deletion sets over the same book — showing both here repeated every
+      // sentence twice ("5 deleted page(s) had nothing…" appeared once from
+      // each), and the export's report is the authoritative one because it
+      // describes the cut that actually ran, not the editor's preview of it.
+      const unresolved = [result.unresolved]
         .filter((s): s is string => s !== null && s.length > 0);
 
       this.showAlert({
