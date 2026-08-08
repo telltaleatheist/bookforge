@@ -67,7 +67,8 @@ import * as path from 'path';
 import { ensureFoundryPath, runFoundry } from './foundry-bridge';
 import { ensureVlmPageServer, wslVlmRefusal } from './vlm-page-server';
 import { resolveDocumentProject } from './document-project';
-import { primaryAbsPath } from './document-stages';
+import { primaryAbsPath, workingAbsPath, type DocumentProject } from './document-stages';
+import { readWorkingDocumentState } from './working-document';
 import { withProjectStage } from './document-stage-run';
 import { moveIntoPlace } from './processing-passes';
 import { sha256File } from './sidecar-binding';
@@ -79,6 +80,7 @@ import {
   vlmEndpointArgs,
   vlmEndpointModelsUrl,
   resolveVlmRoute,
+  vlmSkipPagesArgs,
   type VlmConvertRequest,
   type VlmConvertResult,
   type VlmEndpointCheck,
@@ -111,6 +113,35 @@ export function vlmReadingsPath(pdfSha256: string): string {
 function languageOf(manifest: { metadata?: { language?: string } }): string {
   const declared = (manifest.metadata?.language ?? '').trim();
   return declared.length > 0 ? declared : 'en';
+}
+
+/**
+ * The pages this project's working copy marks deleted, zero-based — read off the
+ * DOCUMENT, which is the only thing that knows.
+ *
+ * A page deletion is `/FoundryPageDeleted` on the page itself, written at the
+ * gesture that made it (electron/working-document-writer.ts). The manifest also
+ * carries a `source.deletedPages` mirror, written when the picker SAVES the
+ * project, and it is deliberately not what is read here: it is a copy that can be
+ * a session behind the file, and a conversion that left a page in because a save
+ * had not happened yet would be ninety minutes producing a book the user can see
+ * is wrong. One authority, and it is the file the button names.
+ *
+ * A missing working copy is a refusal rather than an empty list. The caller asked
+ * for the book as curated; there is no curation, and quietly converting the
+ * untouched original instead would answer a different question at full price.
+ */
+async function deletedPagesOfWorkingCopy(project: DocumentProject): Promise<number[]> {
+  const working = workingAbsPath(project);
+  if (!fs.existsSync(working)) {
+    throw new Error(
+      `${project.primaryRelPath} has no working copy, so there are no page deletions to honour. `
+      + 'Create one from the archive row on the Versions page first, or convert the archive PDF '
+      + 'itself. Nothing was converted.'
+    );
+  }
+  const state = await readWorkingDocumentState(working);
+  return state.pages.filter((page) => page.deleted).map((page) => page.index);
 }
 
 /**
@@ -206,6 +237,19 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
   }
   const language = languageOf(manifest.manifest);
 
+  // Resolved HERE, with the language and the readings path, rather than inside
+  // the stage: it reads a file and can refuse (no working copy, an unreadable
+  // record), and every refusal this run can make is cheaper before the stage is
+  // claimed and the GPU is asked for.
+  const skipPages = request.skipDeletedPages === true
+    ? vlmSkipPagesArgs(await deletedPagesOfWorkingCopy(project))
+    : [];
+  // What went on the command line, back as numbers, so the record and the result
+  // say exactly what foundry was told rather than a second derivation of it.
+  const skippedPages = skipPages.length === 0
+    ? []
+    : skipPages[1].split(',').map(Number);
+
   const { sha256 } = await sha256File(pdfPath);
   const readingsPath = vlmReadingsPath(sha256);
   await fs.promises.mkdir(path.dirname(readingsPath), { recursive: true });
@@ -257,6 +301,11 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
         '--out', stagedEpub,
         '--readings', readingsPath,
         '--language', language,
+        // Never stripped and retried on a foundry that does not know the flag:
+        // that foundry would read every page, and a book silently containing the
+        // pages the user deleted is the failure this is meant to prevent. Its own
+        // unknown-flag error is the answer.
+        ...skipPages,
         ...vlmEndpointArgs(endpoint),
       ],
       {
@@ -316,6 +365,11 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
       // read is a page of the user's book that is not in it, and the versions
       // page is where they would look for that months later.
       unreadablePages: unreadable.map((p) => p.page),
+      // Recorded SEPARATELY from the unreadable ones and always — an empty list
+      // is the positive statement that this conversion read the whole document.
+      // A book missing pages 4-9 months from now is either a decision somebody
+      // made in the working copy or a fault, and only the record can say which.
+      skippedPages,
     },
   });
 
@@ -326,6 +380,7 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     inferredPages,
     totalPages,
     unreadable,
+    skippedPages,
   };
   }
 }

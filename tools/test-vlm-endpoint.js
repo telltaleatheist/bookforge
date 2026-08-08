@@ -45,6 +45,7 @@ const {
   vlmEndpointModelsUrl,
   vlmLocalReadingRefusal,
   vlmRouteLabel,
+  vlmSkipPagesArgs,
 } = require(MODULE);
 
 const results = [];
@@ -210,6 +211,34 @@ check('an unreachable server reports its own reason', () => {
     reachable: false, models: [], error: 'connect ECONNREFUSED 127.0.0.1:8000',
   });
   assert.match(said, /ECONNREFUSED/);
+});
+
+// ── the pages that are NOT read ────────────────────────────────────────────
+//
+// The one place in the app where the working document's zero-based page indexes
+// become the one-based page numbers foundry and people count in. An off-by-one
+// here leaves the wrong page out of somebody's book, an hour after they pressed
+// the button, and nothing in the finished EPUB says which page is missing.
+
+check('nothing deleted means no flag at all, not an empty one', () => {
+  assert.deepStrictEqual(vlmSkipPagesArgs([]), []);
+});
+
+check('page indexes become page numbers', () => {
+  assert.deepStrictEqual(vlmSkipPagesArgs([0, 1, 2]), ['--skip-pages', '1,2,3']);
+});
+
+check('the list is sorted and de-duplicated', () => {
+  assert.deepStrictEqual(vlmSkipPagesArgs([11, 3, 11, 0, 3]), ['--skip-pages', '1,4,12']);
+});
+
+check('a page index that is not a page index stops the conversion', () => {
+  for (const bad of [-1, 1.5, NaN, '3', null, undefined]) {
+    assert.throws(
+      () => vlmSkipPagesArgs([0, bad]),
+      /is not a page index/,
+      `${JSON.stringify(bad)} was accepted as a page`);
+  }
 });
 
 check('a server serving something else names both', () => {

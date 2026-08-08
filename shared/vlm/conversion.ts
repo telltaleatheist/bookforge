@@ -125,6 +125,29 @@ export interface VlmConvertRequest {
    * hands it over per run, exactly as `ollamaBaseUrl` travels on a job config.
    */
   endpoint?: VlmEndpointConfig;
+  /**
+   * Read the archive PDF, but leave out the pages the WORKING COPY marks
+   * deleted.
+   *
+   * This is the whole difference between the two buttons on the versions page.
+   * **Convert to EPUB** on the archive row reads every page, because the archive
+   * is the book as it arrived and nobody has said otherwise. **Create EPUB** on
+   * the working-copy row reads the book the user curated, and the only curation
+   * a conversion can honour is which pages are in it — the working copy's other
+   * marks are block annotations, and a conversion does not read blocks, it reads
+   * pictures of pages.
+   *
+   * It is a BOOLEAN and not a list of pages, on purpose: the record of which
+   * pages are gone lives in the working document itself (`/FoundryPageDeleted`),
+   * main reads it, and a renderer that sent page numbers would be a second copy
+   * of that record able to disagree with the file. The caller says which book it
+   * means; main says which pages that is.
+   *
+   * With no working copy on disk this is a REFUSAL by name rather than a whole
+   * conversion — a button that said "from your working copy" and then quietly
+   * read the original would be ninety minutes producing the wrong book.
+   */
+  skipDeletedPages?: boolean;
 }
 
 export interface VlmConvertResult {
@@ -144,6 +167,16 @@ export interface VlmConvertResult {
   inferredPages: number;
   /** Every page of the PDF. */
   totalPages: number;
+  /**
+   * The pages left out because the working copy marks them deleted, ONE-BASED
+   * as they were given to foundry and as a person counts pages.
+   *
+   * Empty for a conversion of the archive, which reads everything. Reported for
+   * the same reason `unreadable` is: a page that is not in the book is a fact
+   * about the book, and the difference between "the user removed it" and "the
+   * model could not read it" is the difference between a decision and a fault.
+   */
+  skippedPages: number[];
   /**
    * Pages that are NOT in the book, each with foundry's own reason. Never
    * silent: a page the model could not read is a page of the user's book that
@@ -267,6 +300,44 @@ export function vlmEndpointArgs(endpoint: VlmEndpointConfig | null): string[] {
   if (endpoint.model.length > 0) args.push('--vlm-endpoint-model', endpoint.model);
   if (endpoint.concurrency > 0) args.push('--vlm-concurrency', String(endpoint.concurrency));
   return args;
+}
+
+/**
+ * `foundry vlm-convert --skip-pages`, from the working document's own record of
+ * which pages are gone — or no flag at all when none are.
+ *
+ * The whole of the translation between two page vocabularies, stated once:
+ *
+ *  - **In** are the working document's page INDEXES, zero-based, exactly as
+ *    `/FoundryPageDeleted` is recorded and as `delete-page` edits name them
+ *    (shared/document/pipeline-types.ts).
+ *  - **Out** are page NUMBERS, one-based, which is what foundry's flag takes and
+ *    what a person counting pages means. The `+ 1` is the only place in this app
+ *    the two are converted, so there is nowhere for an off-by-one to hide.
+ *
+ * Sorted and de-duplicated because the flag is read by a person as often as by
+ * foundry, and a record listing page 12 twice says nothing a record listing it
+ * once does not.
+ *
+ * A value that is not a page index THROWS rather than being dropped. A skip list
+ * is a list of pages the user decided are not in their book; silently ignoring an
+ * entry nobody can parse would put a page back in the book without saying so, and
+ * a garbage entry means the record itself is wrong — which is worth stopping for.
+ */
+export function vlmSkipPagesArgs(deletedPageIndexes: readonly number[]): string[] {
+  const pages = new Set<number>();
+  for (const index of deletedPageIndexes) {
+    if (!Number.isInteger(index) || index < 0) {
+      throw new Error(
+        `This book's record of deleted pages contains ${JSON.stringify(index)}, which is not a page `
+        + 'index. Pages are counted from 0 in the working document. Nothing was converted, because '
+        + 'a page cannot be left out of the book on the strength of an entry nothing can read.'
+      );
+    }
+    pages.add(index + 1);
+  }
+  if (pages.size === 0) return [];
+  return ['--skip-pages', [...pages].sort((a, b) => a - b).join(',')];
 }
 
 /**
