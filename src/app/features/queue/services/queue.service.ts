@@ -14,6 +14,7 @@ import {
   QueueProgress,
   JobResult,
   CreateJobRequest,
+  JobConfig,
   TtsConversionConfig,
   TranslationJobConfig,
   RvcEnhancementJobConfig,
@@ -37,6 +38,11 @@ import {
 import type { PassJobConfig, ProcessingChainPlan, ProcessingChainRequest } from '@shared/processing/pass-types';
 import { stagesFor } from '../models/job-stages';
 import { JobEtaService } from './job-eta.service';
+import {
+  buildConversionConfig,
+  runConversionJob,
+  type VlmConvertJobConfig,
+} from '../jobs/vlm-convert-job';
 import { AIProvider } from '../../../core/models/ai-config.types';
 import { collapseFilenameDots } from '../../../core/utils/filename-utils';
 import { StudioService } from '../../studio/services/studio.service';
@@ -283,6 +289,31 @@ export class QueueService {
   // The one throughput/ETA engine, shared with the queue panel so a child's row and
   // the workflow total can never quote different numbers for the same work.
   private readonly jobEta = inject(JobEtaService);
+
+  /**
+   * Cancellation handles for conversions currently running, by job id.
+   *
+   * A conversion is a document stage owned by MAIN, so stopping one is asking
+   * main to stop it — the abort here is only how the runner is told to make that
+   * ask. The map is keyed by job id and cleared in a `finally`, so a job that
+   * failed does not leave a handle behind for a later job to abort.
+   */
+  private readonly conversionAborts = new Map<string, AbortController>();
+
+  /**
+   * Stop a running conversion, if this job is one. Safe to call for any job id.
+   *
+   * Separate from `electron.queue.cancelJob` because a conversion is not one of
+   * main's queue jobs: it is a document stage, and cancelling it means asking
+   * main to cancel THAT. Every path that removes or stops a job calls this too,
+   * or a row vanishes from the list while foundry keeps reading pages.
+   */
+  private abortConversion(jobId: string): void {
+    const abort = this.conversionAborts.get(jobId);
+    if (!abort) return;
+    abort.abort();
+    this.conversionAborts.delete(jobId);
+  }
 
   // Progress listener cleanup
   private unsubscribeProgress: (() => void) | null = null;
@@ -1754,6 +1785,10 @@ export class QueueService {
     if (job.status === 'processing' && electron?.queue) {
       await electron.queue.cancelJob(jobId);
     }
+    // A conversion is not one of main's queue jobs — it is a document stage, and
+    // `queue.cancelJob` knows nothing about it. Without this the row disappears
+    // from the list while foundry keeps reading pages and holding the GPU.
+    this.abortConversion(jobId);
 
     // Clear either lane if a removed job was running in it
     if (isMasterJob) {
@@ -2219,6 +2254,7 @@ export class QueueService {
     for (const currentId of [this._currentJobId(), this._currentCloudJobId()]) {
       if (currentId) {
         electron?.queue?.cancelJob(currentId);
+        this.abortConversion(currentId);
         this.clearRunningJob(currentId);
       }
     }
@@ -4131,6 +4167,49 @@ export class QueueService {
         // Finish job (standalone-aware: won't advance queue for standalone jobs)
         await this.finishJob(job.id);
 
+      } else if (job.type === 'vlm-convert') {
+        // Scheduling only. The conversion is a document stage owned by main —
+        // this waits for it and reports it; it never touches the book.
+        const config = job.config as VlmConvertJobConfig;
+        if (!config?.projectDir) {
+          throw new Error('This conversion row has no project, so there is nothing to convert.');
+        }
+
+        const abort = new AbortController();
+        this.conversionAborts.set(job.id, abort);
+        try {
+          const result = await runConversionJob(
+            config,
+            {
+              jobId: job.id,
+              signal: abort.signal,
+              // The ETA rides IN the message ("… · 4.8s/page · 22m 10s left")
+              // rather than in a field of its own. QueueJob has no etaSeconds —
+              // the queue's ETA widget is JobEtaService, whose unit is TTS
+              // chunks — and adding one here would write a key into queue.json
+              // that nothing reads and every future build has to keep honouring.
+              report: ({ progress, message }) => {
+                this._jobs.update(jobs => jobs.map(j => j.id === job.id
+                  ? { ...j, progress, progressMessage: message }
+                  : j));
+              },
+            },
+            {
+              convertPdfToEpub: (r) => this.electron.convertPdfToEpub(r),
+              onDocumentStageProgress: (cb) => this.electron.onDocumentStageProgress(cb),
+              cancelDocumentStage: (dir) => this.electron.documentCancelStage(dir),
+            },
+          );
+
+          this._jobs.update(jobs => jobs.map(j => j.id === job.id
+            ? { ...j, status: 'complete' as JobStatus, progress: 100, outputPath: result.epubPath }
+            : j));
+        } finally {
+          this.conversionAborts.delete(job.id);
+        }
+
+        await this.finishJob(job.id);
+
       } else if (job.type === 'generate-sentences') {
         // Generate-sentences job — transcribe an audiobook variant into a synced
         // VTT with Whisper and link it to that variant.
@@ -4333,7 +4412,10 @@ export class QueueService {
     }
   }
 
-  private buildJobConfig(request: CreateJobRequest): ProcessingPassJobConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig | undefined {
+  // Returns JobConfig rather than re-listing every member: the union is declared
+  // once in queue.types.ts, and a hand-copied second copy is how a new job type
+  // compiles everywhere except the one place that builds it.
+  private buildJobConfig(request: CreateJobRequest): JobConfig | undefined {
     if (PASS_JOB_TYPES.has(request.type)) {
       // Passed through untouched: this config came from planProcessingChain,
       // which is the only thing allowed to decide what a pass does.
@@ -4551,6 +4633,11 @@ export class QueueService {
         testModeChunks: config.testModeChunks,
         target: config.target,
       };
+    } else if (request.type === 'vlm-convert') {
+      // Validated by the job module, not here: the shape belongs beside the code
+      // that runs it, and a row built loosely fails at 3 a.m. in the middle of a
+      // batch rather than at the moment somebody could have fixed it.
+      return buildConversionConfig(request.config as Partial<VlmConvertJobConfig>);
     } else if (request.type === 'generate-sentences') {
       const config = request.config as Partial<GenerateSentencesJobConfig>;
       if (!config?.projectId || !config?.variantId || !config?.m4bPath || !config?.modelId) {

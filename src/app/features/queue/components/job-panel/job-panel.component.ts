@@ -37,6 +37,8 @@ const TYPE_ICONS: Record<JobType, string> = {
   // Processing passes
   'simplify': '\u{1F4D6}',
   'translate-pass': '\u{1F310}',
+  // Making the book: a vision model reading pictures of pages.
+  'vlm-convert': '\u{1F5A5}',
 };
 
 const TYPE_LABELS: Record<JobType, string> = {
@@ -53,6 +55,7 @@ const TYPE_LABELS: Record<JobType, string> = {
   'generate-sentences': 'Generate Sentences',
   'simplify': 'Simplify',
   'translate-pass': 'Translate',
+  'vlm-convert': 'Convert to EPUB',
 };
 
 @Component({

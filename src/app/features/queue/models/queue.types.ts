@@ -31,12 +31,18 @@ export type JobType = 'tts-conversion' | 'translation' | 'rvc-enhancement' | 're
   // project. Both run through the same main-process handler; the pass kind is in
   // the config, and both read and rewrite the project's book EPUB.
   //
-  // Making the book is not a pass and has no job type: `foundry vlm-convert` is
-  // a document stage owned by main. The whole document-pipeline vocabulary that
-  // preceded it — 'document-get-text', 'document-blocks', 'document-reflow',
-  // 'foundry-footnotes' and the 'foundry-*' scan chain before them — is retired;
-  // see RETIRED_JOB_TYPES.
-  | 'simplify' | 'translate-pass';
+  // Making the book is not a pass — but it IS queueable. `vlm-convert` runs the
+  // document stage main already owns (one per project, cancellable, surviving a
+  // renderer reload); the queue only decides WHEN. It was deliberately absent
+  // until Aug 2026 because a conversion is started from the picker and there was
+  // nothing to schedule; what changed is batching — ninety minutes of one GPU
+  // each, so a shelf of books has to be able to run overnight in order.
+  //
+  // It does NOT revive the retired document-pipeline vocabulary below
+  // ('document-get-text', 'document-blocks', 'document-reflow',
+  // 'foundry-footnotes' and the 'foundry-*' scan chain). Those were PASSES that
+  // reimplemented stages; this is the stage itself, queued.
+  | 'simplify' | 'translate-pass' | 'vlm-convert';
 
 /** The job types that are processing passes, for a runtime membership test. */
 export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
@@ -275,7 +281,15 @@ export type ProcessingPassJobConfig = PassJobConfig & {
 };
 
 // Job configuration union type
-export type JobConfig = ProcessingPassJobConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig;
+/**
+ * A queued conversion. Defined in `../jobs/vlm-convert-job.ts` beside the code
+ * that runs it, and re-exported here so the union has one spelling — the job
+ * type owns its own shape rather than having it declared away from its runner.
+ */
+export type { VlmConvertJobConfig } from '../jobs/vlm-convert-job';
+import type { VlmConvertJobConfig } from '../jobs/vlm-convert-job';
+
+export type JobConfig = ProcessingPassJobConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig | VlmConvertJobConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
