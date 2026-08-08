@@ -366,14 +366,6 @@ export class App implements OnInit {
       route: '/queue'
     },
     {
-      // The training corpus — measurement material for the page-layout model,
-      // kept outside the library and never a Studio project.
-      id: 'training',
-      icon: '\u{1F393}', // Graduation cap emoji
-      label: 'Training',
-      route: '/training'
-    },
-    {
       id: 'live-tts',
       icon: '\u{1F3A4}', // Microphone emoji
       label: 'Live TTS',
