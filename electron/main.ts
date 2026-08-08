@@ -6996,9 +6996,9 @@ function setupIpcHandlers(): void {
    *
    * The picker's Chapter tab asks this for a converted book: the blocks on
    * screen are the chapter OPENINGS (`data-bf-cat="chapter"`), and the book's
-   * navigation is what those openings are CALLED — the title an audiobook is
-   * built from. `titles: null` means the project has no book yet, which is a
-   * state and not a failure.
+   * table of contents — its EPUB 3 nav, its EPUB 2 NCX, or both — is what those
+   * openings are CALLED, the title an audiobook is built from. `titles: null`
+   * means the project has no book yet, which is a state and not a failure.
    */
   ipcMain.handle('book:chapter-titles', async (_event, projectDir: string) => {
     try {
@@ -7012,10 +7012,11 @@ function setupIpcHandlers(): void {
   /**
    * Rename one chapter, in the book itself.
    *
-   * The nav entry and the chapter document's `<title>`; never the print. The
-   * book is the only store — re-opening the project reads the new title back out
-   * of it — so there is nothing here that also has to be saved. See
-   * electron/book-chapters.ts for why the narration records move with it.
+   * Every table of contents the book carries, and the chapter document's
+   * `<title>`; never the print. The book is the only store — re-opening the
+   * project reads the new title back out of it — so there is nothing here that
+   * also has to be saved. See electron/book-chapters.ts for why the narration
+   * records move with it, and why renaming only one of two lists is refused.
    */
   ipcMain.handle('book:rename-chapter', async (
     _event, projectDir: string, file: string, title: string) => {

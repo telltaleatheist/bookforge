@@ -2787,8 +2787,9 @@ export class ElectronService {
   }
 
   /**
-   * Rename one chapter in the book itself — its nav entry and its document's
-   * `<title>`, never the print on the page.
+   * Rename one chapter in the book itself — its entry in every table of
+   * contents the book carries (an EPUB 3 nav, an EPUB 2 NCX, or both) and its
+   * document's `<title>`, never the print on the page.
    *
    * `file` is the chapter document's zip entry name, which the picker takes off
    * the renamed block's own element key. The book is the only store, so there is

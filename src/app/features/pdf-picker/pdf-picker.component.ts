@@ -12012,8 +12012,9 @@ export class PdfPickerComponent implements OnInit {
    *    keep in step.
    *  - **The book.** The block's text is mupdf's rendering of the printed page
    *    and cannot be edited — the print is the print. The title is the book's
-   *    own nav entry, so the edit goes into the book (electron/book-chapters.ts)
-   *    and the list re-reads it from there.
+   *    own table-of-contents entry, so the edit goes into the book
+   *    (electron/book-chapters.ts, which writes it into every list the book
+   *    carries) and the list re-reads it from there.
    */
   retitleChapterBlock(event: { blockId: string; title: string }): void {
     if (this.documentLayerLive()) {
