@@ -290,6 +290,23 @@ per-document counts, every applied deletion with ~80 characters of context, and
 every refusal with its reason. The diff's texts come from the two books; its
 CHANGES come from the report, so the change count is the marker count.
 
+## `vlm-convert` is NOT a pass
+
+`foundry vlm-convert` (Aug 2026) is a second, self-contained route to a book: a
+document vision model reads the page pictures and foundry assembles them. It is a
+document STAGE, not a pass, and this section exists so nobody tries to add it to
+the palette.
+
+A pass reads `manifest.outputs.epub`, transforms it, and renames the result back
+onto the same path. A conversion is where the book COMES FROM — there is nothing
+to read, nothing to diff against, and no legal position in a chain except first.
+So it goes through `withProjectStage` like the cast and the detect, `JOB_TYPE_OF`
+has no entry for it (which is the planner's refusal), and its provenance record
+`{kind: 'vlm-convert'}` is written AFTER `registerEpubExport` for the same reason
+the foundry passes' are: an export starts provenance over.
+
+Contract: CLAUDE.md §Convert to EPUB, `shared/vlm/`, `electron/vlm-convert.ts`.
+
 ## Provenance
 
 `manifest.outputs.epub` grows an `appliedPasses` array:
@@ -420,6 +437,14 @@ open; it gates nothing about processing.
 - No EPUB on disk yet? The picker offers "the EPUB this processing run will
   produce" when page 1 has passes configured. Page 1 empty AND no EPUB → TTS
   is grayed out.
+
+- **Three cards, as of Aug 2026** — the book, the NARRATION COPY, and what this
+  run produces. The narration copy (`outputs.ttsEpub`) is the converted book
+  minus what the user struck out of it in the editor; it is PREFERRED on arrival
+  when one exists, because a project that has one has already had somebody decide
+  what gets read aloud. Never a silent redirect: the whole book is on the card
+  beside it, and `effectiveTtsInput` makes the lit card the file that will
+  actually be narrated. See CLAUDE.md §Convert to EPUB.
 
 ### Page 3 — Assembly
 - Unchanged, with the same honesty: no cached sentences AND no TTS configured

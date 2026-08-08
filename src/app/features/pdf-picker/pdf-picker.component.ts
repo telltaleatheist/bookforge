@@ -10161,6 +10161,23 @@ export class PdfPickerComponent implements OnInit {
     this.documentBlocks.stageDone.set(0);
     this.documentBlocks.stageTotal.set(0);
     this.documentBlocks.lastError.set(null);
+    // Its OWN subscription, keyed on the project, rather than the block
+    // service's: that one filters on the working-document ref, and a scanned PDF
+    // that has never been cast has none — which is exactly the book somebody is
+    // most likely to be converting. Torn down in the `finally`, so a window that
+    // converts twice does not accumulate listeners.
+    // Filtered on the PROJECT and nothing else. `document:stage-progress` carries
+    // the pipeline stage id (`vlm-convert`) while `-started` and `-finished`
+    // carry the user-facing label, and a filter that matched the wrong one of
+    // those would drop every line silently. The project can only hold one stage
+    // at a time — `beginStage` refuses a second by name — so the project IS the
+    // whole filter.
+    const unwatch = this.electronService.onDocumentStageProgress((event) => {
+      if (event.projectDir !== dir) return;
+      this.documentBlocks.stageMessage.set(event.message);
+      this.documentBlocks.stageDone.set(event.done);
+      this.documentBlocks.stageTotal.set(event.total);
+    });
     try {
       const answer = await this.electronService.convertPdfToEpub({ projectDir: dir });
       if (!answer.success || !answer.result) {
@@ -10189,6 +10206,7 @@ export class PdfPickerComponent implements OnInit {
       this.documentBlocks.lastError.set(message);
       this.showAlert({ title: 'The conversion failed', message, type: 'error' });
     } finally {
+      unwatch();
       this.documentBlocks.stageRunning.set(null);
     }
   }
