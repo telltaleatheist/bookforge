@@ -62,6 +62,16 @@ async function readManifest(projectDir: string): Promise<ProjectManifest> {
   return JSON.parse(raw) as ProjectManifest;
 }
 
+/** One of a project's PDFs, whatever has or has not been done with it. */
+export interface ProjectPdf {
+  /** The manifest VARIANT id of this PDF. */
+  id: string;
+  /** Project-relative, slash-separated. */
+  relPath: string;
+  absPath: string;
+  label: string;
+}
+
 /** Every PDF this project holds, as project-relative paths that are on disk. */
 function pdfVariants(projectDir: string, manifest: ProjectManifest): Array<{
   id: string;
@@ -77,6 +87,28 @@ function pdfVariants(projectDir: string, manifest: ProjectManifest): Array<{
       label: v.descriptor || v.metadata?.title || path.basename(v.path),
     }))
     .filter((v) => fs.existsSync(path.join(projectDir, v.relPath.split('/').join(path.sep))));
+}
+
+/**
+ * Every PDF this project holds, whether or not anything has been done with it.
+ *
+ * `listWorkingDocuments` answers a narrower question — which PDFs have a working
+ * copy — and it was for a while the only listing there was, which is how the
+ * archive original came to be a row that appeared only AFTER the user had
+ * already acted on it. Convert to EPUB and Create working copy both stand on
+ * that row, and both are things you do to a PDF nothing has happened to yet, so
+ * the row has to exist before either has been pressed.
+ *
+ * Same source as every other answer about a project's documents: the manifest's
+ * variants, filtered to the files that are on disk. Nothing scans a directory
+ * for something ending in `.pdf`.
+ */
+export async function listProjectPdfs(projectDir: string): Promise<ProjectPdf[]> {
+  const manifest = await readManifest(projectDir);
+  return pdfVariants(projectDir, manifest).map((v) => ({
+    ...v,
+    absPath: path.join(projectDir, v.relPath.split('/').join(path.sep)),
+  }));
 }
 
 /**

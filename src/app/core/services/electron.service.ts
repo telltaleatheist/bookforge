@@ -2113,6 +2113,35 @@ export class ElectronService {
     return result.bytes;
   }
 
+  /**
+   * Mint `<Original>.working.pdf` — a copy of the archive original, marked.
+   *
+   * Fast enough to be a button rather than a job: it is a file copy plus one
+   * small incremental update carrying the marker, seconds even on a 300 MB scan.
+   * No foundry, no model, nothing to watch — so it does not go through the queue
+   * and reports no progress. The working-copy row simply appears.
+   *
+   * A project that already has one is REFUSED BY NAME rather than re-minted: the
+   * existing file holds whatever the user has curated, and replacing it would
+   * throw that away instantly, looking exactly like success.
+   */
+  async documentCreateWorkingCopy(ref: DocumentRef): Promise<{
+    workingPath: string;
+    workingRelPath: string;
+    documentClass: 'scanned' | 'text';
+  }> {
+    if (!this.isElectron) throw new Error('Making a working copy needs the desktop app.');
+    const result = await (window as any).electron.document.createWorkingCopy(ref);
+    if (!result.success) {
+      throw new Error(result.error || 'Making the working copy failed with no message.');
+    }
+    return {
+      workingPath: result.workingPath,
+      workingRelPath: result.workingRelPath,
+      documentClass: result.documentClass,
+    };
+  }
+
   async documentCancelStage(projectDir: string): Promise<boolean> {
     if (!this.isElectron) return false;
     const result = await (window as any).electron.document.cancelStage(projectDir);

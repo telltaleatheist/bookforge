@@ -17,7 +17,7 @@ import { registerDocumentIpc } from './document-ipc';
 // A project's files belong to no one window: the picker is its own BrowserWindow
 // and has to hear that the book changed just as much as the main one does.
 import { broadcastToAllWindows } from './document-stage-run';
-import { listWorkingDocuments } from './document-project';
+import { listProjectPdfs, listWorkingDocuments } from './document-project';
 import * as manifestService from './manifest-service';
 import * as manifestMigration from './manifest-migration';
 import * as archiveMigration from './archive-migration';
@@ -9881,27 +9881,6 @@ function setupIpcHandlers(): void {
 
       const projectDir = projectPath;
 
-      // 1. Original source file
-      const sourceDir = path.join(projectDir, 'source');
-      if (fsSync.existsSync(sourceDir)) {
-        const sourceFiles = await fs.readdir(sourceDir);
-        for (const file of sourceFiles) {
-          const ext = path.extname(file).toLowerCase();
-          const baseName = path.basename(file, ext);
-          if (baseName === 'original') {
-            await addVersion(
-              'original',
-              'original',
-              'Original Source',
-              `The original ${ext.toUpperCase().replace('.', '')} file you imported`,
-              path.join(sourceDir, file),
-              ext === '.pdf' ? '📄' : '📘',
-              true
-            );
-          }
-        }
-      }
-
       // ── The family: the archive original and the working copy it minted ─────
       //
       // RULED 2026-08-04 (docs/PIPELINE_V2_PLAN.md), reversing the old rule that
@@ -9909,37 +9888,46 @@ function setupIpcHandlers(): void {
       // detected from the queue and afterwards the versions page listed only the
       // archive. The work existed on disk and had no door.
       //
-      // Both rows are DERIVED from the binding record plus the files' existence.
-      // Nothing here scans a directory for something that looks like a working
-      // copy, and nothing invents a row from a filename guess: no binding, or no
-      // file, means no row.
+      // The ARCHIVE row is listed for every PDF the project holds, whether or not
+      // anything has been done with it. It used to be emitted only alongside a
+      // working copy, which put the archive PDF of a freshly imported book
+      // nowhere — and Convert to EPUB and Create working copy are precisely the
+      // two things you do to a PDF nothing has happened to yet. The WORKING row
+      // is still derived from the binding record plus the file's existence:
+      // nothing scans a directory for something that looks like a working copy,
+      // and no binding, or no file, means no row.
+      const projectPdfs = await listProjectPdfs(projectDir);
       const workingDocs = await listWorkingDocuments(projectDir);
-      for (const doc of workingDocs) {
-        if (doc.primaryExists) {
-          await addVersion(
-            `archive:${doc.primaryRelPath}`,
-            'archive',
-            path.basename(doc.primaryAbsPath, path.extname(doc.primaryAbsPath)),
-            'The book exactly as you imported it. Nothing is ever written to it.',
-            doc.primaryAbsPath,
-            '📕',
-            // Not openable, deliberately, and this is the ONE row where that is a
-            // statement rather than a limitation: opening a book puts the user on
-            // its working copy (RULED 2026-08-04 — you never start on a read-only
-            // book), so an Open here would be a second button doing exactly what
-            // the working copy's does. The row still SAYS so — the versions page
-            // renders a disabled Open carrying that sentence rather than nothing
-            // at all. Export and Delete both act on this file directly.
-            false,
-            undefined,
-            { variantId: doc.primaryVariantId, primaryPath: doc.primaryAbsPath }
-          );
-        }
+      const workingByPrimary = new Map(workingDocs.map((doc) => [doc.primaryRelPath, doc]));
+      const familyPaths = new Set(projectPdfs.map((pdf) => pdf.absPath.toLowerCase()));
+
+      for (const pdf of projectPdfs) {
+        await addVersion(
+          `archive:${pdf.relPath}`,
+          'archive',
+          path.basename(pdf.absPath, path.extname(pdf.absPath)),
+          'The book exactly as you imported it. Nothing is ever written to it.',
+          pdf.absPath,
+          '📕',
+          // Not openable, deliberately, and this is the ONE row where that is a
+          // statement rather than a limitation: opening a book puts the user on
+          // its working copy (RULED 2026-08-04 — you never start on a read-only
+          // book), so an Open here would be a second button doing exactly what
+          // the working copy's does. The row still SAYS so — the versions page
+          // renders a disabled Open carrying that sentence rather than nothing
+          // at all. Export and Delete both act on this file directly.
+          false,
+          undefined,
+          { variantId: pdf.id, primaryPath: pdf.absPath }
+        );
+
+        const doc = workingByPrimary.get(pdf.relPath);
+        if (!doc) continue;
         await addVersion(
           `working:${doc.workingRelPath}`,
           'working',
           'Working copy',
-          'Your copy of the original: the cast text and your block curation.',
+          'Your copy of the original, and the curation you have done on it.',
           doc.workingAbsPath,
           '✏️',
           true,
@@ -9953,6 +9941,33 @@ function setupIpcHandlers(): void {
             })),
           }
         );
+      }
+
+      // 1. Original source file
+      //
+      // Skipped when the file is already an ARCHIVE row above. `source/original.pdf`
+      // is usually the project's PDF variant too, and listing one file as both
+      // "Original Source" and the family's archive parent would put two rows and
+      // two sets of buttons on one document — with only one of them carrying the
+      // family the working copy and the book hang off.
+      const sourceDir = path.join(projectDir, 'source');
+      if (fsSync.existsSync(sourceDir)) {
+        const sourceFiles = await fs.readdir(sourceDir);
+        for (const file of sourceFiles) {
+          const ext = path.extname(file).toLowerCase();
+          const baseName = path.basename(file, ext);
+          if (baseName === 'original' && !familyPaths.has(path.join(sourceDir, file).toLowerCase())) {
+            await addVersion(
+              'original',
+              'original',
+              'Original Source',
+              `The original ${ext.toUpperCase().replace('.', '')} file you imported`,
+              path.join(sourceDir, file),
+              ext === '.pdf' ? '📄' : '📘',
+              true
+            );
+          }
+        }
       }
 
       // When REFLOW wrote this project's book, per the binding that recorded it.

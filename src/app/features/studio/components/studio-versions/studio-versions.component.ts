@@ -11,7 +11,7 @@ import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-
 import { MetadataEditorComponent, EpubMetadata } from '../../../audiobook/components/metadata-editor/metadata-editor.component';
 import { StudioItem } from '../../models/studio.types';
 import { AppliedPass, AppliedPassKind, ProjectVariant, ResolvedProjectVariant } from '../../../../core/models/manifest.types';
-import { DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
+import { DesktopSelectComponent, DesktopSelectItems, DialogService } from '../../../../creamsicle-desktop';
 import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-target';
 import type { PassDiffEntry } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
@@ -20,6 +20,7 @@ import {
   STAR_LABELS,
   STAR_MEANINGS,
   latestPassByKind,
+  narrationRefusal,
   starForPassKind,
   starSlotsFor,
   versionFamily,
@@ -27,7 +28,8 @@ import {
   type VersionFamilyInput,
   type VersionStar,
 } from '@shared/document/version-family';
-import { narrationRefusal } from '@shared/document/stations';
+import { StudioConvertModalComponent } from '../studio-convert-modal/studio-convert-modal.component';
+import { BookConversionService, type ConversionSource } from '../../services/book-conversion.service';
 
 interface VersionRow {
   id: string; type: string; label: string; description: string;
@@ -174,7 +176,10 @@ const AUDIO_EXTS = new Set([
 @Component({
   selector: 'app-studio-versions',
   standalone: true,
-  imports: [CommonModule, FormsModule, DiffViewComponent, MetadataEditorComponent, DesktopSelectComponent],
+  imports: [
+    CommonModule, FormsModule, DiffViewComponent, MetadataEditorComponent, DesktopSelectComponent,
+    StudioConvertModalComponent,
+  ],
   host: { '[class.comparing]': '!!comparing()' },
   template: `
     @if (comparePass(); as cmp) {
@@ -381,12 +386,38 @@ const AUDIO_EXTS = new Set([
                 @if (row.staleness; as stale) {
                   <div class="stale">{{ stale }}</div>
                 }
+                <!-- A conversion the user walked away from. The window is closed;
+                     the run is not, and this is where it stays visible. -->
+                @if (conversion(); as run) {
+                  @if (rowStartedConversion(row)) {
+                    <div class="converting">
+                      <div class="cbar" [class.waiting]="run.total === 0">
+                        <div class="cfill" [style.width.%]="conversionPercent() < 0 ? 100 : conversionPercent()"></div>
+                      </div>
+                      <span class="ctext">
+                        @if (run.total > 0) {
+                          Reading the pages on {{ run.route }} — {{ run.done }} of {{ run.total }}
+                        } @else {
+                          Reading the pages on {{ run.route }} — starting
+                        }
+                      </span>
+                    </div>
+                  }
+                }
               </div>
               <div class="ractions" (click)="$event.stopPropagation()">
-                @if (row.staleness) {
-                  <button class="act" (click)="rebuildBook()" [disabled]="rebuilding()"
-                          title="Build the book again from the working copy, so it includes your latest edits">
-                    {{ rebuilding() ? 'Queueing…' : 'Rebuild' }}
+                @if (conversion() && rowStartedConversion(row)) {
+                  <button class="act" (click)="showConversion()"
+                          title="Watch the conversion, or stop it">Show progress</button>
+                } @else if (canConvert(row)) {
+                  <button class="act primary" [disabled]="!!conversion()"
+                          [title]="conversionBusyTitle() ?? convertTitle(row)"
+                          (click)="startConversion(row)">{{ convertLabel(row) }}</button>
+                }
+                @if (canMintWorkingCopy(row)) {
+                  <button class="act" [disabled]="makingWorkingCopy()" (click)="mintWorkingCopy(row)"
+                          title="Make your own copy of this PDF to mark up. The original is never written to.">
+                    {{ makingWorkingCopy() ? 'Making…' : 'Create working copy' }}
                   </button>
                 }
                 @if (hasSkippedReport(row.v)) { <button class="act" (click)="skipped.emit()">Skipped</button> }
@@ -674,6 +705,13 @@ const AUDIO_EXTS = new Set([
         </div>
       </div>
     }
+
+    <!-- A window ONTO the conversion, never the conversion itself. Closing it
+         backgrounds the run; the row keeps its indicator and opens this again. -->
+    @if (convertModalOpen()) {
+      <app-studio-convert-modal [projectDir]="projectDir()"
+                                (close)="convertModalOpen.set(false)" />
+    }
   `,
   styles: [`
     /* A layout component: fill the tab width as a block (don't rely on the
@@ -768,6 +806,16 @@ const AUDIO_EXTS = new Set([
     /* Said, not locked: the book is older than the curation, and Rebuild is
        right there. Nothing is disabled by it. */
     .stale { margin-top: 5px; font-size: 0.7rem; color: var(--warning, #f59e0b); }
+    /* A conversion running with its window closed. Slim, on the row that
+       started it, and it is the only thing on the page that moves. */
+    .converting { margin-top: 6px; display: flex; align-items: center; gap: 9px; }
+    .cbar { width: 140px; height: 4px; flex-shrink: 0; overflow: hidden; border-radius: 99px;
+      background: var(--bg-elevated); }
+    .cfill { height: 100%; border-radius: 99px; background: var(--accent-primary, #06b6d4);
+      transition: width 0.25s ease-out; }
+    .cbar.waiting .cfill { opacity: 0.35; }
+    .ctext { overflow: hidden; color: var(--accent-primary, #06b6d4); font-size: 0.68rem;
+      text-overflow: ellipsis; white-space: nowrap; }
     /* Footnote removal's own review report, above the diff it belongs to. */
     .pass-report {
       margin: 0 4px 10px; padding: 8px 12px; border-radius: 8px;
@@ -965,6 +1013,7 @@ export class StudioVersionsComponent {
   private readonly components = inject(ComponentService);
   private readonly queue = inject(QueueService);
   private readonly imports = inject(VariantImportService);
+  private readonly dialog = inject(DialogService);
 
   readonly projectDir = input<string>('');
   readonly item = input<StudioItem | null>(null);
@@ -1375,49 +1424,152 @@ export class StudioVersionsComponent {
     return 'Save a copy to your computer';
   }
 
-  // ── Rebuild (staleness is said, never locked) ──────────────────────────────
+  // ── Making the book ────────────────────────────────────────────────────────
+  //
+  // Owen's design, 2026-08-07: a PDF becomes this project's book HERE, on the
+  // versions page, and the archive is never written to on the way. There are two
+  // buttons because there are two documents you can mean —
+  //
+  //   Archive PDF → Convert to EPUB       reads every page of the original
+  //   Working copy → Create EPUB          reads it minus the pages you deleted
+  //
+  // — and one machine underneath both (`foundry vlm-convert`). An archive that
+  // arrived as an EPUB gets NEITHER: there is nothing to convert, and the book
+  // copy the passes rewrite is minted by main the first time something needs it.
 
-  readonly rebuilding = signal(false);
+  private readonly conversions = inject(BookConversionService);
+
+  /** The conversion running for this project, or null. Drives the row and modal. */
+  readonly conversion = computed(() => this.conversions.runFor(this.projectDir()));
+  /** The progress window is open. Closing it leaves the run going. */
+  readonly convertModalOpen = signal(false);
+  readonly makingWorkingCopy = signal(false);
+
+  /** Does this project already have a working copy? Decides Create working copy. */
+  private readonly hasWorkingCopy = computed(() =>
+    this.documentRows().some(r => r.family === 'working'));
 
   /**
-   * Build the book again from the working copy as it stands now.
+   * Can this row's document be read into a book?
    *
-   * Queued through the SAME entry point every other pass run uses, so nothing
-   * here assembles a job: main plans it, the queue runs it, and the user can
-   * watch it where they watch everything else.
+   * A PDF and nothing else. The archive row of an EPUB-born project is already a
+   * book — offering to convert it would promise a second one — and every other
+   * row on the page is downstream of a book that exists.
    */
-  async rebuildBook(): Promise<void> {
-    const dir = this.projectDir();
-    if (!dir || this.rebuilding()) return;
-    const { confirmed } = await this.electron.showConfirmDialog({
-      title: 'Rebuild the book',
-      message: 'Build the book again from your working copy?',
-      detail: 'The new book is written from the working copy as it stands now, so it includes the '
-        + 'curation you have done since the last build.\n\nIt is a FRESH book: the passes applied to '
-        + 'the old one — footnote removal, simplify, translate — are not carried over, and their '
-        + 'stars clear.',
-      confirmLabel: 'Rebuild', cancelLabel: 'Cancel', type: 'warning',
-    });
-    if (!confirmed) return;
+  canConvert(row: DocumentFamilyRow): boolean {
+    return (row.family === 'archive' || row.family === 'working')
+      && row.v.extension === 'pdf';
+  }
 
-    this.rebuilding.set(true);
+  /** Only the archive can mint one, and only when there is not one already. */
+  canMintWorkingCopy(row: DocumentFamilyRow): boolean {
+    return row.family === 'archive' && row.v.extension === 'pdf' && !this.hasWorkingCopy();
+  }
+
+  convertLabel(row: DocumentFamilyRow): string {
+    return row.family === 'working' ? 'Create EPUB' : 'Convert to EPUB';
+  }
+
+  convertTitle(row: DocumentFamilyRow): string {
+    return row.family === 'working'
+      ? 'Read this book into an EPUB, leaving out the pages you deleted in your working copy'
+      : 'Read every page of the original into this project’s book EPUB';
+  }
+
+  /**
+   * Start reading the pages, and open the window that watches it.
+   *
+   * The refusal is asked FIRST — before the window, before anything spawns —
+   * because "no machine here can read pages" is a sentence about a setting and
+   * showing it inside a progress modal would dress a configuration problem up as
+   * a failed run.
+   */
+  async startConversion(row: DocumentFamilyRow): Promise<void> {
+    const dir = this.projectDir();
+    if (!dir || !this.canConvert(row)) return;
+
+    const refusal = await this.conversions.refusal();
+    if (refusal !== null) {
+      await this.dialog.alert({
+        title: 'Nothing here can read the pages',
+        message: refusal,
+        type: 'warning',
+      });
+      return;
+    }
+
+    const from: ConversionSource = row.family === 'working' ? 'working' : 'archive';
+    this.convertModalOpen.set(true);
+    // NOT awaited. The run outlives this click and outlives the window that
+    // watches it — the service owns it, and everything the user has to be told
+    // is told from there.
+    void this.conversions.start({
+      projectDir: dir,
+      from,
+      sourceLabel: row.v.label,
+      ...(row.v.variantId ? { variantId: row.v.variantId } : {}),
+    });
+  }
+
+  /** Re-open the window onto a conversion that is already running. */
+  showConversion(): void { this.convertModalOpen.set(true); }
+
+  /**
+   * Is the live conversion the one THIS row started?
+   *
+   * Matched on which document it is reading, which is the only thing that
+   * distinguishes them: both buttons run the same command over the same archive
+   * PDF, and only the working-copy route leaves pages out. So the indicator sits
+   * on the row that was pressed, and the other row's button is disabled with the
+   * reason rather than showing a second copy of one run's progress.
+   */
+  rowStartedConversion(row: DocumentFamilyRow): boolean {
+    const run = this.conversion();
+    return run !== null && run.from === row.family;
+  }
+
+  /** Why Convert is locked right now, or null. Shown instead of the ordinary hint. */
+  conversionBusyTitle(): string | null {
+    const run = this.conversion();
+    return run === null
+      ? null
+      : `${run.sourceLabel} is being converted right now. A project converts one document at a `
+        + 'time — two conversions would be two writers on one book.';
+  }
+
+  /** How far along, for the row's own slim bar. -1 while there is no count yet. */
+  conversionPercent(): number {
+    const run = this.conversion();
+    if (!run || run.total <= 0) return -1;
+    return Math.min(100, Math.round((run.done / run.total) * 100));
+  }
+
+  /**
+   * Mint the working copy — a file copy and a marker, seconds, no queue.
+   *
+   * The row appears on its own: main broadcasts `project:files-changed` and
+   * `document:stage-finished`, and this page re-measures on the latter. Nothing
+   * is synthesized here from the answer.
+   */
+  async mintWorkingCopy(row: DocumentFamilyRow): Promise<void> {
+    const dir = this.projectDir();
+    if (!dir || this.makingWorkingCopy() || !this.canMintWorkingCopy(row)) return;
+    this.makingWorkingCopy.set(true);
     try {
-      const res = await this.queue.submitProcessingRun({ projectDir: dir, passes: [{ kind: 'reflow' }] });
-      if (!res.success) {
-        await this.electron.showMessageDialog({
-          title: 'Could not rebuild the book',
-          message: res.error || 'The rebuild was refused and gave no reason.',
-          type: 'error',
-        });
-        return;
-      }
-      await this.electron.showMessageDialog({
-        title: 'Added to queue',
-        message: 'Rebuilding the book was added to the queue. Open the Queue tab and press Start to run it.',
-        type: 'info',
+      await this.electron.documentCreateWorkingCopy({
+        projectDir: dir,
+        ...(row.v.variantId ? { variantId: row.v.variantId } : {}),
+      });
+      await this.load();
+      this.changed.emit();
+    } catch (err) {
+      await this.dialog.alert({
+        title: 'The working copy was not made',
+        message: (err as Error).message,
+        type: 'error',
       });
     } finally {
-      this.rebuilding.set(false);
+      this.makingWorkingCopy.set(false);
     }
   }
 
@@ -1438,9 +1590,16 @@ export class StudioVersionsComponent {
    */
   readonly provenanceBadges = computed<ProvenanceBadge[]>(() => {
     const passes = this.item()?.appliedPasses ?? [];
+    // Every kind a book can carry, in the order they would have happened. The
+    // retired ones are listed BECAUSE they are retired: a manifest is a book's
+    // own history, and the badges are the only place a book processed before
+    // Aug 2026 can still say how it was made. A kind missing from this list has
+    // no badge at all, which would silently shorten a real book's history —
+    // `reflow`, `get-text` and `blocks` were missing exactly that way.
     const order: AppliedPassKind[] = [
       'vlm-convert',
-      'tesseract', 'ocr-correction', 'detection', 'footnotes', 'simplify', 'translate'];
+      'tesseract', 'get-text', 'ocr-correction', 'blocks', 'detection', 'reflow',
+      'footnotes', 'simplify', 'translate'];
     // ONE latest-wins implementation, shared with the stars on the document rows
     // (@shared/document/version-family). Two collapses of the same list is how
     // one panel comes to say two things about one pass.
