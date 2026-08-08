@@ -10,10 +10,12 @@
  * Page 1 carries the RUN TYPE, and that is what decides the shape of everything
  * behind it:
  *
- * - **Standard** composes a list of PASSES over one of the project's files —
- *   Tesseract, OCR correction, footnote removal, simplify, translate — validated
- *   and queued through `processing:submit-chain` (see docs/PROCESSING_PIPELINE_V2.md).
- *   Narration and assembly are queued behind the passes in the same workflow.
+ * - **Standard** composes a list of PASSES over the project's book — simplify,
+ *   translate — validated and queued through `processing:submit-chain` (see
+ *   docs/PROCESSING_PIPELINE_V2.md). Both passes rewrite the book in place, so a
+ *   run needs one to exist already; making a book from a PDF is Convert to EPUB,
+ *   a document stage, and has no place here. Narration and assembly are queued
+ *   behind the passes in the same workflow.
  * - **Language learning** is a different product: sentence-aligned translation
  *   into one or more languages, per-language narration, interleaved assembly. It
  *   is not expressible as passes over one book, so it keeps the cleanup +
@@ -55,14 +57,12 @@ import { TTS_ENGINES, engineCaps, type TtsEngineCaps } from '../../models/tts-en
 import { AIProvider } from '../../../../core/models/ai-config.types';
 import type {
   ChainPassRequest,
-  FootnotesPassParams,
   ProcessingChainPlan,
   ProcessingChainRequest,
   ProcessingPassKind,
   SimplifyPassParams,
   TranslatePassParams,
 } from '@shared/processing/pass-types';
-import type { TextLayerReport } from '@shared/pdf/text-layer';
 import type { SourceType } from '../../../../core/models/manifest.types';
 import {
   DesktopSelectComponent,
@@ -93,7 +93,7 @@ interface PassVariantCard {
   label: string;
   format: string;
   filename: string;
-  /** The file itself. Read to measure a PDF's text layer, never to build a path. */
+  /** The file itself. Compared against the recorded book, never used to build a path. */
   absPath: string;
   /** Non-empty when this file cannot be processed — and says why, on the card. */
   disabledReason: string;
@@ -106,53 +106,45 @@ interface PassVariantCard {
 interface BuilderPass {
   uid: string;
   kind: ProcessingPassKind;
-  /** Footnote removal over an EPUB. Meaningless on a PDF run — see selectVariant. */
-  footnotes?: FootnotesPassParams;
   simplify?: SimplifyPassParams;
   translate?: TranslatePassParams;
 }
 
-/** What the palette offers for the chosen book, and why an entry is closed. */
+/** What the palette offers. Both passes apply to any book, so nothing is closed. */
 interface PalettteEntry {
   kind: ProcessingPassKind;
   label: string;
   desc: string;
-  enabled: boolean;
-  why: string;
 }
 
 /**
  * The pass names the user sees. MIRRORS `LABEL_OF` in electron/processing-chain.ts:
- * the planner's refusals are sentences that open with the label of the pass they
- * are about, and `chainErrorAt` matches on that to put the message on the right
+ * the planner's per-pass refusals are sentences of the form "The <label> pass
+ * needs …", and `chainErrorAt` matches on that to put the message on the right
  * row. Change one, change both.
- *
- * The three document passes are named for the document each produces rather than
- * for the machinery inside it — the user is composing transformations of their
- * book, not scheduling stages of a scanner.
  */
 const PASS_LABELS: Record<ProcessingPassKind, string> = {
-  'get-text': 'Get Text',
-  blocks: 'Detect blocks',
-  reflow: 'Build the book',
-  footnotes: 'Footnote removal',
   simplify: 'Simplify',
   translate: 'Translate',
 };
 
 /**
- * The passes that read the working PDF and nothing else.
- *
- * Footnote removal is deliberately NOT one of them: it rewrites the working
- * PDF's text layer on a PDF run and the book EPUB otherwise, so switching the
- * run to an EPUB keeps it (mirroring `DOCUMENT_ONLY_KINDS` in
- * electron/processing-chain.ts).
+ * The palette, in the order it is offered. A constant rather than a computed:
+ * both passes read the project's book EPUB and rewrite it in place, so there is
+ * nothing about the chosen file that can open or close an entry. The filtering
+ * that used to be here separated the passes that read a PDF from the passes that
+ * read a book, and no pass reads a PDF any more — Convert to EPUB does.
  */
-const SCAN_ONLY_PASS_KINDS: ReadonlySet<ProcessingPassKind> = new Set<ProcessingPassKind>([
-  'get-text',
-  'blocks',
-  'reflow',
-]);
+const PASS_PALETTE: readonly PalettteEntry[] = [
+  {
+    kind: 'simplify', label: PASS_LABELS['simplify'],
+    desc: 'Rewrite the prose: de-jargon, de-stiffen, or for language learners.',
+  },
+  {
+    kind: 'translate', label: PASS_LABELS['translate'],
+    desc: 'Translate the whole book into another language.',
+  },
+];
 
 /** A queue submission as the wizard builds it, before the queue stamps its ids. */
 type QueueJobRequest = Parameters<QueueService['addJob']>[0];
@@ -277,60 +269,22 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                   }
                 </div>
 
-                <!-- What the chosen PDF is: a book with text in it, or pictures of
-                     pages. It decides whether the OCR unit is a choice. A check
-                     that failed says so — it never reads as "optional". -->
-                @if (selectedIsPdf()) {
-                  @if (measuringTextLayer()) {
-                    <span class="hint">Checking whether this PDF has any text of its own…</span>
-                  } @else if (textLayerError()) {
-                    <div class="pass-error">{{ textLayerError() }}</div>
-                  } @else if (ocrRequiredReason()) {
-                    <span class="hint">{{ ocrRequiredReason() }}</span>
-                  } @else if (textLayer()) {
-                    <span class="hint">This PDF already has text of its own, so the OCR pass is optional.</span>
-                  }
-                }
-
                 <div class="pass-builder">
-                  <!-- Palette, filtered by what the chosen book can be read as -->
+                  <!-- Every pass rewrites the book, so the palette is the same list
+                       whatever is selected; the variant cards above are what decide
+                       whether there is a book to run it over. -->
                   <div class="pass-palette">
                     <label class="field-label">Add a pass</label>
-                    @for (opt of passPalette(); track opt.kind) {
+                    @for (opt of passPalette; track opt.kind) {
                       <button
                         type="button"
                         class="palette-btn"
                         [class.open]="palettePanel() === opt.kind"
-                        [disabled]="!opt.enabled"
-                        [title]="opt.enabled ? '' : opt.why"
                         (click)="onPaletteClick(opt.kind)"
                       >
                         <span class="palette-name">{{ opt.label }}</span>
-                        <span class="palette-desc">{{ opt.enabled ? opt.desc : opt.why }}</span>
+                        <span class="palette-desc">{{ opt.desc }}</span>
                       </button>
-
-                      @if (palettePanel() === opt.kind && opt.kind === 'footnotes') {
-                        <div class="palette-panel">
-                          <label class="field-label">
-                            <input type="checkbox" [checked]="passFootnotesAskEverything()"
-                                   (change)="passFootnotesAskEverything.set($any($event.target).checked)" />
-                            Also check note bodies and index entries
-                          </label>
-                          <span class="hint">
-                            Normally skipped to protect them: a note's own number and an index entry's
-                            page numbers look exactly like reference markers, and removing them
-                            destroys the numbering. Turn this on only for a book whose markers are
-                            being missed.
-                          </span>
-                          <button
-                            type="button"
-                            class="palette-add-btn"
-                            (click)="addFootnotesPass()"
-                          >
-                            Add footnote-removal pass
-                          </button>
-                        </div>
-                      }
 
                       @if (palettePanel() === opt.kind && opt.kind === 'simplify') {
                         <div class="palette-panel">
@@ -429,8 +383,8 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                       <p class="hint">No passes yet. Add one, or go straight to narration with the book as it is.</p>
                     }
 
-                    <!-- A refusal that names no pass (no PDF, no book EPUB) belongs to
-                         the run as a whole, not to a row. -->
+                    <!-- A refusal that names no pass (no book EPUB, a file that is
+                         not one) belongs to the run as a whole, not to a row. -->
                     @if (chainError() && chainErrorAt() < 0) {
                       <div class="pass-error">{{ chainError() }}</div>
                     }
@@ -445,16 +399,12 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                           <button
                             type="button"
                             class="pass-btn remove"
-                            [disabled]="passLocked(pass)"
-                            [title]="passLocked(pass) ? ocrRequiredReason() : 'Remove'"
+                            title="Remove"
                             (click)="removePass(i)"
                           >✕</button>
                         </div>
                         @if (passDetail(pass)) {
                           <span class="pass-detail">{{ passDetail(pass) }}</span>
-                        }
-                        @if (passLocked(pass)) {
-                          <span class="pass-detail">{{ ocrRequiredReason() }}</span>
                         }
                         @if (chainErrorAt() === i) {
                           <div class="pass-error">{{ chainError() }}</div>
@@ -466,11 +416,7 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                       @if (planning()) {
                         <span class="hint">Checking this order…</span>
                       } @else if (!chainError() && chainPlan()) {
-                        <span class="hint">
-                          {{ chainPlan()!.producesEpub
-                            ? 'Rebuilds the book EPUB from the scanned pages.'
-                            : 'Rewrites the book EPUB in place, one pass at a time.' }}
-                        </span>
+                        <span class="hint">Rewrites the book EPUB in place, one pass at a time.</span>
                       }
                     }
                   </div>
@@ -802,9 +748,9 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                 }
               </p>
 
-              <!-- Narration reads an EPUB. If the project has none and this run
-                   produces none, there is nothing to narrate — say so once and stop,
-                   rather than collecting settings for a job that cannot be queued. -->
+              <!-- Narration reads an EPUB. A project with none has nothing to
+                   narrate — say so once and stop, rather than collecting settings
+                   for a job that cannot be queued. -->
               @if (ttsBlockedReason(); as why) {
                 <div class="step-blocked">{{ why }}</div>
               }
@@ -1073,12 +1019,12 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                       type="button"
                       class="variant-card"
                       [class.selected]="effectiveTtsInput() === 'run'"
-                      [disabled]="!runProducesEpub()"
+                      [disabled]="!runRewritesBook()"
                       (click)="ttsInput.set('run')"
                     >
                       <span class="variant-format">EPUB</span>
                       <span class="variant-title">What this run produces</span>
-                      <span class="variant-file">{{ runProducesEpub() ? getFilenameFromPath(chainPlan()!.bookEpubPath) : 'no passes configured' }}</span>
+                      <span class="variant-file">{{ runRewritesBook() ? getFilenameFromPath(chainPlan()!.bookEpubPath) : 'no passes configured' }}</span>
                     </button>
                   </div>
                 </div>
@@ -3450,16 +3396,6 @@ export class LLWizardComponent implements OnInit {
   /** The languages the NEXT translate pass will carry (the palette's draft). */
   readonly passTranslateSource = signal<string>('en');
   readonly passTranslateTarget = signal<string>('en');
-  /**
-   * The NEXT footnote pass's one option (the palette's draft), OFF by default.
-   *
-   * foundry skips note bodies and index entries because in the measured books
-   * those units are pure false-fire risk — a note's leading number is its own
-   * label, an index entry's trailing numbers are page references, and neither is
-   * a marker anyone reads aloud. Turning the skips off is a judgement about a
-   * particular book, so it is a per-pass choice and never the default.
-   */
-  readonly passFootnotesAskEverything = signal(false);
   /** The project's book EPUB (manifest `outputs.epub`) when it is on disk. */
   readonly bookEpubPath = signal<string | null>(null);
   /**
@@ -3492,107 +3428,18 @@ export class LLWizardComponent implements OnInit {
     return card ? `${card.label} (${card.format.toUpperCase()})` : 'the project book';
   });
 
-  /** Foundry passes read a PDF; nothing else can stand in for one. */
-  readonly selectedIsPdf = computed(() =>
-    (this.selectedVariant()?.format ?? '').toLowerCase() === 'pdf');
+  readonly passPalette = PASS_PALETTE;
 
   /**
-   * Whether the selected PDF carries text of its own, measured in main.
+   * This run rewrites the book, so what gets narrated is what it leaves behind.
    *
-   * Keyed by the path it was measured for, because the variant cards change
-   * under this: an answer about the previous PDF must never be read as an answer
-   * about this one.
+   * Not "produces a book": no pass makes one. Both read `outputs.epub` and rename
+   * their result back onto it, so a planned run means that same path is about to
+   * hold different text.
    */
-  readonly textLayer = signal<{ path: string; report: TextLayerReport } | null>(null);
-  readonly textLayerError = signal<string | null>(null);
-  readonly measuringTextLayer = signal(false);
-
-  /**
-   * The OCR unit cannot be removed: this PDF has no text, so without it the run
-   * produces a book with no words in it.
-   *
-   * Null when it is optional, or when we do not KNOW yet — a check that has not
-   * finished, or one that failed, never reads as "optional". The failure is shown
-   * separately (textLayerError) rather than guessed at.
-   */
-  readonly ocrRequiredReason = computed<string | null>(() => {
-    if (!this.selectedIsPdf()) return null;
-    const measured = this.textLayer();
-    const variant = this.selectedVariant();
-    if (!measured || !variant || !this.samePath(measured.path, variant.absPath)) return null;
-    if (measured.report.hasTextLayer) return null;
-    return 'This PDF is pictures of pages — it carries no text of its own, so nothing can be '
-      + 'narrated unless this pass reads it.';
-  });
-
-  readonly passPalette = computed<PalettteEntry[]>(() => {
-    const pdf = this.selectedIsPdf();
-    const noPdf = 'Reads the scanned pages — pick the PDF version of this book.';
-    return [
-      {
-        // The cast: the archive original in, a working PDF with the words in it
-        // out. For a scan that is Tesseract over every page; for a PDF that
-        // already carries text it is one pass over the publisher's own layer and
-        // costs seconds. Either way the result opens in any reader with the text
-        // selectable, which is the whole test of whether it worked.
-        //
-        // Repairing what Tesseract misread is NOT here. That happens inside Build
-        // the book, on the blocks that survived curation — so the running heads
-        // and footnotes somebody deleted cost no GPU at all, instead of half an
-        // hour of it before anyone had looked at them.
-        kind: 'get-text', label: PASS_LABELS['get-text'],
-        desc: 'Read the pages into a working PDF you can open and search. Add Detect blocks after it.',
-        enabled: pdf, why: noPdf,
-      },
-      {
-        // The pass that makes a book possible: every block labelled body, chapter
-        // opening, running head, footnote, caption — which is what decides what
-        // gets narrated and where the chapters split. It writes the answer INTO
-        // the working PDF as real annotations, so Acrobat shows the boxes.
-        kind: 'blocks', label: PASS_LABELS['blocks'],
-        desc: 'Label every block — body, chapter, running head, footnote — as annotations in the working PDF.',
-        enabled: pdf, why: noPdf,
-      },
-      {
-        // The one exporter. Drops what was deleted, repairs the OCR of what was
-        // kept, reflows the lines into paragraphs and takes each chapter's title
-        // from its own block.
-        kind: 'reflow', label: PASS_LABELS['reflow'],
-        desc: 'Build the book EPUB from the working PDF — dropping what you deleted and repairing the OCR of what you kept.',
-        enabled: pdf, why: noPdf,
-      },
-      {
-        // The one pass with two readings of a book. On a PDF it is a stage of the
-        // scan chain; on an EPUB it edits the publisher's own markup, where the
-        // markers are <sup> links a narrator reads out as numbers.
-        kind: 'footnotes', label: PASS_LABELS['footnotes'],
-        desc: pdf
-          ? 'Remove the reference markers OCR welds into the prose.'
-          : 'Remove the reference markers from the book: the small numbers a narrator reads aloud.',
-        enabled: true, why: '',
-      },
-      {
-        kind: 'simplify', label: PASS_LABELS['simplify'],
-        desc: 'Rewrite the prose: de-jargon, de-stiffen, or for language learners.',
-        enabled: true, why: '',
-      },
-      {
-        kind: 'translate', label: PASS_LABELS['translate'],
-        desc: 'Translate the whole book into another language.',
-        enabled: true, why: '',
-      },
-    ];
-  });
-
-  /** This run rebuilds or rewrites the book, so there will be an EPUB to narrate. */
-  readonly runProducesEpub = computed(() =>
+  readonly runRewritesBook = computed(() =>
     this.passes().length > 0 && !!this.chainPlan() && !this.chainError());
 
-  /**
-   * The EPUB the standard TTS job reads: what the passes leave behind when there
-   * are any (they rewrite the book in place, so it is the same path either way),
-   * else the book as it stands.
-   */
   /**
    * Which of the three the run will ACTUALLY read.
    *
@@ -3603,7 +3450,7 @@ export class LLWizardComponent implements OnInit {
    * lights up is always the file that will be narrated.
    */
   readonly effectiveTtsInput = computed<'book' | 'narration' | 'run'>(() => {
-    if (this.runProducesEpub()) return 'run';
+    if (this.runRewritesBook()) return 'run';
     if (this.ttsInput() === 'narration' && this.narrationEpubPath()) return 'narration';
     if (this.ttsInput() === 'book' && this.bookEpubPath()) return 'book';
     // The chosen file is not there. Whichever of the other two IS, named — not
@@ -3627,16 +3474,24 @@ export class LLWizardComponent implements OnInit {
   readonly ttsBlockedReason = computed<string | null>(() => {
     // Sentence-aligned rows resolve their own per-language EPUBs at run time.
     if (this.pipelineMode() === 'bilingual') return null;
-    if (this.runProducesEpub() || this.bookEpubPath() || this.narrationEpubPath()) return null;
-    return 'This book has no EPUB to narrate, and no pass in this run produces one. '
-      + 'Add an OCR-correction pass over the PDF on the first page, or export the book from the editor.';
+    // The run cannot help: every pass rewrites a book that already exists, so a
+    // project with none has nothing for them to read either.
+    if (this.bookEpubPath() || this.narrationEpubPath()) return null;
+    return 'This book has no EPUB to narrate. Open it in the editor and run Convert to EPUB '
+      + 'from the Archive station — that is what turns the pages into a book.';
   });
 
-  /** Where the planner's refusal belongs: the row it names, or -1 for the run. */
+  /**
+   * Where the planner's refusal belongs: the row it names, or -1 for the run.
+   *
+   * The planner's per-pass refusals are the two "The <label> pass needs …"
+   * sentences in electron/processing-chain.ts; everything else it says is about
+   * the run — no book, or a file that is not one — and belongs above the rows.
+   */
   readonly chainErrorAt = computed<number>(() => {
     const message = this.chainError();
     if (!message) return -1;
-    return this.passes().findIndex(p => message.startsWith(PASS_LABELS[p.kind]));
+    return this.passes().findIndex(p => message.startsWith(`The ${PASS_LABELS[p.kind]} pass `));
   });
 
   /** Every language, for the translate pass's from/into pickers. */
@@ -3680,7 +3535,7 @@ export class LLWizardComponent implements OnInit {
   readonly cleanupStages = signal<CleanupStages>('tts');
   readonly cleanupStageOptions = [
     { value: 'ocr' as const, label: 'OCR repair only', desc: 'Fix scanner damage - merged words, misread letters, broken hyphenation. Slow (reads every chunk). Keeps footnote numbers and curly quotes.' },
-    { value: 'tts' as const, label: 'TTS cleaning only', desc: 'Remove the footnote reference markers the book\u2019s own markup names, straighten quotes, spell out numbers. Minutes \u2014 deterministic, no model. Markers a book does not mark up are the foundry footnotes pass\u2019s job.' },
+    { value: 'tts' as const, label: 'TTS cleaning only', desc: 'Remove the footnote reference markers the book\u2019s own markup names, straighten quotes, spell out numbers. Minutes \u2014 deterministic, no model. A marker the book does not mark up is left where it is.' },
     { value: 'both' as const, label: 'Both', desc: 'Repair the scan first, then prepare it for narration. What a scanned book normally wants.' },
   ];
   /** Set once the user picks a stage; stops provenance from overriding them. */
@@ -4446,7 +4301,7 @@ export class LLWizardComponent implements OnInit {
     // Keep the narration source honest: a queued pass rewrites the book, so once
     // there are passes the only coherent input is what they produce.
     effect(() => {
-      const producing = this.runProducesEpub();
+      const producing = this.runRewritesBook();
       const book = this.bookEpubPath();
       const hasPasses = this.passes().length > 0;
       untracked(() => {
@@ -5620,116 +5475,19 @@ export class LLWizardComponent implements OnInit {
     this._skippedSteps.add('translate');
   }
 
-  /**
-   * Point the run at a different file.
-   *
-   * Switching away from a PDF DROPS the scan passes rather than carrying them:
-   * they read a PDF's run directory, and the planner would otherwise be handed an
-   * EPUB as the document to scan — which it would accept, because it has no way to
-   * know the caller meant something else.
-   *
-   * Switching TO a PDF keeps footnote removal — it is a stage of the scan chain
-   * there — but drops its options, which belong to the EPUB reading of a book.
-   * The planner refuses a run that still carries them; clearing them here means
-   * the user never has to be told.
-   */
+  /** Point the run at a different file. */
   selectVariant(card: PassVariantCard): void {
     if (card.disabledReason) return;
     this.selectedVariantId.set(card.id);
-    void this.measureSelectedTextLayer(card);
-    if (card.format.toLowerCase() !== 'pdf') {
-      this.passes.update(list => list.filter(p => !SCAN_ONLY_PASS_KINDS.has(p.kind)));
-    } else {
-      this.passes.update(list => list.map(
-        p => (p.kind === 'footnotes' && p.footnotes ? { uid: p.uid, kind: p.kind } : p)));
-    }
     this.palettePanel.set(null);
   }
 
   /**
-   * Ask main whether this PDF has any text of its own, and act on the answer.
-   *
-   * A PDF with no text CANNOT be narrated without the OCR unit, so the unit is
-   * added here and the row refuses to be removed. A failed check is shown, never
-   * absorbed: "we could not tell" and "it is optional" are different answers, and
-   * only one of them is safe to act on.
+   * Both passes carry settings, so a palette click opens their panel rather than
+   * adding anything: the pass is added from inside it, with what was chosen.
    */
-  private async measureSelectedTextLayer(card: PassVariantCard): Promise<void> {
-    this.textLayerError.set(null);
-    if (card.format.toLowerCase() !== 'pdf') {
-      this.textLayer.set(null);
-      return;
-    }
-    // An answer about the previous PDF is not an answer about this one.
-    if (this.textLayer()?.path !== card.absPath) this.textLayer.set(null);
-
-    this.measuringTextLayer.set(true);
-    try {
-      const result = await this.electronService.measureTextLayer(card.absPath);
-      // The user moved on while mupdf was reading; this answer is about a run
-      // that is gone.
-      if (this.selectedVariant()?.absPath !== card.absPath) return;
-      if (!result.success || !result.data) {
-        this.textLayerError.set(
-          result.error
-            ? `Could not tell whether this PDF has any text of its own: ${result.error}`
-            : 'Could not tell whether this PDF has any text of its own, and no reason came back.'
-        );
-        return;
-      }
-      this.textLayer.set({ path: card.absPath, report: result.data });
-      if (!result.data.hasTextLayer) this.ensureOcrPass();
-    } catch (err) {
-      if (this.selectedVariant()?.absPath !== card.absPath) return;
-      this.textLayerError.set(
-        `Could not tell whether this PDF has any text of its own: ${(err as Error).message}`
-      );
-    } finally {
-      this.measuringTextLayer.set(false);
-    }
-  }
-
-  /**
-   * Get Text, added if the run has none. First in the order — nothing downstream
-   * has a document to read until it has run.
-   */
-  private ensureOcrPass(): void {
-    if (this.passes().some(p => p.kind === 'get-text')) return;
-    this.passes.update(list => [
-      { uid: this.nextPassUid(), kind: 'get-text' as ProcessingPassKind },
-      ...list,
-    ]);
-  }
-
-  /** True when this row is Get Text and this PDF cannot be read without it. */
-  passLocked(pass: BuilderPass): boolean {
-    return pass.kind === 'get-text' && this.ocrRequiredReason() !== null;
-  }
-
   onPaletteClick(kind: ProcessingPassKind): void {
-    if (kind === 'simplify' || kind === 'translate') {
-      this.palettePanel.set(this.palettePanel() === kind ? null : kind);
-      return;
-    }
-    // Footnote removal has one option, and it exists only when the pass reads the
-    // book EPUB. On a PDF the pass rewrites the working document's text layer and
-    // has nothing to set, so it is added on the click like the document passes.
-    if (kind === 'footnotes' && !this.selectedIsPdf()) {
-      this.palettePanel.set(this.palettePanel() === kind ? null : kind);
-      return;
-    }
-    this.addPass({ uid: this.nextPassUid(), kind });
-  }
-
-  addFootnotesPass(): void {
-    const askEverything = this.passFootnotesAskEverything();
-    this.addPass({
-      uid: this.nextPassUid(),
-      kind: 'footnotes',
-      ...(askEverything ? { footnotes: { askEverything: true } } : {}),
-    });
-    this.palettePanel.set(null);
-    this.passFootnotesAskEverything.set(false);
+    this.palettePanel.set(this.palettePanel() === kind ? null : kind);
   }
 
   addSimplifyPass(mode: 'dejargon' | 'destiffen' | 'learner'): void {
@@ -5784,11 +5542,6 @@ export class LLWizardComponent implements OnInit {
   }
 
   removePass(index: number): void {
-    // The button is disabled, but the guard is here too: this is the rule, and a
-    // rule that lives only in a `[disabled]` binding is one keyboard event away
-    // from a run that narrates an empty book.
-    const pass = this.passes()[index];
-    if (pass && this.passLocked(pass)) return;
     this.passes.update(list => list.filter((_, i) => i !== index));
   }
 
@@ -5797,36 +5550,6 @@ export class LLWizardComponent implements OnInit {
   }
 
   passDetail(pass: BuilderPass): string {
-    if (pass.kind === 'get-text') {
-      // Said on the row because it is what the pass DOES, not an option: the cast
-      // REPLACES the working document, so the pages are read again from the
-      // archive original and whatever was in it before is gone.
-      return 'Reads every page again and casts the working PDF fresh';
-    }
-    if (pass.kind === 'blocks') {
-      return 'Labels every block into the working PDF as annotations';
-    }
-    if (pass.kind === 'reflow') {
-      return 'Drops what you deleted, repairs the OCR of what you kept, writes the book';
-    }
-    if (pass.kind === 'footnotes') {
-      if (this.selectedIsPdf()) {
-        // Which document the pass reads is POSITIONAL, mirroring the planner's
-        // footnotesModeAt: before a later Build the book it edits the text layer
-        // that reflow will read; after one it reads the book that reflow wrote.
-        const list = this.passes();
-        const index = list.findIndex(p => p.uid === pass.uid);
-        const laterReflow = list.some((p, i) => p.kind === 'reflow' && i > index);
-        const earlierReflow = list.some((p, i) => p.kind === 'reflow' && i < index);
-        if (!laterReflow && (earlierReflow || this.bookEpubPath())) {
-          return 'On the finished book';
-        }
-        return "On the working PDF's text layer";
-      }
-      return pass.footnotes?.askEverything
-        ? 'Note bodies and index entries too'
-        : 'Note bodies and index entries left alone';
-    }
     if (pass.simplify) {
       const mode = this.simplifyModeOptions.find(m => m.value === pass.simplify!.mode);
       return `${mode?.label ?? pass.simplify.mode} · ${pass.simplify.aiModel || 'no model'}`;
@@ -5894,9 +5617,11 @@ export class LLWizardComponent implements OnInit {
           format,
           filename: this.getFilenameFromPath(v.absPath),
           absPath: v.absPath,
-          disabledReason: (format === 'pdf' || isBook)
+          disabledReason: isBook
             ? ''
-            : 'The text passes rewrite the project\'s own book EPUB, not this edition.',
+            : format === 'pdf'
+              ? 'A pass reads a book. Run Convert to EPUB over this PDF first.'
+              : 'The text passes rewrite the project\'s own book EPUB, not this edition.',
         });
       }
       if (bookAbs && !cards.some(c => c.id === '')) {
@@ -5911,20 +5636,15 @@ export class LLWizardComponent implements OnInit {
       }
       this.variantCards.set(cards);
 
-      // Keep the selection on something real. The book EPUB is the usual subject
-      // of a run; a project that has none is a scan waiting for its first pass.
+      // Keep the selection on something real. The book EPUB is the only subject a
+      // run can have; a project with none has every card closed, and the planner
+      // says why as soon as a pass is added.
       const current = cards.find(c => c.id === this.selectedVariantId() && !c.disabledReason);
       if (!current) {
         const book = cards.find(c => c.id === '' && !c.disabledReason);
         const first = book ?? cards.find(c => !c.disabledReason);
         this.selectedVariantId.set(first ? first.id : '');
       }
-
-      // A PDF that arrives selected has to be measured too, not just one the user
-      // clicks: a project whose only file is a scan opens on that scan, and the
-      // OCR unit it cannot run without is added from the answer.
-      const selected = cards.find(c => c.id === this.selectedVariantId());
-      if (selected) void this.measureSelectedTextLayer(selected);
     } finally {
       this.loadingVariants.set(false);
     }
@@ -5937,27 +5657,10 @@ export class LLWizardComponent implements OnInit {
   }
 
   /**
-   * The run as the planner wants it. API keys and the Ollama URL are filled in
-   * here, at the last moment, so no secret is ever held in the sidebar's state.
-   */
-  /**
    * The run as the planner wants it: ONE request pass per sidebar row.
    *
-   * "OCR correction" is one row, one pass, one queue job — reading the pages,
-   * repairing what was read and labelling the blocks are three foundry stages of
-   * it, and the queue draws a bar for each. The row used to be expanded into a
-   * `tesseract` pass and an `ocr-correction` pass here; nothing was gained by the
-   * user seeing two rows for one thing they cannot order, choose between, or run
-   * halves of, and the planner refuses a `tesseract` pass now.
-   *
-   * A pass in a submitted run ALWAYS re-runs its own stages, and there is no
-   * option about it: OCR correction starts the run directory over, so the pages
-   * are rasterized again and the scan, repair and layout models all run. The
-   * checkbox that used to ask ("Re-scan from the page images", default OFF) is
-   * gone — a run that quietly handed back this morning's artifacts answered a
-   * question nobody asked, instantly, and looked like success while doing it.
-   * The scan is therefore always part of the pass rather than conditionally
-   * included, and for the same reason: what is on disk is not this run.
+   * API keys and the Ollama URL are filled in here, at the last moment, so no
+   * secret is ever held in the sidebar's state.
    */
   private chainRequest(projectDir: string, variantId: string, list: BuilderPass[]): ProcessingChainRequest {
     const ai = this.settingsService.getAIConfig();
@@ -5969,7 +5672,6 @@ export class LLWizardComponent implements OnInit {
     });
     const passes: ChainPassRequest[] = list.map(p => ({
       kind: p.kind,
-      ...(p.footnotes ? { footnotes: p.footnotes } : {}),
       ...(p.simplify ? { simplify: withCredentials(p.simplify) } : {}),
       ...(p.translate ? { translate: withCredentials(p.translate) } : {}),
     }));
