@@ -2676,6 +2676,27 @@ export class ElectronService {
   }
 
   /**
+   * The file TTS reads — the project's `<archive basename>.tts.epub`.
+   *
+   * Cut from the working copy when there is none or the recorded one was cut
+   * from a book that has changed since. The Process flow calls this instead of
+   * asking the user which EPUB to narrate: the artifact chain has one answer at
+   * that link, so a chooser could only ever pick the wrong file.
+   */
+  async ensureNarrationEpub(projectDir: string): Promise<{
+    success: boolean;
+    narration?: {
+      epubPath: string; relPath: string; removedElements: number; cutReason: string | null;
+    };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.ensureNarrationEpub(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
    * Ask the MAIN window to queue this project's PDF→EPUB conversion and show the
    * queue. The queue is the main window's; see the preload declaration.
    */

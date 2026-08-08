@@ -259,15 +259,22 @@ export interface SessionCacheInfo {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The wizard's pages are `passes → tts → assembly → review`.
+ * The wizard's pages are `tts → assembly → review`.
  *
- * 'cleanup' and 'translate' are NOT pages any more — the pass builder replaced
- * both. They survive here as the keys the sentence-aligned (language-learning)
+ * 'passes' left on 2026-08-08 with the page it named (Owen: "it isn't a pipeline
+ * anymore really — the user is just defining tts and assembly instructions").
+ * By the time anybody presses Process the book has already been read, copied and
+ * curated: there is one working copy, the passes that rewrite it are started from
+ * the picker, and what they did is recorded on the book. So the flow opens on the
+ * first question it still has, which is what voice reads it.
+ *
+ * 'cleanup' and 'translate' are NOT pages either, and never were `currentStep`
+ * values. They survive here as the keys the sentence-aligned (language-learning)
  * pipeline tracks its two sub-stages under, because that pipeline still submits a
  * cleanup job and a per-language translation job and needs to say, separately,
- * whether each is part of the run. Nothing sets `currentStep` to either.
+ * whether each is part of the run.
  */
-export type LLWizardStep = 'passes' | 'cleanup' | 'translate' | 'tts' | 'assembly' | 'review';
+export type LLWizardStep = 'cleanup' | 'translate' | 'tts' | 'assembly' | 'review';
 
 export interface SourceDropdownOption {
   value: string;                // "latest" or actual path

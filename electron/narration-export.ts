@@ -154,6 +154,109 @@ export interface NarrationExportOptions {
   stripSupMarkers?: boolean;
 }
 
+/** The file TTS reads, and how it came to be there. */
+export interface NarrationEpubForTts {
+  /** Absolute path to the narration copy. */
+  epubPath: string;
+  /** Project-relative, forward slashes. */
+  relPath: string;
+  /** How many elements it leaves out of the book. */
+  removedElements: number;
+  /**
+   * Why it had to be cut now, or null when the one on record already described
+   * the book as it is.
+   *
+   * Reported rather than swallowed because "your narration copy was rebuilt just
+   * now" and "the one from Tuesday is still correct" are different facts about
+   * the file about to be narrated, and only one of them is worth the user
+   * checking the Open button over.
+   */
+  cutReason: string | null;
+}
+
+/**
+ * The narration copy for this project, CUT IF THERE IS NOT A CURRENT ONE.
+ *
+ * ── Why the TTS page no longer asks which file to narrate ───────────────────
+ *
+ * Owen, 2026-08-08: "it isn't a pipeline anymore really. The user is just
+ * defining tts and assembly instructions… by that time the system will know
+ * which one." And it does: the artifact chain has one answer at every link —
+ * the archive is the file you handed us, the working copy is the one file you
+ * edit, and the narration copy is the cut of that working copy with what you
+ * struck out removed. TTS reads the last of those. There is no choice to offer
+ * because there is no second candidate; offering one only ever let a user
+ * narrate the wrong file.
+ *
+ * ── Cutting it here is not a hidden side effect ─────────────────────────────
+ *
+ * The narration copy is DERIVED — `outputs.ttsEpub` is a function of the book
+ * and the strikes, and `exportNarrationEpub` rewrites it from scratch every
+ * time. So "there isn't one yet" and "the one there was cut from an older book"
+ * are not questions to put to the user; they are work with exactly one correct
+ * answer, which is to cut it. That is the same reasoning the working copy is
+ * made under, and it is what "fully seamless" means: the system does the part
+ * that has one answer.
+ *
+ * Staleness is measured as `fromEpubSha256` against the book's sha256 on disk —
+ * the record's own claim about which bytes it was cut from, against the bytes
+ * that are there. A Simplify or Translate pass rewrites the book, and a
+ * narration copy cut before it describes a book nobody has any more.
+ *
+ * ── The one thing it will NOT do ────────────────────────────────────────────
+ *
+ * Make a working copy. A project with none has nothing to cut from, and the
+ * answer is a sentence naming the act that produces one — open the book, or
+ * read the pages of a PDF — rather than a file picker offering whatever EPUBs
+ * happen to be lying about. That refusal is the whole of the model: there is one
+ * editable file, and if it does not exist yet the thing to do is make it, not
+ * pick a substitute.
+ */
+export async function ensureNarrationEpub(
+  projectDir: string,
+  options?: NarrationExportOptions
+): Promise<NarrationEpubForTts> {
+  const book = await manifestService.readExportEpub(projectDir);
+  if (!book || !fs.existsSync(book.absPath)) {
+    throw new Error(
+      `${path.basename(projectDir)} has no working copy, so there is nothing to narrate yet. Open `
+      + 'the book from Studio — an EPUB gets its working copy the moment it opens, and a PDF gets '
+      + 'one from Generate EPUB, which reads its pages.'
+    );
+  }
+
+  const { sha256 } = await sha256File(book.absPath);
+  const record = await manifestService.readNarrationEpubRecord(projectDir);
+  if (record) {
+    const abs = path.join(projectDir, record.path.split('/').join(path.sep));
+    if (fs.existsSync(abs) && record.fromEpubSha256 === sha256) {
+      return {
+        epubPath: abs,
+        relPath: record.path,
+        removedElements: record.removedElements,
+        cutReason: null,
+      };
+    }
+  }
+
+  // Three states, one act, and the state is SAID because the sentence is what
+  // tells the user whether to look at the file again before narrating it.
+  const cutReason = record === null
+    ? 'This book had no narration copy yet, so one was cut from your working copy.'
+    : !fs.existsSync(path.join(projectDir, record.path.split('/').join(path.sep)))
+      ? 'The narration copy this project recorded is not on disk any more, so it was cut again.'
+      : 'The book has changed since the narration copy was cut, so it was cut again from the '
+        + 'working copy as it is now.';
+
+  const written = await exportNarrationEpub(projectDir, options);
+  return {
+    epubPath: written.epubPath,
+    relPath: written.relPath,
+    removedElements: written.removedElements,
+    cutReason,
+  };
+}
+
 /**
  * Write the narration copy from the strikes as recorded, and record it.
  *
