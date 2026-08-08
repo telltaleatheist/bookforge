@@ -1362,6 +1362,18 @@ export function createMergedBlock(mergedId: string, blocks: TextBlock[]): TextBl
   // support. Absent is the truth there, and the ids in `bf_blocks` still say
   // exactly what went in.
   const groups = new Set(blocks.map(b => b.bf_group).filter((g): g is string => g !== undefined));
+
+  // The conversion stamps follow the SAME rule, and it matters more here than it
+  // does for `bf_group`: `bf_element` is what a narration strike is recorded as,
+  // so a merged block that claimed one of two elements would strike a paragraph
+  // the user was not looking at. Agreement or absent — and absent means the
+  // merged block simply cannot be struck, which is honest and visible.
+  const cats = new Set(blocks.map(b => b.bf_cat).filter((c): c is string => c !== undefined));
+  const elements = new Set(
+    blocks.map(b => b.bf_element).filter((e): e is string => e !== undefined));
+  const sourcePages = new Set(
+    blocks.map(b => b.bf_source_page).filter((p): p is number => p !== undefined));
+
   const sourceIds: string[] = [];
   const seenSourceIds = new Set<string>();
   for (const b of blocks) {
@@ -1396,5 +1408,8 @@ export function createMergedBlock(mergedId: string, blocks: TextBlock[]): TextBl
     line_count: totalLines,
     ...(groups.size === 1 ? { bf_group: [...groups][0] } : {}),
     ...(sourceIds.length > 0 ? { bf_blocks: sourceIds } : {}),
+    ...(cats.size === 1 ? { bf_cat: [...cats][0] } : {}),
+    ...(elements.size === 1 ? { bf_element: [...elements][0] } : {}),
+    ...(sourcePages.size === 1 ? { bf_source_page: [...sourcePages][0] } : {}),
   };
 }

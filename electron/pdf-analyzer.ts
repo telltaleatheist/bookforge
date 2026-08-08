@@ -14,7 +14,11 @@ import { getRenderCacheBaseDir } from './render-cache';
 import { MutoolBridge } from './mutool-bridge';
 import { BLOCK_CATEGORIES } from '../shared/ocr/block-categories';
 import type { BlockCategoryProvenance } from '../shared/ocr/text-block';
-import { readEpubBlockProvenance, type EpubExportBlock } from './epub-processor';
+import {
+  readEpubBlockProvenance,
+  readEpubConversionStamps,
+  type EpubExportBlock,
+} from './epub-processor';
 import { TEXT_LAYER_MIN_CHARS_PER_PAGE, type TextLayerReport } from '../shared/pdf/text-layer';
 
 export type { BlockCategoryProvenance };
@@ -34,7 +38,7 @@ export { TEXT_LAYER_MIN_CHARS_PER_PAGE, type TextLayerReport };
 const execAsync = promisify(exec);
 
 // Cache version - increment this when changing extraction logic to invalidate old caches
-const ANALYSIS_CACHE_VERSION = 12;  // v12: EPUB categories read from the book's own provenance stamps
+const ANALYSIS_CACHE_VERSION = 13;  // v13: a converted book's blocks carry data-bf-cat / -page / element key
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;
@@ -183,6 +187,13 @@ export interface TextBlock {
   // book out and one authored paragraph becomes one block per visual line.
   bf_group?: string;
   bf_blocks?: string[];
+  // The OTHER stamp: what a document vision model called this block's element,
+  // which page of the PDF it was read from, and the element's positional key.
+  // Written only for a book `foundry vlm-convert` produced; see the full
+  // declaration in shared/ocr/text-block.ts.
+  bf_cat?: string;
+  bf_source_page?: number;
+  bf_element?: string;
 }
 
 export interface Category {
@@ -1640,20 +1651,94 @@ export class PDFAnalyzer {
   }
 
   /**
+   * The same job for a book a document VISION MODEL wrote.
+   *
+   * `foundry vlm-convert` has no working PDF and no paragraph groups to stamp,
+   * so it states the two things it DOES know: what the model called each block
+   * (`data-bf-cat`) and which page of the PDF it was read off (`data-bf-page`).
+   * Both are unrecoverable once mupdf has laid the book out — an EPUB has no
+   * page concept and no memory of a layout model's opinion — and both are what
+   * the picker needs to let a user say "every footnote" or "everything that was
+   * on page 3".
+   *
+   * A second reader rather than a branch inside the first because the two
+   * dialects say different things: this one also carries the element's
+   * positional KEY onto the block, which is the identity the narration
+   * deletions are recorded as (shared/vlm/narration-deletions.ts).
+   */
+  private async readConversionCategories(pdfPath: string): Promise<Map<string, string>> {
+    const alignable: EpubExportBlock[] = this.blocks.map(b => ({
+      id: b.id,
+      page: b.page,
+      y: b.y,
+      text: b.text,
+      deleted: false,
+      isImage: b.is_image,
+      isFootnoteMarker: b.is_footnote_marker,
+    }));
+
+    const reading = await readEpubConversionStamps(pdfPath, alignable);
+    if (!reading.converted) return new Map();
+
+    const stampedCategories = new Map<string, string>();
+    for (const block of this.blocks) {
+      const stamp = reading.byBlockId.get(block.id);
+      if (stamp === undefined) continue;
+      block.bf_cat = stamp.statedCategory;
+      block.bf_source_page = stamp.sourcePage;
+      block.bf_element = stamp.element;
+      stampedCategories.set(block.id, stamp.category);
+    }
+
+    this.categoryProvenance = {
+      source: 'document',
+      stampedBlocks: stampedCategories.size,
+      unstampedElementBlocks: reading.alignedToUnstampedElement,
+      unalignedBlocks: reading.unaligned,
+    };
+    console.log(
+      `[PDF Analyzer] ${path.basename(pdfPath)} was written by a document vision model: `
+      + `${stampedCategories.size} blocks stamped, ${reading.alignedToUnstampedElement} on unstamped `
+      + `elements, ${reading.unaligned} unaligned.`,
+    );
+    if (reading.unaligned > 0) {
+      this.analysisWarnings.push(
+        `${reading.unaligned} block(s) of this book could not be matched to the markup they were `
+        + `laid out from, so their categories are this app's guess rather than the book's own record, `
+        + `and they cannot be struck out of the narration copy. Everything else in it is the record.`,
+      );
+    }
+    return stampedCategories;
+  }
+
+  /**
    * Assign every block its category, from the document's own record where there
    * is one and from the classifier where there is not. The one place both
    * analysis entry points go through, so the two can never disagree about which
    * input class they are looking at.
+   *
+   * THREE input classes now, and they are asked about in the order of how much
+   * the book states. A reflowed book carries `data-bf-category` and the working
+   * PDF's own block ids; a converted book carries `data-bf-cat` and the page it
+   * was read from; a book from anywhere else carries nothing and is classified.
+   * A book carries at most one of the two stamps — each emitter writes its own —
+   * so the order is not a precedence rule, it is two questions asked in turn,
+   * and the second is only reached because the first came back empty.
    */
   private async assignCategories(pdfPath: string, mimeType: string): Promise<void> {
-    // Only an EPUB can carry the stamps — they are written by the EPUB emitter,
+    // Only an EPUB can carry the stamps — they are written by an EPUB emitter,
     // into EPUB markup. A PDF states no categories at all.
     if (mimeType !== 'application/epub+zip') {
       this.categoryProvenance = heuristicProvenance();
       this.generateCategories();
       return;
     }
-    this.generateCategories(await this.readDocumentCategories(pdfPath));
+    const reflowed = await this.readDocumentCategories(pdfPath);
+    if (reflowed.size > 0) {
+      this.generateCategories(reflowed);
+      return;
+    }
+    this.generateCategories(await this.readConversionCategories(pdfPath));
   }
 
   /**

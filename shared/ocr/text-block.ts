@@ -126,6 +126,39 @@ export interface TextBlock {
    * made from. Written by the same reader as `bf_group`, under the same rules.
    */
   bf_blocks?: string[];
+  /**
+   * What the document VISION MODEL called this block's source element — the
+   * `data-bf-cat` attribute `foundry vlm-convert` stamps, verbatim and
+   * lower-cased (`text`, `title`, `section-header`, `footnote`, `caption`,
+   * `table`, `picture`, `quote`, `formula`, `list-item`).
+   *
+   * The OTHER stamp, and it means the same thing `bf_group` means: this block's
+   * `category_id` is the BOOK'S OWN record rather than the analyzer's font and
+   * geometry guess. The two never appear together — a book was written by
+   * reflow or by vlm-convert, and each stamps its own — and `category_id`
+   * carries the translation into the one palette
+   * (shared/vlm/conversion.ts `VLM_CATEGORY_TO_BLOCK`), so nothing downstream
+   * has to know which dialect a book speaks.
+   */
+  bf_cat?: string;
+  /**
+   * The PDF page this block's element was read from — `data-bf-page`.
+   *
+   * NOT `page`, which is the page mupdf laid the EPUB out onto at its own page
+   * size and has nothing to do with the paper. This is what makes "delete
+   * everything that was on page 12" answerable in a book that has no pages.
+   */
+  bf_source_page?: number;
+  /**
+   * This block's source element, as the narration deletions name it:
+   * `<zip entry>#<index within that document's unit list>`.
+   *
+   * Positional, because foundry's emitter gives elements no ids and the book it
+   * writes is never written to again. See shared/vlm/narration-deletions.ts.
+   * Several blocks share one key when mupdf split a paragraph across visual
+   * lines — that is the truth, and striking any of them strikes the element.
+   */
+  bf_element?: string;
 }
 
 /**

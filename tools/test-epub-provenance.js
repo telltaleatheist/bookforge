@@ -140,6 +140,23 @@ const STAMPED_BODY = [
 
 const UNSTAMPED_BODY = STAMPED_BODY.replace(/ data-bf-(?:category|group|blocks)="[^"]*"/g, '');
 
+// The SAME book as written by the OTHER emitter — `foundry vlm-convert`, which
+// has no working PDF and no paragraph groups, and states instead what the model
+// called each block and which page of the PDF it was read off. The two stamps
+// never appear together: a book was written by reflow or by a vision model.
+const CONVERTED_BODY = [
+  '<h1 data-bf-page="6" data-bf-cat="title">Working Towards the Fuhrer</h1>',
+  '<p data-bf-page="1" data-bf-cat="text">'
+    + 'The renewed emphasis on the intertwined fates of the Soviet Union and Germany has become intensified.</p>',
+  '<blockquote data-bf-page="2" data-bf-cat="quote">'
+    + '<p>Everyone works towards the Fuhrer along the lines he would wish.</p></blockquote>',
+  '<ul data-bf-page="3" data-bf-cat="list-item">\n'
+    + '  <li>Bracher, The German Dictatorship</li>\n'
+    + '  <li>Broszat, The Hitler State</li>\n</ul>',
+  '<p data-bf-page="4" data-bf-cat="footnote">'
+    + 'See the discussion in Kershaw, The Nazi Dictatorship, chapter four.</p>',
+].join('\n');
+
 // The blocks mupdf would hand back for that page, in reading order.
 const FIXTURE_BLOCKS = [
   block('b1', 10, 'Working Towards the Fuhrer'),
@@ -262,6 +279,35 @@ const FIXTURE_BLOCKS = [
       'the book says `chapter`; nothing downstream may re-derive it');
     assert.strictEqual(h.bf_group, 'p0001');
     assert.deepStrictEqual(h.bf_blocks, ['p0006b003']);
+  });
+
+  // The THIRD input class: a book a document vision model read. Same book, same
+  // analyzer, a different dialect of the same idea — and the thing that makes it
+  // worth its own case is `bf_element`, which is what a narration strike is
+  // recorded as. A block that reaches the picker without one cannot be struck.
+  const convertedEpub = await writeEpub('converted.epub', CONVERTED_BODY, 'Converted');
+
+  await check('a converted book states its categories, its source pages and its element keys', async () => {
+    const result = await analyzed(convertedEpub);
+    assert.strictEqual(result.categoryProvenance.source, 'document');
+    assert.ok(result.categoryProvenance.stampedBlocks > 0, 'blocks should have been stamped');
+    const h = heading(result);
+    // `title` in dots' vocabulary, `title` in BookForge's — and NOT `chapter`:
+    // dots was never asked which of the middle two heading levels this is, so
+    // nothing invents an answer.
+    assert.strictEqual(h.category_id, 'title');
+    assert.strictEqual(h.bf_cat, 'title');
+    assert.strictEqual(h.bf_source_page, 6, 'the PDF page, not the laid-out page');
+    assert.match(h.bf_element, /^EPUB\/text\/s0001\.xhtml#\d+$/);
+    // The reflow dialect's fields stay absent: a book speaks one of the two.
+    assert.strictEqual(h.bf_group, undefined);
+    assert.strictEqual(h.bf_blocks, undefined);
+
+    const note = result.blocks.find((b) => /Nazi Dictatorship, chapter four/.test(b.text));
+    assert.strictEqual(note.category_id, 'footnote');
+    assert.strictEqual(note.bf_source_page, 4);
+    const list = result.blocks.find((b) => /German Dictatorship/.test(b.text));
+    assert.strictEqual(list.category_id, 'list', 'dots says list-item; the palette says list');
   });
 
   await check('the same book without stamps is classified, and says so', async () => {
