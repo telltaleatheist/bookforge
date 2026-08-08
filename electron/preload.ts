@@ -1338,6 +1338,10 @@ export interface ElectronAPI {
       Promise<{ success: boolean; state?: NarrationState; error?: string }>;
     saveNarrationDeletions: (projectDir: string, elements: string[]) =>
       Promise<{ success: boolean; deletions?: NarrationDeletions; error?: string }>;
+    /** One gesture's worth of change — a difference, never a snapshot. */
+    editNarrationDeletions: (
+      projectDir: string, edit: { strike: string[]; unstrike: string[] }
+    ) => Promise<{ success: boolean; deletions?: NarrationDeletions; error?: string }>;
     exportNarration: (
       projectDir: string,
       options?: { stripSupMarkers?: boolean }
@@ -3133,6 +3137,15 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('narration:state', projectDir),
     saveNarrationDeletions: (projectDir: string, elements: string[]) =>
       ipcRenderer.invoke('narration:save-deletions', projectDir, elements),
+    /**
+     * One gesture's worth of change, applied to the record in main.
+     *
+     * A DIFFERENCE, never a snapshot — the record is the state and the picker's
+     * deletion sets are a view of it (shared/vlm/narration-deletions.ts).
+     */
+    editNarrationDeletions: (
+      projectDir: string, edit: { strike: string[]; unstrike: string[] }) =>
+      ipcRenderer.invoke('narration:edit-deletions', projectDir, edit),
     exportNarration: (projectDir: string, options?: { stripSupMarkers?: boolean }) =>
       ipcRenderer.invoke('narration:export', projectDir, options),
     chapterTitles: (projectDir: string) =>

@@ -17,6 +17,7 @@ import { blockCategoryForVlm } from '../shared/vlm/conversion';
 import { stripFootnoteMarkerSups } from '../shared/text/sup-markers';
 import {
   narrationElementKey,
+  narrationImageElementKey,
   planNarrationRemoval,
   type NarrationElementKey,
   type NarrationUnit,
@@ -3766,6 +3767,19 @@ export interface EpubAlignmentResult {
   unaligned: UnalignedBlock[];
   /** Indices of text units no block matched. */
   uncoveredUnits: number[];
+  /** Every picture of the book, in spine order. */
+  imageUnits: ImageUnit[];
+  /** Image block id → index into `imageUnits`. */
+  blockToImageUnit: Map<string, number>;
+  /**
+   * Image blocks the matcher REFUSED to pair, and why.
+   *
+   * Kept apart from `unaligned`, which is about text: these are pictures whose
+   * document or ordinal could not be settled by counting, and the honest
+   * consequence is that they cannot be struck. Reported rather than guessed —
+   * see `alignImageBlocks`.
+   */
+  unmatchedImages: UnalignedBlock[];
 }
 
 // Tags collected as export units: everything the editor treats as a block, plus
@@ -4019,6 +4033,245 @@ function collectExportUnits(
   return out;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Images, which are elements too
+//
+// `collectExportUnits` above is a TEXT traversal: it collects the elements that
+// contribute characters to the alignment stream. A picture contributes none, so
+// it is either swallowed by the element around it or not collected at all —
+// which left every image in the library with no identity, and therefore no way
+// to be struck out of the narration copy. An image-only document (cover,
+// half-title, title page, a plate) could never be emptied and so was never
+// pruned, and the user's deletion of it did nothing at all.
+//
+// So images are enumerated SEPARATELY, in their own key namespace
+// (shared/vlm/narration-deletions.ts): a document's Nth image in flow order is
+// `<zip entry>#img<N>`. Nothing about the text numbering changes, so every
+// strike already on disk still names what it named.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The image elements of one body, in flow order.
+ *
+ * The SAME element classes `bodyIsEmpty` counts as content — `<img>`, `<svg>`,
+ * and a bare `<image>` — because the two questions are one question asked from
+ * either end: this decides what can be struck, and that decides whether striking
+ * it all leaves a document with nothing in it. A set that disagreed would leave
+ * a document whose every picture was struck still counted as non-empty, i.e.
+ * still in the book as a blank page.
+ *
+ * An `<svg>` is not descended into: a wrapped cover is `<svg><image/></svg>` and
+ * counting both would make one picture two elements, so the outer element is the
+ * picture and the inner `<image>` travels with it. A bare `<image>` outside any
+ * `<svg>` is malformed markup that xmldom still hands back, and it is counted
+ * where it stands rather than ignored.
+ */
+function collectImageElements(body: any): any[] {
+  const out: any[] = [];
+  const walk = (node: any): void => {
+    if (node.nodeType !== 1) return;
+    const tag = node.tagName?.toLowerCase() || '';
+    if (tag === 'img' || tag === 'svg' || tag === 'image') {
+      out.push(node);
+      return; // an <svg> IS the picture; its <image> children are part of it
+    }
+    if (UNIT_TEXT_SKIP_TAGS.has(tag)) return;
+    if (!node.childNodes) return;
+    for (let i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]);
+  };
+  walk(body);
+  return out;
+}
+
+/** One picture of the source EPUB, in spine order. */
+export interface ImageUnit {
+  /** Zip entry name of the spine document it lives in. */
+  file: string;
+  /** Index of that document in the spine — the order the aligner walked. */
+  docIndex: number;
+  /** `<file>#img<ordinal>` — this picture's positional identity. */
+  key: NarrationElementKey;
+  /** The live xmldom element, so the narration writer can remove it. */
+  el: any;
+}
+
+/**
+ * Match the picker's IMAGE blocks onto the book's image ELEMENTS.
+ *
+ * ── The problem, stated exactly ─────────────────────────────────────────────
+ *
+ * mupdf lays the book out and reports `[Image 528x815]` blocks with a page and a
+ * y, in flow order. It does not say which document they came from, and the DOM
+ * is gone by then. Text blocks are placed by their own characters; a picture has
+ * none, so the only evidence about WHERE it is is the text around it.
+ *
+ * ── The rule ────────────────────────────────────────────────────────────────
+ *
+ * 1. Every image block sits in a GAP between two text blocks the aligner did
+ *    place (or before the first / after the last). Those two bound the span of
+ *    spine documents the picture can be in: from the document of the previous
+ *    aligned text block to the document of the next.
+ * 2. A gap whose two ends are the SAME document is unambiguous — the picture is
+ *    inline in that document, whatever else is going on.
+ * 3. A gap that CROSSES documents is resolved by counting: the tail of the
+ *    first document, every document in between (which have no aligned text at
+ *    all — an image-only page is exactly this case), and the head of the last.
+ *    The blocks are handed out in that order, and only if the number of pictures
+ *    those documents still have to spare is EXACTLY the number of blocks in the
+ *    gap.
+ * 4. Within a document, blocks and elements are paired by ORDINAL — both are in
+ *    flow order — and only when the document's counts agree exactly.
+ *
+ * ── The refusal, and why it is a refusal ────────────────────────────────────
+ *
+ * Any count that does not add up leaves the blocks unmatched and REPORTED. This
+ * is not fussiness: mupdf drops images under 20×20 (pdf-analyzer's own filter)
+ * and a document may hold a spacer GIF the layout never showed, so "3 pictures
+ * in the markup, 2 blocks on screen" is a real state — and pairing them by
+ * ordinal anyway would strike the wrong picture out of somebody's book. A
+ * deletion that reached nothing is visible and fixable; a deletion that removed
+ * a different plate is neither.
+ */
+function alignImageBlocks(
+  imageUnits: readonly ImageUnit[],
+  imageBlocks: readonly EpubExportBlock[],
+  docIndexOfBlock: ReadonlyMap<string, number>,
+  sortedBlocks: readonly EpubExportBlock[],
+  docCount: number,
+): { blockToImageUnit: Map<string, number>; unmatched: UnalignedBlock[] } {
+  const blockToImageUnit = new Map<string, number>();
+  const unmatched: UnalignedBlock[] = [];
+  if (imageBlocks.length === 0) return { blockToImageUnit, unmatched };
+
+  // Pictures per document, in flow order, as indices into `imageUnits`.
+  const unitsOfDoc = new Map<number, number[]>();
+  for (let i = 0; i < imageUnits.length; i++) {
+    const list = unitsOfDoc.get(imageUnits[i].docIndex);
+    if (list === undefined) unitsOfDoc.set(imageUnits[i].docIndex, [i]);
+    else list.push(i);
+  }
+
+  // ── Pass 1: bound every image block by the aligned text around it ─────────
+  const isImageBlock = new Set(imageBlocks.map((b) => b.id));
+  const bounds = new Map<string, { prev: number; next: number }>();
+  {
+    let prev = -1;
+    const prevOf = new Map<string, number>();
+    for (const b of sortedBlocks) {
+      if (isImageBlock.has(b.id)) { prevOf.set(b.id, prev); continue; }
+      const doc = docIndexOfBlock.get(b.id);
+      if (doc !== undefined) prev = doc;
+    }
+    let next = docCount;
+    const nextOf = new Map<string, number>();
+    for (let i = sortedBlocks.length - 1; i >= 0; i--) {
+      const b = sortedBlocks[i];
+      if (isImageBlock.has(b.id)) { nextOf.set(b.id, next); continue; }
+      const doc = docIndexOfBlock.get(b.id);
+      if (doc !== undefined) next = doc;
+    }
+    for (const b of imageBlocks) {
+      // A book with no aligned text anywhere leaves both ends open; the window
+      // is then the whole spine, which the counting rule below still decides.
+      const prevDoc = prevOf.get(b.id) ?? -1;
+      const nextDoc = nextOf.get(b.id) ?? docCount;
+      bounds.set(b.id, {
+        prev: prevDoc < 0 ? 0 : prevDoc,
+        next: nextDoc >= docCount ? docCount - 1 : nextDoc,
+      });
+    }
+  }
+
+  // ── Pass 2: the certain ones — a gap that begins and ends in one document ──
+  const blocksOfDoc = new Map<number, EpubExportBlock[]>();
+  const ambiguous: EpubExportBlock[] = [];
+  const ordered = imageBlocks
+    .slice()
+    .sort((a, b) => (a.page !== b.page ? a.page - b.page : a.y - b.y));
+  for (const b of ordered) {
+    const bound = bounds.get(b.id)!;
+    if (bound.prev === bound.next) {
+      const list = blocksOfDoc.get(bound.prev);
+      if (list === undefined) blocksOfDoc.set(bound.prev, [b]);
+      else list.push(b);
+    } else {
+      ambiguous.push(b);
+    }
+  }
+
+  // ── Pass 3: the crossing gaps, resolved by capacity ───────────────────────
+  //
+  // Consecutive ambiguous blocks sharing the same window are ONE gap. Each
+  // middle document belongs to at most one gap by construction — two gaps with
+  // the same window would need an aligned text block between them, which would
+  // put that document at one gap's end rather than in the other's middle.
+  const refuse = (blocks: readonly EpubExportBlock[], reason: string): void => {
+    for (const b of blocks) {
+      unmatched.push({ blockId: b.id, page: b.page, excerpt: b.text.slice(0, 80), reason });
+    }
+  };
+
+  let at = 0;
+  while (at < ambiguous.length) {
+    const window = bounds.get(ambiguous[at].id)!;
+    let end = at + 1;
+    while (end < ambiguous.length) {
+      const w = bounds.get(ambiguous[end].id)!;
+      if (w.prev !== window.prev || w.next !== window.next) break;
+      end++;
+    }
+    const gap = ambiguous.slice(at, end);
+    at = end;
+
+    const capacity: Array<{ doc: number; take: number }> = [];
+    let total = 0;
+    for (let doc = window.prev; doc <= window.next; doc++) {
+      const have = (unitsOfDoc.get(doc) ?? []).length;
+      const spoken = (blocksOfDoc.get(doc) ?? []).length;
+      const take = have - spoken;
+      if (take <= 0) continue;
+      capacity.push({ doc, take });
+      total += take;
+    }
+    if (total !== gap.length) {
+      refuse(
+        gap,
+        `${gap.length} picture(s) lie between two documents (${window.prev}–${window.next}) with `
+        + `${total} unclaimed image element(s) between them, so which document each belongs to `
+        + 'cannot be settled by counting',
+      );
+      continue;
+    }
+    let cursor = 0;
+    for (const { doc, take } of capacity) {
+      const list = blocksOfDoc.get(doc) ?? [];
+      for (let i = 0; i < take; i++) list.push(gap[cursor++]);
+      blocksOfDoc.set(doc, list);
+    }
+  }
+
+  // ── Pass 4: pair by ordinal, per document, only when the counts agree ──────
+  for (const [doc, blocks] of blocksOfDoc) {
+    const units = unitsOfDoc.get(doc) ?? [];
+    // Flow order on both sides: mupdf lays the document out top to bottom, and
+    // `collectImageElements` walks the markup in document order.
+    const inOrder = blocks
+      .slice()
+      .sort((a, b) => (a.page !== b.page ? a.page - b.page : a.y - b.y));
+    if (units.length !== inOrder.length) {
+      refuse(
+        inOrder,
+        `${inOrder.length} picture(s) were laid out from a document holding ${units.length} image `
+        + 'element(s), so pairing them by position would be a guess',
+      );
+      continue;
+    }
+    for (let i = 0; i < inOrder.length; i++) blockToImageUnit.set(inOrder[i].id, units[i]);
+  }
+
+  return { blockToImageUnit, unmatched };
+}
+
 /**
  * Banded Levenshtein verification: does `pattern` match `text` starting exactly
  * at `offset` with at most `tolerance` edits? Returns the matched END offset in
@@ -4130,16 +4383,24 @@ export async function alignBlocksToEpub(
 ): Promise<EpubAlignmentResult> {
   const processor = new EpubProcessor();
   const units: ExportUnit[] = [];
+  const imageUnits: ImageUnit[] = [];
   // mupdf lays out an image's ALT TEXT as "[<alt>]" when it does not draw the
   // image itself — that text exists in no DOM text node, so blocks matching a
   // known alt form are image furniture, not unalignable content.
   const imgAltNorms = new Set<string>();
+  /** Zip entry → its position in the spine, which is the order walked here. */
+  const docIndexOfFile = new Map<string, number>();
 
   try {
     const structure = await processor.open(epubSourcePath);
 
     for (const chapter of structure.chapters) {
       const entryName = normalizeZipEntryName(processor.resolvePath(chapter.href));
+      // A spine document listed twice is ONE file: it is read, numbered and
+      // enumerated once, exactly as the narration writer treats it.
+      if (docIndexOfFile.has(entryName)) continue;
+      const docIndex = docIndexOfFile.size;
+      docIndexOfFile.set(entryName, docIndex);
       const xhtml = await processor.readFile(entryName);
       const { doc, body } = parseXhtmlBody(xhtml, entryName);
       let indexInFile = 0;
@@ -4156,6 +4417,17 @@ export async function alignBlocksToEpub(
           fromCatchAll: c.fromCatchAll,
         });
       }
+      // The picture enumeration, in its own namespace and after the unit walk —
+      // the unit collector MOVES stray runs into synthesized wrappers, and the
+      // image ordinals must be read off the tree the narration writer will walk.
+      collectImageElements(body).forEach((el, ordinal) => {
+        imageUnits.push({
+          file: entryName,
+          docIndex,
+          key: narrationImageElementKey(entryName, ordinal),
+          el,
+        });
+      });
       const imgs = body.getElementsByTagName('img');
       for (let i = 0; i < imgs.length; i++) {
         const alt = imgs[i].getAttribute('alt');
@@ -4312,10 +4584,16 @@ export async function alignBlocksToEpub(
     };
   };
 
+  /** The image blocks, held back for the ordinal matcher below. */
+  const imageBlocks: EpubExportBlock[] = [];
+
   for (const b of sorted) {
     // Footnote markers DUPLICATE their parent block's text in the analyzer
-    // output — aligning them would double-count. Images have no text at all.
-    if (b.isImage || b.isFootnoteMarker) continue;
+    // output — aligning them would double-count. Images have no text at all, so
+    // this loop cannot place them; they are matched to image ELEMENTS after it,
+    // by document and ordinal, using the text placements as their bounds.
+    if (b.isImage) { imageBlocks.push(b); continue; }
+    if (b.isFootnoteMarker) continue;
     const norm = normalizeForAlignment(b.text);
     if (norm.length === 0) continue;
 
@@ -4368,7 +4646,21 @@ export async function alignBlocksToEpub(
   }
   const uncoveredUnits = streamOrder.filter((i) => !coveredUnits.has(i));
 
-  return { units, blockToUnits, unaligned, uncoveredUnits };
+  // The pictures. A block's document is the document of the unit its text
+  // begins in — the same first-unit tiebreak all three readers use.
+  const docIndexOfBlock = new Map<string, number>();
+  for (const [blockId, unitIndices] of blockToUnits) {
+    if (unitIndices.length === 0) continue;
+    const doc = docIndexOfFile.get(units[unitIndices[0]].file);
+    if (doc !== undefined) docIndexOfBlock.set(blockId, doc);
+  }
+  const { blockToImageUnit, unmatched: unmatchedImages } = alignImageBlocks(
+    imageUnits, imageBlocks, docIndexOfBlock, sorted, docIndexOfFile.size);
+
+  return {
+    units, blockToUnits, unaligned, uncoveredUnits,
+    imageUnits, blockToImageUnit, unmatchedImages,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4427,6 +4719,8 @@ export interface EpubProvenanceReading {
   alignedToUnstampedElement: number;
   /** Blocks the aligner could not place in the source markup at all, and why. */
   unaligned: UnalignedBlock[];
+  /** Image blocks the ordinal matcher refused to pair, and why. */
+  unmatchedImages: UnalignedBlock[];
   /**
    * Blocks whose text spanned SEVERAL source elements. Their category is the
    * first one's — the element the block's text begins in — because a block that
@@ -4519,6 +4813,7 @@ export async function readEpubBlockProvenance(
     elementByBlockId: new Map(),
     alignedToUnstampedElement: 0,
     unaligned: [],
+    unmatchedImages: [],
     spanningElements: 0,
   };
   // An unstamped book is not read here at all, and it does not need to be: the
@@ -4528,7 +4823,9 @@ export async function readEpubBlockProvenance(
 
   const legal = new Set<string>(BLOCK_CATEGORY_IDS);
   const whatFor = `EPUB provenance in ${path.basename(epubSourcePath)}`;
-  const { units, blockToUnits, unaligned } = await alignBlocksToEpub(epubSourcePath, blocks);
+  const {
+    units, blockToUnits, unaligned, imageUnits, blockToImageUnit, unmatchedImages,
+  } = await alignBlocksToEpub(epubSourcePath, blocks);
 
   // One element serves many blocks; resolve each unit's stamp once.
   const stampByUnit = new Map<number, EpubBlockProvenance | null>();
@@ -4566,6 +4863,12 @@ export async function readEpubBlockProvenance(
     if (stamp === null) alignedToUnstampedElement++;
     else byBlockId.set(blockId, stamp);
   }
+  // The pictures, through the same join. An image block's key is the only thing
+  // that lets it be struck out of the narration copy; its CATEGORY still comes
+  // from the block's own `is_image` flag, so nothing is read off the stamp here.
+  for (const [blockId, imageIndex] of blockToImageUnit) {
+    elementByBlockId.set(blockId, imageUnits[imageIndex].key);
+  }
 
   return {
     stamped: true,
@@ -4573,6 +4876,7 @@ export async function readEpubBlockProvenance(
     elementByBlockId,
     alignedToUnstampedElement,
     unaligned,
+    unmatchedImages,
     spanningElements,
   };
 }
@@ -4622,6 +4926,8 @@ export interface EpubConversionReading {
   alignedToUnstampedElement: number;
   /** Blocks the aligner could not place in the source markup at all, and why. */
   unaligned: UnalignedBlock[];
+  /** Image blocks the ordinal matcher refused to pair, and why. */
+  unmatchedImages: UnalignedBlock[];
 }
 
 /**
@@ -4694,15 +5000,25 @@ function conversionStampOnOrAbove(el: any, whatFor: string): {
  */
 export async function readEpubConversionUnits(epubSourcePath: string): Promise<NarrationUnit[]> {
   const whatFor = `conversion stamps in ${path.basename(epubSourcePath)}`;
-  const { units } = await alignBlocksToEpub(epubSourcePath, []);
-  return units.map((unit) => {
-    const stamp = conversionStampOnOrAbove(unit.el, whatFor);
+  const { units, imageUnits } = await alignBlocksToEpub(epubSourcePath, []);
+  const read = (el: any, key: NarrationElementKey): NarrationUnit => {
+    const stamp = conversionStampOnOrAbove(el, whatFor);
     return {
-      key: unit.key,
+      key,
       category: stamp?.statedCategory ?? null,
       sourcePage: stamp?.sourcePage ?? null,
     };
-  });
+  };
+  // Text elements, then pictures. The PICTURES ARE IN HERE because this list is
+  // what the narration plan is checked against (`planNarrationRemoval`), and a
+  // key the list does not hold stops the export by name — so leaving images out
+  // would turn every image strike into a refusal to write the copy at all.
+  // Order between the two namespaces is not meaningful: nothing indexes into
+  // this list, every reader looks a key up in it.
+  return [
+    ...units.map((u) => read(u.el, u.key)),
+    ...imageUnits.map((u) => read(u.el, u.key)),
+  ];
 }
 
 /**
@@ -4732,7 +5048,9 @@ export async function readEpubConversionStamps(
 ): Promise<EpubConversionReading> {
   const converted = await epubCarriesConversionStamps(epubSourcePath);
   const whatFor = `conversion stamps in ${path.basename(epubSourcePath)}`;
-  const { units, blockToUnits, unaligned } = await alignBlocksToEpub(epubSourcePath, blocks);
+  const {
+    units, blockToUnits, unaligned, imageUnits, blockToImageUnit, unmatchedImages,
+  } = await alignBlocksToEpub(epubSourcePath, blocks);
 
   const stampByUnit = new Map<number, EpubConversionStamp | null>();
   const stampFor = (unitIndex: number): EpubConversionStamp | null => {
@@ -4762,6 +5080,17 @@ export async function readEpubConversionStamps(
     if (stamp === null) alignedToUnstampedElement++;
     else byBlockId.set(blockId, stamp);
   }
+  // The pictures. A converted book stamps them like everything else — foundry
+  // writes `data-bf-cat="picture"` on the element it puts the `<img>` inside —
+  // so an image block gets both its key and the model's own word for it.
+  for (const [blockId, imageIndex] of blockToImageUnit) {
+    const unit = imageUnits[imageIndex];
+    elementByBlockId.set(blockId, unit.key);
+    if (!converted) continue;
+    const read = conversionStampOnOrAbove(unit.el, whatFor);
+    if (read === null) continue;
+    byBlockId.set(blockId, { ...read, element: unit.key });
+  }
 
   return {
     converted,
@@ -4769,6 +5098,7 @@ export async function readEpubConversionStamps(
     elementByBlockId,
     alignedToUnstampedElement,
     unaligned,
+    unmatchedImages,
   };
 }
 
@@ -5084,6 +5414,8 @@ export interface EpubMarkupReading {
   elementByBlockId: Map<string, NarrationElementKey>;
   /** Blocks the aligner could not place in the source markup, and why. */
   unaligned: UnalignedBlock[];
+  /** Image blocks the ordinal matcher refused to pair, and why. */
+  unmatchedImages: UnalignedBlock[];
   /** Navigation entries that resolved onto a document of this book. */
   tocTargets: number;
   /** Of those, how many opened with a heading this reader called `chapter`. */
@@ -5187,7 +5519,9 @@ export async function readEpubMarkupCategories(
   blocks: EpubExportBlock[],
 ): Promise<EpubMarkupReading> {
   const targets = await readEpubTocTargets(epubSourcePath);
-  const { units, blockToUnits, unaligned } = await alignBlocksToEpub(epubSourcePath, blocks);
+  const {
+    units, blockToUnits, unaligned, imageUnits, blockToImageUnit, unmatchedImages,
+  } = await alignBlocksToEpub(epubSourcePath, blocks);
 
   const noteTargets = collectNoteReferenceTargets(units);
 
@@ -5219,6 +5553,11 @@ export async function readEpubMarkupCategories(
     elementByBlockId.set(blockId, units[unitIndices[0]].key);
     byBlockId.set(blockId, categories[unitIndices[0]]);
   }
+  // The pictures. Their category is `image` by construction — the block IS a
+  // picture, whatever the markup around it says — so only the key is joined.
+  for (const [blockId, imageIndex] of blockToImageUnit) {
+    elementByBlockId.set(blockId, imageUnits[imageIndex].key);
+  }
 
   // Footnote MARKERS never reach the aligner — they duplicate their parent
   // block's text, so it skips them — but the markup has just proved the book
@@ -5235,6 +5574,7 @@ export async function readEpubMarkupCategories(
     byBlockId,
     elementByBlockId,
     unaligned,
+    unmatchedImages,
     tocTargets: targets.length,
     chapterOpenings,
     noterefs: noteTargets.size,
@@ -5410,8 +5750,20 @@ export interface NarrationEpubWriteOptions {
  *
  * An image is content. That is not a special case: the five image-only pages of
  * a typical book (cover, half-title, title, colophon plate, back cover) have no
- * text and never did, they were not struck, and removing them would take the
- * cover out of the book because it happens to have no words on it.
+ * text and never did, so a document still holding its picture is a page the
+ * reader sees and must stay in the book.
+ *
+ * Which is also why a picture can now be STRUCK (`<zip entry>#img<N>`, Aug
+ * 2026). Before it could not, and the consequence was measured: a user struck
+ * out the cover, the half-title and the title page, and all three came through
+ * to the narration copy — the strikes had nothing to name, so the documents
+ * never emptied and this test never said yes about them. Now it does, and the
+ * pruning below removes them exactly as it removes a document whose every
+ * paragraph was struck.
+ *
+ * The tag list here and `collectImageElements`'s are deliberately the same set:
+ * one decides what can be struck, this decides whether striking it all leaves
+ * nothing, and a disagreement between them would leave a blank page behind.
  *
  * `<svg>` counts alongside `<img>` because a wrapped cover is often an SVG
  * `<image>`, which is how EPUB 3 covers are usually written.
@@ -5652,6 +6004,19 @@ export async function writeNarrationEpub(
           sourcePage: stamp?.sourcePage ?? null,
         });
       }
+      // The pictures, enumerated in the SAME order and after the SAME unit walk
+      // as `alignBlocksToEpub` — that is what makes `#img<N>` mean one thing to
+      // the reader that records a strike and to this writer that applies it.
+      collectImageElements(body).forEach((el, ordinal) => {
+        const key = narrationImageElementKey(entryName, ordinal);
+        collected.push({ key, el });
+        const stamp = conversionStampOnOrAbove(el, whatFor);
+        units.push({
+          key,
+          category: stamp?.statedCategory ?? null,
+          sourcePage: stamp?.sourcePage ?? null,
+        });
+      });
       perFile.set(entryName, { doc, body, units: collected });
     }
   } finally {

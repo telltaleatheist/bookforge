@@ -2751,12 +2751,36 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  /** Record what the user has struck out. The book on disk is not touched. */
+  /**
+   * Replace the strike record wholesale. The book on disk is not touched.
+   *
+   * NOT the picker's path — see `editNarrationDeletions`. A caller here is
+   * claiming to know the entire answer, and one that only knows its own view of
+   * it will erase strikes it never heard of.
+   */
   async saveNarrationDeletions(projectDir: string, elements: string[]): Promise<{
     success: boolean; deletions?: NarrationDeletions; error?: string;
   }> {
     if (this.isElectron) {
       return (window as any).electron.vlm.saveNarrationDeletions(projectDir, elements);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * ONE GESTURE, applied to the record in main: strike these, unstrike those.
+   *
+   * The record in the manifest is the state and the editor's deletion sets are a
+   * VIEW of it, so a gesture sends what it changed rather than what it thinks is
+   * struck. Main does the read-modify-write in one manifest transaction
+   * (electron/narration-export.ts, `editNarrationDeletions`).
+   */
+  async editNarrationDeletions(
+    projectDir: string,
+    edit: { strike: string[]; unstrike: string[] }
+  ): Promise<{ success: boolean; deletions?: NarrationDeletions; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.editNarrationDeletions(projectDir, edit);
     }
     return { success: false, error: 'Not running in Electron' };
   }

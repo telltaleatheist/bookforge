@@ -83,12 +83,66 @@ export async function readNarrationState(projectDir: string): Promise<NarrationS
 }
 
 /**
+ * Apply ONE EDIT to the record: strike these, unstrike those.
+ *
+ * ── Why the picker sends a difference and not a set ─────────────────────────
+ *
+ * Because the set it would send is derived from its VIEW, and the view is not
+ * durable. Page deletions on a book tab have no home outside the window; any
+ * document reload — an app restart, a chapter rename, an artifact swap — resets
+ * the editor's signals; and the restore that repopulates them races the
+ * progressive block load. A snapshot save turns every one of those into a
+ * legitimate-looking record with strikes missing from it, and that is exactly
+ * what was measured on a real book in Aug 2026: a document whose text aligns
+ * perfectly ended with ZERO strikes for pages the user had deleted, and 359 of
+ * 668 footnote elements silently came back.
+ *
+ * A difference cannot do that. A window with a stale or empty view produces an
+ * empty difference, which is no write at all. Two windows editing one project
+ * compose instead of overwriting. And the read-modify-write happens HERE, in one
+ * `modifyManifest` transaction, so the record on disk is the only accumulator.
+ *
+ * ── The staleness contract is the existing one ─────────────────────────────
+ *
+ * An edit against a record stamped with a DIFFERENT book is refused by name and
+ * the record is cleared, exactly as `readNarrationState` and `exportNarrationEpub`
+ * do — a positional record whose file moved under it cannot be merged into,
+ * because the elements the edit names and the elements already on record are
+ * positions in two different books.
+ *
+ * The sha is measured HERE for the same reason `saveNarrationDeletions` measures
+ * it: the renderer's copy is as old as the last time it asked.
+ */
+export async function editNarrationDeletions(
+  projectDir: string,
+  edit: { strike: readonly NarrationElementKey[]; unstrike: readonly NarrationElementKey[] }
+): Promise<NarrationDeletions> {
+  // `ensureBookEpub`, not `readExportEpub`, for the reason spelled out in
+  // `saveNarrationDeletions` below: a project imported AS an EPUB has no book
+  // until something needs one, and the first strike is that moment.
+  const book = await manifestService.ensureBookEpub(projectDir);
+  const { sha256 } = await sha256File(book.absPath);
+  // The read, the merge and the write are ONE locked transaction in
+  // manifest-service — an accumulator read outside the lock loses whatever
+  // landed between the read and the write.
+  const answer = await manifestService.editNarrationDeletions(projectDir, sha256, edit);
+  if (answer.staleReason !== null) throw new Error(answer.staleReason);
+  return answer.deletions;
+}
+
+/**
  * Record what the user has struck out, stamped with the book on disk now.
  *
  * The sha is measured HERE rather than taken from the caller: the renderer's
  * copy of it is as old as the last time it asked, and a stamp that says
  * "the book as the picker remembered it" would pass the staleness gate on a
  * book that had moved on.
+ *
+ * WHOLESALE, which is why the picker no longer calls it: it replaces the record
+ * with the caller's set, so a caller whose set is a view snapshot can erase
+ * strikes it merely does not know about. `editNarrationDeletions` above is the
+ * gesture path. This remains for callers that legitimately own the whole answer
+ * — the export's own merge of a legacy editor-state translation, and tests.
  */
 export async function saveNarrationDeletions(
   projectDir: string,

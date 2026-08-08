@@ -99,7 +99,7 @@ function requireUnalignedFacts(cached: CachedAnalysis, pdfPath: string): void {
 const execAsync = promisify(exec);
 
 // Cache version - increment this when changing extraction logic to invalidate old caches
-const ANALYSIS_CACHE_VERSION = 17;  // v17: an EPUB carrying neither stamp gets its categories from its own markup (headings, epub:type, note links, the TOC) instead of the scanned-page positional classifier
+const ANALYSIS_CACHE_VERSION = 18;  // v18: image blocks carry an element key of their own (`<zip entry>#img<N>`), so a picture — and a document that holds nothing else — can be struck out of the narration copy
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;
@@ -1758,7 +1758,7 @@ export class PDFAnalyzer {
       + `${stampedCategories.size} blocks stamped, ${reading.alignedToUnstampedElement} on unstamped `
       + `elements, ${reading.unaligned.length} unaligned, ${reading.spanningElements} spanning several elements.`,
     );
-    this.warnUnalignedBlocks(reading.unaligned, true);
+    this.warnUnalignedBlocks([...reading.unaligned, ...reading.unmatchedImages], true);
     return stampedCategories;
   }
 
@@ -1819,7 +1819,7 @@ export class PDFAnalyzer {
         + `${reading.elementByBlockId.size} of ${this.blocks.length} blocks carry an element key, `
         + `${reading.unaligned.length} could not be placed in the markup.`,
       );
-      this.warnUnalignedBlocks(reading.unaligned, false);
+      this.warnUnalignedBlocks([...reading.unaligned, ...reading.unmatchedImages], false);
       return new Map();
     }
 
@@ -1834,7 +1834,7 @@ export class PDFAnalyzer {
       + `${stampedCategories.size} blocks stamped, ${reading.alignedToUnstampedElement} on unstamped `
       + `elements, ${reading.unaligned.length} unaligned.`,
     );
-    this.warnUnalignedBlocks(reading.unaligned, true);
+    this.warnUnalignedBlocks([...reading.unaligned, ...reading.unmatchedImages], true);
     return stampedCategories;
   }
 
@@ -1895,7 +1895,7 @@ export class PDFAnalyzer {
       + `${reading.chapterOpenings} of ${reading.tocTargets} table-of-contents entries opened with a `
       + `chapter heading, ${reading.noterefs} note references, ${reading.unaligned.length} unaligned.`,
     );
-    this.warnUnalignedBlocks(reading.unaligned, true);
+    this.warnUnalignedBlocks([...reading.unaligned, ...reading.unmatchedImages], true);
     return stated;
   }
 
@@ -1906,6 +1906,12 @@ export class PDFAnalyzer {
    * element key cannot be struck out of the narration copy, because a strike is
    * recorded as the element it names. A book that also STATED its categories
    * loses those for the same blocks, so it has one thing more to say.
+   *
+   * PICTURES arrive here in the same list, from the same consequence: an image
+   * block the ordinal matcher refused to pair with an image element has no key
+   * either, and refusing to pair is the correct answer when the counts disagree
+   * (electron/epub-processor.ts, `alignImageBlocks`). One channel, because the
+   * user's question is the same one — "why did deleting that do nothing?".
    */
   private warnUnalignedBlocks(unaligned: UnalignedBlock[], stated: boolean): void {
     this.unalignedBlocks = unaligned;

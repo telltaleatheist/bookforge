@@ -43,18 +43,23 @@ const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bookforge-narration-'));
 process.env.BOOKFORGE_USERDATA_DIR = path.join(ROOT, 'userdata');
 
 const {
+  ZipReader,
   ZipWriter,
   epubCarriesConversionStamps,
   readEpubConversionStamps,
   readEpubConversionUnits,
   writeNarrationEpub,
 } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+const manifestService = require(path.join(DIST, 'electron', 'manifest-service.js'));
 const {
   narrationElementKey,
+  narrationImageElementKey,
   parseNarrationElementKey,
   deriveNarrationStrikes,
   describeUnstruckDeletions,
   narrationDeletedBlockIds,
+  narrationDeletedPages,
+  narrationDeletionEdit,
   narrationBlocksOnSourcePage,
   narrationEpubRelPath,
   narrationDeletionsStaleReason,
@@ -134,6 +139,104 @@ async function buildEpub(name, chapterXhtml) {
   return out;
 }
 
+// ── The SAME book with pictures in it ────────────────────────────────────────
+//
+// Two shapes, and both are the real ones. `cover.xhtml` holds ONE `<img>` and no
+// text at all — the case that made this change necessary, because such a
+// document had nothing that could be struck and so was never emptied and never
+// pruned. The chapter holds an INLINE plate between two paragraphs, which is the
+// other half: a picture that has to come out without its document going with it.
+
+const COVER = `<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Cover</title></head>
+<body><div class="cover"><img src="images/cover.jpg" alt=""/></div></body>
+</html>`;
+
+const PLATE = '<p data-bf-page="2" data-bf-cat="picture">'
+  + '<img src="images/plate.jpg" alt="Plate 1"/></p>';
+
+/** The stamped chapter, with one plate between the second paragraph and the quote. */
+const CHAPTER_WITH_PLATE = CHAPTER.replace(
+  '<blockquote data-bf-page="2"',
+  `${PLATE}\n<blockquote data-bf-page="2"`);
+
+/** The same chapter carrying TWO plates — the refusal case, when only one is laid out. */
+const CHAPTER_WITH_TWO_PLATES = CHAPTER_WITH_PLATE.replace(
+  '<p data-bf-page="3" data-bf-cat="footnote">',
+  '<p data-bf-page="3" data-bf-cat="picture"><img src="images/plate2.jpg" alt="Plate 2"/></p>\n'
+  + '<p data-bf-page="3" data-bf-cat="footnote">');
+
+const OPF_WITH_COVER = `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:identifier id="id">urn:sha256:test</dc:identifier>
+<dc:title>Working Towards the Fuhrer</dc:title>
+<dc:language>en</dc:language>
+</metadata>
+<manifest>
+<item id="cov" href="cover.xhtml" media-type="application/xhtml+xml"/>
+<item id="c1" href="chapter-01.xhtml" media-type="application/xhtml+xml"/>
+<item id="coverimg" href="images/cover.jpg" media-type="image/jpeg"/>
+</manifest>
+<spine><itemref idref="cov"/><itemref idref="c1"/></spine>
+<guide><reference type="cover" href="cover.xhtml" title="Cover"/></guide>
+</package>`;
+
+/** A two-document book: an image-only cover, then a chapter. */
+async function buildIllustratedEpub(name, chapterXhtml) {
+  const zip = new ZipWriter();
+  zip.addFile('mimetype', Buffer.from('application/epub+zip', 'utf8'), false);
+  zip.addFile('META-INF/container.xml', Buffer.from(CONTAINER, 'utf8'));
+  zip.addFile('OEBPS/content.opf', Buffer.from(OPF_WITH_COVER, 'utf8'));
+  zip.addFile('OEBPS/cover.xhtml', Buffer.from(COVER, 'utf8'));
+  zip.addFile('OEBPS/chapter-01.xhtml', Buffer.from(chapterXhtml, 'utf8'));
+  zip.addFile('OEBPS/images/cover.jpg', Buffer.from('JPEGBYTES', 'utf8'));
+  zip.addFile('OEBPS/images/plate.jpg', Buffer.from('JPEGBYTES', 'utf8'));
+  const out = path.join(ROOT, name);
+  await zip.write(out);
+  return out;
+}
+
+/** The zip entries of a written book. */
+async function entriesOf(epubPath) {
+  const reader = new ZipReader(epubPath);
+  await reader.open();
+  try {
+    return reader.getEntries();
+  } finally {
+    reader.close();
+  }
+}
+
+/** The chapter's prose, laid out — the aligner's block shape. */
+const CHAPTER_TEXTS = [
+  'Working Towards the Fuhrer',
+  'The first paragraph of the book, which is ordinary body prose and long enough to align.',
+  'A second paragraph on the following page, also ordinary and also long enough to align cleanly.',
+  'An epigraph set apart from the body of the chapter.',
+  'Figure 1. The caption belonging to the plate above.',
+  '1. Kershaw, Ian. Working Towards the Fuhrer, page two hundred and eleven.',
+];
+
+/**
+ * The illustrated book AS MUPDF LAYS IT OUT: the cover picture on its own page,
+ * then the chapter's prose with the plate sitting between the second paragraph
+ * and the epigraph — which is where it is in the markup.
+ */
+function illustratedLayout() {
+  const push = (over) => ({
+    page: 1, text: '', deleted: false, isImage: false, isFootnoteMarker: false, ...over,
+  });
+  return [
+    push({ id: 'cover-img', page: 0, y: 0, text: '[Image 600x900]', isImage: true }),
+    ...CHAPTER_TEXTS.map((text, i) => push({ id: `t${i}`, y: i * 100, text })),
+    // Between the second paragraph (t2, y=200) and the epigraph (t3, y=300),
+    // which is where the plate sits in the markup.
+    push({ id: 'plate-img', y: 250, text: '[Image 400x300]', isImage: true }),
+  ];
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 (async () => {
@@ -142,13 +245,31 @@ async function buildEpub(name, chapterXhtml) {
     const key = narrationElementKey('OEBPS/chapter-01.xhtml', 12);
     assert.strictEqual(key, 'OEBPS/chapter-01.xhtml#12');
     assert.deepStrictEqual(parseNarrationElementKey(key),
-      { file: 'OEBPS/chapter-01.xhtml', index: 12 });
+      { file: 'OEBPS/chapter-01.xhtml', index: 12, kind: 'unit' });
+  });
+
+  // The SECOND namespace, and the whole point of its being second: a picture
+  // gets an identity without a single text unit being renumbered, so every
+  // strike already recorded in the library still names what it named.
+  await check('an image key is <file>#img<N>, in its own namespace', () => {
+    const key = narrationImageElementKey('OEBPS/cover.xhtml', 0);
+    assert.strictEqual(key, 'OEBPS/cover.xhtml#img0');
+    assert.deepStrictEqual(parseNarrationElementKey(key),
+      { file: 'OEBPS/cover.xhtml', index: 0, kind: 'image' });
+    assert.notStrictEqual(key, narrationElementKey('OEBPS/cover.xhtml', 0));
   });
 
   await check('a key with no index is refused by name', () => {
     assert.throws(() => parseNarrationElementKey('OEBPS/chapter-01.xhtml'),
       /not a narration element key/);
     assert.throws(() => parseNarrationElementKey('#3'), /not a narration element key/);
+    // `Number('')` is 0, so a key that says "image" and no number would read as
+    // image 0 if the digits were not checked as characters first.
+    assert.throws(() => parseNarrationElementKey('OEBPS/c.xhtml#img'),
+      /not a narration element key/);
+    assert.throws(() => parseNarrationElementKey('OEBPS/c.xhtml#'),
+      /not a narration element key/);
+    assert.throws(() => narrationImageElementKey('OEBPS/c.xhtml', -1), /whole number/);
   });
 
   // ── the category map ──────────────────────────────────────────────────────
@@ -473,6 +594,296 @@ async function buildEpub(name, chapterXhtml) {
       writeNarrationEpub(converted, out, ['OEBPS/chapter-01.xhtml#99']),
       /OEBPS\/chapter-01\.xhtml#99/);
     assert.ok(!fs.existsSync(out), 'a refused export wrote a file anyway');
+  });
+
+  // ── pictures ──────────────────────────────────────────────────────────────
+  //
+  // The measured hole (Aug 2026): the user struck out the cover, the half-title
+  // and the title page — one `<img>` each, no text — and all three came through
+  // to the narration copy. Nothing could be recorded for an image, so those
+  // documents never emptied and the pruning never fired.
+
+  await check('every picture of a book is an element with a key', async () => {
+    const book = await buildIllustratedEpub('illustrated.epub', CHAPTER_WITH_PLATE);
+    const units = await readEpubConversionUnits(book);
+    const keys = units.map((u) => u.key);
+    assert.ok(keys.includes('OEBPS/cover.xhtml#img0'),
+      `the cover picture has no key: ${keys.join(', ')}`);
+    assert.ok(keys.includes('OEBPS/chapter-01.xhtml#img0'),
+      `the plate has no key: ${keys.join(', ')}`);
+    // The TEXT numbering is untouched: the chapter's first element is still #0.
+    assert.ok(keys.includes('OEBPS/chapter-01.xhtml#0'));
+    // A bare `<img>` is ALSO an export unit (it is in the editable-block tag
+    // set), so this element has a name in each namespace. That is redundancy
+    // rather than ambiguity, and it is the safe direction: striking either name
+    // removes the same element, the writer's `parentNode` guard makes removing
+    // it twice a no-op, and an image BLOCK is only ever recorded under the image
+    // name (image blocks never reach the text matcher, so nothing has to choose).
+    assert.deepStrictEqual(
+      keys.filter((k) => k.startsWith('OEBPS/cover.xhtml')).sort(),
+      ['OEBPS/cover.xhtml#0', 'OEBPS/cover.xhtml#img0']);
+    // And the conversion stamp on the element AROUND the plate is read for it.
+    const plate = units.find((u) => u.key === 'OEBPS/chapter-01.xhtml#img0');
+    assert.strictEqual(plate.category, 'picture');
+    assert.strictEqual(plate.sourcePage, 2);
+  });
+
+  await check('an image block is matched to an image element by document and ordinal', async () => {
+    const book = await buildIllustratedEpub('illustrated2.epub', CHAPTER_WITH_PLATE);
+    const reading = await readEpubConversionStamps(book, illustratedLayout());
+    assert.deepStrictEqual(reading.unaligned, [], 'the prose all placed');
+    assert.deepStrictEqual(reading.unmatchedImages, [], 'both pictures placed');
+    // The cover block lies BEFORE any aligned text, so only the counting rule
+    // can put it in cover.xhtml — which is the case that matters, because an
+    // image-only document has no text to bound it from the near side.
+    assert.strictEqual(reading.elementByBlockId.get('cover-img'), 'OEBPS/cover.xhtml#img0');
+    assert.strictEqual(reading.elementByBlockId.get('plate-img'), 'OEBPS/chapter-01.xhtml#img0');
+    assert.strictEqual(reading.byBlockId.get('plate-img').statedCategory, 'picture');
+  });
+
+  // NO FALLBACKS: a count that does not add up is a refusal, not a guess. Two
+  // plates in the markup and one on screen (mupdf drops images under 20×20, and
+  // a spacer GIF is a real thing) must not silently strike the wrong one.
+  await check('a picture the counts cannot settle is REFUSED and reported', async () => {
+    const book = await buildIllustratedEpub('illustrated3.epub', CHAPTER_WITH_TWO_PLATES);
+    const reading = await readEpubConversionStamps(book, illustratedLayout());
+    // The chapter states two pictures and one was laid out — pairing by ordinal
+    // would be a coin toss between the two plates, so neither is paired.
+    assert.strictEqual(reading.elementByBlockId.get('plate-img'), undefined,
+      'a picture was paired by ordinal despite the counts disagreeing');
+    // And the COVER goes with it, which is the conservative answer rather than a
+    // cascade failure: the cover block lies in a gap whose window ends in that
+    // same over-supplied chapter, so "which document is it in" has two answers
+    // too. A refusal costs the user a deletion they can see did nothing; a guess
+    // costs them a plate out of the middle of somebody's book.
+    assert.strictEqual(reading.elementByBlockId.get('cover-img'), undefined);
+    assert.deepStrictEqual(
+      reading.unmatchedImages.map((u) => u.blockId).sort(), ['cover-img', 'plate-img']);
+    assert.ok(reading.unmatchedImages.every((u) => /image element/.test(u.reason)),
+      JSON.stringify(reading.unmatchedImages.map((u) => u.reason)));
+    // The PROSE is untouched: a picture nobody can place says nothing about text.
+    assert.deepStrictEqual(reading.unaligned, []);
+    assert.strictEqual(reading.elementByBlockId.get('t1'), 'OEBPS/chapter-01.xhtml#1');
+  });
+
+  await check('striking an image-only document\'s picture PRUNES the document', async () => {
+    const book = await buildIllustratedEpub('illustrated4.epub', CHAPTER_WITH_PLATE);
+    const before = fs.readFileSync(book);
+    const out = path.join(ROOT, 'illustrated4.tts.epub');
+    const written = await writeNarrationEpub(book, out, ['OEBPS/cover.xhtml#img0'], {
+      stripSupMarkers: false,
+    });
+    assert.strictEqual(written.removedElements, 1);
+    assert.deepStrictEqual(written.removedDocuments, ['OEBPS/cover.xhtml'],
+      'the emptied cover was left in the book');
+    assert.ok(before.equals(fs.readFileSync(book)), 'the official book was rewritten');
+
+    const entries = await entriesOf(out);
+    assert.ok(!entries.includes('OEBPS/cover.xhtml'), 'the pruned document is still in the zip');
+    // Its IMAGE stays: assets are shared, and this removes documents, not files.
+    assert.ok(entries.includes('OEBPS/images/cover.jpg'));
+
+    // The package's own account of itself: manifest item, spine itemref and the
+    // EPUB 2 guide reference all go with the document, or a strict reader
+    // refuses the file and e2a reads a chapter title for a chapter that is gone.
+    const reader = new ZipReader(out);
+    await reader.open();
+    let opf;
+    try {
+      opf = (await reader.readEntry('OEBPS/content.opf')).toString('utf8');
+    } finally {
+      reader.close();
+    }
+    assert.ok(!/cover\.xhtml/.test(opf), `cover.xhtml is still named in the package:\n${opf}`);
+    assert.ok(/chapter-01\.xhtml/.test(opf), 'the surviving document left the package too');
+  });
+
+  await check('striking an INLINE picture removes it and keeps its document', async () => {
+    const book = await buildIllustratedEpub('illustrated5.epub', CHAPTER_WITH_PLATE);
+    const out = path.join(ROOT, 'illustrated5.tts.epub');
+    const written = await writeNarrationEpub(book, out, ['OEBPS/chapter-01.xhtml#img0'], {
+      stripSupMarkers: false,
+    });
+    assert.strictEqual(written.removedElements, 1);
+    assert.deepStrictEqual(written.removedDocuments, [],
+      'a chapter with prose left in it was pruned');
+    const entries = await entriesOf(out);
+    assert.ok(entries.includes('OEBPS/chapter-01.xhtml'));
+    assert.ok(entries.includes('OEBPS/cover.xhtml'), 'an untouched document went missing');
+
+    const reader = new ZipReader(out);
+    await reader.open();
+    let chapter;
+    try {
+      chapter = (await reader.readEntry('OEBPS/chapter-01.xhtml')).toString('utf8');
+    } finally {
+      reader.close();
+    }
+    assert.ok(!/plate\.jpg/.test(chapter), 'the struck picture is still in the chapter');
+    assert.ok(/The first paragraph of the book/.test(chapter), 'the prose went with it');
+  });
+
+  await check('a text strike and an image strike do not disturb each other', async () => {
+    const book = await buildIllustratedEpub('illustrated6.epub', CHAPTER_WITH_PLATE);
+    const units = await readEpubConversionUnits(book);
+    const footnote = units.find((u) => u.category === 'footnote').key;
+    const out = path.join(ROOT, 'illustrated6.tts.epub');
+    const written = await writeNarrationEpub(
+      book, out, [footnote, 'OEBPS/cover.xhtml#img0'], { stripSupMarkers: false });
+    assert.strictEqual(written.removedElements, 2);
+    assert.deepStrictEqual(written.removedDocuments, ['OEBPS/cover.xhtml']);
+    const after = await readEpubConversionUnits(out);
+    assert.deepStrictEqual(
+      after.filter((u) => u.category !== null).map((u) => u.category),
+      // The chapter's text units, then its one image unit. `picture` appears
+      // twice because the plate's `<p>` wrapper is a text unit and the `<img>`
+      // inside it is an image unit — the same element under both names.
+      ['title', 'text', 'text', 'picture', 'quote', 'caption', 'picture'],
+      'the footnote left and everything else stayed, the plate included');
+    assert.ok(!after.some((u) => u.key.startsWith('OEBPS/cover.xhtml')),
+      'the pruned cover still has elements in the copy');
+  });
+
+  // ── the view, projected from the record ───────────────────────────────────
+  await check('a page every strikeable block of which is struck reads as deleted', () => {
+    const blocks = [
+      laid('b1', 0, 'e#0'),
+      laid('b2', 0, 'e#1'),
+      laid('b3', 1, 'e#2'),
+      // Furniture: a page holding nothing that can be struck is NOT deleted,
+      // or every blank page in the book would go the moment anything else did.
+      laid('b4', 2, null, { unplaceable: true }),
+    ];
+    assert.deepStrictEqual(
+      [...narrationDeletedPages(blocks, new Set(['b1', 'b2']))], [0]);
+    assert.deepStrictEqual(
+      [...narrationDeletedPages(blocks, new Set(['b1']))], [],
+      'a page with one of two blocks struck is not a deleted page');
+    assert.deepStrictEqual(
+      [...narrationDeletedPages(blocks, new Set(['b4']))], [],
+      'a page of furniture reads as deleted by vacuous truth');
+  });
+
+  // ── the transaction ───────────────────────────────────────────────────────
+  await check('an edit is the difference, both ways', () => {
+    assert.deepStrictEqual(
+      narrationDeletionEdit(new Set(['a#0', 'a#1']), new Set(['a#1', 'a#2'])),
+      { strike: ['a#2'], unstrike: ['a#0'] });
+    // The case the whole model turns on: a view that has just been reset. The
+    // old snapshot save read this as "nothing is struck" and wrote it.
+    assert.deepStrictEqual(
+      narrationDeletionEdit(new Set(['a#0']), new Set(['a#0'])),
+      { strike: [], unstrike: [] });
+  });
+
+  // ── the record, edited transactionally, on a real manifest ────────────────
+  //
+  // The bug this is the fix for: the picker used to DERIVE the whole record from
+  // its view and overwrite the manifest with it. The view resets on every
+  // document reload, so a derivation over a freshly-reset view was a perfectly
+  // legitimate record with an evening's strikes missing from it. Main now
+  // accumulates, under the project lock, and the picker sends differences.
+
+  /** A library of one project, with a book on disk and a manifest that names it. */
+  function makeProject(suffix) {
+    const library = fs.mkdtempSync(path.join(ROOT, `lib-${suffix}-`));
+    const projectId = 'Illustrated_-_A_Author_-_1999';
+    const projectDir = path.join(library, 'projects', projectId);
+    fs.mkdirSync(path.join(projectDir, 'source'), { recursive: true });
+    const bookRel = 'source/Illustrated.working.epub';
+    const bookAbs = path.join(projectDir, 'source', 'Illustrated.working.epub');
+    fs.writeFileSync(path.join(projectDir, 'manifest.json'), JSON.stringify({
+      version: 2,
+      projectId,
+      type: 'book',
+      metadata: { title: 'Illustrated' },
+      source: { type: 'epub', path: bookRel },
+      outputs: { epub: { path: bookRel, modifiedAt: new Date().toISOString() } },
+    }, null, 2));
+    manifestService.setLibraryBasePath(library);
+    return { projectDir, bookAbs, bookRel };
+  }
+
+  await check('a strike ACCUMULATES into the record rather than replacing it', async () => {
+    const p = makeProject('accum');
+    fs.copyFileSync(await buildIllustratedEpub('rec1.epub', CHAPTER_WITH_PLATE), p.bookAbs);
+    const { sha256File } = require(path.join(DIST, 'electron', 'sidecar-binding.js'));
+    const { sha256: sha } = await sha256File(p.bookAbs);
+
+    const one = await manifestService.editNarrationDeletions(
+      p.projectDir, sha, { strike: ['OEBPS/chapter-01.xhtml#5'], unstrike: [] });
+    assert.deepStrictEqual(one.deletions.elements, ['OEBPS/chapter-01.xhtml#5']);
+
+    // A SECOND gesture that knows nothing about the first. Under the old
+    // snapshot save this window's view would have replaced the record.
+    const two = await manifestService.editNarrationDeletions(
+      p.projectDir, sha, { strike: ['OEBPS/cover.xhtml#img0'], unstrike: [] });
+    assert.deepStrictEqual(two.deletions.elements,
+      ['OEBPS/chapter-01.xhtml#5', 'OEBPS/cover.xhtml#img0']);
+    assert.strictEqual(two.staleReason, null);
+
+    // Idempotent: striking what is already struck changes nothing.
+    const again = await manifestService.editNarrationDeletions(
+      p.projectDir, sha, { strike: ['OEBPS/cover.xhtml#img0'], unstrike: [] });
+    assert.deepStrictEqual(again.deletions.elements,
+      ['OEBPS/chapter-01.xhtml#5', 'OEBPS/cover.xhtml#img0']);
+
+    // An UNSTRIKE takes exactly its own element back out.
+    const undone = await manifestService.editNarrationDeletions(
+      p.projectDir, sha, { strike: [], unstrike: ['OEBPS/cover.xhtml#img0'] });
+    assert.deepStrictEqual(undone.deletions.elements, ['OEBPS/chapter-01.xhtml#5']);
+
+    // Unstriking something that is not struck is not an error — an undo of a
+    // gesture whose element another gesture had already taken back is a real
+    // sequence, and refusing it would make undo fail on a legal history.
+    const noop = await manifestService.editNarrationDeletions(
+      p.projectDir, sha, { strike: [], unstrike: ['OEBPS/cover.xhtml#img0'] });
+    assert.deepStrictEqual(noop.deletions.elements, ['OEBPS/chapter-01.xhtml#5']);
+
+    // The record on disk says the same thing — nothing is held in memory.
+    const onDisk = await manifestService.readNarrationDeletions(p.projectDir);
+    assert.deepStrictEqual(onDisk.elements, ['OEBPS/chapter-01.xhtml#5']);
+    assert.strictEqual(onDisk.epubSha256, sha);
+  });
+
+  await check('an edit against a book that has moved on CLEARS and refuses', async () => {
+    const p = makeProject('stale');
+    fs.copyFileSync(await buildIllustratedEpub('rec2.epub', CHAPTER_WITH_PLATE), p.bookAbs);
+    const { sha256File } = require(path.join(DIST, 'electron', 'sidecar-binding.js'));
+    const { sha256: sha } = await sha256File(p.bookAbs);
+
+    await manifestService.editNarrationDeletions(
+      p.projectDir, sha, { strike: ['OEBPS/chapter-01.xhtml#5'], unstrike: [] });
+
+    // A simplify or translate pass rewrites the book in place; every position
+    // after the first change moves. Merging into that record would be striking
+    // paragraphs at random.
+    const answer = await manifestService.editNarrationDeletions(
+      p.projectDir, 'a-different-book-entirely',
+      { strike: ['OEBPS/chapter-01.xhtml#2'], unstrike: [] });
+    assert.strictEqual(answer.deletions, null);
+    assert.ok(/has changed since these deletions were made/.test(answer.staleReason),
+      answer.staleReason);
+    assert.strictEqual(await manifestService.readNarrationDeletions(p.projectDir), null,
+      'the void record was left on disk');
+  });
+
+  await check('concurrent edits compose — none is lost to the read-modify-write', async () => {
+    const p = makeProject('concurrent');
+    fs.copyFileSync(await buildIllustratedEpub('rec3.epub', CHAPTER_WITH_PLATE), p.bookAbs);
+    const { sha256File } = require(path.join(DIST, 'electron', 'sidecar-binding.js'));
+    const { sha256: sha } = await sha256File(p.bookAbs);
+
+    // Fired together, deliberately: the read and the write are one locked
+    // transaction in manifest-service precisely so this cannot drop one.
+    await Promise.all(
+      ['#0', '#1', '#2', '#3', '#4'].map((k) => manifestService.editNarrationDeletions(
+        p.projectDir, sha, { strike: [`OEBPS/chapter-01.xhtml${k}`], unstrike: [] })));
+    const onDisk = await manifestService.readNarrationDeletions(p.projectDir);
+    assert.deepStrictEqual(onDisk.elements, [
+      'OEBPS/chapter-01.xhtml#0', 'OEBPS/chapter-01.xhtml#1', 'OEBPS/chapter-01.xhtml#2',
+      'OEBPS/chapter-01.xhtml#3', 'OEBPS/chapter-01.xhtml#4',
+    ]);
   });
 
   // ── report ────────────────────────────────────────────────────────────────
