@@ -27,21 +27,20 @@ export type CleanupStages = 'ocr' | 'tts' | 'both';
 
 // Job types supported by the queue
 export type JobType = 'tts-conversion' | 'translation' | 'rvc-enhancement' | 'reassembly' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook' | 'book-analysis' | 'generate-sentences'
-  // Processing passes (docs/PROCESSING_PIPELINE_V2.md). One job per pass, chained
-  // in the user's order against ONE project. Every one of them runs through the
-  // same main-process handler; the pass kind is in the config.
+  // Processing passes. One job per pass, chained in the user's order against ONE
+  // project. Both run through the same main-process handler; the pass kind is in
+  // the config, and both read and rewrite the project's book EPUB.
   //
-  // Each document pass is one row: 'document-get-text' casts the working PDF and
-  // puts the words in it, 'document-blocks' labels every block into it, and
-  // 'document-reflow' writes the book out of it. The whole 'foundry-*' scan-chain
-  // vocabulary that preceded them is retired — see RETIRED_JOB_TYPES.
-  | 'document-get-text' | 'document-blocks' | 'document-reflow'
-  | 'foundry-footnotes' | 'simplify' | 'translate-pass';
+  // Making the book is not a pass and has no job type: `foundry vlm-convert` is
+  // a document stage owned by main. The whole document-pipeline vocabulary that
+  // preceded it — 'document-get-text', 'document-blocks', 'document-reflow',
+  // 'foundry-footnotes' and the 'foundry-*' scan chain before them — is retired;
+  // see RETIRED_JOB_TYPES.
+  | 'simplify' | 'translate-pass';
 
-/** The six job types that are processing passes, for a runtime membership test. */
+/** The job types that are processing passes, for a runtime membership test. */
 export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
-  'document-get-text', 'document-blocks', 'document-reflow',
-  'foundry-footnotes', 'simplify', 'translate-pass',
+  'simplify', 'translate-pass',
 ]);
 
 /**
@@ -53,17 +52,28 @@ export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
  * that explains it, never left pending in a queue that silently steps over it.
  */
 export const RETIRED_JOB_TYPES: ReadonlyMap<string, string> = new Map([
-  ['foundry-scan', 'Tesseract is no longer a queue step of its own: reading the pages is what '
-    + 'the Get Text pass IS. Remove this row and start the run again from the Process tab.'],
-  ['foundry-ocr-correct', 'OCR correction is not a pass any more \u2014 repairing what Tesseract '
-    + 'misread happens inside Build the book, on the blocks you kept, so the ones you deleted '
-    + 'cost nothing. Remove this row and plan the run again from the Process tab.'],
-  ['foundry-ocr', 'OCR correction is not a pass any more \u2014 repairing what Tesseract misread '
-    + 'happens inside Build the book, on the blocks you kept. Remove this row and plan the run '
-    + 'again from the Process tab.'],
-  ['foundry-detect', 'Detection is now Detect blocks, and it writes its answer into the working '
-    + 'PDF instead of a run directory. This row was queued against the run directory, which no '
-    + 'longer exists. Remove it and plan the run again from the Process tab.'],
+  // Aug 2026: `foundry vlm-convert` became the only PDF\u2192EPUB conversion, and the
+  // whole Tesseract-era document pipeline was removed with it. A run today is
+  // Simplify and Translate over a book that already exists.
+  ['document-get-text', 'Get Text is gone: BookForge no longer casts a working PDF with '
+    + 'Tesseract. Converting a PDF to a book is one act now \u2014 Convert to EPUB. Remove this row.'],
+  ['document-blocks', 'Detect blocks is gone: the block model and the layout pipeline it '
+    + 'labelled for were retired when Convert to EPUB became the only PDF\u2192EPUB conversion. '
+    + 'Remove this row.'],
+  ['document-reflow', 'Build the book is gone: Convert to EPUB writes the book directly from the '
+    + 'pages, so there is no working document to reflow. Remove this row.'],
+  ['foundry-footnotes', 'The AI footnote pass is gone. Digits-only footnote references are now '
+    + 'removed deterministically as the narration copy is written, so nothing needs to be queued. '
+    + 'Remove this row.'],
+  // The scan-chain vocabulary that preceded the document pipeline.
+  ['foundry-scan', 'Tesseract is no longer part of this app: the pages are read by the document '
+    + 'vision model Convert to EPUB runs. Remove this row.'],
+  ['foundry-ocr-correct', 'OCR correction is gone with the Tesseract pipeline it repaired. '
+    + 'Remove this row.'],
+  ['foundry-ocr', 'OCR correction is gone with the Tesseract pipeline it repaired. Remove this '
+    + 'row.'],
+  ['foundry-detect', 'Detection is gone with the Tesseract pipeline it labelled. Remove this '
+    + 'row.'],
 ]);
 
 // Job status

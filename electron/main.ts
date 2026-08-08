@@ -7642,18 +7642,6 @@ function setupIpcHandlers(): void {
       console.error('[IPC] Error stopping parallel TTS job:', err);
     }
 
-    // Try to cancel a processing pass. Only the foundry ones answer here — a
-    // simplify pass is an ai-bridge cleanup job and was already cancelled above.
-    try {
-      const { cancelProcessingPass } = await import('./processing-passes.js');
-      if (await cancelProcessingPass(jobId)) {
-        console.log('[IPC] Processing pass cancelled:', jobId);
-        cancelled = true;
-      }
-    } catch (err) {
-      console.error('[IPC] Error cancelling processing pass:', err);
-    }
-
     // Try to cancel reassembly job
     try {
       const { stopReassembly } = await import('./reassembly-bridge.js');

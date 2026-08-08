@@ -18,21 +18,24 @@
  * The pass kinds that name a stage directory — `manifest-service.passStageRelDir`
  * builds `stages/NN-<kind>` out of exactly these.
  *
- * The retired three are still in the list, and have to be: a reset is asked to
+ * EVERY RETIRED NAME IS STILL IN THE LIST, and has to be: a reset is asked to
  * clean up books this pipeline processed under older builds, and a directory
  * named `stages/02-ocr-correction` could only have been made by it. Dropping the
- * name would leave that directory behind forever.
+ * name would leave that directory behind forever. The list therefore only ever
+ * grows — it is a list of names that have existed, not of passes that run.
  */
 export const PASS_STAGE_KINDS: readonly string[] = [
+  'simplify',
+  'translate',
+  // Retired (Aug 2026, when `foundry vlm-convert` became the only PDF→EPUB
+  // conversion) and the wave before it.
   'get-text',
   'blocks',
   'reflow',
+  'footnotes',
   'tesseract',
   'ocr-correction',
   'detection',
-  'footnotes',
-  'simplify',
-  'translate',
 ];
 
 /**

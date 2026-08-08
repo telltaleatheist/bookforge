@@ -8,22 +8,23 @@
  *
  * `queue.json` outlives the code that wrote it. A user who planned a run under
  * an older build, closed the app and reopened it under this one still has those
- * rows, and three of the kinds they name — `tesseract`, `ocr-correction`,
- * `detection` — no longer exist: the document pipeline folded the first into Get
- * Text, the second into Build the book, and turned the third into annotations in
- * the working PDF (docs/DOCUMENT_PIPELINE.md).
+ * rows, and every kind they name except `simplify` and `translate` is gone: in
+ * Aug 2026 `foundry vlm-convert` became the only PDF→EPUB conversion and the
+ * whole Tesseract-era document pipeline went with it — `get-text` (the cast),
+ * `blocks` (Detect), `reflow` (the exporter) and the 4B `footnotes` pass, which
+ * had already absorbed `tesseract`, `ocr-correction` and `detection`.
  *
- * A row like that cannot be reasoned about. Nothing knows what `detection` would
- * do now, and the nearest live pass is not the same pass — running it would
- * spend GPU time producing something the user did not ask for and did not plan.
- * So it is refused, and the refusal carries the sentence that explains the
- * change plus where to plan the run again, because "there is no detection pass"
- * on its own tells someone nothing about what happened to their queue.
+ * A row like that cannot be reasoned about. Nothing knows what `reflow` would do
+ * now, and the nearest live pass is not the same pass — running it would spend
+ * GPU time producing something the user did not ask for and did not plan. So it
+ * is refused, and the refusal carries the sentence that explains the change plus
+ * where to plan the run again, because "there is no reflow pass" on its own
+ * tells someone nothing about what happened to their queue.
  *
- * `footnotes` is the same shape from the other side: it survived, but it now has
- * two implementations and the PLAN says which. A row queued before that
- * distinction existed carries no `footnotesMode`, and picking one would silently
- * read the wrong document.
+ * The queue's own half of this is `RETIRED_JOB_TYPES`
+ * (src/app/features/queue/models/queue.types.ts), which fails such a row on
+ * LOAD. This is the belt to that pair of braces: a row that reaches the executor
+ * anyway still refuses rather than falling through a switch.
  */
 const fs = require('fs');
 const os = require('os');
@@ -60,36 +61,31 @@ async function run(kind, extra) {
 
 (async () => {
   console.log('1. a queue row naming a pass this build no longer has');
-  {
-    const detection = await run('detection');
-    ok('the job fails instead of guessing', detection.success === false);
-    ok('and the message names the change and the fix',
-      /Detect blocks/.test(detection.error || '') && /Process tab/.test(detection.error || ''),
-      detection.error);
-
-    const ocr = await run('ocr-correction');
-    ok('OCR correction says where the repair went',
-      ocr.success === false && /Build the book/.test(ocr.error || ''),
-      ocr.error);
-
-    const tesseract = await run('tesseract');
-    ok('and Tesseract says which pass reads the pages now',
-      tesseract.success === false && /Get Text/.test(tesseract.error || ''),
-      tesseract.error);
+  // Each of these says what happened to that pass, not merely that it is gone.
+  const expected = {
+    'get-text': /Convert to EPUB/,
+    blocks: /block model/,
+    reflow: /Convert to EPUB writes the book/,
+    footnotes: /narration copy/,
+    tesseract: /document vision model/,
+    'ocr-correction': /Tesseract pipeline it repaired/,
+    detection: /Tesseract pipeline it labelled/,
+  };
+  for (const [kind, pattern] of Object.entries(expected)) {
+    const result = await run(kind);
+    ok(`${kind} fails instead of guessing`, result.success === false, result.error);
+    ok(`${kind} says what happened to it`, pattern.test(result.error || ''), result.error);
+    ok(`${kind} says where to plan the run again`,
+      /Process tab/.test(result.error || ''), result.error);
   }
 
-  console.log('\n2. a footnotes row that does not say which document it reads');
+  console.log('\n2. a kind nobody has ever had');
   {
-    // The pass survived the pipeline change; the AMBIGUITY did not survive with
-    // it. `--epub` edits the finished book and `--pdf` rewrites the working
-    // document's text layer, and a job that names neither would have one of them
-    // chosen for it — which is a pass silently reading the wrong document.
-    const footnotes = await run('footnotes');
-    ok('an unqualified footnotes job is refused, not guessed at',
-      footnotes.success === false && /footnotesMode/.test(footnotes.error || ''),
-      footnotes.error);
-    ok('and it says the row predates the document pipeline',
-      /document pipeline/.test(footnotes.error || ''), footnotes.error);
+    // Not in the retired table, so it reaches the switch's exhaustiveness arm —
+    // which has to refuse rather than fall through to whichever case is last.
+    const result = await run('sharpen');
+    ok('an unknown kind is refused by its own name',
+      result.success === false && /no sharpen pass/.test(result.error || ''), result.error);
   }
 
   fs.rmSync(scratch, { recursive: true, force: true });

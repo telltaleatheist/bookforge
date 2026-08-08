@@ -1,22 +1,27 @@
 /**
- * document-ipc — the renderer's whole view of the document pipeline.
+ * document-ipc — the renderer's whole view of a project's documents.
  *
- * Five things a window can ask about a book's documents: what has happened to
- * them, what blocks they carry, a curation edit, a stage, and a reset. There is
- * nothing else, and in particular there is nothing that hands back a "run" — the
- * document on disk IS the result (docs/DOCUMENT_PIPELINE.md), so a reader asks
- * the document and gets the answer as it stands rather than as some earlier
- * process recorded it.
+ * What a window can ask: what state the documents are in, what blocks they
+ * carry, mint a working copy, land a curation edit, reset, discard, delete the
+ * book. There is nothing else, and in particular there is nothing that hands
+ * back a "run" — the document on disk IS the result, so a reader asks the
+ * document and gets the answer as it stands rather than as some earlier process
+ * recorded it.
+ *
+ * The four foundry STAGES that used to live here (Get Text, Blocks, Reflow, and
+ * footnote removal by a 4B adapter) went in Aug 2026 with the Tesseract pipeline
+ * they belonged to. Reading the pages is `vlm:convert` now — one act, producing
+ * a book — and footnote references come out as the NARRATION COPY is written
+ * (electron/narration-export.ts), which edits no book at all.
  *
  * ── Errors are not state ────────────────────────────────────────────────────
  *
- * A stage that fails answers `{ success: false, error }` and leaves NOTHING
- * behind: foundry's staged-temp discipline means the document is untouched, and
- * the scratch directory a stage used is deleted on failure and on success alike.
- * The message reaches the user once, where they asked for the stage. There is no
- * persistent error record to attach, clear, or trip over for the rest of a
- * book's life — that model is what this replaces, and re-running the stage is
- * the whole recovery story.
+ * Anything that fails here answers `{ success: false, error }` and leaves
+ * NOTHING behind: every write is staged and moved into place, so a failure means
+ * the documents are untouched. The message reaches the user once, where they
+ * asked. There is no persistent error record to attach, clear, or trip over for
+ * the rest of a book's life — that model is what this replaced, and trying again
+ * is the whole recovery story.
  *
  * ── Why the renderer never holds a path ─────────────────────────────────────
  *
@@ -31,19 +36,16 @@
 import { BrowserWindow, ipcMain } from 'electron';
 import * as fs from 'fs';
 
-import { resolveDocumentProject, reflowOutputPath } from './document-project';
+import { resolveDocumentProject } from './document-project';
 import {
   discardDocumentPipeline,
   measureDocumentClass,
   primaryAbsPath,
   readDocumentPipelineState,
   resetDocumentTo,
-  runBlocksStage,
-  runGetTextStage,
-  runReflowStage,
   type DocumentProject,
-  type DocumentStageProgress,
 } from './document-stages';
+import { createWorkingCopy } from './working-copy';
 import { readWorkingDocumentBlocks } from './working-document';
 import { applyWorkingDocumentEdits, type WorkingDocumentEdit } from './working-document-writer';
 import { abortStageFor } from './document-stage-registry';
@@ -95,27 +97,6 @@ async function projectOf(ref: DocumentRef): Promise<DocumentProject> {
     ...(ref.variantId ? { variantId: ref.variantId } : {}),
     ...(ref.sourcePath ? { sourcePath: ref.sourcePath } : {}),
   });
-}
-
-/**
- * Run a stage over this project's DOCUMENTS.
- *
- * The claim, the three broadcasts and the "open when finished" settlement are
- * `withProjectStage`'s — the queue path needs exactly the same four things and
- * had its own copy of them. What this adds is the resolved document project the
- * document stages take, so a caller here hands `runGetTextStage` and friends
- * what they expect.
- */
-async function withStage<T>(
-  project: DocumentProject,
-  stage: string,
-  run: (opts: {
-    project: DocumentProject;
-    signal: AbortSignal;
-    onProgress: (progress: DocumentStageProgress) => void;
-  }) => Promise<T>
-): Promise<T> {
-  return withProjectStage(project.projectDir, stage, (opts) => run({ project, ...opts }));
 }
 
 
@@ -243,99 +224,33 @@ export function registerDocumentIpc(): void {
   });
 
   /**
-   * Get Text — the cast. Every page, always.
+   * Mint `<Original>.working.pdf` — a copy of the archive original, marked.
    *
-   * The picker's "read the pages again from scratch": casting REPLACES whatever
-   * working document was there, because handing back this morning's document
-   * would answer a different question than the one that was asked, silently and
-   * instantly, which reads as success.
+   * The archive original is immutable and curation is an append to a PDF, so
+   * there has to be a second file; this is where it comes from. It is a copy and
+   * a marker and nothing else (electron/working-copy.ts): no foundry, no
+   * Tesseract, no text layer, no model, seconds rather than minutes.
+   *
+   * A project that already has one is REFUSED by name rather than re-minted —
+   * the existing file holds whatever the user has marked up, and replacing it
+   * would throw that away instantly, looking exactly like success. The caller
+   * offers to open it instead.
    */
-  ipcMain.handle('document:get-text', async (_event, ref: DocumentRef) => {
+  ipcMain.handle('document:create-working-copy', async (_event, ref: DocumentRef) => {
     try {
       const project = await projectOf(ref);
-      const { documentClass } = await withStage(project, 'Get Text', (opts) =>
-        runGetTextStage(opts));
+      // Under the stage claim like anything else that writes a document: two
+      // windows pressing this at once would otherwise both copy 300 MB over the
+      // same path. The bar it draws is for a copy, so it reports nothing.
+      const result = await withProjectStage(
+        project.projectDir, 'Working copy', () => createWorkingCopy(project));
       broadcast('project:files-changed', project.projectDir);
-      return { success: true, documentClass };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  /**
-   * Detect. One of these, and it writes into the document.
-   *
-   * The confirmation belongs to the picker — this is where a user's hand
-   * curation is overwritten — and there is none here, because a caller reaching
-   * this handler has already decided. Results are never staged, previewed or
-   * held: if it ran, the annotations in the PDF are the new truth.
-   */
-  ipcMain.handle('document:blocks', async (_event, ref: DocumentRef) => {
-    try {
-      const project = await projectOf(ref);
-      await withStage(project, 'Blocks', (opts) => runBlocksStage(opts));
-      broadcast('project:files-changed', project.projectDir);
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  /** Reflow — the working document in, the book out. The one exporter. */
-  ipcMain.handle('document:reflow', async (
-    _event, ref: DocumentRef, options?: { excludeCategories?: string[]; coverPath?: string }
-  ) => {
-    try {
-      const project = await projectOf(ref);
-      const outputPath = await reflowOutputPath(project.projectDir);
-      const { epubPath } = await withStage(project, 'Reflow', (opts) => runReflowStage({
-        ...opts,
-        outputPath,
-        ...(options?.excludeCategories ? { excludeCategories: options.excludeCategories } : {}),
-        ...(options?.coverPath ? { coverPath: options.coverPath } : {}),
-      }));
-      const manifestService = await import('./manifest-service.js');
-      await manifestService.registerEpubExport(project.projectDir, epubPath);
-      broadcast('project:files-changed', project.projectDir);
-      return { success: true, epubPath };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  /**
-   * Footnote removal over the project's BOOK, run here and now.
-   *
-   * Owen, 2026-08-04: "footnote removal is pretty fast. instead of adding to the
-   * queue lets have it do it quickly in a modal with a progress bar, just like
-   * the OCR modal on pdfs." So it is a stage like the three above it: claimed in
-   * the registry (a second writer is refused by name, and `document:cancel-stage`
-   * stops it), reported on the `document:stage-*` channels the picker already
-   * listens to, and followed by `project:files-changed` so the versions page
-   * re-measures.
-   *
-   * WHAT IT RUNS IS NOT WRITTEN HERE. `runEpubFootnotesOnBook` is the one
-   * description of what a footnotes run IS — foundry, the diff, the report, the
-   * swap and the provenance record — and the queue job runs the same function.
-   * Two descriptions would mean a book whose record depends on which button
-   * started it.
-   */
-  ipcMain.handle('document:footnotes-epub', async (
-    _event, projectDir: string, options?: { askEverything?: boolean }
-  ) => {
-    try {
-      const manifestService = await import('./manifest-service.js');
-      const { EPUB_FOOTNOTES_STAGE, runEpubFootnotesOnBook } = await import('./processing-passes.js');
-      const stageRelDir = await manifestService.nextPassStageRelDir(projectDir, 'footnotes');
-      const result = await withProjectStage(projectDir, EPUB_FOOTNOTES_STAGE, (opts) =>
-        runEpubFootnotesOnBook({
-          projectDir,
-          stageRelDir,
-          askEverything: options?.askEverything === true,
-          signal: opts.signal,
-          onProgress: opts.onProgress,
-        }));
-      return { success: true, ...result };
+      return {
+        success: true,
+        workingPath: result.workingPath,
+        workingRelPath: result.workingRelPath,
+        documentClass: result.binding.documentClass,
+      };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

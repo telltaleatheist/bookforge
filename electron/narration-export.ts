@@ -90,13 +90,14 @@ export async function saveNarrationDeletions(
   projectDir: string,
   elements: readonly NarrationElementKey[]
 ): Promise<NarrationDeletions> {
-  const book = await manifestService.readExportEpub(projectDir);
-  if (!book || !fs.existsSync(book.absPath)) {
-    throw new Error(
-      `${path.basename(projectDir)} has no book EPUB on disk, so there is nothing for these `
-      + 'deletions to be strikes out of.'
-    );
-  }
+  // `ensureBookEpub`, not `readExportEpub`: a project imported AS an EPUB has no
+  // book until something needs one, and the first strike is exactly that moment.
+  // The archive original is copied to `source/<Book Title>.epub` and recorded,
+  // so the strikes are positions inside a file this app owns — the archive stays
+  // untouched, which is what it is for. The same call is what a Simplify or
+  // Translate pass makes (processing-passes `requireBookEpub`), so both routes
+  // mint the same one book.
+  const book = await manifestService.ensureBookEpub(projectDir);
   const { sha256 } = await sha256File(book.absPath);
   const deletions: NarrationDeletions = {
     epubSha256: sha256,
@@ -114,6 +115,8 @@ export interface NarrationExportResult {
   relPath: string;
   removedElements: number;
   totalElements: number;
+  /** Digits-only `<sup>` footnote references removed on the way out. */
+  removedSupMarkers: number;
 }
 
 /**
@@ -148,6 +151,10 @@ export async function exportNarrationEpub(projectDir: string): Promise<Narration
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
   const staged = path.join(STAGING_DIR, `narration-${sha256.slice(0, 16)}.epub`);
 
+  // The footnote-marker strip is ON, and it is not a choice made here: it is
+  // `writeNarrationEpub`'s default, because a narration copy that keeps
+  // `<sup>55</sup>` is a copy the narrator reads "fifty-five" out of. This is
+  // also the ONLY place those markers are removed — no pass edits the book.
   const written = await writeNarrationEpub(book.absPath, staged, recorded?.elements ?? []);
   await moveIntoPlace(staged, target.absPath);
 
@@ -156,6 +163,7 @@ export async function exportNarrationEpub(projectDir: string): Promise<Narration
     modifiedAt: new Date().toISOString(),
     fromEpubSha256: sha256,
     removedElements: written.removedElements,
+    removedSupMarkers: written.removedSupMarkers,
   });
 
   return {
@@ -163,5 +171,6 @@ export async function exportNarrationEpub(projectDir: string): Promise<Narration
     relPath: target.relPath,
     removedElements: written.removedElements,
     totalElements: written.totalElements,
+    removedSupMarkers: written.removedSupMarkers,
   };
 }

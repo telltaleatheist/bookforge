@@ -861,6 +861,92 @@ export async function readExportEpub(projectDir: string): Promise<ExportEpubLoca
 }
 
 /**
+ * The project's source original, when it is an EPUB.
+ *
+ * Two recorded locations, because two import eras wrote them: today's importer
+ * copies the pristine file into `archive/` and records it in `manifest.archive`
+ * with `role: 'original'`, and projects imported before that have
+ * `source/original.epub`. Both are THE ORIGINAL — this is one question with two
+ * answers on disk, not a fallback ladder — and either way the file is read-only
+ * from here on.
+ */
+async function sourceOriginalEpub(
+  projectDir: string,
+  manifest: ProjectManifest
+): Promise<string | null> {
+  const archived = (manifest.archive ?? []).find(
+    (a) => a.role === 'original' && (a.format || '').toLowerCase() === 'epub');
+  if (archived?.path) {
+    const abs = toAbs(projectDir, archived.path);
+    if (fs.existsSync(abs)) return abs;
+  }
+  const legacy = path.join(projectDir, 'source', 'original.epub');
+  if (fs.existsSync(legacy)) return legacy;
+  return null;
+}
+
+/**
+ * The project's book EPUB, minting it from an EPUB original if there is none.
+ *
+ * ── WHAT PROBLEM THIS SOLVES ────────────────────────────────────────────────
+ *
+ * `outputs.epub` is the ONE book a pass reads and rewrites, and a book that came
+ * out of `foundry vlm-convert` has one from the moment it exists. A project
+ * imported AS an EPUB does not: its only EPUB is the archive original, which is
+ * the thing the archive exists to preserve. Simplify, Translate and the
+ * narration strikes would all have had to either refuse those projects or write
+ * to the archive — and writing to the archive is the one thing that must never
+ * happen, because it is unrecoverable and it is what the user handed us.
+ *
+ * So the book is minted lazily: the first act that needs one COPIES the original
+ * into `source/<Book Title>.epub` and records it. From then on the project looks
+ * exactly like a converted one, and every later pass writes to the copy.
+ *
+ * ── NO PROVENANCE ENTRY ─────────────────────────────────────────────────────
+ *
+ * `registerEpubExport` starts the book's provenance over, and nothing is
+ * appended after it: this book has had nothing done to it. It IS the original,
+ * copied. An `appliedPasses` entry here would claim a transformation that did
+ * not happen, and a diff viewer would offer a review of nothing.
+ *
+ * A project with no EPUB original is REFUSED by name. A PDF with no book has no
+ * book; converting one is what makes it, and this helper is not a second, silent
+ * way to end up with something to narrate.
+ */
+export async function ensureBookEpub(projectDir: string): Promise<ExportEpubLocation> {
+  const existing = await readExportEpub(projectDir);
+  if (existing && fs.existsSync(existing.absPath)) return existing;
+
+  const manifest = await readManifestAt(projectDir);
+  const original = await sourceOriginalEpub(projectDir, manifest);
+  if (!original) {
+    // Two different situations, and they get the same answer for the same
+    // reason: there is no EPUB in this project that is safe to write to.
+    throw new Error(
+      existing
+        ? `${path.basename(projectDir)}'s manifest records its book as ${existing.relPath}, but that `
+          + 'file is not there, and the project has no EPUB original to make a new one from.'
+        : `${path.basename(projectDir)} has no book EPUB. Its source is not an EPUB, so one has to `
+          + 'be made from the pages — run Convert to EPUB over it first.'
+    );
+  }
+
+  const target = await exportEpubTarget(projectDir);
+  if (path.resolve(target.absPath) === path.resolve(original)) {
+    throw new Error(
+      `${path.basename(projectDir)}'s book would be written over its own archive original `
+      + `(${target.relPath}). Refusing: the archive is the one file nothing may edit.`
+    );
+  }
+  await atomicCopyFile(original, target.absPath);
+  await registerEpubExport(projectDir, target.absPath);
+  console.log(
+    `[manifest-service] ${path.basename(projectDir)}: minted ${target.relPath} from its EPUB original`
+  );
+  return { ...target, modifiedAt: new Date().toISOString() };
+}
+
+/**
  * Remove what a set of superseded passes left on disk.
  *
  * The paths come from `passesAfterEpubEvent` and from nowhere else — this

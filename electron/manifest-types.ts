@@ -339,34 +339,38 @@ export interface EpubOutput {
 }
 
 /**
- * What a processing run can do to a book — the current passes, plus the ones
- * books already record.
+ * What has ever been done to a book — the things that can be done to one now,
+ * plus every name books already record.
  *
- * The current six are the document transformations (docs/DOCUMENT_PIPELINE.md):
- * `get-text`, `blocks`, `reflow`, `footnotes`, `simplify`, `translate`.
+ * ONLY THE RUNNABLE SET SHRINKS. A manifest is a BOOK'S OWN HISTORY, so a name
+ * that leaves the pipeline stays in this type forever: dropping it would make a
+ * real book's provenance unreadable — the history would silently shorten rather
+ * than say what happened.
  *
- * `RetiredPassKind` is not a live pass and cannot be requested. It is here
- * because a manifest is a BOOK'S OWN HISTORY: books processed before Aug 2026
- * carry `tesseract`, `ocr-correction` and `detection` records, and dropping the
- * names would make a real book's provenance unreadable — the history would
- * silently shorten rather than say what happened. `reflow` supersedes them all:
- * repair is a step inside it, and labelling is `blocks`.
+ * `RetiredPassKind` is everything that can no longer be asked for. The Aug 2026
+ * wave is the big one: `foundry vlm-convert` became the only PDF→EPUB
+ * conversion, and the whole Tesseract-era document pipeline went with it —
+ * `get-text` (the cast), `blocks` (Detect), `reflow` (the exporter) and the AI
+ * `footnotes` pass, which had already absorbed `tesseract`, `ocr-correction`
+ * and `detection` from the wave before it.
  */
-export type RetiredPassKind = 'tesseract' | 'ocr-correction' | 'detection';
-
-export type AppliedPassKind =
+export type RetiredPassKind =
   | 'get-text'
   | 'blocks'
   | 'reflow'
   | 'footnotes'
+  | 'tesseract'
+  | 'ocr-correction'
+  | 'detection';
+
+export type AppliedPassKind =
   | 'simplify'
   | 'translate'
-  // The OTHER route to a book: a document vision model read the pages and
-  // foundry assembled them (`foundry vlm-convert`). Like `reflow` it is a book's
-  // ORIGIN rather than a transformation of one, so it is the first record in a
-  // freshly converted book's provenance and never appears after another pass.
-  // It is not a queue job type and the chain planner refuses it — see
-  // shared/vlm/conversion.ts.
+  // The route to a book: a document vision model read the pages and foundry
+  // assembled them (`foundry vlm-convert`). A book's ORIGIN rather than a
+  // transformation of one, so it is the first record in a converted book's
+  // provenance and never appears after another pass. It is not a queue job type
+  // and the chain planner refuses it — see shared/vlm/conversion.ts.
   | 'vlm-convert'
   | RetiredPassKind;
 

@@ -379,26 +379,28 @@ export interface EpubOutput {
   narrationDeletions?: NarrationDeletions;
 }
 
-// The six things a processing run can do to a book. One queue job type each
-// except `tesseract`; see docs/PROCESSING_PIPELINE_V2.md for the user-facing
-// names. `detection` (labelling the blocks) split away from `ocr-correction`
-// (repairing what Tesseract misread) in Aug 2026 — a born-digital PDF needs the
-// second and not the first.
-// The current passes are the document transformations; the retired three are
-// here because a manifest is a book's own history and books already record them
-// (see electron/manifest-types.ts). They cannot be requested.
-export type RetiredPassKind = 'tesseract' | 'ocr-correction' | 'detection';
-
-export type AppliedPassKind =
+// What has ever been done to a book. ONLY THE RUNNABLE SET SHRINKS: a manifest
+// is a book's own history, so a name that leaves the pipeline stays in this type
+// forever (see electron/manifest-types.ts, which this mirrors). A run today is
+// Simplify and Translate over the book; making the book is `vlm-convert`.
+// `RetiredPassKind` cannot be requested — the Aug 2026 wave retired the whole
+// Tesseract-era document pipeline when `foundry vlm-convert` became the only
+// PDF→EPUB conversion.
+export type RetiredPassKind =
   | 'get-text'
   | 'blocks'
   | 'reflow'
   | 'footnotes'
+  | 'tesseract'
+  | 'ocr-correction'
+  | 'detection';
+
+export type AppliedPassKind =
   | 'simplify'
   | 'translate'
-  // The OTHER route to a book: a document vision model read the pages
-  // (`foundry vlm-convert`). A book's ORIGIN, like reflow — never a
-  // transformation of one, and never a queue job.
+  // The route to a book: a document vision model read the pages
+  // (`foundry vlm-convert`). A book's ORIGIN — never a transformation of one,
+  // and never a queue job.
   | 'vlm-convert'
   | RetiredPassKind;
 

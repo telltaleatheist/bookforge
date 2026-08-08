@@ -14,6 +14,7 @@ import { promisify } from 'util';
 import * as cheerio from 'cheerio';
 import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
 import { blockCategoryForVlm } from '../shared/vlm/conversion';
+import { stripFootnoteMarkerSups } from '../shared/text/sup-markers';
 import {
   narrationElementKey,
   planNarrationRemoval,
@@ -726,25 +727,11 @@ export class EpubProcessor {
     // fine-tuned on that text learned the junk marks end-of-utterance and truncated
     // there, which is what broke the thirdreich model.
     //
-    // Digits-only is the discriminator: `<sup>th</sup>` / `<sup>st</sup>` (ordinals)
-    // and any lettered superscript are KEPT. Ranges/lists ("1,2", "3-5") are still
-    // note refs, so they go too. A scientific exponent (`<sup>2</sup>`) is also
-    // dropped — accepted, because the blanket strip rendered it as a spurious spoken
-    // "2" anyway, so removal is no worse and usually better.
-    //
-    // Digits-only is measured on the sup's TEXT, not on its raw contents, because
-    // publishers write the reference two ways and BOTH are endnote markers:
-    //   bare           <sup class="calibre11">55</sup>              (Evans, Third Reich in Power)
-    //   anchor-wrapped <sup><a href="#fn-9" id="fn_9">9</a></sup>   (Killing America, Himmler)
-    // The original pattern required digits IMMEDIATELY inside the tag, so it only
-    // ever caught the first. Across 180 archived originals the anchor-wrapped form is
-    // the more common of the two by a wide margin — and The Third Reich at War is
-    // 2093 anchor-wrapped to 1 bare, which is how its markers reached the text, got
-    // spoken, and taught that voice model junk-means-stop.
-    text = text.replace(/<sup\b[^>]*>([\s\S]*?)<\/sup>/gi, (whole: string, inner: string) => {
-      const innerText = inner.replace(/<[^>]+>/g, '').trim();
-      return /^[\s\d,;–—-]+$/.test(innerText) && /\d/.test(innerText) ? '' : whole;
-    });
+    // THE RULE IS shared/text/sup-markers.ts, and it is shared with
+    // `document:strip-sup-markers`, which removes the same markers from the book
+    // itself. Two copies of it would mean the strip and the extractor disagreeing
+    // about which superscripts are prose.
+    text = stripFootnoteMarkerSups(text).text;
 
     // Remove all remaining tags
     text = text.replace(/<[^>]+>/g, ' ');
@@ -4689,18 +4676,40 @@ export interface NarrationEpubWriteResult {
   removedElements: number;
   /** How many the book had. */
   totalElements: number;
+  /** How many digits-only `<sup>` footnote references were removed. */
+  removedSupMarkers: number;
   /** The spine documents that were rewritten. */
   rewrittenFiles: string[];
 }
 
+export interface NarrationEpubWriteOptions {
+  /**
+   * Remove digits-only `<sup>` footnote references as the copy is written.
+   *
+   * DEFAULT ON, and the default is the point. A narrator reads `<sup>55</sup>`
+   * out loud as "fifty-five", e2a's number expansion inflates it first, and a
+   * voice fine-tuned on that text learns that junk means end-of-utterance. The
+   * markers are noise in every narration copy that has them, so the copy comes
+   * out without them unless a caller says otherwise.
+   *
+   * It is an option on THIS write and not a pass over the book because the book
+   * is never edited — see shared/text/sup-markers.ts.
+   */
+  stripSupMarkers?: boolean;
+}
+
 /**
- * Write the narration copy: the book, with the struck elements gone.
+ * Write the narration copy: the book, with the struck elements gone and (by
+ * default) its footnote reference markers with them.
  *
  * THE INPUT IS NEVER TOUCHED. Every zip entry is copied across; the spine
  * documents that lose an element are re-serialized from the same DOM the unit
  * list was built on, and everything else — the OPF, the nav, the CSS, the
- * cropped figures — goes over byte for byte. So the official conversion stays
- * the complete book it was, which is the whole point of there being two files.
+ * cropped figures — goes over byte for byte. So the official book stays the
+ * complete book it was, which is the whole point of there being two files. That
+ * holds whatever the book IS: a conversion foundry wrote, or a copy of an EPUB
+ * the user imported (manifest-service `ensureBookEpub`), whose archive original
+ * is never opened for writing either.
  *
  * `planNarrationRemoval` decides WHAT comes out and refuses a key the book does
  * not have; this function only carries that out. The output is written to
@@ -4710,6 +4719,7 @@ export async function writeNarrationEpub(
   inputPath: string,
   outputPath: string,
   deletions: readonly NarrationElementKey[],
+  options?: NarrationEpubWriteOptions,
 ): Promise<NarrationEpubWriteResult> {
   const { XMLSerializer } = require('@xmldom/xmldom');
   const whatFor = `the narration copy of ${path.basename(inputPath)}`;
@@ -4766,16 +4776,33 @@ export async function writeNarrationEpub(
     rewrittenFiles.push(file);
   }
 
+  const stripSups = options?.stripSupMarkers !== false;
+  let removedSupMarkers = 0;
+
   const zipReader = new ZipReader(inputPath);
   await zipReader.open();
   try {
     const zipWriter = new ZipWriter();
     for (const entry of zipReader.getEntries()) {
-      const replacement = replacements.get(entry);
+      let data = replacements.get(entry) ?? await zipReader.readEntry(entry);
+
+      // The marker strip runs on the BYTES that are about to be written — after
+      // the element removals, so a document that lost both is edited once, and
+      // as a string edit so every byte of markup nobody asked to touch comes
+      // through unchanged. Content documents only: the OPF and the nav have no
+      // prose in them, and `<sup>` there would not be a footnote reference.
+      if (stripSups && /\.(xhtml|html|htm)$/i.test(entry)) {
+        const stripped = stripFootnoteMarkerSups(data.toString('utf8'));
+        if (stripped.removed > 0) {
+          removedSupMarkers += stripped.removed;
+          data = Buffer.from(stripped.text, 'utf8');
+          if (!rewrittenFiles.includes(entry)) rewrittenFiles.push(entry);
+        }
+      }
+
       // `mimetype` is stored, never deflated — the EPUB spec requires it, and a
       // compressed one makes the book unopenable in strict readers.
-      zipWriter.addFile(
-        entry, replacement ?? await zipReader.readEntry(entry), entry !== 'mimetype');
+      zipWriter.addFile(entry, data, entry !== 'mimetype');
     }
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
     await zipWriter.write(outputPath);
@@ -4786,6 +4813,7 @@ export async function writeNarrationEpub(
   return {
     removedElements: plan.remove.length,
     totalElements: plan.total,
+    removedSupMarkers,
     rewrittenFiles,
   };
 }

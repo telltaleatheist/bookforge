@@ -61,6 +61,17 @@ export interface NarrationEpubOutput {
   fromEpubSha256: string;
   /** How many elements were removed. Zero is legal: a copy of the whole book. */
   removedElements: number;
+  /**
+   * How many digits-only `<sup>` footnote references were removed as the copy
+   * was written (shared/text/sup-markers.ts). Reported so the UI can say what
+   * the narration copy actually differs from the book by — a copy with nothing
+   * struck and 1,864 markers gone is not "identical to the book".
+   *
+   * OPTIONAL because records written before the strip existed have no number,
+   * and inventing 0 for them would say it found none rather than that it never
+   * ran.
+   */
+  removedSupMarkers?: number;
 }
 
 export function narrationElementKey(file: string, index: number): NarrationElementKey {
