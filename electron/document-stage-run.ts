@@ -2,8 +2,8 @@
  * document-stage-run — how a stage over a project's documents is ANNOUNCED.
  *
  * A stage is a long piece of work over one project's files, and there are two
- * places one can be started from: a window pressed a button (document-ipc) or
- * the queue reached a job (processing-passes). What has to happen around it is
+ * places one can be started from: a window pressed a button (document-ipc,
+ * vlm-convert) or the queue reached a job. What has to happen around it is
  * identical either way, and it was written out twice:
  *
  *  - it is CLAIMED in the shared stage registry, so a reset submitted from
@@ -12,25 +12,21 @@
  *  - it says `document:stage-started`, every line of `document:stage-progress`
  *    and finally `document:stage-finished` to EVERY window, because a project's
  *    documents change whoever ran the stage — the picker showing that book has
- *    to hear about it, and the OCR/footnotes dialogs watch these three channels
+ *    to hear about it, and the conversion dialog watches these three channels
  *    and nothing else;
  *  - `document:stage-finished` fires from a `finally`, because a stage that
  *    FAILED still stopped and a window waiting for it to stop has to stop
  *    waiting. What it changed on disk is measured afterwards, never inferred
- *    from the fact that it ended;
- *  - and the app's half of "open when finished" is settled from that same
- *    `finally` (document-open-when-finished).
+ *    from the fact that it ended.
  *
- * One description of all of it, here. The two callers differ only in what they
- * do with the CONTROLLER: the queue registers it against a job id so a queue row
- * can cancel, and the picker path lets `document:cancel-stage` find it through
- * the registry.
+ * One description of all of it, here. Callers differ only in what they do with
+ * the CONTROLLER: one that has somewhere else to register it hands its own in,
+ * and otherwise `document:cancel-stage` finds it through the registry.
  */
 
 import { BrowserWindow } from 'electron';
 
 import { beginStage } from './document-stage-registry';
-import { noteDocumentStageFinished } from './document-open-when-finished';
 import type { DocumentStageProgress } from './document-stages';
 
 /** Send a message to every live window. A project's files belong to no one window. */
@@ -75,6 +71,5 @@ export async function withProjectStage<T>(
   } finally {
     release();
     broadcastToAllWindows('document:stage-finished', { projectDir, stage });
-    noteDocumentStageFinished(projectDir, stage);
   }
 }

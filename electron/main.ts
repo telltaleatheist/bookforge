@@ -5,13 +5,11 @@ import * as fsSync from 'fs';
 import * as crypto from 'crypto';
 import * as os from 'os';
 import * as pdfWorkerProxy from './pdf-worker-proxy.js';
-import { getOcrService } from './ocr-service';
 import { getPluginRegistry } from './plugins/plugin-registry';
 import { loadBuiltinPlugins } from './plugins/plugin-loader';
 import { bookshelfServer } from './bookshelf-server';
 import * as ebookLibrary from './ebook-library';
 import { importEpubProject } from './import-epub-project';
-import { getHeadlessOcrService } from './headless-ocr';
 import { initializeLoggers, getMainLogger, getTTSLogger, closeLoggers } from './rolling-logger';
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import { registerClipforgeIpc } from './clipforge-bridge';
@@ -20,7 +18,6 @@ import { registerDocumentIpc } from './document-ipc';
 // and has to hear that the book changed just as much as the main one does.
 import { broadcastToAllWindows } from './document-stage-run';
 import { listWorkingDocuments } from './document-project';
-import { registerOpenWhenFinishedIpc } from './document-open-when-finished';
 import * as manifestService from './manifest-service';
 import * as manifestMigration from './manifest-migration';
 import * as archiveMigration from './archive-migration';
@@ -3219,84 +3216,6 @@ function setupIpcHandlers(): void {
     }
   });
 
-
-  // OCR handlers
-  //
-  // Returns the whole picture, not a bare boolean: which binary was resolved,
-  // which traineddata directory, and which languages it actually offers. The
-  // picker used to render `available: false` as "Not installed" for an install
-  // that was present but whose language data was missing — two different problems
-  // with two different fixes, and the conflation cost an hour of debugging.
-  ipcMain.handle('ocr:is-available', async () => {
-    try {
-      const ocr = getOcrService();
-      const availability = await ocr.getAvailability();
-      return { success: true, ...availability };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ocr:get-languages', async () => {
-    try {
-      const ocr = getOcrService();
-      const languages = await ocr.getAvailableLanguages();
-      return { success: true, languages };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ocr:recognize', async (_event, imageData: string) => {
-    try {
-      const ocr = getOcrService();
-      const result = await ocr.recognizeBase64(imageData);
-      return { success: true, data: result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ocr:detect-skew', async (_event, imageData: string) => {
-    try {
-      const ocr = getOcrService();
-      const result = await ocr.detectSkewBase64(imageData);
-      if (result === null) {
-        // Detection FAILED — must not be reported as a successful "0 degrees"
-        return { success: false, error: 'Skew detection failed — Tesseract OSD could not analyze the image (see main-process log for details)' };
-      }
-      return { success: true, data: result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Headless OCR - processes PDF directly without rendering to UI
-  ipcMain.handle('ocr:process-pdf-headless', async (_event, pdfPath: string, options: {
-    engine: string;
-    language?: string;
-    pages?: number[];
-  }) => {
-    try {
-      const headlessOcr = getHeadlessOcrService();
-
-      // Create progress callback that sends updates to renderer
-      const onProgress = (current: number, total: number) => {
-        if (mainWindow) {
-          mainWindow.webContents.send('ocr:headless-progress', { current, total });
-        }
-      };
-
-      const results = await headlessOcr.processPdf(pdfPath, {
-        ...options,
-        onProgress
-      });
-
-      return { success: true, results };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
   // Window control handlers
   ipcMain.handle('window:hide', () => {
@@ -7268,57 +7187,6 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // ── Corpus OCR runs ───────────────────────────────────────────────────────
-  // The run is owned HERE, not by the window that started it: see
-  // electron/corpus-ocr-run.ts. The renderer starts one, then only watches, so
-  // minimizing the panel or reloading the window changes nothing about the run.
-
-  // Every window, not `mainWindow`: a corpus book is opened with
-  // openEditorWindow(), so the window watching the run is never the main one.
-  // Sending to mainWindow would deliver progress to a window with no interest in
-  // it and none to the window drawing the bar.
-  void (async () => {
-    const { onCorpusOcrProgress } = await import('./corpus-ocr-run.js');
-    onCorpusOcrProgress((state) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) win.webContents.send('corpus-ocr:progress', state);
-      }
-    });
-  })();
-
-  ipcMain.handle('corpus-ocr:start', async (
-    _event, opts: import('./corpus-ocr-run.js').CorpusOcrRunStart) => {
-    try {
-      const { startCorpusOcrRun } = await import('./corpus-ocr-run.js');
-      return { success: true, state: await startCorpusOcrRun(opts) };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('corpus-ocr:attach', async (_event, bookDir: string) => {
-    try {
-      const { attachCorpusOcrRun, corpusOcrJournalSummary } = await import('./corpus-ocr-run.js');
-      return {
-        success: true,
-        state: attachCorpusOcrRun(bookDir),
-        journal: await corpusOcrJournalSummary(bookDir),
-      };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('corpus-ocr:cancel', async (_event, bookDir: string) => {
-    try {
-      const { cancelCorpusOcrRun } = await import('./corpus-ocr-run.js');
-      await cancelCorpusOcrRun(bookDir);
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
   ipcMain.handle('training:save-blocks', async (
     _event,
     dir: string,
@@ -10850,11 +10718,6 @@ app.whenReady().then(async () => {
   setupAlignmentIpc();
   registerClipforgeIpc();
   registerDocumentIpc();
-  // "Open when finished" is the APP's promise, so the thing that keeps it is
-  // here rather than in whichever window happened to make it. The opener is
-  // handed in rather than imported, because openEditorWindow lives in this file
-  // and this file is what registers the promise.
-  registerOpenWhenFinishedIpc((projectDir) => { openEditorWindow(projectDir); });
   // `electron . --clipforge` (the clipforge:electron:dev script) opens ONLY the
   // ClipForge window for a clean single-app dev session; otherwise BookForge.
   if (process.argv.includes('--clipforge')) {

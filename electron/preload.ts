@@ -118,53 +118,13 @@ export interface PdfAnalyzeResult {
   error?: string;
 }
 
-export interface OcrTextLine {
-  text: string;
-  confidence: number;
-  bbox: [number, number, number, number];  // [x1, y1, x2, y2]
-}
-
-export interface OcrParagraph {
-  text: string;
-  confidence: number;
-  bbox: [number, number, number, number];
-  lineCount: number;
-  blockNum: number;
-  parNum: number;
-}
-
-export interface OcrResult {
-  text: string;
-  confidence: number;
-  textLines?: OcrTextLine[];
-  paragraphs?: OcrParagraph[];
-}
-
-export interface DeskewResult {
-  angle: number;
-  confidence: number;
-}
-
 /**
- * Declared here rather than imported from `./corpus-ocr-run` because preload is
+ * Which revision of a corpus file a labelling session is holding.
+ *
+ * Declared here rather than imported from `./corpus-book` because preload is
  * bundled for the renderer and must not drag main-process modules across the
- * boundary. Keep in step with `CorpusOcrRunState` there.
- */
-export interface CorpusOcrRunState {
-  bookDir: string;
-  status: 'running' | 'done' | 'cancelled' | 'error';
-  requested: number;
-  done: number;
-  bookPages: number;
-  journalPages: number;
-  currentPage: number | null;
-  startedAt: number;
-  error?: string;
-}
-
-/**
- * Which revision of a corpus file a labelling session is holding. Mirrors
- * `CorpusFingerprint` in `./corpus-book`, re-declared for the reason above.
+ * boundary. Keep in step with `CorpusFingerprint` there — and the same goes for
+ * the two declarations below it.
  */
 export interface CorpusFingerprint {
   file: string;
@@ -172,10 +132,7 @@ export interface CorpusFingerprint {
   size: number;
 }
 
-/**
- * A whole page declared to be one thing. Mirrors `CorpusPageType` in
- * `../shared/ocr/page-types`, re-declared for the reason above.
- */
+/** A whole page declared to be one thing. Mirrors `../shared/ocr/page-types`. */
 export type CorpusPageType = 'title' | 'copyright';
 
 /** The file under an open labelling session changed. Mirrors `./corpus-watch`. */
@@ -186,16 +143,6 @@ export interface CorpusFileChanged {
   expected: { mtimeMs: number; size: number };
   actual: { mtimeMs: number; size: number } | null;
   detail: string;
-}
-
-export interface CorpusOcrRunStart {
-  bookDir: string;
-  engine: string;
-  language?: string;
-  pages?: number[];
-  redo?: boolean;
-  concurrency?: number;
-  force?: boolean;
 }
 
 // Plugin system types
@@ -1272,44 +1219,6 @@ export interface ElectronAPI {
     ) => Promise<{ success: boolean; data?: string; error?: string }>;
     onProgress: (callback: (progress: TTSProgress) => void) => () => void;
   };
-  ocr: {
-    isAvailable: () => Promise<{ success: boolean; available?: boolean; version?: string | null; error?: string }>;
-    getLanguages: () => Promise<{ success: boolean; languages?: string[]; error?: string }>;
-    recognize: (imageData: string) => Promise<{ success: boolean; data?: OcrResult; error?: string }>;
-    detectSkew: (imageData: string) => Promise<{ success: boolean; data?: DeskewResult; error?: string }>;
-    processPdfHeadless: (pdfPath: string, options: {
-      engine: string;
-      language?: string;
-      pages?: number[];
-    }) => Promise<{ success: boolean; results?: Array<{
-      page: number;
-      text: string;
-      confidence: number;
-      textLines?: OcrTextLine[];
-    }>; error?: string }>;
-    onHeadlessProgress: (callback: (data: { current: number; total: number }) => void) => () => void;
-  };
-  corpusOcr: {
-    start: (opts: CorpusOcrRunStart) =>
-      Promise<{ success: boolean; state?: CorpusOcrRunState; error?: string }>;
-    attach: (bookDir: string) => Promise<{
-      success: boolean;
-      state?: CorpusOcrRunState | null;
-      journal?: { exists: boolean; pages: number[] };
-      error?: string;
-    }>;
-    cancel: (bookDir: string) => Promise<{ success: boolean; error?: string }>;
-    onProgress: (callback: (state: CorpusOcrRunState) => void) => () => void;
-  };
-  /**
-   * Which foundry this machine has — the version banner, and the check the
-   * add-ons page runs.
-   *
-   * That is the whole of it. foundry's stages are reached through `document`
-   * below, because a stage is a transformation of one of this book's documents
-   * rather than a job with a life of its own; there is nothing here to start,
-   * attach to, cancel or read back.
-   */
   foundry: {
     version: () => Promise<{ ok: boolean; path?: string; version?: string; commit?: string | null; error?: string }>;
   };
@@ -1336,42 +1245,25 @@ export interface ElectronAPI {
     measureClass: (ref: DocumentRef) =>
       Promise<{ success: boolean; documentClass?: 'scanned' | 'text'; error?: string }>;
     /**
-     * "Open this station when the run I am about to submit lands."
+     * Mint `<Original>.working.pdf` — a copy of the archive original, marked.
      *
-     * Kept in MAIN, so it outlives the window that asked — which is the whole
-     * point of backgrounding a run. See document-open-when-finished.ts.
+     * A copy and a marker, no foundry and no model: the archive original is
+     * immutable and curation is an append to a PDF, so there has to be a second
+     * file. A project that already has one is REFUSED by name — the existing one
+     * holds the user's markup — and the caller offers to open it instead.
      */
-    requestOpenWhenFinished: (projectDir: string, station: string) =>
-      Promise<{ success: boolean; error?: string }>;
-    /** Withdraw it — a run that was refused will never finish. */
-    cancelOpenWhenFinished: (projectDir: string) => Promise<{ success: boolean }>;
-    /** Take it: the station, once, or null. Atomic, so two windows cannot both. */
-    takeOpenWhenFinished: (projectDir: string) =>
-      Promise<{ success: boolean; station?: string | null }>;
+    createWorkingCopy: (ref: DocumentRef) => Promise<{
+      success: boolean;
+      error?: string;
+      workingPath?: string;
+      workingRelPath?: string;
+      documentClass?: 'scanned' | 'text';
+    }>;
     readBlocks: (ref: DocumentRef) =>
       Promise<{ success: boolean; error?: string } & Partial<DocumentBlocksPayload>>;
     /** A batch of curation edits, landed as ONE incremental update. */
     applyEdits: (ref: DocumentRef, edits: WorkingDocumentEdit[]) =>
       Promise<{ success: boolean; bytes?: number; appended?: number; error?: string }>;
-    getText: (ref: DocumentRef) =>
-      Promise<{ success: boolean; documentClass?: 'scanned' | 'text'; error?: string }>;
-    detect: (ref: DocumentRef) => Promise<{ success: boolean; error?: string }>;
-    reflow: (ref: DocumentRef, options?: { excludeCategories?: string[]; coverPath?: string }) =>
-      Promise<{ success: boolean; epubPath?: string; error?: string }>;
-    /**
-     * Footnote removal over the book, inline. The same run the queue job makes,
-     * so the record it leaves is the same one; what differs is who watches it.
-     */
-    footnotesEpub: (projectDir: string, options?: { askEverything?: boolean }) => Promise<{
-      success: boolean;
-      error?: string;
-      bookPath?: string;
-      diffRelPath?: string;
-      reportRelPath?: string;
-      markersRemoved?: number;
-      documentsEdited?: number;
-      model?: string;
-    }>;
     cancelStage: (projectDir: string) => Promise<{ success: boolean; stopped?: boolean }>;
     resetTo: (ref: DocumentRef, target: ResetTarget) =>
       Promise<{ success: boolean; error?: string }>;
@@ -3032,70 +2924,17 @@ const electronAPI: ElectronAPI = {
       };
     },
   },
-  ocr: {
-    isAvailable: () =>
-      ipcRenderer.invoke('ocr:is-available'),
-    getLanguages: () =>
-      ipcRenderer.invoke('ocr:get-languages'),
-    recognize: (imageData: string) =>
-      ipcRenderer.invoke('ocr:recognize', imageData),
-    detectSkew: (imageData: string) =>
-      ipcRenderer.invoke('ocr:detect-skew', imageData),
-    processPdfHeadless: (pdfPath: string, options: {
-      engine: string;
-      language?: string;
-      pages?: number[];
-    }) =>
-      ipcRenderer.invoke('ocr:process-pdf-headless', pdfPath, options),
-    onHeadlessProgress: (callback: (data: { current: number; total: number }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { current: number; total: number }) => {
-        callback(data);
-      };
-      ipcRenderer.on('ocr:headless-progress', listener);
-      return () => {
-        ipcRenderer.removeListener('ocr:headless-progress', listener);
-      };
-    },
-  },
-  corpusOcr: {
-    start: (opts: CorpusOcrRunStart) =>
-      ipcRenderer.invoke('corpus-ocr:start', opts),
-    attach: (bookDir: string) =>
-      ipcRenderer.invoke('corpus-ocr:attach', bookDir),
-    cancel: (bookDir: string) =>
-      ipcRenderer.invoke('corpus-ocr:cancel', bookDir),
-    onProgress: (callback: (state: CorpusOcrRunState) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, state: CorpusOcrRunState) => callback(state);
-      ipcRenderer.on('corpus-ocr:progress', listener);
-      return () => {
-        ipcRenderer.removeListener('corpus-ocr:progress', listener);
-      };
-    },
-  },
   foundry: {
     version: () => ipcRenderer.invoke('foundry:version'),
   },
   document: {
     state: (ref: DocumentRef) => ipcRenderer.invoke('document:state', ref),
     measureClass: (ref: DocumentRef) => ipcRenderer.invoke('document:measure-class', ref),
-    requestOpenWhenFinished: (projectDir: string, station: string) =>
-      ipcRenderer.invoke('document:request-open-when-finished', projectDir, station),
-    cancelOpenWhenFinished: (projectDir: string) =>
-      ipcRenderer.invoke('document:cancel-open-when-finished', projectDir),
-    takeOpenWhenFinished: (projectDir: string) =>
-      ipcRenderer.invoke('document:take-open-when-finished', projectDir),
+    createWorkingCopy: (ref: DocumentRef) =>
+      ipcRenderer.invoke('document:create-working-copy', ref),
     readBlocks: (ref: DocumentRef) => ipcRenderer.invoke('document:read-blocks', ref),
     applyEdits: (ref: DocumentRef, edits: WorkingDocumentEdit[]) =>
       ipcRenderer.invoke('document:apply-edits', ref, edits),
-    getText: (ref: DocumentRef) => ipcRenderer.invoke('document:get-text', ref),
-    detect: (ref: DocumentRef) => ipcRenderer.invoke('document:blocks', ref),
-    reflow: (ref: DocumentRef, options?: { excludeCategories?: string[]; coverPath?: string }) =>
-      ipcRenderer.invoke('document:reflow', ref, options),
-    // Footnote removal over the book, run inline rather than queued: it is
-    // minutes at most, and its progress arrives on the same document:stage-*
-    // channels as the stages above it.
-    footnotesEpub: (projectDir: string, options?: { askEverything?: boolean }) =>
-      ipcRenderer.invoke('document:footnotes-epub', projectDir, options),
     cancelStage: (projectDir: string) => ipcRenderer.invoke('document:cancel-stage', projectDir),
     resetTo: (ref: DocumentRef, target: ResetTarget) =>
       ipcRenderer.invoke('document:reset-to', ref, target),
