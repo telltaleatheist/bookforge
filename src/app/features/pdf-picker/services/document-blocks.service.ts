@@ -3,7 +3,7 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 import { ElectronService } from '../../../core/services/electron.service';
 import { blockCategoryDef } from '@shared/ocr/block-categories';
 import { mergeRefusal } from '@shared/document/block-merge';
-import type { TextBlock } from '@shared/ocr/text-block';
+import { chapterOpeningsAfterDeletions, type TextBlock } from '@shared/ocr/text-block';
 import type {
   BlockAnnotation,
   DocumentBlocksPayload,
@@ -85,10 +85,13 @@ export class DocumentBlocksService {
    *
    * Derived from the one category field rather than kept as a second list, so
    * relabelling any block to `chapter` makes it appear here and relabelling it
-   * away removes it, with nothing to keep in step.
+   * away removes it, with nothing to keep in step. Struck blocks and struck
+   * pages are both left out, and the sort is the helper's, so this and the book
+   * the picker also shows resolve the question identically —
+   * `chapterOpeningsAfterDeletions` is the one place that rule is written.
    */
   readonly chapterBlocks = computed<TextBlock[]>(() =>
-    this.visibleBlocks().filter(b => b.category_id === 'chapter'));
+    chapterOpeningsAfterDeletions(this.blocks(), this.deletedBlockIds(), this.deletedPages()));
 
   /**
    * What the last edit said when it was refused.

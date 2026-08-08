@@ -105,6 +105,18 @@ export const BLOCK_CATEGORIES: readonly BlockCategoryDef[] = [
 ];
 
 /**
+ * Plain prose — the class a block is relabelled TO when the user says only what
+ * it is not.
+ *
+ * The Chapter tab's "not a chapter" gesture is the case: the user is rejecting
+ * `chapter`, not choosing a replacement, and a heading that is not a split point
+ * is still text the book has to read aloud. Named here, beside the list, because
+ * which class means "just words on the page" is a fact about the palette and not
+ * about whichever tab is asking.
+ */
+export const BODY_CATEGORY = 'body';
+
+/**
  * Unlabel sentinel — offered in the labelling UI like a category (chip + `u`
  * key) but it is NOT one and must never be stored: assigning it DELETES the
  * block's label, which saves as a missing key in labels.json — the corpus's
