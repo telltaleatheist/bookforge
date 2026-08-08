@@ -226,3 +226,42 @@ export interface PageDimension {
   width: number;
   height: number;
 }
+
+/**
+ * Is this block a chapter opening?
+ *
+ * The ONE category field answers it — nothing keeps a second list of chapters —
+ * and an image is excluded because a chapter is a heading that was READ: a
+ * figure carrying the label has no title text to name the chapter with, and
+ * would export as a split point with an empty `<h1>`.
+ */
+export function isChapterOpening(block: TextBlock): boolean {
+  return block.category_id === 'chapter' && !block.is_image;
+}
+
+/**
+ * The chapter openings among these blocks, in reading order, minus everything
+ * struck out.
+ *
+ * BOTH strikes, because they cut the same thing out of the book being built: a
+ * block deleted on its own, and a block whose whole page was deleted. A printed
+ * Contents page is the case that forced this — a publisher EPUB stamps its own
+ * markup, so the Contents heading arrives labelled `chapter`, and deleting the
+ * page has to stop it being listed as a chapter of a book that will not contain
+ * it.
+ *
+ * DERIVED and never a removal: deletions are undoable records, so restoring the
+ * page puts the row back with nothing to re-add. Shared by the two artifacts
+ * that have chapter blocks — the working PDF's document layer and a converted
+ * book's own blocks — so the Chapter tab cannot answer "what is a chapter here"
+ * two different ways depending on what is on screen.
+ */
+export function chapterOpeningsAfterDeletions(
+  blocks: readonly TextBlock[],
+  deletedBlockIds: ReadonlySet<string>,
+  deletedPages: ReadonlySet<number>,
+): TextBlock[] {
+  return blocks
+    .filter(b => isChapterOpening(b) && !deletedBlockIds.has(b.id) && !deletedPages.has(b.page))
+    .sort((a, b) => a.page - b.page || a.y - b.y);
+}

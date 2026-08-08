@@ -202,7 +202,8 @@ export interface ChapterRow {
         @case ('chapter') {
           <p class="tab-hint">
             Every chapter opening, in reading order — double-click one to retype
-            its title. Ctrl/⌘-click or shift-click to pick several, then Merge.
+            its title, or × to say it is not a chapter. Ctrl/⌘-click or
+            shift-click to pick several, then Merge.
           </p>
           @for (row of chapterRows(); track row.id) {
             <div
@@ -246,6 +247,22 @@ export interface ChapterRow {
                     title="Edit this chapter's title"
                     (click)="startEditing(row)"
                   >✎</button>
+                }
+                <!--
+                  Offered on every row that has a block, INCLUDING the ones the
+                  pencil refuses: whether a title can be retyped and whether the
+                  heading is a chapter at all are different questions, and a
+                  heading the book's contents does not list is the likeliest one
+                  to be answered "no". A row read out of the navigation has no
+                  block to relabel, so it gets nothing.
+                -->
+                @if (row.blockId !== null) {
+                  <button
+                    type="button"
+                    class="chapter-dismiss"
+                    title="Not a chapter — relabel as body text"
+                    (click)="demoteRow(row)"
+                  >×</button>
                 }
               }
             </div>
@@ -493,16 +510,24 @@ export interface ChapterRow {
     }
 
     /* The pencil is what opens title editing, so it only appears on the row the
-       pointer is on — a column of them would read as the list's own decoration. */
-    .chapter-pencil {
+       pointer is on — a column of them would read as the list's own decoration.
+       The dismiss × rides with it: it is the same kind of thing (an act on THIS
+       row) and it removes a row, which is not a gesture to leave sitting under
+       an idle pointer. */
+    .chapter-pencil,
+    .chapter-dismiss {
       opacity: 0;
       background: none;
       border: none;
+      padding: 0 2px;
       color: var(--text-secondary);
       cursor: pointer;
     }
 
-    .chapter-row:hover .chapter-pencil { opacity: 1; }
+    .chapter-row:hover .chapter-pencil,
+    .chapter-row:hover .chapter-dismiss { opacity: 1; }
+
+    .chapter-dismiss:hover { color: var(--warning); }
 
     .chapter-input {
       flex: 1;
@@ -585,6 +610,15 @@ export class DocumentNavComponent {
    * and a row read out of a book's navigation has no such address.
    */
   readonly retitle = output<{ blockId: string; title: string }>();
+  /**
+   * A chapter row was dismissed: this block is not a chapter opening.
+   *
+   * Says only WHICH block, not what to make it. The class that means "ordinary
+   * prose" is the palette's answer and the shell's to name — see
+   * `BODY_CATEGORY` — and this component draws rows, it does not hold opinions
+   * about the thirteen.
+   */
+  readonly demote = output<{ blockId: string }>();
   readonly resetTo = output<ResetTarget>();
   readonly tabChange = output<DocumentNavTab>();
 
@@ -710,6 +744,19 @@ export class DocumentNavComponent {
     }
     if (!event.shiftKey) this.rangeAnchor = row.id;
     this.chapterClick.emit({ blockIds: [blockId], additive });
+  }
+
+  /**
+   * "This is not a chapter."
+   *
+   * Closes the title editor if this row was open in it, because the block is
+   * about to stop being a chapter and a committed title would be typed into a
+   * row that no longer exists.
+   */
+  demoteRow(row: ChapterRow): void {
+    if (row.blockId === null) return;
+    if (this.editing() === row.id) this.editing.set(null);
+    this.demote.emit({ blockId: row.blockId });
   }
 
   startEditing(row: ChapterRow): void {

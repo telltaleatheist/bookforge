@@ -42,7 +42,8 @@ import { computeBaselines, learnFromBreaks, detectParagraphBreaks, getDefaultCon
 import { recategorize as recategorizeBlocksFromLearner, classifyBlockHeuristic, computeBaselines as computeCategoryBaselines, isDefaultThresholds, detectMergeableGroups, createMergedBlock, type BlockAssignment, type ClassificationThresholds, type MergeGroup } from './services/category-learner';
 import { ExportSettingsModalComponent, ExportSettings, ExportResult } from './components/export-settings-modal/export-settings-modal.component';
 import { TaskRailComponent } from './components/task-rail/task-rail.component';
-import { BLOCK_CATEGORIES, normalizeCategories, UNLABEL_CATEGORY } from '@shared/ocr/block-categories';
+import { BLOCK_CATEGORIES, BODY_CATEGORY, normalizeCategories, UNLABEL_CATEGORY } from '@shared/ocr/block-categories';
+import { chapterOpeningsAfterDeletions, isChapterOpening } from '@shared/ocr/text-block';
 import {
   TASK_ORDER,
   TASK_LABELS,
@@ -765,6 +766,7 @@ interface AlertModal {
                 (merge)="mergeSelectedBlocks()"
                 (chapterClick)="selectChapterBlocks($event)"
                 (retitle)="retitleChapterBlock($event)"
+                (demote)="demoteChapterBlock($event)"
                 (resetTo)="resetToStage($event)"
               />
             }
@@ -3618,10 +3620,18 @@ export class PdfPickerComponent implements OnInit {
    * 2 and 3 are exclusive on purpose. The moment a book has chapter blocks they
    * ARE the list, because the nav rows describe the same chapters — listing both
    * would show every chapter of the book twice.
+   *
+   * 1 and 2 list only what survives the strikes (`visibleBlocks`,
+   * `bookChapterOpeningBlocks`); 3 is not filtered by them, because those rows
+   * are the book's own table of contents rather than markers on any page, and
+   * striking a page out of the narration does not edit what the book says about
+   * itself.
    */
   readonly curationChapterRows = computed<readonly ChapterRow[]>(() => {
     if (this.documentLayerLive()) {
-      return this.inReadingOrder(this.documentBlocks.chapterBlocks())
+      // Already in reading order, and already without the struck ones — see
+      // `chapterOpeningsAfterDeletions`, which the service derives them by.
+      return this.documentBlocks.chapterBlocks()
         .map(b => ({
           id: b.id, title: b.text.trim(), page: b.page, blockId: b.id, readOnlyReason: null,
         }));
@@ -3725,11 +3735,6 @@ export class PdfPickerComponent implements OnInit {
     return null;
   }
 
-  /** Page, then down the page — the one order a chapter list can be in. */
-  private inReadingOrder(blocks: readonly TextBlock[]): TextBlock[] {
-    return blocks.slice().sort((a, b) => a.page - b.page || a.y - b.y);
-  }
-
   /**
    * The blocks of the book on screen that are chapter openings, in reading
    * order.
@@ -3740,12 +3745,15 @@ export class PdfPickerComponent implements OnInit {
    * the stamped one (`readConversionCategories`) and `setCategoryCorrection`
    * writes the user's relabel over it, both into `category_id`. So there is one
    * field to read here too, and no correction map to overlay by hand.
+   *
+   * The strikes are read HERE rather than off a pre-filtered list, so the tab
+   * tracks them: deleting the page a chapter marker sits on takes its row out
+   * immediately, and restoring the page brings it back. See
+   * `chapterOpeningsAfterDeletions`, which is also what the working PDF's own
+   * chapter blocks are resolved by.
    */
-  private readonly bookChapterOpeningBlocks = computed<TextBlock[]>(() => {
-    const gone = this.deletedBlockIds();
-    return this.inReadingOrder(
-      this.blocks().filter(b => this.isChapterBlock(b) && !gone.has(b.id)));
-  });
+  private readonly bookChapterOpeningBlocks = computed<TextBlock[]>(() =>
+    chapterOpeningsAfterDeletions(this.blocks(), this.deletedBlockIds(), this.deletedPages()));
 
   /**
    * Main's last answer about what the project's book calls its chapters,
@@ -12068,8 +12076,6 @@ export class PdfPickerComponent implements OnInit {
     // different hat.
     if (!this.documentLayerLive()) return;
     const derived: Chapter[] = this.documentBlocks.chapterBlocks()
-      .slice()
-      .sort((a, b) => a.page - b.page || a.y - b.y)
       .map(b => ({
         id: b.id,
         title: b.text.trim(),
@@ -12095,7 +12101,7 @@ export class PdfPickerComponent implements OnInit {
    * a chapter.
    */
   isChapterBlock(block: TextBlock): boolean {
-    return block.category_id === 'chapter' && !block.is_image;
+    return isChapterOpening(block);
   }
 
   /**
@@ -12183,6 +12189,25 @@ export class PdfPickerComponent implements OnInit {
    *    (electron/book-chapters.ts, which writes it into every list the book
    *    carries) and the list re-reads it from there.
    */
+  /**
+   * The Chapter tab's × — this heading is not a chapter opening.
+   *
+   * A RELABEL, not a removal, and it goes down `onSetBlockCategory`: the same
+   * call the Label tab's palette makes, so it is the same write to the same one
+   * category field for each artifact (the annotation for a working PDF, a
+   * correction in `manifest.editor` for a book), refused by the same
+   * `curationLocked`, and joined to the same undo. The row then leaves the list
+   * because the list is derived from that field — there is nothing here to
+   * remove it from.
+   *
+   * `body` rather than nothing at all: the user is saying what this block is
+   * NOT, and a printed heading is still words on the page that the audiobook
+   * has to read. Deleting it is a separate gesture, already on the page.
+   */
+  demoteChapterBlock(event: { blockId: string }): void {
+    this.onSetBlockCategory({ blockIds: [event.blockId], categoryId: BODY_CATEGORY });
+  }
+
   retitleChapterBlock(event: { blockId: string; title: string }): void {
     if (this.documentLayerLive()) {
       this.documentBlocks.retitle(event.blockId, event.title);
