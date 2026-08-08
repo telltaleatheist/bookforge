@@ -224,12 +224,15 @@ export function registerDocumentIpc(): void {
   });
 
   /**
-   * Mint `<Original>.working.pdf` — a copy of the archive original, marked.
+   * Mint `<Original>.working.pdf` — a copy of the archive original, marked, and
+   * carrying the block layer curation edits name.
    *
    * The archive original is immutable and curation is an append to a PDF, so
-   * there has to be a second file; this is where it comes from. It is a copy and
-   * a marker and nothing else (electron/working-copy.ts): no foundry, no
-   * Tesseract, no text layer, no model, seconds rather than minutes.
+   * there has to be a second file; this is where it comes from. No foundry, no
+   * Tesseract, no model (electron/working-copy.ts) — but the copy is SEEDED from
+   * `pdf-analyzer`'s reading of the same bytes, because every curation edit
+   * names a block id and a document with no annotations refuses all of them.
+   * That analysis is the slow part, so this reports progress as it goes.
    *
    * A project that already has one is REFUSED by name rather than re-minted —
    * the existing file holds whatever the user has marked up, and replacing it
@@ -241,9 +244,11 @@ export function registerDocumentIpc(): void {
       const project = await projectOf(ref);
       // Under the stage claim like anything else that writes a document: two
       // windows pressing this at once would otherwise both copy 300 MB over the
-      // same path. The bar it draws is for a copy, so it reports nothing.
+      // same path.
       const result = await withProjectStage(
-        project.projectDir, 'Working copy', () => createWorkingCopy(project));
+        project.projectDir,
+        'Working copy',
+        (opts) => createWorkingCopy(project, { onProgress: opts.onProgress }));
       broadcast('project:files-changed', project.projectDir);
       return {
         success: true,

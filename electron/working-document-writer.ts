@@ -50,6 +50,12 @@ import {
 } from '@cantoo/pdf-lib';
 
 import { BLOCK_CATEGORY_IDS, blockCategoryColor } from '../shared/ocr/block-categories';
+import {
+  planBlockSeed,
+  type BlockSeedSource,
+  type SeedBlockAnnotation,
+  type SeedCropBox,
+} from '../shared/document/block-seed';
 import type { WorkingDocumentEdit } from '../shared/document/pipeline-types';
 
 const K_PAGE_DELETED = PDFName.of('FoundryPageDeleted');
@@ -77,6 +83,9 @@ export class WorkingDocumentWriteError extends Error {
  * both rather than two that drift silently across the IPC boundary.
  */
 export type { WorkingDocumentEdit };
+
+/** One analyzed block, as the seed takes it. Declared in shared/document/block-seed.ts. */
+export type { BlockSeedSource };
 
 export interface WorkingDocumentWriteResult {
   /** The file's length after the append — the next boundary, if a stage records one. */
@@ -141,6 +150,7 @@ class WorkingDocumentEditor {
     private readonly baseLength: number,
     private readonly blocks: Map<string, LocatedBlock>,
     private readonly pages: PDFDict[],
+    private readonly cropBoxes: SeedCropBox[],
   ) {}
 
   static async open(file: string): Promise<WorkingDocumentEditor> {
@@ -171,7 +181,14 @@ class WorkingDocumentEditor {
     }
 
     const snapshot = doc.takeSnapshot();
-    const pages = doc.getPages().map((p) => p.node);
+    const loaded = doc.getPages();
+    const pages = loaded.map((p) => p.node);
+    // Read once, here, because the seed's frame conversion is measured against
+    // them and the picker reads them back off the same pages.
+    const cropBoxes: SeedCropBox[] = loaded.map((p) => {
+      const box = p.getCropBox();
+      return [box.x, box.y, box.x + box.width, box.y + box.height] as SeedCropBox;
+    });
     const blocks = new Map<string, LocatedBlock>();
     for (let index = 0; index < pages.length; index++) {
       const pageDict = pages[index];
@@ -220,7 +237,86 @@ class WorkingDocumentEditor {
         });
       }
     }
-    return new WorkingDocumentEditor(file, doc, snapshot, bytes.length, blocks, pages);
+    return new WorkingDocumentEditor(file, doc, snapshot, bytes.length, blocks, pages, cropBoxes);
+  }
+
+  /**
+   * Write the document's FIRST block layer, from an analysis of the same bytes.
+   *
+   * Seeding, not editing: it is refused outright on a document that already
+   * carries blocks. Re-seeding would either duplicate every id — and a duplicate
+   * id makes the next edit land on whichever annotation was read second — or
+   * silently replace a layer somebody has been curating.
+   *
+   * The annotation is the shape `foundry blocks` wrote and
+   * `working-document.ts` reads: a `/Square` with the block id in `/NM`, its
+   * class in `/FoundryCategory`, its place in reading order in `/FoundrySeq`,
+   * its text in `/Contents`, and `/T` + `/C` so a reader that knows nothing
+   * about the foundry keys still lists and paints it correctly.
+   */
+  seed(sources: readonly BlockSeedSource[]): { seeded: number; projected: Record<string, number> } {
+    if (this.blocks.size > 0) {
+      throw new WorkingDocumentWriteError(
+        this.file,
+        `already carries ${this.blocks.size} block annotations, so it has a block layer already. `
+        + 'Seeding a second one over it would give two annotations the same id.'
+      );
+    }
+    let plan;
+    try {
+      plan = planBlockSeed(sources, this.cropBoxes);
+    } catch (err) {
+      throw new WorkingDocumentWriteError(this.file, (err as Error).message);
+    }
+
+    const byPage = new Map<number, SeedBlockAnnotation[]>();
+    for (const annotation of plan.annotations) {
+      const list = byPage.get(annotation.page);
+      if (list) list.push(annotation);
+      else byPage.set(annotation.page, [annotation]);
+    }
+
+    for (const [index, mine] of byPage) {
+      const pageDict = this.requirePage(index);
+      // A page that already has annotations of its own (a link, a form field)
+      // keeps them: this appends to the array rather than replacing it.
+      const located = locateAnnots(this.doc, pageDict);
+      let annots: PDFArray;
+      if (located) {
+        annots = located.annots;
+        this.mark(located.mark);
+      } else {
+        annots = this.doc.context.obj([]) as PDFArray;
+        pageDict.set(K_ANNOTS, annots);
+        this.mark(pageDict);
+      }
+      for (const annotation of mine) {
+        const dict = this.doc.context.obj({
+          Type: 'Annot',
+          Subtype: 'Square',
+          Rect: annotation.rect,
+          F: 4,
+          C: colourComponents(blockCategoryColor(annotation.category)),
+          BS: { W: 1, S: 'S' },
+          NM: textString(annotation.id),
+          T: textString(`${annotation.id} ${annotation.category}`),
+          Contents: textString(annotation.text),
+        }) as PDFDict;
+        dict.set(K_CATEGORY, PDFName.of(annotation.category));
+        dict.set(K_SEQ, PDFNumber.of(annotation.seq));
+        // Registered, so the annotation is an indirect object of its own: that
+        // is what lets a later edit mark ONE annotation instead of the whole
+        // page, and it is what readers expect of `/Annots` entries.
+        annots.push(this.doc.context.register(dict));
+      }
+    }
+
+    return { seeded: plan.annotations.length, projected: plan.projected };
+  }
+
+  /** The file's length as it was opened — what an update that never happened leaves it at. */
+  get baseFileLength(): number {
+    return this.baseLength;
   }
 
   private mark(target: PDFObject | PDFRef): void {
@@ -492,4 +588,38 @@ export async function applyWorkingDocumentEdits(
   const editor = await WorkingDocumentEditor.open(file);
   for (const edit of edits) editor.apply(edit);
   return editor.append();
+}
+
+export interface WorkingDocumentSeedResult extends WorkingDocumentWriteResult {
+  /** How many annotations were written. Zero is an answer — see below. */
+  seeded: number;
+  /** Analyzer categories outside the contract → how many blocks each covered. */
+  projected: Record<string, number>;
+}
+
+/**
+ * Give a freshly minted working copy its block layer, as ONE incremental update.
+ *
+ * Called by the mint (electron/working-copy.ts) and by nothing else: a document
+ * gets a block layer once, from the analysis of the bytes it was copied from,
+ * and everything after that is curation.
+ *
+ * AN EMPTY ANALYSIS IS NOT A FAILURE, and it is the one place this module does
+ * not write. A scanned PDF with no text layer yields no text blocks, and the
+ * honest working copy for it is one with no block layer: its pages can still be
+ * deleted, and reading its pages is `foundry vlm-convert`'s job. Appending a
+ * zero-block update would only move the end of the file so it looked like
+ * something happened, which is exactly what `append` refuses to do.
+ */
+export async function seedWorkingDocumentBlocks(
+  file: string,
+  sources: readonly BlockSeedSource[]
+): Promise<WorkingDocumentSeedResult> {
+  const editor = await WorkingDocumentEditor.open(file);
+  const { seeded, projected } = editor.seed(sources);
+  if (seeded === 0) {
+    return { bytes: editor.baseFileLength, appended: 0, seeded: 0, projected };
+  }
+  const written = await editor.append();
+  return { ...written, seeded, projected };
 }

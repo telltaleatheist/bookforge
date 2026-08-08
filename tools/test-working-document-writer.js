@@ -422,6 +422,183 @@ test('the marker and the pages survive curation untouched', async () => {
   assert.deepStrictEqual(after.pages[0].cropBox, before.pages[0].cropBox);
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The SEED — the block layer a working copy is born with
+//
+// `shared/document/block-seed.ts` is the pure half (frame, order, categories)
+// and `seedWorkingDocumentBlocks` is the write. They exist because a working
+// copy minted with no annotations refused every curation edit by name: there is
+// no `add` edit, so a document with no blocks is a document nothing can be done
+// to. The last test here is that hole, closed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const { planBlockSeed } = require(path.join(REPO, 'dist', 'shared', 'document', 'block-seed.js'));
+
+/** A block as `pdf-analyzer` reports it: points, origin top-left, y down. */
+function analyzed(over) {
+  return {
+    id: 'a1', page: 0, x: 72, y: 48, width: 288, height: 40,
+    text: 'Chapter One', category_id: 'chapter', ...over,
+  };
+}
+
+/** The picker's own conversion (document-blocks.service.ts `toTextBlock`). */
+function backToPickerFrame(rect, crop) {
+  const [cx0, , , cy1] = crop;
+  const [x0, y0, x1, y1] = rect;
+  return { x: x0 - cx0, y: cy1 - y1, width: x1 - x0, height: y1 - y0 };
+}
+
+/** A working copy with a seeded block layer, minted the way the mint mints one. */
+async function seedFromAnalysis(sources) {
+  const file = path.join(scratch, `seeded-${n++}.pdf`);
+  fs.copyFileSync(FIXTURE, file);
+  const result = await writer.seedWorkingDocumentBlocks(file, sources);
+  return { file, result };
+}
+
+test('the seed rect is EXACTLY what the picker converts back — crop-box origin included', () => {
+  // A crop box with a non-zero origin is the case the fixture cannot show: a
+  // trimmed scanner margin. Drop the offset and every box on such a page is
+  // short by the trim, silently.
+  const crop = [12, 20, 444, 668];
+  const block = analyzed({ x: 72, y: 48, width: 288, height: 40 });
+  const { annotations } = planBlockSeed([block], [crop]);
+  assert.strictEqual(annotations.length, 1);
+  assert.deepStrictEqual(annotations[0].rect, [84, 580, 372, 620]);
+  assert.deepStrictEqual(
+    backToPickerFrame(annotations[0].rect, crop),
+    { x: block.x, y: block.y, width: block.width, height: block.height },
+    'the round trip through the picker\'s frame is the identity'
+  );
+});
+
+test('reading order is page-major, and keeps the analyzer\'s order inside a page', () => {
+  // Images are appended to the analysis after the text, so they arrive out of
+  // page order — and a sort by y would destroy mutool's column order for text.
+  const crop = [0, 0, 432, 648];
+  const sources = [
+    analyzed({ id: 'p1-second', page: 1, y: 500 }),
+    analyzed({ id: 'p0-first', page: 0, y: 40 }),
+    analyzed({ id: 'p0-second', page: 0, y: 400 }),
+    analyzed({ id: 'p1-first', page: 1, y: 40 }),
+  ];
+  const { annotations } = planBlockSeed(sources, [crop, crop]);
+  assert.deepStrictEqual(
+    annotations.map((a) => `${a.id}:${a.seq}`),
+    ['p0-first:0', 'p0-second:1', 'p1-second:2', 'p1-first:3']
+  );
+});
+
+test('a category outside the thirteen is written as body, and COUNTED', () => {
+  // `classifyBlock` still answers `footnote_ref`, retired from the contract in
+  // Jul 2026. Written verbatim it would paint with no colour, list with no name
+  // and be un-relabellable, so it is projected — and said out loud.
+  const crop = [0, 0, 432, 648];
+  const { annotations, projected } = planBlockSeed([
+    analyzed({ id: 'x1', category_id: 'footnote_ref' }),
+    analyzed({ id: 'x2', category_id: 'footnote_ref' }),
+    analyzed({ id: 'x3', category_id: 'made_up' }),
+    analyzed({ id: 'x4', category_id: 'body' }),
+  ], [crop]);
+  assert.deepStrictEqual(annotations.map((a) => a.category), ['body', 'body', 'body', 'body']);
+  assert.deepStrictEqual(projected, { footnote_ref: 2, made_up: 1 });
+});
+
+test('the plan refuses a duplicate id, an absent page and a negative box, by name', async () => {
+  const crop = [0, 0, 432, 648];
+  await refuses(
+    () => planBlockSeed([analyzed({ id: 'dup' }), analyzed({ id: 'dup' })], [crop]),
+    'dup', 'claim the id');
+  await refuses(
+    () => planBlockSeed([analyzed({ id: 'far', page: 7 })], [crop]),
+    'far', 'page 8', 'has 1 pages');
+  await refuses(
+    () => planBlockSeed([analyzed({ id: 'bad', width: -3 })], [crop]),
+    'bad', 'negative size');
+});
+
+test('a seeded working copy reads back cold as a block layer', async () => {
+  const { file, result } = await seedFromAnalysis([
+    analyzed({ id: 's1', page: 0, y: 40, category_id: 'chapter', text: 'Chapter One' }),
+    analyzed({ id: 's2', page: 0, y: 200, category_id: 'body', text: 'It was a dark night.' }),
+    analyzed({ id: 's3', page: 2, y: 60, category_id: 'footnote', text: '1. Ibid.' }),
+  ]);
+  assert.strictEqual(result.seeded, 3);
+  assert.ok(result.appended > 0, 'the seed is an incremental update');
+
+  const { blocks, byId, marker } = await coldRead(file);
+  assert.deepStrictEqual(blocks.map((b) => b.id), ['s1', 's2', 's3']);
+  assert.strictEqual(byId.get('s1').category, 'chapter');
+  assert.strictEqual(byId.get('s3').page, 2);
+  assert.strictEqual(byId.get('s2').text, 'It was a dark night.');
+  assert.strictEqual(byId.get('s1').deleted, false);
+  // The fixture's crop box is [0,0,432,648]: y=40, height=40 → [72, 568, 360, 608].
+  assert.deepStrictEqual(byId.get('s1').rect, [72, 568, 360, 608]);
+  assert.strictEqual(marker.producer.length > 0, true, 'the marker is untouched');
+
+  // /C and /T come from the one palette, exactly as a relabel writes them.
+  const dict = await coldAnnot(file, 's3');
+  const colour = dict.lookup(PDFName.of('C'));
+  assert.deepStrictEqual(
+    [0, 1, 2].map((i) => Math.round(colour.lookup(i).asNumber() * 255)),
+    [0x21, 0x96, 0xf3]);
+  assert.strictEqual(dict.lookup(PDFName.of('T')).decodeText(), 's3 footnote');
+  assert.strictEqual(dict.lookup(PDFName.of('Subtype')).decodeText(), 'Square');
+});
+
+test('an analysis with NO blocks is an answer: no update, and the document still reads', async () => {
+  // A scanned PDF with no text layer. Its pages can still be deleted, and
+  // appending a zero-block update would only move the end of the file so it
+  // looked like something happened.
+  const before = fs.statSync(FIXTURE).size;
+  const { file, result } = await seedFromAnalysis([]);
+  assert.strictEqual(result.seeded, 0);
+  assert.strictEqual(result.appended, 0);
+  assert.strictEqual(fs.statSync(file).size, before, 'not one byte was written');
+  const { blocks, pages } = await coldRead(file);
+  assert.strictEqual(blocks.length, 0);
+  assert.strictEqual(pages.length, 3, 'and the pages are all there to delete');
+});
+
+test('seeding a document that already has a block layer is refused by name', async () => {
+  const { file } = await seedFromAnalysis([analyzed({ id: 's1' })]);
+  await refuses(
+    () => writer.seedWorkingDocumentBlocks(file, [analyzed({ id: 's9' })]),
+    'already carries 1 block annotations', 'same id');
+});
+
+test('THE HOLE: every curation gesture lands on a freshly seeded copy', async () => {
+  // The bug this seed exists to close. A working copy minted with no
+  // annotations refused all five of these by name — "there is no block … in
+  // this document" — because every edit names a block id and there is no `add`.
+  const { file } = await seedFromAnalysis([
+    analyzed({ id: 'c1', page: 0, y: 40, category_id: 'body', text: 'Chapter One' }),
+    analyzed({ id: 'c2', page: 0, y: 100, category_id: 'body', text: 'The Beginning' }),
+    analyzed({ id: 'c3', page: 0, y: 300, category_id: 'body', text: 'It was a dark night.' }),
+    analyzed({ id: 'c4', page: 1, y: 40, category_id: 'body', text: 'The next morning.' }),
+  ]);
+
+  await writer.applyWorkingDocumentEdits(file, [
+    { kind: 'relabel', blockId: 'c1', category: 'chapter' },
+    { kind: 'retitle', blockId: 'c1', text: 'Chapter the First' },
+    { kind: 'delete', blockId: 'c3' },
+    { kind: 'delete-page', page: 1 },
+    { kind: 'merge', blockIds: ['c1', 'c2'] },
+  ]);
+
+  const cold = await coldRead(file);
+  assert.strictEqual(cold.byId.get('c1').category, 'chapter');
+  assert.strictEqual(cold.byId.get('c1').text, 'Chapter the First The Beginning');
+  assert.deepStrictEqual(cold.byId.get('c1').merged, ['c1', 'c2']);
+  assert.strictEqual(cold.byId.has('c2'), false, 'the merged member left the layer');
+  assert.strictEqual(cold.byId.get('c3').deleted, true);
+  assert.strictEqual(cold.pages[1].deleted, true);
+
+  await writer.applyWorkingDocumentEdits(file, [{ kind: 'restore', blockId: 'c3' }]);
+  assert.strictEqual((await coldRead(file)).byId.get('c3').deleted, false);
+});
+
 (async () => {
   for (const { name, fn } of tests) {
     try {

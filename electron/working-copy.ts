@@ -7,19 +7,29 @@
  * file the user imported would edit the thing the whole archive exists to
  * preserve. So there is a second file, and this is where it comes from.
  *
- * ── IT IS A COPY, AND NOTHING ELSE HAPPENS TO IT ────────────────────────────
+ * ── NO MODEL RUNS, AND THE COPY IS BORN CURATABLE ───────────────────────────
  *
- * `cp` plus one small incremental update carrying the marker below. No foundry,
- * no Tesseract, no model, no text layer: the working copy is the original's
- * bytes, and everything that ever appears in it after this is something a person
- * did in the picker.
+ * `cp`, one small incremental update carrying the marker below, and one more
+ * carrying the BLOCK LAYER. No foundry, no Tesseract, no model, no rewritten
+ * text layer: the working copy is the original's bytes, and everything that ever
+ * happens to it after this is something a person did in the picker.
  *
- * This replaces the Get Text "cast", which read every page with Tesseract and
- * wrote the recognized lines back as an invisible text layer — minutes of GPU
- * before a user could draw a single box. Reading the pages is `foundry
- * vlm-convert`'s job now (electron/vlm-convert.ts), and it produces a BOOK
- * rather than a document to curate. The two are separate acts on separate files,
- * which is why neither one is a step of the other.
+ * The block layer is seeded here because curation cannot invent one. Every
+ * edit — relabel, retitle, delete, restore, merge — names a block id, and
+ * `applyWorkingDocumentEdits` refuses an id the document does not carry; there
+ * is no `add` edit and there should not be one. So a copy minted without blocks
+ * refused every gesture by name and the whole flow was unusable. The blocks come
+ * from `pdf-analyzer` — the same analysis the picker displays, keyed by the
+ * file's sha256 and cached, so the picker's own `analyzeQuick` on the next open
+ * is a cache hit and the work is paid for once. That analysis is the slow part
+ * of the mint now: on a long book it is minutes, not seconds, and it says so as
+ * it goes.
+ *
+ * A document with NO text layer yields few blocks or none, and that is the
+ * honest answer rather than an error: its pages can still be deleted, and
+ * reading its pages is `foundry vlm-convert`'s job (electron/vlm-convert.ts),
+ * which produces a BOOK rather than a document to curate. The two are separate
+ * acts on separate files, which is why neither one is a step of the other.
  *
  * ── WHY THE MARKER ──────────────────────────────────────────────────────────
  *
@@ -63,8 +73,13 @@ import {
   primaryAbsPath,
   workingAbsPath,
   type DocumentProject,
+  type DocumentStageProgress,
 } from './document-stages';
 import { FOUNDRY_MARKER_VERSION } from './working-document';
+import {
+  seedWorkingDocumentBlocks,
+  type BlockSeedSource,
+} from './working-document-writer';
 import { sha256File } from './sidecar-binding';
 
 /**
@@ -82,6 +97,37 @@ export interface WorkingCopyResult {
   /** Project-relative, forward slashes. */
   workingRelPath: string;
   binding: DocumentBinding;
+  /** How many block annotations the copy was born with. Zero on a document with no text. */
+  seededBlocks: number;
+}
+
+export interface WorkingCopyOptions {
+  /** The mint's own progress, on the `document:stage-*` channels. */
+  onProgress?: (progress: DocumentStageProgress) => void;
+}
+
+/**
+ * Read the archive original's blocks — the same analysis the picker shows.
+ *
+ * Through the worker proxy rather than by calling `pdfAnalyzer` here, for the
+ * two reasons every other analysis goes that way: mupdf's WASM heap stays out of
+ * the main process, and the result lands in the analysis cache under the file's
+ * sha256, which is the cache the picker's own `analyzeQuick` reads on the next
+ * open. Analysing here and again there would read one book twice.
+ */
+async function analyzeBlocks(pdfPath: string): Promise<BlockSeedSource[]> {
+  // Lazily, so requiring this module does not drag in the worker proxy — and
+  // through it Electron's `app` — for anything that only wants the marker shape.
+  const proxy = require('./pdf-worker-proxy') as typeof import('./pdf-worker-proxy');
+  const result = await proxy.call('analyze', [pdfPath]);
+  const blocks = (result as { blocks?: BlockSeedSource[] } | null)?.blocks;
+  if (!Array.isArray(blocks)) {
+    throw new Error(
+      `Analyzing ${path.basename(pdfPath)} answered no block list, so there is nothing to seed the `
+      + 'working copy with. The working copy is not made — try again.'
+    );
+  }
+  return blocks;
 }
 
 /**
@@ -144,12 +190,23 @@ async function stampMarker(
 }
 
 /**
- * Mint this book's working copy.
+ * Mint this book's working copy: the bytes, the marker, and the block layer.
  *
  * Refuses when one already exists, because the existing one holds curation and
  * replacing it is not something to do on the way to something else.
+ *
+ * ORDER, and it is the failure discipline the rest of the document code uses:
+ * the ANALYSIS runs first, before a byte is copied, so a document that cannot be
+ * read costs nothing and leaves nothing. The copy, the marker and the seed all
+ * happen on a staged file beside the destination and only a complete one is
+ * renamed into place — so a failure anywhere leaves NO working copy at all,
+ * rather than a marked one with no blocks, which is exactly the state that made
+ * every curation gesture refuse.
  */
-export async function createWorkingCopy(project: DocumentProject): Promise<WorkingCopyResult> {
+export async function createWorkingCopy(
+  project: DocumentProject,
+  options: WorkingCopyOptions = {}
+): Promise<WorkingCopyResult> {
   const primary = primaryAbsPath(project);
   if (!fs.existsSync(primary)) {
     throw new Error(
@@ -168,20 +225,35 @@ export async function createWorkingCopy(project: DocumentProject): Promise<Worki
   const { sha256 } = await sha256File(primary);
   const documentClass = await measureDocumentClass(primary);
 
+  const report = options.onProgress ?? (() => { });
+  report({ stage: 'blocks', message: `Reading the blocks of ${path.basename(primary)}…`, done: 0, total: 2 });
+  const sources = await analyzeBlocks(primary);
+  report({ stage: 'blocks', message: `Copying the original and writing ${sources.length} blocks…`, done: 1, total: 2 });
+
   // Staged beside the destination — same filesystem, so the rename is atomic —
   // and removed on any failure. A half-copied PDF at the working document's name
   // would be adopted by the next open as though it were one.
   const staged = `${workingPath}.bookforge-tmp`;
   await fs.promises.rm(staged, { force: true });
+  let seeded: number;
   try {
     await fs.promises.mkdir(path.dirname(workingPath), { recursive: true });
     await fs.promises.copyFile(primary, staged);
     await stampMarker(staged, documentClass, sha256);
+    const seed = await seedWorkingDocumentBlocks(staged, sources);
+    seeded = seed.seeded;
+    for (const [category, count] of Object.entries(seed.projected)) {
+      console.warn(
+        `[working-copy] ${count} block(s) the analysis called "${category}" were written as `
+        + 'body — it is not one of the thirteen block categories (shared/ocr/block-categories.ts).'
+      );
+    }
     await fs.promises.rename(staged, workingPath);
   } catch (err) {
     await fs.promises.rm(staged, { force: true });
     throw err;
   }
+  report({ stage: 'blocks', message: `${seeded} blocks`, done: 2, total: 2 });
 
   const binding = await createDocumentBinding({
     projectId: project.projectId,
@@ -195,12 +267,14 @@ export async function createWorkingCopy(project: DocumentProject): Promise<Worki
   });
   await writeDocumentBinding(bindingAbsPath(project), binding);
   console.log(
-    `[working-copy] ${workingPath} (${binding.working.bytes} bytes, class ${documentClass})`
+    `[working-copy] ${workingPath} (${binding.working.bytes} bytes, class ${documentClass}, `
+    + `${seeded} blocks)`
   );
 
   return {
     workingPath,
     workingRelPath: binding.working.path,
     binding,
+    seededBlocks: seeded,
   };
 }

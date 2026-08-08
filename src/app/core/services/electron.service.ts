@@ -2114,12 +2114,15 @@ export class ElectronService {
   }
 
   /**
-   * Mint `<Original>.working.pdf` — a copy of the archive original, marked.
+   * Mint `<Original>.working.pdf` — a copy of the archive original, marked, and
+   * carrying the block layer.
    *
-   * Fast enough to be a button rather than a job: it is a file copy plus one
-   * small incremental update carrying the marker, seconds even on a 300 MB scan.
-   * No foundry, no model, nothing to watch — so it does not go through the queue
-   * and reports no progress. The working-copy row simply appears.
+   * No foundry and no model, so it is a button rather than a queue job — but it
+   * is not instant: the copy is seeded from `pdf-analyzer`'s reading of the
+   * document (main's own `createWorkingCopy` says why), which on a long book is
+   * minutes. It announces itself on `document:stage-*` like any other document
+   * stage, under the name `Working copy`, and that analysis is cached by the
+   * file's sha256 so the picker's own open pays for it once.
    *
    * A project that already has one is REFUSED BY NAME rather than re-minted: the
    * existing file holds whatever the user has curated, and replacing it would
