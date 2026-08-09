@@ -34,6 +34,7 @@
  * and that has to stop the analysis rather than quietly degrade it.
  */
 import * as crypto from 'crypto';
+import * as fsSync from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 // The ANALYZER's own block declaration, not `shared/ocr/text-block`'s. The two
@@ -93,6 +94,45 @@ async function stampedCopy(epubPath: string, fileHash: string): Promise<string> 
   } catch { /* not stamped yet */ }
   await stampEpubForQuire(epubPath, at, path.basename(epubPath));
   return at;
+}
+
+/**
+ * This book's stamped copy, made if it is not there, for a caller that has no
+ * digest of its own.
+ *
+ * The analysis path already knows the book's sha256 — the analyzer computed it
+ * for its own cache key and passes it down. The VIEWER does not: it is handed a
+ * path by a picker that is about to show it. So the digest is computed here,
+ * the same way and to the same 16 hex characters, and the SAME stamped file is
+ * reached.
+ *
+ * One stamp per book, keyed by the book's own bytes, is the point rather than a
+ * saving. Keyed by anything else — a path, a session — the same book gets two
+ * stamped copies, and on Windows the second open of a book the first still has
+ * open fails outright: `stampEpubForQuire` writes a temp file and renames it
+ * over the target, and a rename over a file another quire session holds is
+ * EPERM. Reusing the existing stamp never writes it twice, so that cannot
+ * happen (measured: tools/phasec-gesture-matrix.js, which opens a book twice).
+ */
+export async function stampedCopyForViewer(
+  epubPath: string,
+): Promise<{ stampedPath: string; fileHash: string; reused: boolean }> {
+  const digest = await new Promise<string>((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fsSync.createReadStream(epubPath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
+  const fileHash = digest.substring(0, 16);
+  const at = stampedEpubPath(fileHash);
+  let reused = true;
+  try {
+    await fsPromises.access(at);
+  } catch {
+    reused = false;
+  }
+  return { stampedPath: await stampedCopy(epubPath, fileHash), fileHash, reused };
 }
 
 /** This book's page map — cached if it is there for this paginator and geometry. */

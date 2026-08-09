@@ -8,8 +8,27 @@ frames and puts the picker's marks ON the book's own elements as CSS classes. Bo
 `shared/document/laid-out-book.ts` and emit the same gestures, so the picker above them does not
 have to know which is mounted.
 
-Phase B of the quire plan. Phase C is what puts it on the picker's open path; until then
-`/#/epub-viewer-harness?book=<path>` and `tools/epub-viewer-harness.js` are how it is driven.
+Phase B of the quire plan. Phase C put it on the picker's open path: `pdf-picker.component.ts`
+branches at open — `showsEpubViewer()` — and an EPUB reaches this component while a PDF reaches
+the raster one. The bench is still here and still the way to drive it alone:
+`/#/epub-viewer-harness?book=<path>` and `tools/epub-viewer-harness.js`.
+
+What the picker hands it: `book` is the PICKER's own `LaidOutBook` (its analysis blocks, which the
+user has been editing), not the bridge's — one description of what is in the document. `source` is
+`window.electron.quire.openBook`'s mounts. The picker refuses to mount this component at all if the
+two disagree about the page count, since every page-keyed gesture would otherwise point one page at
+two places.
+
+Two things Phase C added to the component itself:
+
+- **`scrollToPage(page)`**, the one raster-viewer method the parent calls that means something to a
+  live book (search results, the page timeline and the outline all navigate by page). Band
+  arithmetic rather than `scrollIntoView`, because the target page is usually still a placeholder
+  when it is asked for — scrolling there is what causes its frame to mount.
+- **`blockDoubleClick` now carries `metaKey`/`ctrlKey`.** The picker reads them: a double-click with
+  the modifier held ADDS the like-this run to the selection instead of replacing it. Emitting the
+  block alone would have made every double-click on a live book replacing — a quiet behaviour change
+  rather than a missing feature.
 
 ---
 
@@ -227,9 +246,11 @@ Not omissions — decisions with a reason, listed so they are chosen rather than
   raster viewer offers no text selection either. Restoring it means routing pointer events into the
   frame and getting the selection back out, which is a design, not a setting.
 - **Merge and split.** Both are disabled-never-hidden in the context menu, with the sentence that
-  says why. `mergeSelectedBlocks` already silently no-ops on working EPUBs, and split's "find split
-  points" half is mupdf-span IPC that a live EPUB has none of. The plan owes an explicit decision on
-  each; this component states the refusal rather than pretending.
+  says why. **Settled in Phase C**, both disabled for EPUBs and refused by name in the picker too
+  (`mergeSelectionRefusal()`, `splitBlockRefusal()`), including the Merge button in `document-nav`,
+  which was enabled and only refused after the click. Split's refusal is not only about the missing
+  mupdf spans: the text-mode fallback WOULD have gone through, and a block here is one element, so
+  two blocks naming one element means striking either strikes the whole of it.
 - **Crop, sample, page reorder, background removal, blanked pages.** All operate on a rasterized
   page. Crop is disabled-never-hidden in the menu; the rest live as controls in
   `pdf-picker.component.ts` (the parent), never in the viewer, so there is nothing here to disable

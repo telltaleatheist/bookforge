@@ -21,10 +21,11 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import { app, ipcMain } from 'electron';
+import { ipcMain } from 'electron';
 import { Quire, type QuireDocument } from '../packages/quire/src';
 import type { QuirePageMount } from '../packages/quire/src/types';
-import { enumerateNarrationElements, stampEpubForQuire } from './quire-stamp';
+import { enumerateNarrationElements } from './quire-stamp';
+import { stampedCopyForViewer } from './epub-quire-analysis';
 import { markupCategoriesForUnits, readEpubTocTargets, type MarkupUnit } from './epub-processor';
 import type { LaidOutBlock, LaidOutBook } from '../shared/document/laid-out-book';
 
@@ -65,11 +66,6 @@ const DEFAULT_GEOMETRY: QuireViewerGeometry = { width: 600, height: 900, fontSiz
 
 const open = new Map<string, { doc: QuireDocument; stampedPath: string }>();
 
-/** Where stamped copies go. Never beside the book — `archive/` is immutable. */
-function stampDirectory(): string {
-  return path.join(app.getPath('temp'), 'bookforge-quire-viewer');
-}
-
 /**
  * Open `epubPath` and describe it.
  *
@@ -85,23 +81,31 @@ export async function openBookForViewer(
     throw new Error(`There is no book at ${epubPath}, so there is nothing to show.`);
   }
 
-  const digest = crypto.createHash('sha1').update(path.resolve(epubPath)).digest('hex').slice(0, 12);
-  fs.mkdirSync(stampDirectory(), { recursive: true });
-  const stampedPath = path.join(stampDirectory(), `${digest}.stamped.epub`);
-
+  // The book's ONE stamped copy — the same file the analysis path stamps, keyed
+  // by the book's own bytes. Not a second copy of its own: two stampers meant
+  // two files, and on Windows it meant that opening a book a second time while
+  // the first was still open failed with EPERM, because the stamp is written by
+  // rename and the open session holds the target.
   const stampStartedAt = Date.now();
-  const stamp = await stampEpubForQuire(epubPath, stampedPath, path.basename(epubPath));
+  const { stampedPath, reused } = await stampedCopyForViewer(epubPath);
   const stampMs = Date.now() - stampStartedAt;
+  console.log(`[quire-viewer] ${path.basename(epubPath)}: stamp `
+    + `${reused ? 'reused' : 'written'} in ${stampMs} ms`);
 
-  // The categories come off the SAME walk the stamps came off — one enumeration,
-  // two consumers, which is the rule the whole quire identity story rests on.
+  // The categories and the element list come off the SAME walk — one
+  // enumeration, three consumers, which is the rule the whole quire identity
+  // story rests on. `stampEpubForQuire` writes exactly this list onto the copy
+  // (it walks with this same function), so reading it here rather than taking
+  // the stamper's return is what lets an already-stamped copy be reused.
   const walked = await enumerateNarrationElements(epubPath, path.basename(epubPath));
   const units: MarkupUnit[] = [];
   const imageKeys = new Set<string>();
   const seqByKey = new Map<string, number>();
+  const stampedElements: Array<{ key: string; kind: 'text' | 'image' }> = [];
   for (const doc of walked) {
     for (const entry of doc.entries) {
       seqByKey.set(entry.key, seqByKey.size);
+      stampedElements.push({ key: entry.key, kind: entry.kind });
       if (entry.unit) units.push(entry.unit);
       else imageKeys.add(entry.key);
     }
@@ -121,7 +125,7 @@ export async function openBookForViewer(
     if (report.unplaced.length > 0) {
       const names = report.unplaced.slice(0, 5).map((u) => `${u.id} (${u.tag}, ${u.display})`);
       throw new Error(
-        `${report.unplaced.length} of ${stamp.stamped.length} elements of `
+        `${report.unplaced.length} of ${stampedElements.length} elements of `
         + `${path.basename(epubPath)} got no page — e.g. ${names.join('; ')}. The viewer can show `
         + 'them but could never point at them, so the book is not opened.',
       );
@@ -150,7 +154,7 @@ export async function openBookForViewer(
     }
 
     const blocks: LaidOutBlock[] = [];
-    for (const stamped of stamp.stamped) {
+    for (const stamped of stampedElements) {
       const found = byKey.get(stamped.key);
       if (!found) {
         throw new Error(
@@ -214,7 +218,7 @@ export async function openBookForViewer(
         documents: report.documents.length,
         pages: pageCount,
         blocks: blocks.length,
-        stampedElements: stamp.stamped.length,
+        stampedElements: stampedElements.length,
         unplaced: report.unplaced.length,
         overflows: report.overflows.length,
         layoutMs: Math.round(report.layoutMs),
