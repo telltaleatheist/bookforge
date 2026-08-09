@@ -1,5 +1,5 @@
 import { Injectable, signal, computed } from '@angular/core';
-import { TextBlock, Category, PageDimension } from './pdf.service';
+import { TextBlock, Category, PageDimension, BlockCategoryProvenance } from './pdf.service';
 import { ClassificationThresholds, getDefaultThresholds } from './category-learner';
 import { normalizeCategories } from '@shared/ocr/block-categories';
 
@@ -141,6 +141,20 @@ export class PdfEditorStateService {
   readonly blocks = signal<TextBlock[]>([]);
   readonly categories = signal<Record<string, Category>>({});
   readonly pageDimensions = signal<PageDimension[]>([]);
+  /**
+   * Where THIS document's block categories came from — the whole-book fact
+   * `LaidOutBook.categoryProvenance` states.
+   *
+   * `null` means no analysis has said yet, which is the honest answer while
+   * `blocks` is still empty on a cache miss; it is never an answer about a
+   * book that HAS blocks. The analyzer guarantees the pairing at the source
+   * (`AnalyzeTextResult.categoryProvenance` is required, and a cached analysis
+   * without one is refused outright rather than defaulted), so a non-empty
+   * block list with a null provenance is a bug and is reported as one where
+   * the book is described — not smoothed over with `heuristic`, which would
+   * let a guess pass for the document's own record.
+   */
+  readonly categoryProvenance = signal<BlockCategoryProvenance['source'] | null>(null);
   readonly totalPages = signal(0);
   readonly pdfName = signal('');
   readonly pdfPath = signal('');       // Original path (for display)
@@ -273,6 +287,13 @@ export class PdfEditorStateService {
   loadDocument(data: {
     blocks: TextBlock[];
     categories: Record<string, Category>;
+    /**
+     * See `categoryProvenance`. Required rather than optional so a caller has
+     * to state it — including stating `null` when its blocks are empty and no
+     * analysis has answered yet. An omittable field would silently keep the
+     * PREVIOUS document's provenance across a document switch.
+     */
+    categoryProvenance: BlockCategoryProvenance['source'] | null;
     pageDimensions: PageDimension[];
     totalPages: number;
     pdfName: string;
@@ -295,6 +316,7 @@ export class PdfEditorStateService {
     // colours from tables that predate the thirteen-class contract, and both are
     // missing classes entirely. See shared/ocr/block-categories.ts.
     this.categories.set(normalizeCategories(data.categories));
+    this.categoryProvenance.set(data.categoryProvenance);
     this.pageDimensions.set(data.pageDimensions);
     this.totalPages.set(data.totalPages);
     this.pdfName.set(data.pdfName);
@@ -349,12 +371,18 @@ export class PdfEditorStateService {
    * Re-applies any existing category corrections since the new blocks arrive with
    * their original PDF-analyzed category_ids.
    */
-  updateTextData(data: { blocks: TextBlock[]; categories: Record<string, Category> }): void {
+  updateTextData(data: {
+    blocks: TextBlock[];
+    categories: Record<string, Category>;
+    /** See `categoryProvenance` — required for the reason `loadDocument` states. */
+    categoryProvenance: BlockCategoryProvenance['source'] | null;
+  }): void {
     const learned = this.learnedCategories();
     const corrections = this.categoryCorrections();
 
     this.blocks.set(data.blocks);
     this.categories.set(normalizeCategories(data.categories));
+    this.categoryProvenance.set(data.categoryProvenance);
     this.textLoading.set(false);
 
     // New blocks from PDF analysis have original category_ids.
@@ -369,6 +397,7 @@ export class PdfEditorStateService {
   reset(): void {
     this.blocks.set([]);
     this.categories.set({});
+    this.categoryProvenance.set(null);
     this.pageDimensions.set([]);
     this.totalPages.set(0);
     this.pdfName.set('');

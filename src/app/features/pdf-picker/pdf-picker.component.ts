@@ -1,7 +1,7 @@
 import { Component, inject, signal, computed, untracked, HostListener, ViewChild, ElementRef, effect, DestroyRef, ChangeDetectionStrategy, input, output, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
-import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
+import { PdfService, TextBlock, Category, PageDimension, BlockCategoryProvenance } from './services/pdf.service';
 import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits } from '../../core/services/electron.service';
 import { PdfEditorStateService, HistoryAction, BlockEdit, SplitDefinition, MergeDefinition, CropRegion } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
@@ -23,6 +23,7 @@ import {
   type ChapterRow,
 } from './components/document-nav/document-nav.component';
 import type { DocumentRef, ResetTarget } from '@shared/document/pipeline-types';
+import { toLaidOutBook, type LaidOutBlock, type LaidOutBook } from '@shared/document/laid-out-book';
 import { PdfViewerComponent, CropRect } from './components/pdf-viewer/pdf-viewer.component';
 import { AnalysisPanelComponent } from './components/analysis-panel/analysis-panel.component';
 import { MergePanelComponent } from './components/merge-panel/merge-panel.component';
@@ -112,6 +113,13 @@ interface OpenDocument {
   name: string;
   blocks: TextBlock[];
   categories: Record<string, Category>;
+  /**
+   * Where THIS tab's block categories came from — carried on the tab because
+   * `editorState` holds only the ACTIVE document's, and a tab switch reloads
+   * from here. `null` until an analysis has answered (a cache miss opens a tab
+   * with no blocks yet). See PdfEditorStateService.categoryProvenance.
+   */
+  categoryProvenance: BlockCategoryProvenance['source'] | null;
   pageDimensions: PageDimension[];
   totalPages: number;
   deletedBlockIds: Set<string>;
@@ -153,6 +161,23 @@ interface OpenDocument {
    * the original, and only the derived one is forbidden to save.
    */
   projectStateNotApplied?: boolean;
+}
+
+/**
+ * The one source an analysis STATED, or `null` because it stated none.
+ *
+ * The analyzer sends provenance exactly when it sends blocks — a cache hit
+ * carries both, a cache miss carries neither, and a cached analysis missing its
+ * provenance is refused rather than defaulted (electron/pdf-analyzer.ts
+ * `cachedProvenance`). So `null` here means "no blocks have been classified
+ * yet", never "classified, source unknown", and nothing downstream is entitled
+ * to read `heuristic` into it: `heuristic` is the answer for a document that
+ * states no categories, which is a different claim entirely.
+ */
+function statedProvenance(
+  provenance: BlockCategoryProvenance | undefined,
+): BlockCategoryProvenance['source'] | null {
+  return provenance === undefined ? null : provenance.source;
 }
 
 // Serializable custom category for project persistence
@@ -5342,6 +5367,7 @@ export class PdfPickerComponent implements OnInit {
         this.editorState.updateTextData({
           blocks: data.blocks as TextBlock[],
           categories: data.categories as Record<string, Category>,
+          categoryProvenance: statedProvenance(provenance),
         });
 
         // Re-apply any block merges that were restored before text arrived.
@@ -5567,6 +5593,7 @@ export class PdfPickerComponent implements OnInit {
         name: quickResult.pdf_name,
         blocks: quickResult.blocks || [],
         categories: quickResult.categories || {},
+        categoryProvenance: statedProvenance(quickResult.categoryProvenance),
         pageDimensions: quickResult.page_dimensions,
         totalPages: quickResult.page_count,
         deletedBlockIds: new Set(),
@@ -5590,6 +5617,7 @@ export class PdfPickerComponent implements OnInit {
       this.editorState.loadDocument({
         blocks: quickResult.blocks || [],
         categories: quickResult.categories || {},
+        categoryProvenance: statedProvenance(quickResult.categoryProvenance),
         pageDimensions: quickResult.page_dimensions,
         totalPages: quickResult.page_count,
         pdfName: quickResult.pdf_name,
@@ -5950,11 +5978,14 @@ export class PdfPickerComponent implements OnInit {
     this.closeAlert();
   }
 
-  onBlockHover(_block: TextBlock | null): void {
+  onBlockHover(_block: LaidOutBlock | null): void {
     // Could show tooltip here
   }
 
-  selectLikeThis(block: TextBlock, additive: boolean = false): void {
+  // Takes a LaidOutBlock, not a TextBlock: the only thing it reads is
+  // `category_id`, which is in the MEANING half of the contract. Whatever
+  // viewer emitted the gesture, the answer is the same.
+  selectLikeThis(block: LaidOutBlock, additive: boolean = false): void {
     // "Like this" means like the block's own category — the one field, no
     // divergence possible.
     const categoryId = block.category_id;
@@ -5983,7 +6014,7 @@ export class PdfPickerComponent implements OnInit {
    * paper. Selecting by it is what makes "this whole page was a table of
    * contents" a thing a user can act on in a book that has no pages.
    */
-  selectSourcePage(block: TextBlock, additive: boolean = false): void {
+  selectSourcePage(block: LaidOutBlock, additive: boolean = false): void {
     if (block.bf_source_page === undefined) return;
     const deleted = this.deletedBlockIds();
     const matching = narrationBlocksOnSourcePage(
@@ -6008,7 +6039,7 @@ export class PdfPickerComponent implements OnInit {
    * a delete that reached a different set than the one Select would light up
    * would be far worse than a selection that did.
    */
-  deleteSourcePage(block: TextBlock): void {
+  deleteSourcePage(block: LaidOutBlock): void {
     if (this.curationLocked()) return;  // the artifact on screen is not curated here
     if (block.bf_source_page === undefined) return;
     const deleted = this.deletedBlockIds();
@@ -6191,7 +6222,7 @@ export class PdfPickerComponent implements OnInit {
     return true;
   }
 
-  deleteLikeThis(block: TextBlock): void {
+  deleteLikeThis(block: LaidOutBlock): void {
     if (this.curationLocked()) return;  // the artifact on screen is not curated here
     if (this.refuseBulkGestureWhileLoading('Deleting every block like this one')) return;
     // The destructive twin of selectLikeThis, so it resolves the category the
@@ -8720,14 +8751,56 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
+   * The book on screen as a VIEWER-AGNOSTIC book — the boundary the strike
+   * machinery reads across, rather than this viewer's own block model.
+   *
+   * The raster viewer is the only viewer today, so this is a mapping of
+   * `TextBlock[]`/`PageDimension[]`. That is the whole point: it is the proof
+   * that the shape a live-DOM EPUB viewer will produce is a shape THIS viewer
+   * already produces, so the deletion and strike paths never learn which one is
+   * mounted. Geometry rides along inside `LaidOutBlock.geometry` and nothing
+   * below this line reads it.
+   *
+   * Provenance is REQUIRED by the contract and this window either knows it or
+   * refuses. It cannot be defaulted: `heuristic` is a claim (the document states
+   * no categories), not a stand-in for not knowing, and the analyzer guarantees
+   * it is stated wherever blocks are — so a book with blocks and no provenance
+   * is a bug that gets named here instead of being painted over.
+   */
+  private laidOutBook(): LaidOutBook {
+    const provenance = this.editorState.categoryProvenance();
+    if (provenance === null) {
+      throw new Error(
+        'This document has blocks on screen but no record of where their categories came from, '
+        + 'so the book cannot be described. Close and re-open it; if it persists, clear the '
+        + 'analysis cache for this file.',
+      );
+    }
+    return toLaidOutBook(this.blocks(), this.pageDimensions(), provenance);
+  }
+
+  /**
    * The blocks of the book on screen, in the shape the strike derivation reads.
    *
    * One place, because the derivation and the restore both need it and two
    * mappings of the same block list is two answers to "what did the aligner
    * place this block on".
+   *
+   * Reads `LaidOutBlock`, not `TextBlock`: every field it takes is in the
+   * MEANING half of the contract, which is exactly why the strike machinery can
+   * outlive the raster viewer. `bf_element` keeps flowing through here even
+   * though a DOM viewer's blocks would be 1:1 with elements — the escalation to
+   * a whole-document key and the unstruck-deletion diagnostics live inside
+   * `deriveNarrationStrikes` and are lost the moment anything routes around it.
    */
   private narrationLaidOutBlocks(): NarrationLaidOutBlock[] {
-    return this.blocks().map(b => ({
+    // A book with no blocks projects to no blocks, and it also has no
+    // provenance to state — describing it is neither possible nor needed.
+    // (Both branches return the same thing for an empty list; this one just
+    // does not ask a question nobody has an answer to yet.)
+    if (this.blocks().length === 0) return [];
+    const laid: readonly LaidOutBlock[] = this.laidOutBook().blocks;
+    return laid.map(b => ({
       id: b.id,
       page: b.page,
       ...(b.bf_element !== undefined ? { element: b.bf_element } : {}),
@@ -8737,8 +8810,8 @@ export class PdfPickerComponent implements OnInit {
       // ordinal now, so an image block with no element is a REFUSAL to guess and
       // must be reported like any other deletion that reached nothing.
       //
-      // The flag is declared optional on TextBlock and an absent one means the
-      // block is not a marker: it is set on every block the analyzer produces,
+      // The flag is declared optional on LaidOutBlock and an absent one means
+      // the block is not a marker: it is set on every block the analyzer produces,
       // and the picker's own constructed blocks set it literally false. A real
       // state, not a missing fact, which is why it is read as one here.
       unplaceable: b.is_footnote_marker === true,
@@ -10522,6 +10595,7 @@ export class PdfPickerComponent implements OnInit {
         name: isLoadingOriginal ? (project.source_name || quickResult.pdf_name) : quickResult.pdf_name,
         blocks: quickResult.blocks || [],
         categories: quickResult.categories || {},
+        categoryProvenance: statedProvenance(quickResult.categoryProvenance),
         pageDimensions: quickResult.page_dimensions,
         totalPages: quickResult.page_count,
         deletedBlockIds: deletedBlockIds,
@@ -10585,6 +10659,7 @@ export class PdfPickerComponent implements OnInit {
       this.editorState.loadDocument({
         blocks: quickResult.blocks || [],
         categories: quickResult.categories || {},
+        categoryProvenance: statedProvenance(quickResult.categoryProvenance),
         pageDimensions: quickResult.page_dimensions,
         totalPages: quickResult.page_count,
         pdfName: project.source_name || quickResult.pdf_name,
@@ -10780,6 +10855,7 @@ export class PdfPickerComponent implements OnInit {
             this.editorState.updateTextData({
               blocks: data.blocks as TextBlock[],
               categories: data.categories as Record<string, Category>,
+              categoryProvenance: statedProvenance(data.categoryProvenance),
             });
 
             // Now apply deferred project state
@@ -12919,6 +12995,7 @@ export class PdfPickerComponent implements OnInit {
             ...doc,
             blocks: this.blocks(),
             categories: this.categories(),
+            categoryProvenance: this.editorState.categoryProvenance(),
             pageDimensions: this.pageDimensions(),
             totalPages: this.totalPages(),
             deletedBlockIds: this.deletedBlockIds(),
@@ -12961,6 +13038,7 @@ export class PdfPickerComponent implements OnInit {
     this.editorState.loadDocument({
       blocks: doc.blocks,
       categories: doc.categories,
+      categoryProvenance: doc.categoryProvenance,
       pageDimensions: doc.pageDimensions,
       totalPages: doc.totalPages,
       pdfName: doc.name,
