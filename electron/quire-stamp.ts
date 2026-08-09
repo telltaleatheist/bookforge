@@ -36,9 +36,28 @@ import * as path from 'path';
 import {
   EpubProcessor, ZipReader, ZipWriter,
   parseXhtmlBody, collectExportUnits, collectImageElements, normalizeZipEntryName,
+  type MarkupUnit,
 } from './epub-processor';
 import { narrationElementKey, narrationImageElementKey } from '../shared/vlm/narration-deletions';
 import { QUIRE_ID_ATTRIBUTE, QUIRE_ID_SEPARATOR } from '../packages/quire/src/types';
+
+/**
+ * One element this walk found: the key BookForge knows it by, the node itself,
+ * and — for a text unit — the `ExportUnit` the walk produced it from.
+ *
+ * The unit is carried rather than re-derived because everything downstream that
+ * wants to know what KIND of thing an element is (its markup category, whether
+ * it is image-only) already has the answer here, and a second walk to ask again
+ * would be a second enumeration of one book — the exact thing this file exists
+ * to prevent. `undefined` on a picture, which no unit walk produced.
+ */
+export interface NarrationWalkEntry {
+  key: string;
+  el: any;
+  kind: 'text' | 'image';
+  tag: string;
+  unit?: MarkupUnit;
+}
 
 /** One stamped element: the key BookForge knows it by, and what kind of thing it is. */
 export interface StampedElement {
@@ -74,9 +93,9 @@ export interface QuireStampResult {
 export async function enumerateNarrationElements(
   epubPath: string,
   whatFor: string,
-): Promise<Array<{ file: string; docs: { doc: any; body: any }; entries: Array<{ key: string; el: any; kind: 'text' | 'image'; tag: string }> }>> {
+): Promise<Array<{ file: string; docs: { doc: any; body: any }; entries: NarrationWalkEntry[] }>> {
   const processor = new EpubProcessor();
-  const out: Array<{ file: string; docs: { doc: any; body: any }; entries: Array<{ key: string; el: any; kind: 'text' | 'image'; tag: string }> }> = [];
+  const out: Array<{ file: string; docs: { doc: any; body: any }; entries: NarrationWalkEntry[] }> = [];
   const seen = new Set<string>();
   try {
     const structure = await processor.open(epubPath);
@@ -88,15 +107,22 @@ export async function enumerateNarrationElements(
 
       const xhtml = await processor.readFile(entryName);
       const { doc, body } = parseXhtmlBody(xhtml, entryName);
-      const entries: Array<{ key: string; el: any; kind: 'text' | 'image'; tag: string }> = [];
+      const entries: NarrationWalkEntry[] = [];
 
       let indexInFile = 0;
       for (const c of collectExportUnits(doc, body, entryName)) {
+        const key = narrationElementKey(entryName, indexInFile++);
         entries.push({
-          key: narrationElementKey(entryName, indexInFile++),
+          key,
           el: c.el,
           kind: 'text',
           tag: String(c.el.tagName || '').toLowerCase(),
+          // The walk already knows everything the markup classifier asks, so it
+          // is carried rather than re-derived from a second walk of the book.
+          unit: {
+            file: entryName, key, tag: c.tag, el: c.el,
+            imageOnly: c.imageOnly, normText: c.normText,
+          },
         });
       }
       // AFTER the unit walk, because that walk MOVES stray runs into synthesized

@@ -436,6 +436,12 @@ interface ProjectSaveResult {
   canceled?: boolean;
   filePath?: string;
   error?: string;
+  /**
+   * Present on a SUCCESSFUL save that did not write the page and block
+   * deletions, because this window was never given the project's own — see
+   * `ProjectSaveResult` in electron/preload.ts. The window must say it.
+   */
+  staleLayoutRefusal?: string;
 }
 
 /**
@@ -812,6 +818,30 @@ export class ElectronService {
    * Subscribe to PDF analysis progress updates.
    * Returns unsubscribe function.
    */
+  /**
+   * Open an EPUB for the live-DOM viewer — the mounts it shows the book with.
+   *
+   * Nothing here renders anything. What comes back is `partition` plus one
+   * `quire://` mount per spine document, loadable ONLY inside a frame on the
+   * book's own session, which is what keeps a stranger's markup off BookForge's
+   * origin. The handle must be given back to `quireCloseBook`: an open book owns
+   * an offscreen window and a session until it is.
+   */
+  async quireOpenBook(
+    epubPath: string,
+    geometry?: { width: number; height: number; fontSize: number },
+  ): Promise<{ success: boolean; data?: any; error?: string }> {
+    if (!this.isElectron) {
+      return { success: false, error: 'A book can only be opened inside the desktop app.' };
+    }
+    return (window as any).electron.quire.openBook(epubPath, geometry);
+  }
+
+  async quireCloseBook(handle: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.isElectron) return { success: true };
+    return (window as any).electron.quire.closeBook(handle);
+  }
+
   onAnalyzeProgress(callback: (progress: { phase: string; message: string }) => void): () => void {
     if (this.isElectron) {
       return (window as any).electron.pdf.onAnalyzeProgress(callback);

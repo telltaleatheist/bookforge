@@ -44,11 +44,33 @@ export interface StrategyMeasurement {
   diagnostics: Record<string, number>;
 }
 
+/**
+ * The type an element is actually set in, as the browser computed it.
+ *
+ * A fact of the layout rather than a description of it: only the engine that
+ * applied the book's stylesheets can say what size a heading came out at, and
+ * the caller has no second way to find out. Reported per ELEMENT, not per
+ * fragment — a paragraph broken over a page turn is set in one face — and `null`
+ * for a replaced element, which is set in no face at all.
+ */
+export interface StrategyFont {
+  /** `font-size` in CSS pixels. */
+  size: number;
+  /** `font-family` as computed — the declared list, not the face that was used. */
+  family: string;
+  /** `font-weight` as a number (`normal` computes to 400, `bold` to 700). */
+  weight: number;
+  /** `font-style`: `normal`, `italic`, `oblique …`. */
+  style: string;
+}
+
 export interface StrategyPlacement {
   /** Every id stamped on this element, in the order the caller wrote them. */
   ids: string[];
   tag: string;
   type: 'text' | 'image';
+  /** How this element is set. `null` for `type: 'image'`. */
+  font: StrategyFont | null;
   /** One entry per page this element touches, in ascending page order. */
   fragments: Array<{
     /** Page index LOCAL to this document's flow. */
@@ -56,6 +78,15 @@ export interface StrategyPlacement {
     x: number; y: number; w: number; h: number;
     /** Rendered text of the fragment on this page; null for image elements. */
     text: string | null;
+    /**
+     * How many LINE BOXES this fragment set, counted from the client rects of a
+     * Range over its contents.
+     *
+     * A measurement rather than an estimate — height divided by line-height is
+     * wrong the moment a paragraph mixes type sizes — and one a caller cannot
+     * make for itself. `0` for an image, which sets no lines.
+     */
+    lines: number;
   }>;
 }
 

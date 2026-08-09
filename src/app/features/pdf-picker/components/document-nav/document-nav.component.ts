@@ -170,7 +170,7 @@ export interface ChapterRow {
             <button
               type="button"
               class="action-btn"
-              [disabled]="!hasDocument() || mergeRefusal() !== null"
+              [disabled]="!hasDocument() || mergeBlocked() !== null"
               [title]="mergeTooltip()"
               (click)="merge.emit()"
             >{{ selectedBlockIds().length >= 2 ? 'Merge ' + selectedBlockIds().length : 'Merge' }}</button>
@@ -284,7 +284,7 @@ export interface ChapterRow {
             <button
               type="button"
               class="action-btn"
-              [disabled]="!hasDocument() || mergeRefusal() !== null"
+              [disabled]="!hasDocument() || mergeBlocked() !== null"
               [title]="mergeTooltip()"
               (click)="merge.emit()"
             >{{ selectedBlockIds().length >= 2 ? 'Merge ' + selectedBlockIds().length : 'Merge' }}</button>
@@ -691,9 +691,25 @@ export class DocumentNavComponent {
     return mergeRefusal(this.blocks().filter(b => chosen.has(b.id)));
   });
 
+  /**
+   * Why merging is off for reasons this panel cannot see.
+   *
+   * `mergeRefusal` above is about the SELECTION — are these blocks adjacent, on
+   * one page, in reading order — which is all this component knows. Whether the
+   * DOCUMENT can be merged into at all is the picker's question: an EPUB's
+   * blocks are the book's own elements and there is no working PDF to join two
+   * boxes in. Passed in rather than re-derived, so there is one answer and the
+   * button is disabled by it instead of accepting the click and then refusing.
+   */
+  readonly documentMergeRefusal = input<string | null>(null);
+
+  /** Either reason, selection-level first — the one the user can act on. */
+  readonly mergeBlocked = computed<string | null>(() =>
+    this.documentMergeRefusal() ?? this.mergeRefusal());
+
   mergeTooltip(): string {
     if (!this.hasDocument()) return 'Merging is an edit to the working copy, and there is none.';
-    const refusal = this.mergeRefusal();
+    const refusal = this.mergeBlocked();
     if (refusal) return refusal;
     return `Merge ${this.selectedBlockIds().length} blocks into one.`;
   }

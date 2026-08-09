@@ -25,6 +25,9 @@ import {
 import type { DocumentRef, ResetTarget } from '@shared/document/pipeline-types';
 import { toLaidOutBook, type LaidOutBlock, type LaidOutBook } from '@shared/document/laid-out-book';
 import { PdfViewerComponent, CropRect } from './components/pdf-viewer/pdf-viewer.component';
+import {
+  EpubViewerComponent, type EpubViewerSource,
+} from './components/epub-viewer/epub-viewer.component';
 import { AnalysisPanelComponent } from './components/analysis-panel/analysis-panel.component';
 import { MergePanelComponent } from './components/merge-panel/merge-panel.component';
 import { RegexCriteria, defaultRegexCriteria } from './shared/regex-criteria';
@@ -41,7 +44,7 @@ import { QueueService } from '../queue/services/queue.service';
 import { SettingsService } from '../../core/services/settings.service';
 import { computeBaselines, learnFromBreaks, detectParagraphBreaks, getDefaultConfig, type DetectionConfig } from './services/paragraph-detector';
 import { recategorize as recategorizeBlocksFromLearner, classifyBlockHeuristic, computeBaselines as computeCategoryBaselines, isDefaultThresholds, detectMergeableGroups, createMergedBlock, type BlockAssignment, type ClassificationThresholds, type MergeGroup } from './services/category-learner';
-import { ExportSettingsModalComponent, ExportSettings, ExportResult } from './components/export-settings-modal/export-settings-modal.component';
+import { ExportSettingsModalComponent, ExportSettings, ExportResult, type ExportFormat } from './components/export-settings-modal/export-settings-modal.component';
 import { TaskRailComponent } from './components/task-rail/task-rail.component';
 import { BLOCK_CATEGORIES, BODY_CATEGORY, normalizeCategories, UNLABEL_CATEGORY } from '@shared/ocr/block-categories';
 import { chapterOpeningsAfterDeletions, isChapterOpening } from '@shared/ocr/text-block';
@@ -317,6 +320,37 @@ interface BookForgeProject {
   audiobook?: AudiobookState;
   created_at: string;
   modified_at: string;
+
+  // ── What the layout guard has to say about this project ──────────────────
+  //
+  // Both come from `projects:load-from-path`, which settles WHICH pagination
+  // this project's saved records belong to before it reads them
+  // (electron/legacy-epub-layout.ts). Neither is a field of the project on
+  // disk — they describe what happened while it was being opened — and both
+  // are surfaced by `announceLayoutState`.
+
+  /**
+   * Why the project's saved page and block deletions were NOT loaded.
+   *
+   * Present only when the records could not be carried into this build's
+   * layout of the book. Everything above that names a page or a block id came
+   * back EMPTY in that case — withheld rather than corrected, because a picker
+   * handed page numbers from a 218-page mupdf layout has no way to tell they
+   * are about a different shape of the same book, and it will draw them.
+   *
+   * Nothing was deleted from the project: the records are still on disk, and
+   * `project:save-to-path` refuses to overwrite them from this window.
+   */
+  stale_layout_refusal?: string;
+
+  /**
+   * What a one-time carry-over of those records came to, when one ran and
+   * succeeded. Not a warning — the project's deletions ARE loaded and are now
+   * recorded against this build's layout. It is said once because the book was
+   * laid out twice to do it, and because the undo history and chapter markers
+   * that could not be carried are gone.
+   */
+  layout_migration_notice?: string;
 }
 
 // Lightweight match rectangle for custom category highlights
@@ -385,6 +419,7 @@ interface AlertModal {
     ToolbarComponent,
     DesktopButtonComponent,
     PdfViewerComponent,
+    EpubViewerComponent,
     AnalysisPanelComponent,
     MergePanelComponent,
     FilePickerComponent,
@@ -584,6 +619,20 @@ interface AlertModal {
                   }
                 </div>
               }
+              <!-- A one-time note about something that succeeded — currently
+                   the carry-over of an old project's deletions into this
+                   build's page layout. Not a modal: nothing is wrong, and a
+                   book that opened correctly should not be interrupted. -->
+              @if (sessionNotice(); as notice) {
+                <div class="review-banner session-notice">
+                  <span class="review-banner-icon">📄</span>
+                  <span class="review-banner-text">{{ notice }}</span>
+                  <button
+                    class="session-notice-dismiss"
+                    (click)="dismissSessionNotice()"
+                  >Dismiss</button>
+                </div>
+              }
               @if (lightweightMode()) {
                 <div class="lightweight-placeholder">
                   <div class="placeholder-content">
@@ -597,6 +646,53 @@ interface AlertModal {
                     </ul>
                   </div>
                 </div>
+              } @else if (showsEpubViewer()) {
+                <!-- An EPUB shows its own DOM. The raster viewer is not
+                     instantiated for one at all — no mixed mode, and nothing
+                     below this branch changes for a PDF. -->
+                @if (epubViewerReady(); as ready) {
+                  <app-epub-viewer
+                    [book]="ready.book"
+                    [source]="ready.source"
+                    [categories]="categoriesWithPreview()"
+                    [hiddenCategoryIds]="hiddenCategoryIds()"
+                    [selectedBlockIds]="selectedBlockIds()"
+                    [deletedBlockIds]="deletedBlockIds()"
+                    [deletedPages]="deletedPages()"
+                    [selectedPages]="selectedPageNumbers()"
+                    [tocSelectedBlockIds]="tocSelectedBlockIdSet()"
+                    [zoom]="zoom()"
+                    [layout]="layout()"
+                    (blockClick)="onEpubBlockClick($event)"
+                    (blockDoubleClick)="onEpubBlockDoubleClick($event)"
+                    (blockHover)="onBlockHover($event)"
+                    (selectLikeThis)="selectLikeThis($event)"
+                    (deleteLikeThis)="deleteLikeThis($event)"
+                    (deleteBlock)="deleteBlock($event)"
+                    (marqueeSelect)="onMarqueeSelect($event)"
+                    (pageDeleteToggle)="togglePageDeleted($event)"
+                    (pageSelect)="onPageSelect($event)"
+                    (selectAllOnPage)="selectAllOnPage($event)"
+                    (deselectAllOnPage)="deselectAllOnPage($event)"
+                    (zoomChange)="onZoomChange($event)"
+                  />
+                } @else if (epubViewerWhyNot(); as why) {
+                  <div class="lightweight-placeholder">
+                    <div class="placeholder-content">
+                      <span class="placeholder-icon">⚠️</span>
+                      <h2>This book is not shown</h2>
+                      <p>{{ why }}</p>
+                    </div>
+                  </div>
+                } @else {
+                  <div class="lightweight-placeholder">
+                    <div class="placeholder-content">
+                      <span class="placeholder-icon">📖</span>
+                      <h2>Opening the book…</h2>
+                      <p>Its pages are being laid out.</p>
+                    </div>
+                  </div>
+                }
               } @else {
                 <app-pdf-viewer
                 [blocks]="blocks()"
@@ -787,6 +883,7 @@ interface AlertModal {
                 [lastError]="documentBlocks.lastError()"
                 [hasDocument]="workingDocumentOpen()"
                 [tab]="navTab()"
+                [documentMergeRefusal]="mergeSelectionRefusal()"
                 (tabChange)="setNavTab($event)"
                 (selectCategory)="selectAllOfCategory({ categoryId: $event, additive: false })"
                 (assignCategory)="assignSelectedToCategory($event)"
@@ -1034,6 +1131,7 @@ interface AlertModal {
         [totalPages]="totalPages()"
         [removeBackgrounds]="removeBackgrounds()"
         [unaddressed]="exportUnaddressed()"
+        [formatRefusals]="exportFormatRefusals()"
         (result)="onExportSettingsResult($event)"
       />
     }
@@ -1262,6 +1360,22 @@ interface AlertModal {
     .review-banner-icon { font-size: var(--ui-font-lg); }
     .review-banner-text { color: var(--text-primary); font-weight: 600; }
     .review-banner-hint { color: var(--text-tertiary); }
+
+    /* Something that WORKED and cost something, so it reads as information
+       rather than as a lock: the same bar, normal weight, and it goes away when
+       the user is done with it. */
+    .session-notice .review-banner-text { font-weight: 400; }
+    .session-notice-dismiss {
+      margin-left: auto;
+      flex-shrink: 0;
+      border: 1px solid var(--border-default);
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: var(--ui-font-sm);
+      padding: 4px 10px;
+      border-radius: $radius-md;
+      cursor: pointer;
+    }
 
     /* The one thing that can be done about a read-only artifact. Pushed to the
        far end so the sentence reads first and the button is where the eye goes
@@ -2729,6 +2843,7 @@ export class PdfPickerComponent implements OnInit {
   })();
 
   @ViewChild(PdfViewerComponent) pdfViewer!: PdfViewerComponent;
+  @ViewChild(EpubViewerComponent) epubViewer?: EpubViewerComponent;
   @ViewChild('searchInput') searchInputRef?: ElementRef<HTMLInputElement>;
 
   // Fixed sidebar width - doesn't change with window size
@@ -2753,6 +2868,298 @@ export class PdfPickerComponent implements OnInit {
     const loaded = this.editorState.effectivePath() || this.pdfName();
     return loaded.toLowerCase().endsWith('.epub');
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // The EPUB branch — a book shows its own pages
+  //
+  // Two viewers, and WHICH one is a property of the document, settled by the
+  // document's own extension and by nothing else. There is no mixed mode: a
+  // book on screen is either a raster of mupdf's reflow or the book's live DOM,
+  // never both and never one falling back to the other. The raster path is
+  // reached by PDFs exactly as it always was.
+  //
+  // What crosses the boundary is unchanged in both directions. The viewer is
+  // given `LaidOutBook` — the picker's OWN blocks, the ones the analysis
+  // produced and the user has been editing — and it emits gestures back in
+  // block ids. Selection still becomes an element key through
+  // `deriveNarrationStrikes`, and deletions still go through the one
+  // transactional `narration:edit-deletions` pipeline. The viewer is a way of
+  // pointing at blocks, not a second opinion about what they are.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Does the document on screen show itself, rather than a picture of itself?
+   *
+   * `lightweightMode` wins because it is a statement about not rendering pages
+   * at all, and a live-DOM viewer renders the most of anything here.
+   */
+  readonly showsEpubViewer = computed(() =>
+    this.isCurrentDocumentEpub() && !this.lightweightMode());
+
+  private readonly epubViewerSource = signal<EpubViewerSource | null>(null);
+  private readonly epubViewerRefusal = signal<string | null>(null);
+
+  /** The open book's handle. It owns a session until it is given back. */
+  private epubViewerHandle: string | null = null;
+  /** Which path the current source is FOR — the effect's idempotence key. */
+  private epubViewerOpenedFor: string | null = null;
+  /** Bumped per open so a slow open cannot land on top of a newer one. */
+  private epubViewerOpenSeq = 0;
+
+  /**
+   * Open the book when an EPUB comes on screen; give it back when one leaves.
+   *
+   * An effect rather than a line in `loadPdf`, because the document on screen
+   * changes down several paths — opening a file, opening a project, switching
+   * tabs, swapping to a variant — and a book left open by one of them is a
+   * leaked session and a stale set of pages. Keyed on the path so it does
+   * exactly one open per document.
+   */
+  private readonly epubViewerEffect = effect(() => {
+    const wanted = this.showsEpubViewer() ? this.editorState.effectivePath() : '';
+    if (wanted === this.epubViewerOpenedFor) return;
+    this.epubViewerOpenedFor = wanted;
+    void this.openEpubViewerFor(wanted);
+  });
+
+  /**
+   * Give the book back when the window goes.
+   *
+   * `closeAllBooksForViewer()` on before-quit is the backstop, not the plan: a
+   * picker window can close while the app keeps running, and an open book holds
+   * an offscreen window and a whole session until somebody says otherwise.
+   */
+  private readonly epubViewerRelease = this.destroyRef.onDestroy(() => {
+    const handle = this.epubViewerHandle;
+    this.epubViewerHandle = null;
+    if (handle !== null) void this.electronService.quireCloseBook(handle);
+  });
+
+  private async openEpubViewerFor(epubPath: string): Promise<void> {
+    const seq = ++this.epubViewerOpenSeq;
+
+    const previous = this.epubViewerHandle;
+    this.epubViewerHandle = null;
+    this.epubViewerSource.set(null);
+    this.epubViewerRefusal.set(null);
+    if (previous !== null) {
+      const closed = await this.electronService.quireCloseBook(previous);
+      if (!closed.success) console.warn('[epub-viewer] closing the last book failed:', closed.error);
+    }
+    if (epubPath === '') return;
+
+    const result = await this.electronService.quireOpenBook(epubPath);
+    if (seq !== this.epubViewerOpenSeq) {
+      // A newer document won while this was in flight. Hand this one straight
+      // back rather than leaving a session open for a book nobody is looking at.
+      if (result.success && result.data?.handle) {
+        void this.electronService.quireCloseBook(result.data.handle);
+      }
+      return;
+    }
+    if (!result.success || !result.data) {
+      this.epubViewerRefusal.set(
+        `${epubPath} could not be opened for viewing: ${result.error ?? 'no reason given'}`,
+      );
+      return;
+    }
+    this.epubViewerHandle = result.data.handle;
+    this.epubViewerSource.set(result.data.source as EpubViewerSource);
+    console.log('[epub-viewer] opened', epubPath, result.data.stats);
+  }
+
+  /**
+   * What the viewer pane should show for an EPUB — one of three things, never a
+   * blank.
+   *
+   * Every way this can fail to be a book is a NAMED refusal on screen rather
+   * than an empty pane or a quiet fall back to the raster viewer. In
+   * particular the page-count agreement: the analysis and the viewer paginate
+   * the same book with the same geometry and must therefore get the same number
+   * of pages, and if they ever did not, every page-keyed gesture — page delete,
+   * the timeline, scroll-to-page — would point one page at two different places.
+   * Deterministic pagination is what makes them agree; this is what happens if
+   * that ever stops being true.
+   */
+  readonly epubViewerState = computed<
+    | { kind: 'opening' }
+    | { kind: 'refused'; why: string }
+    | { kind: 'ready'; book: LaidOutBook; source: EpubViewerSource }
+  >(() => {
+    const refusal = this.epubViewerRefusal();
+    if (refusal !== null) return { kind: 'refused', why: refusal };
+
+    const source = this.epubViewerSource();
+    if (source === null) return { kind: 'opening' };
+
+    // The analysis has not landed yet. Not a refusal — the book is on its way.
+    const blocks = this.blocks();
+    if (blocks.length === 0 || this.totalPages() === 0) return { kind: 'opening' };
+
+    const shown = source.documents.reduce((n, d) => n + d.documentPageCount, 0);
+    if (shown !== this.totalPages()) {
+      return {
+        kind: 'refused',
+        why:
+          `This book was analyzed as ${this.totalPages()} page(s) but opens for viewing as `
+          + `${shown}. The two must be the same book laid out the same way — every page number `
+          + 'recorded against it means a different place otherwise — so it is not shown rather '
+          + 'than shown wrong. Clear this file\'s analysis cache and re-open it.',
+      };
+    }
+
+    const provenance = this.editorState.categoryProvenance();
+    if (provenance === null) {
+      return {
+        kind: 'refused',
+        why:
+          'This book has blocks on screen but no record of where their categories came from, so '
+          + 'it cannot be described to the viewer. Close and re-open it; if it persists, clear '
+          + 'the analysis cache for this file.',
+      };
+    }
+
+    try {
+      return {
+        kind: 'ready',
+        book: toLaidOutBook(blocks, this.pageDimensions(), provenance),
+        source,
+      };
+    } catch (err) {
+      return { kind: 'refused', why: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // The three arms, each its own signal, so the template narrows without
+  // depending on discriminated-union narrowing inside a control-flow block.
+  readonly epubViewerReady = computed(() => {
+    const state = this.epubViewerState();
+    return state.kind === 'ready' ? state : null;
+  });
+  readonly epubViewerWhyNot = computed(() => {
+    const state = this.epubViewerState();
+    return state.kind === 'refused' ? state.why : null;
+  });
+
+  // ── Reaching into the viewer ──────────────────────────────────────────────
+  //
+  // Seven methods on the raster viewer are called directly by this component
+  // through `@ViewChild`. With two viewers in play every one of them needs an
+  // answer for an EPUB, because `this.pdfViewer?.whatever()` on a document
+  // showing the OTHER viewer is a silent no-op — the control appears to work,
+  // nothing happens, and nothing says why. The seven, and their answer:
+  //
+  //   scrollToPage               → routed: the EPUB viewer has an equivalent.
+  //   resetGridPagination        → nothing to reset; see viewerResetGridPagination.
+  //   highlightSearchResults     ⎫ unreachable: `performSearch` refuses for an
+  //   highlightCurrentSearchResult⎭ EPUB (searchRefusal) and produces no results,
+  //                                so nothing ever asks for a hit to be painted.
+  //   clearSearchHighlights      → still reached, by `clearSearch`. Left alone
+  //                                on purpose: it erases highlights that on this
+  //                                branch were never drawn, so doing nothing IS
+  //                                the whole of the work, not a swallowed one.
+  //   renderPageForExport        → unreachable: export-to-PDF is refused.
+  //   clearCrop                  → unreachable: the crop TASK is already
+  //                                disabled for an EPUB in `disabledTasks`
+  //                                ("PDF only"), and every path into
+  //                                `activatePanel('crop')` goes through that
+  //                                gate — so the crop panel can never have been
+  //                                open to leave. No second refusal is added
+  //                                here; one description of that rule is enough.
+  //
+  // Note which signal these ask. The two ROUTING helpers ask `showsEpubViewer`,
+  // because their question is "which viewer is mounted". The three REFUSALS ask
+  // `isCurrentDocumentEpub`, because their question is "what kind of document is
+  // this" — an EPUB in lightweight mode mounts no viewer at all, and searching
+  // or PDF-exporting one is no more possible for that.
+  //
+  // The refusals are values (`searchRefusal`, `exportPdfRefusal`,
+  // `cropRefusal`) so the controls can disable themselves and say the sentence,
+  // rather than being hidden or left live over a viewer that cannot serve them.
+
+  /** Put a page on screen, on whichever viewer this document mounted. */
+  private viewerScrollToPage(pageNum: number): void {
+    if (this.showsEpubViewer()) {
+      // Absent only between the branch switching and Angular resolving the
+      // query — the book opens scrolled to its first page either way.
+      this.epubViewer?.scrollToPage(pageNum);
+      return;
+    }
+    this.pdfViewer?.scrollToPage(pageNum);
+  }
+
+  /**
+   * Re-seed the raster viewer's page window. Genuinely nothing to do for an
+   * EPUB, and that is a fact about the two designs rather than a gap: the
+   * raster grid keeps a windowing cursor that a document change invalidates,
+   * and the EPUB viewer keeps none — its bands are a computed of the source and
+   * the zoom, and it decides what to mount from the rectangles on every scroll.
+   */
+  private viewerResetGridPagination(): void {
+    if (this.showsEpubViewer()) return;
+    this.pdfViewer?.resetGridPagination();
+  }
+
+  /**
+   * Why the document on screen cannot be searched, or null when it can.
+   *
+   * The picker's search paints its hits onto the raster viewer's overlay
+   * (`highlightSearchResults`), and the live-DOM viewer has no such overlay —
+   * marking a hit there means writing into the book's own document, which is a
+   * Phase C decision about what the viewer may write and was deliberately not
+   * taken. Finding results the user then cannot be shown would be worse than
+   * saying so.
+   */
+  readonly searchRefusal = computed<string | null>(() =>
+    this.isCurrentDocumentEpub()
+      ? 'Search highlights are drawn over a rendered page, and this book is shown as its own '
+        + 'live document. Searching an EPUB is not available yet.'
+      : null);
+
+  /** Why this document cannot be exported as a PDF, or null when it can. */
+  readonly exportPdfRefusal = computed<string | null>(() =>
+    this.isCurrentDocumentEpub()
+      ? 'Exporting to PDF photographs each rendered page, and an EPUB has no rendered pages — it '
+        + 'is shown as its own document. Export it as an EPUB instead.'
+      : null);
+
+  /**
+   * The `TextBlock` a gesture's `LaidOutBlock` came from.
+   *
+   * The viewer speaks the MEANING half of the contract and several of the
+   * picker's oldest handlers still take the analyzer's own block. Resolved by
+   * id — the projection preserves it — and refused rather than guessed if the
+   * id names nothing, because a gesture that silently hit no block is
+   * indistinguishable from a picker that ignores clicks.
+   */
+  private textBlockFor(block: LaidOutBlock): TextBlock {
+    const found = this.blocks().find(b => b.id === block.id);
+    if (!found) {
+      throw new Error(
+        `The viewer reported a gesture on block ${block.id}, which is not in the document on `
+        + 'screen. The book and the blocks describing it have gone out of step.',
+      );
+    }
+    return found;
+  }
+
+  onEpubBlockClick(event: {
+    block: LaidOutBlock; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean;
+  }): void {
+    this.onBlockClick({
+      block: this.textBlockFor(event.block),
+      shiftKey: event.shiftKey, metaKey: event.metaKey, ctrlKey: event.ctrlKey,
+    });
+  }
+
+  onEpubBlockDoubleClick(event: {
+    block: LaidOutBlock; metaKey: boolean; ctrlKey: boolean;
+  }): void {
+    this.onBlockDoubleClick({
+      block: this.textBlockFor(event.block),
+      metaKey: event.metaKey, ctrlKey: event.ctrlKey,
+    });
+  }
 
   get effectivePath() { return this.editorState.effectivePath; }
   get fileHash() { return this.editorState.fileHash; }
@@ -4570,6 +4977,74 @@ export class PdfPickerComponent implements OnInit {
     + 'the project is left untouched. Open the project\'s own source file to change its edits.';
 
   /**
+   * A one-time, non-blocking note about this session — shown under the viewer,
+   * dismissed by the user, and never used for anything a refusal should say.
+   *
+   * Separate from `showAlert` on purpose. A modal is the right shape for "your
+   * edits were not loaded, here is what to do"; it is the wrong shape for "this
+   * worked, and here is what it cost", which is what a completed layout
+   * migration is. Interrupting a book that opened correctly trains people to
+   * dismiss without reading, which is exactly how the refusals stop working.
+   */
+  readonly sessionNotice = signal<string | null>(null);
+
+  dismissSessionNotice(): void { this.sessionNotice.set(null); }
+
+  /** Projects whose layout-guard verdict has already been said, this session. */
+  private readonly layoutStateAnnounced = new Set<string>();
+
+  /**
+   * Say what the layout guard did to this project's saved records.
+   *
+   * The main process settles which pagination a project's `deleted_pages` and
+   * `deleted_block_ids` belong to BEFORE it hands them over, and reports one of
+   * two things (electron/legacy-epub-layout.ts). Neither may be swallowed:
+   *
+   *  - a REFUSAL means the payload arrived with every positional field emptied,
+   *    so this window is about to show a book with no strikes on it and the user
+   *    would otherwise conclude their work had been lost. It gets the modal, in
+   *    the same shape as the stale-source refusal above: what happened, what was
+   *    NOT changed, and the one thing to do about it.
+   *  - a NOTICE means the records were carried across successfully. Nothing is
+   *    wrong, so nothing blocks; but the book was laid out twice to do it and
+   *    some records (undo history, chapter markers) did not survive, so it is
+   *    said once rather than not at all.
+   *
+   * Both are possible only for EPUB projects saved before the quire cutover. A
+   * PDF project, or one already stamped with this build's layout, carries
+   * neither field and this does nothing.
+   */
+  private announceLayoutState(project: BookForgeProject, projectPath: string): void {
+    // Opening a project can reach the load handler twice — once to open it, and
+    // once more when the freshly loaded document is bound back to it
+    // (`restoreProjectState`). The guard is per PROJECT rather than per call so
+    // the sentence is said once, whichever of the two got there first.
+    if (this.layoutStateAnnounced.has(projectPath)) return;
+    this.layoutStateAnnounced.add(projectPath);
+
+    const refusal = project.stale_layout_refusal;
+    if (refusal) {
+      console.warn(`[loadProjectFromPath] layout refusal: ${refusal}`);
+      this.showAlert({
+        title: 'Saved Deletions Not Loaded',
+        message:
+          refusal
+          + '\n\nThe rest of the project — its metadata, its highlights, its audiobook settings — '
+          + 'opened normally. Strike out what you want left out again and save, and the new '
+          + 'records will be written against the layout you are looking at.',
+        type: 'warning',
+      });
+      return;
+    }
+
+    const notice = project.layout_migration_notice;
+    if (notice) {
+      console.log(`[loadProjectFromPath] layout migration: ${notice}`);
+      this.sessionNotice.set(notice);
+    }
+  }
+
+  /**
    * Why a project's saved edits do NOT belong to the file that was just analyzed —
    * or null when they do (or when nothing on file can prove otherwise).
    *
@@ -4650,6 +5125,7 @@ export class PdfPickerComponent implements OnInit {
       // an EPUB — and disabled with its own sentence otherwise, because a
       // control that vanishes teaches nothing about how to reach it.
       const narrationRefusalText = this.narrationRefusalReason();
+      const searchRefusalText = this.searchRefusal();
       const actionItems: ToolbarItem[] = [
         { id: 'export', type: 'button', icon: '📤', label: 'Export', tooltip: 'Export document (Cmd+E)' },
         {
@@ -4671,8 +5147,12 @@ export class PdfPickerComponent implements OnInit {
           type: 'button',
           icon: '🔍',
           label: 'Search',
-          tooltip: lightweight ? 'Not available in lightweight mode' : 'Search text (Ctrl+F)',
-          disabled: lightweight
+          // Two reasons it can be off, and the more specific one is told: an
+          // EPUB has nowhere to paint a hit, which is a different fact about a
+          // different thing from lightweight mode's "pages are not rendered".
+          tooltip: searchRefusalText
+            ?? (lightweight ? 'Not available in lightweight mode' : 'Search text (Ctrl+F)'),
+          disabled: lightweight || searchRefusalText !== null
         },
         { id: 'divider1', type: 'divider' },
         { id: 'undo', type: 'button', icon: '↩', tooltip: lightweight ? 'Not available in lightweight mode' : 'Undo (Ctrl+Z)', disabled: lightweight || !this.canUndo() },
@@ -4966,7 +5446,7 @@ export class PdfPickerComponent implements OnInit {
             this.userAdjustedZoom = false;
             setTimeout(() => {
               this.autoZoomForGrid();
-              this.pdfViewer?.resetGridPagination();
+              this.viewerResetGridPagination();
             }, 0);
           }
           return newLayout;
@@ -5308,8 +5788,28 @@ export class PdfPickerComponent implements OnInit {
    * user. The backend attaches these to analyze/analyzeText results and the
    * text-ready event; without this they'd only exist in the main-process log.
    */
-  private surfaceAnalysisWarnings(warnings: string[] | undefined): void {
+  private surfaceAnalysisWarnings(warnings: string[] | undefined, analyzedPath: string): void {
     if (!warnings || warnings.length === 0) return;
+
+    // An EPUB cannot produce one of these any more, and that is structural
+    // rather than lucky. Every warning this modal was built for comes from the
+    // block→markup ALIGNER — blocks mupdf laid out that could not be matched
+    // back to the elements they came from — and the quire path has no aligner
+    // to fail: a block IS an element, handed the key BookForge stamped on it.
+    //
+    // So a warning arriving for an EPUB is not news for the user, it is a bug
+    // in this app, and it is logged as one instead of being shown as if the
+    // book were at fault. PDFs are untouched: the aligner is still how a
+    // reflowed PDF finds its markup, and it can still come up short.
+    if (analyzedPath.toLowerCase().endsWith('.epub')) {
+      console.error(
+        `[analysis] ${analyzedPath} came back with ${warnings.length} analysis warning(s), which `
+        + 'the EPUB path is not supposed to be able to produce. Not shown to the user. '
+        + `Warnings: ${warnings.join(' | ')}`,
+      );
+      return;
+    }
+
     this.showAlert({
       title: 'Document Analysis Warning',
       message: warnings.join('\n\n'),
@@ -5340,7 +5840,7 @@ export class PdfPickerComponent implements OnInit {
       this.textReadyUnsubs.delete(docId);
 
       // Surface non-fatal extraction problems (e.g. images failed) to the user
-      this.surfaceAnalysisWarnings(data.warnings);
+      this.surfaceAnalysisWarnings(data.warnings, libraryPath);
 
       // Say which input class this document is: a book our own pipeline wrote
       // states its block categories outright, a publisher's EPUB states its
@@ -5581,7 +6081,7 @@ export class PdfPickerComponent implements OnInit {
 
       // Cache hit may carry warnings recorded when the analysis was produced
       // (e.g. image extraction failed) — surface them
-      this.surfaceAnalysisWarnings(quickResult.warnings);
+      this.surfaceAnalysisWarnings(quickResult.warnings, libraryPath);
 
       // Create new document — use full data if cache hit, empty if cache miss
       const docId = this.generateDocumentId();
@@ -5669,7 +6169,7 @@ export class PdfPickerComponent implements OnInit {
 
       // Reset grid pagination for efficient initial render
       if (!lightweight) {
-        this.pdfViewer?.resetGridPagination();
+        this.viewerResetGridPagination();
       }
 
       // Auto-create project file for this document
@@ -6430,8 +6930,40 @@ export class PdfPickerComponent implements OnInit {
 
   // ─── Split Block Popover ────────────────────────────────────────────────────
 
+  /**
+   * Why splitting is off, or null when it can run.
+   *
+   * Both halves of splitting are PDF machinery. The split POINTS come from
+   * mupdf's spans, which a live EPUB has none of; and the text-mode fallback
+   * below would go further and do real damage on this path, because a block of
+   * a quire-paginated book IS one element of the book — splitting it would
+   * leave two blocks naming one element, and striking either would strike the
+   * whole of it. The narration writer deletes elements, not halves of them.
+   *
+   * A DOM-Range equivalent is a design (where does a split land in the markup?
+   * what does the export writer do with half an element?), not a setting, so v1
+   * says no and says why. The commit shape (`SplitDefinition`) is untouched, so
+   * nothing has to be unpicked when the answer changes.
+   */
+  readonly splitBlockRefusal = computed<string | null>(() => {
+    if (this.curationLocked()) {
+      return 'The document on screen is a finished artifact, not the working copy, so its blocks '
+        + 'are not edited here.';
+    }
+    if (this.isCurrentDocumentEpub()) {
+      return 'A block of an EPUB is one element of the book itself, and half an element is not '
+        + 'something the book can be written back out as. Splitting is available on PDFs, where a '
+        + 'block is a box of spans rather than a paragraph of the source.';
+    }
+    return null;
+  });
+
   async onSplitBlockRequest(block: TextBlock): Promise<void> {
-    if (this.curationLocked()) return;  // the artifact on screen is not curated here
+    const splitRefusal = this.splitBlockRefusal();
+    if (splitRefusal !== null) {
+      this.showAlert({ title: 'This block cannot be split', message: splitRefusal, type: 'warning' });
+      return;
+    }
     if (this.editorState.textLoading()) {
       this.showAlert({ title: 'Split Block', message: 'Text extraction is still in progress. Please wait for it to complete.', type: 'error' });
       return;
@@ -7514,7 +8046,7 @@ export class PdfPickerComponent implements OnInit {
   // Scroll to a specific page (used by timeline)
   scrollToPage(pageNum: number): void {
     this.currentPageIndex.set(pageNum);
-    this.pdfViewer?.scrollToPage(pageNum);
+    this.viewerScrollToPage(pageNum);
   }
 
   /**
@@ -7615,6 +8147,13 @@ export class PdfPickerComponent implements OnInit {
   // ─────────────────────────────────────────────────────────────────────────────
 
   toggleSearch(): void {
+    // The toolbar button is disabled and says why; this is the keyboard's
+    // answer to the same question, since Ctrl+F does not read that button.
+    const refusal = this.searchRefusal();
+    if (refusal !== null) {
+      this.showAlert({ title: 'This book cannot be searched', message: refusal, type: 'warning' });
+      return;
+    }
     if (this.showSearch()) {
       this.closeSearch();
     } else {
@@ -7655,6 +8194,17 @@ export class PdfPickerComponent implements OnInit {
   }
 
   private performSearch(): void {
+    // Refused rather than run: the results would be real and the highlights
+    // that show where they are would not exist, so the search box would fill
+    // with hits the user cannot be taken to. The control itself is disabled and
+    // carries this sentence; this is the same answer for anything that reaches
+    // the method another way (the debounce already in flight, a shortcut).
+    if (this.searchRefusal() !== null) {
+      this.searchResults.set([]);
+      this.currentSearchIndex.set(-1);
+      return;
+    }
+
     const query = this.searchQuery().trim();
     if (!query) {
       this.searchResults.set([]);
@@ -7731,7 +8281,7 @@ export class PdfPickerComponent implements OnInit {
 
     const result = results[index];
     // Navigate to the page containing this result
-    this.pdfViewer?.scrollToPage(result.page);
+    this.viewerScrollToPage(result.page);
     // Highlight the current result block
     this.pdfViewer?.highlightCurrentSearchResult(result.blockId);
   }
@@ -9502,7 +10052,23 @@ export class PdfPickerComponent implements OnInit {
    * The removeBackgrounds option is for paper cleanup (yellowed → white) only,
    * which requires page rasterization and is only used when no content deletions.
    */
+  /** Formats the export dialog must show as disabled, with the sentence why. */
+  readonly exportFormatRefusals = computed<Partial<Record<ExportFormat, string>>>(() => {
+    const pdf = this.exportPdfRefusal();
+    return pdf === null ? {} : { pdf };
+  });
+
   private async exportAsPdf(settings: ExportSettings): Promise<void> {
+    // The format button is disabled and carries this sentence. Said again here
+    // because `onExportSettingsResult` routes anything it does not recognise to
+    // this method, so "PDF" is also what an unknown format becomes — and that
+    // must not turn into a silent nothing on a book with no pages to render.
+    const refusal = this.exportPdfRefusal();
+    if (refusal !== null) {
+      this.showAlert({ title: 'Cannot export this book as a PDF', message: refusal, type: 'warning' });
+      return;
+    }
+
     // Check if we have any deletions (blocks, highlights, or pages)
     const hasDeletedBlocks = this.deletedBlockIds().size > 0;
     const hasDeletedHighlights = this.deletedHighlightIds().size > 0;
@@ -9787,6 +10353,7 @@ export class PdfPickerComponent implements OnInit {
     }
 
     const project = result.data as BookForgeProject;
+    this.announceLayoutState(project, projectFilePath);
     this.projectPath.set(projectFilePath);
     this.projectCreatedAt = project.created_at || null;
 
@@ -10304,6 +10871,27 @@ export class PdfPickerComponent implements OnInit {
 
     if (result.success) {
       console.log('[saveProjectToPath] SUCCESS');
+      // A save can succeed and still not have written the deletions: the
+      // manifest keeps its old page and block records when this window was
+      // never given them, rather than letting an empty set overwrite them. The
+      // metadata and everything else DID go to disk, so this is not a failure —
+      // but the user just pressed save on a book they have been striking out,
+      // and must not be left believing those strikes are on file.
+      //
+      // Said even on a `silent` (auto)save. Silence is for routine success, and
+      // "your deletions are not saved" is not routine.
+      if (result.staleLayoutRefusal) {
+        console.warn(`[saveProjectToPath] deletions NOT written: ${result.staleLayoutRefusal}`);
+        this.showAlert({
+          title: 'Deletions Not Saved',
+          message:
+            result.staleLayoutRefusal
+            + '\n\nEverything else about the project was saved. To record what you have struck '
+            + 'out in this session, the project has to be opened on the book those records can '
+            + 'be read against.',
+          type: 'warning',
+        });
+      }
       this.projectCreatedAt = projectData.created_at;
       // Only clear the dirty flag if no edit occurred while the save was in
       // flight — otherwise the newer changes would be silently marked saved
@@ -10375,7 +10963,26 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    const result = await this.electronService.projectsLoadFromPath(filePath);
+    // Shown BEFORE the call, not after it, because the slow thing happens
+    // inside it. Opening an EPUB project saved before the quire cutover lays
+    // the book out twice — once by mupdf to read what the old records meant,
+    // once by quire to write them back — and until that returns there is
+    // nothing else on screen to explain the wait. The main process reports its
+    // own progress on `pdf:analyze-progress` while it runs, which upgrades this
+    // to name the book; a project that needs no migration returns before the
+    // first frame and this is never seen.
+    this.loading.set(true);
+    this.loadingText.set('Opening the project…');
+    let result;
+    const unsubMigration = this.electronService.onAnalyzeProgress((progress) => {
+      this.loadingText.set(progress.message);
+    });
+    try {
+      result = await this.electronService.projectsLoadFromPath(filePath);
+    } finally {
+      unsubMigration();
+      this.loading.set(false);
+    }
 
     if (!result.success || !result.data) {
       if (result.error) {
@@ -10389,6 +10996,7 @@ export class PdfPickerComponent implements OnInit {
     }
 
     const project = result.data as BookForgeProject;
+    this.announceLayoutState(project, result.filePath || filePath);
     // Use the returned filePath - may be different if project was imported to library
     const actualProjectPath = result.filePath || filePath;
 
@@ -10525,7 +11133,7 @@ export class PdfPickerComponent implements OnInit {
       }
 
       // Cache hit may carry warnings recorded when the analysis was produced
-      this.surfaceAnalysisWarnings(quickResult.warnings);
+      this.surfaceAnalysisWarnings(quickResult.warnings, pdfPathToLoad);
 
       // Create new document for tabs
       const docId = this.generateDocumentId();
@@ -10848,7 +11456,7 @@ export class PdfPickerComponent implements OnInit {
           this.textReadyUnsubs.delete(docId);
 
           // Surface non-fatal extraction problems (e.g. images failed) to the user
-          this.surfaceAnalysisWarnings(data.warnings);
+          this.surfaceAnalysisWarnings(data.warnings, pdfPathToLoad);
 
           // Update blocks/categories from extraction
           if (this.activeDocumentId() === docId) {
@@ -12877,9 +13485,40 @@ export class PdfPickerComponent implements OnInit {
    * service refuses the cases that are not merges — one block, or blocks on two
    * pages — by name rather than producing something that looks merged.
    */
+  /**
+   * Why merging is off, or null when it can run.
+   *
+   * Merging rewrites the WORKING DOCUMENT's block layer — a PDF annotation
+   * layer — and there is no such thing behind an EPUB. That was already true
+   * before the quire cutover and `mergeSelectedBlocks` already declined to do
+   * it; what it did not do was SAY so, and a control that accepts a click and
+   * changes nothing is indistinguishable from a broken one. So the reason is a
+   * value now: the merge controls read it to disable themselves, and the
+   * gesture itself says it out loud if it is reached anyway.
+   */
+  readonly mergeSelectionRefusal = computed<string | null>(() => {
+    if (this.curationLocked()) {
+      return 'The document on screen is a finished artifact, not the working copy, so its blocks '
+        + 'are not edited here.';
+    }
+    if (this.isCurrentDocumentEpub()) {
+      return 'Merging joins two blocks of a PDF working document into one box. An EPUB has no '
+        + 'such document — its blocks are the book\'s own elements, and two elements are two '
+        + 'elements — so there is nothing here to merge them into.';
+    }
+    if (!this.documentLayerLive()) {
+      return 'This document has no working block layer open, so there is nothing to merge in. '
+        + 'Reload the book and try again.';
+    }
+    return null;
+  });
+
   mergeSelectedBlocks(): void {
-    if (this.curationLocked()) return;  // the artifact on screen is not curated here
-    if (!this.documentLayerLive()) return;
+    const refusal = this.mergeSelectionRefusal();
+    if (refusal !== null) {
+      this.showAlert({ title: 'Blocks cannot be merged here', message: refusal, type: 'warning' });
+      return;
+    }
     let survivor: string;
     try {
       survivor = this.documentBlocks.merge(this.selectedBlockIds());

@@ -56,6 +56,7 @@ import {
   type NarrationStrikes,
 } from '../shared/vlm/narration-deletions';
 import * as manifestService from './manifest-service';
+import { EDITOR_LAYOUT_MANIFEST_KEY, readEditorLayoutState } from './editor-layout';
 
 /**
  * One block of the analyzer's answer, as much of it as this module reads.
@@ -143,14 +144,54 @@ export function editorStateTranslationRefusal(
   deletions: manifestService.EditorStateDeletions,
   projectDir: string
 ): string | null {
-  if (deletions.sourceType === 'epub') return null;
   if (deletions.blockIds.length === 0 && deletions.pages.length === 0) return null;
-  return (
-    `${path.basename(projectDir)} was made from a ${deletions.sourceType.toUpperCase()}, so the `
-    + `${deletions.pages.length} page(s) and ${deletions.blockIds.length} block(s) its editor has `
-    + 'deleted are positions in that file rather than in the book. They are not translated into '
-    + 'narration strikes — strike what you want left out with the book itself on screen.'
+
+  if (deletions.sourceType !== 'epub') {
+    return (
+      `${path.basename(projectDir)} was made from a ${deletions.sourceType.toUpperCase()}, so the `
+      + `${deletions.pages.length} page(s) and ${deletions.blockIds.length} block(s) its editor has `
+      + 'deleted are positions in that file rather than in the book. They are not translated into '
+      + 'narration strikes — strike what you want left out with the book itself on screen.'
+    );
+  }
+
+  // ── The layout gate ───────────────────────────────────────────────────────
+  //
+  // `translateEditorStateDeletions` resolves these numbers against a FRESH
+  // analysis of the book, and since August 2026 that analysis is quire's. A
+  // record made against mupdf's reflow — every EPUB project saved before then,
+  // 49 of them in this library — would resolve page 140 of a 218-page layout
+  // against page 140 of a 183-page one and strike out real paragraphs the user
+  // never touched. That is not a warning, it is the failure this whole module
+  // exists to prevent, so it is refused here rather than translated.
+  //
+  // Carrying them over IS possible and is a separate, deliberate act:
+  // `migrateLegacyEpubEditorRecords` (electron/legacy-epub-layout.ts) lays the
+  // book out the OLD way, translates through element keys, and rewrites these
+  // two records in the current layout — after which the stamp matches and this
+  // returns null.
+  const layout = readEditorLayoutState(
+    path.basename(projectDir), deletions.sourceType, { source: layoutSource(deletions) },
   );
+  return layout.refusal;
+}
+
+/**
+ * The manifest fragment the layout reader needs, rebuilt from the deletions
+ * answer.
+ *
+ * `readEditorStateDeletions` has already read the manifest and carries the three
+ * facts that decide the question, so re-reading the file here would be a second
+ * snapshot of a project another window may have written in between.
+ */
+function layoutSource(
+  deletions: manifestService.EditorStateDeletions,
+): Record<string, unknown> {
+  return {
+    deletedPages: deletions.pages,
+    deletedBlockIds: deletions.blockIds,
+    ...(deletions.layout === null ? {} : { [EDITOR_LAYOUT_MANIFEST_KEY]: deletions.layout }),
+  };
 }
 
 /**

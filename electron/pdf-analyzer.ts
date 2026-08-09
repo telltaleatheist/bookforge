@@ -14,23 +14,29 @@ import { getRenderCacheBaseDir } from './render-cache';
 import { MutoolBridge } from './mutool-bridge';
 import { BLOCK_CATEGORIES } from '../shared/ocr/block-categories';
 import type { BlockCategoryProvenance } from '../shared/ocr/text-block';
-import {
-  epubCarriesConversionStamps,
-  readEpubBlockProvenance,
-  readEpubConversionStamps,
-  readEpubMarkupCategories,
-  type EpubExportBlock,
-  type UnalignedBlock,
-} from './epub-processor';
+import type { UnalignedBlock } from './epub-processor';
+import type { NarrationLaidOutBlock } from '../shared/vlm/narration-deletions';
 import { TEXT_LAYER_MIN_CHARS_PER_PAGE, type TextLayerReport } from '../shared/pdf/text-layer';
+import { analyzeEpubWithQuire, epubPageGeometryWithQuire } from './epub-quire-analysis';
 
 export type { BlockCategoryProvenance };
+
+/**
+ * A block of mupdf's OLD reflow of an EPUB, with the element it came from.
+ *
+ * The narration derivation's own block shape, aliased rather than re-declared:
+ * `layOutEpubTheLegacyWay` exists to be fed straight into
+ * `deriveNarrationStrikes`, and a second declaration of the same five fields is
+ * a second thing to keep in step.
+ */
+export type LegacyEpubLaidOutBlock = NarrationLaidOutBlock;
 
 /**
  * A document whose blocks state no categories of their own AND whose structure
  * cannot be read either — every PDF, whose text layer is glyphs and boxes. An
  * EPUB is never this: even a publisher's book states its structure in its markup
- * (see readMarkupCategories), so `heuristic` is now the PDF answer.
+ * (see `readEpubElementCategories` in epub-processor.ts), so `heuristic` is now
+ * the PDF answer.
  */
 function heuristicProvenance(): BlockCategoryProvenance {
   return { source: 'heuristic', stampedBlocks: 0, unstampedElementBlocks: 0, unalignedBlocks: 0 };
@@ -99,7 +105,7 @@ function requireUnalignedFacts(cached: CachedAnalysis, pdfPath: string): void {
 const execAsync = promisify(exec);
 
 // Cache version - increment this when changing extraction logic to invalidate old caches
-const ANALYSIS_CACHE_VERSION = 18;  // v18: image blocks carry an element key of their own (`<zip entry>#img<N>`), so a picture — and a document that holds nothing else — can be struck out of the narration copy
+const ANALYSIS_CACHE_VERSION = 20;  // v20: an EPUB is paginated by quire, in a browser, off its own DOM — so a block IS an element, the page numbering is quire's rather than mupdf's, and the block→element matcher is gone from this path. (v19 was taken by a branch in flight; the counter is global and the cache directory is shared across worktrees, so a collision serves one build's payload to another.)
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;
@@ -239,6 +245,13 @@ export interface TextBlock {
   is_footnote_marker: boolean;  // Inline footnote reference marker (¹, ², [1], etc.)
   parent_block_id?: string;     // If this is a marker extracted from a parent block
   line_count: number;
+  // This block's place in the book's READING ORDER, stated rather than implied
+  // by array order — see the full declaration in shared/ocr/text-block.ts, and
+  // `mergeRefusal` in shared/document/block-merge.ts, which refuses a merge
+  // whose members have no place or a gap between their places. Absent on a PDF
+  // analyzed from its text layer, which has only page order; present on every
+  // block of an EPUB, from the enumeration of the book's own elements.
+  seq?: number;
   is_ocr?: boolean;             // True if this block was generated via OCR (independent from images)
   // The book's own record of what this block is, read back from the EPUB
   // element it was laid out from. Set only on blocks of an EPUB the pipeline
@@ -686,8 +699,12 @@ export class PDFAnalyzer {
     const data = await fsPromises.readFile(pdfPath);
     const mimeType = getMimeType(pdfPath);
 
-    // All WASM operations under a single lock: open doc, count pages, get dimensions
-    const pageCount = await this.withWasmLock(async () => {
+    const isEpub = mimeType === 'application/epub+zip';
+
+    // Opening the document is a WASM operation, so it holds the lock — but only
+    // it does. An EPUB's pages are read afterwards, from quire, which does not
+    // touch WASM at all.
+    await this.withWasmLock(async () => {
       // Open document with error handling for WebAssembly issues
       try {
         this.doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
@@ -699,13 +716,22 @@ export class PDFAnalyzer {
         throw err;
       }
 
-      // Layout reflowable documents (EPUBs) so page numbers are meaningful
+      // An EPUB is still laid out here, but ONLY so the raster page view has
+      // something to render: its blocks, its page count and its page geometry
+      // all come from quire now.
+      //
       // Note: doc.isReflowable() has a bug in mupdf.js (missing return statement),
       // so we use mimeType check instead, consistent with all other call sites.
-      if (mimeType === 'application/epub+zip') {
-        this.doc.layout(600, 900, 18);
-      }
+      if (isEpub) this.doc.layout(600, 900, 18);
+    });
 
+    // ── The EPUB half, which is one call ─────────────────────────────────────
+    if (isEpub) {
+      const epubPages = await this.extractEpubBlocks(pdfPath, sourceSha256, maxPages, sendProgress);
+      return this.finishAnalysis(pdfPath, epubPages, sourceSha256, fileHash, maxPages);
+    }
+
+    const pageCount = await this.withWasmLock(async () => {
       let totalPages: number;
       try {
         totalPages = this.doc.countPages();
@@ -837,19 +863,32 @@ export class PDFAnalyzer {
       }
     }
 
-    // For non-PDF documents (EPUBs), use mupdf.js
+    // Anything that reaches here is a document mupdf laid out and mutool could
+    // not read — an XPS, a MOBI, an FB2. An EPUB returned long before this.
     if (!usedMutool) {
-      // Extract blocks from each page using mupdf.js
       for (let pageNum = 0; pageNum < pageCount; pageNum++) {
         await this.extractPageBlocks(pageNum);
       }
-
-      // No span extraction for EPUBs (mutool doesn't support them)
     }
 
     // Assign categories — from the book's own record when it has one.
     await this.assignCategories(pdfPath, mimeType);
 
+    return this.finishAnalysis(pdfPath, pageCount, sourceSha256, fileHash, maxPages);
+  }
+
+  /**
+   * Build the payload, cache it, and hand it back — the tail every analysis
+   * shares, written once so the EPUB half and the PDF half cannot cache
+   * different shapes.
+   */
+  private async finishAnalysis(
+    pdfPath: string,
+    pageCount: number,
+    sourceSha256: string,
+    fileHash: string,
+    maxPages: number | undefined,
+  ): Promise<AnalyzeResult> {
     const cacheable: CachedAnalysis = {
       blocks: this.blocks,
       categories: this.categories,
@@ -960,9 +999,9 @@ export class PDFAnalyzer {
     sendProgress('loading', 'Reading document file...');
     const data = await fsPromises.readFile(pdfPath);
     const mimeType = getMimeType(pdfPath);
+    const isEpub = mimeType === 'application/epub+zip';
 
-    // All WASM operations under a single lock: open doc, count pages, get dimensions
-    const pageCount = await this.withWasmLock(async () => {
+    await this.withWasmLock(async () => {
       try {
         this.doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
       } catch (err) {
@@ -973,10 +1012,30 @@ export class PDFAnalyzer {
         throw err;
       }
 
-      if (mimeType === 'application/epub+zip') {
-        this.doc.layout(600, 900, 18);
-      }
+      // For the raster page view only — the numbers below are quire's.
+      if (isEpub) this.doc.layout(600, 900, 18);
+    });
 
+    // An EPUB's page COUNT is its pagination: there is no cheaper way to know
+    // it than to lay the book out, so the first open of a book pays for that and
+    // every later one reads the map back off disk. `analyzeText` then finds the
+    // map already made.
+    if (isEpub) {
+      sendProgress('loading', 'Laying the book out…');
+      const geometry = await epubPageGeometryWithQuire(pdfPath, sourceSha256);
+      const pages = maxPages ? Math.min(geometry.pageCount, maxPages) : geometry.pageCount;
+      this.pageDimensions = geometry.pageDimensions.slice(0, pages);
+      return {
+        page_count: pages,
+        page_dimensions: this.pageDimensions,
+        pdf_name: path.basename(pdfPath),
+        textReady: false,
+        sourceSha256,
+      };
+    }
+
+    // All WASM operations under a single lock: count pages, get dimensions
+    const pageCount = await this.withWasmLock(async () => {
       let totalPages: number;
       try {
         totalPages = this.doc.countPages();
@@ -1058,12 +1117,41 @@ export class PDFAnalyzer {
     this.blocks = [];
     this.spans = [];
 
+    const mimeType = getMimeType(pdfPath);
+    const isPdf = mimeType === 'application/pdf' || pdfPath.toLowerCase().endsWith('.pdf');
+
+    // ── The EPUB half, which is one call ─────────────────────────────────────
+    //
+    // It does not need `this.doc`: quire read the book itself. The open document
+    // is still there for the raster page view, and untouched by any of this.
+    if (mimeType === 'application/epub+zip') {
+      const sourceSha256 = await this.computeSourceSha256(pdfPath);
+      const pages = await this.extractEpubBlocks(pdfPath, sourceSha256, maxPages, sendProgress);
+      if (!maxPages) {
+        await this.saveAnalysisToCache(this.analysisCacheKey(sourceSha256), {
+          blocks: this.blocks,
+          categories: this.categories,
+          page_count: pages,
+          page_dimensions: this.pageDimensions,
+          pdf_name: path.basename(pdfPath),
+          spans: this.spans,
+          categoryProvenance: this.categoryProvenance,
+          ...(this.analysisWarnings.length > 0 ? { warnings: [...this.analysisWarnings] } : {}),
+        });
+      }
+      return {
+        blocks: this.blocks,
+        categories: this.categories,
+        spans: this.spans,
+        sourceSha256,
+        categoryProvenance: this.categoryProvenance,
+        ...presentedWarnings(this.analysisWarnings, [], false),
+      };
+    }
+
     const pageCount = maxPages
       ? Math.min(this.pageDimensions.length, maxPages)
       : this.pageDimensions.length;
-
-    const mimeType = getMimeType(pdfPath);
-    const isPdf = mimeType === 'application/pdf' || pdfPath.toLowerCase().endsWith('.pdf');
 
     let usedMutool = false;
     if (isPdf) {
@@ -1182,6 +1270,181 @@ export class PDFAnalyzer {
       categoryProvenance: this.categoryProvenance,
       ...presentedWarnings(this.analysisWarnings, this.unalignedBlocks, this.unalignedStated),
     };
+  }
+
+  /**
+   * An EPUB's whole block layer, from quire.
+   *
+   * The one place the EPUB path lives, shared by `analyze` and `analyzeText` so
+   * the two cannot describe a book differently. Nothing in here touches mupdf:
+   * the book is stamped with the element keys BookForge already knows it by,
+   * paginated in a browser, and every block comes back carrying the key of the
+   * element it IS. There is no matching, so there is nothing to fail to match —
+   * which is why `unalignedBlocks` is zero by construction and no unaligned
+   * warning can be produced for an EPUB any more.
+   *
+   * `maxPages` truncates exactly as it did before: mupdf laid the whole book out
+   * and then extracted only the first N pages, and so does this.
+   */
+  private async extractEpubBlocks(
+    pdfPath: string,
+    sourceSha256: string,
+    maxPages: number | undefined,
+    sendProgress: (phase: string, message: string) => void,
+  ): Promise<number> {
+    const analysis = await analyzeEpubWithQuire(pdfPath, sourceSha256, sendProgress);
+    console.log(analysis.summary);
+
+    const pageCount = maxPages ? Math.min(analysis.pageCount, maxPages) : analysis.pageCount;
+    this.blocks = maxPages
+      ? analysis.blocks.filter((b) => b.page < pageCount)
+      : analysis.blocks;
+    // An EPUB has no spans: they are mutool's character-level report on a PDF's
+    // text layer, and this book has no text layer, it has markup.
+    this.spans = [];
+    this.pageDimensions = analysis.pageDimensions.slice(0, pageCount);
+    this.categoryProvenance = analysis.categoryProvenance;
+    this.unalignedBlocks = [];
+    this.unalignedStated = false;
+
+    let stated = analysis.stated;
+    if (maxPages) {
+      const kept = new Set(this.blocks.map((b) => b.id));
+      stated = new Map([...analysis.stated].filter(([id]) => kept.has(id)));
+    }
+    this.generateCategories(stated, 'epub-reflow');
+    return pageCount;
+  }
+
+  /**
+   * The book laid out THE OLD WAY — mupdf's reflow at 600×900×18 — with every
+   * block carrying the element it came from.
+   *
+   * ── Why a build that paginates with quire still does this ──────────────────
+   *
+   * Because 49 of the library's 163 EPUB projects (measured 2026-08-09) carry
+   * page and block deletions recorded against mupdf's pagination, and one of
+   * them is 613 deleted pages of a Himmler biography. Those records are not
+   * garbage: they are an evening's curation each, expressed in the only
+   * vocabulary the picker had at the time. What makes them unreadable is that
+   * this build lays the same book out differently — so the way to read them is
+   * to lay it out the way they were written in, ONCE, and translate them into
+   * element keys, which no pagination can invalidate.
+   *
+   * It is reproducible for exactly the reason the records survive a working-copy
+   * re-mint: the block id is `md5("<page>:<index>:<text>")` of a deterministic
+   * reflow of bytes that are verified identical to the archive original. Same
+   * mupdf, same geometry, same file — same numbers. And when that is NOT true
+   * (a mupdf upgrade moved a line break), the ids simply fail to match and the
+   * caller's translation refuses by name; nothing is quietly half-applied.
+   *
+   * NOT AN ANALYSIS. It produces no categories, fills no cache, and is never on
+   * the path of opening a book — `analyze` routes an EPUB to quire and always
+   * will. This is a migration tool with one caller
+   * (`electron/legacy-epub-layout.ts`) and it dies with the last unmigrated
+   * project.
+   *
+   * It runs on the shared analyzer instance and therefore resets its state,
+   * exactly as `analyze` does; both are self-contained calls that re-open the
+   * document from a path.
+   */
+  async layOutEpubTheLegacyWay(epubPath: string): Promise<LegacyEpubLaidOutBlock[]> {
+    const mupdfLib = await getMupdf();
+    const data = await fsPromises.readFile(epubPath);
+    const mimeType = getMimeType(epubPath);
+    if (mimeType !== 'application/epub+zip') {
+      throw new Error(
+        `${path.basename(epubPath)} is not an EPUB, and mupdf's reflow layout is the thing an `
+        + 'EPUB\'s legacy page and block records were written against. There is nothing to '
+        + 'reproduce for any other kind of file.',
+      );
+    }
+
+    this.pdfPath = epubPath;
+    this.blocks = [];
+    this.spans = [];
+    this.categories = {};
+    this.pageDimensions = [];
+    this.analysisWarnings = [];
+    this.unalignedBlocks = [];
+    this.unalignedStated = false;
+    this.categoryProvenance = heuristicProvenance();
+
+    const pageCount = await this.withWasmLock(async () => {
+      this.doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
+      // The three numbers the old records were made under. Never parameterized:
+      // a different box is a different layout and would reproduce different ids.
+      this.doc.layout(600, 900, 18);
+      const total = this.doc.countPages();
+      for (let pageNum = 0; pageNum < total; pageNum++) {
+        let page;
+        try {
+          page = this.doc.loadPage(pageNum);
+          const bounds = page.getBounds();
+          this.pageDimensions.push({
+            width: bounds[2] - bounds[0],
+            height: bounds[3] - bounds[1],
+            originX: bounds[0],
+            originY: bounds[1],
+          });
+        } finally {
+          try { page?.destroy(); } catch { /* ignore */ }
+        }
+      }
+      return total;
+    });
+
+    for (let pageNum = 0; pageNum < pageCount; pageNum++) {
+      await this.extractPageBlocks(pageNum);
+    }
+
+    // The element key for every block, from the aligner — the same join the old
+    // analysis used and the same first-unit tiebreak. `readEpubMarkupCategories`
+    // is the reader that answers for EVERY book rather than only a stamped one;
+    // the other two readers produce identical keys from the same alignment, so
+    // which one asks is immaterial and this is the one that never returns empty.
+    //
+    // Required lazily so this migration path does not put epub-processor back
+    // into the analyzer's module graph, which Phase A took it out of.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const processor = require('./epub-processor') as typeof import('./epub-processor');
+    const reading = await processor.readEpubMarkupCategories(
+      epubPath,
+      this.blocks.map((b) => ({
+        id: b.id,
+        page: b.page,
+        y: b.y,
+        text: b.text,
+        // Nothing is deleted at layout time: which blocks the user struck is the
+        // caller's question, and the aligner only reads the flag to report
+        // policy failures the exporter cares about.
+        deleted: false,
+        isImage: b.is_image,
+        isFootnoteMarker: b.is_footnote_marker,
+      })),
+    );
+
+    const laidOut = this.blocks.map((b) => {
+      const element = reading.elementByBlockId.get(b.id);
+      return {
+        id: b.id,
+        page: b.page,
+        ...(element === undefined ? {} : { element }),
+        // The one class with no element by design rather than by failure — see
+        // NarrationLaidOutBlock.unplaceable.
+        unplaceable: b.is_footnote_marker === true,
+        excerpt: b.text.slice(0, 80),
+      };
+    });
+
+    console.log(
+      `[PDF Analyzer] ${path.basename(epubPath)}: laid out the legacy way (mupdf reflow, `
+      + `600×900×18) — ${pageCount} page(s), ${laidOut.length} block(s), `
+      + `${laidOut.filter((b) => b.element !== undefined).length} carrying an element key, `
+      + `${reading.unaligned.length} unaligned, ${reading.unmatchedImages.length} unmatched `
+      + 'picture(s). This is a legacy-record migration, not an analysis.',
+    );
+    return laidOut;
   }
 
   /**
@@ -1687,284 +1950,32 @@ export class PDFAnalyzer {
   }
 
   /**
-   * Read the book's OWN record of its blocks, when it has one, and put it on
-   * `this.blocks`. Returns the categories to be used verbatim, keyed by block id.
+   * Assign every block its category, for a document that states none.
    *
-   * ── Why this exists ───────────────────────────────────────────────────────
+   * That is now every document this method sees. It used to hold the four input
+   * classes — a book our reflow wrote, a book vlm-convert wrote, a publisher's
+   * book read off its markup, and a PDF — and it asked the first three through
+   * `alignBlocksToEpub`, which found each block's element by matching its text.
    *
-   * MuPDF reflows an EPUB and hands back glyph geometry and font metrics; the
-   * markup is gone by then, so `classifyBlock` below has nothing to read but
-   * relative type size, weight and position. On a book WE built that is absurd:
-   * reflow put the `<h1>` there because the working PDF said `chapter`, and then
-   * the picker reads the finished book back and calls it a `title` because the
-   * heading does not literally begin with the word "chapter". Since foundry
-   * 86c59bc every element it emits carries its category, its group and the
-   * source block ids, so the answer is written down — the job is to find the
-   * element again, which `readEpubBlockProvenance` does through the same
-   * aligner the preserving exporter uses.
+   * An EPUB does not come here any more. `extractEpubBlocks` reads the same
+   * three classes off the same rules (`readEpubElementCategories` in
+   * epub-processor.ts) keyed by ELEMENT, because quire hands the element key
+   * back on every block, and hands `generateCategories` the answer directly.
    *
-   * ── Two input classes ─────────────────────────────────────────────────────
-   *
-   * A book with no stamps was not written by our reflow. There is no record to
-   * read, so its blocks keep the classifier's answer and the result says
-   * `heuristic`. That is not a fallback for a missing value: it is the honest
-   * reading of a different kind of input, and the caller can tell the two apart
-   * because the result says which it got. A STAMPED book whose blocks fail to
-   * align is a third thing again, and it is a problem — those blocks fall back
-   * to the classifier and the count is both returned and warned about, so the
-   * degradation can never happen quietly.
-   */
-  private async readDocumentCategories(pdfPath: string): Promise<Map<string, string>> {
-    this.categoryProvenance = heuristicProvenance();
-
-    const alignable: EpubExportBlock[] = this.blocks.map(b => ({
-      id: b.id,
-      page: b.page,
-      y: b.y,
-      text: b.text,
-      // Nothing is deleted at analysis time — deletion is a picker edit that
-      // happens long after this, and the aligner only reads the flag to report
-      // policy failures the exporter cares about.
-      deleted: false,
-      isImage: b.is_image,
-      isFootnoteMarker: b.is_footnote_marker,
-    }));
-
-    const reading = await readEpubBlockProvenance(pdfPath, alignable);
-    if (!reading.stamped) return new Map();
-
-    const stampedCategories = new Map<string, string>();
-    for (const block of this.blocks) {
-      // The element key is a fact about where the block came from, so it is set
-      // for every block the aligner placed — including one that landed on an
-      // element carrying no stamp. It is what a narration strike is recorded as.
-      const element = reading.elementByBlockId.get(block.id);
-      if (element !== undefined) block.bf_element = element;
-      const stamp = reading.byBlockId.get(block.id);
-      if (stamp === undefined) continue;
-      block.bf_group = stamp.group;
-      block.bf_blocks = stamp.sourceBlockIds;
-      stampedCategories.set(block.id, stamp.category);
-    }
-
-    this.categoryProvenance = {
-      source: 'document',
-      stampedBlocks: stampedCategories.size,
-      unstampedElementBlocks: reading.alignedToUnstampedElement,
-      unalignedBlocks: reading.unaligned.length,
-    };
-    console.log(
-      `[PDF Analyzer] ${path.basename(pdfPath)} carries its own block record: `
-      + `${stampedCategories.size} blocks stamped, ${reading.alignedToUnstampedElement} on unstamped `
-      + `elements, ${reading.unaligned.length} unaligned, ${reading.spanningElements} spanning several elements.`,
-    );
-    this.warnUnalignedBlocks([...reading.unaligned, ...reading.unmatchedImages], true);
-    return stampedCategories;
-  }
-
-  /**
-   * The same job for a book a document VISION MODEL wrote — and the element key
-   * for every EPUB, whoever wrote it.
-   *
-   * `foundry vlm-convert` has no working PDF and no paragraph groups to stamp,
-   * so it states the two things it DOES know: what the model called each block
-   * (`data-bf-cat`) and which page of the PDF it was read off (`data-bf-page`).
-   * Both are unrecoverable once mupdf has laid the book out — an EPUB has no
-   * page concept and no memory of a layout model's opinion — and both are what
-   * the picker needs to let a user say "every footnote" or "everything that was
-   * on page 3". A book with neither states no categories, and this returns an
-   * empty map so the classifier's answers stand.
-   *
-   * A second reader rather than a branch inside the first because the two
-   * dialects say different things. But the element's positional KEY is in
-   * neither dialect: it is where the block came from, the aligner knows it for
-   * every book, and it is the identity a narration strike is recorded as
-   * (shared/vlm/narration-deletions.ts). So it is set unconditionally. It used
-   * to be set only on a stamped book, which meant a user could strike a
-   * paragraph of a publisher's EPUB and have nothing recorded at all.
-   */
-  private async readConversionCategories(pdfPath: string): Promise<Map<string, string>> {
-    const alignable: EpubExportBlock[] = this.blocks.map(b => ({
-      id: b.id,
-      page: b.page,
-      y: b.y,
-      text: b.text,
-      deleted: false,
-      isImage: b.is_image,
-      isFootnoteMarker: b.is_footnote_marker,
-    }));
-
-    const reading = await readEpubConversionStamps(pdfPath, alignable);
-
-    const stampedCategories = new Map<string, string>();
-    for (const block of this.blocks) {
-      // ALWAYS, for every EPUB: the element key says where the block came from,
-      // which is true of a publisher's book as much as of a converted one, and
-      // it is the identity a narration strike is recorded as. Only the model's
-      // category and the source page are a converted book's own record.
-      const element = reading.elementByBlockId.get(block.id);
-      if (element !== undefined) block.bf_element = element;
-      const stamp = reading.byBlockId.get(block.id);
-      if (stamp === undefined) continue;
-      block.bf_cat = stamp.statedCategory;
-      block.bf_source_page = stamp.sourcePage;
-      stampedCategories.set(block.id, stamp.category);
-    }
-
-    if (!reading.converted) {
-      // No stamps: the categories stay the classifier's, and the provenance says
-      // so. The element keys are set either way, and they are not a category.
-      console.log(
-        `[PDF Analyzer] ${path.basename(pdfPath)} states no categories of its own; `
-        + `${reading.elementByBlockId.size} of ${this.blocks.length} blocks carry an element key, `
-        + `${reading.unaligned.length} could not be placed in the markup.`,
-      );
-      this.warnUnalignedBlocks([...reading.unaligned, ...reading.unmatchedImages], false);
-      return new Map();
-    }
-
-    this.categoryProvenance = {
-      source: 'document',
-      stampedBlocks: stampedCategories.size,
-      unstampedElementBlocks: reading.alignedToUnstampedElement,
-      unalignedBlocks: reading.unaligned.length,
-    };
-    console.log(
-      `[PDF Analyzer] ${path.basename(pdfPath)} was written by a document vision model: `
-      + `${stampedCategories.size} blocks stamped, ${reading.alignedToUnstampedElement} on unstamped `
-      + `elements, ${reading.unaligned.length} unaligned.`,
-    );
-    this.warnUnalignedBlocks([...reading.unaligned, ...reading.unmatchedImages], true);
-    return stampedCategories;
-  }
-
-  /**
-   * The same job again for a book NEITHER emitter wrote — and this one is most
-   * of the library.
-   *
-   * A publisher's EPUB carries no stamp because our pipeline never touched it,
-   * but it is not silent: `<h1>`, `<blockquote>`, `<figcaption>`, `epub:type`,
-   * the `<sup>` links that bind a reference to its note, and the table of
-   * contents that names which documents open a chapter are all the book stating
-   * what its own parts are. `readEpubMarkupCategories` reads that through the
-   * same aligner the two stamp readers use, so a unit index means one thing
-   * across all three.
-   *
-   * What this replaces is not a subtler guess — it is a wrong one. Falling
-   * through to `classifyBlock` handed an EPUB to a classifier written for
-   * scanned pages, which reads `header` and `footer` off where a block sits on
-   * the paper. There is no paper: mupdf reflows the book onto pages of its own
-   * invention, and on Killing America that put `footer` on ordinary prose.
-   *
-   * Every aligned block gets a category here, so `unstampedElementBlocks` is
-   * zero by construction — the reader derives the answer rather than looking for
-   * an attribute that may be absent. Only blocks the aligner could not place at
-   * all are left to the classifier, and those are already warned about.
-   */
-  private async readMarkupCategories(pdfPath: string): Promise<Map<string, string>> {
-    const alignable: EpubExportBlock[] = this.blocks.map(b => ({
-      id: b.id,
-      page: b.page,
-      y: b.y,
-      text: b.text,
-      deleted: false,
-      isImage: b.is_image,
-      isFootnoteMarker: b.is_footnote_marker,
-    }));
-
-    const reading = await readEpubMarkupCategories(pdfPath, alignable);
-
-    const stated = new Map<string, string>();
-    for (const block of this.blocks) {
-      const element = reading.elementByBlockId.get(block.id);
-      if (element !== undefined) block.bf_element = element;
-      const category = reading.byBlockId.get(block.id);
-      if (category === undefined) continue;
-      stated.set(block.id, category);
-    }
-
-    this.categoryProvenance = {
-      source: 'markup',
-      stampedBlocks: stated.size,
-      unstampedElementBlocks: 0,
-      unalignedBlocks: reading.unaligned.length,
-    };
-    console.log(
-      `[PDF Analyzer] ${path.basename(pdfPath)} states no categories, so they were read off its `
-      + `markup: ${stated.size} of ${this.blocks.length} blocks categorized, `
-      + `${reading.chapterOpenings} of ${reading.tocTargets} table-of-contents entries opened with a `
-      + `chapter heading, ${reading.noterefs} note references, ${reading.unaligned.length} unaligned.`,
-    );
-    this.warnUnalignedBlocks([...reading.unaligned, ...reading.unmatchedImages], true);
-    return stated;
-  }
-
-  /**
-   * Blocks the aligner could not place, said once, in the user's terms.
-   *
-   * The consequence is the same whichever kind of book it is — a block with no
-   * element key cannot be struck out of the narration copy, because a strike is
-   * recorded as the element it names. A book that also STATED its categories
-   * loses those for the same blocks, so it has one thing more to say.
-   *
-   * PICTURES arrive here in the same list, from the same consequence: an image
-   * block the ordinal matcher refused to pair with an image element has no key
-   * either, and refusing to pair is the correct answer when the counts disagree
-   * (electron/epub-processor.ts, `alignImageBlocks`). One channel, because the
-   * user's question is the same one — "why did deleting that do nothing?".
-   */
-  private warnUnalignedBlocks(unaligned: UnalignedBlock[], stated: boolean): void {
-    this.unalignedBlocks = unaligned;
-    this.unalignedStated = stated;
-    // The console keeps the complete record of THE RUN, block ids included —
-    // the user-facing sentence is rendered at read time (`presentedWarnings`),
-    // never stored, so a wording change reaches already-analyzed books.
-    for (const u of unaligned) {
-      console.warn(`[PDF Analyzer] unaligned block ${u.blockId}: ${describeUnaligned(u)}`);
-    }
-  }
-
-  /**
-   * Assign every block its category, from the document's own record where there
-   * is one and from the classifier where there is not. The one place both
-   * analysis entry points go through, so the two can never disagree about which
-   * input class they are looking at.
-   *
-   * FOUR input classes now, asked in the order of how much the book states. A
-   * reflowed book carries `data-bf-category` and the working PDF's own block
-   * ids; a converted book carries `data-bf-cat` and the page it was read from; a
-   * publisher's EPUB carries neither stamp but states its structure in its
-   * markup; a PDF states nothing at all and is classified.
-   *
-   * A book carries at most one of the two stamps — each emitter writes its own —
-   * so the order is not a precedence rule, it is questions asked in turn, and
-   * each is only reached because the one before came back empty.
-   *
-   * The conversion stamp is TESTED before its reader runs, rather than let the
-   * reader answer "no": both that reader and the markup reader run the aligner,
-   * which is the expensive half, and the test is a substring scan. So exactly
-   * one of the two runs, and the branch on stamped-or-not is written here where
-   * it can be read.
+   * What is left is what was always the honest heuristic case: a PDF, whose text
+   * layer is glyphs and boxes and states nothing — and an XPS, a MOBI, an FB2,
+   * which mupdf lays out and which carry no markup this app can read either.
    */
   private async assignCategories(pdfPath: string, mimeType: string): Promise<void> {
-    // Only an EPUB can carry the stamps — they are written by an EPUB emitter,
-    // into EPUB markup — and only an EPUB has markup to read at all. A PDF's
-    // text layer is glyphs and boxes, which is what the classifier is for.
-    if (mimeType !== 'application/epub+zip') {
-      this.categoryProvenance = heuristicProvenance();
-      this.generateCategories(new Map(), 'pdf-page');
-      return;
+    if (mimeType === 'application/epub+zip') {
+      throw new Error(
+        `${path.basename(pdfPath)}: an EPUB's categories come from its own elements `
+        + '(extractEpubBlocks → readEpubElementCategories), not from the classifier. Reaching '
+        + 'assignCategories with an EPUB means the quire path was skipped.',
+      );
     }
-    const reflowed = await this.readDocumentCategories(pdfPath);
-    if (reflowed.size > 0) {
-      this.generateCategories(reflowed, 'epub-reflow');
-      return;
-    }
-    if (await epubCarriesConversionStamps(pdfPath)) {
-      this.generateCategories(await this.readConversionCategories(pdfPath), 'epub-reflow');
-      return;
-    }
-    this.generateCategories(await this.readMarkupCategories(pdfPath), 'epub-reflow');
+    this.categoryProvenance = heuristicProvenance();
+    this.generateCategories(new Map(), 'pdf-page');
   }
 
   /**

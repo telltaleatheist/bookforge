@@ -46,6 +46,9 @@ class WorkerCrashError extends Error {
 const RETRYABLE_METHODS = new Set<string>([
   'analyze',
   'analyzeQuick',
+  // Self-contained: it re-opens the EPUB from the path it is given and keeps
+  // nothing from a prior call.
+  'layOutEpubTheLegacyWay',
   'renderPage',
   'renderBlankPage',
   'renderAllPagesToFiles',
@@ -126,6 +129,25 @@ function spawn(label: string, onExit: (w: Worker) => void): Worker {
   console.log(`[pdf-worker-proxy] ${label} started`);
 
   w.on('message', (msg: any) => {
+    // ── The one request that travels the OTHER way ────────────────────────
+    //
+    // A worker thread cannot reach Electron's `app` (see the spawn call above),
+    // and quire paginates an EPUB in a real BrowserWindow. So the analyzer,
+    // which lives in the worker, asks the main thread to lay the book out and
+    // waits for the map. Everything else about the analysis stays in the worker.
+    if (msg.type === 'quire-request') {
+      const { paginateInThisProcess } = require('./quire-service.js') as
+        typeof import('./quire-service');
+      paginateInThisProcess(msg.stampedPath, msg.geometry)
+        .then((result) => w.postMessage({ type: 'quire-response', quireId: msg.quireId, result }))
+        .catch((err: unknown) => w.postMessage({
+          type: 'quire-response',
+          quireId: msg.quireId,
+          error: err instanceof Error ? (err.stack ?? err.message) : String(err),
+        }));
+      return;
+    }
+
     if (msg.type === 'progress') {
       // Forward progress to whichever sender is associated with the *latest*
       // pending call, or to all pending senders, or to the default sender.

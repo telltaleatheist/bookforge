@@ -53,6 +53,8 @@
     "test:display-run-merge": "npx tsc -p tsconfig.electron.json && node tools/test-display-run-merge.js",
     "test:epub-provenance": "npx tsc -p tsconfig.electron.json && node tools/test-epub-provenance.js",
     "test:narration-deletions": "npx tsc -p tsconfig.electron.json && node tools/test-narration-deletions.js",
+    "test:editor-layout": "npx tsc -p tsconfig.electron.json && node tools/test-editor-layout.js",
+    "test:legacy-layout-state": "npx tsc -p tsconfig.electron.json && node tools/test-legacy-layout-state.js",
     "test:working-copy-remint": "npx tsc -p tsconfig.electron.json && node tools/test-working-copy-remint.js",
     "test:book-chapter-titles": "npx tsc -p tsconfig.electron.json && node tools/test-book-chapter-titles.js",
     "test:chapter-openings": "npx tsc -p tsconfig.electron.json && node tools/test-chapter-openings.js",
@@ -69,6 +71,8 @@
     "test:component-upgrades": "npx tsc -p tsconfig.electron.json && node tools/test-component-upgrades.js",
     "test:quire": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/test-quire.js",
     "quire:paginate": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/quire-paginate.js",
+    "quire:probe-host": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/probe-quire-host.js",
+    "quire:viewer-bench": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/epub-viewer-harness.js",
     "build:quire-vendor": "node -e \"require('fs').cpSync('packages/quire/vendor','dist/packages/quire/vendor',{recursive:true})\""
   },
   "prettier": {

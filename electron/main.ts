@@ -12,6 +12,8 @@ import * as ebookLibrary from './ebook-library';
 import { importEpubProject } from './import-epub-project';
 import { initializeLoggers, getMainLogger, getTTSLogger, closeLoggers } from './rolling-logger';
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
+import { Quire } from '../packages/quire/src';
+import { setupQuireViewerIpc, closeAllBooksForViewer } from './quire-viewer-bridge';
 import { registerClipforgeIpc } from './clipforge-bridge';
 import { registerDocumentIpc } from './document-ipc';
 // A project's files belong to no one window: the picker is its own BrowserWindow
@@ -19,6 +21,12 @@ import { registerDocumentIpc } from './document-ipc';
 import { broadcastToAllWindows } from './document-stage-run';
 import { listProjectPdfs, listWorkingDocuments } from './document-project';
 import * as manifestService from './manifest-service';
+import {
+  currentEpubEditorLayout,
+  readEditorLayoutState,
+  EDITOR_LAYOUT_MANIFEST_KEY,
+} from './editor-layout';
+import { migrateLegacyEpubEditorRecords } from './legacy-epub-layout';
 import * as manifestMigration from './manifest-migration';
 import * as archiveMigration from './archive-migration';
 import { findEbookConvert } from './ebook-convert-bridge';
@@ -1849,9 +1857,40 @@ function setupIpcHandlers(): void {
         const manifestContent = await fs.readFile(manifestPath, 'utf-8');
         const manifest = JSON.parse(manifestContent);
 
+        // ── A window that was never given the records may not speak for them ──
+        //
+        // `projects:load-from-path` WITHHOLDS every page- and block-keyed record
+        // from a project whose layout could not be reconciled with this build's
+        // — so such a window holds empty sets not because the user cleared them
+        // but because it was never told. Letting this save write those empties
+        // back would destroy the records in the ordinary act of opening a book
+        // and closing it, which is precisely the silent loss the withholding
+        // exists to prevent.
+        //
+        // So: when the stored layout is still stale, the layout-keyed records
+        // are left EXACTLY as they are and no stamp is written. The refusal
+        // travels back with the result, because the other half of that rule is
+        // that anything the user DID delete in such a window is not saved
+        // either, and they have to be told.
+        const layoutState = readEditorLayoutState(
+          path.basename(filePath), manifest.source?.type ?? '', manifest,
+        );
+        const layoutIsStale = layoutState.refusal !== null;
+        if (layoutIsStale) {
+          console.warn(
+            `[project:save] ${path.basename(filePath)}: the page and block records on file were `
+            + 'recorded against a layout this build does not produce and were not loaded into this '
+            + 'window, so this save leaves them untouched.',
+          );
+        }
+
         // Update manifest with editor state
         if (!manifest.source) manifest.source = {};
-        manifest.source.deletedBlockIds = mergedData.deleted_block_ids || [];
+        if (!layoutIsStale) {
+          manifest.source.deletedBlockIds = mergedData.deleted_block_ids || [];
+          manifest.source.pageOrder = mergedData.page_order || [];
+          manifest.source.deletedPages = mergedData.deleted_pages || [];
+        }
         // INERT (see manifest-types.ts): nothing resolves scan-line deletions
         // any more — a deletion is `/FoundryDeleted` on the block's own
         // annotation. Carried through untouched so manifests that have the
@@ -1866,37 +1905,63 @@ function setupIpcHandlers(): void {
         manifest.source.foundryAutoDiscardedLines =
           mergedData.foundry_auto_discarded_lines || undefined;
         manifest.source.deletedHighlightIds = mergedData.deleted_highlight_ids || [];
-        manifest.source.pageOrder = mergedData.page_order || [];
-        manifest.source.deletedPages = mergedData.deleted_pages || [];
         manifest.source.removeBackgrounds = mergedData.remove_backgrounds || false;
 
+        // ── Which LAYOUT these records are about ──────────────────────────
+        //
+        // `deletedPages` is a page number and `deletedBlockIds` are md5s of
+        // where blocks were drawn, so both mean nothing without the pagination
+        // that produced them — and in August 2026 that pagination changed for
+        // EPUBs (mupdf's reflow → quire's fragmentation of the book's own DOM,
+        // 218 pages → 183 on Killing America). Every save from now on SAYS
+        // which layout it was made in, so a later build never has to infer it.
+        //
+        // EPUBs only, and that is not a shortcut: a PDF's pages are the PDF's
+        // own and did not change, so stamping one would record an answer to a
+        // question that does not arise. `shared/document/editor-layout.ts`
+        // reads an absent stamp on an EPUB as the mupdf era, which is what it
+        // is — no manifest written before this line exists carries one.
+        //
+        // NOT written while the stored records are stale: the stamp would then
+        // say "these are current" about numbers this save deliberately left as
+        // they were.
+        if (manifest.source.type === 'epub' && !layoutIsStale) {
+          manifest.source[EDITOR_LAYOUT_MANIFEST_KEY] =
+            currentEpubEditorLayout(new Date().toISOString());
+        }
+
         if (!manifest.editor) manifest.editor = {};
-        manifest.editor.undoStack = mergedData.undo_stack || [];
-        manifest.editor.redoStack = mergedData.redo_stack || [];
-        manifest.editor.blockEdits = mergedData.block_edits || undefined;
-        manifest.editor.customCategories = mergedData.custom_categories || undefined;
-        manifest.editor.ocrBlocks = mergedData.ocr_blocks || undefined;
-        // Blocks the USER authored (chapter boxes), kept apart from ocrBlocks on
-        // purpose: restoring ocrBlocks calls replaceTextBlocksOnPages, which drops
-        // every non-image block on the pages it touches, so a manual block riding
-        // in there would take that page's native text layer with it.
-        manifest.editor.manualBlocks = mergedData.manual_blocks || undefined;
+        if (!layoutIsStale) {
+          manifest.editor.undoStack = mergedData.undo_stack || [];
+          manifest.editor.redoStack = mergedData.redo_stack || [];
+          manifest.editor.blockEdits = mergedData.block_edits || undefined;
+          manifest.editor.customCategories = mergedData.custom_categories || undefined;
+          manifest.editor.ocrBlocks = mergedData.ocr_blocks || undefined;
+          // Blocks the USER authored (chapter boxes), kept apart from ocrBlocks on
+          // purpose: restoring ocrBlocks calls replaceTextBlocksOnPages, which drops
+          // every non-image block on the pages it touches, so a manual block riding
+          // in there would take that page's native text layer with it.
+          manifest.editor.manualBlocks = mergedData.manual_blocks || undefined;
+          manifest.editor.categoryCorrections = mergedData.category_corrections || undefined;
+          manifest.editor.learnedCategories = mergedData.learned_categories || undefined;
+          manifest.editor.paragraphBreaks = mergedData.paragraph_breaks || undefined;
+          // Block splits/merges, crop regions and legacy text corrections
+          // previously never reached the manifest (only the retired single-file
+          // .bfp projects persisted them), so text-mode splits and crops were lost
+          // on reload for manifest projects. They round-trip through
+          // manifest.editor now — the same wholesale-cleared container the reset
+          // handler wipes, so reset still covers them automatically.
+          // `|| undefined` omits empty keys (mirrors the fields above and the
+          // renderer's own serializer), so old manifests are unchanged.
+          manifest.editor.blockSplits = mergedData.block_splits || undefined;
+          manifest.editor.blockMerges = mergedData.block_merges || undefined;
+          manifest.editor.cropRegions = mergedData.crop_regions || undefined;
+          manifest.editor.textCorrections = mergedData.text_corrections || undefined;
+        }
+        // Keyed by CATEGORY id, and tuning numbers: neither names a position in
+        // a layout, so both are written whatever the layout state is.
         manifest.editor.ocrCategories = mergedData.ocr_categories || undefined;
-        manifest.editor.categoryCorrections = mergedData.category_corrections || undefined;
-        manifest.editor.learnedCategories = mergedData.learned_categories || undefined;
-        manifest.editor.paragraphBreaks = mergedData.paragraph_breaks || undefined;
-        // Block splits/merges, crop regions, classification thresholds and legacy
-        // text corrections previously never reached the manifest (only the retired
-        // single-file .bfp projects persisted them), so text-mode splits and crops were lost on reload for
-        // manifest projects. They round-trip through manifest.editor now — the same
-        // wholesale-cleared container the reset handler wipes, so reset still covers
-        // them automatically. `|| undefined` omits empty keys (mirrors the fields
-        // above and the renderer's own serializer), so old manifests are unchanged.
-        manifest.editor.blockSplits = mergedData.block_splits || undefined;
-        manifest.editor.blockMerges = mergedData.block_merges || undefined;
-        manifest.editor.cropRegions = mergedData.crop_regions || undefined;
         manifest.editor.classificationThresholds = mergedData.classification_thresholds || undefined;
-        manifest.editor.textCorrections = mergedData.text_corrections || undefined;
         // The digest of the exact file the edit set was made against. This is
         // the ONE signal the renderer's projectEditsMismatchReason gate has:
         // dropped here, the gate reads "nothing on file can prove otherwise"
@@ -1906,9 +1971,13 @@ function setupIpcHandlers(): void {
         // must clear it with the edits it vouches for.
         manifest.editor.sourceFileSha256 = mergedData.source_file_sha256 || undefined;
 
-        // Chapters
-        manifest.chapters = mergedData.chapters || [];
-        manifest.chaptersSource = mergedData.chapters_source || 'manual';
+        // Chapters. The picker's markers carry a `page` and mostly no `blockId`,
+        // so they are positions in the layout like everything above — and a
+        // window that was not given them cannot restate them.
+        if (!layoutIsStale) {
+          manifest.chapters = mergedData.chapters || [];
+          manifest.chaptersSource = mergedData.chapters_source || 'manual';
+        }
 
         // Metadata from editor (title, author, etc.)
         if (mergedData.metadata) {
@@ -1930,7 +1999,15 @@ function setupIpcHandlers(): void {
         }
 
         await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
-        return { success: true, filePath };
+        // The save SUCCEEDED — the metadata, the highlights and everything that
+        // does not name a position went to disk. `staleLayoutRefusal` says what
+        // did NOT, so a window can tell the user that the deletions they made in
+        // this session are not on file, instead of leaving them to find out.
+        return {
+          success: true,
+          filePath,
+          staleLayoutRefusal: layoutState.refusal ?? undefined,
+        };
       }
 
       // Every project is a manifest directory (a .bfp path could only ever be a
@@ -3081,11 +3158,60 @@ function setupIpcHandlers(): void {
 
 
   // Load project from specific path - auto-imports to library if external
-  ipcMain.handle('projects:load-from-path', async (_event, filePath: string) => {
+  ipcMain.handle('projects:load-from-path', async (event, filePath: string) => {
     try {
       // Check if filePath is a manifest project directory
       const stat = await fs.stat(filePath);
       if (stat.isDirectory()) {
+        // ── The layout the saved records belong to, settled BEFORE they are
+        //    read ──────────────────────────────────────────────────────────
+        //
+        // `deleted_pages` and `deleted_block_ids` are positions in a
+        // PAGINATION, and for EPUBs that pagination changed in August 2026
+        // (mupdf's reflow → quire, 218 pages → 183 on Killing America). Handing
+        // the old numbers to a window showing the new layout paints strikes
+        // across paragraphs the user never touched — silently, in a book they
+        // have no reason to re-read.
+        //
+        // So the records are carried across FIRST, once, through the layout
+        // they were written in (electron/legacy-epub-layout.ts), and the
+        // manifest is read afterwards. A project already stamped with this
+        // build's layout, or made from a PDF, returns after one manifest read
+        // and nothing below changes for it.
+        let staleLayoutRefusal: string | null = null;
+        let layoutMigrationNotice: string | null = null;
+        try {
+          // The window asking is the one told. This is the app's existing
+          // document-analysis progress channel and the picker is already
+          // listening on it around this call — a migration IS two analyses of
+          // the book, so it reports where analyses report rather than opening a
+          // second channel that says the same kind of thing.
+          const carried = await migrateLegacyEpubEditorRecords(filePath, (message) => {
+            if (!event.sender.isDestroyed()) {
+              event.sender.send('pdf:analyze-progress', { phase: 'extracting', message });
+            }
+          });
+          if (carried.kind === 'migrated') {
+            layoutMigrationNotice = carried.message;
+            console.warn(`[projects:load] ${carried.message}`);
+          } else if (carried.kind === 'refused') {
+            staleLayoutRefusal = carried.message;
+            console.warn(`[projects:load] ${carried.message}`);
+          }
+        } catch (err) {
+          // The migration itself failed — mupdf ran out of memory, the book is
+          // unreadable, the project is not in this library. That is a reason to
+          // WITHHOLD the records, not to refuse to open the project: the file
+          // on disk is untouched either way, and a book nobody can open is a
+          // worse answer than a book whose old edits are not shown.
+          staleLayoutRefusal =
+            `${path.basename(filePath)}'s page and block deletions were recorded against a `
+            + 'different layout of the book, and carrying them into this one failed: '
+            + `${(err as Error).message}\n\nThey are NOT applied — replaying them would strike out `
+            + 'paragraphs you never touched. They are still in the project, unchanged.';
+          console.warn(`[projects:load] ${staleLayoutRefusal}`);
+        }
+
         // Read manifest.json and convert it to the editor's project shape
         const manifestPath = path.join(filePath, 'manifest.json');
         const manifestContent = await fs.readFile(manifestPath, 'utf-8');
@@ -3153,6 +3279,23 @@ function setupIpcHandlers(): void {
 
         // Convert manifest to BookForgeProject format expected by the editor
         const editor = manifest.editor || {};
+
+        // ── What a stale layout costs the payload ──────────────────────────
+        //
+        // When the records could NOT be carried across, every field below that
+        // names a page or a block id is withheld — not corrected, not
+        // approximated, withheld — and `stale_layout_refusal` says so in words
+        // the window can put on screen. Withholding is the whole safety
+        // property: a picker handed `deleted_pages: [140, …]` from a
+        // 218-page layout has no way to know those numbers are about a
+        // different book-shape, and it will draw them.
+        //
+        // Nothing is deleted from the manifest. The records stay exactly as
+        // they are, and the save handler refuses to overwrite them from a
+        // window that was never given them (`project:save-to-path`).
+        const stale = staleLayoutRefusal !== null;
+        const withheld = <T>(value: T, empty: T): T => (stale ? empty : value);
+
         const data: Record<string, any> = {
           version: manifest.version || 2,
           source_path: sourcePath,
@@ -3164,33 +3307,49 @@ function setupIpcHandlers(): void {
           source_name: source.originalFilename || path.basename(sourcePath),
           library_path: sourcePath,
           file_hash: source.fileHash || '',
-          deleted_block_ids: source.deletedBlockIds || [],
+          deleted_block_ids: withheld(source.deletedBlockIds || [], []),
           deleted_block_lines: source.deletedBlockLines || undefined,
           foundry_auto_discarded_lines: source.foundryAutoDiscardedLines || undefined,
           deleted_highlight_ids: source.deletedHighlightIds || [],
-          page_order: source.pageOrder || [],
-          deleted_pages: source.deletedPages || [],
+          page_order: withheld(source.pageOrder || [], []),
+          deleted_pages: withheld(source.deletedPages || [], []),
           remove_backgrounds: source.removeBackgrounds || false,
-          undo_stack: editor.undoStack || [],
-          redo_stack: editor.redoStack || [],
-          block_edits: editor.blockEdits || undefined,
-          custom_categories: editor.customCategories || undefined,
-          ocr_blocks: editor.ocrBlocks || undefined,
-          manual_blocks: editor.manualBlocks || undefined,
+          undo_stack: withheld(editor.undoStack || [], []),
+          redo_stack: withheld(editor.redoStack || [], []),
+          block_edits: withheld(editor.blockEdits || undefined, undefined),
+          custom_categories: withheld(editor.customCategories || undefined, undefined),
+          ocr_blocks: withheld(editor.ocrBlocks || undefined, undefined),
+          manual_blocks: withheld(editor.manualBlocks || undefined, undefined),
+          // Keyed by CATEGORY id ("title", "caption"), not by block — it names
+          // no position in a layout and survives a change of paginator intact.
           ocr_categories: editor.ocrCategories || undefined,
-          category_corrections: editor.categoryCorrections || undefined,
-          learned_categories: editor.learnedCategories || undefined,
-          paragraph_breaks: editor.paragraphBreaks || undefined,
+          category_corrections: withheld(editor.categoryCorrections || undefined, undefined),
+          learned_categories: withheld(editor.learnedCategories || undefined, undefined),
+          paragraph_breaks: withheld(editor.paragraphBreaks || undefined, undefined),
           // Round-trip counterparts of the save handler above. Absent on old
           // manifests → undefined → the renderer restores exactly as before.
-          block_splits: editor.blockSplits || undefined,
-          block_merges: editor.blockMerges || undefined,
-          crop_regions: editor.cropRegions || undefined,
+          block_splits: withheld(editor.blockSplits || undefined, undefined),
+          block_merges: withheld(editor.blockMerges || undefined, undefined),
+          crop_regions: withheld(editor.cropRegions || undefined, undefined),
+          // Tuning numbers and a file digest — neither names a position.
           classification_thresholds: editor.classificationThresholds || undefined,
-          text_corrections: editor.textCorrections || undefined,
+          text_corrections: withheld(editor.textCorrections || undefined, undefined),
           source_file_sha256: editor.sourceFileSha256 || undefined,
-          chapters: manifest.chapters || [],
+          // The picker's chapter markers carry a `page` (and mostly no
+          // `blockId`), so they are positions in the layout too. A `toc`-sourced
+          // marker re-reads itself from the book when the window detects
+          // chapters, so withholding them costs nothing that is derived.
+          chapters: withheld(manifest.chapters || [], []),
           chapters_source: manifest.chaptersSource || 'manual',
+          /**
+           * Why this project's saved page and block records were not loaded,
+           * or absent when they were. A window that gets this MUST say it —
+           * see the picker TODO in the Phase C report; until it does, the
+           * sentence is in the main-process log.
+           */
+          stale_layout_refusal: staleLayoutRefusal ?? undefined,
+          /** What a one-time carry-over of those records came to, when one ran. */
+          layout_migration_notice: layoutMigrationNotice ?? undefined,
           metadata: {
             title: meta.title || '',
             author: meta.author || '',
@@ -9890,7 +10049,14 @@ function setupIpcHandlers(): void {
         // never add per-field handling for them here.
         delete manifest.editor;
         if (manifest.source && typeof manifest.source === 'object') {
-          for (const k of ['deletedBlockIds', 'deletedBlockLines', 'foundryAutoDiscardedLines', 'deletedHighlightIds', 'pageOrder', 'deletedPages', 'removeBackgrounds']) {
+          // `editorLayout` is in this list because it is not a fact about the
+          // source document — it is the stamp that says WHICH LAYOUT the records
+          // above were made in, and with those records gone it would be a claim
+          // about nothing. Leaving it would also make the next save read
+          // "current" for a project whose records were erased, which is true but
+          // says nothing; a project with no records is `clean` and is stamped
+          // afresh the next time the user saves one.
+          for (const k of ['deletedBlockIds', 'deletedBlockLines', 'foundryAutoDiscardedLines', 'deletedHighlightIds', 'pageOrder', 'deletedPages', 'removeBackgrounds', EDITOR_LAYOUT_MANIFEST_KEY]) {
             delete manifest.source[k];
           }
         }
@@ -10493,6 +10659,19 @@ protocol.registerSchemesAsPrivileged([
   }
 ]);
 
+// quire serves an EPUB's own bytes — to the offscreen frame that paginates it
+// for analysis, and to the on-screen frames that show it — out of the archive
+// and through `quire://`. Registering it is a before-ready operation like the
+// two above, and quire refuses to open a book at all if it was not done
+// (SCHEME_NOT_REGISTERED) rather than serving a blank one.
+//
+// Deliberately NOT privileged the way `bookforge-page` is: `bypassCSP` is false
+// on it, because the whole point is that the book's CSP applies to the book, and
+// `supportFetchAPI` is false so nothing in a quire document can fetch anything.
+// And quire attaches the handler to the DOCUMENT's session, never to the app's,
+// so a book never shares an origin with BookForge.
+Quire.registerScheme();
+
 // Single-instance lock: a second launch must NOT run while the first is doing
 // the first-run runtime unpack — two processes extracting/copying into the same
 // userData/runtime dir is a prime cause of a corrupted install. The second
@@ -10521,6 +10700,10 @@ app.whenReady().then(async () => {
   // Initialize rolling logger
   await initializeLoggers();
   const logger = getMainLogger();
+
+  // The live-DOM EPUB viewer's opening channel. The scheme it needs was
+  // registered at module scope above; this is only the two handles.
+  setupQuireViewerIpc();
   logger.info('BookForge starting', { version: app.getVersion(), platform: process.platform });
 
   // In development, point FOUNDRY_CLI_PATH at the locally-built binary unless
@@ -10985,6 +11168,14 @@ app.on('before-quit', async (event) => {
   cleanupDone = true;
 
   console.log('[MAIN] Running cleanup before quit...');
+
+  // Every open quire document owns an offscreen BrowserWindow and a session
+  // partition. Neither outlives the app, so both are closed by name.
+  try {
+    await closeAllBooksForViewer();
+  } catch (err) {
+    console.warn('[MAIN] closing quire documents failed:', (err as Error).message);
+  }
 
   // Stop whatever document stage is mid-flight. Each one owns a foundry process
   // which owns a llama-server holding several GB on the GPU; closing the window

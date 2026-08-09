@@ -54,6 +54,25 @@ export interface QuireBox {
 }
 
 /**
+ * The type an element is set in, as the browser computed it after the book's own
+ * stylesheets were applied.
+ *
+ * Carried because a caller has no second way to learn it — the markup does not
+ * say what size an `<h1>` came out at, only the layout does — and because the
+ * alternative is a caller inventing a number for a field it has to fill.
+ */
+export interface QuireFont {
+  /** `font-size` in CSS pixels. */
+  size: number;
+  /** `font-family` as computed: the declared list, not the face that was used. */
+  family: string;
+  /** `font-weight` as a number (`normal` is 400, `bold` is 700). */
+  weight: number;
+  /** `font-style`: `normal`, `italic`, `oblique …`. */
+  style: string;
+}
+
+/**
  * One stamped element's footprint on one page.
  *
  * An element that spans a page break produces one block per page it touches,
@@ -85,6 +104,17 @@ export interface QuireBlock {
   splitFrom: number | null;
   /** Last page this element occupies — `null` unless it spans more than one. */
   splitTo: number | null;
+  /**
+   * How the element is set. The same value on every fragment of one element —
+   * a paragraph broken over a page turn is set in one face — and `null` for
+   * `type: 'image'`, which is set in none.
+   */
+  font: QuireFont | null;
+  /**
+   * Line boxes this fragment set on THIS page — measured, not derived from the
+   * box height. `0` for an image.
+   */
+  lines: number;
 }
 
 /**

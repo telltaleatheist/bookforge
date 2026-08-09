@@ -156,6 +156,7 @@ const MEASURE_SOURCE = function quireMeasure(cfg: {
   const tagOf = (el: Element): string => String(el.tagName || '').toUpperCase();
   const collapse = (s: string): string => s.replace(/\s+/g, ' ').trim();
 
+
   try {
     const body = document.body;
     if (!body) fail('NO_BODY', 'the document has no <body>');
@@ -203,6 +204,32 @@ const MEASURE_SOURCE = function quireMeasure(cfg: {
     }
 
     const columnOf = (x: number): number => Math.floor(x / P);
+
+    /**
+     * Line boxes an element set inside ONE column, from the client rects of a
+     * Range over its contents. The same measurement `PagedStrategy` makes, with
+     * the column filter this box model needs: a continuous flow keeps every
+     * column of a spanning element in one document, so a rect belongs to this
+     * page only when its left edge falls in this column.
+     */
+    const countLinesInColumn = (el: Element, column: number, originX: number): number => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const rects = range.getClientRects();
+      const tops: number[] = [];
+      for (let i = 0; i < rects.length; i++) {
+        if (rects[i].height === 0 && rects[i].width === 0) continue;
+        if (columnOf(rects[i].left - originX) !== column) continue;
+        tops.push(rects[i].top);
+      }
+      if (tops.length === 0) return 0;
+      tops.sort((a, b) => a - b);
+      let lines = 1;
+      for (let i = 1; i < tops.length; i++) {
+        if (tops[i] - tops[i - 1] > 1) lines++;
+      }
+      return lines;
+    };
 
     // ── Page count, and the pitch assertion ───────────────────────────────
     //
@@ -498,10 +525,27 @@ const MEASURE_SOURCE = function quireMeasure(cfg: {
           x: +box.x.toFixed(3), y: +box.y.toFixed(3),
           w: +(box.r - box.x).toFixed(3), h: +(box.b - box.y).toFixed(3),
           text,
+          lines: type === 'image' ? 0 : countLinesInColumn(el, col, ox),
         });
       }
 
-      placed.push({ ids, tag, type, fragments });
+      // How the element is SET — the same fact `PagedStrategy` reports, read the
+      // same way. A continuous flow has one element rather than one clone per
+      // page, so there is nothing to choose between.
+      let font: unknown = null;
+      if (type === 'text') {
+        const cs = getComputedStyle(el);
+        const size = parseFloat(cs.fontSize);
+        const weight = Number(cs.fontWeight);
+        if (!isFinite(size) || !isFinite(weight)) {
+          fail('FONT_UNREADABLE',
+            'element "' + rawId + '" computes to font-size "' + cs.fontSize + '" and font-weight "'
+            + cs.fontWeight + '", neither of which is a number.');
+        }
+        font = { size, family: cs.fontFamily, weight, style: cs.fontStyle };
+      }
+
+      placed.push({ ids, tag, type, font, fragments });
     }
 
     return JSON.stringify({

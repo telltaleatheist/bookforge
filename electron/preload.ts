@@ -61,6 +61,18 @@ export interface ProjectSaveResult {
   canceled?: boolean;
   filePath?: string;
   error?: string;
+  /**
+   * Present on a SUCCESSFUL save that nonetheless did not write the page and
+   * block deletions, because this window was never given the project's own —
+   * they were recorded against a layout of the book this build no longer
+   * produces (`electron/legacy-epub-layout.ts`).
+   *
+   * Success and this field together are not a contradiction: the metadata, the
+   * highlights and everything that names no position DID go to disk. Only the
+   * positional records were left alone, and a window that gets this must say so
+   * rather than letting the user believe the strikes they just made are on file.
+   */
+  staleLayoutRefusal?: string;
 }
 
 export interface ProjectLoadResult {
@@ -812,6 +824,16 @@ export interface ElectronAPI {
     addBookmarks: (pdfBase64: string, chapters: Chapter[]) => Promise<{ success: boolean; data?: string; error?: string }>;
     // WYSIWYG export from canvas-rendered images
     assembleFromImages: (pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>, chapters?: Chapter[]) => Promise<{ success: boolean; data?: string; error?: string }>;
+  };
+  /**
+   * The live-DOM EPUB viewer's own opening. Separate from `pdf`, because a book
+   * shown as itself is not a book photographed: nothing here renders, caches or
+   * returns an image. `data` is a QuireViewerOpening (electron/quire-viewer-bridge.ts).
+   */
+  quire: {
+    openBook: (epubPath: string, geometry?: { width: number; height: number; fontSize: number })
+      => Promise<{ success: boolean; data?: any; error?: string }>;
+    closeBook: (handle: string) => Promise<{ success: boolean; error?: string }>;
   };
   fs: {
     browse: (dirPath: string) => Promise<{
@@ -2491,6 +2513,13 @@ const electronAPI: ElectronAPI = {
     assembleFromImages: (pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>, chapters?: Chapter[]) =>
       ipcRenderer.invoke('pdf:assemble-from-images', pages, chapters),
   },
+
+  quire: {
+    openBook: (epubPath: string, geometry?: { width: number; height: number; fontSize: number }) =>
+      ipcRenderer.invoke('quire:open-book', epubPath, geometry),
+    closeBook: (handle: string) => ipcRenderer.invoke('quire:close-book', handle),
+  },
+
   fs: {
     browse: (dirPath: string) =>
       ipcRenderer.invoke('fs:browse', dirPath),

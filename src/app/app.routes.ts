@@ -75,6 +75,17 @@ export const routes: Routes = [
     loadComponent: () => import('./features/studio/components/listen-window/listen-window.component').then(m => m.ListenWindowComponent)
   },
   {
+    // A bench for the live-DOM EPUB viewer, not part of the app's navigation.
+    // `/#/epub-viewer-harness?book=<path>` opens a real EPUB through quire and
+    // drives the component with the picker's gesture vocabulary. Phase C is what
+    // puts the viewer on the picker's own open path; until then this is how it
+    // is exercised against a real book.
+    path: 'epub-viewer-harness',
+    loadComponent: () => import(
+      './features/pdf-picker/components/epub-viewer/epub-viewer-harness.component'
+    ).then(m => m.EpubViewerHarnessComponent)
+  },
+  {
     // Sentence alignment - opens in separate Electron window
     path: 'alignment',
     loadComponent: () => import('./features/language-learning/components/sentence-alignment/sentence-alignment.component').then(m => m.SentenceAlignmentComponent)

@@ -488,6 +488,35 @@ const MEASURE_SOURCE = (async function quirePagedMeasure(
   const tagOf = (el: Element): string => String(el.tagName || '').toUpperCase();
   const collapse = (s: string): string => s.replace(/\s+/g, ' ').trim();
 
+  /**
+   * How many LINE BOXES a set of elements set, from the client rects of a Range
+   * over their contents.
+   *
+   * A Range hands back one rect per line box; a rect is a new line when its top
+   * clears the previous run by more than a pixel of sub-pixel noise. Nested
+   * block children contribute rects at the same tops as the text they hold, so
+   * they collapse into the same runs rather than counting twice.
+   */
+  const countLines = (els: Element[]): number => {
+    const tops: number[] = [];
+    for (const el of els) {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const rects = range.getClientRects();
+      for (let i = 0; i < rects.length; i++) {
+        if (rects[i].height === 0 && rects[i].width === 0) continue;
+        tops.push(rects[i].top);
+      }
+    }
+    if (tops.length === 0) return 0;
+    tops.sort((a, b) => a - b);
+    let lines = 1;
+    for (let i = 1; i < tops.length; i++) {
+      if (tops[i] - tops[i - 1] > 1) lines++;
+    }
+    return lines;
+  };
+
   try {
     const W = cfg.width, H = cfg.height, TOL = cfg.tolerance;
 
@@ -799,10 +828,35 @@ const MEASURE_SOURCE = (async function quirePagedMeasure(
           x: +box.x.toFixed(3), y: +box.y.toFixed(3),
           w: +(box.r - box.x).toFixed(3), h: +(box.b - box.y).toFixed(3),
           text,
+          lines: type === 'image' ? 0 : countLines(group.byPage[p].els),
         });
       }
 
-      placed.push({ ids: group.rawId.split('|'), tag: group.tag, type, fragments });
+      // How the element is SET, read off the first clone that rendered anything.
+      // Paged.js copies the ancestor chain onto every page an element continues
+      // on, so every clone computes the same type; the first is read because
+      // there is always one and asking them all could only agree.
+      let font: unknown = null;
+      if (type === 'text') {
+        const first = group.byPage[inkedPages[0]].els[0];
+        const cs = getComputedStyle(first);
+        font = {
+          size: parseFloat(cs.fontSize),
+          family: cs.fontFamily,
+          weight: Number(cs.fontWeight),
+          style: cs.fontStyle,
+        };
+        const f = font as { size: number; weight: number };
+        if (!isFinite(f.size) || !isFinite(f.weight)) {
+          fail('FONT_UNREADABLE',
+            'the element stamped "' + group.rawId + '" computes to font-size "' + cs.fontSize
+            + '" and font-weight "' + cs.fontWeight + '", neither of which is a number. quire '
+            + 'reports the type an element is set in as a fact of the layout and will not '
+            + 'substitute one.');
+        }
+      }
+
+      placed.push({ ids: group.rawId.split('|'), tag: group.tag, type, font, fragments });
     }
 
     // ── What got no page ────────────────────────────────────────────────

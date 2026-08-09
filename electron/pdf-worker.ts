@@ -53,6 +53,20 @@ const dispatch: Record<string, Dispatcher> = {
     });
   },
 
+  /**
+   * An EPUB laid out the way it was BEFORE quire — mupdf's reflow at 600×900×18.
+   *
+   * Here for the same reason every other mupdf call is: the WASM heap stays out
+   * of the main process. Its one caller is the legacy-record migration
+   * (electron/legacy-epub-layout.ts), which needs the layout a project's page
+   * and block deletions were actually written against in order to translate
+   * them into element keys.
+   */
+  async layOutEpubTheLegacyWay(args) {
+    const [epubPath] = args;
+    return pdfAnalyzer.layOutEpubTheLegacyWay(epubPath);
+  },
+
   async analyzeQuick(args) {
     const [pdfPath, maxPages] = args;
     return pdfAnalyzer.analyzeQuick(pdfPath, maxPages, (phase: string, message: string) => {
