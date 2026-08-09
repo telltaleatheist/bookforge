@@ -79,6 +79,8 @@ import {
   narrationDeletionEdit,
   parseNarrationElementKey,
   type NarrationDeletionEdit,
+  type NarrationDeletions,
+  type NarrationElementKey,
   type NarrationLaidOutBlock,
   type NarrationState,
 } from '@shared/vlm/narration-deletions';
@@ -2576,10 +2578,26 @@ export class PdfPickerComponent implements OnInit {
     // Read so the effect re-runs when the segmenter replaces the block list.
     const blockCount = this.blocks().length;
     if (blockCount === 0) return;
-    const key = `${docId}|${recorded?.updatedAt ?? ''}|${blockCount}`;
+    // The two signals are in the key, so ANY writer of them that is not this
+    // rebuild puts the view back under the record's authority on the next tick.
+    //
+    // That is the structural half of the guarantee, and it is what closes the
+    // paths a per-gesture funnel cannot reach: a saved project's own
+    // `deleted_block_ids` restored into the view, a legacy disabled-category
+    // migration, the document mirror. None of those is a strike, none of them
+    // may show as one, and none of them has to remember to say so — the view
+    // simply cannot hold a deletion the record does not have for longer than a
+    // tick.
+    //
+    // It settles rather than loops: the rebuild's output is a function of the
+    // record, so the pass after it computes the same key it just applied.
+    const key = `${docId}|${recorded?.updatedAt ?? ''}|${blockCount}`
+      + `|${this.deletedBlockIds().size}|${this.deletedPages().size}`;
     if (this.appliedNarrationKey === key) return;
     this.appliedNarrationKey = key;
     this.rebuildNarrationView();
+    this.appliedNarrationKey = `${docId}|${recorded?.updatedAt ?? ''}|${blockCount}`
+      + `|${this.deletedBlockIds().size}|${this.deletedPages().size}`;
   });
 
   // Tab persistence - localStorage keys
@@ -5018,6 +5036,7 @@ export class PdfPickerComponent implements OnInit {
    * Permanently remove all blocks of a specific text layer type.
    */
   deleteTextLayer(layerId: string): void {
+    if (this.refuseBulkGestureWhileLoading('Deleting a whole text layer')) return;
     const blocks = this.blocks();
     const idsToRemove: string[] = [];
     for (const b of blocks) {
@@ -6042,6 +6061,11 @@ export class PdfPickerComponent implements OnInit {
     if (this.curationLocked()) return;  // the artifact on screen is not curated here
     const selected = this.selectedBlockIds();
     if (selected.length === 0) return;
+    // A selection spanning more than one page came from a select-all-like-this
+    // or a drag over the timeline, which is a bulk gesture wearing a selection's
+    // clothes. A single page's worth is what the user can see and is not.
+    if (new Set(selected.map(id => this.editorState.getBlock(id)?.page)).size > 1
+      && this.refuseBulkGestureWhileLoading('Deleting a selection spanning several pages')) return;
 
     const deleted = this.deletedBlockIds();
 
@@ -6133,6 +6157,13 @@ export class PdfPickerComponent implements OnInit {
         `[picker] migrated ${toDelete.length} blocks from ${disabled.size} disabled ` +
         `categories (${[...disabled].join(', ')}) into explicit deletions`,
       );
+      // …and into the RECORD, if the artifact on screen is a book. This wrote
+      // only the signal, which under the record-authoritative model is a
+      // deletion the screen shows and the narration copy never hears about —
+      // and, since the restore effect now repaints the view from the record,
+      // one that would silently vanish again on the next tick. The migration is
+      // a statement of the user's intent, so it goes where intent lives.
+      this.landNarrationBlockStrikes(toDelete.map(b => b.id), true);
     }
 
     // Drop the flag so it is not re-saved. normalizeCategories spreads the record
@@ -6162,6 +6193,7 @@ export class PdfPickerComponent implements OnInit {
 
   deleteLikeThis(block: TextBlock): void {
     if (this.curationLocked()) return;  // the artifact on screen is not curated here
+    if (this.refuseBulkGestureWhileLoading('Deleting every block like this one')) return;
     // The destructive twin of selectLikeThis, so it resolves the category the
     // same way the screen paints it — a delete that reached blocks the user was
     // looking at as body text would be far worse than a selection that did.
@@ -7214,7 +7246,7 @@ export class PdfPickerComponent implements OnInit {
     // it undid in the editor's vocabulary, not in elements, so the strike record
     // is edited by the difference — read here, in the same handler, before
     // anything else can touch either set.
-    const struckBefore = new Set(this.deletedBlockIds());
+    const struckBefore = this.narrationStruckBlockIds();
     const pagesBefore = new Set(this.deletedPages());
     const action = this.editorState.undo();
     if (!action) return;
@@ -7242,7 +7274,7 @@ export class PdfPickerComponent implements OnInit {
   }
 
   async redo(): Promise<void> {
-    const struckBefore = new Set(this.deletedBlockIds());
+    const struckBefore = this.narrationStruckBlockIds();
     const pagesBefore = new Set(this.deletedPages());
     const action = this.editorState.redo();
     if (!action) return;
@@ -8614,6 +8646,20 @@ export class PdfPickerComponent implements OnInit {
       // export reads it — but a gesture still in flight must land before the
       // cut, or the file would be one gesture behind the screen.
       await this.narrationEdits;
+
+      // ── The screen and the record must agree before a file is cut ─────────
+      //
+      // The cut is made from the RECORD. The user's belief about what is in it
+      // comes from the SCREEN. Any difference between the two is a file that is
+      // not what the person who asked for it thinks it is, so it is a refusal
+      // here rather than a reconciliation: reconciling would mean this window
+      // deciding which of the two is right, and it is exactly the window whose
+      // view was wrong when this was measured.
+      const divergence = this.narrationExportDivergence();
+      if (divergence !== null) {
+        throw new Error(divergence);
+      }
+
       const answer = await this.electronService.exportNarrationEpub(dir, {
         stripSupMarkers: choice.checkboxChecked,
       });
@@ -8747,13 +8793,26 @@ export class PdfPickerComponent implements OnInit {
     afterBlockIds: ReadonlySet<string>,
     afterPages: ReadonlySet<number>,
   ): void {
-    const dir = this.projectPath();
-    if (!dir || !this.canStrikeForNarration()) return;
+    // Not a book, so there is no strike record for this gesture to land in.
+    // A domain boundary, not a swallowed failure: the working PDF's own writer
+    // (`landBlockDeletions`) answers for that artifact.
+    if (!this.canStrikeForNarration()) return;
     // The strikes are one of the records the erase clears, and this window's
     // struck sets are what it is clearing them of — see `eraseAllChanges`.
     if (this.erasing()) {
       console.warn('[picker] not recording narration deletions: this project\'s changes are being erased.');
       return;
+    }
+    const dir = this.projectPath();
+    if (!dir) {
+      // The book on screen IS this project's working copy — that is what
+      // `canStrikeForNarration` just said — so there is no reading of a missing
+      // project path other than a bug, and a gesture that quietly did nothing is
+      // the failure this whole contract exists to end.
+      throw new Error(
+        'A book is on screen for narration curation and this window has no project directory, so '
+        + 'the deletion has nowhere to be recorded.'
+      );
     }
 
     const laid = this.narrationLaidOutBlocks();
@@ -8769,29 +8828,283 @@ export class PdfPickerComponent implements OnInit {
     this.sendNarrationEdit(dir, edit);
   }
 
-  /** Post one edit, behind whatever this window has already posted. */
+  /**
+   * Post one edit, behind whatever this window has already posted — and RECONCILE
+   * the screen with the answer.
+   *
+   * ── The screen may not show a deletion the record does not have ────────────
+   *
+   * Owen, 2026-08-09: "it should just delete the blocks we tell it to delete,
+   * without fail. a guarantee; a promise."
+   *
+   * This used to post the edit, and on failure show an alert and leave the
+   * strike on screen. That is the exact shape of the measured failure: the user
+   * saw 36 footnotes struck through in chapter one, the record held 31, and the
+   * copy was cut from the record. An alert cannot fix that — it is one modal
+   * against a page of strike-through the user goes on trusting for the rest of
+   * the evening.
+   *
+   * So the answer decides what is on screen, both ways. On success the returned
+   * record IS the new truth and the view is checked against it. On failure the
+   * view is REPAINTED from the record as main still has it, which puts the
+   * user's deletion back on the page exactly as it was before the gesture, and
+   * the alert says which blocks refused and why.
+   */
   private sendNarrationEdit(dir: string, edit: NarrationDeletionEdit): void {
     this.narrationEdits = this.narrationEdits.then(async () => {
       const answer = await this.electronService.editNarrationDeletions(dir, edit);
-      if (!answer.success) {
+      if (!answer.success || !answer.deletions) {
         throw new Error(answer.error || 'The narration deletions could not be recorded.');
       }
       // The record main just wrote, kept here so the next gesture's rebuild and
       // the export's report describe the same answer the file does.
       const state = this.narrationAnswer();
-      if (state && state.dir === dir && answer.deletions) {
+      if (state && state.dir === dir) {
         this.narrationAnswer.set({ dir, state: { ...state.state, deletions: answer.deletions } });
       }
-    }).catch((err) => {
+      this.assertNarrationViewMatchesRecord(answer.deletions);
+    }).catch(async (err) => {
       console.error('[picker] could not record the narration deletions:', err);
-      this.showAlert({
-        title: 'That deletion was not recorded',
-        message: (err instanceof Error ? err.message : String(err))
-          + '\n\nThe narration copy is cut from the record, so what you just struck out would still '
-          + 'be read aloud. Re-open the book to see what is actually recorded.',
-        type: 'error',
-      });
+      await this.undoUnrecordedGesture(edit, err);
     });
+  }
+
+  /**
+   * A gesture the record refused: take it off the screen, and say what refused.
+   *
+   * The record is re-read from main rather than assumed, because the reason the
+   * edit failed may be that main knows something this window does not (the book
+   * moved on, another window struck something). Repainting from what main
+   * actually has is the only statement that cannot be wrong in the dangerous
+   * direction.
+   */
+  private async undoUnrecordedGesture(edit: NarrationDeletionEdit, err: unknown): Promise<void> {
+    const named = edit.strike.length > 0 ? edit.strike : edit.unstrike;
+    const SHOWN = 5;
+    const which = named.slice(0, SHOWN).map(k => `  • ${this.narrationElementLabel(k)}`).join('\n')
+      + (named.length > SHOWN ? `\n  • …and ${named.length - SHOWN} more` : '');
+
+    let repainted = true;
+    try {
+      await this.refreshNarrationState();
+      this.repaintNarrationFromRecord();
+    } catch (repaintErr) {
+      repainted = false;
+      console.error('[picker] could not repaint the view from the record:', repaintErr);
+    }
+
+    this.showAlert({
+      title: repainted
+        ? 'That deletion was not recorded, so it has been undone'
+        : 'That deletion was not recorded',
+      message:
+        `${named.length} element(s) could not be ${edit.strike.length > 0 ? 'struck' : 'restored'}:\n`
+        + `${which}\n\n${err instanceof Error ? err.message : String(err)}\n\n`
+        + (repainted
+          ? 'The page has been put back the way the record has it, so what you see is what will be '
+            + 'left out of the narration copy. Try the deletion again.'
+          : 'The narration copy is cut from the record, so what you just struck out would still be '
+            + 'read aloud, and this window could not put the page back. Re-open the book.'),
+      type: 'error',
+    });
+  }
+
+  /** An element key, said the way the user can recognize it: page and opening. */
+  private narrationElementLabel(key: NarrationElementKey): string {
+    const block = this.blocks().find(b => b.bf_element === key);
+    if (!block) return key;
+    return `page ${block.page + 1}, "${block.text.trim().slice(0, 60)}"`;
+  }
+
+  /**
+   * Repaint the two deletion signals from the record, WHATEVER is in them now.
+   *
+   * `rebuildNarrationView` is idempotent and cheap, but it is guarded by a key
+   * so opening a book does not repaint on every block that streams in. This
+   * clears the key, which is the difference between "paint if something changed"
+   * and "the record is the truth, put it on the screen".
+   */
+  private repaintNarrationFromRecord(): void {
+    this.appliedNarrationKey = '';
+    this.rebuildNarrationView();
+  }
+
+  /**
+   * THE TRIPWIRE: what is on screen, derived, against what the record says.
+   *
+   * Cheap (one derivation over the block list this window already holds) and
+   * always on, because the whole class of bug this change exists to end is a
+   * divergence nobody notices. Every gesture path was audited and funnelled;
+   * this is what catches the one that was missed, or the one somebody adds next
+   * year.
+   *
+   * ── Why only one direction is unconditional ────────────────────────────────
+   *
+   * ON SCREEN BUT NOT RECORDED is always a bug: the user is looking at a
+   * deletion that will not happen. RECORDED BUT NOT ON SCREEN is only a bug once
+   * the book is fully laid out — while pages are still streaming in, a recorded
+   * element whose blocks do not exist yet cannot be derived from a view that
+   * does not contain them, and reporting that would cry wolf on every open.
+   */
+  private assertNarrationViewMatchesRecord(record: NarrationDeletions): void {
+    const laid = this.narrationLaidOutBlocks();
+    if (laid.length === 0) return;
+    const view = deriveNarrationStrikes(
+      laid, this.narrationStruckBlockIds(), this.deletedPages());
+    const diff = narrationDeletionEdit(new Set(record.elements), new Set(view.elements));
+    const fullyLoaded = this.pagesLoaded() >= this.totalPages();
+    const onScreenOnly = diff.strike;
+    const recordedOnly = fullyLoaded ? diff.unstrike : [];
+    if (onScreenOnly.length === 0 && recordedOnly.length === 0) return;
+
+    const parts: string[] = [];
+    if (onScreenOnly.length > 0) {
+      parts.push(
+        `${onScreenOnly.length} element(s) are struck through on screen and are NOT in the record, `
+        + `so they would still be read aloud — the first is ${onScreenOnly[0]}.`);
+    }
+    if (recordedOnly.length > 0) {
+      parts.push(
+        `${recordedOnly.length} element(s) are in the record and are NOT struck through on screen `
+        + `— the first is ${recordedOnly[0]}.`);
+    }
+    const sentence = parts.join(' ');
+    console.error('[picker] narration view/record divergence:', sentence, diff);
+
+    // SURFACED, because a tripwire nobody sees is a log line in a build nobody
+    // runs with the console open. Once per distinct divergence: it can only fire
+    // on a bug, and when it does it fires on every gesture after the one that
+    // caused it, which would be a modal the user cannot get past.
+    if (this.surfacedNarrationDivergence === sentence) return;
+    this.surfacedNarrationDivergence = sentence;
+    this.showAlert({
+      title: 'What is on screen and what is recorded have come apart',
+      message:
+        `${sentence}\n\nThe narration copy is cut from the record, so the screen is the one that `
+        + 'is wrong. Re-open the book to put the record on screen. Export will refuse until they '
+        + 'agree.',
+      type: 'error',
+    });
+  }
+
+  /**
+   * The divergence sentence this window has already put in front of the user.
+   *
+   * Not a signal: nothing renders it, and it exists only so the same bug is not
+   * reported twice on two consecutive gestures.
+   */
+  private surfacedNarrationDivergence: string | null = null;
+
+  /**
+   * Why this window must NOT export a narration copy right now, or null.
+   *
+   * Three questions, asked of the live view against the record main last gave
+   * this window, at the one moment it decides what a file contains:
+   *
+   *  1. Is anything struck through on screen that the record does not have?
+   *     That is a deletion that would not happen.
+   *  2. Is anything in the record that is not struck through on screen? That is
+   *     a deletion the user cannot see and did not ask for. Only asked once the
+   *     book is fully laid out, for the reason in `assertNarrationViewMatchesRecord`.
+   *  3. Did anything the user deleted reach no markup at all? Then the copy
+   *     cannot leave it out, and main will refuse too — but this window can say
+   *     it with the page and the words on it, which main cannot.
+   */
+  private narrationExportDivergence(): string | null {
+    if (!this.canStrikeForNarration()) return null;
+    const record = this.narrationState()?.deletions;
+    const laid = this.narrationLaidOutBlocks();
+    if (laid.length === 0) return null;
+
+    const view = deriveNarrationStrikes(laid, this.narrationStruckBlockIds(), this.deletedPages());
+
+    const unstruck = describeUnstruckDeletions(view);
+    if (unstruck !== null) {
+      return (
+        'The narration copy was not written, because some of what you deleted could not be matched '
+        + `to the book's markup.\n\n${unstruck}\n\nStrike the whole page or the whole document `
+        + 'those blocks are in — a document is removed by name, so everything in it goes whether or '
+        + 'not each piece could be identified — or restore them, and export again.'
+      );
+    }
+
+    const diff = narrationDeletionEdit(new Set(record?.elements ?? []), new Set(view.elements));
+    const onScreenOnly = diff.strike;
+    const recordedOnly = this.pagesLoaded() >= this.totalPages() ? diff.unstrike : [];
+    if (onScreenOnly.length === 0 && recordedOnly.length === 0) return null;
+
+    const SHOWN = 5;
+    const list = (keys: readonly string[]): string =>
+      keys.slice(0, SHOWN).map(k => `  • ${this.narrationElementLabel(k)}`).join('\n')
+      + (keys.length > SHOWN ? `\n  • …and ${keys.length - SHOWN} more` : '');
+
+    const parts: string[] = [];
+    if (onScreenOnly.length > 0) {
+      parts.push(
+        `${onScreenOnly.length} element(s) are struck through on this page and are NOT in the `
+        + `record the copy is cut from, so they would be read aloud:\n${list(onScreenOnly)}`);
+    }
+    if (recordedOnly.length > 0) {
+      parts.push(
+        `${recordedOnly.length} element(s) are in the record and are NOT struck through on this `
+        + `page, so they would be left out without your having asked:\n${list(recordedOnly)}`);
+    }
+    return (
+      'The narration copy was not written, because what is on screen and what is recorded do not '
+      + `agree.\n\n${parts.join('\n\n')}\n\nNothing was written. Re-open the book — the record is `
+      + 'what it will be cut from, and re-opening puts exactly that on screen.'
+    );
+  }
+
+  /**
+   * A gesture that means "everywhere in this book" is REFUSED while the book is
+   * still being laid out.
+   *
+   * ── Why a bulk gesture over a partial book is worse than no gesture ────────
+   *
+   * "Delete all like this" acts on the blocks that exist RIGHT NOW. Pressed at
+   * page 40 of 240 it deletes a sixth of what the user meant, reports nothing
+   * unusual, and leaves a book whose footnotes are struck out at the front and
+   * read aloud from chapter four on — which is indistinguishable, on screen,
+   * from a book where the gesture worked. Every deletion it did make is recorded
+   * correctly, so nothing downstream can tell either.
+   *
+   * The refusal names the numbers because "still loading" alone does not tell
+   * the user whether to wait five seconds or two minutes.
+   */
+  private refuseBulkGestureWhileLoading(what: string): boolean {
+    const total = this.totalPages();
+    const loaded = this.pagesLoaded();
+    if (total === 0 || loaded >= total) return false;
+    this.showAlert({
+      title: 'The book is still loading',
+      message:
+        `${what} acts on every page of the book, and only ${loaded} of ${total} are laid out so `
+        + 'far. Doing it now would silently leave out everything on the pages that have not '
+        + 'arrived. Wait for the page count to finish, then try again.',
+      type: 'warning',
+    });
+    return true;
+  }
+
+  /**
+   * The struck block ids AS A STRIKE RECORD reads them: the deletion set, minus
+   * the blocks a SPLIT hid.
+   *
+   * `editorState.splitBlock` puts the original block's id in `deletedBlockIds`
+   * to hide it behind its children — a re-segmentation of the view, not a
+   * deletion, and the one writer of that signal that must never reach the
+   * record. Left in, the next gesture's derivation would strike the paragraph
+   * the user split, and it would be gone from the narration copy for good.
+   *
+   * The children carry no element key of their own, so a user who then deletes
+   * them gets an honest "could not be matched" refusal at export rather than a
+   * silent miss.
+   */
+  private narrationStruckBlockIds(): Set<string> {
+    const struck = new Set(this.deletedBlockIds());
+    for (const originalId of this.editorState.blockSplits().keys()) struck.delete(originalId);
+    return struck;
   }
 
   /**
@@ -8805,7 +9118,7 @@ export class PdfPickerComponent implements OnInit {
    */
   private landNarrationBlockStrikes(blockIds: readonly string[], deleted: boolean): void {
     if (blockIds.length === 0 || !this.canStrikeForNarration()) return;
-    const after = this.deletedBlockIds();
+    const after = this.narrationStruckBlockIds();
     const before = new Set(after);
     for (const id of blockIds) {
       if (deleted) before.delete(id);
@@ -8833,7 +9146,7 @@ export class PdfPickerComponent implements OnInit {
       if (deleted) before.delete(p);
       else before.add(p);
     }
-    const blockIds = this.deletedBlockIds();
+    const blockIds = this.narrationStruckBlockIds();
     this.postNarrationEdit(blockIds, before, blockIds, after);
   }
 
@@ -8853,7 +9166,7 @@ export class PdfPickerComponent implements OnInit {
   ): void {
     if (!this.canStrikeForNarration()) return;
     this.postNarrationEdit(
-      beforeBlockIds, beforePages, this.deletedBlockIds(), this.deletedPages());
+      beforeBlockIds, beforePages, this.narrationStruckBlockIds(), this.deletedPages());
   }
 
   /**
@@ -8916,6 +9229,14 @@ export class PdfPickerComponent implements OnInit {
       const page = pageOf.get(id);
       if (page !== undefined && pages.has(page)) struckIds.delete(id);
     }
+
+    // The blocks a SPLIT hid are put back: they are in `deletedBlockIds` to be
+    // invisible behind their children, not because anything struck them, and the
+    // record has nothing to say about them either way. Painting the record over
+    // them would make every split block on screen reappear on top of its own
+    // children — see `narrationStruckBlockIds` for the same boundary read from
+    // the other end.
+    for (const originalId of this.editorState.blockSplits().keys()) struckIds.add(originalId);
 
     // Set, never `deleteBlocks`: this is the view being brought in line with the
     // record, not an edit. Going through the editor's deletion methods would
@@ -11749,6 +12070,7 @@ export class PdfPickerComponent implements OnInit {
   }
 
   clearDeletedPages(): void {
+    if (this.refuseBulkGestureWhileLoading('Restoring every deleted page')) return;
     // Restore all deleted pages (with undo support)
     const deletedArray = [...this.deletedPages()];
     if (deletedArray.length > 0) {
@@ -11802,6 +12124,8 @@ export class PdfPickerComponent implements OnInit {
 
     // Toggle page deletion (delete if not deleted, restore if all are deleted)
     const pageArray = [...pages];
+    if (pageArray.length > 1
+      && this.refuseBulkGestureWhileLoading('Deleting a run of pages')) return;
     this.landPageToggle(this.editorState.togglePageDeletion(pageArray));
 
     // Clear selection after action

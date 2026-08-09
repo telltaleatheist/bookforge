@@ -35,10 +35,12 @@ import { moveIntoPlace } from './processing-passes';
 import { sha256File } from './sidecar-binding';
 import * as manifestService from './manifest-service';
 import {
+  describeUnstruckDeletions,
   narrationDeletionsStaleReason,
   type NarrationDeletions,
   type NarrationElementKey,
   type NarrationState,
+  type NarrationStrikes,
 } from '../shared/vlm/narration-deletions';
 
 export type { NarrationState };
@@ -198,9 +200,53 @@ export interface NarrationExportResult {
   translated: number;
   /**
    * Why some of the editor's deletions reached nothing, or null when they all
-   * did. Named, never swallowed — see shared/vlm/narration-deletions.ts.
+   * did.
+   *
+   * ALWAYS NULL on a successful export, and it is kept in the shape because the
+   * field is what a caller reads to find that out. An export whose deletions do
+   * not all resolve does not return — it throws, and no file is written
+   * (`refuseUnresolvedDeletions`). A warning string beside a finished audiobook
+   * is a sentence nobody reads; a refusal is a thing the user can act on.
    */
   unresolved: string | null;
+}
+
+/**
+ * The refusal a deletion that reached NOTHING earns, or null when they all
+ * reached something.
+ *
+ * ── Why this is a refusal and not the warning it used to be ─────────────────
+ *
+ * Owen, 2026-08-09: "it should just delete the blocks we tell it to delete,
+ * without fail. a guarantee; a promise. if one is deleted, it should be matched
+ * to a block and removed on reflow. if it isn't, it should fail."
+ *
+ * It used to write the file and return the sentence. The file was then narrated,
+ * because a `.tts.epub` on disk is what the TTS step reads and nothing about it
+ * says it is incomplete — so the user found out by hearing 43 footnotes read
+ * aloud in a finished audiobook. There is no version of "some of what you struck
+ * is still in here" that is worth more than not writing the file.
+ *
+ * The sentence ends with what the user can DO, because both remedies are real
+ * and neither is obvious: a block whose markup cannot be identified is still
+ * removable by striking the whole page or the whole document (the identity of a
+ * spine document is never in doubt — shared/vlm/narration-deletions.ts), and a
+ * deletion the user no longer wants can simply be restored.
+ */
+export function refuseUnresolvedDeletions(
+  strikes: NarrationStrikes,
+  whence: string,
+): string | null {
+  const report = describeUnstruckDeletions(strikes);
+  if (report === null) return null;
+  return (
+    `The narration copy was not written, because ${whence} could not be carried out in full.\n\n`
+    + report
+    + '\n\nNothing was written and your deletions are intact. Either strike the whole page or the '
+    + 'whole document those blocks are in — a document is removed by name, so everything in it goes '
+    + 'whether or not each piece could be identified — or restore the blocks you no longer want '
+    + 'left out, and export again.'
+  );
 }
 
 export interface NarrationExportOptions {
@@ -439,15 +485,29 @@ async function mergeEditorStateDeletions(
     return { elements: onRecord, fromStrikes: onRecord.length, translated: 0, unresolved: null };
   }
 
+  // The legacy record cannot be read as strikes against this book at all. That
+  // used to be logged and the export continued, which wrote a copy explained by
+  // the strike record alone while the user's page and block deletions — the only
+  // record of an evening's curation, for every project made before the picker
+  // recorded strikes — stayed in the file. Same rule as below: refuse.
   const refusal = editorStateTranslationRefusal(editor, projectDir);
   if (refusal !== null) {
-    console.log(`[narration-export] ${refusal}`);
-    return {
-      elements: onRecord, fromStrikes: onRecord.length, translated: 0, unresolved: refusal,
-    };
+    throw new Error(
+      'The narration copy was not written, because this project\'s editor deletions cannot be '
+      + `read as strikes against its book.\n\n${refusal}`
+    );
   }
 
   const translation = await translateEditorStateDeletions(editor, bookAbsPath);
+  // Every deletion resolves, or nothing is written. The check is here rather
+  // than after the cut because the cut is what must not happen.
+  const unresolved = refuseUnresolvedDeletions(
+    translation.strikes,
+    `the ${editor.pages.length} page(s) and ${editor.blockIds.length} block(s) this project's `
+    + 'editor has deleted'
+  );
+  if (unresolved !== null) throw new Error(unresolved);
+
   const struck = new Set(onRecord);
   const added = translation.elements.filter((key) => !struck.has(key));
   console.log(
@@ -458,12 +518,7 @@ async function mergeEditorStateDeletions(
     + 'struck.'
   );
   if (added.length === 0) {
-    return {
-      elements: onRecord,
-      fromStrikes: onRecord.length,
-      translated: 0,
-      unresolved: translation.unstruckReport,
-    };
+    return { elements: onRecord, fromStrikes: onRecord.length, translated: 0, unresolved: null };
   }
 
   const elements = [...struck, ...added].sort();
@@ -472,10 +527,5 @@ async function mergeEditorStateDeletions(
     elements,
     updatedAt: new Date().toISOString(),
   });
-  return {
-    elements,
-    fromStrikes: onRecord.length,
-    translated: added.length,
-    unresolved: translation.unstruckReport,
-  };
+  return { elements, fromStrikes: onRecord.length, translated: added.length, unresolved: null };
 }

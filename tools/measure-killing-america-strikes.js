@@ -54,6 +54,10 @@ const {
   deriveNarrationStrikes, describeUnstruckDeletions, narrationDeletedPages,
   narrationDeletedBlockIds, narrationDeletionEdit, splitNarrationDeletions,
 } = require(path.join(DIST, 'shared', 'vlm', 'narration-deletions.js'));
+const { refuseUnresolvedDeletions } =
+  require(path.join(DIST, 'electron', 'narration-export.js'));
+const { SUP_ELEMENT_PATTERN, supInnerText, isFootnoteMarkerSupText } =
+  require(path.join(DIST, 'shared', 'text', 'sup-markers.js'));
 
 const sha = (p) => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
 
@@ -143,6 +147,18 @@ async function documentsOf(epubPath) {
     `\ncut: ${written.removedElements}/${written.totalElements} element(s) removed, `
     + `${written.removedSupMarkers} sup marker(s) stripped, `
     + `${written.removedDocuments.length} document(s) pruned`);
+  // THE VERIFICATION, measured against the file on disk rather than the plan.
+  // `writeNarrationEpub` re-opened the copy it had just written and re-walked it
+  // with the same two enumerations that produced the keys; these are its counts.
+  console.log(
+    `verified: ${written.verifiedElements} element(s) alive in the copy, `
+    + `${written.removedElements} struck, ${written.dissolvedElements} dissolved with what held `
+    + `them = ${written.verifiedElements + written.removedElements + written.dissolvedElements}`
+    + ` of ${written.totalElements}`);
+  assert.strictEqual(
+    written.verifiedElements + written.removedElements + written.dissolvedElements,
+    written.totalElements,
+    'the cut does not account for every element of the book');
   console.log(`pruned: ${written.removedDocuments.join(', ') || '(none)'}`);
 
   console.log('\ndocument                                   before      after');
@@ -289,6 +305,77 @@ async function documentsOf(epubPath) {
   assert.strictEqual(refusedAfter.length, 0,
     'the unmatchable pictures survived into the narration copy');
   for (const w of galleryCut.warnings ?? []) console.log(`copy WARNING ${w}`);
+
+  // -- Session C: a deletion that reaches NOTHING, refused by name ----------
+  //
+  // The other half of the guarantee. The nine plate-gallery pictures no ordinal
+  // can settle are the real uncoverable blocks on this book: struck ALONE --
+  // without the documents that would carry them out -- there is nothing the cut
+  // can do with them, and the old contract wrote the file anyway and returned a
+  // warning string. It now refuses, and the sentence names the page and says
+  // what the user can do instead.
+  console.log('\n-- one uncoverable deletion, refused ---------------------------');
+  const orphan = blocks.find((b) => b.is_image && b.bf_element === undefined);
+  assert.ok(orphan, 'this book has no unmatchable picture to strike');
+  const orphanStrikes = deriveNarrationStrikes(laid, new Set([orphan.id]), new Set());
+  const refusal = refuseUnresolvedDeletions(orphanStrikes, 'the blocks you deleted');
+  assert.ok(refusal !== null, 'striking an unmatchable picture alone did not refuse');
+  assert.ok(/was not written/.test(refusal), 'the refusal does not say nothing was written');
+  assert.ok(/strike the whole page or the whole document/i.test(refusal),
+    'the refusal does not say what to do about it');
+  console.log(refusal.split('\n').map((l) => `  ${l}`).join('\n'));
+
+  // ...and the SAME picture, inside the documents struck whole, is carried out
+  // without ever being identified. The refusal is about a deletion that reaches
+  // nothing, not about a picture that cannot be named.
+  assert.strictEqual(
+    refuseUnresolvedDeletions(gallery, 'the pages you deleted'), null,
+    'the gallery deletions were refused even though the documents carry them out');
+  console.log('  the same picture, struck with its document: no refusal.');
+
+  // -- The <sup> the marker strip leaves behind, measured -------------------
+  //
+  // The rule is digits-only (shared/text/sup-markers.ts). This measures what it
+  // leaves in the copy on a real book, so the rule is judged by the case rather
+  // than by argument.
+  console.log('\n-- the sup markers, measured ------------------------------------');
+  const supSurvivors = async (epubPath) => {
+    const reader = new ZipReader(epubPath);
+    await reader.open();
+    try {
+      const out = [];
+      for (const entry of reader.getEntries()) {
+        if (!/\.(xhtml|html|htm)$/i.test(entry)) continue;
+        const xhtml = (await reader.readEntry(entry)).toString('utf8');
+        xhtml.replace(new RegExp(SUP_ELEMENT_PATTERN.source, 'gi'), (whole, inner) => {
+          if (!isFootnoteMarkerSupText(supInnerText(inner))) out.push({ entry, whole });
+          return whole;
+        });
+      }
+      return out;
+    } finally {
+      reader.close();
+    }
+  };
+  const keptInBook = await supSurvivors(BOOK);
+  const keptInCopy = await supSurvivors(out);
+  console.log(
+    `book: ${written.removedSupMarkers} marker(s) the rule strips, `
+    + `${keptInBook.length} sup(s) it keeps -- ${keptInBook.map((k) => k.whole).join(' ')}`);
+  console.log(
+    `copy: ${keptInCopy.length} sup(s) left -- `
+    + `${keptInCopy.map((k) => `${k.entry.split('/').pop()} ${k.whole}`).join(' ')}`);
+  // Every sup left in the copy is an ORDINAL SUFFIX, not a note reference. It
+  // holds no digit at all, so no widening of a digit-based rule reaches it, and
+  // removing it would turn "the 28th state" into "the 28 state" -- which the
+  // narrator reads as "the twenty-eight state". The rule is right; the survivor
+  // is not a marker.
+  for (const kept of keptInCopy) {
+    assert.ok(/^<sup[^>]*>(th|st|nd|rd)<\/sup>$/i.test(kept.whole),
+      `a sup that is not an ordinal suffix survived the strip: ${kept.entry} ${kept.whole}`);
+  }
+  assert.strictEqual(keptInCopy.length, 1,
+    `expected exactly the one measured ordinal in the copy, got ${keptInCopy.length}`);
 
   assert.strictEqual(sha(BOOK), beforeSha, 'THE BOOK WAS REWRITTEN');
   console.log('\nthe book on disk is byte-identical to what it was.');
