@@ -797,11 +797,19 @@ interface AlertModal {
               </div>
             }
 
-            <!-- Page Timeline (bottom of viewer) -->
+            <!-- Page Timeline (bottom of viewer). In FLOW the rail is the
+                 book's chapters instead: flow has no page boxes on screen, so
+                 a row of page numbers would point at places the eye cannot
+                 line up with, while a chapter is exactly the unit a flowing
+                 column scrolls by. -->
             <div class="page-timeline">
               <div class="timeline-header">
                 <span class="timeline-label">
-                  {{ totalPages() }} pages
+                  @if (showsEpubViewer() && layout() === 'flow') {
+                    {{ curationChapterRows().length }} chapters · {{ totalPages() }} pages
+                  } @else {
+                    {{ totalPages() }} pages
+                  }
                   @if (pagesLoaded() < totalPages()) {
                     · <span class="loading-status"><span class="mini-spinner"></span> Loading {{ pagesLoaded() }}/{{ totalPages() }}</span>
                   }
@@ -813,6 +821,17 @@ interface AlertModal {
                   }
                 </span>
               </div>
+              @if (showsEpubViewer() && layout() === 'flow') {
+                <div class="timeline-scroll timeline-chapters">
+                  @for (row of curationChapterRows(); track row.id) {
+                    <button
+                      class="timeline-chapter"
+                      [title]="row.title + ' — page ' + (row.page + 1)"
+                      (click)="scrollToPage(row.page)"
+                    >{{ row.title }}</button>
+                  }
+                </div>
+              } @else {
               <div class="timeline-scroll">
                 @for (pageNum of pageNumbers(); track pageNum) {
                   <button
@@ -832,6 +851,7 @@ interface AlertModal {
                   </button>
                 }
               </div>
+              }
             </div>
 
           </div>
@@ -1458,6 +1478,33 @@ interface AlertModal {
       &::-webkit-scrollbar-thumb {
         background: var(--border-default);
         border-radius: 3px;
+      }
+    }
+
+    // The flow rail: chapters as pills, vertically centred where the page
+    // thumbs would stand. Titles can be long ("Foreword: Eric Metaxas"), so
+    // each pill keeps its whole title on one line and the rail scrolls.
+    .timeline-chapters {
+      align-items: center;
+    }
+
+    .timeline-chapter {
+      flex-shrink: 0;
+      max-width: 260px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding: var(--ui-spacing-xs) var(--ui-spacing-md);
+      font-size: var(--ui-font-xs);
+      color: var(--text-secondary);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      cursor: pointer;
+
+      &:hover {
+        color: var(--text-primary);
+        border-color: var(--accent);
       }
     }
 
@@ -4206,10 +4253,12 @@ export class PdfPickerComponent implements OnInit {
       const opensDocument = file !== null && navTitles.has(file) && !claimed.has(file);
       if (file !== null) claimed.add(file);
 
-      // The nav entry when this row owns it; the print otherwise. The print is
-      // never wrong — it is what the page says — it is just not the name the
-      // audiobook will use, which is why the nav wins where there is one.
-      const title = opensDocument ? navTitles.get(file)! : block.text.trim();
+      // The PRINT, always — the chapter is named by the exact text of the
+      // block that opens it (Owen, 2026-08-09: if the page says
+      // "Foreword: Eric Metaxas", the chapter says "Foreword: Eric Metaxas",
+      // never a shortened nav entry). The nav entry still exists and renames
+      // still write it; `opensDocument` keeps deciding WHICH row may rename.
+      const title = block.text.trim();
 
       return {
         id: block.id,
@@ -6716,8 +6765,28 @@ export class PdfPickerComponent implements OnInit {
 
     const deleted = this.deletedBlockIds();
 
+    // On a book, a page whose every block is struck is presented as a deleted
+    // PAGE and its blocks are taken OUT of the block-strike set
+    // (rebuildNarrationView). So "is this block deleted" must ask the page
+    // too, or a selection of page-carried strikes reads as undeleted, the
+    // toggle re-deletes it, and the record answers "already recorded" — a
+    // gesture that visibly does nothing (measured: an evening of it on
+    // Killing America's footnote pages). Raster documents keep the plain
+    // block-set answer: their page deletions are a gesture of their own, not
+    // a presentation of block strikes.
+    const pages = this.deletedPages();
+    const pageCarried = new Set(
+      this.showsEpubViewer()
+        ? selected.filter(id => {
+            if (deleted.has(id)) return false;
+            const page = this.editorState.getBlock(id)?.page;
+            return page !== undefined && pages.has(page);
+          })
+        : [],
+    );
+
     // Check if ALL selected blocks are already deleted - toggle to restore
-    const allDeleted = selected.every(id => deleted.has(id));
+    const allDeleted = selected.every(id => deleted.has(id) || pageCarried.has(id));
 
     if (allDeleted) {
       // Restore all selected blocks (toggle off)
@@ -6728,8 +6797,34 @@ export class PdfPickerComponent implements OnInit {
         if (block) affectedPages.add(block.page);
       }
 
-      this.landBlockDeletions(this.editorState.restoreBlocks(selected), false);
-      this.editorState.clearSelection();
+      if (pageCarried.size === 0) {
+        this.landBlockDeletions(this.editorState.restoreBlocks(selected), false);
+        this.editorState.clearSelection();
+      } else {
+        // Restoring a page-carried strike opens its page and re-strikes the
+        // page's UNSELECTED blocks individually — the page stops being fully
+        // struck, so the page presentation no longer covers them. The record
+        // edit is landed ONCE from the before/after sets around the whole
+        // compound; landing each step would post the middle states.
+        const beforeBlocks = this.narrationStruckBlockIds();
+        const beforePages = new Set(pages);
+
+        const selectedSet = new Set(selected);
+        const pagesToOpen = [...new Set(
+          [...pageCarried].map(id => this.editorState.getBlock(id)!.page),
+        )];
+        const keepStruck = this.blocks()
+          .filter(b => pagesToOpen.includes(b.page) && !selectedSet.has(b.id) && !deleted.has(b.id))
+          .map(b => b.id);
+        if (keepStruck.length > 0) this.editorState.deleteBlocks(keepStruck);
+        this.editorState.restorePages(pagesToOpen);
+        const ownStruck = selected.filter(id => deleted.has(id));
+        if (ownStruck.length > 0) this.editorState.restoreBlocks(ownStruck);
+        this.editorState.clearSelection();
+
+        this.postNarrationEdit(
+          beforeBlocks, beforePages, this.narrationStruckBlockIds(), this.deletedPages());
+      }
 
       // Re-render affected pages to restore original content
       for (const pageNum of affectedPages) {
