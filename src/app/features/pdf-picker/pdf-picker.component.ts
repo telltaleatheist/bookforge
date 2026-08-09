@@ -9827,12 +9827,48 @@ export class PdfPickerComponent implements OnInit {
    * element whose blocks do not exist yet cannot be derived from a view that
    * does not contain them, and reporting that would cry wolf on every open.
    */
+  /**
+   * A deletion set with every `#doc` key expanded to the document's elements.
+   *
+   * A fully-struck document has TWO spellings — its elements one by one, or
+   * the single `<file>#doc` escalation — and which one a set carries depends
+   * on when it was written (a record laid down element-by-element across
+   * sessions keeps the elements; a fresh derivation escalates). They mean the
+   * SAME deletion, so every comparison of two sets must expand both sides
+   * first or it reports a divergence over notation (measured: copy.xhtml as
+   * 18 recorded elements vs the screen's one #doc — the same struck page).
+   */
+  private expandDocDeletionKeys(
+    elements: Iterable<string>,
+    laid: readonly NarrationLaidOutBlock[],
+  ): Set<string> {
+    const out = new Set<string>();
+    let byFile: Map<string, string[]> | null = null;
+    for (const key of elements) {
+      if (parseNarrationElementKey(key).kind !== 'doc') { out.add(key); continue; }
+      if (byFile === null) {
+        byFile = new Map();
+        for (const b of laid) {
+          if (b.element === undefined) continue;
+          const file = parseNarrationElementKey(b.element).file;
+          let list = byFile.get(file);
+          if (!list) { list = []; byFile.set(file, list); }
+          list.push(b.element);
+        }
+      }
+      for (const el of byFile.get(parseNarrationElementKey(key).file) ?? []) out.add(el);
+    }
+    return out;
+  }
+
   private assertNarrationViewMatchesRecord(record: NarrationDeletions): void {
     const laid = this.narrationLaidOutBlocks();
     if (laid.length === 0) return;
     const view = deriveNarrationStrikes(
       laid, this.narrationStruckBlockIds(), this.deletedPages());
-    const diff = narrationDeletionEdit(new Set(record.elements), new Set(view.elements));
+    const diff = narrationDeletionEdit(
+      this.expandDocDeletionKeys(record.elements, laid),
+      this.expandDocDeletionKeys(view.elements, laid));
     const fullyLoaded = this.pagesLoaded() >= this.totalPages();
     const onScreenOnly = diff.strike;
     const recordedOnly = fullyLoaded ? diff.unstrike : [];
@@ -9909,7 +9945,9 @@ export class PdfPickerComponent implements OnInit {
       );
     }
 
-    const diff = narrationDeletionEdit(new Set(record?.elements ?? []), new Set(view.elements));
+    const diff = narrationDeletionEdit(
+      this.expandDocDeletionKeys(record?.elements ?? [], laid),
+      this.expandDocDeletionKeys(view.elements, laid));
     const onScreenOnly = diff.strike;
     const recordedOnly = this.pagesLoaded() >= this.totalPages() ? diff.unstrike : [];
     if (onScreenOnly.length === 0 && recordedOnly.length === 0) return null;
