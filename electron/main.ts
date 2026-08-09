@@ -45,6 +45,7 @@ import { componentManager, runInstaller as runExternalInstaller, listInstallable
 import { systemProbe } from './components/system-probe';
 import { listManagedComponents, checkComponentUpdates, installComponent } from './update/component-updater';
 import { getStarterStatus, installStarterLibrary } from './update/starter-library';
+import { Quire } from '../packages/quire/src';
 
 // Normalize the app's data directory. Electron derives userData from the app
 // name, which defaults to package.json `name` ("bookforge-app") — inconsistent
@@ -10492,6 +10493,16 @@ protocol.registerSchemesAsPrivileged([
     }
   }
 ]);
+
+// quire serves an EPUB's own bytes to the sandboxed frame that paginates it,
+// out of the archive and through `quire://`. Registering it is a before-ready
+// operation like the two above, and quire refuses to open a book at all if it
+// was not done (SCHEME_NOT_REGISTERED) rather than serving a blank one.
+//
+// Deliberately NOT privileged the way `bookforge-page` is: `bypassCSP` is false
+// on it, because the whole point is that the book's CSP applies to the book, and
+// `supportFetchAPI` is false so nothing in a quire document can fetch anything.
+Quire.registerScheme();
 
 // Single-instance lock: a second launch must NOT run while the first is doing
 // the first-run runtime unpack — two processes extracting/copying into the same

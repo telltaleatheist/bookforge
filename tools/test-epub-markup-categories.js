@@ -48,6 +48,10 @@ if (!fs.existsSync(path.join(DIST, 'electron', 'epub-processor.js'))) {
   process.exit(1);
 }
 
+// quire paginates an EPUB in a real browser, and PDFAnalyzer now goes through
+// quire for every EPUB — so this harness has to run under Electron.
+require('./electron-relaunch').relaunchUnderElectron(__filename);
+
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bookforge-epub-markup-'));
 // The analyzer's caches resolve against the Electron userData dir, which does
 // not exist outside the app. Point them at the temp tree BEFORE anything loads.
@@ -248,6 +252,7 @@ const BLOCKS = [
 ];
 
 (async () => {
+  await require('./electron-relaunch').prepareQuireHost(DIST);
   const epub = await writePublisherEpub('publisher.epub');
 
   // ── The table of contents ─────────────────────────────────────────────────
@@ -450,8 +455,8 @@ const BLOCKS = [
   }
   console.log(`\n${results.length - failures}/${results.length} passed`);
   fs.rmSync(ROOT, { recursive: true, force: true });
-  process.exit(failures > 0 ? 1 : 0);
+  require('electron').app.exit(failures > 0 ? 1 : 0);
 })().catch((err) => {
   console.error(err);
-  process.exit(1);
+  require('electron').app.exit(1);
 });

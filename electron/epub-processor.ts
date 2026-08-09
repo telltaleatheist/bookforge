@@ -4373,17 +4373,33 @@ export function normalizeZipEntryName(name: string): string {
 }
 
 /**
- * Map picker blocks onto the source EPUB's own elements by sequential text
- * alignment. Never throws on a block that merely fails to match — those are
- * reported in `unaligned` and POLICY (what is tolerable) belongs to the
- * exporter. It does throw on structural failures: unreadable/unparseable spine
- * sections and stray text the unit collector cannot attribute, because no
- * alignment over that book can be trusted.
+ * Every element of a book, in the ONE order everything else agrees on.
+ *
+ * The traversal half of `alignBlocksToEpub`, lifted out because it has two
+ * callers that want completely different things from it. The aligner matches
+ * geometry-only blocks back onto these elements by their text; the quire
+ * analysis path is HANDED the element key on every block and needs no matching
+ * at all — but it needs the same elements, in the same order, with the same
+ * keys, or a key would mean two things.
+ *
+ * So there is one walk and one enumeration, and `narrationElementKey` /
+ * `narrationImageElementKey` are minted here and nowhere else on this path.
  */
-export async function alignBlocksToEpub(
-  epubSourcePath: string,
-  blocks: EpubExportBlock[],
-): Promise<EpubAlignmentResult> {
+export interface EpubElementWalk {
+  units: ExportUnit[];
+  imageUnits: ImageUnit[];
+  /** Zip entry → its position in the spine, which is the order walked. */
+  docIndexOfFile: Map<string, number>;
+  /**
+   * The normalized forms of the labels mupdf lays out in place of an image it
+   * does not draw (`[<alt>]`). Meaningful only to the mupdf aligner — a browser
+   * draws the picture — and carried here because the walk is where the `alt`
+   * attributes are in hand.
+   */
+  imgAltNorms: Set<string>;
+}
+
+export async function walkEpubElements(epubSourcePath: string): Promise<EpubElementWalk> {
   const processor = new EpubProcessor();
   const units: ExportUnit[] = [];
   const imageUnits: ImageUnit[] = [];
@@ -4445,6 +4461,31 @@ export async function alignBlocksToEpub(
   } finally {
     processor.close();
   }
+
+  return { units, imageUnits, docIndexOfFile, imgAltNorms };
+}
+
+/**
+ * Map picker blocks onto the source EPUB's own elements by sequential text
+ * alignment. Never throws on a block that merely fails to match — those are
+ * reported in `unaligned` and POLICY (what is tolerable) belongs to the
+ * exporter. It does throw on structural failures: unreadable/unparseable spine
+ * sections and stray text the unit collector cannot attribute, because no
+ * alignment over that book can be trusted.
+ *
+ * NOT on the EPUB ANALYSIS path any more. Analysis routes through quire, which
+ * reports the caller's own element key on every block, so there is nothing to
+ * match. This is still what the PRESERVING EXPORTER
+ * (`exportEpubPreservingMarkup`) uses, because that one is handed the picker's
+ * edited blocks and has to find them in the markup — and it is still what the
+ * three block-keyed readers below use, which the tests drive directly.
+ */
+export async function alignBlocksToEpub(
+  epubSourcePath: string,
+  blocks: EpubExportBlock[],
+): Promise<EpubAlignmentResult> {
+  const { units, imageUnits, docIndexOfFile, imgAltNorms } =
+    await walkEpubElements(epubSourcePath);
 
   // Stream S: concatenated normalized text of all non-image units, spine order.
   let stream = '';
@@ -5517,15 +5558,21 @@ function collectNoteReferenceTargets(units: ExportUnit[]): Set<string> {
  * ids itself rather than translating a stamp, so there is nothing to validate
  * and nothing that could disagree.
  */
-export async function readEpubMarkupCategories(
-  epubSourcePath: string,
-  blocks: EpubExportBlock[],
-): Promise<EpubMarkupReading> {
-  const targets = await readEpubTocTargets(epubSourcePath);
-  const {
-    units, blockToUnits, unaligned, imageUnits, blockToImageUnit, unmatchedImages,
-  } = await alignBlocksToEpub(epubSourcePath, blocks);
-
+/**
+ * One category per export unit, read off the markup around it — the whole of
+ * the markup reading, with no blocks in sight.
+ *
+ * Its own function because there are two joins onto it and only one description
+ * of it may exist: the block-keyed reader below (mupdf's aligned blocks, and the
+ * preserving exporter's tests) and the element-keyed reader further down (the
+ * quire analysis path, which is handed the element key and needs no join at
+ * all). A second copy of these rules is a second opinion about what a
+ * `<blockquote>` is.
+ */
+function markupCategoriesOfUnits(
+  units: ExportUnit[],
+  targets: readonly EpubTocTarget[],
+): { categories: string[]; noteTargets: Set<string>; chapterOpenings: number } {
   const noteTargets = collectNoteReferenceTargets(units);
 
   const categories = units.map((unit) => {
@@ -5541,6 +5588,19 @@ export async function readEpubMarkupCategories(
   });
 
   const chapterOpenings = markChapterOpenings(units, categories, targets);
+  return { categories, noteTargets, chapterOpenings };
+}
+
+export async function readEpubMarkupCategories(
+  epubSourcePath: string,
+  blocks: EpubExportBlock[],
+): Promise<EpubMarkupReading> {
+  const targets = await readEpubTocTargets(epubSourcePath);
+  const {
+    units, blockToUnits, unaligned, imageUnits, blockToImageUnit, unmatchedImages,
+  } = await alignBlocksToEpub(epubSourcePath, blocks);
+
+  const { categories, noteTargets, chapterOpenings } = markupCategoriesOfUnits(units, targets);
 
   const byBlockId = new Map<string, string>();
   const elementByBlockId = new Map<string, NarrationElementKey>();
@@ -5700,6 +5760,185 @@ function markChapterOpenings(
   }
 
   return found;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The same three readings, keyed by ELEMENT instead of by block
+//
+// Everything above answers "what is the block with this id?", and to do that it
+// has to first answer "which element was that block laid out from?" — by
+// matching text, because mupdf reports boxes and throws the DOM away.
+//
+// quire does not throw the DOM away. It is handed the element key on every
+// block it reports, because BookForge stamped it (electron/quire-stamp.ts), so
+// on that path the join is already made and the question left is the simple one:
+// what does this book say about the element named `<zip entry>#<index>`?
+//
+// One walk, one enumeration, one set of category rules — the readers below share
+// `walkEpubElements`, `provenanceOnOrAbove`, `conversionStampOnOrAbove` and
+// `markupCategoriesOfUnits` with their block-keyed counterparts, so a book
+// cannot be described two different ways depending on which one asked.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One element of a book, as the analysis path needs to know it. */
+export interface EpubElementFact {
+  key: NarrationElementKey;
+  /** Zip entry of the spine document it lives in. */
+  file: string;
+  /** Which enumeration produced the key — text units and pictures are separate namespaces. */
+  kind: 'text' | 'image';
+  tag: string;
+  /**
+   * Text units only: the element holds a picture and contributes no words.
+   *
+   * Load-bearing rather than descriptive. Such an element is enumerated in BOTH
+   * namespaces — the wrapper `<div class="image">` is a unit and the `<img>`
+   * inside it is a picture, and a bare `<img>` under `<body>` is literally both
+   * at once — so emitting a block for each would put two overlapping rectangles
+   * on one plate. The picture is the one that gets the block, exactly as the
+   * mupdf path had it (`alignBlocksToEpub` keeps image-only units out of the
+   * alignment stream, and `alignImageBlocks` pairs picture blocks with picture
+   * ELEMENTS), and exactly as `writeNarrationEpub` treats a strike on either.
+   */
+  imageOnly: boolean;
+  /** Text units only: normalized character count. Zero means it lays out no words. */
+  textLength: number;
+}
+
+export interface EpubElementReading {
+  /**
+   * Which input class this book is, in the vocabulary of
+   * `BlockCategoryProvenance.source`. `heuristic` never appears: an EPUB always
+   * states its structure somewhere, even when it carries none of our stamps.
+   */
+  source: 'document' | 'markup';
+  /** Every element of the book, in the enumeration order the stamper walks. */
+  elements: EpubElementFact[];
+  /** Element key → the category this book states or implies for it. */
+  categoryByElement: Map<NarrationElementKey, string>;
+  /** Element key → the reflow stamp, on a book our reflow wrote. */
+  provenanceByElement: Map<NarrationElementKey, EpubBlockProvenance>;
+  /** Element key → the conversion stamp, on a book vlm-convert wrote. */
+  conversionByElement: Map<NarrationElementKey, EpubConversionStamp>;
+  /** Elements a `document`-class book carries no stamp on (nav TOC, hand-added markup). */
+  unstampedElements: number;
+  /** Navigation entries that resolved onto a document of this book. */
+  tocTargets: number;
+  /** Of those, how many opened with a heading the markup reader called `chapter`. */
+  chapterOpenings: number;
+  /** Note references found by `epub:type` or by `<sup>` link topology. */
+  noterefs: number;
+}
+
+/**
+ * Everything a book says about its own elements, keyed by the element key.
+ *
+ * FOUR input classes asked in the same order `assignCategories` asks them, and
+ * for the same reason: a book carries at most one of the two stamps, so this is
+ * questions asked in turn rather than a precedence rule. A PDF never reaches
+ * here — it has no markup at all — which is why `source` has no `heuristic`.
+ */
+export async function readEpubElementCategories(
+  epubSourcePath: string,
+): Promise<EpubElementReading> {
+  const whatFor = `the elements of ${path.basename(epubSourcePath)}`;
+  const walk = await walkEpubElements(epubSourcePath);
+  const { units, imageUnits } = walk;
+
+  // The enumeration order the stamper walks and the narration writer applies:
+  // per spine document, text units first, then that document's pictures.
+  const unitsOfFile = new Map<string, ExportUnit[]>();
+  for (const u of units) {
+    const list = unitsOfFile.get(u.file);
+    if (list === undefined) unitsOfFile.set(u.file, [u]); else list.push(u);
+  }
+  const imagesOfFile = new Map<string, ImageUnit[]>();
+  for (const i of imageUnits) {
+    const list = imagesOfFile.get(i.file);
+    if (list === undefined) imagesOfFile.set(i.file, [i]); else list.push(i);
+  }
+  const elements: EpubElementFact[] = [];
+  for (const file of walk.docIndexOfFile.keys()) {
+    for (const u of unitsOfFile.get(file) ?? []) {
+      elements.push({
+        key: u.key, file, kind: 'text', tag: u.tag,
+        imageOnly: u.imageOnly, textLength: u.normText.length,
+      });
+    }
+    for (const i of imagesOfFile.get(file) ?? []) {
+      elements.push({
+        key: i.key, file, kind: 'image', tag: String(i.el.tagName || '').toLowerCase(),
+        imageOnly: true, textLength: 0,
+      });
+    }
+  }
+
+  const categoryByElement = new Map<NarrationElementKey, string>();
+  const provenanceByElement = new Map<NarrationElementKey, EpubBlockProvenance>();
+  const conversionByElement = new Map<NarrationElementKey, EpubConversionStamp>();
+
+  // ── 1. A book our reflow wrote ────────────────────────────────────────────
+  if (await epubCarriesProvenance(epubSourcePath)) {
+    const legal = new Set<string>(BLOCK_CATEGORY_IDS);
+    let unstamped = 0;
+    for (const u of units) {
+      const stamp = provenanceOnOrAbove(u.el, whatFor);
+      if (stamp === null) { unstamped++; continue; }
+      if (!legal.has(stamp.category)) {
+        throw new Error(
+          `${whatFor}: element <${u.tag}> in ${u.file} is stamped `
+          + `${PROVENANCE_CATEGORY_ATTR}="${stamp.category}" (group ${stamp.group}), which is not a `
+          + `block category BookForge knows. The palette is shared/ocr/block-categories.ts: `
+          + `${BLOCK_CATEGORY_IDS.join(', ')}.`,
+        );
+      }
+      provenanceByElement.set(u.key, stamp);
+      categoryByElement.set(u.key, stamp.category);
+    }
+    if (provenanceByElement.size > 0) {
+      // Pictures take no category from the stamp — the block IS a picture, which
+      // is what the block-keyed reader says too.
+      return {
+        source: 'document', elements, categoryByElement, provenanceByElement,
+        conversionByElement, unstampedElements: unstamped,
+        tocTargets: 0, chapterOpenings: 0, noterefs: 0,
+      };
+    }
+    // The attribute is in the bytes but no element resolved a stamp. The book is
+    // then not a reflow of ours in any usable sense, and the next question is
+    // asked — the same thing `assignCategories` does when `reflowed.size === 0`.
+    categoryByElement.clear();
+  }
+
+  // ── 2. A book a document vision model wrote ───────────────────────────────
+  if (await epubCarriesConversionStamps(epubSourcePath)) {
+    let unstamped = 0;
+    const readOnto = (el: any, key: NarrationElementKey): void => {
+      const read = conversionStampOnOrAbove(el, whatFor);
+      if (read === null) { unstamped++; return; }
+      conversionByElement.set(key, { ...read, element: key });
+      categoryByElement.set(key, read.category);
+    };
+    for (const u of units) readOnto(u.el, u.key);
+    for (const i of imageUnits) readOnto(i.el, i.key);
+    return {
+      source: 'document', elements, categoryByElement, provenanceByElement,
+      conversionByElement, unstampedElements: unstamped,
+      tocTargets: 0, chapterOpenings: 0, noterefs: 0,
+    };
+  }
+
+  // ── 3. A publisher's book, which states its structure in its own markup ───
+  const targets = await readEpubTocTargets(epubSourcePath);
+  const { categories, noteTargets, chapterOpenings } = markupCategoriesOfUnits(units, targets);
+  for (let i = 0; i < units.length; i++) categoryByElement.set(units[i].key, categories[i]);
+  // Pictures are `image` by construction here too, and that is the block's own
+  // flag rather than a reading of the markup — so nothing is written for them.
+  return {
+    source: 'markup', elements, categoryByElement, provenanceByElement, conversionByElement,
+    unstampedElements: 0,
+    tocTargets: targets.length, chapterOpenings, noterefs: noteTargets.size,
+  };
 }
 
 export interface NarrationEpubWriteResult {

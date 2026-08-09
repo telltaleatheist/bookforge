@@ -32,6 +32,10 @@ if (!fs.existsSync(path.join(DIST, 'electron', 'pdf-analyzer.js'))) {
   process.exit(1);
 }
 
+// quire paginates an EPUB in a real browser, and PDFAnalyzer now goes through
+// quire for every EPUB — so this harness has to run under Electron.
+require('./electron-relaunch').relaunchUnderElectron(__filename);
+
 const BOOK = process.argv[2];
 if (!BOOK || !fs.existsSync(BOOK)) {
   console.error('Usage: node tools/measure-killing-america-strikes.js <copy of the book.epub>');
@@ -78,6 +82,7 @@ async function documentsOf(epubPath) {
 }
 
 (async () => {
+  await require('./electron-relaunch').prepareQuireHost(DIST);
   console.log(`book: ${BOOK} (${fs.statSync(BOOK).size} bytes)`);
   const beforeSha = sha(BOOK);
 
@@ -201,12 +206,17 @@ async function documentsOf(epubPath) {
     `footnote blocks: ${footnoteBlockIds.size} in the book → ${stillFootnotes.length} in the copy`);
   assert.strictEqual(stillFootnotes.length, 0, 'footnotes survived into the narration copy');
 
-  // Where the pictures the matcher REFUSED live, so the refusal is legible.
+  // The pictures nothing could name. There used to be nine of them in this book
+  // — mupdf laid 6 picture blocks out of a `bm01.xhtml` that states 3 image
+  // elements, and 3 out of a `back.xhtml` that states 4, so no ordinal could
+  // settle any of them and every one of those deletions reached nothing. quire
+  // hands the element key back on every block it reports, so the count is now
+  // zero by construction rather than by luck — and it is asserted rather than
+  // printed, because a picture that could not be named would be a regression.
   const refused = blocks.filter((b) => b.is_image && b.bf_element === undefined);
-  if (refused.length > 0) {
-    console.log(`\nimage blocks refused (no element, reported, not guessed): ${refused.length}`);
-    for (const b of refused) console.log(`  page ${b.page}: ${b.text}`);
-  }
+  for (const b of refused) console.log(`  UNNAMED PICTURE page ${b.page}: ${b.text}`);
+  assert.strictEqual(refused.length, 0,
+    'a picture of this book has no element key — every block quire reports carries one');
 
   // ── Session B: the plate gallery, struck as DOCUMENTS ────────────────────
   //
@@ -308,16 +318,29 @@ async function documentsOf(epubPath) {
 
   // -- Session C: a deletion that reaches NOTHING, refused by name ----------
   //
-  // The other half of the guarantee. The nine plate-gallery pictures no ordinal
-  // can settle are the real uncoverable blocks on this book: struck ALONE --
-  // without the documents that would carry them out -- there is nothing the cut
-  // can do with them, and the old contract wrote the file anyway and returned a
-  // warning string. It now refuses, and the sentence names the page and says
-  // what the user can do instead.
+  // The other half of the guarantee. This USED TO BE measured on the book: the
+  // nine plate-gallery pictures no ordinal could settle were its real
+  // uncoverable blocks, and struck ALONE -- without the documents that would
+  // carry them out -- there was nothing the cut could do with them. The old
+  // contract wrote the file anyway and returned a warning string; it now
+  // refuses, and the sentence names the page and says what to do instead.
+  //
+  // quire took that case off this book, which is the whole point of quire:
+  // every block carries the key of the element it IS, so there is no such block
+  // here any more (asserted above). The refusal is still the contract, so it is
+  // proved against a block CONSTRUCTED to have no element -- stated as a
+  // construction rather than dressed up as a finding, because pretending to
+  // discover a fault the book no longer has would be the dishonest way to keep
+  // a test alive.
   console.log('\n-- one uncoverable deletion, refused ---------------------------');
-  const orphan = blocks.find((b) => b.is_image && b.bf_element === undefined);
-  assert.ok(orphan, 'this book has no unmatchable picture to strike');
-  const orphanStrikes = deriveNarrationStrikes(laid, new Set([orphan.id]), new Set());
+  const anyPicture = blocks.find((b) => b.is_image);
+  assert.ok(anyPicture, 'this book has no picture at all to build the case from');
+  const orphan = { id: 'constructed-unnameable-picture', page: anyPicture.page, text: anyPicture.text };
+  const orphanLaid = [
+    ...laid,
+    { id: orphan.id, page: orphan.page, unplaceable: false, excerpt: orphan.text.slice(0, 80) },
+  ];
+  const orphanStrikes = deriveNarrationStrikes(orphanLaid, new Set([orphan.id]), new Set());
   const refusal = refuseUnresolvedDeletions(orphanStrikes, 'the blocks you deleted');
   assert.ok(refusal !== null, 'striking an unmatchable picture alone did not refuse');
   assert.ok(/was not written/.test(refusal), 'the refusal does not say nothing was written');
@@ -379,7 +402,8 @@ async function documentsOf(epubPath) {
 
   assert.strictEqual(sha(BOOK), beforeSha, 'THE BOOK WAS REWRITTEN');
   console.log('\nthe book on disk is byte-identical to what it was.');
+  require('electron').app.exit(0);
 })().catch((err) => {
   console.error(err);
-  process.exit(1);
+  require('electron').app.exit(1);
 });
