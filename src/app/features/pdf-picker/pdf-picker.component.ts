@@ -9587,22 +9587,39 @@ export class PdfPickerComponent implements OnInit {
    * the alert says which blocks refused and why.
    */
   private sendNarrationEdit(dir: string, edit: NarrationDeletionEdit): void {
-    this.narrationEdits = this.narrationEdits.then(async () => {
+    const posted: Promise<void> = this.narrationEdits.then(async () => {
       const answer = await this.electronService.editNarrationDeletions(dir, edit);
       if (!answer.success || !answer.deletions) {
         throw new Error(answer.error || 'The narration deletions could not be recorded.');
       }
+      const recorded = answer.deletions;
       // The record main just wrote, kept here so the next gesture's rebuild and
       // the export's report describe the same answer the file does.
       const state = this.narrationAnswer();
       if (state && state.dir === dir) {
-        this.narrationAnswer.set({ dir, state: { ...state.state, deletions: answer.deletions } });
+        this.narrationAnswer.set({ dir, state: { ...state.state, deletions: recorded } });
       }
-      this.assertNarrationViewMatchesRecord(answer.deletions);
+      // The tripwire runs AFTER the restore effect has consumed this answer —
+      // never in the same turn. `narrationRestoreEffect` deliberately rewinds
+      // the view to the record's state while a gesture's write is in flight
+      // ("the view cannot hold a deletion the record does not have for longer
+      // than a tick"), so at THIS moment the screen may be standing in the
+      // rewound state; comparing the fresh record against it reports the whole
+      // gesture as missing and tells the user their screen is wrong when it is
+      // one effect-flush away from correct (measured 2026-08-09: a 320-element
+      // footnote sweep on an empty record fired exactly that modal). A
+      // macrotask runs after the flush. And only the LAST in-flight gesture
+      // checks: while the queue drains, the screen is legitimately ahead of
+      // the record it is being compared with.
+      setTimeout(() => {
+        if (this.narrationEdits !== posted) return;
+        this.assertNarrationViewMatchesRecord(recorded);
+      }, 0);
     }).catch(async (err) => {
       console.error('[picker] could not record the narration deletions:', err);
       await this.undoUnrecordedGesture(edit, err);
     });
+    this.narrationEdits = posted;
   }
 
   /**
