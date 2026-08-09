@@ -31,6 +31,7 @@ import type {
   NarrationFlags,
   AppliedPass,
   AppliedPassKind,
+  MergeChapterOpeningEdit,
   SourceType,
 } from './manifest-types.js';
 import { passesAfterEpubEvent } from '../shared/document/pass-lifecycle';
@@ -44,6 +45,7 @@ import {
   type WorkingCopyRemint,
 } from '../shared/document/working-copy-remint';
 import {
+  migrateNarrationDeletionsForFold,
   narrationDeletionsStaleReason,
   narrationEpubRelPath,
   type NarrationDeletions,
@@ -1516,6 +1518,88 @@ export async function touchBookEpub(projectDir: string, at: string): Promise<voi
       `The book was rewritten, but recording that in ${projectDir}'s manifest failed: ${saved.error}`
     );
   }
+}
+
+/** What the manifest did about a fold that has already been written to disk. */
+export interface ChapterOpeningFoldRecord {
+  /** Strike keys the fold left naming nothing, so they were dropped. */
+  droppedStrikes: string[];
+  /** Strike keys that name the same element under a new index. */
+  renumberedStrikes: number;
+}
+
+/**
+ * Record a chapter-opening fold: carry the strikes, touch the book, log the edit.
+ *
+ * ── Why all three are ONE transaction ───────────────────────────────────────
+ *
+ * Because they are one fact. The strikes are POSITIONS in the book and the fold
+ * moved them (shared/vlm/narration-deletions.ts,
+ * `migrateNarrationDeletionsForFold`); the record's `epubSha256` is what says
+ * which book those positions are in; and the edit-log entry is the only thing
+ * that will ever say what the opening used to print. A manifest written with
+ * any two of the three would be a manifest that lies about the file on disk —
+ * strikes carried but still stamped with the old book read as stale and get
+ * cleared, and a re-stamped record whose indices were not carried strikes the
+ * wrong paragraphs.
+ *
+ * The record's stamp is CHECKED against `fromSha256` rather than overwritten. A
+ * record describing some other book cannot be carried — its indices are
+ * positions in a file nobody has — and quietly re-stamping it here would forge
+ * agreement. That is a refusal after the book has been written, which is the
+ * right way round: the file is the user's edit and it is correct; the manifest
+ * says why it could not follow.
+ */
+export async function recordChapterOpeningFold(
+  projectDir: string,
+  edit: MergeChapterOpeningEdit,
+  removedIndices: readonly number[],
+): Promise<ChapterOpeningFoldRecord> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  let droppedStrikes: string[] = [];
+  let renumberedStrikes = 0;
+
+  const saved = await modifyManifest(projectId, (m) => {
+    const epub = m.outputs?.epub;
+    if (!epub) {
+      throw new Error(
+        `Cannot record the chapter-opening fold in ${projectDir}: the project has no outputs.epub, `
+        + 'so there is no book to have been folded.'
+      );
+    }
+
+    const recorded = epub.narrationDeletions;
+    if (recorded !== undefined) {
+      if (recorded.epubSha256 !== edit.fromSha256) {
+        throw new Error(
+          `${path.basename(projectDir)}'s narration strikes are stamped with a different book than `
+          + 'the one that was just folded, so they name positions in a file nobody has and cannot '
+          + 'be carried across the fold. The book has been edited; strike what you want left out '
+          + 'of the narration again.'
+        );
+      }
+      const carried = migrateNarrationDeletionsForFold(
+        recorded.elements, edit.file, removedIndices);
+      droppedStrikes = carried.dropped;
+      renumberedStrikes = carried.renumbered;
+      epub.narrationDeletions = {
+        epubSha256: edit.toSha256,
+        elements: carried.elements,
+        updatedAt: edit.at,
+      };
+    }
+
+    epub.modifiedAt = edit.at;
+    (epub.bookEdits ??= []).push(edit);
+  });
+  if (!saved.success) {
+    throw new Error(
+      `The book was folded, but recording that in ${projectDir}'s manifest failed: ${saved.error}`
+    );
+  }
+  return { droppedStrikes, renumberedStrikes };
 }
 
 /**

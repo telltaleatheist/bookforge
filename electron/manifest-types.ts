@@ -402,7 +402,57 @@ export interface EpubOutput {
    * element and why the record is stamped with the book's sha256 anyway.
    */
   narrationDeletions?: NarrationDeletions;
+  /**
+   * Every edit that rewrote this book's own MARKUP, oldest first.
+   *
+   * Distinct from `appliedPasses`, which names WHICH PASS ran over the whole
+   * file. These are single, deliberate, user-made edits to particular elements,
+   * and each one carries what the element said before and what it says now.
+   *
+   * Owen, 2026-08-09, on the chapter-opening fold: "as long as we have a record
+   * of what it was before and what it was changed to, it can be changed." This
+   * list IS that record, and it is why the edit is allowed at all — the working
+   * copy is editable, the archive original beside it is not, and the difference
+   * between an edit and a corruption is whether the book can say what happened
+   * to it.
+   */
+  bookEdits?: BookEdit[];
 }
+
+/**
+ * The chapter-opening fold: one opening rewritten to its chapter's stored name,
+ * with the elements folded into it removed from the markup.
+ *
+ * `openerKey` and the folded keys are narration element keys — `<zip entry>#<index>`,
+ * positions in the one enumeration walk everything shares
+ * (shared/vlm/narration-deletions.ts). They name POSITIONS IN THE BOOK BEFORE
+ * THIS EDIT, which is the only book those numbers ever described: the fold
+ * renumbers everything after the folds, and the strike record is carried across
+ * in the same manifest transaction that appends this entry.
+ */
+export interface MergeChapterOpeningEdit {
+  kind: 'merge-chapter-opening';
+  at: string;
+  /** The zip entry that was rewritten. */
+  file: string;
+  openerKey: string;
+  /** What the opening printed before, whitespace collapsed. */
+  openerTextBefore: string;
+  /** What it says now: the chapter's stored name, single line. */
+  openerTextAfter: string;
+  /** The elements that went, each with the text it held. */
+  folded: Array<{ key: string; textBefore: string }>;
+  /** The book's sha256 before the edit and after it. */
+  fromSha256: string;
+  toSha256: string;
+}
+
+/**
+ * One edit to a book's markup. A union of ONE today, and a union on purpose:
+ * every future edit gets its own `kind` and its own before/after fields rather
+ * than a shared "details" bag nothing can read.
+ */
+export type BookEdit = MergeChapterOpeningEdit;
 
 /**
  * What has ever been done to a book — the things that can be done to one now,

@@ -7178,6 +7178,30 @@ function setupIpcHandlers(): void {
   });
 
   /**
+   * Fold a chapter's opening IN THE BOOK: the opening is rewritten to say the
+   * chapter's stored name, and the elements folded into it are removed from the
+   * markup.
+   *
+   * The one gesture that EDITS the working copy's own elements rather than
+   * recording something about them. It is allowed because the manifest keeps a
+   * record of what each folded element said and what the opening says now
+   * (`outputs.epub.bookEdits`), written in the same transaction that carries the
+   * positional strike record across the renumbering the fold causes. The archive
+   * original is never opened.
+   */
+  ipcMain.handle('book:merge-chapter-opening', async (
+    _event, projectDir: string, openerKey: string, foldedKeys: string[]) => {
+    try {
+      const { mergeChapterOpening } = await import('./narration-export.js');
+      const result = await mergeChapterOpening(projectDir, openerKey, foldedKeys);
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return { success: true, result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
    * Replace the record wholesale.
    *
    * Not the picker's path any more — see `narration:edit-deletions`. Kept for
