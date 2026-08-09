@@ -256,6 +256,23 @@ export interface QuireFrameMarks {
   tocSelected: string[];
   /** Page indices LOCAL to this frame's document. */
   struckPages: number[];
+  /**
+   * The distinct category colours on this book, as `#RRGGBB`, and which one
+   * each element wears. A selected element is highlighted in ITS OWN
+   * category's colour — the raster viewer's behaviour, where selecting a
+   * heading looks different from selecting body text — instead of one flat
+   * accent for everything. The classes are generated per palette INDEX, so the
+   * stylesheet stays as small as the number of colours, not of elements.
+   */
+  palette: string[];
+  categoryOf: Record<string, number>;
+  /**
+   * Elements to paint in their category colour even while unselected — the
+   * picker's colour layer. Empty when the layer is off. The caller subtracts
+   * selected/toc-selected elements itself, so wash never fights a stronger
+   * mark's outline.
+   */
+  wash: string[];
 }
 
 /**
@@ -273,6 +290,28 @@ export function applyMarksScript(marks: QuireFrameMarks): string {
   return evaluable(`
     var cfg = ${cfg};
     var cls = ${classes};
+
+    // The category stylesheet: one selected-colour and one wash rule per
+    // palette entry, regenerated whole on every apply (the palette is a
+    // handful of colours; correctness beats caching). It sits AFTER the view
+    // stylesheet, and the selected rule carries two classes so it outranks the
+    // base .bf-selected accent by specificity, not by luck of ordering.
+    var catSheet = document.getElementById('bf-quire-category-style');
+    if (!catSheet) {
+      catSheet = document.createElement('style');
+      catSheet.id = 'bf-quire-category-style';
+      document.head.appendChild(catSheet);
+    }
+    var rules = [];
+    for (var p = 0; p < cfg.palette.length; p++) {
+      var col = cfg.palette[p];
+      rules.push('.' + cls.selected + '.bf-sel-' + p + '{background-color:' + col
+        + '2e !important;outline-color:' + col + ' !important;}');
+      rules.push('.bf-wash-' + p + '{background-color:' + col
+        + '22 !important;outline:1px solid ' + col + '55 !important;outline-offset:0 !important;}');
+    }
+    catSheet.textContent = rules.join('\\n');
+
     var view = window.__bfQuireView;
     if (!view) {
       // One index per frame, built the first time it is marked: id -> the
@@ -292,20 +331,40 @@ export function applyMarksScript(marks: QuireFrameMarks): string {
 
     var every = [cls.struck, cls.selected, cls.tocSelected];
     view.byId.forEach(function (els) {
-      for (var i = 0; i < els.length; i++) els[i].classList.remove.apply(els[i].classList, every);
+      for (var i = 0; i < els.length; i++) {
+        var list = els[i].classList;
+        // The per-colour classes are dynamic, so they are stripped by prefix —
+        // a whole-state apply must leave nothing from the previous state.
+        var dyn = [];
+        for (var c = 0; c < list.length; c++) {
+          if (list[c].indexOf('bf-sel-') === 0 || list[c].indexOf('bf-wash-') === 0) dyn.push(list[c]);
+        }
+        list.remove.apply(list, every.concat(dyn));
+      }
     });
 
     var missing = [];
-    function mark(ids, className) {
+    function mark(ids, className, withColour) {
       for (var i = 0; i < ids.length; i++) {
         var els = view.byId.get(ids[i]);
         if (!els) { missing.push(ids[i]); continue; }
-        for (var j = 0; j < els.length; j++) els[j].classList.add(className);
+        var idx = withColour ? cfg.categoryOf[ids[i]] : undefined;
+        for (var j = 0; j < els.length; j++) {
+          els[j].classList.add(className);
+          if (idx !== undefined) els[j].classList.add('bf-sel-' + idx);
+        }
       }
     }
-    mark(cfg.struck, cls.struck);
-    mark(cfg.selected, cls.selected);
-    mark(cfg.tocSelected, cls.tocSelected);
+    mark(cfg.struck, cls.struck, false);
+    mark(cfg.selected, cls.selected, true);
+    mark(cfg.tocSelected, cls.tocSelected, false);
+    for (var w = 0; w < cfg.wash.length; w++) {
+      var washEls = view.byId.get(cfg.wash[w]);
+      if (!washEls) { missing.push(cfg.wash[w]); continue; }
+      var washIdx = cfg.categoryOf[cfg.wash[w]];
+      if (washIdx === undefined) continue;
+      for (var q = 0; q < washEls.length; q++) washEls[q].classList.add('bf-wash-' + washIdx);
+    }
 
     var boxes = document.querySelectorAll('.pagedjs_page');
     for (var p = 0; p < boxes.length; p++) {

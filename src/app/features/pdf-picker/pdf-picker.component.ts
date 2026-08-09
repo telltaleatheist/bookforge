@@ -663,6 +663,7 @@ interface AlertModal {
                     [tocSelectedBlockIds]="tocSelectedBlockIdSet()"
                     [zoom]="zoom()"
                     [layout]="layout()"
+                    [showCategoryColors]="showCategoryColors()"
                     (blockClick)="onEpubBlockClick($event)"
                     (blockDoubleClick)="onEpubBlockDoubleClick($event)"
                     (blockHover)="onBlockHover($event)"

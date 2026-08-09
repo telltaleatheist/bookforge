@@ -66,7 +66,8 @@ import { mountQuirePage, type MountedQuirePage } from '../../../../../../package
 import type { QuirePageMount } from '../../../../../../packages/quire/src/types';
 import {
   applyMarksScript, arrangeScript, zoomScript,
-  type QuireFrameArrangement, type QuireFrameElement, type QuireFramePage,
+  type QuireFrameArrangement, type QuireFrameElement, type QuireFrameMarks,
+  type QuireFramePage,
 } from './quire-frame-scripts';
 
 /**
@@ -108,7 +109,11 @@ type BandState =
   | { kind: 'unmounted' }
   | { kind: 'waiting-for-view' }
   | { kind: 'mounting' }
-  | { kind: 'ready'; arrangement: QuireFrameArrangement }
+  /** `columns` is the grid the frame was ARRANGED into — compared against the
+   *  band's current column count so a zoom that changes how many pages fit a
+   *  row re-arranges the frame instead of leaving its grid and the overlay's
+   *  grid disagreeing about where every page is. */
+  | { kind: 'ready'; arrangement: QuireFrameArrangement; columns: number }
   | { kind: 'refused'; why: string };
 
 /** A page as the overlay draws it: chrome, not content. */
@@ -525,6 +530,9 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   /** Percent, exactly like the raster viewer's — 100 is 1:1. */
   readonly zoom = input.required<number>();
   readonly layout = input.required<'vertical' | 'grid'>();
+  /** The picker's colour layer — every categorised block wears a wash of its
+   *  category's colour, exactly as the raster viewer paints it. */
+  readonly showCategoryColors = input<boolean>(false);
 
   // ── outputs: the same gestures, in LaidOutBlock terms ─────────────────────
 
@@ -563,6 +571,17 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   private readonly states = signal<ReadonlyMap<number, BandState>>(new Map());
   private readonly mounted = new Map<number, MountedQuirePage>();
   private readonly lastSeen = new Map<number, number>();
+  /**
+   * The geometry each frame SHOULD be showing right now, and which frames have
+   * a worker chasing it. One worker per frame, always chasing the latest
+   * target: a ctrl+wheel burst lands many zoom changes in a row, and letting
+   * each start its own sync loop was measured to fail — a stale loop's pixel
+   * nudge re-imposed its old size while the newer loop was checking, the two
+   * fought, and the band refused with the previous zoom step's viewport
+   * (368×552 inside 300×450 — exactly one step's ratio apart).
+   */
+  private readonly syncTargets = new Map<number, { w: number; h: number; scale: number }>();
+  private readonly syncing = new Set<number>();
   private observer: IntersectionObserver | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private reconcileQueued = false;
@@ -662,6 +681,58 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   private readonly selectedElements = computed(() => this.elementsFor(this.selectedBlockIds()));
   private readonly tocElements = computed(() => this.elementsFor([...this.tocSelectedBlockIds()]));
 
+  /**
+   * Each element's category colour, as a palette of distinct colours plus an
+   * index per element — the shape {@link applyMarksScript} builds its
+   * stylesheet from.
+   *
+   * The colour is the raster viewer's `getCategoryColor` verbatim: the
+   * contract palette wins, the book's own measured record covers custom
+   * categories, unlabeled is the same neutral gray. A split element's
+   * fragments share one category in practice; if they ever disagree, the
+   * FIRST fragment's colour paints the element — marks are per element, so
+   * one element cannot wear two colours anyway.
+   *
+   * `washable` is the colour layer's audience: every categorised element
+   * whose category is not hidden. Unlabeled elements stay blank there — in
+   * the colour layer, no wash IS the "unjudged" state.
+   */
+  private readonly categoryMarks = computed(() => {
+    const hidden = this.hiddenCategoryIds();
+    const palette: string[] = [];
+    const paletteIndex = new Map<string, number>();
+    const categoryOf: Record<string, number> = {};
+    const washable: string[] = [];
+    for (const [key, fragments] of this.blocksByElement()) {
+      const id = fragments[0].category_id;
+      const color = this.colorOf(fragments[0]);
+      if (!/^#[0-9a-fA-F]{6}$/.test(color)) {
+        throw new Error(
+          `Category "${id}" resolves to colour "${color}", which is not a six-digit hex colour. `
+          + 'The viewer derives its highlight opacities by appending an alpha byte, so this '
+          + 'colour cannot be painted and the marks are not applied.',
+        );
+      }
+      let idx = paletteIndex.get(color);
+      if (idx === undefined) { idx = palette.length; palette.push(color); paletteIndex.set(color, idx); }
+      categoryOf[key] = idx;
+      if (id && !hidden.has(id)) washable.push(key);
+    }
+    return { palette, categoryOf, washable };
+  });
+
+  /**
+   * The colour of a block's category — the raster viewer's `getCategoryColor`
+   * verbatim: the contract palette wins, the book's own record covers custom
+   * categories, unlabeled is a neutral gray rather than the unresolvable-
+   * category orange.
+   */
+  private colorOf(block: LaidOutBlock): string {
+    const id = block.category_id;
+    if (!id) return '#9E9E9E';
+    return blockCategoryColor(id, this.categories()[id]?.color || '#FF9500');
+  }
+
   private elementsFor(blockIds: readonly string[]): string[] {
     const byId = new Map(this.book().blocks.map((b) => [b.id, b]));
     const out: string[] = [];
@@ -691,6 +762,7 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     }
     try {
       this.blocksByElement();
+      this.categoryMarks();
     } catch (err) {
       return (err as Error).message;
     }
@@ -733,53 +805,59 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
 
   constructor() {
     // Zoom is a transform on already-measured boxes, so a change costs one
-    // script per live frame and no re-measurement. Bands resize from `scale()`
-    // in the template; the frames are told separately because they are not
-    // Angular's to render.
+    // script per live frame and no re-measurement — UNLESS it changed how many
+    // columns fit a grid row, in which case the frame must be re-arranged (a
+    // re-grid and re-measure, still never a re-pagination). Either way the
+    // effect only RECORDS what each frame should look like; the one worker per
+    // frame (chaseFrameSync) does the asking, so a burst of wheel ticks
+    // coalesces instead of racing.
     effect(() => {
       const scale = this.scale();
       const bands = this.bands();
+      const states = this.states(); // dependency: chase a band the moment it becomes ready
       for (const [index, frame] of this.mounted) {
         const band = bands[index];
         if (!band) continue;
-        const el = frame.element;
-        el.style.width = `${band.width}px`;
-        el.style.height = `${band.height}px`;
-        // The guest is ASKED whether it followed the resize before the zoom is
-        // applied — Electron drops webview resizes under load, and a guest
-        // painting a stale viewport shows the top of every page and nothing
-        // else. See syncGuestViewport.
-        void this.syncGuestViewport(frame, band.width, band.height)
-          .then(() => this.evaluate(frame, zoomScript(scale)))
-          .catch((err: unknown) => {
-            if (this.mounted.get(index) !== frame) return; // unmounted meanwhile
-            this.setState(index, { kind: 'refused', why: String((err as Error).message) });
-          });
+        frame.element.style.width = `${band.width}px`;
+        frame.element.style.height = `${band.height}px`;
+        this.syncTargets.set(index, { w: band.width, h: band.height, scale });
+        // Only a READY frame is chased. While a band is mounting, mountBand
+        // owns its frame and sequences sync → arrange itself; when it finishes,
+        // this effect re-runs (states is a dependency) and catches it up to
+        // whatever the zoom is by then.
+        if (states.get(index)?.kind === 'ready') void this.chaseFrameSync(index, frame);
       }
     });
 
     // The marks are whole-state, so any change to any of them re-states all of
     // them on every live frame. See applyMarksScript for why not a diff.
     effect(() => {
-      const struck = this.struckElements();
-      const selected = this.selectedElements();
-      const toc = this.tocElements();
-      const pages = this.deletedPages();
+      // A refused book mounts nothing, and reading categoryMarks below would
+      // re-throw the very error the refusal is already displaying.
+      if (this.refusal() !== null) return;
+      // Read every marks input HERE, not only inside frameMarks — the effect
+      // must track them even at a moment when no frame is mounted, or the
+      // first mount after a change would wear the state before it.
+      this.struckElements();
+      this.selectedElements();
+      this.tocElements();
+      this.deletedPages();
+      this.categoryMarks();
+      this.showCategoryColors();
       const bands = this.bands();
       for (const [index, frame] of this.mounted) {
         const band = bands[index];
         if (!band) continue;
-        const localStruck: number[] = [];
-        for (const page of pages) {
-          if (page >= band.firstPage && page < band.firstPage + band.pageCount) {
-            localStruck.push(page - band.firstPage);
-          }
-        }
-        void this.evaluate(frame, applyMarksScript({
-          struck, selected, tocSelected: toc, struckPages: localStruck,
-        })).catch((err: unknown) => {
-          this.setState(index, { kind: 'refused', why: String((err as Error).message) });
-        });
+        // Never mark a frame that is still paginating: applyMarksScript builds
+        // its id→elements index on first use, and an index built before
+        // Paged.js has cloned the elements into page boxes would be cached
+        // wrong for the frame's whole life. mountBand applies the marks itself
+        // the moment the frame is ready.
+        if (this.bandState(index).kind !== 'ready') continue;
+        void this.evaluate(frame, applyMarksScript(this.frameMarks(band)))
+          .catch((err: unknown) => {
+            this.setState(index, { kind: 'refused', why: String((err as Error).message) });
+          });
       }
     });
 
@@ -956,16 +1034,9 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
           `${arrangement.orphans} stamped element(s) in ${band.mount.document} are inside no page `
           + 'box, so they could be shown but not pointed at.');
       }
-      this.setState(index, { kind: 'ready', arrangement });
+      this.setState(index, { kind: 'ready', arrangement, columns: band.columns });
 
-      await this.evaluate(frame, applyMarksScript({
-        struck: this.struckElements(),
-        selected: this.selectedElements(),
-        tocSelected: this.tocElements(),
-        struckPages: [...this.deletedPages()]
-          .filter((p) => p >= band.firstPage && p < band.firstPage + band.pageCount)
-          .map((p) => p - band.firstPage),
-      }));
+      await this.evaluate(frame, applyMarksScript(this.frameMarks(band)));
       this.evictBeyondBudget();
     } catch (err) {
       if (cancelled()) return;
@@ -979,7 +1050,33 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     if (!frame) return;
     frame.destroy();
     this.mounted.delete(index);
+    this.syncTargets.delete(index);
     this.setState(index, { kind: 'unmounted' });
+  }
+
+  /**
+   * The whole of what a band's frame should be wearing, assembled from the
+   * picker's current state. The wash — the colour layer — subtracts anything
+   * selected or toc-selected, so the 1 px wash outline never overrides a
+   * stronger mark's 2 px one (both stylesheets speak with !important, and the
+   * category sheet is the later of the two).
+   */
+  private frameMarks(band: DocumentBand): QuireFrameMarks {
+    const selected = this.selectedElements();
+    const toc = this.tocElements();
+    const { palette, categoryOf, washable } = this.categoryMarks();
+    const strong = new Set([...selected, ...toc]);
+    return {
+      struck: this.struckElements(),
+      selected,
+      tocSelected: toc,
+      struckPages: [...this.deletedPages()]
+        .filter((p) => p >= band.firstPage && p < band.firstPage + band.pageCount)
+        .map((p) => p - band.firstPage),
+      palette,
+      categoryOf,
+      wash: this.showCategoryColors() ? washable.filter((k) => !strong.has(k)) : [],
+    };
   }
 
   /**
@@ -1019,6 +1116,58 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     const parsed = JSON.parse(String(raw)) as T & { error?: string };
     if (parsed.error) throw new Error(parsed.error);
     return parsed;
+  }
+
+  /**
+   * Bring one frame up to date with the LATEST recorded target, however many
+   * targets were recorded while it worked.
+   *
+   * The loop shape is the whole point: it re-reads `syncTargets` after every
+   * await, so a zoom that lands mid-chase is simply the next lap, never a
+   * second concurrent chaser. A sync failure against a target that is no
+   * longer the latest is not a verdict about the frame — the size it failed to
+   * reach is not the size wanted any more — so only the CURRENT target's
+   * failure refuses the band.
+   */
+  private async chaseFrameSync(index: number, frame: MountedQuirePage): Promise<void> {
+    if (this.syncing.has(index)) return; // the running worker re-reads the target each lap
+    this.syncing.add(index);
+    try {
+      for (;;) {
+        const target = this.syncTargets.get(index);
+        if (!target || this.mounted.get(index) !== frame) return;
+        const state = this.bandState(index);
+        if (state.kind !== 'ready') return;
+        try {
+          await this.syncGuestViewport(frame, target.w, target.h);
+          if (this.mounted.get(index) !== frame) return;
+          if (this.syncTargets.get(index) !== target) continue;
+          const band = this.bands()[index];
+          if (!band) return;
+          if (band.columns !== state.columns) {
+            // The zoom changed how many pages fit a row. A transform cannot
+            // express that — the page boxes must actually move — so re-grid
+            // and re-measure. Pagination is untouched: the boxes are the same
+            // boxes, in new places.
+            const arrangement = await this.evaluate<QuireFrameArrangement>(
+              frame, arrangeScript(band.columns, PAGE_GAP, target.scale));
+            if (this.mounted.get(index) !== frame) return;
+            this.setState(index, { kind: 'ready', arrangement, columns: band.columns });
+          } else {
+            await this.evaluate(frame, zoomScript(target.scale));
+            if (this.mounted.get(index) !== frame) return;
+          }
+        } catch (err) {
+          if (this.mounted.get(index) !== frame) return;
+          if (this.syncTargets.get(index) !== target) continue; // stale failure, chase the new size
+          this.setState(index, { kind: 'refused', why: String((err as Error).message) });
+          return;
+        }
+        if (this.syncTargets.get(index) === target) return; // caught up
+      }
+    } finally {
+      this.syncing.delete(index);
+    }
   }
 
   /**
@@ -1251,7 +1400,7 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
       band: band.index,
       id: hit.element.id,
       rect: hit.element,
-      color: blockCategoryColor(hit.block.category_id),
+      color: this.colorOf(hit.block),
     });
     this.blockHover.emit(hit.block);
   }
