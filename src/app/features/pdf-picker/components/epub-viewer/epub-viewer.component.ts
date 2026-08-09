@@ -722,6 +722,30 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     return out;
   });
 
+  /**
+   * Element keys with a fragment on a DELETED page.
+   *
+   * The picker presents a page whose every block is struck as a deleted PAGE
+   * and takes those blocks OUT of the block-strike set (rebuildNarrationView).
+   * The paginated layouts show that as page chrome — a red outline and an
+   * "excluded" badge on the page box. FLOW has no page boxes, so without this
+   * the content of a deleted page looks completely untouched (measured on
+   * Killing America: 345 footnote blocks struck, 39 footnote-only pages
+   * converted, and only the 82 blocks sharing a page with body text showed any
+   * strikethrough — the user re-deleted the "missing" ones for an hour, each
+   * attempt a silent already-recorded no-op). In flow, the elements themselves
+   * wear the strike.
+   */
+  private readonly pageDeletedElements = computed(() => {
+    const pages = this.deletedPages();
+    if (pages.size === 0) return [] as string[];
+    const out: string[] = [];
+    for (const [key, fragments] of this.blocksByElement()) {
+      if (fragments.some((f) => pages.has(f.page))) out.push(key);
+    }
+    return out;
+  });
+
   private readonly selectedElements = computed(() => this.elementsFor(this.selectedBlockIds()));
   private readonly tocElements = computed(() => this.elementsFor([...this.tocSelectedBlockIds()]));
 
@@ -1179,7 +1203,12 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     const { palette, categoryOf, washable } = this.categoryMarks();
     const strong = new Set([...selected, ...toc]);
     return {
-      struck: this.struckElements(),
+      // In flow the page-deleted content strikes element by element — there is
+      // no page box to carry the state. Paginated layouts keep the page chrome
+      // and the block strikes exactly as they were.
+      struck: this.layout() === 'flow'
+        ? [...new Set([...this.struckElements(), ...this.pageDeletedElements()])]
+        : this.struckElements(),
       selected,
       tocSelected: toc,
       struckPages: [...this.deletedPages()]
