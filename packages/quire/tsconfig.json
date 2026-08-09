@@ -1,0 +1,33 @@
+{
+  // quire's own program. Its emit layout is deliberately IDENTICAL to what
+  // tsconfig.electron.json produces for the same files (rootDir is the repo
+  // root there, so packages/quire/src/x.ts -> dist/packages/quire/src/x.js),
+  // so compiling either way puts the same JavaScript in the same place and
+  // there is only ever one build of the package on disk.
+  //
+  // The electron program also includes these files, so `npx tsc -p
+  // tsconfig.electron.json` type-checks the package alongside the app and the
+  // package is built by `npm run build:electron` with no extra step. This
+  // project file exists so the package can be checked on its own:
+  //     npx tsc -p packages/quire/tsconfig.json --noEmit
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": ".",
+    "outDir": "../../dist/packages/quire",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "sourceMap": true
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
