@@ -7,8 +7,9 @@
 
 import type { TextBlock, Category } from '../shared/ocr/text-block';
 import type { NarrationDeletions, NarrationEpubOutput } from '../shared/vlm/narration-deletions';
+import type { EditorLayoutIdentity } from '../shared/document/editor-layout';
 
-export type { NarrationDeletions, NarrationEpubOutput };
+export type { NarrationDeletions, NarrationEpubOutput, EditorLayoutIdentity };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core Types
@@ -175,6 +176,23 @@ export interface ManifestSource {
    * unnoticed that nothing read it at all.
    */
   deletedPages?: number[];
+  /**
+   * WHICH LAYOUT the two records above, and everything under `editor`, were made
+   * against — see shared/document/editor-layout.ts.
+   *
+   * A page number and a block id are both functions of a pagination rather than
+   * of the book, and in August 2026 the pagination of an EPUB changed: mupdf's
+   * reflow gave way to quire's fragmentation of the book's own DOM, which puts
+   * *Killing America* on 183 pages where mupdf put it on 218 and mints block ids
+   * from a different string entirely. Replaying a record from one layout against
+   * the other strikes out paragraphs the user never touched.
+   *
+   * So a save STATES the layout it was made in, and an EPUB project that carries
+   * records but no stamp is read as the mupdf era — the absence is the answer,
+   * not a gap. A PDF project never carries one: mupdf's pagination of a PDF is
+   * the PDF's own pages and did not change.
+   */
+  editorLayout?: EditorLayoutIdentity;
   /** Written by the markup-preserving EPUB export — see ExportProvenance. */
   exportProvenance?: ExportProvenance;
 }
@@ -232,6 +250,42 @@ export interface ManifestMetadata {
   };
 }
 
+/**
+ * ⚠ TWO DIFFERENT THINGS ARE WRITTEN TO `manifest.chapters`, AND THIS IS ONLY
+ * ONE OF THEM. Measured across the library 2026-08-09, pre-existing, not
+ * introduced by the quire cutover.
+ *
+ * What is ACTUALLY on disk is the PICKER's `Chapter` — declared three times over
+ * (electron/pdf-analyzer.ts, electron/preload.ts,
+ * src/app/core/services/electron.service.ts) as
+ * `{ id, title, page, blockId?, mergedBlockIds?, y?, level, source, confidence? }`
+ * — written verbatim by main's `project:save-to-path`
+ * (`manifest.chapters = mergedData.chapters`) from the picker's own
+ * `chapters` signal, and read back verbatim by `projects:load-from-path`.
+ * Of the 942 chapter entries on EPUB projects, 942 carry `page` and ZERO carry
+ * `sentences`; 159 carry a `blockId`.
+ *
+ * `ManifestChapter` — this type, `order` + `sentences` — has NO live writer
+ * anywhere in the repo. Its one reader is the bilingual player
+ * (src/app/features/language-learning/components/bilingual-player), which
+ * filters on `ch.sentences?.length > 0` and sorts on `a.order - b.order`:
+ * against every real manifest that filter removes everything and that sort
+ * compares undefined, so the lookup silently yields nothing. It is a leftover
+ * of the pre-picker sentence pipeline.
+ *
+ * Left declared rather than repaired here on purpose: `manifest.chapters` is
+ * the picker's field and the picker is being rebuilt for EPUBs in parallel
+ * (Phase B/C of the quire cutover). Deciding which of the two concepts owns the
+ * key — and giving the other one its own — is a change to that surface, and
+ * doing it from this file would be two agents editing the same contract. What
+ * belongs here is the record that the collision exists, since neither
+ * declaration admitted it before.
+ *
+ * NOTE for the quire cutover: because the picker's markers carry a `page`, they
+ * are layout-keyed like `deletedPages`, and `source.editorLayout` governs them —
+ * a stale-layout project's chapters are withheld on load and left alone on save
+ * (electron/legacy-epub-layout.ts).
+ */
 export interface ManifestChapter {
   id: string;
   title: string;
@@ -431,6 +485,57 @@ export interface ManifestEditorState {
    */
   ocrBlocks?: TextBlock[];
   ocrCategories?: Record<string, Category>;
+
+  // ── The rest of what `project:save-to-path` actually writes ───────────────
+  //
+  // Measured 2026-08-09: main's save handler persists SIXTEEN keys under
+  // `manifest.editor`, and until this block twelve of them appeared in neither
+  // this declaration nor the renderer's. They round-trip through
+  // `projects:load-from-path` and are cleared by `pipeline:reset-editor-state`,
+  // so they are as real as the five above — the type simply did not admit them,
+  // which is how it went unnoticed that a change of paginator invalidates most
+  // of them (see `editorLayout` on ManifestSource).
+  //
+  // They are typed as loosely as they are written. The picker owns their exact
+  // shapes and this file is not the place to re-specify them; what it must state
+  // is that they EXIST and which of them a layout explains, because that is what
+  // the migration reads. `unknown` rather than `any`, so nothing here can be
+  // silently mis-consumed by a reader that guesses.
+  //
+  // LAYOUT-KEYED (block ids or page numbers — retired by a paginator change,
+  // see LAYOUT_KEYED_EDITOR_FIELDS in shared/document/editor-layout.ts):
+  /** `{ "<block id>": { text } }` — hand-edited block text. */
+  blockEdits?: Record<string, unknown>;
+  /** Highlight rectangles, each on a page of the layout. */
+  customCategories?: unknown;
+  /** Blocks the user drew by hand, each with an id and a page. */
+  manualBlocks?: TextBlock[];
+  /** `[["<block id>", "<category>"], …]` — labels set by hand. */
+  categoryCorrections?: unknown;
+  /** The same pairs, learned from the corrections rather than set. */
+  learnedCategories?: unknown;
+  /** `["<block id>", …]` — where a paragraph was declared to break. */
+  paragraphBreaks?: string[];
+  /** Split definitions, keyed by the block that was split. */
+  blockSplits?: unknown;
+  /** `[{ mergedBlockId, sourceBlockIds }]`. */
+  blockMerges?: unknown;
+  /** Crop rectangles, each on a page of the layout. */
+  cropRegions?: unknown;
+  /** Text fixes, keyed by block id. */
+  textCorrections?: unknown;
+  //
+  // NOT layout-keyed — these survive a change of paginator untouched:
+  /** Tuning numbers for the classifier. Names no position. */
+  classificationThresholds?: unknown;
+  /** sha256 of the source file the editor state was made against. */
+  sourceFileSha256?: string;
+  /**
+   * A rubric run's predictions, keyed in THAT run's own id space
+   * (`ocr_p4_0_7r8inz`) rather than in the picker's, and naming files outside
+   * the project. Not the picker's block ids, so not the picker's layout.
+   */
+  rubricPredictions?: unknown;
 }
 
 export interface EditorHistoryAction {

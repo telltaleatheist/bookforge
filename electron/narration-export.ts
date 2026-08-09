@@ -31,6 +31,7 @@ import {
   editorStateTranslationRefusal,
   translateEditorStateDeletions,
 } from './narration-editor-state';
+import { migrateLegacyEpubEditorRecords } from './legacy-epub-layout';
 import { moveIntoPlace } from './processing-passes';
 import { sha256File } from './sidecar-binding';
 import * as manifestService from './manifest-service';
@@ -479,6 +480,27 @@ async function mergeEditorStateDeletions(
   recorded: NarrationDeletions | null,
 ): Promise<MergedNarrationDeletions> {
   const onRecord = recorded?.elements ?? [];
+
+  // ── The layout the editor's numbers belong to ─────────────────────────────
+  //
+  // Since quire, a page number recorded before August 2026 belongs to a
+  // pagination this build does not produce, and resolving it against a fresh
+  // analysis would strike out paragraphs the user never touched. So the records
+  // are carried into the current layout FIRST, once, through the layout they
+  // were written in — or the export refuses, naming what could not come across.
+  // Either way nothing is resolved against the wrong pagination.
+  //
+  // Cheap on everything that does not need it: a project already stamped with
+  // this build's layout, or made from a PDF, returns after one manifest read.
+  const carried = await migrateLegacyEpubEditorRecords(projectDir);
+  if (carried.kind === 'refused') {
+    throw new Error(
+      'The narration copy was not written, because this project\'s editor deletions were recorded '
+      + `against a different layout of the book and could not be carried over.\n\n${carried.message}`
+    );
+  }
+  if (carried.kind === 'migrated') console.log(`[narration-export] ${carried.message}`);
+
   const editor = await manifestService.readEditorStateDeletions(projectDir);
 
   if (editor.blockIds.length === 0 && editor.pages.length === 0) {

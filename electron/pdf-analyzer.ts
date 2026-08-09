@@ -15,10 +15,21 @@ import { MutoolBridge } from './mutool-bridge';
 import { BLOCK_CATEGORIES } from '../shared/ocr/block-categories';
 import type { BlockCategoryProvenance } from '../shared/ocr/text-block';
 import type { UnalignedBlock } from './epub-processor';
+import type { NarrationLaidOutBlock } from '../shared/vlm/narration-deletions';
 import { TEXT_LAYER_MIN_CHARS_PER_PAGE, type TextLayerReport } from '../shared/pdf/text-layer';
 import { analyzeEpubWithQuire, epubPageGeometryWithQuire } from './epub-quire-analysis';
 
 export type { BlockCategoryProvenance };
+
+/**
+ * A block of mupdf's OLD reflow of an EPUB, with the element it came from.
+ *
+ * The narration derivation's own block shape, aliased rather than re-declared:
+ * `layOutEpubTheLegacyWay` exists to be fed straight into
+ * `deriveNarrationStrikes`, and a second declaration of the same five fields is
+ * a second thing to keep in step.
+ */
+export type LegacyEpubLaidOutBlock = NarrationLaidOutBlock;
 
 /**
  * A document whose blocks state no categories of their own AND whose structure
@@ -1303,6 +1314,137 @@ export class PDFAnalyzer {
     }
     this.generateCategories(stated, 'epub-reflow');
     return pageCount;
+  }
+
+  /**
+   * The book laid out THE OLD WAY — mupdf's reflow at 600×900×18 — with every
+   * block carrying the element it came from.
+   *
+   * ── Why a build that paginates with quire still does this ──────────────────
+   *
+   * Because 49 of the library's 163 EPUB projects (measured 2026-08-09) carry
+   * page and block deletions recorded against mupdf's pagination, and one of
+   * them is 613 deleted pages of a Himmler biography. Those records are not
+   * garbage: they are an evening's curation each, expressed in the only
+   * vocabulary the picker had at the time. What makes them unreadable is that
+   * this build lays the same book out differently — so the way to read them is
+   * to lay it out the way they were written in, ONCE, and translate them into
+   * element keys, which no pagination can invalidate.
+   *
+   * It is reproducible for exactly the reason the records survive a working-copy
+   * re-mint: the block id is `md5("<page>:<index>:<text>")` of a deterministic
+   * reflow of bytes that are verified identical to the archive original. Same
+   * mupdf, same geometry, same file — same numbers. And when that is NOT true
+   * (a mupdf upgrade moved a line break), the ids simply fail to match and the
+   * caller's translation refuses by name; nothing is quietly half-applied.
+   *
+   * NOT AN ANALYSIS. It produces no categories, fills no cache, and is never on
+   * the path of opening a book — `analyze` routes an EPUB to quire and always
+   * will. This is a migration tool with one caller
+   * (`electron/legacy-epub-layout.ts`) and it dies with the last unmigrated
+   * project.
+   *
+   * It runs on the shared analyzer instance and therefore resets its state,
+   * exactly as `analyze` does; both are self-contained calls that re-open the
+   * document from a path.
+   */
+  async layOutEpubTheLegacyWay(epubPath: string): Promise<LegacyEpubLaidOutBlock[]> {
+    const mupdfLib = await getMupdf();
+    const data = await fsPromises.readFile(epubPath);
+    const mimeType = getMimeType(epubPath);
+    if (mimeType !== 'application/epub+zip') {
+      throw new Error(
+        `${path.basename(epubPath)} is not an EPUB, and mupdf's reflow layout is the thing an `
+        + 'EPUB\'s legacy page and block records were written against. There is nothing to '
+        + 'reproduce for any other kind of file.',
+      );
+    }
+
+    this.pdfPath = epubPath;
+    this.blocks = [];
+    this.spans = [];
+    this.categories = {};
+    this.pageDimensions = [];
+    this.analysisWarnings = [];
+    this.unalignedBlocks = [];
+    this.unalignedStated = false;
+    this.categoryProvenance = heuristicProvenance();
+
+    const pageCount = await this.withWasmLock(async () => {
+      this.doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
+      // The three numbers the old records were made under. Never parameterized:
+      // a different box is a different layout and would reproduce different ids.
+      this.doc.layout(600, 900, 18);
+      const total = this.doc.countPages();
+      for (let pageNum = 0; pageNum < total; pageNum++) {
+        let page;
+        try {
+          page = this.doc.loadPage(pageNum);
+          const bounds = page.getBounds();
+          this.pageDimensions.push({
+            width: bounds[2] - bounds[0],
+            height: bounds[3] - bounds[1],
+            originX: bounds[0],
+            originY: bounds[1],
+          });
+        } finally {
+          try { page?.destroy(); } catch { /* ignore */ }
+        }
+      }
+      return total;
+    });
+
+    for (let pageNum = 0; pageNum < pageCount; pageNum++) {
+      await this.extractPageBlocks(pageNum);
+    }
+
+    // The element key for every block, from the aligner — the same join the old
+    // analysis used and the same first-unit tiebreak. `readEpubMarkupCategories`
+    // is the reader that answers for EVERY book rather than only a stamped one;
+    // the other two readers produce identical keys from the same alignment, so
+    // which one asks is immaterial and this is the one that never returns empty.
+    //
+    // Required lazily so this migration path does not put epub-processor back
+    // into the analyzer's module graph, which Phase A took it out of.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const processor = require('./epub-processor') as typeof import('./epub-processor');
+    const reading = await processor.readEpubMarkupCategories(
+      epubPath,
+      this.blocks.map((b) => ({
+        id: b.id,
+        page: b.page,
+        y: b.y,
+        text: b.text,
+        // Nothing is deleted at layout time: which blocks the user struck is the
+        // caller's question, and the aligner only reads the flag to report
+        // policy failures the exporter cares about.
+        deleted: false,
+        isImage: b.is_image,
+        isFootnoteMarker: b.is_footnote_marker,
+      })),
+    );
+
+    const laidOut = this.blocks.map((b) => {
+      const element = reading.elementByBlockId.get(b.id);
+      return {
+        id: b.id,
+        page: b.page,
+        ...(element === undefined ? {} : { element }),
+        // The one class with no element by design rather than by failure — see
+        // NarrationLaidOutBlock.unplaceable.
+        unplaceable: b.is_footnote_marker === true,
+        excerpt: b.text.slice(0, 80),
+      };
+    });
+
+    console.log(
+      `[PDF Analyzer] ${path.basename(epubPath)}: laid out the legacy way (mupdf reflow, `
+      + `600×900×18) — ${pageCount} page(s), ${laidOut.length} block(s), `
+      + `${laidOut.filter((b) => b.element !== undefined).length} carrying an element key, `
+      + `${reading.unaligned.length} unaligned, ${reading.unmatchedImages.length} unmatched `
+      + 'picture(s). This is a legacy-record migration, not an analysis.',
+    );
+    return laidOut;
   }
 
   /**

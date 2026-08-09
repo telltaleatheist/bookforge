@@ -11,8 +11,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { NarrationDeletions, NarrationEpubOutput } from '@shared/vlm/narration-deletions';
+import type { EditorLayoutIdentity } from '@shared/document/editor-layout';
 
-export type { NarrationDeletions, NarrationEpubOutput };
+export type { NarrationDeletions, NarrationEpubOutput, EditorLayoutIdentity };
 
 export type ProjectType = 'book' | 'article';
 export type SourceType = 'pdf' | 'epub' | 'url' | 'audiobook';
@@ -175,6 +176,25 @@ export interface ManifestSource {
    */
   foundryAutoDiscardedLines?: { scanId: string; lineIds: string[] };
   pageOrder?: number[];       // Reordered pages
+  /**
+   * Pages the picker struck out, by the page number of the LAYOUT they were
+   * struck in. Written by main's `project:save-to-path` since long before this
+   * declaration existed — it was missing here while the main-process type had
+   * it, which is exactly the asymmetry these two files exist to avoid.
+   */
+  deletedPages?: number[];
+  /**
+   * WHICH LAYOUT the three records above, and everything under `editor`, were
+   * made against — see shared/document/editor-layout.ts.
+   *
+   * A page number and a block id are functions of a PAGINATION, and in August
+   * 2026 the pagination of an EPUB changed (mupdf's reflow → quire's
+   * fragmentation of the book's own DOM: 218 pages → 183 on Killing America,
+   * and block ids minted from a different string). A save states the layout it
+   * was made in; an EPUB project carrying records but no stamp is the mupdf era.
+   * A PDF project never carries one — its pages are the PDF's own.
+   */
+  editorLayout?: EditorLayoutIdentity;
 
   // Written by the markup-preserving EPUB export — see ExportProvenance
   exportProvenance?: ExportProvenance;
@@ -230,6 +250,19 @@ export interface ManifestMetadata {
 // Chapters with Stable IDs
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * ⚠ TWO DIFFERENT THINGS ARE WRITTEN TO `manifest.chapters` — see the full
+ * account on the matching declaration in electron/manifest-types.ts.
+ *
+ * In short, measured 2026-08-09: every one of the 942 chapter entries on the
+ * library's EPUB projects is the PICKER's `Chapter`
+ * (`{ id, title, page, blockId?, level, source, … }`), and none carries
+ * `sentences`. This type has no live writer; its only reader — the bilingual
+ * player — filters on `sentences` and therefore silently finds nothing.
+ * Pre-existing, and left to whoever owns the picker's chapter surface to
+ * resolve, since giving one of the two concepts a different key is a change to
+ * that surface rather than to this file.
+ */
 export interface ManifestChapter {
   id: string;                 // Stable UUID
   title: string;

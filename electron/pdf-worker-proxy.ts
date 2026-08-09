@@ -46,6 +46,9 @@ class WorkerCrashError extends Error {
 const RETRYABLE_METHODS = new Set<string>([
   'analyze',
   'analyzeQuick',
+  // Self-contained: it re-opens the EPUB from the path it is given and keeps
+  // nothing from a prior call.
+  'layOutEpubTheLegacyWay',
   'renderPage',
   'renderBlankPage',
   'renderAllPagesToFiles',

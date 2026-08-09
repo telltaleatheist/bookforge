@@ -35,6 +35,11 @@ import type {
 } from './manifest-types.js';
 import { passesAfterEpubEvent } from '../shared/document/pass-lifecycle';
 import {
+  EDITOR_LAYOUT_MANIFEST_KEY,
+  LAYOUT_KEYED_EDITOR_FIELDS,
+  type EditorLayoutIdentity,
+} from '../shared/document/editor-layout';
+import {
   describeWorkingCopyRemint,
   type WorkingCopyRemint,
 } from '../shared/document/working-copy-remint';
@@ -1557,6 +1562,128 @@ export async function listPassDiffs(projectDir: string): Promise<Array<{
 // name lives here: one derivation, one authority.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * A project's manifest, straight off disk.
+ *
+ * The public face of `readManifestAt`, for callers outside this module that need
+ * the WHOLE record rather than one derived answer — the layout-identity reader
+ * (electron/editor-layout.ts) is one, because the records it counts live under
+ * `editor` keys that neither manifest declaration admits, so no typed accessor
+ * can hand them over.
+ */
+export async function readProjectManifest(projectDir: string): Promise<ProjectManifest> {
+  return readManifestAt(projectDir);
+}
+
+/**
+ * The record classes a change of paginator invalidates, retired in one write.
+ *
+ * ── Why it is one call and not four ────────────────────────────────────────
+ *
+ * Because the intermediate states are all lies. A manifest that has been stamped
+ * with the current layout but still holds the old layout's deleted pages says
+ * "these deletions are current" about numbers that are not; one that has had the
+ * old records taken out but not the new ones put in says the user deleted
+ * nothing. Either could be read by another window, or synced, in the moment
+ * between two writes. `clearProcessingRecords` is one transaction for the same
+ * reason.
+ *
+ * ── What it does with each class ───────────────────────────────────────────
+ *
+ * `deletions` is the carried-over set, expressed in the CURRENT layout, or null
+ * when there was nothing to carry. `narration` is the same intent as element
+ * keys, which is the form that survives the next change of paginator too, and is
+ * written into `outputs.epub.narrationDeletions` — the record the narration cut
+ * actually reads.
+ *
+ * Everything else the old layout explained is DELETED: `pageOrder` (a
+ * permutation of a page count that no longer holds), the undo and redo stacks,
+ * the chapter list, and every block-keyed field under `editor`. They are named
+ * in the migration's own sentence rather than removed in silence; see
+ * electron/legacy-epub-layout.ts for why each one cannot come across.
+ *
+ * `editor.ocrCategories`, `classificationThresholds`, `sourceFileSha256` and
+ * `rubricPredictions` are LEFT ALONE — none of them names a position in a
+ * layout, so none of them went stale (see LAYOUT_KEYED_EDITOR_FIELDS).
+ */
+export async function applyEditorLayoutMigration(
+  projectDir: string,
+  migration: {
+    layout: EditorLayoutIdentity;
+    deletions: { deletedPages: number[]; deletedBlockIds: string[] } | null;
+    narration: { epubSha256: string; elements: string[] } | null;
+  },
+): Promise<void> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  const saved = await modifyManifest(projectId, (m) => {
+    const source = (m.source ?? {}) as unknown as Record<string, unknown>;
+    if (migration.deletions) {
+      source.deletedPages = migration.deletions.deletedPages;
+      source.deletedBlockIds = migration.deletions.deletedBlockIds;
+    } else {
+      delete source.deletedPages;
+      delete source.deletedBlockIds;
+    }
+    delete source.pageOrder;
+    source[EDITOR_LAYOUT_MANIFEST_KEY] = migration.layout;
+
+    const editor = m.editor as unknown as Record<string, unknown> | undefined;
+    if (editor) {
+      delete editor.undoStack;
+      delete editor.redoStack;
+      for (const field of LAYOUT_KEYED_EDITOR_FIELDS) delete editor[field];
+    }
+
+    // The picker's chapter markers are position-linked and mostly carry only a
+    // page — a list where a fifth of them moved is a table of contents pointing
+    // at the wrong chapters. A `toc`-sourced marker re-reads itself from the
+    // book on the next open, so dropping them loses nothing that is derived.
+    m.chapters = [];
+
+    if (migration.narration && m.outputs?.epub) {
+      m.outputs.epub.narrationDeletions = {
+        epubSha256: migration.narration.epubSha256,
+        elements: [...migration.narration.elements].sort(),
+        updatedAt: new Date().toISOString(),
+      };
+    }
+  });
+  if (!saved.success) {
+    throw new Error(
+      `Carrying ${path.basename(projectDir)}'s editor records into the current layout failed: `
+      + `${saved.error}. Nothing was changed.`
+    );
+  }
+}
+
+/**
+ * Stamp the layout a save's page and block records were made in.
+ *
+ * Called by the picker's save for an EPUB project, so that from now on a record
+ * SAYS which pagination explains it instead of leaving a later build to infer
+ * it from the absence of a stamp. Never called for a PDF: a PDF's pages are the
+ * PDF's own and there is no pagination to have changed.
+ */
+export async function writeEditorLayout(
+  projectDir: string,
+  layout: EditorLayoutIdentity,
+): Promise<void> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+  const saved = await modifyManifest(projectId, (m) => {
+    const source = (m.source ?? {}) as unknown as Record<string, unknown>;
+    source[EDITOR_LAYOUT_MANIFEST_KEY] = layout;
+  });
+  if (!saved.success) {
+    throw new Error(
+      `Recording the layout ${path.basename(projectDir)}'s editor records were made in failed: `
+      + `${saved.error}`
+    );
+  }
+}
+
 /** What the user has struck out of the project's book, or null when nothing. */
 export async function readNarrationDeletions(
   projectDir: string
@@ -1589,6 +1716,16 @@ export interface EditorStateDeletions {
   pages: number[];
   /** What the project was made from. */
   sourceType: SourceType;
+  /**
+   * WHICH layout that was, or null when the project states none.
+   *
+   * It travels with the answer for the same reason `sourceType` does: without
+   * it, "page 140" is a number with two possible meanings and no way to tell
+   * which. On an EPUB project a null stamp means mupdf's reflow — see
+   * `editorLayout` on ManifestSource — and the caller must translate through
+   * that layout or refuse, never resolve the number against a fresh analysis.
+   */
+  layout: EditorLayoutIdentity | null;
 }
 
 export async function readEditorStateDeletions(
@@ -1609,6 +1746,7 @@ export async function readEditorStateDeletions(
     blockIds: source.deletedBlockIds ?? [],
     pages: source.deletedPages ?? [],
     sourceType: source.type,
+    layout: source[EDITOR_LAYOUT_MANIFEST_KEY] ?? null,
   };
 }
 
