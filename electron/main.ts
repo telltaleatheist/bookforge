@@ -996,6 +996,10 @@ function openEditorWindow(
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
+      // The EPUB viewer shows a book's pages in <webview> frames confined to
+      // the book's own session partition. Without this flag the element is
+      // silently inert — no error, no load, just an empty box.
+      webviewTag: true,
     },
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0a0a0a',
@@ -9949,6 +9953,10 @@ function setupIpcHandlers(): void {
         nodeIntegration: false,
         contextIsolation: true,
         preload: path.join(__dirname, 'preload.js'),
+        // The EPUB viewer shows a book's pages in <webview> frames confined to
+        // the book's own session partition. Without this flag the element is
+        // silently inert — no error, no load, just an empty box.
+        webviewTag: true,
       },
       titleBarStyle: 'hiddenInset',
       backgroundColor: '#0a0a0a',
