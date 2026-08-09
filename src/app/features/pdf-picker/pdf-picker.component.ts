@@ -13694,6 +13694,31 @@ export class PdfPickerComponent implements OnInit {
     // record main re-stamped onto the book's new bytes.
     await this.refreshBookEpub();
 
+    // ── The opening followed the name, so the PAGE has to be laid out again ──
+    //
+    // Owen, 2026-08-09: "if the user changes the text of the chapter name, it
+    // updates the chapter opener to reflect that accurately." Main did that in
+    // the book (`nameChapterOpenings`), which means the markup this window laid
+    // out no longer exists — the heading on screen is the old one. Only a real
+    // re-open ends with the window and the file agreeing, so it is a real
+    // re-open, and then the window goes back to the page the user was on,
+    // because being thrown to page 1 for renaming a chapter is its own kind of
+    // wrong. A long name simply wraps and pushes the chapter down; the viewer
+    // lays out the real text and needs nothing from here to do it.
+    if (answer.openingsNamed !== undefined && answer.openingsNamed > 0) {
+      const docId = this.activeDocumentId();
+      const doc = docId === null ? undefined : this.openDocuments().find(d => d.id === docId);
+      if (doc !== undefined) {
+        const target = doc.projectPath ?? doc.libraryPath;
+        const page = block.page;
+        queueMicrotask(async () => {
+          this.closeDocument(docId!);
+          await this.openTarget(target);
+          this.scrollBackAfterReopen(page);
+        });
+      }
+    }
+
     if (answer.result.narrationCopy === 'already-stale') {
       // The one case the rename could not keep in step, said out loud. A stale
       // narration copy is the file the audiobook would actually be built from,
@@ -13707,6 +13732,31 @@ export class PdfPickerComponent implements OnInit {
         type: 'warning',
       });
     }
+  }
+
+  /**
+   * Put the window back on `page` once a re-opened book is laid out.
+   *
+   * A re-open is a full close-and-open — the only refresh that ends with the
+   * window and the file agreeing — and it starts at page 1. The viewer cannot
+   * be asked for the old page the instant `openTarget` resolves: its bands are
+   * rendered by the change detection that resolution schedules, and
+   * `scrollToPage` finds no band element until they are in the DOM (it does
+   * nothing, silently, by design). There is no "laid out" event to wait on, so
+   * the ask is made on animation frames until the book reports the page exists,
+   * and then one frame later so the band is rendered. The budget is what keeps
+   * this from being a spinner: a second at 60fps, after which the book is
+   * simply open at the top — the same place it would have been anyway.
+   */
+  private scrollBackAfterReopen(page: number, framesLeft = 60): void {
+    if (page <= 0) return;
+    requestAnimationFrame(() => {
+      if (this.epubViewerReady() === null || page >= this.totalPages()) {
+        if (framesLeft > 0) this.scrollBackAfterReopen(page, framesLeft - 1);
+        return;
+      }
+      requestAnimationFrame(() => this.scrollToPage(page));
+    });
   }
 
   /**
@@ -13764,33 +13814,19 @@ export class PdfPickerComponent implements OnInit {
         + 'are not edited here.';
     }
     if (this.isCurrentDocumentEpub()) {
-      // On a book, "merge" is the CHAPTER-OPENING FOLD, and it EDITS THE BOOK:
-      // the opening element is rewritten to say the chapter's stored name and
-      // the folded elements are removed from the working copy's markup
-      // (electron/narration-export.ts, `mergeChapterOpening`). Joining two body
-      // elements into one is still NOT an edit this app makes to a book — the
-      // book's own markup says what its elements are; a chapter header is the
-      // one place the book is wrong about itself, because its name is written
-      // in its table of contents and printed on the page as something else.
-      const selected = this.selectedBlockIds();
-      if (selected.length < 2) {
-        return 'Folding needs the chapter opening selected together with the blocks that belong '
-          + 'to it.';
-      }
-      const openings = selected.filter(id =>
-        this.editorState.getBlock(id)?.category_id === 'chapter');
-      if (openings.length === 0) {
-        return 'This selection has no chapter-opening block, so there is nothing to fold it '
-          + 'into. On a book, merging folds a subhead (or a stray fragment) into its CHAPTER '
-          + 'OPENING; the opening is then rewritten IN THE BOOK to the chapter\'s stored name, '
-          + 'and the folded blocks come out of the markup. Joining two body elements into one is '
-          + 'not an edit this app makes to a book.';
-      }
-      if (openings.length > 1) {
-        return `This selection holds ${openings.length} chapter openings. A fold needs exactly `
-          + 'one — the opening the rest of the selection belongs to.';
-      }
-      return null;
+      // On a book there is nothing here to do, and that is the FEATURE. A
+      // chapter opening is rewritten to the chapter's stored name the moment
+      // the project opens, book-wide and unasked (electron/narration-export.ts,
+      // `nameChapterOpenings`) — Owen, 2026-08-09: "from the moment the book
+      // opens, the chapter openers contain the chapter's text. period. the user
+      // will delete surrounding blocks if they're unnecessary." So the fold
+      // gesture that used to do it one chapter at a time has no work left, and
+      // what IS left — whether the subhead under the opening should be narrated
+      // — is a deletion, which the page already offers. Joining two body
+      // elements into one was never an edit this app makes to a book: the
+      // book's own markup says what its elements are.
+      return 'A chapter opening is named automatically when the book opens. Delete the blocks '
+        + 'around it that should not be narrated.';
     }
     if (!this.documentLayerLive()) {
       return 'This document has no working block layer open, so there is nothing to merge in. '
@@ -13806,12 +13842,9 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    // The book's fold — see mergeSelectionRefusal for what it is and is not.
-    if (this.isCurrentDocumentEpub()) {
-      void this.foldChapterOpeningInBook();
-      return;
-    }
-
+    // No EPUB branch: `mergeSelectionRefusal` returns a sentence for every
+    // book, so this line is only ever reached with a working PDF's block layer
+    // on screen.
     let survivor: string;
     try {
       survivor = this.documentBlocks.merge(this.selectedBlockIds());
@@ -13827,121 +13860,6 @@ export class PdfPickerComponent implements OnInit {
     // all of them, and the selection collapses onto it. Which one that is, is
     // the service's answer (the earliest in reading order), not a guess here.
     this.selectedBlockIds.set([survivor]);
-  }
-
-  /**
-   * Fold the selection into its chapter opening, IN THE BOOK.
-   *
-   * ── Why this writes the file instead of striking the fragments ─────────────
-   *
-   * Because the correction is about the book, and a strike is about one
-   * narration. Owen, 2026-08-09, on the first version of this gesture, which
-   * only struck them: the merge must EDIT THE BOOK — the working copy has to
-   * literally contain one chapter-opening element whose text is the chapter's
-   * name. After this, every reader of the working copy sees the same one line:
-   * the viewer, the aligner, the narration cut, a phone. "As long as we have a
-   * record of what it was before and what it was changed to, it can be
-   * changed" — and there is one (`outputs.epub.bookEdits`).
-   *
-   * The blocks are addressed by their SOURCE ELEMENTS (`bf_element`,
-   * `<zip entry>#<index>`), the same identity a narration strike carries. A
-   * selected block the aligner never matched to markup has no such identity, so
-   * it is NAMED and the whole fold refuses — folding "everything except that
-   * one" would silently leave a fragment in the book the user watched them
-   * select away.
-   */
-  private async foldChapterOpeningInBook(): Promise<void> {
-    const dir = this.projectPath();
-    if (!dir) {
-      this.showAlert({
-        title: 'This book is not in a project',
-        message: 'A fold rewrites the project\'s working copy of the book, and this document does '
-          + 'not belong to a project. Import it from Studio first.',
-        type: 'warning',
-      });
-      return;
-    }
-
-    const selected = this.selectedBlockIds();
-    const openerId = selected.find(id =>
-      this.editorState.getBlock(id)?.category_id === 'chapter')!;
-
-    let openerKey: string | null = null;
-    const foldedKeys: string[] = [];
-    const untraced: string[] = [];
-    for (const id of selected) {
-      const element = this.editorState.getBlock(id)?.bf_element;
-      if (element === undefined) { untraced.push(id); continue; }
-      if (id === openerId) openerKey = element; else foldedKeys.push(element);
-    }
-    if (untraced.length > 0) {
-      this.showAlert({
-        title: 'Some of these blocks could not be traced back to the book',
-        message: `${untraced.length} of the ${selected.length} selected block(s) were not matched `
-          + 'to the markup they were laid out from, so there is no element in the book to fold or '
-          + `to fold into: ${untraced.join(', ')}. The warnings shown when this book opened name `
-          + 'every block in that state. Nothing was written.',
-        type: 'warning',
-      });
-      return;
-    }
-    if (openerKey === null) {
-      this.showAlert({
-        title: 'The chapter opening could not be traced back to the book',
-        message: 'The selected chapter-opening block was not matched to the markup it was laid '
-          + 'out from, so there is no element in the book to write the chapter name into. Nothing '
-          + 'was written.',
-        type: 'warning',
-      });
-      return;
-    }
-
-    const answer = await this.electronService.mergeChapterOpening(dir, openerKey, foldedKeys);
-    if (!answer.success || !answer.result) {
-      // Main's own sentence, verbatim: it names the missing working copy, the
-      // chapter with no stored name, the picture a fold would have deleted. This
-      // is the only place any of them is said.
-      this.showAlert({
-        title: 'That chapter opening was not folded',
-        message: answer.error === undefined
-          ? 'The fold came back without a result and without a reason, which is a fault in '
-            + 'BookForge rather than anything about this book. Nothing was written.'
-          : answer.error,
-        type: 'error',
-      });
-      return;
-    }
-
-    const result = answer.result;
-    const docId = this.activeDocumentId();
-    const doc = docId === null ? undefined : this.openDocuments().find(d => d.id === docId);
-
-    this.showAlert({
-      title: 'The chapter opening was rewritten in the book',
-      message:
-        `This chapter now opens with one element that reads "${result.name}", and `
-        + `${result.foldedCount} folded element(s) are gone from the book's markup. The file `
-        + 'edited is this project\'s working copy — the archive original it was made from is '
-        + 'untouched, and the manifest records what each element said before.'
-        + (result.droppedStrikes.length > 0
-          ? ` ${result.droppedStrikes.length} narration strike(s) named elements the fold `
-            + 'removed and were dropped with them.'
-          : '')
-        + (doc === undefined ? '' : ' Re-opening the book to read it back.'),
-      type: 'info',
-    });
-
-    // Re-open through the real open path, so the fresh file is re-analyzed and
-    // the carried strike record repaints against it. The same act the page-count
-    // recovery makes, for the same reason: the book on disk has changed under a
-    // window that laid out the old one, and there is no partial refresh that
-    // ends with the two agreeing.
-    if (doc === undefined) return;
-    const target = doc.projectPath ?? doc.libraryPath;
-    queueMicrotask(() => {
-      this.closeDocument(docId!);
-      void this.openTarget(target);
-    });
   }
 
   /**

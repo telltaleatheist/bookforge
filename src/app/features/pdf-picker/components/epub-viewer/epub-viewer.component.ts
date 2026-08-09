@@ -266,16 +266,19 @@ const GRID_BASE_WIDTH = 200;
             {{ deletedPages().has(menu.page) ? 'Bring page back' : 'Exclude page' }}
           </button>
           <div class="sep"></div>
+          <!--
+            Disabled, and disabled for a reason worth reading: a chapter opening
+            is NAMED when the book opens, book-wide and unasked
+            (electron/narration-export.ts, nameChapterOpenings). There is
+            nothing left for a fold gesture to do to the opening, and what is
+            left — whether the subhead under it should be narrated — is a
+            deletion, which the menu above already offers.
+          -->
           <button
             type="button"
-            [class.disabled]="selectedBlockIds().length < 2"
-            [disabled]="selectedBlockIds().length < 2"
-            [title]="selectedBlockIds().length < 2
-              ? 'Select the chapter opening together with the blocks that belong to it first.'
-              : 'Fold the selection into its chapter opening, in the book: the opening is ' +
-                'rewritten to the stored chapter name and the folded blocks come out of the ' +
-                'markup. The working copy is edited; the archive original is untouched.'"
-            (click)="onMergeSelection()"
+            class="disabled"
+            disabled
+            title="A chapter opening is named automatically when the book opens. Delete the blocks around it that should not be narrated."
           >Merge into chapter opening</button>
           <button
             type="button"
@@ -600,7 +603,16 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   }>();
   readonly selectAllOnPage = output<number>();
   readonly deselectAllOnPage = output<number>();
-  /** Fold the current selection into its chapter opening — the picker decides validity. */
+  /**
+   * Merge the current selection — the picker decides what that means and
+   * whether it is possible.
+   *
+   * The context menu's own merge item no longer emits it: on a book, a chapter
+   * opening is named when the book opens, so there is no fold left to ask for
+   * and the item is disabled with that sentence. The output stays because the
+   * picker's own Merge control is the one entry point and this component's
+   * contract does not change with which controls happen to be lit.
+   */
   readonly mergeSelection = output<void>();
   /** A zoom DELTA in percent, the same shape the raster viewer emits. */
   readonly zoomChange = output<number>();

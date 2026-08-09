@@ -6960,8 +6960,86 @@ export async function writeNarrationEpub(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The chapter-opening fold — the one edit that rewrites the book's own markup
+// The book edits — the two writes that rewrite the book's own markup
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// The chapter-opening FOLD (a gesture, one chapter, removes elements) and the
+// chapter-opening NAMING (unattended, whole book, text only) are two edits with
+// one anatomy: walk the book the way the narration writer walks it, change
+// elements in the parsed tree, copy the zip with the touched documents replaced,
+// and re-walk what was written before the caller is allowed to move it over the
+// working copy. The four helpers below are that anatomy, held in one place so
+// the two can never come to disagree about what an image is, what an element's
+// text says, or how a book is written back out.
+
+/**
+ * Does this element hold a picture?
+ *
+ * Asked before ANY edit that would replace or remove an element's children,
+ * because an `<img>` that goes with them renumbers the image walk under every
+ * `#img<N>` strike on record — the exact reconciliation the two key namespaces
+ * exist to avoid. The fold refuses over it; the naming pass skips the one
+ * chapter and says so.
+ */
+function elementHoldsImage(el: any): boolean {
+  return (el.tagName ?? '').toLowerCase() === 'img'
+    || (el.getElementsByTagName?.('img')?.length ?? 0) > 0;
+}
+
+/** An element's text as the book prints it, whitespace collapsed to one line. */
+function collapsedUnitText(el: any): string {
+  return getUnitTextContent(el).replace(/\s+/g, ' ').trim();
+}
+
+/** One edited document, serialized as a book entry: XML declaration and all. */
+function serializeEditedDocument(doc: any): Buffer {
+  const { XMLSerializer } = require('@xmldom/xmldom');
+  let serialized: string = new XMLSerializer().serializeToString(doc);
+  if (!serialized.startsWith('<?xml')) {
+    serialized = `<?xml version="1.0" encoding="utf-8"?>\n${serialized}`;
+  }
+  return Buffer.from(serialized, 'utf8');
+}
+
+/**
+ * Copy a book to `outputPath` with the named entries replaced, and every other
+ * entry copied byte for byte.
+ *
+ * The byte-for-byte half is the load-bearing half: a book edit is about the
+ * documents it names, and an entry nobody edited coming out different would
+ * make every diff of a working copy unreadable and every re-analysis of it
+ * suspect. `mimetype` is stored, never deflated — the EPUB spec requires it,
+ * and a compressed one makes the book unopenable in strict readers.
+ */
+async function writeBookWithReplacedEntries(
+  inputPath: string,
+  outputPath: string,
+  replacements: ReadonlyMap<string, Buffer>,
+): Promise<void> {
+  const bookName = path.basename(inputPath);
+  const zipReader = new ZipReader(inputPath);
+  await zipReader.open();
+  try {
+    for (const entry of replacements.keys()) {
+      if (!zipReader.hasEntry(entry)) {
+        throw new Error(
+          `${bookName}'s spine lists ${entry} but its zip does not contain it, so there is nothing `
+          + 'to rewrite. Nothing was written.'
+        );
+      }
+    }
+    const zipWriter = new ZipWriter();
+    for (const entry of zipReader.getEntries()) {
+      const replacement = replacements.get(entry);
+      const data = replacement === undefined ? await zipReader.readEntry(entry) : replacement;
+      zipWriter.addFile(entry, data, entry !== 'mimetype');
+    }
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await zipWriter.write(outputPath);
+  } finally {
+    zipReader.close();
+  }
+}
 
 /** One element the fold took out, and what it said before it went. */
 export interface FoldedChapterElement {
@@ -7031,7 +7109,6 @@ export async function foldChapterOpeningInBookFile(
   foldedKeys: readonly NarrationElementKey[],
   name: string,
 ): Promise<ChapterOpeningFoldResult> {
-  const { XMLSerializer } = require('@xmldom/xmldom');
   const bookName = path.basename(inputPath);
   const whatFor = `the chapter-opening fold in ${bookName}`;
 
@@ -7141,17 +7218,14 @@ export async function foldChapterOpeningInBookFile(
   // same way a folded one would, and the image walk under every `#img<N>` on
   // record would renumber beneath a key namespace this fold promises not to
   // touch.
-  const holdsImage = (el: any): boolean =>
-    (el.tagName ?? '').toLowerCase() === 'img'
-    || (el.getElementsByTagName?.('img')?.length ?? 0) > 0;
-  if (holdsImage(openerEl)) {
+  if (elementHoldsImage(openerEl)) {
     throw new Error(
       `${openerKey} holds a picture, and writing the chapter name into it would take that picture `
       + 'out of the book. Nothing was written.'
     );
   }
   for (const folded of foldedEls) {
-    if (holdsImage(folded.el)) {
+    if (elementHoldsImage(folded.el)) {
       throw new Error(
         `${folded.key} holds a picture, and folding it into the chapter opening would delete that `
         + 'picture from the book. Strike it instead if it should not be narrated. Nothing was '
@@ -7160,10 +7234,9 @@ export async function foldChapterOpeningInBookFile(
     }
   }
 
-  const collapse = (el: any): string => getUnitTextContent(el).replace(/\s+/g, ' ').trim();
-  const openerTextBefore = collapse(openerEl);
+  const openerTextBefore = collapsedUnitText(openerEl);
   const folded: FoldedChapterElement[] = foldedEls.map((f) => ({
-    key: f.key, textBefore: collapse(f.el),
+    key: f.key, textBefore: collapsedUnitText(f.el),
   }));
 
   // ── The edit ──────────────────────────────────────────────────────────────
@@ -7187,34 +7260,9 @@ export async function foldChapterOpeningInBookFile(
     );
   }
 
-  let serialized: string = new XMLSerializer().serializeToString(doc);
-  if (!serialized.startsWith('<?xml')) {
-    serialized = `<?xml version="1.0" encoding="utf-8"?>\n${serialized}`;
-  }
-
   // ── The book, with exactly one entry replaced ─────────────────────────────
-  const replacement = Buffer.from(serialized, 'utf8');
-  const zipReader = new ZipReader(inputPath);
-  await zipReader.open();
-  try {
-    if (!zipReader.hasEntry(file)) {
-      throw new Error(
-        `${bookName}'s spine lists ${file} but its zip does not contain it, so there is nothing to `
-        + 'rewrite. Nothing was written.'
-      );
-    }
-    const zipWriter = new ZipWriter();
-    for (const entry of zipReader.getEntries()) {
-      const data = entry === file ? replacement : await zipReader.readEntry(entry);
-      // `mimetype` is stored, never deflated — the EPUB spec requires it, and a
-      // compressed one makes the book unopenable in strict readers.
-      zipWriter.addFile(entry, data, entry !== 'mimetype');
-    }
-    await fs.mkdir(path.dirname(outputPath), { recursive: true });
-    await zipWriter.write(outputPath);
-  } finally {
-    zipReader.close();
-  }
+  await writeBookWithReplacedEntries(
+    inputPath, outputPath, new Map([[file, serializeEditedDocument(doc)]]));
 
   // ── The promise, kept or the file destroyed ───────────────────────────────
   //
@@ -7239,7 +7287,7 @@ export async function foldChapterOpeningInBookFile(
       unitsAfter = units.length;
       imagesAfter = collectImageElements(written.body).length;
       if (openerIndexAfter < units.length) {
-        openerTextAfter = collapse(units[openerIndexAfter].el);
+        openerTextAfter = collapsedUnitText(units[openerIndexAfter].el);
       }
     } finally {
       check.close();
@@ -7278,6 +7326,259 @@ export async function foldChapterOpeningInBookFile(
     await fs.rm(outputPath, { force: true });
     throw err;
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Naming the chapter openings — what every book gets, the moment it opens
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One chapter opening this pass rewrote, and what it printed before. */
+export interface NamedChapterOpening {
+  /** The zip entry the opening is in. */
+  file: string;
+  openerKey: NarrationElementKey;
+  /** What it printed before, whitespace collapsed: "2", "CHAPTER TWO", "". */
+  textBefore: string;
+  /** What it says now: the chapter's stored name, single line. */
+  textAfter: string;
+}
+
+/** One chapter this pass left alone, and why. It is never a refusal. */
+export interface UnnamedChapterOpening {
+  file: string;
+  /** The opening it was about, or null when the document has none. */
+  openerKey: NarrationElementKey | null;
+  kind: 'no-chapter-element' | 'already-named' | 'holds-image';
+  /** The sentence a log says about it. */
+  reason: string;
+}
+
+/** What the naming pass did to a book, in the terms an edit log records. */
+export interface ChapterOpeningNamingResult {
+  edits: NamedChapterOpening[];
+  skipped: UnnamedChapterOpening[];
+}
+
+/**
+ * Write every named chapter's opening AS its stored name, book-wide.
+ *
+ * ── Why this is unattended, where the fold is a gesture ────────────────────
+ *
+ * Owen, 2026-08-09: "from the moment the book opens, the chapter openers
+ * contain the chapter's text. period. the user will delete surrounding blocks
+ * if they're unnecessary." A chapter that prints "2" over an "An Opportunity to
+ * Hope" subhead is called "Chapter 2: An Opportunity to Hope" in its own table
+ * of contents, and there is no version of this app in which the user should
+ * have to ask, chapter by chapter, for the book to say what the book already
+ * says about itself. So it is a normalization the project's open runs, not a
+ * button — and the surrounding blocks stay exactly where they are, because
+ * whether a subhead is worth narrating is a judgement, and judgements are the
+ * user's.
+ *
+ * ── Why NOTHING is removed ────────────────────────────────────────────────
+ *
+ * Every edit here is text inside one element. No element leaves the markup, so
+ * no text-unit index moves and no image ordinal moves, so every narration
+ * strike on record still names the element it always named — which is why the
+ * caller re-stamps the record onto the new bytes rather than migrating its
+ * keys, and why this pass may run over a book that has been struck without
+ * asking anybody anything.
+ *
+ * ── Why one odd chapter never blocks the rest ─────────────────────────────
+ *
+ * The fold REFUSES over an opening holding an `<img>`, because a person asked
+ * for that one fold and is owed the reason. This pass runs unattended over a
+ * whole book, so refusing would mean one picture-titled chapter stopping the
+ * project from opening. It skips that chapter, reports it, and names the other
+ * two hundred.
+ *
+ * `namesByFile` is zip entry → the name that chapter's opening should say. A
+ * document with no entry keeps its printed text: its print IS its name.
+ *
+ * A book that already reads right is NOT copied to `outputPath` — see below.
+ */
+export async function nameChapterOpeningsInBookFile(
+  inputPath: string,
+  outputPath: string,
+  namesByFile: ReadonlyMap<string, string>,
+): Promise<ChapterOpeningNamingResult> {
+  const bookName = path.basename(inputPath);
+
+  const wanted = new Map<string, string>();
+  for (const [file, raw] of namesByFile) {
+    const name = raw.replace(/\s+/g, ' ').trim();
+    if (name.length === 0) {
+      throw new Error(
+        `${bookName}'s chapter openings cannot be named: ${file} was handed an empty name. An `
+        + 'opening with no stored name keeps what it prints, and the caller decides that before it '
+        + 'gets here rather than this pass silencing a heading. Nothing was written.'
+      );
+    }
+    wanted.set(file, name);
+  }
+
+  // ── The book, walked ONCE, exactly as the narration writer walks it ───────
+  //
+  // `collectExportUnits` then `collectImageElements`, per spine document, in
+  // spine order — the one walk that makes a key the picker recorded and a key
+  // resolved here the same element (`writeNarrationEpub` above,
+  // electron/quire-stamp.ts, and this).
+  const processor = new EpubProcessor();
+  const perFile = new Map<string, {
+    doc: any; body: any; units: MarkupUnit[]; images: number;
+  }>();
+  try {
+    const structure = await processor.open(inputPath);
+    for (const chapter of structure.chapters) {
+      const entryName = normalizeZipEntryName(processor.resolvePath(chapter.href));
+      if (perFile.has(entryName)) continue;  // a spine document listed twice is one file
+      const { doc, body } = parseXhtmlBody(await processor.readFile(entryName), entryName);
+      const units: MarkupUnit[] = [];
+      let indexInFile = 0;
+      for (const c of collectExportUnits(doc, body, entryName)) {
+        units.push({
+          file: entryName,
+          key: narrationElementKey(entryName, indexInFile++),
+          tag: c.tag,
+          el: c.el,
+          imageOnly: c.imageOnly,
+          normText: c.normText,
+        });
+      }
+      perFile.set(entryName, {
+        doc, body, units, images: collectImageElements(body).length,
+      });
+    }
+  } finally {
+    processor.close();
+  }
+
+  // ── Which element opens each chapter ──────────────────────────────────────
+  //
+  // The book's own markup says, read by the ONE classifier
+  // (`markupCategoriesForUnits`) over the WHOLE book — note targets are
+  // resolved across documents and chapter openings are marked against the
+  // navigation, so a per-document reading would be a different reading. This is
+  // the same derivation `chapterSpeechOverrides` makes in
+  // electron/narration-export.ts, and it must stay the same one: that override
+  // is what the narration copy says, and this is what the book says.
+  const allUnits: MarkupUnit[] = [];
+  for (const walked of perFile.values()) allUnits.push(...walked.units);
+  const { categoryByKey } = markupCategoriesForUnits(
+    allUnits, await readEpubTocTargets(inputPath));
+
+  const edits: NamedChapterOpening[] = [];
+  const skipped: UnnamedChapterOpening[] = [];
+  const replacements = new Map<string, Buffer>();
+  /** What the written file must read back as, per edited document. */
+  const expected: Array<{
+    file: string; openerIndex: number; name: string; units: number; images: number;
+  }> = [];
+
+  for (const [file, walked] of perFile) {
+    const name = wanted.get(file);
+    if (name === undefined) continue;  // not a named chapter; its print is its name
+
+    const openerIndex = walked.units.findIndex((u) => categoryByKey.get(u.key) === 'chapter');
+    if (openerIndex < 0) {
+      skipped.push({
+        file, openerKey: null, kind: 'no-chapter-element',
+        reason: `${file} is called "${name}" in the table of contents, and its markup marks no `
+          + 'chapter opening in it, so there is no element to write that name into.',
+      });
+      continue;
+    }
+    const opener = walked.units[openerIndex];
+    const openerKey = opener.key as NarrationElementKey;
+
+    const textBefore = collapsedUnitText(opener.el);
+    if (textBefore === name) {
+      skipped.push({
+        file, openerKey, kind: 'already-named',
+        reason: `${file}'s opening already reads "${name}".`,
+      });
+      continue;
+    }
+    if (elementHoldsImage(opener.el)) {
+      skipped.push({
+        file, openerKey, kind: 'holds-image',
+        reason: `${file}'s chapter opening holds a picture, and writing "${name}" into it would `
+          + 'take that picture out of the book. This chapter keeps what it prints; the rest of the '
+          + 'book was named.',
+      });
+      continue;
+    }
+
+    // The opening's children are replaced with ONE text node, because the name
+    // is the whole utterance: a `<h1>` that keeps a `<span class="num">2</span>`
+    // beside the name is a heading that says the number twice.
+    while (opener.el.firstChild) opener.el.removeChild(opener.el.firstChild);
+    opener.el.appendChild(walked.doc.createTextNode(name));
+
+    edits.push({ file, openerKey, textBefore, textAfter: name });
+    replacements.set(file, serializeEditedDocument(walked.doc));
+    expected.push({
+      file, openerIndex, name, units: walked.units.length, images: walked.images,
+    });
+  }
+
+  // A book with nothing to name is NOT copied. This runs on every project open,
+  // and writing a byte-for-byte duplicate of a fifty-megabyte book to disk to
+  // discover that it was a duplicate is work nobody asked for. An empty `edits`
+  // therefore means `outputPath` was never created — which is exactly what the
+  // caller does with it either way.
+  if (replacements.size === 0) return { edits, skipped };
+
+  await writeBookWithReplacedEntries(inputPath, outputPath, replacements);
+
+  // ── The promise, kept or the file destroyed ───────────────────────────────
+  //
+  // Re-walked with the same two enumerations that produced the keys, because
+  // the caller is about to re-stamp a positional strike record onto these bytes
+  // WITHOUT migrating a single key, and the claim that entitles it to is
+  // checked here: the document holds the same number of text units it held and
+  // the same number of pictures, and the opening — still at its own index,
+  // since nothing was removed — reads the name.
+  try {
+    const check = new ZipReader(outputPath);
+    await check.open();
+    try {
+      for (const want of expected) {
+        const written = parseXhtmlBody(
+          (await check.readEntry(want.file)).toString('utf8'), want.file);
+        const units = collectExportUnits(written.doc, written.body, want.file);
+        const images = collectImageElements(written.body).length;
+        if (units.length !== want.units) {
+          throw new Error(
+            `${want.file} held ${want.units} text element(s) and the rewritten file holds `
+            + `${units.length}. Naming a chapter opening removes nothing, so every narration `
+            + 'strike recorded against this book would now name the wrong element. Nothing was '
+            + 'written.'
+          );
+        }
+        if (images !== want.images) {
+          throw new Error(
+            `${want.file} held ${want.images} picture(s) and the rewritten file holds ${images}. `
+            + 'Naming a chapter opening moves no picture. Nothing was written.'
+          );
+        }
+        const reads = collapsedUnitText(units[want.openerIndex].el);
+        if (reads !== want.name) {
+          throw new Error(
+            `${want.file}'s chapter opening should read "${want.name}" and reads "${reads}". `
+            + 'Nothing was written.'
+          );
+        }
+      }
+    } finally {
+      check.close();
+    }
+  } catch (err) {
+    await fs.rm(outputPath, { force: true });
+    throw err;
+  }
+
+  return { edits, skipped };
 }
 
 /**

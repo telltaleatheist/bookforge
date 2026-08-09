@@ -28,7 +28,9 @@ import * as path from 'path';
 
 import {
   writeNarrationEpub, epubCarriesConversionStamps, foldChapterOpeningInBookFile,
-  markupCategoriesForUnits, readEpubTocTargets, type MarkupUnit,
+  nameChapterOpeningsInBookFile,
+  markupCategoriesForUnits, readEpubTocTargets,
+  type MarkupUnit, type NamedChapterOpening, type UnnamedChapterOpening,
 } from './epub-processor';
 import { enumerateNarrationElements } from './quire-stamp';
 import { readChapterTitlesOfBook } from './book-chapters';
@@ -776,4 +778,134 @@ export async function mergeChapterOpening(
     droppedStrikes: record.droppedStrikes,
     renumberedStrikes: record.renumberedStrikes,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Naming the chapter openings — the normalization a book gets at open
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** What the naming pass did to a project's book. */
+export interface ChapterOpeningNamingSummary {
+  /** How many openings were rewritten. Zero means the book was already right. */
+  edited: number;
+  /** Each one, with what it printed before — the same list the manifest keeps. */
+  named: NamedChapterOpening[];
+  /** Chapters left alone, and why. Never a failure; see below. */
+  skipped: UnnamedChapterOpening[];
+}
+
+/**
+ * Name every chapter opening of the project's working copy, in the book.
+ *
+ * ── The contract ──────────────────────────────────────────────────────────
+ *
+ * Owen, 2026-08-09: "from the moment the book opens, the chapter openers
+ * contain the chapter's text. period. the user will delete surrounding blocks
+ * if they're unnecessary." So this runs on the project's OPEN
+ * (`projects:load-from-path`) and again after a chapter RENAME, and it is
+ * IDEMPOTENT — the second open finds every opening already reading its name,
+ * makes no edit, and does not touch the book or the manifest by so much as a
+ * timestamp. That is not an optimization; it is what makes running it on every
+ * open safe, because a book whose bytes changed on every open would invalidate
+ * the narration copy, the analysis cache and the strike record for nothing.
+ *
+ * ── What is never touched ─────────────────────────────────────────────────
+ *
+ * The ARCHIVE. `manifest.outputs.epub` is the working copy and is the only
+ * file opened for writing (memory: pipeline-source-model-archive-as-source).
+ * A project with no working copy at all is normal — a PDF before Generate
+ * EPUB — and returns "nothing edited" rather than an error.
+ *
+ * ── Why the strike record is re-stamped and not migrated ──────────────────
+ *
+ * Because NO element is removed: every edit is text inside one element, so
+ * every text-unit index and every image ordinal is exactly where it was and
+ * each strike still names the element it named. The record follows the book's
+ * new bytes; its keys are not touched. A record stamped with some OTHER book
+ * cannot be followed — its positions are in a file nobody has — so this
+ * REFUSES, before the book is written, rather than forging agreement. The
+ * refusal is only reachable when there is something to name: a book already
+ * normalized is a no-op no matter what the record says, which is what keeps a
+ * void record from making a project unopenable.
+ */
+export async function nameChapterOpenings(
+  projectDir: string,
+): Promise<ChapterOpeningNamingSummary> {
+  const nothing: ChapterOpeningNamingSummary = { edited: 0, named: [], skipped: [] };
+
+  const book = await manifestService.readExportEpub(projectDir);
+  if (!book || !fs.existsSync(book.absPath)) return nothing;
+
+  // The book as it stands, measured BEFORE anything is written: it is what says
+  // whether the strike record was describing this book a moment ago, and what
+  // the edit log records this pass as having started from.
+  const { sha256: fromSha256 } = await sha256File(book.absPath);
+
+  // ── The names ─────────────────────────────────────────────────────────────
+  //
+  // The book's own table of contents, which is where a chapter's name lives and
+  // the only place it lives (electron/book-chapters.ts). A chapter listed under
+  // an empty title contributes nothing — an opening with no stored name keeps
+  // what it prints, because its print IS its name.
+  const namesByFile = new Map<string, string>();
+  for (const chapter of (await readChapterTitlesOfBook(book.absPath)).chapters) {
+    const name = chapter.navTitle.replace(/\s+/g, ' ').trim();
+    if (name.length === 0) continue;
+    if (!namesByFile.has(chapter.file)) namesByFile.set(chapter.file, name);
+  }
+  if (namesByFile.size === 0) return nothing;
+
+  // Read now, judged after the pass has said whether it has anything to do. A
+  // book that is already named must open even when its strikes are void.
+  const recorded = await manifestService.readNarrationDeletions(projectDir);
+  const stale = narrationDeletionsStaleReason(recorded, fromSha256);
+
+  await fs.promises.mkdir(STAGING_DIR, { recursive: true });
+  const staged = path.join(STAGING_DIR, `name-openers-${fromSha256.slice(0, 16)}.epub`);
+  const named = await nameChapterOpeningsInBookFile(book.absPath, staged, namesByFile);
+
+  if (named.edits.length === 0) {
+    // The book already says what it says. Idempotence is the contract, so the
+    // working copy is not replaced by bytes that would differ only in their zip
+    // timestamps — and the file op did not even write a staged copy to have to
+    // move. The `rm` is for the case where it did and something below refused.
+    await fs.promises.rm(staged, { force: true });
+    return { edited: 0, named: [], skipped: named.skipped };
+  }
+
+  if (stale !== null) {
+    await fs.promises.rm(staged, { force: true });
+    throw new Error(
+      `${named.edits.length} chapter opening(s) in ${path.basename(book.absPath)} still print `
+      + 'something other than their stored name, and they were NOT rewritten, because the '
+      + `narration strikes recorded against this book cannot be carried onto the edit.\n\n${stale}`
+    );
+  }
+
+  await moveIntoPlace(staged, book.absPath);
+  const { sha256: toSha256 } = await sha256File(book.absPath);
+  const at = new Date().toISOString();
+
+  await manifestService.recordChapterOpeningNaming(projectDir, {
+    kind: 'name-chapter-openers',
+    at,
+    named: named.edits.map((e) => ({
+      file: e.file, openerKey: e.openerKey, textBefore: e.textBefore, textAfter: e.textAfter,
+    })),
+    fromSha256,
+    toSha256,
+  });
+
+  const blocked = named.skipped.filter((s) => s.kind === 'holds-image');
+  console.log(
+    `[narration-export] ${path.basename(projectDir)}: named ${named.edits.length} chapter `
+    + `opening(s) in ${path.basename(book.absPath)} — `
+    + named.edits.map((e) => `${e.openerKey} "${e.textBefore}" → "${e.textAfter}"`).join('; ')
+    + (blocked.length === 0
+      ? '.'
+      : `. ${blocked.length} opening(s) hold a picture and were left alone: `
+        + `${blocked.map((s) => s.file).join(', ')}.`)
+  );
+
+  return { edited: named.edits.length, named: named.edits, skipped: named.skipped };
 }

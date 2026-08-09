@@ -1407,12 +1407,23 @@ export interface ElectronAPI {
     chapterTitles: (projectDir: string) =>
       Promise<{ success: boolean; titles?: BookChapterTitles | null; error?: string }>;
     /**
-     * Rename one chapter IN the book: its nav entry and its document's
-     * `<title>`, never the print on the page. `file` is the chapter document's
-     * zip entry name — the same identity a narration strike carries.
+     * Rename one chapter IN the book: its nav entry, its document's `<title>`,
+     * and its chapter OPENING — the print on the page follows the name it is
+     * given. `file` is the chapter document's zip entry name, the same identity
+     * a narration strike carries.
+     *
+     * `openingsNamed` is how many openings the book had rewritten as part of
+     * this rename (normally one; more if some earlier open had left any
+     * un-named). A window that sees it above zero is looking at a book whose
+     * markup has changed under it and must re-open to lay it out again.
      */
     renameChapter: (projectDir: string, file: string, title: string) =>
-      Promise<{ success: boolean; result?: BookChapterRenameResult; error?: string }>;
+      Promise<{
+        success: boolean;
+        result?: BookChapterRenameResult;
+        openingsNamed?: number;
+        error?: string;
+      }>;
   };
   window: {
     hide: () => Promise<{ success: boolean }>;

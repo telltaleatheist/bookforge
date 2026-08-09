@@ -448,11 +448,44 @@ export interface MergeChapterOpeningEdit {
 }
 
 /**
- * One edit to a book's markup. A union of ONE today, and a union on purpose:
- * every future edit gets its own `kind` and its own before/after fields rather
- * than a shared "details" bag nothing can read.
+ * The chapter-opening NAMING: every named chapter's opening rewritten to say
+ * what the book's own table of contents calls that chapter.
+ *
+ * Unattended — it runs when the project opens and after a chapter is renamed —
+ * and TEXT-ONLY. No element is removed, which is the whole difference from
+ * {@link MergeChapterOpeningEdit}: every text-unit index and image ordinal is
+ * where it was, so the narration strike record is re-stamped onto the book's
+ * new bytes with its keys untouched rather than migrated.
+ *
+ * One entry per RUN, not per chapter: a pass that named nineteen openings is
+ * one act, and the nineteen are its subject. A run that named nothing writes no
+ * entry at all.
  */
-export type BookEdit = MergeChapterOpeningEdit;
+export interface NameChapterOpenersEdit {
+  kind: 'name-chapter-openers';
+  at: string;
+  /** Every opening rewritten, with the words it printed before. */
+  named: Array<{
+    /** The zip entry it is in. */
+    file: string;
+    /** `<zip entry>#<index>` — the position, unchanged by this edit. */
+    openerKey: string;
+    /** What it printed, whitespace collapsed: "2", "CHAPTER TWO", "". */
+    textBefore: string;
+    /** What it says now: the chapter's stored name, single line. */
+    textAfter: string;
+  }>;
+  /** The book's sha256 before the pass and after it. */
+  fromSha256: string;
+  toSha256: string;
+}
+
+/**
+ * One edit to a book's markup. A union on purpose: every edit gets its own
+ * `kind` and its own before/after fields rather than a shared "details" bag
+ * nothing can read.
+ */
+export type BookEdit = MergeChapterOpeningEdit | NameChapterOpenersEdit;
 
 /**
  * What has ever been done to a book — the things that can be done to one now,
