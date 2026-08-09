@@ -320,10 +320,24 @@ const GRID_BASE_WIDTH = 200;
       -webkit-user-select: none;
     }
 
+    // The table the pages lie on should read as GRAY. In the light palette
+    // --bg-sunken already is one (light sand), but the dark palette resolves it
+    // to $neutral-950 — the deepest black on the ramp — and a grid of white
+    // pages sits in a void. One step up the SAME ramp, $neutral-800 ("Dark
+    // charcoal", the constant --bg-input is built from), is that gray. No new
+    // token, and only the dark theme has anything to say.
+    :host-context([data-theme='dark']) {
+      .placeholder,
+      .epub-viewport { background: $neutral-800; }
+    }
+
     .epub-content {
       display: flex;
       flex-direction: column;
-      align-items: center;
+      // Left-aligned, the way the raster viewer's grid is (flex-start on both
+      // axes). Centring made a narrow band sit under a wide one's middle, so
+      // page 1 of one document did not line up with page 1 of the next.
+      align-items: flex-start;
       gap: var(--ui-spacing-xl);
       padding: var(--ui-spacing-xl);
     }
@@ -353,10 +367,14 @@ const GRID_BASE_WIDTH = 200;
       inset: 0;
     }
 
+    // A slot and a mounted page are the same page at two moments, so they carry
+    // the same chrome: one hairline at the page edge and the raster viewer's
+    // drop shadow. A band that is still laying out must not look like a
+    // different kind of thing from the band beside it that is ready.
     .page-slot {
       position: absolute;
       background: var(--bg-elevated);
-      border: 1px solid var(--border-subtle);
+      border: 1px solid var(--border-default);
       box-shadow: var(--shadow-lg);
       display: flex;
       align-items: center;
@@ -389,7 +407,13 @@ const GRID_BASE_WIDTH = 200;
     .page-frame {
       position: absolute;
       pointer-events: none;
-      outline: 1px solid transparent;
+      // Each of these is ONE page. Inside a band the pages share a single
+      // white webview, so without this the 24 px gutter between two pages is
+      // white on white and there is no telling where one ends. Outline and
+      // shadow both paint OUTSIDE the border box, so the page boxes do not
+      // move — the gutter the arrange script laid out is untouched.
+      outline: 1px solid var(--border-default);
+      box-shadow: var(--shadow-lg);
 
       &.page-selected { outline: 2px solid var(--accent); }
       &.page-deleted { outline: 2px solid #ff4444; background: rgba(255, 68, 68, 0.08); }
