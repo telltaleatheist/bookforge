@@ -68,6 +68,22 @@ import type { QuireStrategy } from './strategy';
 export const PAGEDJS_VERSION = '0.4.3';
 
 /**
+ * Inner margin of every page box, in CSS pixels, on all four sides.
+ *
+ * `@page { margin }` — Paged.js insets the CONTENT area and the page box keeps
+ * its size, so nothing that measures `.pagedjs_page` boxes changes. What does
+ * change is pagination: less content fits a page, so this number is part of a
+ * page map's identity exactly as the page size is. It is a constant of this
+ * strategy, not a caller option — every consumer of quire's page numbers must
+ * lay books out identically, and `QUIRE_ANALYSIS_VERSION` (electron side) was
+ * bumped when this stopped being zero.
+ *
+ * 48px on a 600px page leaves a 504px measure — about 62 characters at the
+ * 18px analysis font, which is a book's, not a browser's, line length.
+ */
+export const PAGE_MARGIN = 48;
+
+/**
  * Slack, in CSS pixels, on box arithmetic. Sub-pixel layout makes an exact
  * comparison superstition; half a pixel of drift is still agreement. Chromium's
  * LayoutUnit is 1/64px, so this is 32 of them.
@@ -128,6 +144,8 @@ export interface PagedConfig {
   width: number;
   /** Page box height in CSS pixels. */
   height: number;
+  /** Inner page margin in CSS pixels — the content box is the page box less this on every side. */
+  margin: number;
   /** Slack on every box comparison. */
   tolerance: number;
   /** Pages one document may produce before pagination is called a runaway. */
@@ -151,10 +169,12 @@ export class PagedStrategy implements QuireStrategy {
 
   layoutCss(g: QuireGeometry): string {
     const { width: w, height: h, fontSize } = g;
+    const cw = w - 2 * PAGE_MARGIN;
+    const ch = h - 2 * PAGE_MARGIN;
     return [
       '/* quire: the page box. Appended last so it wins over the book, and handed',
       '   to Paged.js\'s polisher last for the same reason. */',
-      `@page{size:${w}px ${h}px;margin:0;}`,
+      `@page{size:${w}px ${h}px;margin:${PAGE_MARGIN}px;}`,
       'html{',
       'margin:0!important;padding:0!important;border:0!important;',
       `font-size:${fontSize}px!important;`,
@@ -179,12 +199,15 @@ export class PagedStrategy implements QuireStrategy {
       // set them would move the page boxes out from under the arithmetic.
       '.pagedjs_pages{display:block!important;}',
       '.pagedjs_page{margin:0!important;}',
-      // Capped at the PAGE BOX, height included — the difference from the
+      // Capped at the CONTENT BOX, height included — the difference from the
       // multi-column strategy, and the one that buys correct image placement. A
-      // plate taller than the page is scaled to the page rather than sliced
-      // across two, which is what a reader means by "the plate is on page 181".
+      // plate taller than the content area is scaled to it rather than sliced
+      // across two pages, which is what a reader means by "the plate is on page
+      // 181". The cap is the content box, not the page box, because an image is
+      // content: sized to the page box it would run 2×margin past the content
+      // edge and be clipped by the sheet.
       'body img,body svg,body video,body canvas,body object,body embed,body picture{',
-      `max-width:${w}px!important;max-height:${h}px!important;height:auto!important;`,
+      `max-width:${cw}px!important;max-height:${ch}px!important;height:auto!important;`,
       '}',
     ].join('');
   }
@@ -197,6 +220,7 @@ export class PagedStrategy implements QuireStrategy {
     return {
       width: g.width,
       height: g.height,
+      margin: PAGE_MARGIN,
       tolerance: BOX_TOLERANCE,
       maxPages: RUNAWAY_PAGE_GUARD,
       layoutCss: this.layoutCss(g),
@@ -519,6 +543,10 @@ const MEASURE_SOURCE = (async function quirePagedMeasure(
 
   try {
     const W = cfg.width, H = cfg.height, TOL = cfg.tolerance;
+    // The CONTENT box — the page box less the margin on every side. Coordinates
+    // are content-relative (the origins below are the content area's), so this
+    // is the box that overflow and size assertions speak about.
+    const CW = W - 2 * cfg.margin, CH = H - 2 * cfg.margin;
 
     // ── The roster, taken before the book's CSS is removed ───────────────
     //
@@ -586,16 +614,19 @@ const MEASURE_SOURCE = (async function quirePagedMeasure(
       }
       const rect = content.getBoundingClientRect();
       // The direct check on the layout, the counterpart of the multi-column
-      // strategy's COLUMN_GAP_MISMATCH: if `@page { size }` did not reach the
-      // fragmenter, Paged.js silently uses its own default (US Letter) and every
-      // box would be measured against a page that is not the page. Caught on the
-      // first box of the first document rather than inferred later.
-      if (Math.abs(rect.width - W) > TOL || Math.abs(rect.height - H) > TOL) {
+      // strategy's COLUMN_GAP_MISMATCH: if `@page { size }` or `@page { margin }`
+      // did not reach the fragmenter, Paged.js silently uses its own defaults
+      // (US Letter) and every box would be measured against a page that is not
+      // the page. The content area is what is measured here, so the expectation
+      // is the content box — page size less the margin on every side. Caught on
+      // the first box of the first document rather than inferred later.
+      if (Math.abs(rect.width - CW) > TOL || Math.abs(rect.height - CH) > TOL) {
         fail('PAGE_BOX_MISMATCH',
-          'page box ' + i + ' lays out at ' + rect.width.toFixed(3) + '×'
-          + rect.height.toFixed(3) + 'px but the page arithmetic assumes ' + W + '×' + H
-          + 'px. The @page size quire asked for did not reach the fragmenter, so every '
-          + 'page-local coordinate would be measured against the wrong box.');
+          'page box ' + i + ' lays its content out at ' + rect.width.toFixed(3) + '×'
+          + rect.height.toFixed(3) + 'px but the page arithmetic assumes ' + CW + '×' + CH
+          + 'px (' + W + '×' + H + ' less a ' + cfg.margin + 'px margin). The @page rule '
+          + 'quire asked for did not reach the fragmenter, so every page-local coordinate '
+          + 'would be measured against the wrong box.');
       }
       originX.push(rect.left);
       originY.push(rect.top);
@@ -752,13 +783,13 @@ const MEASURE_SOURCE = (async function quirePagedMeasure(
         if (box) {
           boxByPage[p] = box;
           inkedPages.push(p);
-          const outX = Math.max(-box.x, box.r - W);
+          const outX = Math.max(-box.x, box.r - CW);
           if (outX > TOL) {
             overflows.push({
               ids: group.rawId.split('|'), page: p, axis: 'x', overshoot: +outX.toFixed(3),
             });
           }
-          const outY = Math.max(-box.y, box.b - H);
+          const outY = Math.max(-box.y, box.b - CH);
           if (outY > TOL) {
             overflows.push({
               ids: group.rawId.split('|'), page: p, axis: 'y', overshoot: +outY.toFixed(3),

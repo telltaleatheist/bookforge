@@ -105,7 +105,7 @@ function requireUnalignedFacts(cached: CachedAnalysis, pdfPath: string): void {
 const execAsync = promisify(exec);
 
 // Cache version - increment this when changing extraction logic to invalidate old caches
-const ANALYSIS_CACHE_VERSION = 20;  // v20: an EPUB is paginated by quire, in a browser, off its own DOM — so a block IS an element, the page numbering is quire's rather than mupdf's, and the block→element matcher is gone from this path. (v19 was taken by a branch in flight; the counter is global and the cache directory is shared across worktrees, so a collision serves one build's payload to another.)
+const ANALYSIS_CACHE_VERSION = 21;  // v21: quire pages gained an inner margin (PAGE_MARGIN 48px), so every EPUB's pagination — page counts and block page numbers — changed. (v20: an EPUB is paginated by quire, in a browser, off its own DOM — a block IS an element and the page numbering is quire's rather than mupdf's.)
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;

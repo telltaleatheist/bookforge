@@ -38,12 +38,16 @@ import type {
 } from '../packages/quire/src/types';
 
 /**
- * Bump when the STAMPS or the shape of a cached map change.
+ * Bump when the STAMPS, the shape of a cached map, or the LAYOUT ITSELF change
+ * — anything that would make an old map disagree with what this build lays out.
  *
  * The stamped copy and the page map are one artifact in two files — the map's
  * ids are the stamps — so they share a version and are invalidated together.
+ *
+ * v2: pages gained an inner margin (`PAGE_MARGIN` in quire's Paged strategy),
+ * so less content fits a page and every v1 page number means a different page.
  */
-export const QUIRE_ANALYSIS_VERSION = 1;
+export const QUIRE_ANALYSIS_VERSION = 2;
 
 export interface QuireAnalysisGeometry {
   width: number;
@@ -56,10 +60,11 @@ export interface QuireAnalysisGeometry {
  *
  * The same three numbers mupdf was given (`layout(600, 900, 18)`), so a book's
  * pages stay roughly the size they have always been, and the geometry quire's
- * own test battery measures. Page MARGIN is zero — quire forces `html`/`body`
- * margin, padding and border to 0, so the page box is the content box — which is
- * why quire's page count for a book is lower than mupdf's: mupdf adds margins of
- * its own and therefore fits less on a page.
+ * own test battery measures. The page MARGIN is not a fourth number here: it is
+ * a constant of the Paged strategy itself (`PAGE_MARGIN`, 48px since v2 —
+ * before that, zero), because every consumer of quire's page numbers must lay
+ * books out identically. Changing it changes pagination, which is a
+ * `QUIRE_ANALYSIS_VERSION` bump by definition.
  */
 export const QUIRE_ANALYSIS_GEOMETRY: QuireAnalysisGeometry = {
   width: 600, height: 900, fontSize: 18,
