@@ -14,11 +14,12 @@ import { promisify } from 'util';
 import * as cheerio from 'cheerio';
 import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
 import { blockCategoryForVlm } from '../shared/vlm/conversion';
-import { stripFootnoteMarkerSups } from '../shared/text/sup-markers';
+import { isFootnoteMarkerSupText, stripFootnoteMarkerSups } from '../shared/text/sup-markers';
 import {
   narrationDocumentKey,
   narrationElementKey,
   narrationImageElementKey,
+  parseNarrationElementKey,
   planNarrationRemoval,
   splitNarrationDeletions,
   type NarrationElementKey,
@@ -5706,6 +5707,22 @@ export interface NarrationEpubWriteResult {
   removedElements: number;
   /** How many the book had. */
   totalElements: number;
+  /**
+   * How many elements were found ALIVE in the written file by the verification.
+   *
+   * Reported rather than kept private because it is the number that says the
+   * guarantee was actually checked: `verifiedElements + removedElements +
+   * dissolvedElements === totalElements`, measured against the file on disk
+   * rather than against the plan that produced it.
+   */
+  verifiedElements: number;
+  /**
+   * How many elements left the copy WITHOUT being struck: a picture inside a
+   * struck paragraph, a wrapper whose only picture was struck, anything in a
+   * document the strikes emptied. Counted apart because they are not deletions
+   * the user asked for by name, and the arithmetic has to say where they went.
+   */
+  dissolvedElements: number;
   /** How many digits-only `<sup>` footnote references were removed. */
   removedSupMarkers: number;
   /** The spine documents that were rewritten. */
@@ -5945,6 +5962,212 @@ function neutralizeLinksToPruned(doc: any, pruned: ReadonlySet<string>, entry: s
   return neutralized;
 }
 
+// ─── Verifying the cut before it lands ───────────────────────────────────────
+//
+// Owen, 2026-08-09: "it should just delete the blocks we tell it to delete,
+// without fail. a guarantee; a promise… if it isn't, it should fail."
+//
+// Everything above this line decides what to remove. None of it CHECKS that the
+// file that came out is the file that was described — and the failure this was
+// written for is precisely a cut that reported success while 43 of 668 struck
+// paragraphs were still in the copy. So the staged file is re-opened and
+// re-walked with the SAME two enumerations that produced the keys, and the copy
+// only moves into place if its contents are the contents that were planned.
+//
+// The check is a SEQUENCE of signatures rather than a count, because a count is
+// satisfied by removing the wrong paragraph. It is a signature rather than a key
+// because a key is an INDEX and every index after a removal has shifted by
+// construction — the output's unit 8 is the input's unit 9, and comparing those
+// numbers would fail on every correct cut.
+
+/**
+ * The text of one unit as the OUTPUT will spell it — i.e. with the footnote
+ * markers the strip is about to remove already gone.
+ *
+ * Computed from the DOM rather than from the stripped bytes so the two sides of
+ * the comparison are derived independently: the expectation comes from the input
+ * tree, the observation from the written file. `stripFootnoteMarkerSups` works
+ * on serialized markup, so the same rule is applied here to the sup's TEXT,
+ * which is what that rule measures (shared/text/sup-markers.ts).
+ */
+function narrationUnitText(el: any, stripSups: boolean): string {
+  let out = '';
+  const walk = (node: any): void => {
+    if (node.nodeType === 3 || node.nodeType === 4) {
+      out += node.nodeValue ?? '';
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    const tag = (node.tagName ?? '').toLowerCase();
+    if (stripSups && tag === 'sup'
+      && isFootnoteMarkerSupText((node.textContent ?? '').trim())) return;
+    if (!node.childNodes) return;
+    for (let i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]);
+  };
+  walk(el);
+  return out;
+}
+
+/**
+ * What a TEXT unit is, for the purpose of recognizing it again in the output.
+ *
+ * Whitespace is removed entirely rather than collapsed: removing an element
+ * changes the whitespace around the hole it leaves, and a re-serialization
+ * normalizes indentation, so any comparison that kept it would fail on correct
+ * cuts. The tag travels with the text because a paragraph and the heading above
+ * it can carry the same words.
+ */
+function narrationUnitSignature(el: any, stripSups: boolean): string {
+  const tag = (el.tagName ?? '').toLowerCase();
+  const text = narrationUnitText(el, stripSups).replace(/[\s ]+/g, '');
+  return `${tag}|${text}`;
+}
+
+/** What an IMAGE element is: its tag and whatever it points at. */
+function narrationImageSignature(el: any): string {
+  const tag = (el.tagName ?? '').toLowerCase();
+  const src = el.getAttribute?.('src')
+    ?? el.getAttribute?.('xlink:href')
+    ?? el.getAttribute?.('href')
+    ?? '';
+  return `${tag}|${src}`;
+}
+
+/** The readable half of a signature: what the element says, for a sentence. */
+function narrationSignatureExcerpt(signature: string): string {
+  return signature.slice(signature.indexOf('|') + 1, signature.indexOf('|') + 61);
+}
+
+/** Is this element still reachable from the body it was collected out of? */
+function isStillInBody(el: any, body: any): boolean {
+  for (let node = el; node; node = node.parentNode) if (node === body) return true;
+  return false;
+}
+
+/** One element the cut must account for: what it is, and what named it. */
+interface NarrationSignedElement {
+  key: NarrationElementKey;
+  signature: string;
+}
+
+/** What one spine document of the OUTPUT must look like for the cut to be right. */
+interface NarrationCutExpectation {
+  file: string;
+  /** True when the whole document must be absent from the copy. */
+  removed: boolean;
+  /** The TEXT units that must still be there, in the book's own order. */
+  keptUnits: NarrationSignedElement[];
+  /** The IMAGE elements that must still be there, in flow order. */
+  keptImages: NarrationSignedElement[];
+  /** What this document was asked to lose, so a survivor can be NAMED. */
+  struck: NarrationSignedElement[];
+}
+
+/**
+ * Read the staged copy back and prove it is the copy that was planned.
+ *
+ * Throws naming what went wrong; returns the number of elements it accounted
+ * for as still present, which the caller checks against the arithmetic of the
+ * plan. It never repairs anything: a mismatch here means the cut and the record
+ * disagree, and the only honest answer to that is a refusal.
+ */
+async function verifyNarrationCut(
+  outputPath: string,
+  expectations: readonly NarrationCutExpectation[],
+  stripSups: boolean,
+  whatFor: string,
+): Promise<number> {
+  const problems: string[] = [];
+  let kept = 0;
+
+  const zipReader = new ZipReader(outputPath);
+  await zipReader.open();
+  try {
+    for (const expected of expectations) {
+      if (expected.removed) {
+        if (zipReader.hasEntry(expected.file)) {
+          problems.push(
+            `${expected.file} was struck out whole and is still in the copy.`
+          );
+        }
+        continue;
+      }
+      if (!zipReader.hasEntry(expected.file)) {
+        problems.push(
+          `${expected.file} was not struck out and is not in the copy at all.`
+        );
+        continue;
+      }
+
+      const xhtml = (await zipReader.readEntry(expected.file)).toString('utf8');
+      const { doc, body } = parseXhtmlBody(xhtml, expected.file);
+      const gotUnits = collectExportUnits(doc, body, whatFor)
+        .map((c) => narrationUnitSignature(c.el, stripSups));
+      const gotImages = collectImageElements(body).map((el) => narrationImageSignature(el));
+
+      for (const [what, got, want] of [
+        ['text element', gotUnits, expected.keptUnits],
+        ['picture', gotImages, expected.keptImages],
+      ] as Array<[string, string[], NarrationSignedElement[]]>) {
+        // The multiset first, because it says WHICH strike survived; the
+        // sequence second, because it says the survivors are in the right
+        // places. Only the first difference of each is reported — past one the
+        // list is the noise, and one named element is what the user acts on.
+        const wanted = new Map<string, number>();
+        for (const w of want) wanted.set(w.signature, (wanted.get(w.signature) ?? 0) + 1);
+        const surplus = new Map<string, number>();
+        for (const g of got) {
+          const left = wanted.get(g);
+          if (left === undefined || left === 0) {
+            surplus.set(g, (surplus.get(g) ?? 0) + 1);
+          } else {
+            wanted.set(g, left - 1);
+          }
+        }
+        for (const survivor of expected.struck) {
+          if ((surplus.get(survivor.signature) ?? 0) === 0) continue;
+          surplus.set(survivor.signature, surplus.get(survivor.signature)! - 1);
+          problems.push(
+            `${survivor.key} was struck and is still in the copy: `
+            + `"${narrationSignatureExcerpt(survivor.signature)}"`
+          );
+        }
+        for (const [, missing] of wanted) {
+          if (missing === 0) continue;
+          const lost = want.find((w) => wanted.get(w.signature)! > 0);
+          problems.push(
+            `${expected.file} lost a ${what} nobody struck — ${lost ? lost.key : 'unknown'}: `
+            + `"${lost ? narrationSignatureExcerpt(lost.signature) : ''}"`
+          );
+          break;
+        }
+        if (got.length !== want.length) {
+          problems.push(
+            `${expected.file} should hold ${want.length} ${what}(s) after the cut and holds `
+            + `${got.length}.`
+          );
+        }
+        kept += Math.min(got.length, want.length);
+      }
+    }
+  } finally {
+    zipReader.close();
+  }
+
+  if (problems.length > 0) {
+    const SHOWN = 8;
+    throw new Error(
+      `The narration copy was written and does not match what was struck, so it has been `
+      + `discarded rather than put in place. ${problems.length} problem(s):\n`
+      + problems.slice(0, SHOWN).map((p) => `  • ${p}`).join('\n')
+      + (problems.length > SHOWN ? `\n  • …and ${problems.length - SHOWN} more.` : '')
+      + '\n\nThis is a bug in the cut, not something you did — the record is intact, and nothing '
+      + 'was written.'
+    );
+  }
+  return kept;
+}
+
 /**
  * Write the narration copy: the book, with the struck elements gone and (by
  * default) its footnote reference markers with them.
@@ -6056,6 +6279,70 @@ export async function writeNarrationEpub(
     for (const unit of perFile.get(file)!.units) struck.add(unit.key);
   }
 
+  const stripSups = options?.stripSupMarkers !== false;
+
+  // ── What the copy must contain, decided BEFORE anything is removed ────────
+  //
+  // Read off the tree as it still is, so the expectation is a statement about
+  // the book rather than a restatement of the removal loop. A bug in that loop
+  // cannot flow into the check that is supposed to catch it.
+  //
+  // ── The one thing a strike does that it was not asked to do ───────────────
+  //
+  // `collectExportUnits` admits an element as a unit when it holds an `<img>` OR
+  // any text at all. So a wrapper whose ONLY content is a picture — the
+  // `<div class="image">` a plate lives in — stops being a unit the moment that
+  // picture is struck. It is not removed and it was never struck; it simply is
+  // not there to be enumerated any more. Counting it as a survivor would fail
+  // every correct cut of an image, so it is classified here, by the SAME
+  // admission rule, against the content the copy will actually have.
+  //
+  // The mirror of it: a picture INSIDE a struck paragraph goes with the
+  // paragraph. It was not struck by name and it is not coming back, because the
+  // element that held it is what the user struck.
+  const struckImageElements = new Set<any>();
+  const struckUnitElements: any[] = [];
+  for (const [, { units: fileUnits }] of perFile) {
+    for (const unit of fileUnits) {
+      if (!struck.has(unit.key)) continue;
+      if (parseNarrationElementKey(unit.key).kind === 'image') struckImageElements.add(unit.el);
+      else struckUnitElements.push(unit.el);
+    }
+  }
+  const goesWithAStruckUnit = (el: any): boolean =>
+    struckUnitElements.some((struckEl) => el === struckEl || isDescendantOf(el, struckEl));
+
+  const signedPerFile = new Map<string, Array<NarrationSignedElement & {
+    kind: 'unit' | 'image';
+    /** Will the output's own walk still enumerate this element? */
+    admitted: boolean;
+  }>>();
+  for (const [file, { units: fileUnits }] of perFile) {
+    const signed: Array<NarrationSignedElement & { kind: 'unit' | 'image'; admitted: boolean }> = [];
+    for (const unit of fileUnits) {
+      const kind = parseNarrationElementKey(unit.key).kind === 'image' ? 'image' : 'unit';
+      const signature = kind === 'image'
+        ? narrationImageSignature(unit.el)
+        : narrationUnitSignature(unit.el, stripSups);
+      let admitted: boolean;
+      if (struck.has(unit.key)) {
+        admitted = false;
+      } else if (kind === 'image') {
+        admitted = !goesWithAStruckUnit(unit.el);
+      } else {
+        const imgs = unit.el.tagName?.toLowerCase() === 'img'
+          ? [unit.el]
+          : Array.from(unit.el.getElementsByTagName('img') as ArrayLike<any>);
+        const keepsAnImage = imgs.some((img: any) => !struckImageElements.has(img));
+        const keepsText =
+          normalizeForAlignment(narrationUnitText(unit.el, stripSups)).length >= 1;
+        admitted = keepsAnImage || keepsText;
+      }
+      signed.push({ key: unit.key, signature, kind, admitted });
+    }
+    signedPerFile.set(file, signed);
+  }
+
   const rewrittenFiles: string[] = [];
   const emptied: string[] = [];
   /** Serialized survivors, held until the pruning set is known. */
@@ -6081,6 +6368,17 @@ export async function writeNarrationEpub(
       // An element whose parent has already gone with an ancestor is already
       // out of the tree; removing it again would throw in xmldom.
       if (unit.el.parentNode) unit.el.parentNode.removeChild(unit.el);
+    }
+    // The skip above is the ONE place a strike could quietly do nothing, so
+    // detachment is asserted rather than assumed: an element still reachable
+    // from the body after the pass is a strike that was planned, checked, and
+    // then had no effect on the tree that is about to be serialized.
+    const stillThere = toRemove.filter((u) => isStillInBody(u.el, body));
+    if (stillThere.length > 0) {
+      throw new Error(
+        `${stillThere.length} element(s) struck out of ${file} are still in the document after `
+        + `they were removed — the first is ${stillThere[0].key}. Nothing was written.`
+      );
     }
     // ── The document the strikes emptied ──────────────────────────────────
     //
@@ -6110,6 +6408,51 @@ export async function writeNarrationEpub(
   }
 
   const pruned = new Set(emptied);
+
+  // ── The expectation, now that the pruning set is known ────────────────────
+  //
+  // A dropped document takes its remaining elements with it — the plate wrapper
+  // whose picture was struck, the `<img>` inside a struck paragraph. Those are
+  // DISSOLVED: gone from the copy without having been struck by name, and
+  // counted apart so the arithmetic below still adds up.
+  //
+  // The prune decision is checked rather than trusted: a document is only
+  // allowed to be dropped when nothing the output's own walk would enumerate is
+  // left in it. Otherwise a bug in `bodyIsEmpty` would silently take a chapter
+  // out of the copy and this check would bless it.
+  const expectations: NarrationCutExpectation[] = [];
+  let dissolved = 0;
+  for (const [file, signed] of signedPerFile) {
+    const dropped = pruned.has(file);
+    const keptUnits: NarrationSignedElement[] = [];
+    const keptImages: NarrationSignedElement[] = [];
+    const struckHere: NarrationSignedElement[] = [];
+    const survivingInDroppedDocument: string[] = [];
+    for (const el of signed) {
+      if (struck.has(el.key)) {
+        struckHere.push({ key: el.key, signature: el.signature });
+        continue;
+      }
+      if (dropped) {
+        dissolved++;
+        if (el.admitted) survivingInDroppedDocument.push(el.key);
+        continue;
+      }
+      if (!el.admitted) { dissolved++; continue; }
+      (el.kind === 'image' ? keptImages : keptUnits).push(
+        { key: el.key, signature: el.signature });
+    }
+    if (survivingInDroppedDocument.length > 0) {
+      await fs.rm(outputPath, { force: true });
+      throw new Error(
+        `${file} was taken out of the narration copy, but ${survivingInDroppedDocument.length} `
+        + `element(s) in it were never struck — the first is ${survivingInDroppedDocument[0]}. `
+        + 'Nothing was written.'
+      );
+    }
+    expectations.push({ file, removed: dropped, keptUnits, keptImages, struck: struckHere });
+  }
+
   const replacements = new Map<string, Buffer>();
 
   // The surviving documents are serialized AFTER the pruning set is known,
@@ -6140,7 +6483,6 @@ export async function writeNarrationEpub(
     }
   }
 
-  const stripSups = options?.stripSupMarkers !== false;
   let removedSupMarkers = 0;
 
   const zipReader = new ZipReader(inputPath);
@@ -6205,9 +6547,39 @@ export async function writeNarrationEpub(
     zipReader.close();
   }
 
+  // ── The promise, kept or the file destroyed ───────────────────────────────
+  //
+  // The staged file is read back and re-walked with the same two enumerations
+  // that produced the keys. Nothing downstream sees a copy that failed this:
+  // the staged file is deleted and the error names what survived, so a caller
+  // that moves the file into place cannot move an unverified one — there is
+  // none to move.
+  let verified = 0;
+  try {
+    const kept = await verifyNarrationCut(outputPath, expectations, stripSups, whatFor);
+    verified = kept;
+    // The arithmetic of the plan, checked against the file: every element the
+    // book had is still in the copy, or was struck out of it, or dissolved with
+    // the thing that held it. `struck` is the UNION — an element named
+    // individually AND by its document is one removal — so this is also the
+    // assertion that `removedElements` means what it says.
+    if (kept + struck.size + dissolved !== plan.total) {
+      throw new Error(
+        `The narration copy accounts for ${kept + struck.size + dissolved} of the book's `
+        + `${plan.total} element(s): ${kept} still in the copy, ${struck.size} struck, `
+        + `${dissolved} dissolved with what held them. Nothing was written.`
+      );
+    }
+  } catch (err) {
+    await fs.rm(outputPath, { force: true });
+    throw err;
+  }
+
   return {
     removedElements: struck.size,
     totalElements: plan.total,
+    verifiedElements: verified,
+    dissolvedElements: dissolved,
     removedSupMarkers,
     rewrittenFiles,
     removedDocuments: emptied.sort(),

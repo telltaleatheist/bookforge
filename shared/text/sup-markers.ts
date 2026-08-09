@@ -31,6 +31,27 @@
  * common of the two by a wide margin — The Third Reich at War is 2093
  * anchor-wrapped to 1 bare, which is how its markers reached the text, got
  * spoken, and taught a fine-tuned voice that junk means end-of-utterance.
+ *
+ * ── THE ONE SURVIVOR ON KILLING AMERICA, AND WHY IT STAYS ───────────────────
+ *
+ * Measured 2026-08-09 over the whole book, both files: 324 `<sup>` elements, 321
+ * stripped, and exactly one left in the narration copy —
+ *
+ *   ch04:  "…it would be invited to become the 28<sup>th</sup> state…"
+ *
+ * That is an ORDINAL SUFFIX, not a note reference, and the rule is doing the
+ * right thing by keeping it. Widening the rule cannot reach it honestly: it
+ * holds no digit at all, so "digits plus punctuation" does not match it, and
+ * "any `<sup>`" would turn the sentence into "the 28 state" — a narrator reading
+ * "the twenty-eight state". A "sup wrapping a noteref anchor" rule would not
+ * reach it either (there is no anchor), and would not be an improvement anywhere
+ * else on this book: the anchor-wrapped markers are already caught by the text
+ * rule, and the bare form has no anchor to recognize.
+ *
+ * The other two survivors of the rule are `<sup>st</sup>` (ch04, ch08) and both
+ * are the same construction — ch08's sits inside a footnote paragraph the user
+ * struck, so it left the copy with the note that held it rather than with the
+ * strip. There is nothing here for the rule to do differently.
  */
 
 /** Matches one `<sup>…</sup>` element, with its inner markup captured. */

@@ -1300,6 +1300,162 @@ function illustratedLayout() {
     ]);
   });
 
+
+  // -- THE GUARANTEE: the cut is VERIFIED before the file lands --------------
+  //
+  // Owen, 2026-08-09: "it should just delete the blocks we tell it to delete,
+  // without fail. a guarantee; a promise... if it fails, it isn't ready for
+  // production."
+  //
+  // Everything above tests that the cut is PLANNED correctly. These test what
+  // happens when the cut itself goes wrong, which is the failure that was
+  // actually measured: 43 of 668 struck footnotes were still in a copy that
+  // reported success. The check re-opens the written file and re-walks it with
+  // the same two enumerations that produced the keys, so a copy that does not
+  // match what was struck is deleted rather than moved into place.
+  //
+  // Both sabotages are applied to a COPY of the compiled module -- the real one
+  // is never patched -- and each disables a different half of the cut, because
+  // the two halves fail in different ways and only one of them is caught by the
+  // detachment assertion.
+
+  /** The compiled writer, with one line of it broken, loaded as its own module. */
+  function sabotagedWriter(name, find, replace) {
+    const src = fs.readFileSync(path.join(DIST, 'electron', 'epub-processor.js'), 'utf8');
+    assert.ok(src.includes(find), `the sabotage anchor for ${name} is not in the compiled writer`);
+    const out = path.join(DIST, 'electron', `epub-processor.sabotage-${name}.js`);
+    fs.writeFileSync(out, src.split(find).join(replace));
+    return { path: out, module: require(out) };
+  }
+
+  await check('a cut that does not remove a struck element throws and writes nothing', async () => {
+    // The DOM removal skipped: the element is planned, checked, and then left in
+    // the tree. This is the one place a strike could quietly do nothing.
+    const saboteur = sabotagedWriter(
+      'nodetach',
+      'if (unit.el.parentNode)\n                unit.el.parentNode.removeChild(unit.el);',
+      'if (unit.el.parentNode && unit.key !== process.env.BOOKFORGE_TEST_SKIP_KEY)\n'
+      + '                unit.el.parentNode.removeChild(unit.el);');
+    const book = await buildEpub('sabotage-detach.epub', CHAPTER);
+    const out = path.join(ROOT, 'sabotage-detach.tts.epub');
+    process.env.BOOKFORGE_TEST_SKIP_KEY = 'OEBPS/chapter-01.xhtml#5';
+    try {
+      await assert.rejects(
+        () => saboteur.module.writeNarrationEpub(book, out, ['OEBPS/chapter-01.xhtml#5']),
+        (err) => /still in the document after they were removed/.test(err.message)
+          && err.message.includes('OEBPS/chapter-01.xhtml#5'),
+        'a strike that removed nothing was not refused');
+    } finally {
+      delete process.env.BOOKFORGE_TEST_SKIP_KEY;
+      fs.rmSync(saboteur.path, { force: true });
+    }
+    assert.ok(!fs.existsSync(out), 'a file was written for a cut that did not remove anything');
+  });
+
+  await check('a cut whose document is not rewritten throws and writes nothing', async () => {
+    // The element IS detached, and the document it came out of is then written
+    // from the ORIGINAL bytes -- the shape of the measured failure, where the
+    // record and the file disagreed and nothing said so. Only reading the
+    // written file back catches this.
+    const saboteur = sabotagedWriter(
+      'noreplace',
+      "        replacements.set(file, Buffer.from(text, 'utf8'));\n    }",
+      "        if (!process.env.BOOKFORGE_TEST_DROP_FILE\n"
+      + "            || !file.endsWith(process.env.BOOKFORGE_TEST_DROP_FILE))\n"
+      + "            replacements.set(file, Buffer.from(text, 'utf8'));\n    }");
+    const book = await buildEpub('sabotage-write.epub', CHAPTER);
+    const out = path.join(ROOT, 'sabotage-write.tts.epub');
+    process.env.BOOKFORGE_TEST_DROP_FILE = 'chapter-01.xhtml';
+    try {
+      await assert.rejects(
+        () => saboteur.module.writeNarrationEpub(book, out, ['OEBPS/chapter-01.xhtml#5']),
+        (err) => /does not match what was struck/.test(err.message)
+          && err.message.includes('OEBPS/chapter-01.xhtml#5 was struck and is still in the copy'),
+        'a copy still holding a struck element was not refused');
+    } finally {
+      delete process.env.BOOKFORGE_TEST_DROP_FILE;
+      fs.rmSync(saboteur.path, { force: true });
+    }
+    assert.ok(!fs.existsSync(out), 'the unverified copy was left on disk');
+  });
+
+  await check('an out-of-range unit index is refused BY NAME', async () => {
+    const book = await buildEpub('range-unit.epub', CHAPTER);
+    const out = path.join(ROOT, 'range-unit.tts.epub');
+    await assert.rejects(
+      () => writeNarrationEpub(book, out, ['OEBPS/chapter-01.xhtml#999']),
+      (err) => err.message.includes('OEBPS/chapter-01.xhtml#999'),
+      'an index past the end of the unit list was not refused by name');
+    assert.ok(!fs.existsSync(out), 'a file was written for a key naming no element');
+  });
+
+  await check('an image ordinal the document does not have is refused BY NAME', async () => {
+    const book = await buildIllustratedEpub('range-img.epub', CHAPTER_WITH_PLATE);
+    const out = path.join(ROOT, 'range-img.tts.epub');
+    await assert.rejects(
+      () => writeNarrationEpub(book, out, ['OEBPS/chapter-01.xhtml#img99']),
+      (err) => err.message.includes('OEBPS/chapter-01.xhtml#img99'),
+      'an image ordinal past the last picture was not refused by name');
+    assert.ok(!fs.existsSync(out), 'a file was written for a picture that is not there');
+  });
+
+  await check('a clean record still cuts, and the verification passes it', async () => {
+    // The success path, unchanged. Named here rather than left implicit because
+    // the whole risk of a verification is that it refuses correct work.
+    const book = await buildIllustratedEpub('clean.epub', CHAPTER_WITH_PLATE);
+    const out = path.join(ROOT, 'clean.tts.epub');
+    const written = await writeNarrationEpub(
+      book, out, ['OEBPS/chapter-01.xhtml#5', 'OEBPS/chapter-01.xhtml#img0']);
+    assert.ok(fs.existsSync(out), 'the verified copy was not written');
+    assert.strictEqual(written.removedElements, 2);
+  });
+
+  await check('a deletion that reaches nothing REFUSES the export, and says what to do', () => {
+    // The contract this replaced returned a warning string beside a FINISHED
+    // file, and the file was then narrated -- which is how 43 struck footnotes
+    // were read aloud in a finished audiobook. A deletion that resolves to
+    // nothing now stops the export.
+    //
+    // Tested at the decision rather than through `exportNarrationEpub`, which
+    // lays the book out through the pdf worker and so needs Electron's `app` to
+    // find the analysis cache. This is the whole of the decision: the same
+    // `NarrationStrikes` the export derives, in, the refusal out.
+    const { refuseUnresolvedDeletions } =
+      require(path.join(DIST, 'electron', 'narration-export.js'));
+
+    // The book as laid out, with ONE UNCOVERABLE PICTURE in it: an image block
+    // the ordinal matcher refused to pair (no element), which is not furniture
+    // (`unplaceable: false`) and is not inside a document struck whole. That is
+    // the plate-gallery case measured on Killing America, and the only honest
+    // answer to striking it is that it could not be reached.
+    const laid = [
+      { id: 't0', page: 0, element: 'OEBPS/chapter-01.xhtml#0', unplaceable: false,
+        excerpt: 'The first paragraph of the book' },
+      { id: 'plate', page: 1, unplaceable: false, excerpt: '[Image 400x300]' },
+      { id: 't1', page: 2, element: 'OEBPS/chapter-01.xhtml#1', unplaceable: false,
+        excerpt: 'A second paragraph on the following page' },
+    ];
+
+    const strikes = deriveNarrationStrikes(laid, new Set(['plate']), new Set());
+    assert.strictEqual(strikes.unstruck.length, 1, 'the uncoverable picture was not reported');
+
+    const refusal = refuseUnresolvedDeletions(strikes, 'the blocks you deleted');
+    assert.ok(refusal !== null, 'a deletion that reached nothing did not refuse');
+    assert.ok(/was not written/.test(refusal), 'the refusal does not say nothing was written');
+    assert.ok(refusal.includes('[Image 400x300]'),
+      'the refusal does not name the block that could not be struck');
+    assert.ok(/strike the whole page or the whole document/i.test(refusal),
+      'the refusal does not say what the user can do about it');
+    assert.ok(/your deletions are intact/i.test(refusal),
+      'the refusal does not say the record survived');
+
+    // And a derivation that reached everything is NOT refused -- the risk of any
+    // refusal is that it fires on correct work.
+    const clean = deriveNarrationStrikes(laid, new Set(['t0', 't1']), new Set());
+    assert.strictEqual(refuseUnresolvedDeletions(clean, 'the blocks you deleted'), null,
+      'a derivation that reached everything was refused anyway');
+  });
+
   // ── report ────────────────────────────────────────────────────────────────
   for (const [status, name, message] of results) {
     console.log(`${status === 'ok' ? '  ok  ' : ' FAIL '} ${name}${message ? `\n        ${message}` : ''}`);
