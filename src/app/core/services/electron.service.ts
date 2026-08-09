@@ -2849,6 +2849,8 @@ export class ElectronService {
     result?: {
       epubPath: string; relPath: string;
       removedElements: number; totalElements: number; removedSupMarkers: number;
+      /** Chapter openings written as their stored chapter names, single line. */
+      overriddenChapterOpenings: number;
       /**
        * How the removed elements were arrived at, and what was left behind.
        * `fromStrikes + translated === removedElements`; `unresolved` names the

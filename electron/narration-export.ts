@@ -26,7 +26,13 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { writeNarrationEpub, epubCarriesConversionStamps } from './epub-processor';
+import {
+  writeNarrationEpub, epubCarriesConversionStamps,
+  markupCategoriesForUnits, readEpubTocTargets, type MarkupUnit,
+} from './epub-processor';
+import { enumerateNarrationElements } from './quire-stamp';
+import { readChapterTitlesOfBook } from './book-chapters';
+import { parseNarrationElementKey } from '../shared/vlm/narration-deletions';
 import {
   editorStateTranslationRefusal,
   translateEditorStateDeletions,
@@ -178,6 +184,8 @@ export interface NarrationExportResult {
   totalElements: number;
   /** Digits-only `<sup>` footnote references removed on the way out. */
   removedSupMarkers: number;
+  /** Chapter openings written as their stored chapter names, single line. */
+  overriddenChapterOpenings: number;
   /**
    * The spine documents the strikes emptied, which were taken out of the copy
    * entirely rather than left as blank pages.
@@ -407,13 +415,27 @@ export async function exportNarrationEpub(
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
   const staged = path.join(STAGING_DIR, `narration-${sha256.slice(0, 16)}.epub`);
 
+  // ── A chapter opening speaks its chapter's NAME ───────────────────────────
+  //
+  // Derived from the book itself at every cut — the book's own markup says
+  // which element opens each chapter, the book's own table of contents says
+  // what that chapter is called — so the rule holds across the whole
+  // collection with no record to maintain and nothing that can drift. The
+  // opener that prints "2" over a subhead is read as
+  // "Chapter 2: An Opportunity to Hope", single line, because that is the name
+  // stored in the book and the name a listener should hear.
+  const chapterSpeech = await chapterSpeechOverrides(book.absPath);
+
   // The footnote-marker strip is ON unless the caller says otherwise, because a
   // narration copy that keeps `<sup>55</sup>` is a copy the narrator reads
   // "fifty-five" out of. This is also the ONLY place those markers are removed —
   // no pass edits the book.
   const written = await writeNarrationEpub(
     book.absPath, staged, merged.elements,
-    options?.stripSupMarkers === undefined ? undefined : { stripSupMarkers: options.stripSupMarkers });
+    {
+      ...(options?.stripSupMarkers === undefined ? {} : { stripSupMarkers: options.stripSupMarkers }),
+      ...(Object.keys(chapterSpeech).length > 0 ? { textOverrides: chapterSpeech } : {}),
+    });
   await moveIntoPlace(staged, target.absPath);
 
   await manifestService.registerNarrationEpub(projectDir, {
@@ -431,11 +453,56 @@ export async function exportNarrationEpub(
     removedElements: written.removedElements,
     totalElements: written.totalElements,
     removedSupMarkers: written.removedSupMarkers,
+    overriddenChapterOpenings: written.overriddenElements,
     removedDocuments: written.removedDocuments,
     fromStrikes: merged.fromStrikes,
     translated: merged.translated,
     unresolved: merged.unresolved,
   };
+}
+
+/**
+ * Which elements must speak their chapter's stored name, and that name.
+ *
+ * One entry per spine document that (a) the book's table of contents gives a
+ * title and (b) the book's own markup marks a chapter opening in — the FIRST
+ * chapter element of the document, the same one the picker's chapter list
+ * shows under that title. Books that fail either condition contribute nothing:
+ * an opener with no stored name keeps its printed text (its print IS its
+ * name), and a titled document with no chapter element has nothing safe to
+ * rewrite. Both are per-document facts, so one odd chapter never blocks the
+ * rest of the book.
+ */
+async function chapterSpeechOverrides(bookPath: string): Promise<Record<string, string>> {
+  const walked = await enumerateNarrationElements(bookPath, path.basename(bookPath));
+  const units: MarkupUnit[] = [];
+  for (const doc of walked) {
+    for (const entry of doc.entries) {
+      if (entry.unit) units.push(entry.unit);
+    }
+  }
+  const { categoryByKey } = markupCategoriesForUnits(units, await readEpubTocTargets(bookPath));
+
+  const titleByFile = new Map<string, string>();
+  for (const chapter of (await readChapterTitlesOfBook(bookPath)).chapters) {
+    const title = chapter.navTitle.replace(/\s+/g, ' ').trim();
+    if (title.length > 0 && !titleByFile.has(chapter.file)) titleByFile.set(chapter.file, title);
+  }
+
+  const overrides: Record<string, string> = {};
+  const claimed = new Set<string>();
+  for (const doc of walked) {
+    for (const entry of doc.entries) {
+      if (categoryByKey.get(entry.key) !== 'chapter') continue;
+      const file = parseNarrationElementKey(entry.key).file;
+      if (claimed.has(file)) continue;
+      claimed.add(file);
+      const title = titleByFile.get(file);
+      if (title === undefined) continue;
+      overrides[entry.key] = title;
+    }
+  }
+  return overrides;
 }
 
 interface MergedNarrationDeletions {

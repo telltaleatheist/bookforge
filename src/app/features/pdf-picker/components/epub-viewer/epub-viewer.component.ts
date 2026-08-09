@@ -268,11 +268,14 @@ const GRID_BASE_WIDTH = 200;
           <div class="sep"></div>
           <button
             type="button"
-            class="disabled"
-            disabled
-            title="Merging is a working-PDF operation. On a live EPUB the picker's merge
-                   goes through editorState, not the viewer — Phase C decides which."
-          >Merge selection</button>
+            [class.disabled]="selectedBlockIds().length < 2"
+            [disabled]="selectedBlockIds().length < 2"
+            [title]="selectedBlockIds().length < 2
+              ? 'Select the chapter opening together with the blocks that belong to it first.'
+              : 'Fold the selection into its chapter opening — the opening is read as the ' +
+                'stored chapter name, and the folded blocks are not read separately.'"
+            (click)="onMergeSelection()"
+          >Merge into chapter opening</button>
           <button
             type="button"
             class="disabled"
@@ -596,6 +599,8 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   }>();
   readonly selectAllOnPage = output<number>();
   readonly deselectAllOnPage = output<number>();
+  /** Fold the current selection into its chapter opening — the picker decides validity. */
+  readonly mergeSelection = output<void>();
   /** A zoom DELTA in percent, the same shape the raster viewer emits. */
   readonly zoomChange = output<number>();
 
@@ -1629,6 +1634,11 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   protected closeContextMenu(): void { this.contextMenu.set(null); }
+
+  protected onMergeSelection(): void {
+    this.mergeSelection.emit();
+    this.closeContextMenu();
+  }
 
   protected fire(which: 'selectLikeThis' | 'deleteLikeThis', block: LaidOutBlock): void {
     this[which].emit(block);

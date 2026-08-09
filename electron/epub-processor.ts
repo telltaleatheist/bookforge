@@ -6033,6 +6033,8 @@ export interface NarrationEpubWriteResult {
   dissolvedElements: number;
   /** How many digits-only `<sup>` footnote references were removed. */
   removedSupMarkers: number;
+  /** How many elements speak an overridden text (chapter openings, mostly). */
+  overriddenElements: number;
   /** The spine documents that were rewritten. */
   rewrittenFiles: string[];
   /**
@@ -6061,6 +6063,20 @@ export interface NarrationEpubWriteOptions {
    * is never edited — see shared/text/sup-markers.ts.
    */
   stripSupMarkers?: boolean;
+  /**
+   * Element key → the EXACT text the narration copy must carry for that
+   * element, in place of whatever it prints.
+   *
+   * The chapter-name rule rides on this: a chapter opening speaks its chapter's
+   * stored name — "Chapter 2: An Opportunity to Hope" — never the "2" it
+   * happens to print (Owen, 2026-08-09: a chapter header is a single line and
+   * it is always the chapter's name). The overrides are applied to the tree
+   * BEFORE the verification signatures are computed, so the guarantee check
+   * verifies the book as overridden rather than reporting every override as a
+   * unit that lost its text. A key the book does not have is refused by name;
+   * a struck key is skipped — its element is leaving the copy anyway.
+   */
+  textOverrides?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -6589,6 +6605,52 @@ export async function writeNarrationEpub(
 
   const stripSups = options?.stripSupMarkers !== false;
 
+  // ── The elements that speak a stated text instead of their printed one ────
+  //
+  // Applied to the tree HERE — after the strikes are known, before the
+  // expectation signatures are computed — so everything downstream (the
+  // signatures, the admission test, the serialization, the verification)
+  // describes the overridden book. The element's children are replaced with
+  // one text node: the override IS the whole utterance, single line.
+  const overrideTouched = new Set<string>();
+  let overriddenElements = 0;
+  if (options?.textOverrides !== undefined) {
+    const elByKey = new Map<string, any>();
+    const fileByKey = new Map<string, string>();
+    for (const [file, { units: fileUnits }] of perFile) {
+      for (const unit of fileUnits) {
+        elByKey.set(unit.key, unit.el);
+        fileByKey.set(unit.key, file);
+      }
+    }
+    for (const [key, spoken] of Object.entries(options.textOverrides)) {
+      const el = elByKey.get(key);
+      if (el === undefined) {
+        throw new Error(
+          `The narration copy was asked to speak "${spoken}" for ${key}, and this book has no `
+          + 'element by that key. Nothing was written.'
+        );
+      }
+      if (parseNarrationElementKey(key).kind === 'image') {
+        throw new Error(
+          `${key} is a picture, and a picture has no text to override. Nothing was written.`
+        );
+      }
+      if (struck.has(key)) continue;  // leaving the copy anyway
+      const text = spoken.replace(/\s+/g, ' ').trim();
+      if (text.length === 0) {
+        throw new Error(
+          `The narration copy was asked to speak an EMPTY text for ${key}. Silencing an element `
+          + 'is a strike, not an override. Nothing was written.'
+        );
+      }
+      while (el.firstChild) el.removeChild(el.firstChild);
+      el.appendChild(el.ownerDocument.createTextNode(text));
+      overrideTouched.add(fileByKey.get(key)!);
+      overriddenElements++;
+    }
+  }
+
   // ── What the copy must contain, decided BEFORE anything is removed ────────
   //
   // Read off the tree as it still is, so the expectation is a statement about
@@ -6671,7 +6733,9 @@ export async function writeNarrationEpub(
       continue;
     }
     const toRemove = fileUnits.filter((u) => struck.has(u.key));
-    if (toRemove.length === 0) continue;
+    // A file can need re-serializing with NOTHING struck in it: an override
+    // rewrote one of its elements' text.
+    if (toRemove.length === 0 && !overrideTouched.has(file)) continue;
     for (const unit of toRemove) {
       // An element whose parent has already gone with an ancestor is already
       // out of the tree; removing it again would throw in xmldom.
@@ -6889,6 +6953,7 @@ export async function writeNarrationEpub(
     verifiedElements: verified,
     dissolvedElements: dissolved,
     removedSupMarkers,
+    overriddenElements,
     rewrittenFiles,
     removedDocuments: emptied.sort(),
   };

@@ -690,6 +690,7 @@ interface AlertModal {
                     (deleteLikeThis)="deleteLikeThis($event)"
                     (deleteBlock)="deleteBlock($event)"
                     (marqueeSelect)="onMarqueeSelect($event)"
+                    (mergeSelection)="mergeSelectedBlocks()"
                     (pageDeleteToggle)="togglePageDeleted($event)"
                     (pageSelect)="onPageSelect($event)"
                     (selectAllOnPage)="selectAllOnPage($event)"
@@ -9511,12 +9512,20 @@ export class PdfPickerComponent implements OnInit {
           + `from the copy rather than left as blank pages: `
           + `${result.removedDocuments.map(d => d.split('/').pop()).join(', ')}.`;
 
+      // The chapter-name rule, reported when it did anything: an opener that
+      // prints "2" is in the copy as "Chapter 2: An Opportunity to Hope", and
+      // the user checking the copy should know that was deliberate.
+      const spoken = result.overriddenChapterOpenings > 0
+        ? ` ${result.overriddenChapterOpenings} chapter opening(s) are written as their stored `
+          + 'chapter names, each on a single line.'
+        : '';
+
       this.showAlert({
         title: 'TTS copy written',
         message:
           `${result.relPath} — ${result.removedElements} of ${result.totalElements} element(s) `
           + `left out${provenance}, ${result.removedSupMarkers} footnote marker(s) stripped. The book `
-          + `itself is unchanged.${pruned}`
+          + `itself is unchanged.${spoken}${pruned}`
           + (unresolved.length > 0 ? `\n\n${unresolved.join('\n\n')}` : '')
           + '\n\nThe Process tab\'s narration step will offer this file.',
         type: unresolved.length > 0 ? 'warning' : 'info',
@@ -13755,9 +13764,30 @@ export class PdfPickerComponent implements OnInit {
         + 'are not edited here.';
     }
     if (this.isCurrentDocumentEpub()) {
-      return 'Merging joins two blocks of a PDF working document into one box. An EPUB has no '
-        + 'such document — its blocks are the book\'s own elements, and two elements are two '
-        + 'elements — so there is nothing here to merge them into.';
+      // On a book, "merge" is the CHAPTER-OPENING FOLD: the selection becomes
+      // one unit whose spoken text is the chapter's stored name (the export
+      // writes the opening as that name — chapterSpeechOverrides), and the
+      // folded blocks are struck so their text is not read a second time.
+      // Joining two body elements into one is NOT an edit this app makes to a
+      // book — the book's own markup says what its elements are.
+      const selected = this.selectedBlockIds();
+      if (selected.length < 2) {
+        return 'Folding needs the chapter opening selected together with the blocks that belong '
+          + 'to it.';
+      }
+      const openings = selected.filter(id =>
+        this.editorState.getBlock(id)?.category_id === 'chapter');
+      if (openings.length === 0) {
+        return 'This selection has no chapter-opening block, so there is nothing to fold it '
+          + 'into. On a book, merging folds a subhead (or a stray fragment) into its CHAPTER '
+          + 'OPENING; the opening is then read aloud as the chapter\'s stored name. Joining two '
+          + 'body elements into one is not an edit this app makes to a book.';
+      }
+      if (openings.length > 1) {
+        return `This selection holds ${openings.length} chapter openings. A fold needs exactly `
+          + 'one — the opening the rest of the selection belongs to.';
+      }
+      return null;
     }
     if (!this.documentLayerLive()) {
       return 'This document has no working block layer open, so there is nothing to merge in. '
@@ -13772,6 +13802,29 @@ export class PdfPickerComponent implements OnInit {
       this.showAlert({ title: 'Blocks cannot be merged here', message: refusal, type: 'warning' });
       return;
     }
+
+    // The book's fold — see mergeSelectionRefusal for what it is and is not.
+    if (this.isCurrentDocumentEpub()) {
+      const selected = this.selectedBlockIds();
+      const opener = selected.find(id =>
+        this.editorState.getBlock(id)?.category_id === 'chapter')!;
+      const deleted = this.deletedBlockIds();
+      const folded = selected.filter(id => id !== opener && !deleted.has(id));
+      if (folded.length > 0) {
+        this.landBlockDeletions(this.editorState.deleteBlocks(folded), true);
+      }
+      this.selectedBlockIds.set([opener]);
+      this.showAlert({
+        title: 'Folded into the chapter opening',
+        message:
+          `${folded.length} block(s) are now part of this chapter opening. The opening is read `
+          + 'aloud as the chapter\'s stored name — a single line — and the folded blocks are not '
+          + 'read separately.',
+        type: 'info',
+      });
+      return;
+    }
+
     let survivor: string;
     try {
       survivor = this.documentBlocks.merge(this.selectedBlockIds());
