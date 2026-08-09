@@ -114,61 +114,127 @@ On *Killing America* (24 documents, 1360 stamped elements) this number is **0**.
 
 ## How pagination works
 
-The document is laid into CSS columns whose width is the page width and whose gap is the gutter,
-with a definite height and `column-fill: auto`. Chromium fragments the flow, and **column N is
-page N**. Column N's left edge sits at `N * (width + gap)` — the *pitch*.
+Behind `QuireStrategy` (`src/paginate/strategy.ts`) — and there are two implementations, which are
+**not** alternatives:
 
-### The measurement subtlety that decides correctness
+| | `PagedStrategy` | `MultiColumnStrategy` |
+|---|---|---|
+| what | Paged.js 0.4.3, vendored | CSS multi-column |
+| box model | `fragmented-boxes` | `continuous-columns` |
+| role | **the product**, and `openDocument`'s default | the **adversarial test fixture** |
 
-`getBoundingClientRect()` returns the **union** box of an element that spans a column break. For
-a paragraph broken across a page, that union spans both columns *and the gutter between them*, so
-its left edge can land in the gutter and yield a page number that is not merely imprecise but
-meaningless.
+There is no fallback between them. A book paginates with the strategy it was opened with or the
+open fails naming why, and a cached page map is only valid for the paginator that produced it —
+which is why `doc.strategyName` exists and why the strategy names its version (`pagedjs-0.4.3`).
 
-quire never uses it. It uses **`Range.getClientRects()`** over the element's contents — one rect
-per fragment — and maps each fragment to its own column. An element's pages are the SET of columns
-its fragments occupy.
+### PagedStrategy — the product
 
-### The pitch is checked two ways, and neither rounds
+`@page { size: <width>px <height>px; margin: 0 }` is handed to Paged.js's polisher, and Paged.js
+chunks the flow into `.pagedjs_page` boxes stacked down one document. **Each page is its own DOM
+subtree**, so a grid can mount many pages from a single instance and a page can be brought to a
+surface's origin by scrolling rather than by translating a 115,840px-wide strip.
 
-1. **Against the layout, immediately.** The laid-out `column-gap` and `column-width` are read back
-   from computed style and compared with the numbers the arithmetic uses. A disagreement is
-   refused in the first column of the first document (`COLUMN_GAP_MISMATCH`).
-2. **Against the content, continuously.** Every fragment of the whole flow — not just the stamped
-   elements — must *begin* inside a column. A fragment beginning in a gutter means the pitch is
-   wrong, and since the error compounds by one gutter per column, this catches a mismatch the
-   computed style was willing to lie about (`FRAGMENT_IN_GUTTER`).
+The engine is injected as the strategy's **prelude**: evaluated in the *isolated world*, from the
+main process, exactly like the measurement. It is never a `<script>` in the book's document — the
+book is still served under `script-src 'none'` with every `<script>` stripped from the bytes — so
+the book's own world can neither see `Paged` nor call it. `tools/test-quire.js` proves the book's
+document still holds zero `<script>` elements after a page has been built and shown.
 
-Check 2 alone is not immediate: drift has to exceed the gutter before a fragment lands in one,
-which can take a dozen columns. That is exactly why check 1 exists. Both are tested by doctoring
-one number and requiring the refusal.
+**A page number is decided twice, and a disagreement is refused.**
 
-### Page count is NOT taken from `scrollWidth`
+1. *quire's own*, from geometry: which page box an element's `Range.getClientRects()` land in.
+2. *Paged.js's own*, from the mapping it used: `data-ref` groups an element's clones, and
+   `data-split-from` / `data-split-to` say which of them are continuations.
 
-`body.scrollWidth` is the extent of everything that overflows, which includes content overflowing
-*sideways* inside a column — a table too wide for the page, an unbreakable URL. On a real book
-that makes it disagree with the column count by an arbitrary amount. (It did, immediately, on
-`ch09.xhtml` of *Killing America*.) A last column narrower than the page makes it disagree the
-other way.
+Trusting the attributes alone would trust an attribute; trusting the geometry alone would throw
+away the engine's own answer. So both are computed for every stamped element of every document and
+compared, and `SPLIT_DISAGREEMENT` names the element when they differ. The test suite proves that
+refusal fires by wrapping `Previewer.preview` and removing one `data-split-to` from an otherwise
+perfect pagination.
 
-The page count is the highest column any content actually reaches, taken over a Range across the
-whole `<body>`. `scrollWidth` is reported as a diagnostic and never used as an answer.
+**The page box is checked against the layout**, the counterpart of multi-column's
+`COLUMN_GAP_MISMATCH`: if `@page { size }` never reaches the fragmenter, Paged.js silently uses its
+own default (US Letter) and every coordinate would be measured against a box that is not the page.
+Every `.pagedjs_page_content` must lay out at exactly the asked-for size or `PAGE_BOX_MISMATCH`.
 
-### What quire does to the book
+Page identity here comes from DOM containment, not from geometry — an element is a descendant of
+one `.pagedjs_page` and of no other — so a fragment that reaches *outside* its page box is not an
+ambiguity to refuse but a fact to report. It goes into `report.overflows` with the axis it ran off
+and how far, and Paged.js clips it, which means it is content the reader will not see.
 
-As little as possible, and all of it stated. The book's own markup and stylesheets are left in
-place and load normally, so `body > p.first` still matches what the book meant by it. On top of
-that, and only that:
+### What PagedStrategy does to the book
 
-- the page box is forced onto `html` and `body` — margin, padding, border, size, overflow;
-- the multi-column properties are forced onto `body`;
-- replaced elements are capped at `max-width: 100%` so an oversized figure cannot silently
-  redefine the pitch. **Height is deliberately not touched**: a figure taller than the page is
-  allowed to be sliced across pages, which is what mupdf's rasterizer does to the same figure.
+More than multi-column does, and all of it stated:
 
-Forcing `body` margin to 0 means the page box *is* the column box. Callers that want page margins
-add their own. This is why quire's page count for a given book will not match mupdf's — mupdf
-applies its own page margins, so it fits less text per page.
+- the book's own `<style>` and `<link rel=stylesheet>` are taken out and handed to Paged.js's
+  polisher as **text read back from the CSSOM**. Paged.js has to rewrite `@page`, `break-*` and the
+  split pseudo-elements, and its own way of getting the text is to *fetch* the href — which the
+  `quire://` scheme deliberately does not support. Reading the CSSOM is lossless with respect to
+  what is actually in force: a rule Chromium did not parse was never applied. A `<link>` pointing
+  off `quire://` is dropped, decided **on the href before anything is read** — a blocked
+  cross-origin sheet is not absent, Chromium still exposes a `CSSStyleSheet` whose `cssRules`
+  throw, and telling that apart from a genuinely broken sheet inside the archive by catching the
+  `SecurityError` would be reading the sandbox's mind;
+- Paged.js re-parents content into page boxes, cloning the ancestor chain onto every page an
+  element continues on. **`body > p` therefore stops matching**, where under multi-column it still
+  would. That is inherent to fragmenting into boxes and is the price of the box model;
+- replaced elements are capped at the **page box, height included**. This is the difference that
+  decided gate G0. A book that says `max-height: 100%` on a plate is saying nothing at all — a
+  percentage max-height resolves against an auto-height containing block and computes to `none` —
+  which is how a 2400px plate ends up laid out at 2400px inside a 900px page;
+- the viewport's scrollbar is taken to zero width. The page boxes must be scrollable, and a
+  scrollbar would take its width out of the layout viewport, so a surface sized to the page would
+  show the page minus a scrollbar and a raster of it would have its right edge sliced off. This
+  changes what is drawn, never what is laid out.
+
+### MultiColumnStrategy — the test fixture
+
+Kept because it is the strategy whose arithmetic can be **wrong in an interesting way**. The
+document is laid into columns whose width is the page width and whose gap is the gutter, with
+`column-fill: auto`; Chromium fragments the flow and **column N is page N**, with column N's left
+edge at `N * (width + gap)` — the *pitch*. Get the pitch wrong and page numbers drift by one more
+column every column, silently and confidently. That is a failure mode worth having something to
+test against, and `tools/test-quire.js` subclasses this to lay a document out at one gutter and
+measure it at another.
+
+Its measurement subtlety is worth keeping written down, because it is the same trap in any
+column-based reader: `getBoundingClientRect()` returns the **union** box of an element spanning a
+column break, whose left edge can land in the gutter and yield a page number that is not merely
+imprecise but meaningless. It uses `Range.getClientRects()` — one rect per fragment — instead. The
+pitch is then checked two ways and neither rounds: against the laid-out `column-gap`/`column-width`
+immediately (`COLUMN_GAP_MISMATCH`), and against every fragment of the whole flow continuously
+(`FRAGMENT_IN_GUTTER`), because drift has to exceed the gutter before a fragment lands in one and
+that can take a dozen columns. Its page count is the highest column any content reaches, never
+`body.scrollWidth` — `scrollWidth` includes content overflowing *sideways* inside a column, which
+on `ch09.xhtml` of *Killing America* disagrees with the column count immediately.
+
+### Common to both
+
+`html`/`body` margin, padding and border are forced to 0, so the page box *is* the content box.
+Callers that want page margins add their own. This is why quire's page count for a given book will
+not match mupdf's — mupdf applies its own page margins, so it fits less text per page.
+
+### The analysis host must get frames, and that is not obvious
+
+Paged.js's work queue ticks on `requestAnimationFrame`, so its throughput is whatever frame rate
+the surface is given. Measured here on one 13-page chapter of *Killing America*:
+
+| analysis host | rAF | per page |
+|---|---|---|
+| `offscreen: true` (what quire uses) | 61 fps | **18 ms** |
+| shown at opacity 0, parked off-screen | 60 fps | **18 ms** |
+| hidden and NOT offscreen, `backgroundThrottling: false` | 61 fps | 855 ms |
+| hidden and NOT offscreen, throttling left on | 61 fps | 853 ms |
+| minimized | 60 fps | 854 ms |
+| `offscreen: true`, frame rate forced to 1 | 1.5 fps | 1076 ms |
+
+Two things in that table are worth saying out loud. A merely-hidden window paginates at about one
+page per second — 47× slower — and `backgroundThrottling` does not touch it. And a rAF *counter*
+inside that window still reads 60 fps: the callbacks fire, the layout work between them does not
+progress, so counting frames alone would not have found this. `tools/test-quire.js` therefore holds
+the book to **milliseconds per page** as well as measuring the frame rate, because every page number
+would still be RIGHT if this regressed — it would just take two and a half minutes instead of four
+seconds.
 
 ---
 
@@ -245,8 +311,18 @@ mounted.destroy();
 `mount.ts` imports nothing — not Electron, not Node — so it bundles into the Angular app without
 dragging the main-process half along.
 
+Both paths run `mount.preludeScript` first and `mount.presentScript` second, because under
+`fragmented-boxes` **the page boxes do not exist in the served bytes** — they are built in the
+frame. That prelude is the same near-megabyte string for every page of the book, which is the
+reason a grid should hold one frame per *spine document* and present that document's pages into it
+rather than one frame per cell. `mountQuirePage` mounts one page into one frame because that is the
+only thing that works for both box models; the saving is the caller's to take.
+
 If a page cannot be brought to the origin, both paths **throw**. A cell that quietly shows page 0
-while claiming to be page 40 is the one outcome worth refusing outright.
+while claiming to be page 40 is the one outcome worth refusing outright. And `presentScript` waits
+for the surface to actually paint the new position before it says so: `capturePage` hands back the
+last painted frame, so a surface scrolled and photographed in the same turn produces a confident
+picture of the page it used to be showing.
 
 ---
 
@@ -291,6 +367,15 @@ the bytes in the main process *before* they are served. The CSP would refuse to 
 anyway; this is the second mechanism. A book carrying script is not rejected, it is served without
 it.
 
+**Including the fragmenter.** Paged.js is a megabyte of JavaScript that has to run against the
+book's DOM, and none of the above loosens for it. It goes in as the strategy's *prelude* —
+evaluated in the isolated world, from the main process, the same channel the measurement uses — so
+the book's document is served with `script-src 'none'` and no `<script>` in it, before and after.
+The engine also never reaches the book by the side door: its polisher's own way of reading a
+stylesheet is to `fetch()` the href, and `quire://` is registered with `supportFetchAPI: false`, so
+the CSS is read out of the CSSOM the browser already built instead. Nothing in a quire document
+fetches anything.
+
 **No permissions, no storage.** `setPermissionRequestHandler`/`setPermissionCheckHandler` deny
 everything. Each document gets its own non-persistent partition (`quire-<random>`, no `persist:`
 prefix), so the book gets no cookies, cache or storage that outlives it, and shares none of
@@ -320,6 +405,14 @@ because a wrong one is believed. In particular quire refuses — rather than gue
 |---|---|
 | `SCHEME_NOT_REGISTERED` | `registerScheme()` was not called before app ready |
 | `NOT_LAID_OUT` | pages were asked about before `await layout()` |
+| `PAGEDJS_BUNDLE_MISSING` / `PAGEDJS_BUNDLE_UNRECOGNISED` | the vendored fragmenter is not there, or is not the pinned version |
+| `PRELUDE_FAILED` | the strategy could not put its engine into the frame |
+| `PAGE_BOX_MISMATCH` | a laid-out page box is not the box the arithmetic assumes |
+| `SPLIT_DISAGREEMENT` | Paged.js's record of a split and the measured pages disagree |
+| `OCCURRENCES_NOT_CONTIGUOUS` / `FRAGMENTS_NOT_CONTIGUOUS` | an element left a page and came back |
+| `REF_COLLISION` / `NO_DATA_REF` / `DUPLICATE_STAMP` | element identity cannot be reconciled |
+| `STYLESHEET_UNREADABLE` | a stylesheet inside the archive produced no readable CSSOM |
+| `PAGINATION_RUNAWAY` / `PAGE_COUNT_DISAGREEMENT` | the fragmenter did not converge, or cannot say how many pages it made |
 | `COLUMN_GAP_MISMATCH` / `COLUMN_WIDTH_MISMATCH` | the layout's pitch is not the arithmetic's |
 | `FRAGMENT_IN_GUTTER` | a fragment begins in a gutter |
 | `SPLIT_NOT_ORDERED` | a split element's characters do not run in column order |
@@ -341,19 +434,36 @@ to the **same** output layout, so there is only ever one build on disk:
 ```
 npx tsc -p tsconfig.electron.json          # app + package
 npx tsc -p packages/quire/tsconfig.json --noEmit   # package alone
+npm run build:quire-vendor                 # copy vendor/ beside the compiled output
 ```
+
+That last step is not optional and not a fallback: `PagedStrategy` reads the vendored bundle from
+`<quire package root>/vendor/pagedjs/paged.js` at run time, resolved relative to the compiled
+module, and refuses by name if it is not there. `npm run build:electron` does it; so do
+`npm run test:quire` and `npm run quire:paginate`.
 
 Dependencies: `electron` and `@xmldom/xmldom`. Note that `@xmldom/xmldom` is present but
 **undeclared** in the repo's `package.json` — a pre-existing condition (`epub-processor.ts`
 already relies on it), not something quire introduced.
 
+Paged.js is **vendored, not installed** — `packages/quire/vendor/pagedjs/`, with its MIT licence,
+its exact provenance and the sha256 of the byte-for-byte artifact recorded in the README beside it,
+and a `.gitattributes` marking it `-text` so `core.autocrlf` cannot rewrite it. Nothing was added
+to the repo's dependencies. `tools/test-quire.js` checks that hash, so a bundle that quietly became
+something else fails a test instead of paginating a book differently.
+
 ## Running it
 
 ```
 node tools/quire-paginate.js <book.epub> [--width 600] [--height 900] [--font-size 18]
-                                         [--gap 24] [--json out.json] [--png <page> <file>]
+                                         [--gap 24] [--strategy paged|multicol]
+                                         [--json out.json] [--png <page> <file>]
 node tools/test-quire.js
 ```
+
+`--strategy multicol` selects the test fixture rather than the product. It is there so the two can
+be compared on the same book on demand — that comparison is what decided gate G0 — not because a
+caller gets to pick a fragmenter.
 
 Both re-launch themselves under Electron, because quire paginates in a real browser and there is
 no browser in plain Node. That is the point of the package, so the harnesses make it obvious

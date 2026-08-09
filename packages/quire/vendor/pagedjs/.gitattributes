@@ -1,0 +1,6 @@
+# The vendored bundle is a verbatim third-party artifact. The repo has
+# core.autocrlf=true, which would rewrite its line endings on checkout and make
+# the sha256 recorded in README.md wrong on Windows and right on macOS. `-text`
+# stops git touching the bytes at all, so the hash is checkable everywhere.
+paged.js -text
+LICENSE.md -text

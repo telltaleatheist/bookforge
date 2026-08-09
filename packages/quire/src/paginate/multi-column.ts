@@ -1,5 +1,21 @@
 /**
- * The CSS multi-column strategy.
+ * The CSS multi-column strategy — quire's ADVERSARIAL TEST FIXTURE.
+ *
+ * This is not the product and it is not a fallback. `PagedStrategy` is what
+ * `openDocument` uses; gate G0 decided that (README, "Strategy — SETTLED"), and
+ * the reason was image placement: multi-column reproduces exactly mupdf's
+ * failure of slicing an over-tall plate across a page break, because a column
+ * fragments a flow and has no notion of "this thing does not fit, move it".
+ *
+ * What it is kept for is that it is the strategy whose page arithmetic can be
+ * WRONG in an interesting way. Column N's left edge sits at `N * (width + gap)`,
+ * so a pitch that disagrees with the layout produces page numbers that drift by
+ * one more column every column — silently, and confidently. `tools/test-quire.js`
+ * subclasses this to lay a document out at one gutter and measure it at another,
+ * and requires quire to refuse. Delete this file and those tests have nothing to
+ * fail against.
+ *
+ * Everything below is the original strategy, unchanged.
  *
  * The document is laid into columns whose width is the page width and whose gap
  * is the gutter, with a definite height and `column-fill: auto`. Chromium then
@@ -91,6 +107,11 @@ export class MultiColumnStrategy implements QuireStrategy {
     width: number; gap: number; pitch: number; tolerance: number;
   } {
     return { width: g.width, gap: g.gap, pitch: g.width + g.gap, tolerance: PITCH_TOLERANCE };
+  }
+
+  /** Nothing to inject: the measurement is the whole engine. */
+  preludeScript(): string | null {
+    return null;
   }
 
   measureScript(g: QuireGeometry): string {
@@ -381,7 +402,9 @@ const MEASURE_SOURCE = function quireMeasure(cfg: {
             + 'from here on would be wrong. Refusing rather than rounding into a column.');
         }
         if (localX + r.width > W + TOL) {
-          overflows.push({ ids, page: col, overshoot: +(localX + r.width - W).toFixed(3) });
+          overflows.push({
+            ids, page: col, axis: 'x', overshoot: +(localX + r.width - W).toFixed(3),
+          });
         }
         const prev = boxes[col];
         if (!prev) {

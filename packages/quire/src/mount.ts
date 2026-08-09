@@ -16,14 +16,21 @@
  * `mountQuirePage` sets the guest's preferences to quire's sandbox requirements
  * explicitly rather than inheriting whatever the host happens to have.
  *
- * ── On `continuous-columns` ────────────────────────────────────────────────
+ * ── One frame per page, and why that is the wasteful way ───────────────────
  *
- * With the current strategy a page is a window onto its chapter's flow, so each
- * mounted page is one webview holding one chapter. A grid showing twelve pages
- * of the same chapter is twelve frames of the same document. That is affordable
- * for a viewport and not for a book, so a grid MUST virtualise: mount what is
- * visible plus a margin, unmount the rest. {@link QuirePageMount.boxModel} says
- * which regime is in force so the grid does not have to assume.
+ * This function mounts ONE page into ONE frame, which is the only thing that
+ * works for both box models and is therefore what it does.
+ *
+ * Under `continuous-columns` that is also the only thing possible: a page is a
+ * window onto its chapter's flow, so twelve pages of one chapter are twelve
+ * frames of the same document, and a grid MUST virtualise.
+ *
+ * Under `fragmented-boxes` — what quire actually paginates with — every page of
+ * a chapter is a separate DOM subtree inside ONE instance, so a grid can show
+ * many pages from a single frame, and should: the prelude that builds those
+ * subtrees is close to a megabyte and one frame per cell evaluates it once per
+ * cell. {@link QuirePageMount.boxModel} says which regime is in force so a grid
+ * does not have to assume.
  */
 import type { QuirePageMount } from './types';
 
@@ -99,17 +106,32 @@ export function mountQuirePage(
     const onReady = (): void => {
       cleanup();
       if (destroyed) { resolve(); return; }
-      frame.executeJavaScript(mount.presentScript).then((raw) => {
-        const parsed = JSON.parse(String(raw)) as { ok?: boolean; error?: string };
-        if (parsed.error) {
-          reject(new Error(
-            `[quire/MOUNT_PRESENT_FAILED] page ${mount.page} (${mount.document}, column `
-            + `${mount.localPage}): ${parsed.error}`,
-          ));
-          return;
-        }
-        resolve();
-      }, reject);
+      // The prelude first, and only then the page. Under `fragmented-boxes` the
+      // page boxes do not exist in the served bytes — they are built in the
+      // frame by the strategy's own engine — so a present script run without it
+      // would be looking for a page that has not been made yet.
+      const prelude = mount.preludeScript === null
+        ? Promise.resolve()
+        : frame.executeJavaScript(mount.preludeScript).then((raw) => {
+          const parsed = JSON.parse(String(raw)) as { ok?: boolean; error?: string };
+          if (parsed.ok !== true) {
+            throw new Error(
+              `[quire/MOUNT_PRELUDE_FAILED] page ${mount.page} (${mount.document}): `
+              + `${parsed.error ?? String(raw).slice(0, 200)}`);
+          }
+        });
+      prelude
+        .then(() => frame.executeJavaScript(mount.presentScript))
+        .then((raw) => {
+          const parsed = JSON.parse(String(raw)) as { ok?: boolean; error?: string };
+          if (parsed.error) {
+            throw new Error(
+              `[quire/MOUNT_PRESENT_FAILED] page ${mount.page} (${mount.document}, local page `
+              + `${mount.localPage}): ${parsed.error}`);
+          }
+          resolve();
+        })
+        .catch(reject);
     };
     const cleanup = (): void => {
       frame.removeEventListener('did-finish-load', onReady);

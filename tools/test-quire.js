@@ -15,15 +15,24 @@
  *     that a change to either side has something to disagree with.
  *  2. SPLIT DETECTION — an element that spans a page break is reported on both
  *     pages, with splitFrom/splitTo, and its words are divided between them
- *     rather than repeated.
+ *     rather than repeated. Run against BOTH strategies, because it is the one
+ *     behaviour they have to agree about.
  *  3. GAP ARITHMETIC — if the pitch used for the arithmetic is not the pitch the
  *     layout used, quire REFUSES. Proved by laying a document out at one gutter
  *     and measuring it at another, which is the exact failure the assertion is
- *     for.
+ *     for. This is what `MultiColumnStrategy` is kept in the tree FOR.
  *  4. PATH ESCAPE — the protocol refuses to serve anything outside the archive,
  *     both as a unit test of the rule and live through a loaded document.
  *  5. SANDBOX — a book's own script does not run, and a book's remote reference
  *     does not leave the machine.
+ *  6. PAGED.JS — the product strategy on a real book: the vendored bundle is the
+ *     one that was audited, every image lands on exactly one page, the map is
+ *     the same twice running, the split runs are coherent, quire refuses when
+ *     the page box is not the page box, quire refuses when Paged.js's own record
+ *     of a split disagrees with the geometry, and the whole book paginates in
+ *     seconds rather than in minutes — the last one because Paged.js's work
+ *     queue ticks on requestAnimationFrame, and a throttled host turns that into
+ *     a 60x slowdown that nothing else in this file would notice.
  */
 'use strict';
 
@@ -44,7 +53,7 @@ if (!process.versions.electron) {
 const { app } = require('electron');
 const DIST = path.join(__dirname, '..', 'dist');
 const {
-  Quire, resolveQuireRequest, MultiColumnStrategy, QuireError,
+  Quire, resolveQuireRequest, MultiColumnStrategy, PagedStrategy, PAGEDJS_VERSION, QuireError,
 } = require(path.join(DIST, 'packages/quire/src/index.js'));
 const { stampEpubForQuire } = require(path.join(DIST, 'electron/quire-stamp.js'));
 const {
@@ -183,22 +192,35 @@ async function testIdentity() {
       'quire saw a different number of stamps than the book has elements');
     assertEqual(report.unplaced.length, 0,
       `${report.unplaced.length} stamped element(s) got no page`);
+    // Named, so a change in the stamper's enumeration shows up here as a number
+    // rather than as a silent shift in what "every element" means.
+    assertEqual(stamp.textUnitCount, 1350, 'Killing America has 1350 text units');
+    assertEqual(stamp.imageElementCount, 10, 'Killing America has 10 image elements');
+    assertEqual(reference.length, 1360, 'Killing America has 1360 stamped keys in total');
   } finally {
     await doc.close();
   }
 }
 
 // ── 2. Split detection ────────────────────────────────────────────────────
-async function testSplitDetection() {
+/**
+ * Run against BOTH strategies. Splitting is the one thing a column strip and a
+ * stack of page boxes have to agree about — an element that spans a break is
+ * reported on every page it touches, with the same splitFrom/splitTo, and its
+ * words divided rather than repeated — and they arrive at it by completely
+ * different routes (character-by-character column arithmetic on one side,
+ * Paged.js's own cut text nodes on the other).
+ */
+async function testSplitDetection(strategy) {
   const words = [];
   for (let i = 0; i < 400; i++) words.push(`word${i}`);
   const long = words.join(' ');
-  const epub = path.join(scratch, 'split.epub');
+  const epub = path.join(scratch, `split-${strategy.name}.epub`);
   await buildEpub(epub, [{ name: 'a.xhtml', xhtml: page(`<p>${long}</p>`) }]);
 
-  const stamped = path.join(scratch, 'split.stamped.epub');
+  const stamped = path.join(scratch, `split-${strategy.name}.stamped.epub`);
   await stampEpubForQuire(epub, stamped, 'split');
-  const doc = await Quire.openDocument(stamped);
+  const doc = await Quire.openDocument(stamped, { strategy });
   try {
     await doc.layout({ width: 600, height: 900, fontSize: 18 });
     assert(doc.countPages() > 1, 'the fixture was meant to be longer than one page');
@@ -234,6 +256,37 @@ async function testSplitDetection() {
   }
 }
 
+/**
+ * A spine document that renders nothing still takes a page, the way a blank leaf
+ * in a printed book is still a leaf. This is a definition rather than a guess —
+ * it is what mupdf does with the same document, and dropping the page would
+ * shift every page number after it — so both strategies have to agree about it.
+ */
+async function testEmptyDocumentStillTakesAPage(strategy) {
+  const epub = path.join(scratch, `empty-${strategy.name}.epub`);
+  await buildEpub(epub, [
+    { name: 'a.xhtml', xhtml: page('<p>first</p>') },
+    { name: 'b.xhtml', xhtml: page('') },
+    { name: 'c.xhtml', xhtml: page('<p>third</p>') },
+  ]);
+  const stamped = path.join(scratch, `empty-${strategy.name}.stamped.epub`);
+  await stampEpubForQuire(epub, stamped, 'empty');
+
+  const doc = await Quire.openDocument(stamped, { strategy });
+  try {
+    const report = await doc.layout({ width: 600, height: 900, fontSize: 18 });
+    assertEqual(doc.countPages(), 3,
+      'three spine documents must produce three pages even when the middle one is blank');
+    assertEqual(report.documentPageOffsets.join(','), '0,1,2',
+      'the blank document must occupy a page of its own rather than be skipped');
+    const third = doc.loadPage(2).getBlocks();
+    assert(third.some((b) => b.id.startsWith('OEBPS/c.xhtml')),
+      'the document after the blank one must start on the page after it');
+  } finally {
+    await doc.close();
+  }
+}
+
 // ── 3. Gap arithmetic ─────────────────────────────────────────────────────
 /**
  * A strategy that lays out with one gutter and measures with another. Nothing
@@ -264,8 +317,11 @@ async function testGapArithmeticRefused() {
   const stamped = path.join(scratch, 'gap.stamped.epub');
   await stampEpubForQuire(epub, stamped, 'gap');
 
-  // Sanity: the same book with a CONSISTENT gutter lays out fine.
-  const ok = await Quire.openDocument(stamped);
+  // Sanity: the same book with a CONSISTENT gutter lays out fine. The strategy
+  // is named rather than defaulted — the default is Paged.js, which has no
+  // gutter at all, so a defaulted document here would prove nothing about the
+  // arithmetic the two refusals below are about.
+  const ok = await Quire.openDocument(stamped, { strategy: new MultiColumnStrategy() });
   try {
     await ok.layout({ width: 600, height: 900, fontSize: 18, gap: 24 });
     assert(ok.countPages() > 3, 'the fixture was meant to run to several pages');
@@ -469,6 +525,424 @@ async function testSandboxPreferencesEnforced() {
   }
 }
 
+// ── 6. Paged.js, the product strategy ─────────────────────────────────────
+
+/**
+ * The vendored bundle is the artifact that was audited, byte for byte.
+ *
+ * The repo has `core.autocrlf=true`, so without the `-text` attribute beside it
+ * this file would be rewritten on checkout and this test would fail on Windows
+ * and pass on macOS — which is exactly the kind of "works on my machine" the
+ * hash is here to make impossible.
+ */
+async function testVendoredBundle() {
+  const crypto = require('crypto');
+  const bundle = path.join(__dirname, '..', 'packages', 'quire', 'vendor', 'pagedjs', 'paged.js');
+  assert(fs.existsSync(bundle), `the vendored bundle is missing from ${bundle}`);
+  const bytes = fs.readFileSync(bundle);
+  assertEqual(bytes.length, 920798, 'the vendored paged.js is not the size npm published');
+  assertEqual(
+    crypto.createHash('sha256').update(bytes).digest('hex'),
+    '4cae0c875c89084b353ceee87bcc742388de3133f2bbf48830b63f1d2d357e4f',
+    'the vendored paged.js is not byte-for-byte what packages/quire/vendor/pagedjs/README.md records');
+  assertEqual(PAGEDJS_VERSION, '0.4.3', 'the pinned Paged.js version changed');
+  assertEqual(new PagedStrategy().name, 'pagedjs-0.4.3',
+    'the strategy must name the version it paginated with — a cached page map is only '
+    + 'valid for the paginator that produced it');
+
+  // And the compiled copy the run time actually reads is the same bytes.
+  const shipped = path.join(DIST, 'packages/quire/vendor/pagedjs/paged.js');
+  assert(fs.existsSync(shipped),
+    `dist has no vendored bundle at ${shipped} — run \`npm run build:quire-vendor\``);
+  assert(fs.readFileSync(shipped).equals(bytes),
+    'the bundle in dist/ is not the bundle in packages/quire/vendor/');
+}
+
+/**
+ * Killing America through PagedStrategy, laid out once and read many times. The
+ * layout is the expensive part and every assertion below is about the same one.
+ */
+let kaPaged = null;
+async function layoutKaWithPagedStrategy() {
+  const stampedPath = path.join(scratch, 'ka.paged.epub');
+  if (!fs.existsSync(stampedPath)) await stampEpubForQuire(KA, stampedPath, 'ka');
+  const doc = await Quire.openDocument(stampedPath, { strategy: new PagedStrategy() });
+  try {
+    const started = Date.now();
+    const report = await doc.layout({ width: 600, height: 900, fontSize: 18 });
+    const wallMs = Date.now() - started;
+    const pageCount = doc.countPages();
+    const blocks = [];
+    for (let p = 0; p < pageCount; p++) {
+      for (const b of doc.loadPage(p).getBlocks()) blocks.push({ page: p, ...b });
+    }
+    return { report, pageCount, blocks, wallMs, strategyName: doc.strategyName };
+  } finally {
+    await doc.close();
+  }
+}
+async function ka() {
+  if (!kaPaged) kaPaged = await layoutKaWithPagedStrategy();
+  return kaPaged;
+}
+
+function pagesById(blocks) {
+  const map = new Map();
+  for (const b of blocks) {
+    const list = map.get(b.id);
+    if (list) { if (!list.includes(b.page)) list.push(b.page); } else map.set(b.id, [b.page]);
+  }
+  for (const list of map.values()) list.sort((a, b) => a - b);
+  return map;
+}
+
+async function testPagedCoverage() {
+  const run = await ka();
+  assertEqual(run.strategyName, 'pagedjs-0.4.3', 'openDocument must default to Paged.js');
+  assertEqual(run.report.unplaced.length, 0,
+    `${run.report.unplaced.length} stamped element(s) got no page`);
+  assertEqual(run.report.stampedIds.length, 1360, 'quire must see all 1360 stamps');
+  assert(run.pageCount > 100, `the book should run to well over 100 pages, got ${run.pageCount}`);
+  assertEqual(run.report.documents.length, 24, 'Killing America has 24 spine documents');
+}
+
+/**
+ * The headline result of gate G0. mupdf slices two of bm01's plates across a
+ * page break and CSS multi-column reproduces exactly that failure; Paged.js
+ * detects that an over-tall plate does not fit and moves it to a fresh page. Ten
+ * image elements, ten unambiguous pages.
+ */
+async function testPagedImagesEachOnOnePage() {
+  const run = await ka();
+  const byId = pagesById(run.blocks.filter((b) => /#img\d+$/.test(b.id)));
+  assertEqual(byId.size, 10, 'Killing America has 10 image elements');
+  const split = [];
+  for (const [id, pages] of byId) {
+    if (pages.length !== 1) split.push(`${id} on pages ${pages.join(',')}`);
+  }
+  assert(split.length === 0,
+    `${split.length} image(s) span a page break, which is the failure Paged.js was chosen to `
+    + `fix: ${split.join('; ')}`);
+  for (const b of run.blocks.filter((x) => /#img\d+$/.test(x.id))) {
+    assert(b.splitFrom === null && b.splitTo === null,
+      `${b.id} sits on one page but reports a split ${b.splitFrom}..${b.splitTo}`);
+  }
+  // And the three plates that mupdf and multicol straddle are each somewhere.
+  for (const id of ['OEBPS/bm01.xhtml#img0', 'OEBPS/bm01.xhtml#img1', 'OEBPS/bm01.xhtml#img2']) {
+    assert(byId.has(id), `${id} is not in the page map at all`);
+  }
+}
+
+/**
+ * Every split run must be coherent as quire reports it, on the real book: the
+ * pages an element touches are consecutive, and every block of it names the same
+ * first and last page. The OTHER half of this — that quire's geometry and
+ * Paged.js's own data-split-from/data-split-to agree — is enforced inside the
+ * measurement on every element of every document, and is proved to actually fire
+ * by testPagedSplitDisagreementRefused below.
+ */
+async function testPagedSplitRunsCoherent() {
+  const run = await ka();
+  const byId = pagesById(run.blocks);
+  let spanning = 0;
+  for (const [id, pages] of byId) {
+    for (let i = 1; i < pages.length; i++) {
+      assertEqual(pages[i], pages[0] + i, `${id} occupies non-consecutive pages ${pages.join(',')}`);
+    }
+    const blocks = run.blocks.filter((b) => b.id === id);
+    if (pages.length === 1) {
+      for (const b of blocks) {
+        assert(b.splitFrom === null && b.splitTo === null,
+          `${id} sits on one page but reports splitFrom=${b.splitFrom} splitTo=${b.splitTo}`);
+      }
+      continue;
+    }
+    spanning++;
+    for (const b of blocks) {
+      assertEqual(b.splitFrom, pages[0], `${id} reports the wrong splitFrom`);
+      assertEqual(b.splitTo, pages[pages.length - 1], `${id} reports the wrong splitTo`);
+    }
+  }
+  assert(spanning > 20,
+    `a book this long must have elements spanning page breaks; only ${spanning} did, which `
+    + 'suggests the split detection is not running at all');
+}
+
+/**
+ * The same book, paginated twice from scratch, produces the same map. This is
+ * what makes caching a page map sound — and Paged.js mints a random `data-ref`
+ * per element per run, so it is worth proving that none of that randomness
+ * reaches the answer.
+ */
+async function testPagedDeterminism() {
+  const first = await ka();
+  const second = await layoutKaWithPagedStrategy();
+  assertEqual(second.pageCount, first.pageCount,
+    'two consecutive layouts disagree about how many pages the book has');
+  const a = pagesById(first.blocks);
+  const b = pagesById(second.blocks);
+  assertEqual(b.size, a.size, 'two consecutive layouts placed a different number of ids');
+  const differ = [];
+  for (const [id, pages] of a) {
+    const other = b.get(id);
+    if (!other) { differ.push(`${id} vanished`); continue; }
+    if (pages.join(',') !== other.join(',')) {
+      differ.push(`${id}: ${pages.join(',')} then ${other.join(',')}`);
+    }
+  }
+  assert(differ.length === 0,
+    `${differ.length} id(s) landed on different pages the second time: ${differ.slice(0, 5).join('; ')}`);
+}
+
+/**
+ * A small book, paginated with the product strategy and left open. Used by the
+ * tests that need a live paginated document rather than a page map — the host
+ * probe and the display path — so that neither of them pays for Killing America.
+ * The caller closes it.
+ */
+async function smallPagedFixture() {
+  const epubPath = path.join(scratch, 'paged-fixture.epub');
+  const stamped = path.join(scratch, 'paged-fixture.stamped.epub');
+  if (!fs.existsSync(stamped)) {
+    const paras = [];
+    for (let i = 0; i < 200; i++) {
+      paras.push(`<p>Paragraph ${i} with enough words in it to fill a line or two of a page.</p>`);
+    }
+    await buildEpub(epubPath, [{ name: 'a.xhtml', xhtml: page(paras.join('')) }]);
+    await stampEpubForQuire(epubPath, stamped, 'fixture');
+  }
+  const doc = await Quire.openDocument(stamped, { strategy: new PagedStrategy() });
+  try {
+    await doc.layout({ width: 600, height: 900, fontSize: 18 });
+  } catch (err) {
+    await doc.close();
+    throw err;
+  }
+  return doc;
+}
+
+/**
+ * The rAF trap, as numbers rather than a belief — and there are TWO of them.
+ *
+ * Paged.js's work queue ticks on requestAnimationFrame (`src/utils/queue.js`),
+ * so its throughput is the surface's frame rate. Every answer stays right when
+ * that collapses; only the clock changes, which is exactly why it needs its own
+ * test. Measured on this machine, one chapter of Killing America (13 pages):
+ *
+ * | host                                             | rAF    | per page |
+ * |--------------------------------------------------|--------|----------|
+ * | offscreen:true, backgroundThrottling:false       | 61 fps |    18 ms |
+ * | shown at opacity 0, parked off-screen            | 60 fps |    18 ms |
+ * | hidden, NOT offscreen (any backgroundThrottling) | 61 fps |   853 ms |
+ * | offscreen with the frame rate forced to 1        |  1 fps |  1076 ms |
+ *
+ * Note the third row. A merely-hidden window paginates at about one page per
+ * second — the figure the spike reported — while a naive rAF counter in it still
+ * reads 60 fps: the callbacks fire, the layout work between them does not
+ * progress. So counting frames alone would not catch the trap quire is actually
+ * exposed to. Both are therefore asserted: the frame rate, which catches the
+ * fourth row, and milliseconds per page on the real book, which catches the
+ * third.
+ *
+ * quire's analysis host dodges it with `offscreen: true` rather than by showing
+ * a transparent window, which is the same fix by a different route and does not
+ * put a window on the user's desktop.
+ */
+async function testAnalysisHostIsNotThrottled() {
+  const { OffscreenWindowHost } = require(path.join(DIST, 'packages/quire/src/index.js'));
+  const doc = await smallPagedFixture();
+  try {
+    const host = await OffscreenWindowHost.create({ session: doc.session, width: 600, height: 900 });
+    try {
+      await host.load(doc.getPageMount(0).url);
+      const raw = await host.evaluate(`new Promise((resolve) => {
+        let n = 0; const t0 = performance.now();
+        const tick = () => {
+          n++;
+          const dt = performance.now() - t0;
+          if (dt >= 1000) { resolve(JSON.stringify({ fps: +(n / (dt / 1000)).toFixed(2) })); return; }
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      })`);
+      const { fps } = JSON.parse(raw);
+      console.log(`        (analysis host runs requestAnimationFrame at ${fps} fps)`);
+      assert(fps >= 30,
+        `the analysis host runs requestAnimationFrame at ${fps} fps. Paged.js's work queue ticks `
+        + 'on rAF, so at this rate the book paginates at one page per frame. The surface must '
+        + 'get real frames — quire\'s host asks for them with `offscreen: true`.');
+    } finally {
+      host.destroy();
+    }
+  } finally {
+    await doc.close();
+  }
+
+  const run = await ka();
+  const perPage = run.wallMs / run.pageCount;
+  console.log(`        (Killing America: ${run.pageCount} pages in ${run.wallMs} ms, `
+    + `${perPage.toFixed(1)} ms/page)`);
+  assert(perPage < 100,
+    `Killing America paginated at ${perPage.toFixed(1)} ms per page. A surface that gets real `
+    + 'frames does about 20 ms/page and a merely-hidden one about 850 ms/page, so this is the '
+    + 'host rather than the book. Check that the analysis window is still `offscreen: true`.');
+  assert(run.wallMs < 25000,
+    `Killing America took ${run.wallMs} ms to paginate; it takes about four seconds on a host `
+    + 'that is getting frames and about two and a half minutes on one that is not.');
+}
+
+/**
+ * The page box, checked against the layout — the Paged.js counterpart of
+ * COLUMN_GAP_MISMATCH.
+ *
+ * If `@page { size }` never reaches the fragmenter, Paged.js silently uses its
+ * own default (US Letter) and every page-local coordinate is measured against a
+ * box that is not the page. Here the layout is correct and the ARITHMETIC is
+ * doctored, which is the same disagreement from the other side, and quire must
+ * refuse rather than report coordinates in a box nobody asked for.
+ */
+class WrongPageBoxStrategy extends PagedStrategy {
+  pagedConfig(g) { return { ...super.pagedConfig(g), width: g.width - 50 }; }
+}
+
+/**
+ * Paged.js's own record of a split, made to disagree with the geometry.
+ *
+ * The prelude is composed rather than rewritten: the real one runs first, and
+ * then `Previewer.prototype.preview` is wrapped so that after a perfectly good
+ * pagination one `data-split-to` marker is removed. Nothing about the layout
+ * changes — the element still occupies two pages and quire still measures it on
+ * both — so the only thing wrong is the engine's account of it. That is exactly
+ * the disagreement quire promises to refuse instead of silently believing one
+ * side of.
+ */
+class SplitMarkerTamperingStrategy extends PagedStrategy {
+  preludeScript() {
+    const real = super.preludeScript();
+    return `(function(){
+      var first = ${real};
+      if (JSON.parse(first).error) return first;
+      var P = globalThis.Paged.Previewer.prototype;
+      var realPreview = P.preview;
+      P.preview = async function () {
+        var flow = await realPreview.apply(this, arguments);
+        var victim = document.querySelector('.pagedjs_page [data-quire-id][data-split-to]');
+        if (!victim) throw new Error('the tampering fixture found no split element to tamper with');
+        victim.removeAttribute('data-split-to');
+        return flow;
+      };
+      return first;
+    })()`;
+  }
+}
+
+async function testPagedRefusals() {
+  const words = [];
+  for (let i = 0; i < 400; i++) words.push(`word${i}`);
+  const epub = path.join(scratch, 'paged-refuse.epub');
+  await buildEpub(epub, [{ name: 'a.xhtml', xhtml: page(`<p>${words.join(' ')}</p>`) }]);
+  const stamped = path.join(scratch, 'paged-refuse.stamped.epub');
+  await stampEpubForQuire(epub, stamped, 'refuse');
+
+  // Sanity: the fixture paginates fine when nothing is doctored.
+  const ok = await Quire.openDocument(stamped, { strategy: new PagedStrategy() });
+  try {
+    await ok.layout({ width: 600, height: 900, fontSize: 18 });
+    assert(ok.countPages() > 1, 'the fixture was meant to be longer than one page');
+  } finally {
+    await ok.close();
+  }
+
+  const refuse = async (strategy, mustName, what) => {
+    const bad = await Quire.openDocument(stamped, { strategy });
+    let threw = null;
+    try {
+      await bad.layout({ width: 600, height: 900, fontSize: 18 });
+    } catch (err) {
+      threw = err;
+    } finally {
+      await bad.close();
+    }
+    assert(threw !== null, `quire accepted ${what}`);
+    assert(threw instanceof QuireError, `expected a QuireError for ${what}, got ${threw && threw.name}`);
+    assert(mustName.test(threw.message),
+      `the refusal for ${what} should name what disagreed; it said: ${threw.message}`);
+  };
+
+  await refuse(new WrongPageBoxStrategy(), /PAGE_BOX_MISMATCH/,
+    'a page box that is not the box the arithmetic assumes');
+  await refuse(new SplitMarkerTamperingStrategy(), /SPLIT_DISAGREEMENT/,
+    "Paged.js's own split record disagreeing with the measured pages");
+}
+
+/**
+ * The DISPLAY path — the half of the package that is the product — through the
+ * fragmenter, and the sandbox still intact on the other side.
+ *
+ * `presentPage` loads a spine document into a surface, puts the engine in front
+ * of it (from the isolated world, never as a `<script>` the book could see),
+ * builds the page boxes and brings one of them to the origin. Afterwards the
+ * book's own document must still hold zero `<script>` elements: quire added the
+ * fragmenter to the frame without adding anything the book can reach.
+ */
+async function testPagedDisplayPath() {
+  const { OffscreenWindowHost } = require(path.join(DIST, 'packages/quire/src/index.js'));
+  const doc = await smallPagedFixture();
+  try {
+    const last = doc.countPages() - 1;
+    assert(last >= 2, 'the display fixture was meant to run to several pages');
+
+    const mount = doc.getPageMount(last);
+    assertEqual(mount.boxModel, 'fragmented-boxes', 'the Paged.js mount must say fragmented-boxes');
+    assert(typeof mount.preludeScript === 'string',
+      'the mount must carry the engine, since the page boxes do not exist in the served bytes');
+    assert(/@license Paged\.js v0\.4\.3/.test(mount.preludeScript),
+      "the mount's prelude is not the vendored Paged.js bundle");
+
+    const host = await OffscreenWindowHost.create({ session: doc.session, width: 600, height: 900 });
+    try {
+      await doc.presentPage(last, host);
+      const raw = await host.evaluate(`JSON.stringify({
+        scripts: document.querySelectorAll('script').length,
+        boxes: document.querySelectorAll('.pagedjs_page').length,
+        atOrigin: (function () {
+          const p = document.querySelectorAll('.pagedjs_page')[${last}];
+          if (!p) return null;
+          const r = p.getBoundingClientRect();
+          return { left: Math.round(r.left), top: Math.round(r.top),
+                   w: Math.round(r.width), h: Math.round(r.height) };
+        })(),
+      })`);
+      const seen = JSON.parse(raw);
+      assertEqual(seen.scripts, 0,
+        'the fragmenter put a <script> into the book\'s document, which the book could then read');
+      assertEqual(seen.boxes, doc.countPages(),
+        'the display surface produced a different number of page boxes than the measurement did');
+      assert(seen.atOrigin !== null, `page ${last} has no box on the display surface`);
+      assertEqual(seen.atOrigin.left, 0, `page ${last} is not at the surface origin horizontally`);
+      assertEqual(seen.atOrigin.top, 0, `page ${last} is not at the surface origin vertically`);
+      assertEqual(seen.atOrigin.w, 600, 'the presented page box is not the page width');
+      assertEqual(seen.atOrigin.h, 900, 'the presented page box is not the page height');
+    } finally {
+      host.destroy();
+    }
+
+    // And the raster really follows the page. `capturePage` hands back the LAST
+    // PAINTED frame, so a surface that is scrolled and photographed in the same
+    // turn produces a confident picture of the page it used to be showing — the
+    // sort of failure where every page number is right and every thumbnail is
+    // wrong. Two different pages must produce two different images.
+    const firstPng = await doc.loadPage(0).toPng(1);
+    const lastPng = await doc.loadPage(last).toPng(1);
+    assert(firstPng.length > 0 && lastPng.length > 0, 'a page rasterized to nothing');
+    assert(!firstPng.equals(lastPng),
+      `page 0 and page ${last} produced byte-identical rasters, which means the capture is a `
+      + 'stale frame rather than the page that was asked for');
+  } finally {
+    await doc.close();
+  }
+}
+
 // ── run ───────────────────────────────────────────────────────────────────
 async function main() {
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'quire-test-'));
@@ -477,7 +951,14 @@ async function main() {
   console.log('identity');
   await check('stamps match the narration enumeration, element for element', testIdentity);
   console.log('pagination');
-  await check('an element spanning a page break is split, not repeated', testSplitDetection);
+  await check('an element spanning a page break is split, not repeated (Paged.js)',
+    () => testSplitDetection(new PagedStrategy()));
+  await check('an element spanning a page break is split, not repeated (multi-column)',
+    () => testSplitDetection(new MultiColumnStrategy()));
+  await check('a document that renders nothing still takes a page (Paged.js)',
+    () => testEmptyDocumentStillTakesAPage(new PagedStrategy()));
+  await check('a document that renders nothing still takes a page (multi-column)',
+    () => testEmptyDocumentStillTakesAPage(new MultiColumnStrategy()));
   await check('a gutter that disagrees with the arithmetic is refused', testGapArithmeticRefused);
   console.log('protocol');
   await check('path escapes are refused by rule', testPathEscapeUnit);
@@ -486,6 +967,15 @@ async function main() {
   await check('the book\'s own script never runs', testScriptDoesNotRun);
   await check('remote references never leave the machine', testRemoteLoadsBlocked);
   await check('an unsandboxed surface is refused', testSandboxPreferencesEnforced);
+  console.log('paged.js');
+  await check('the vendored bundle is the artifact that was audited', testVendoredBundle);
+  await check('every stamped element of Killing America gets a page', testPagedCoverage);
+  await check('all ten images land on exactly one page each', testPagedImagesEachOnOnePage);
+  await check('every split run is coherent across the whole book', testPagedSplitRunsCoherent);
+  await check('two layouts of the same book produce the same map', testPagedDeterminism);
+  await check('the analysis host is not rAF-throttled', testAnalysisHostIsNotThrottled);
+  await check('a doctored page box and a doctored split record are both refused', testPagedRefusals);
+  await check('the display path shows the asked-for page and adds no script', testPagedDisplayPath);
 
   console.log('');
   console.log(`${passed} passed, ${failures.length} failed`);
