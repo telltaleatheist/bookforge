@@ -1257,6 +1257,12 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     if (!viewport) return;
     const root = this.hostRef.nativeElement as HTMLElement;
     const bounds = viewport.getBoundingClientRect();
+    // An unmeasurable viewport decides nothing. A zero-height box means the
+    // layout has (transiently or by a host CSS bug) collapsed — every band
+    // would measure off-screen and mounting frames would be dropped for a
+    // reason that is not theirs. Keep the current state and decide on the next
+    // call, when there is a box to measure against.
+    if (bounds.height <= 0) return;
     for (const band of this.bands()) {
       const el = root.querySelector<HTMLElement>(`[data-band="${band.index}"]`);
       if (!el) continue;

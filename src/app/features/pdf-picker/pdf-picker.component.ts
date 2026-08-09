@@ -1679,6 +1679,16 @@ interface AlertModal {
       position: relative;
     }
 
+    /* The EPUB viewer owns its own scrolling and virtualization, so it must be
+       a BOUNDED box inside the pane — its \`:host { flex: 1 }\` is inert here
+       because the pane is not a flex container, and an unbounded host makes
+       every page-band measure "on screen": all of them mount, the frame budget
+       evicts them in a loop, and the book blinks in and goes gray. */
+    .viewer-pane app-epub-viewer {
+      display: flex;
+      height: 100%;
+    }
+
     /* The narration copy: the one primary action of the book's flow, bottom-right.
        A flex row of the viewer/timeline column rather than an absolutely
        positioned overlay — it shares the bottom of the window with the page
