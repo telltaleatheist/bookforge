@@ -26,7 +26,14 @@
   },
   "include": [
     "electron/**/*",
-    "shared/**/*"
+    "shared/**/*",
+    // packages/quire is the browser-based EPUB paginator. It is compiled here so
+    // that it is type-checked alongside the app and built by `npm run
+    // build:electron` with no extra step. rootDir is the repo root, so it emits
+    // to dist/packages/quire/src/*.js — the SAME layout its own
+    // packages/quire/tsconfig.json produces, so there is only ever one build of
+    // it on disk.
+    "packages/quire/src/**/*"
   ],
   "exclude": [
     "node_modules"

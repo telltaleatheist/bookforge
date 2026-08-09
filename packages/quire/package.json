@@ -1,0 +1,8 @@
+{
+  "name": "@bookforge/quire",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A sandboxed, browser-based paginator for EPUBs that reports the caller's own element ids on every block.",
+  "main": "../../dist/packages/quire/src/index.js",
+  "license": "UNLICENSED"
+}

@@ -2889,7 +2889,7 @@ function xmlSafeEntities(xhtml: string): string {
  * Throws rather than degrading: a section whose markup will not parse cannot be
  * edited or preserved, and silently skipping it would drop the user's content.
  */
-function parseXhtmlBody(xhtml: string, whatFor: string): { doc: any; body: any } {
+export function parseXhtmlBody(xhtml: string, whatFor: string): { doc: any; body: any } {
   const { DOMParser } = require('@xmldom/xmldom');
   const doc = new DOMParser().parseFromString(xmlSafeEntities(xhtml), 'application/xhtml+xml');
 
@@ -3861,7 +3861,7 @@ function getUnitTextContent(node: any): string {
  *     which becomes the unit. The wrapper preserves the run's own inline
  *     markup verbatim; collected units are never touched.
  */
-function collectExportUnits(
+export function collectExportUnits(
   doc: any,
   body: any,
   whatFor: string,
@@ -4069,7 +4069,7 @@ function collectExportUnits(
  * `<svg>` is malformed markup that xmldom still hands back, and it is counted
  * where it stands rather than ignored.
  */
-function collectImageElements(body: any): any[] {
+export function collectImageElements(body: any): any[] {
   const out: any[] = [];
   const walk = (node: any): void => {
     if (node.nodeType !== 1) return;
@@ -4362,7 +4362,7 @@ const LIST_MARKER_PREFIX = /^\s*(?:[•◦▪‣⁃·]|\(?\d{1,4}[.)]|\(?[ivxlcd
 const LIST_MARKER_ANYWHERE = /(^|\s)(?:[•◦▪‣⁃·]|\(?\d{1,4}[.)]|\(?[ivxlcdmIVXLCDM]{1,7}[.)]|\(?[a-zA-Z][.)])(?=\s|$)/g;
 
 /** Resolve "." and ".." segments in a zip entry name (hrefs like "OPS/../x"). */
-function normalizeZipEntryName(name: string): string {
+export function normalizeZipEntryName(name: string): string {
   const parts: string[] = [];
   for (const seg of name.split('/')) {
     if (seg === '' || seg === '.') continue;

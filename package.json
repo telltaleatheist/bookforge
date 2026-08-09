@@ -66,7 +66,9 @@
     "migrate:sidecars": "node scripts/run-sidecar-migration.cjs",
     "test:version-family": "npx tsc -p tsconfig.electron.json && node tools/test-version-family.js",
     "test:rail-tasks": "npx tsc -p tsconfig.electron.json && node tools/test-rail-tasks.js",
-    "test:component-upgrades": "npx tsc -p tsconfig.electron.json && node tools/test-component-upgrades.js"
+    "test:component-upgrades": "npx tsc -p tsconfig.electron.json && node tools/test-component-upgrades.js",
+    "test:quire": "npx tsc -p tsconfig.electron.json && node tools/test-quire.js",
+    "quire:paginate": "npx tsc -p tsconfig.electron.json && node tools/quire-paginate.js"
   },
   "prettier": {
     "printWidth": 100,
