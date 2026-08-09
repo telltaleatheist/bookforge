@@ -148,7 +148,11 @@ const GRID_BASE_WIDTH = 200;
       <div class="placeholder"><p>No book is open.</p></div>
     } @else {
       <div class="epub-viewport" #viewport (scroll)="onScroll()" (wheel)="onWheel($event)">
-        <div class="epub-content" [class.single-column]="layout() !== 'grid'">
+        <div
+          class="epub-content"
+          [class.single-column]="layout() !== 'grid'"
+          [class.flow]="layout() === 'flow'"
+        >
           @for (band of bands(); track band.index) {
             <div
               class="band"
@@ -353,6 +357,23 @@ const GRID_BASE_WIDTH = 200;
       padding: var(--ui-spacing-xl);
 
       &.single-column { align-items: center; }
+
+      // FLOW is a book, not a table of cards. The chapters butt together into
+      // one continuous white column — the seam between two bands is invisible
+      // because both sides of it are the same white, and the 48px flow padding
+      // on each side of the join is the chapter break's whitespace. Per-band
+      // shadows would betray the seams (each band's shadow falls on its
+      // neighbour's white), so the column wears none; on the gray table it
+      // reads as one tall page. Generous tail padding so the last line of the
+      // book is not glued to the bottom of the window.
+      &.flow {
+        gap: 0;
+        padding-top: var(--ui-spacing-xl);
+        padding-bottom: 120px;
+      }
+
+      &.flow .frame-host ::ng-deep webview { box-shadow: none; }
+      &.flow .page-slot { box-shadow: none; }
     }
 
     .band {

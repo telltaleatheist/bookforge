@@ -263,10 +263,14 @@ export interface QuireFlowArrangement {
  *
  * The paginated frame's counterpart of `arrangeScript`, for a frame in which
  * no page boxes exist and none will: the document flows top to bottom exactly
- * as served. The stylesheet gives the flow the SAME typographic conditions the
+ * as served. The stylesheet gives the flow the SAME typographic frame the
  * paginator used — the analysis root font size, the page's content width as
- * the column measure, the page margin as the column padding — so a paragraph
- * reads identically in both presentations and only the page breaks differ.
+ * the column measure, the page margin as the column padding — plus a layer of
+ * READING defaults (a book serif, a reading line-height, heading and
+ * scene-break shapes) written entirely in `:where()` so they carry zero
+ * specificity: any rule the book's own stylesheet states, however weakly,
+ * outranks them. A styled book looks like itself; an unstyled one looks like
+ * a book instead of a browser default.
  *
  * Same non-negotiable order as `arrangeScript`: style, force layout and
  * measure at scale 1 with the transform removed, and only then apply the
@@ -303,6 +307,16 @@ export function flowArrangeScript(
         // margins.
         'body img,body svg,body video,body canvas,body object,body embed,body picture{',
         'max-width:' + (cfg.pageWidth - 2 * cfg.margin) + 'px!important;height:auto!important;}',
+        // Reading defaults, all at ZERO specificity (:where) so the book's own
+        // stylesheet — any rule in it at all — wins. These decide only what an
+        // undeclared property looks like: books published without CSS get book
+        // typography instead of Times-at-browser-default.
+        ':where(body){font-family:Georgia,"Palatino Linotype","Book Antiqua",serif;',
+        'color:#1c1c1e;line-height:1.7;-webkit-font-smoothing:antialiased;',
+        'text-rendering:optimizeLegibility;font-kerning:normal;}',
+        ':where(h1,h2,h3,h4,h5,h6){line-height:1.25;margin:1.6em 0 0.7em;text-wrap:balance;}',
+        ':where(h1){margin-top:0.4em;}',
+        ':where(hr){border:0;border-top:1px solid #d5d5d0;width:40%;margin:2.2em auto;}',
       ].join('');
       document.head.appendChild(flowSheet);
     }
