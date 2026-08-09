@@ -5504,6 +5504,15 @@ export class PdfPickerComponent implements OnInit {
 
   // Count of pages that have finished loading (for progress indicator)
   readonly pagesLoaded = computed(() => {
+    // A quire EPUB does not stream: the analysis delivers every page's blocks
+    // in ONE answer, and the raster pipeline this counter watches does not run
+    // for it at all — an mupdf raster of an EPUB is a DIFFERENT pagination
+    // wearing the same page numbers (mupdf lays Killing America out as 218
+    // pages where quire lays 235, so this counter sat at 218/235 forever and
+    // held the bulk-gesture guard shut on a fully-arrived book). Everything
+    // that reads this signal is asking "has the whole book arrived"; for an
+    // EPUB it has, by construction, as soon as there is a book at all.
+    if (this.isCurrentDocumentEpub()) return this.totalPages();
     const images = this.pageImages();
     let loaded = 0;
     for (const [_, value] of images) {
@@ -6310,8 +6319,11 @@ export class PdfPickerComponent implements OnInit {
       }
 
       // Start on-demand page rendering (non-blocking, only renders visible pages)
-      // Additional pages render as the user scrolls via the pdf-viewer effect
-      if (!lightweight) {
+      // Additional pages render as the user scrolls via the pdf-viewer effect.
+      // NOT for an EPUB: the rasters would be mupdf's OWN pagination of the
+      // book — a different page count under the same page numbers — and the
+      // quire viewer shows the live DOM, so nothing may display them.
+      if (!lightweight && !libraryPath.toLowerCase().endsWith('.epub')) {
         this.pageRenderService.startOnDemandRendering(quickResult.page_count);
       }
 
@@ -11521,8 +11533,12 @@ export class PdfPickerComponent implements OnInit {
       // Show document immediately
       this.pdfLoaded.set(true);
 
-      // Start on-demand page rendering (skip if lightweight mode)
-      if (!lightweight) {
+      // Start on-demand page rendering (skip if lightweight mode). NOT for an
+      // EPUB: the rasters would be mupdf's OWN pagination of the book — a
+      // different page count under the same page numbers — and the quire
+      // viewer shows the live DOM, so nothing may display them. (Background
+      // removal is a raster treatment, so it goes with them.)
+      if (!lightweight && !renderPath.toLowerCase().endsWith('.epub')) {
         // If background removal is enabled, apply it after initial pages load
         if (project.remove_backgrounds) {
           this.pageRenderService.startOnDemandRendering(quickResult.page_count).then(() => {
