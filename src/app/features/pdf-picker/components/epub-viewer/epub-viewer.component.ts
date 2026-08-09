@@ -721,9 +721,16 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
         const el = frame.element;
         el.style.width = `${band.width}px`;
         el.style.height = `${band.height}px`;
-        void this.evaluate(frame, zoomScript(scale)).catch((err: unknown) => {
-          this.setState(index, { kind: 'refused', why: String((err as Error).message) });
-        });
+        // The guest is ASKED whether it followed the resize before the zoom is
+        // applied — Electron drops webview resizes under load, and a guest
+        // painting a stale viewport shows the top of every page and nothing
+        // else. See syncGuestViewport.
+        void this.syncGuestViewport(frame, band.width, band.height)
+          .then(() => this.evaluate(frame, zoomScript(scale)))
+          .catch((err: unknown) => {
+            if (this.mounted.get(index) !== frame) return; // unmounted meanwhile
+            this.setState(index, { kind: 'refused', why: String((err as Error).message) });
+          });
       }
     });
 
@@ -904,6 +911,13 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
       await frame.ready;
       if (cancelled()) return;
 
+      // The element is sized; make sure the guest actually FOLLOWED before
+      // anything is arranged or measured in it. Measured failure mode: element
+      // 200×300, guest viewport 200×150 — the bottom half of every page is
+      // simply never painted, and nothing errors.
+      await this.syncGuestViewport(frame, band.width, band.height);
+      if (cancelled()) return;
+
       const arrangement = await this.evaluate<QuireFrameArrangement>(
         frame, arrangeScript(band.columns, PAGE_GAP, this.scale()));
       if (cancelled()) return;
@@ -981,6 +995,56 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     const parsed = JSON.parse(String(raw)) as T & { error?: string };
     if (parsed.error) throw new Error(parsed.error);
     return parsed;
+  }
+
+  /**
+   * Make the frame's INNER viewport actually match its element, or refuse.
+   *
+   * A `<webview>` guest is supposed to follow the element's box, but Electron
+   * drops resizes that land while the guest is busy loading or laying out —
+   * measured on the real book: element 200×300, guest viewport 200×150, and a
+   * browser paints nothing below its viewport, so the bottom half of every
+   * page simply did not exist on screen (and each zoom re-resize could strand
+   * it somewhere new). So the guest is ASKED, and if it disagrees the element
+   * is nudged by a pixel — which forces Electron's internal resize path — and
+   * asked again. Loudly refusing beats quietly showing the top of a page.
+   */
+  private async syncGuestViewport(
+    frame: MountedQuirePage, width: number, height: number,
+  ): Promise<void> {
+    const guest = frame.element as HTMLElement & { executeJavaScript(code: string): Promise<unknown> };
+    const expected = { w: Math.round(width), h: Math.round(height) };
+    let got = { w: 0, h: 0 };
+    for (let attempt = 0; attempt < 4; attempt++) {
+      got = await guest.executeJavaScript(
+        'JSON.parse(JSON.stringify({w: window.innerWidth, h: window.innerHeight}))',
+      ) as { w: number; h: number };
+      if (Math.abs(got.w - expected.w) <= 2 && Math.abs(got.h - expected.h) <= 2) return;
+      // The measured mechanism (guest stuck at 200×150 — the replaced-element
+      // DEFAULT): Electron's <webview> hosts the guest in a shadow <iframe>
+      // that does not get a height, so the guest viewport never follows the
+      // element. The repair is to size that iframe explicitly; the pixel
+      // nudge afterwards forces the resize message through for embedders
+      // where the iframe was fine and the message was merely dropped.
+      const shadow = (frame.element as unknown as { shadowRoot: ShadowRoot | null }).shadowRoot;
+      const inner = shadow?.querySelector('iframe');
+      if (inner) {
+        inner.style.width = '100%';
+        inner.style.height = '100%';
+        inner.style.border = '0';
+      }
+      frame.element.style.height = `${expected.h + 1}px`;
+      frame.element.style.width = `${expected.w + 1}px`;
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      frame.element.style.height = `${expected.h}px`;
+      frame.element.style.width = `${expected.w}px`;
+      await new Promise<void>((r) => setTimeout(r, 60 * (attempt + 1)));
+    }
+    throw new Error(
+      `This chapter's frame paints a ${got.w}×${got.h} viewport inside a ${expected.w}×`
+      + `${expected.h} box, so part of every page would simply not be drawn. The frame was `
+      + 'nudged and would not follow its own size.',
+    );
   }
 
   // ── geometry the overlay draws from ───────────────────────────────────────
