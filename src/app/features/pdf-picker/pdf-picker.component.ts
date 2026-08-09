@@ -2930,8 +2930,19 @@ export class PdfPickerComponent implements OnInit {
     const wanted = this.showsEpubViewer() ? this.editorState.effectivePath() : '';
     if (wanted === this.epubViewerOpenedFor) return;
     this.epubViewerOpenedFor = wanted;
+    if (wanted !== '' && !this.flowDefaultedFor.has(wanted)) {
+      // An EPUB opens the way a book reader would show it: one flowing column
+      // at reading size. ONCE per book — a layout the user picked by hand
+      // afterwards survives switching tabs away and back.
+      this.flowDefaultedFor.add(wanted);
+      this.layout.set('flow');
+      this.zoom.set(100);
+    }
     void this.openEpubViewerFor(wanted);
   });
+
+  /** EPUB paths already given their opening layout, so a book is defaulted once. */
+  private readonly flowDefaultedFor = new Set<string>();
 
   /**
    * Give the book back when the window goes.
@@ -3007,15 +3018,18 @@ export class PdfPickerComponent implements OnInit {
     const blocks = this.blocks();
     if (blocks.length === 0 || this.totalPages() === 0) return { kind: 'opening' };
 
-    const shown = source.documents.reduce((n, d) => n + d.documentPageCount, 0);
-    if (shown !== this.totalPages()) {
+    const disagreement = this.epubPageCountDisagreement();
+    if (disagreement !== null) {
       return {
         kind: 'refused',
         why:
-          `This book was analyzed as ${this.totalPages()} page(s) but opens for viewing as `
-          + `${shown}. The two must be the same book laid out the same way — every page number `
-          + 'recorded against it means a different place otherwise — so it is not shown rather '
-          + 'than shown wrong. Clear this file\'s analysis cache and re-open it.',
+          `This book was analyzed as ${disagreement.analyzed} page(s) but opens for viewing as `
+          + `${disagreement.shown}. The two must be the same book laid out the same way — every `
+          + 'page number recorded against it means a different place otherwise — so it is not '
+          + 'shown rather than shown wrong. The stale analysis is discarded and the book '
+          + 're-opened automatically, once; if this message stays, the analyzer and the viewer '
+          + 'are genuinely laying the book out differently, which is a bug and not a cache '
+          + 'problem.',
       };
     }
 
@@ -3039,6 +3053,61 @@ export class PdfPickerComponent implements OnInit {
     } catch (err) {
       return { kind: 'refused', why: err instanceof Error ? err.message : String(err) };
     }
+  });
+
+  /**
+   * The analysis's page count against the viewer's, when they DISAGREE — null
+   * in every other state, including every state where one of them is not known
+   * yet. Structured rather than a string test, because two things react to it:
+   * the refusal above, and the ONE automatic recovery below.
+   */
+  private readonly epubPageCountDisagreement = computed<
+    { analyzed: number; shown: number } | null
+  >(() => {
+    if (this.epubViewerRefusal() !== null) return null;
+    const source = this.epubViewerSource();
+    if (source === null) return null;
+    if (this.blocks().length === 0 || this.totalPages() === 0) return null;
+    const shown = source.documents.reduce((n, d) => n + d.documentPageCount, 0);
+    return shown === this.totalPages() ? null : { analyzed: this.totalPages(), shown };
+  });
+
+  /**
+   * Books already re-opened once for a page-count disagreement. A second
+   * disagreement on the same book means the analyzer and the viewer are LIVE
+   * disagreeing — re-opening again would loop forever, so the refusal stands.
+   */
+  private readonly pageCountReopened = new Set<string>();
+
+  /**
+   * The recovery for a stale analysis: close the book and open it again.
+   *
+   * By the time the disagreement is observable the viewer bridge has already
+   * deleted the poisoned page map and analysis payloads from this book's cache
+   * (it does so whenever its live pagination contradicts the cached map), so a
+   * re-open re-analyzes from scratch and lands on the viewer's own numbers.
+   * The re-open is the app's real open path — `closeDocument` +
+   * `openTarget` — not a hand-rolled partial reload, so project state comes
+   * back exactly as a manual close-and-reopen would bring it back.
+   */
+  private readonly epubPageCountRecovery = effect(() => {
+    const disagreement = this.epubPageCountDisagreement();
+    if (disagreement === null) return;
+    const docId = this.activeDocumentId();
+    const doc = docId === null ? undefined : this.openDocuments().find(d => d.id === docId);
+    if (doc === undefined) return;
+    const target = doc.projectPath ?? doc.libraryPath;
+    if (this.pageCountReopened.has(target)) return;
+    this.pageCountReopened.add(target);
+    console.warn(
+      `[epub-viewer] ${doc.name}: analyzed as ${disagreement.analyzed} page(s) but lays out as `
+      + `${disagreement.shown}. The stale analysis cache was discarded when the viewer opened; `
+      + 're-opening the book to re-analyze it.',
+    );
+    queueMicrotask(() => {
+      this.closeDocument(docId!);
+      void this.openTarget(target);
+    });
   });
 
   // The three arms, each its own signal, so the template narrows without
@@ -5483,6 +5552,11 @@ export class PdfPickerComponent implements OnInit {
               this.autoZoomForGrid();
               this.viewerResetGridPagination();
             }, 0);
+          }
+          // Flow is the reading mode, and reading size is 100% — the same
+          // way grid picks its own zoom on entry.
+          if (newLayout === 'flow') {
+            this.zoom.set(100);
           }
           return newLayout;
         });

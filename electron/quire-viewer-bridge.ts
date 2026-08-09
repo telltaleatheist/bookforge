@@ -20,6 +20,7 @@
  */
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import { ipcMain } from 'electron';
 import { Quire, type QuireDocument } from '../packages/quire/src';
@@ -27,6 +28,9 @@ import type { QuirePageMount } from '../packages/quire/src/types';
 import { enumerateNarrationElements } from './quire-stamp';
 import { blockId, stampedCopyForViewer } from './epub-quire-analysis';
 import { markupCategoriesForUnits, readEpubTocTargets, type MarkupUnit } from './epub-processor';
+import {
+  loadCachedPageMap, pageMapPath, quireCacheDir, type QuirePageMap,
+} from './quire-page-map';
 import type { LaidOutBlock, LaidOutBook } from '../shared/document/laid-out-book';
 
 /** The page box a book is laid out into. The viewer scales it; it never reflows. */
@@ -89,7 +93,7 @@ export async function openBookForViewer(
   // the first was still open failed with EPERM, because the stamp is written by
   // rename and the open session holds the target.
   const stampStartedAt = Date.now();
-  const { stampedPath, reused } = await stampedCopyForViewer(epubPath);
+  const { stampedPath, fileHash, reused } = await stampedCopyForViewer(epubPath);
   const stampMs = Date.now() - stampStartedAt;
   console.log(`[quire-viewer] ${path.basename(epubPath)}: stamp `
     + `${reused ? 'reused' : 'written'} in ${stampMs} ms`);
@@ -133,6 +137,18 @@ export async function openBookForViewer(
       );
     }
     const pageCount = doc.countPages();
+
+    // The analyzer trusts a CACHED page map; this bridge just paginated the
+    // same stamped book live. Pagination is deterministic, so a cached map
+    // that disagrees with what was measured right here is a leftover of a
+    // build that laid books out differently — poison that feeds the analysis
+    // a page world this viewer cannot show, which the picker then refuses as
+    // "analyzed as X but opens as Y" forever. Deleted here, together with the
+    // analysis payloads built from it, so the very next analysis
+    // re-paginates and the two meet on the same number. (Measured 2026-08-09:
+    // a v2-named map paginated without the v2 margin said 183 pages against a
+    // live 235, and nothing would ever have retired it.)
+    await discardCachedMapsDisagreeingWith(fileHash, doc.strategyName, geometry, pageCount);
 
     // One block per page FRAGMENT — the same shape the analysis emits, with the
     // same id derivation, so the harness drives the viewer with exactly the
@@ -241,6 +257,49 @@ export async function openBookForViewer(
     throw err;
   }
   return opening;
+}
+
+/**
+ * Retire a cached page map that contradicts this book's live pagination.
+ *
+ * A map that cannot even be read for this geometry, or that carries a
+ * different page count than the layout just measured, is poison from a stale
+ * build: no future run of THIS build will ever produce it, so no future run
+ * should ever read it. The analysis payloads in the same directory embed
+ * page-keyed blocks derived from some map, so they go with it — all of them
+ * pure cache, rebuilt from the book on the next analysis.
+ */
+async function discardCachedMapsDisagreeingWith(
+  fileHash: string,
+  strategyName: string,
+  geometry: QuireViewerGeometry,
+  livePageCount: number,
+): Promise<void> {
+  let cached: QuirePageMap | null = null;
+  let unreadable: string | null = null;
+  try {
+    cached = await loadCachedPageMap(fileHash, strategyName, geometry);
+  } catch (err) {
+    unreadable = (err as Error).message;
+  }
+  if (unreadable === null && (cached === null || cached.pageCount === livePageCount)) return;
+
+  const mapAt = pageMapPath(fileHash, strategyName, geometry);
+  console.warn(
+    `[quire-viewer] the cached page map at ${mapAt} `
+    + (unreadable !== null
+      ? `cannot be read for this layout (${unreadable})`
+      : `says ${cached!.pageCount} page(s), but this book lays out live as ${livePageCount}`)
+    + ' — a leftover of a build that paginated differently. Deleting it and the analysis'
+    + ' payloads built from it, so the next analysis re-paginates.',
+  );
+  await fsPromises.rm(mapAt, { force: true });
+  const dir = quireCacheDir(fileHash);
+  for (const entry of await fsPromises.readdir(dir)) {
+    if (/^analysis-v\d+\.json$/.test(entry)) {
+      await fsPromises.rm(path.join(dir, entry), { force: true });
+    }
+  }
 }
 
 export async function closeBookForViewer(handle: string): Promise<void> {

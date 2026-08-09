@@ -173,6 +173,19 @@ export class PagedStrategy implements QuireStrategy {
 
   layoutCss(g: QuireGeometry): string {
     const { width: w, height: h, fontSize } = g;
+    if (!Number.isFinite(PAGE_MARGIN)) {
+      // Interpolated into CSS below, where a non-number would not error — the
+      // browser drops the invalid `margin:` declaration and paginates with NO
+      // margin, silently producing a different book. (Measured 2026-08-09: a
+      // mixed build did exactly this and poisoned a page-map cache with a
+      // marginless layout under the current version's name.)
+      throw new Error(
+        `[quire] PAGE_MARGIN is ${String(PAGE_MARGIN)}, not a number — this build is `
+        + 'inconsistent (types.js and paged.js are from different compilations). Rebuild '
+        + 'before paginating anything: a page laid out without its margin is a different '
+        + 'pagination wearing the same version number.',
+      );
+    }
     const cw = w - 2 * PAGE_MARGIN;
     const ch = h - 2 * PAGE_MARGIN;
     return [
