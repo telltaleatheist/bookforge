@@ -28,6 +28,27 @@ export interface ConfirmOptions {
   cancelLabel?: string;
 }
 
+/**
+ * A question with THREE answers: the recommended one, another real one, and
+ * not doing it at all.
+ *
+ * Distinct from {@link ConfirmOptions} because folding a second real answer into
+ * Cancel makes a dialog describe an outcome it does not produce. The primary
+ * button is the default — Enter takes it — and Escape or the backdrop still
+ * cancel, which is the only safe meaning for a dismissal.
+ */
+export interface ChooseOptions {
+  message: string;
+  title?: string;
+  detail?: string;
+  type?: DesktopDialogType;
+  /** The recommended answer. Primary-styled, and what Enter takes. */
+  confirmLabel: string;
+  /** The other real answer, beside it. */
+  alternateLabel: string;
+  cancelLabel?: string;
+}
+
 export interface PromptOptions {
   message: string;
   title?: string;
@@ -88,6 +109,36 @@ export class DialogService {
         this.destroy(ref);
         resolve(false);
       });
+    });
+  }
+
+  /**
+   * Ask a question with two real answers and a way out. Resolves which.
+   *
+   * Never collapses into a boolean: a caller has to handle 'cancel' as its own
+   * outcome, which is the point — a dismissal is not one of the two answers and
+   * must not quietly become the safer-looking one.
+   */
+  choose(options: ChooseOptions): Promise<'confirm' | 'alternate' | 'cancel'> {
+    return new Promise((resolve) => {
+      const ref = this.mount({
+        title: options.title ?? '',
+        message: options.message,
+        detail: options.detail,
+        type: options.type ?? 'question',
+        confirmLabel: options.confirmLabel,
+        cancelLabel: options.cancelLabel ?? 'Cancel',
+        showCancel: true,
+        showAlternate: true,
+        alternateLabel: options.alternateLabel,
+      });
+      const settle = (answer: 'confirm' | 'alternate' | 'cancel') => {
+        this.destroy(ref);
+        resolve(answer);
+      };
+      ref.instance.confirm.subscribe(() => settle('confirm'));
+      ref.instance.alternate.subscribe(() => settle('alternate'));
+      ref.instance.cancel.subscribe(() => settle('cancel'));
     });
   }
 

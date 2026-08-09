@@ -35,6 +35,7 @@ import {
   type ConversionRateSample,
 } from '@shared/vlm/eta';
 import { VLM_CONVERT_STAGE } from '@shared/vlm/conversion';
+import type { VlmReadingsChoice } from '@shared/vlm/readings-bank';
 import { samePath } from '@shared/document/same-path';
 
 /**
@@ -80,6 +81,24 @@ export interface VlmConvertJobConfig {
    * name rather than leaving it waiting for progress that will never come.
    */
   attachToRunning?: boolean;
+  /**
+   * What the user said to do with the page answers already banked for this PDF,
+   * answered when the row was ADDED to the queue.
+   *
+   * Recorded here, on the row, because the whole point is that nothing
+   * re-decides it: pressing Start on a queued row honours what the row was
+   * enqueued expecting, and a retry of a failed row inherits the same answer
+   * rather than flipping. Owen, 2026-08-09: "if its already in the queue and i
+   * hit start, it means it was expecting the cache to be there and should rely
+   * on it."
+   *
+   * ABSENT means the row was enqueued before BookForge asked the question, and
+   * `readingsChoiceOfJob` turns that into "rely on the bank" — deliberately NOT
+   * the fresh-on-completed default, which belongs to a question this row was
+   * never asked. `queue.json` outlives the build that wrote it, so that case is
+   * permanent rather than transitional.
+   */
+  readings?: VlmReadingsChoice;
 }
 
 /** One sub-bar under the row's own, in the shape the queue's stage list takes. */
@@ -114,6 +133,7 @@ export interface ConversionJobContext {
 export interface ConversionJobElectron {
   convertPdfToEpub(request: {
     projectDir: string; variantId?: string; sourcePath?: string; skipDeletedPages?: boolean;
+    readings?: VlmReadingsChoice;
   }): Promise<{ success: boolean; result?: { epubPath: string }; error?: string }>;
   onDocumentStageProgress(
     cb: (e: {
@@ -153,6 +173,11 @@ export function buildConversionConfig(
     ...(raw.variantId ? { variantId: raw.variantId } : {}),
     ...(raw.sourcePath ? { sourcePath: raw.sourcePath } : {}),
     ...(raw.skipDeletedPages ? { skipDeletedPages: true } : {}),
+    // Carried through EXACTLY as given, including absent. A row rebuilt from
+    // `queue.json` by a build that added this field must not acquire a choice
+    // its user never made — absent is a state with a defined meaning
+    // (`readingsChoiceOfJob`), not a hole to fill in.
+    ...(raw.readings ? { readings: raw.readings } : {}),
   };
 }
 
@@ -318,6 +343,10 @@ export async function runConversionJob(
       ...(config.variantId ? { variantId: config.variantId } : {}),
       ...(config.sourcePath ? { sourcePath: config.sourcePath } : {}),
       ...(config.skipDeletedPages ? { skipDeletedPages: true } : {}),
+      // The answer given when this row was added to the queue, unchanged — on
+      // the first start and on every retry alike. A retry that re-decided would
+      // be the queue overruling the user between two attempts at one job.
+      ...(config.readings ? { readings: config.readings } : {}),
     });
     if (!result.success || !result.result) {
       // Main's own sentence — it names the missing Python, the model it could

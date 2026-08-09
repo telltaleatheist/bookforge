@@ -6882,6 +6882,26 @@ function setupIpcHandlers(): void {
   });
 
   /**
+   * What page answers are already banked for this book's PDF, and whether the
+   * run that banked them FINISHED.
+   *
+   * Asked at the moment a conversion is committed to — added to the queue, or
+   * started from the Versions page — so the user can be shown the facts and
+   * choose. Answered by main because only main knows where the bank lives, what
+   * the PDF hashes to, and what this project's provenance records. The whole
+   * rule lives in shared/vlm/readings-bank.ts; this handler only measures.
+   */
+  ipcMain.handle('vlm:readings-bank', async (
+    _event, request: import('../shared/vlm/conversion').VlmConvertRequest) => {
+    try {
+      const { inspectVlmReadingsBank } = await import('./vlm-convert.js');
+      return { success: true, bank: await inspectVlmReadingsBank(request) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
    * Is the configured VLM endpoint up, and what is it serving?
    *
    * The Test button in Settings → AI → Reading pages. It runs here rather than

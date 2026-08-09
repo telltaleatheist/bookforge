@@ -17,6 +17,7 @@ import type {
   VlmEndpointCheck,
   VlmEndpointConfig,
 } from '@shared/vlm/conversion';
+import type { VlmReadingsBank } from '@shared/vlm/readings-bank';
 import type { NarrationDeletions, NarrationState } from '@shared/vlm/narration-deletions';
 import type { BookChapterRenameResult, BookChapterTitles } from '@shared/vlm/chapter-titles';
 import type {
@@ -2618,6 +2619,25 @@ export class ElectronService {
   }> {
     if (this.isElectron) {
       return (window as any).electron.vlm.convert(request);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * What page answers are already banked for this book's PDF, and whether the
+   * conversion that banked them finished.
+   *
+   * Asked at the moment a conversion is committed to, so the user is shown the
+   * facts and chooses what happens to hours of banked GPU work. A failure is
+   * REPORTED rather than turned into "no bank": treating an unanswerable
+   * question as an empty run directory is how the app would go back to
+   * silently replaying a cache the user did not ask for.
+   */
+  async vlmReadingsBank(request: VlmConvertRequest): Promise<{
+    success: boolean; bank?: VlmReadingsBank; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.readingsBank(request);
     }
     return { success: false, error: 'Not running in Electron' };
   }

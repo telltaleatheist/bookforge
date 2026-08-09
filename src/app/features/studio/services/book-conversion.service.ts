@@ -51,6 +51,12 @@ import {
   type VlmEndpointConfig,
   type VlmRoute,
 } from '@shared/vlm/conversion';
+import {
+  describeReadingsBank,
+  describeReadingsChoices,
+  readingsChoiceButtons,
+  type VlmReadingsChoice,
+} from '@shared/vlm/readings-bank';
 import { samePath } from '@shared/document/same-path';
 import { sampleConversionRate, type ConversionRateSample } from '@shared/vlm/eta';
 
@@ -110,6 +116,15 @@ export interface ConversionRequest {
    * question for exactly the users who curated one of two editions.
    */
   sourcePath?: string;
+  /**
+   * What to do with the answers already banked for this PDF, as the user
+   * answered it when they committed to the run.
+   *
+   * Set by `begin`, never by `prepare`: opening the window is not ordering the
+   * conversion, and a question asked at the wrong moment is a question asked
+   * about a run that may never happen.
+   */
+  readings?: VlmReadingsChoice;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -250,13 +265,80 @@ export class BookConversionService {
   /** The request behind a prepared run, so Start and Add to queue agree on it. */
   private readonly pending = new Map<string, ConversionRequest>();
 
+  /**
+   * What happens to the page answers already banked for this book — asked HERE,
+   * at the moment the conversion is committed to, and nowhere else.
+   *
+   * `foundry vlm-convert` banks each page as it lands so a killed run costs one
+   * page. That resume is worth hours and it stays. What it must never be is the
+   * silent answer to "convert this book" after a conversion that FINISHED, which
+   * is what it was: the user ordered the work and got a replay of a cache.
+   *
+   * Owen, 2026-08-09: "i told it to run the VLM by scheduling the job in the
+   * queue, and instead of doing what i told it to do, it used an unexpected
+   * codepath to completely ignore my order and do something different."
+   *
+   * So it is a QUESTION, once, here — pressing Start, or Add to queue — and the
+   * answer is carried on the run and recorded on the queue row. Nothing
+   * downstream re-decides: pressing Start on a row that is already queued
+   * honours what that row was enqueued expecting, and a retry inherits it.
+   *
+   * With NO bank there is nothing to ask about and no dialog appears. A bank
+   * that cannot be measured is a REFUSAL rather than a shrug — treating an
+   * unanswerable question as an empty run directory is how this would go
+   * straight back to replaying a cache nobody asked for.
+   */
+  private async askAboutBank(
+    request: ConversionRequest,
+  ): Promise<{ choice: VlmReadingsChoice } | { cancelled: true } | { error: string }> {
+    const answer = await this.electron.vlmReadingsBank({
+      projectDir: request.projectDir,
+      ...(request.variantId ? { variantId: request.variantId } : {}),
+      ...(request.sourcePath ? { sourcePath: request.sourcePath } : {}),
+    });
+    if (!answer.success || !answer.bank) {
+      return {
+        error: answer.error
+          ?? 'BookForge could not check whether this book has banked page readings, and it will not '
+          + 'convert without knowing — a conversion that answered itself out of a cache is exactly '
+          + 'what that check exists to prevent.',
+      };
+    }
+    const bank = answer.bank;
+    // Nothing banked: there is no question, so no dialog. Every page is read,
+    // which is both answers' meaning for an empty run directory.
+    if (bank.pages === 0) return { choice: 'fresh' };
+
+    const buttons = readingsChoiceButtons(bank);
+    const chosen = await this.dialog.choose({
+      title: 'This book already has readings',
+      message: describeReadingsBank(bank),
+      detail: describeReadingsChoices(bank),
+      type: 'question',
+      confirmLabel: buttons.primaryLabel,
+      alternateLabel: buttons.alternateLabel,
+    });
+    if (chosen === 'cancel') return { cancelled: true };
+    return { choice: chosen === 'confirm' ? buttons.primaryChoice : buttons.alternateChoice };
+  }
+
   /** Start a prepared conversion. */
   async begin(projectDir: string): Promise<void> {
     const request = this.pending.get(projectDir);
     if (!request) return;
+
+    // Asked BEFORE anything is dropped or spawned, so a cancel leaves the window
+    // exactly as it was and the user can press Start again.
+    const bank = await this.askAboutBank(request);
+    if ('cancelled' in bank) return;
+    if ('error' in bank) {
+      await this.failed(request.sourceLabel, bank.error);
+      return;
+    }
+
     this.pending.delete(projectDir);
     this.drop(projectDir);
-    await this.start(request);
+    await this.start({ ...request, readings: bank.choice });
   }
 
   /**
@@ -282,6 +364,36 @@ export class BookConversionService {
     if (!run) return;
     const request = this.pending.get(projectDir);
 
+    /*
+     * The banked-readings question, asked at ADD-TO-QUEUE time and answered onto
+     * the row. Owen pinned the timing exactly: "if i add it to the queue and
+     * theres a cache present, it should ask if i want to use the cached path or
+     * overwrite it/delete it before starting."
+     *
+     * NOT asked for a row that is ATTACHING to a conversion already running —
+     * that row starts nothing, so there is no bank decision for it to make, and
+     * a dialog about one would be asking the user to redirect a run that is
+     * already forty minutes into reading pages.
+     */
+    let readings: VlmReadingsChoice | undefined;
+    if (run.phase !== 'running') {
+      const bank = await this.askAboutBank({
+        projectDir,
+        from: run.from,
+        sourceLabel: run.sourceLabel,
+        ...(request?.variantId ? { variantId: request.variantId } : {}),
+        ...(request?.sourcePath ? { sourcePath: request.sourcePath } : {}),
+      });
+      // Cancel means the row is not added. Nothing is dropped and the window
+      // stays open on a conversion the user has not committed to.
+      if ('cancelled' in bank) return;
+      if ('error' in bank) {
+        await this.failed(run.sourceLabel, bank.error);
+        return;
+      }
+      readings = bank.choice;
+    }
+
     await this.queue.addJob({
       type: 'vlm-convert',
       config: {
@@ -292,6 +404,9 @@ export class BookConversionService {
         ...(request?.sourcePath ? { sourcePath: request.sourcePath } : {}),
         ...(run.from === 'working' ? { skipDeletedPages: true } : {}),
         ...(run.phase === 'running' ? { attachToRunning: true } : {}),
+        // Recorded on the row, so its start and every retry read the same
+        // answer. Absent only for an attaching row, which starts nothing.
+        ...(readings ? { readings } : {}),
       },
     });
 
@@ -375,6 +490,10 @@ export class BookConversionService {
         // The whole difference between the two buttons. Main reads WHICH pages
         // that is off the working document itself.
         ...(request.from === 'working' ? { skipDeletedPages: true } : {}),
+        // The answer given at the moment this conversion was committed to.
+        // Absent only where nobody was asked, which main reads as "expecting
+        // the bank" (shared/vlm/readings-bank.ts).
+        ...(request.readings ? { readings: request.readings } : {}),
       });
       if (!answer.success || !answer.result) {
         throw new Error(answer.error || 'The conversion failed and said nothing about why.');
@@ -430,7 +549,9 @@ export class BookConversionService {
       notes.push(
         `${result.unreadable.length} page(s) could NOT be read and are missing: `
         + `${result.unreadable.map((p) => p.page).join(', ')}. The first reason given was `
-        + `"${result.unreadable[0].reason}". Converting again re-reads only those pages.`
+        + `"${result.unreadable[0].reason}". Converting again asks whether to read the whole book `
+        + 'afresh or rebuild it from the answers already banked — this run finished, so the '
+        + 'banked answers are a finished piece of work rather than a run to resume.'
       );
     }
     await this.dialog.alert({

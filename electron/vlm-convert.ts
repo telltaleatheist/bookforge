@@ -66,7 +66,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { ensureFoundryPath, runFoundry } from './foundry-bridge';
+import { ensureFoundryPath, foundryVersion, runFoundry } from './foundry-bridge';
 import { ensureVlmPageServer, wslVlmRefusal } from './vlm-page-server';
 import { getActiveBundledEnvPath, relocatablePythonPath } from './e2a-env-bootstrap';
 import { getDefaultE2aPath } from './e2a-paths';
@@ -77,6 +77,15 @@ import { withProjectStage } from './document-stage-run';
 import { moveIntoPlace } from './processing-passes';
 import { sha256File } from './sidecar-binding';
 import * as manifestService from './manifest-service';
+import {
+  FOUNDRY_VERSION_FOR_READINGS_FLAGS,
+  describeReadingsDecision,
+  foundryTooOldForReadingsFlags,
+  foundryVersionAtLeast,
+  readingsChoiceOfJob,
+  vlmReadingsArgs,
+  type VlmReadingsBank,
+} from '../shared/vlm/readings-bank';
 import {
   VLM_CONVERT_STAGE,
   parseVlmProgressLine,
@@ -177,6 +186,150 @@ export function vlmReadingsPath(pdfSha256: string): string {
     os.homedir(), 'Documents', 'BookForge', 'foundry-runs',
     `vlm-${pdfSha256.slice(0, 16)}`, 'readings.jsonl'
   );
+}
+
+/** foundry's completion marker, beside the readings it belongs to. */
+function completionMarkerPath(readingsPath: string): string {
+  return path.join(path.dirname(readingsPath), 'completed.json');
+}
+
+/**
+ * How many DISTINCT pages this bank answers for, by reading it.
+ *
+ * Counted by page number rather than by line, because that is what foundry
+ * counts and the two must agree — a dialog that says 317 while foundry resumes
+ * 316 is a dialog nobody can act on. A book's bank is single-digit megabytes,
+ * so it is read rather than streamed.
+ *
+ * A line that is not JSON is SKIPPED here and nowhere else: foundry appends and
+ * fsyncs each answer, so a killed run leaves a half-written last line, and this
+ * is a count for a dialog rather than the reader of the answers. foundry itself
+ * refuses a malformed line that is not the last one, which is where that check
+ * belongs.
+ */
+async function bankedPageCount(readingsPath: string): Promise<number> {
+  if (!fs.existsSync(readingsPath)) return 0;
+  const text = await fs.promises.readFile(readingsPath, 'utf8');
+  const pages = new Set<number>();
+  for (const line of text.split('\n')) {
+    if (line.trim().length === 0) continue;
+    try {
+      const page = (JSON.parse(line) as { page?: unknown }).page;
+      if (typeof page === 'number') pages.add(page);
+    } catch {
+      continue;
+    }
+  }
+  return pages.size;
+}
+
+/**
+ * Everything known about the answers banked for one PDF — for the dialog that
+ * asks what to do with them, and for the log line that says what was done.
+ *
+ * TWO witnesses to "a conversion of this book already finished", and both are
+ * consulted because neither covers every book. foundry's own `completed.json` is
+ * authoritative and is absent from every bank written before foundry wrote
+ * markers; BookForge's provenance — the `vlm-convert` pass on `outputs.epub`,
+ * matched on the PDF's sha256 — is the only record those legacy banks leave.
+ * Either one means the same thing: re-ordering this conversion is ordering the
+ * work, not a replay of it.
+ */
+export async function inspectVlmReadingsBank(
+  request: VlmConvertRequest,
+): Promise<VlmReadingsBank> {
+  const project = await resolveDocumentProject({
+    projectDir: request.projectDir,
+    ...(request.variantId ? { variantId: request.variantId } : {}),
+    ...(request.sourcePath ? { sourcePath: request.sourcePath } : {}),
+  });
+  const pdfPath = primaryAbsPath(project);
+  if (!fs.existsSync(pdfPath)) {
+    throw new Error(
+      `${project.primaryRelPath} is recorded as this project's PDF, but it is not on disk, so `
+      + 'BookForge cannot tell whether any page readings are banked for it.'
+    );
+  }
+  const { sha256 } = await sha256File(pdfPath);
+  const manifest = await manifestService.getManifest(project.projectId);
+  if (!manifest.success || !manifest.manifest) {
+    throw new Error(
+      `Could not read ${project.projectDir}'s manifest: ${manifest.error}`
+    );
+  }
+  return readBank(vlmReadingsPath(sha256), manifest.manifest, sha256);
+}
+
+/**
+ * The bank, measured. Split from `inspectVlmReadingsBank` so the run itself —
+ * which has already resolved the project, hashed the PDF and read the manifest —
+ * measures the SAME bank the dialog did without doing any of it twice.
+ */
+async function readBank(
+  readingsPath: string,
+  manifest: { outputs?: { epub?: { appliedPasses?: Array<{ kind: string; at: string; params?: Record<string, unknown> }> } } },
+  pdfSha256: string,
+): Promise<VlmReadingsBank> {
+  const pages = await bankedPageCount(readingsPath);
+
+  // foundry's marker. A marker that will not parse is a REFUSAL rather than a
+  // shrug: "there is a file here I cannot read" and "no run ever completed" are
+  // different facts, and reading the second out of the first is how a finished
+  // conversion gets replayed out of a cache.
+  const markerPath = completionMarkerPath(readingsPath);
+  let completedAt: string | null = null;
+  let markerPages: number | null = null;
+  if (fs.existsSync(markerPath)) {
+    const raw = await fs.promises.readFile(markerPath, 'utf8');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      throw new Error(
+        `${markerPath} is where foundry records a finished conversion, and it is not JSON `
+        + `(${(err as Error).message}). BookForge cannot tell whether the readings beside it are a `
+        + 'finished book or an interrupted one. Move it aside to convert this book again.'
+      );
+    }
+    const marker = parsed as { completedAt?: unknown; pages?: unknown };
+    if (typeof marker.completedAt !== 'string') {
+      throw new Error(
+        `${markerPath} carries no completedAt, so it is not a foundry completion marker. `
+        + 'BookForge cannot tell whether the readings beside it are a finished book or an '
+        + 'interrupted one. Move it aside to convert this book again.'
+      );
+    }
+    completedAt = marker.completedAt;
+    markerPages = typeof marker.pages === 'number' ? marker.pages : null;
+  }
+
+  // BookForge's own record: the conversion pass on this project's book, matched
+  // on the PDF it was read from. The LAST one, because a book converted twice
+  // has two and the recent one is the one this bank belongs to.
+  //
+  // An absent list is a book with no provenance — a project that has never
+  // exported an EPUB — which is a real state and the honest answer is "no
+  // conversion is recorded", not a missing value being papered over.
+  const passes = manifest.outputs?.epub?.appliedPasses ?? [];
+  const mine = passes.filter(
+    (pass) => pass.kind === 'vlm-convert' && pass.params?.['sourceSha256'] === pdfSha256,
+  );
+  const recorded = mine.length === 0 ? null : mine[mine.length - 1];
+  const recordedTotal = recorded?.params?.['totalPages'];
+
+  return {
+    path: readingsPath,
+    pages,
+    completedAt,
+    recordedConversionAt: recorded === null || recorded === undefined ? null : recorded.at,
+    // foundry's marker first — it is a count of the book the model actually
+    // read. Never zero passed off as a total: a provenance record written by a
+    // run whose summary line was not parsed carries 0, and "0 of 0 pages" in a
+    // dialog is a sentence that describes nothing.
+    totalPages: markerPages !== null && markerPages > 0
+      ? markerPages
+      : typeof recordedTotal === 'number' && recordedTotal > 0 ? recordedTotal : null,
+  };
 }
 
 /**
@@ -330,6 +483,38 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
 
   const { sha256 } = await sha256File(pdfPath);
   const readingsPath = vlmReadingsPath(sha256);
+
+  /*
+   * What happens to the answers already banked for this PDF — decided by the
+   * user when the job was added to the queue, obeyed here, and never re-decided.
+   *
+   * The choice travels ON THE REQUEST because that is what makes a retry honour
+   * it: the queue re-runs the same config, so the second attempt reads the same
+   * answer as the first and cannot flip to something the user did not ask for.
+   * A request carrying NO choice is one made before the question existed — a job
+   * enqueued by an older build, or the headless CLI, where there is nobody to
+   * ask — and Owen's rule for those is that they were expecting the bank and
+   * rely on it.
+   *
+   * Measured HERE rather than trusted from the renderer: the bank is a fact
+   * about this machine's disk at this instant, and a job that sat in the queue
+   * overnight would otherwise be carrying last night's page count into a
+   * decision about which flag to pass.
+   */
+  const bank = await readBank(readingsPath, manifest.manifest, sha256);
+  const readingsChoice = readingsChoiceOfJob(request.readings);
+  const readingsFlags = vlmReadingsArgs(readingsChoice, bank.pages);
+
+  // A foundry that predates the flag cannot be told any of this, and running it
+  // anyway would let it decide on its own — which for a completed conversion is
+  // the silent replay this whole path exists to end. Named, and nothing runs.
+  if (readingsFlags.length > 0) {
+    const installed = await foundryVersion();
+    if (!foundryVersionAtLeast(installed.version, FOUNDRY_VERSION_FOR_READINGS_FLAGS)) {
+      throw new Error(foundryTooOldForReadingsFlags(installed.version, readingsFlags[0]));
+    }
+  }
+
   await fs.promises.mkdir(path.dirname(readingsPath), { recursive: true });
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
   const stagedEpub = path.join(STAGING_DIR, `vlm-convert-${sha256.slice(0, 16)}.epub`);
@@ -372,6 +557,17 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     const twoPass = endpoint !== null;
     let render: { done: number; total: number } | null = null;
 
+    // What is being done about the banked readings, in one sentence, before
+    // anything spawns. On the progress channel because that is the job log — a
+    // decision nobody can read in the log is a decision nobody can check, and
+    // this bug was invisible for exactly that reason.
+    opts.onProgress({
+      stage: 'vlm-convert',
+      message: describeReadingsDecision(readingsChoice, bank, request.readings === undefined),
+      done: 0,
+      total: 0,
+    });
+
     // Said before the first page, on the same channel the progress lines use, so
     // the modal states which GPU is about to be busy for the next ninety
     // minutes rather than implying the local one.
@@ -392,6 +588,14 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
         '--pdf', pdfPath,
         '--out', stagedEpub,
         '--readings', readingsPath,
+        // Explicit, always, whenever a bank exists — never left to foundry's own
+        // marker. BookForge knows things the marker does not: a bank written
+        // before markers existed carries none, and this app's provenance is the
+        // only record that the conversion finished. One decision, made in
+        // shared/vlm/readings-bank.ts, obeyed on both sides of the process
+        // boundary. Gated on the installed foundry above, so it is never
+        // silently dropped against a binary that would ignore it.
+        ...readingsFlags,
         '--language', language,
         ...renderPythonArgs(),
         // Never stripped and retried on a foundry that does not know the flag:

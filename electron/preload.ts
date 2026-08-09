@@ -30,6 +30,7 @@ import type {
   VlmEndpointCheck,
   VlmEndpointConfig,
 } from '../shared/vlm/conversion';
+import type { VlmReadingsBank } from '../shared/vlm/readings-bank';
 import type { NarrationDeletions, NarrationState } from '../shared/vlm/narration-deletions';
 import type { BookChapterRenameResult, BookChapterTitles } from '../shared/vlm/chapter-titles';
 import type { TextLayerReport } from '../shared/pdf/text-layer';
@@ -1305,6 +1306,13 @@ export interface ElectronAPI {
     /** Is the configured endpoint up, and what is it serving? */
     checkEndpoint: (config: VlmEndpointConfig) =>
       Promise<{ success: boolean; check?: VlmEndpointCheck; error?: string }>;
+    /**
+     * What page answers are already banked for this PDF, and whether the run
+     * that banked them FINISHED — asked at the moment a conversion is committed
+     * to, so the user chooses what happens to hours of banked GPU work.
+     */
+    readingsBank: (request: VlmConvertRequest) =>
+      Promise<{ success: boolean; bank?: VlmReadingsBank; error?: string }>;
     /**
      * Why the WSL page reader is unavailable (null when it is ready), and
      * whether one is running right now. Fed to `resolveVlmRoute` by every
@@ -3128,6 +3136,9 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('vlm:convert', request),
     checkEndpoint: (config: VlmEndpointConfig) =>
       ipcRenderer.invoke('vlm:check-endpoint', config),
+    /** What is banked for this PDF, and whether the run that banked it finished. */
+    readingsBank: (request: VlmConvertRequest) =>
+      ipcRenderer.invoke('vlm:readings-bank', request),
     readerStatus: () => ipcRenderer.invoke('vlm:reader-status'),
     ensureWorkingEpub: (projectDir: string) =>
       ipcRenderer.invoke('book:ensure-working-copy', projectDir),
