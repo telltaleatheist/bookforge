@@ -211,6 +211,64 @@ export function parseNarrationElementKey(key: NarrationElementKey): ParsedNarrat
   return isImage ? { file, kind: 'image', index } : { file, kind: 'unit', index };
 }
 
+/** What carrying a strike record across a fold did to it. */
+export interface NarrationDeletionsFoldMigration {
+  /** The record's keys as they name the book AFTER the fold, sorted. */
+  elements: NarrationElementKey[];
+  /** Keys whose element the fold removed — they name nothing now, so they go. */
+  dropped: NarrationElementKey[];
+  /** How many keys named the same element under a NEW index. */
+  renumbered: number;
+}
+
+/**
+ * Carry a strike record across a fold that took text units OUT of one document.
+ *
+ * ── Why the record cannot simply be re-stamped ──────────────────────────────
+ *
+ * A text-unit key is a POSITION — `<zip entry>#<index>`, minted by the one
+ * enumeration walk everything shares — so removing the third unit of a file
+ * makes the old fourth the new third and every strike after it name the element
+ * one further on. A rename (electron/book-chapters.ts) can re-stamp the record
+ * untouched because it adds, removes and reorders nothing; a fold cannot,
+ * because removing elements is the whole of what it does.
+ *
+ * The three namespaces are treated as the three separate things they are:
+ *
+ *   - TEXT units in the edited file are renumbered, and a key naming one of the
+ *     removed units is DROPPED. It named an element that is not in the book any
+ *     more; keeping it would strike whichever element slid into its index.
+ *   - IMAGE keys (`#img<N>`) are ordinals in their own walk, and a fold refuses
+ *     to remove anything holding an `<img>` (electron/epub-processor.ts,
+ *     `foldChapterOpeningInBookFile`), so no picture moves.
+ *   - `#doc` keys name the document itself and mean the same thing after.
+ *
+ * Every other file is untouched, because a fold rewrites exactly one.
+ */
+export function migrateNarrationDeletionsForFold(
+  elements: readonly NarrationElementKey[],
+  file: string,
+  removedIndices: readonly number[],
+): NarrationDeletionsFoldMigration {
+  const removed = new Set(removedIndices);
+  const kept: NarrationElementKey[] = [];
+  const dropped: NarrationElementKey[] = [];
+  let renumbered = 0;
+
+  for (const key of elements) {
+    const parsed = parseNarrationElementKey(key);
+    if (parsed.file !== file || parsed.kind !== 'unit') { kept.push(key); continue; }
+    if (removed.has(parsed.index)) { dropped.push(key); continue; }
+    let before = 0;
+    for (const r of removed) if (r < parsed.index) before++;
+    if (before === 0) { kept.push(key); continue; }
+    kept.push(narrationElementKey(file, parsed.index - before));
+    renumbered++;
+  }
+
+  return { elements: [...new Set(kept)].sort(), dropped, renumbered };
+}
+
 /**
  * A block of the book as laid out in the picker, as much of it as this module
  * needs: its id, and the element of the official EPUB it was laid out FROM.

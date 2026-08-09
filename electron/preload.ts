@@ -1372,6 +1372,23 @@ export interface ElectronAPI {
     editNarrationDeletions: (
       projectDir: string, edit: { strike: string[]; unstrike: string[] }
     ) => Promise<{ success: boolean; deletions?: NarrationDeletions; error?: string }>;
+    /**
+     * Fold a chapter's opening IN the working copy: the opening is rewritten to
+     * say the chapter's stored name and the folded elements come out of the
+     * markup. The archive original is never touched, and the manifest keeps what
+     * each element said before (`outputs.epub.bookEdits`).
+     */
+    mergeChapterOpening: (
+      projectDir: string, openerKey: string, foldedKeys: string[]
+    ) => Promise<{
+      success: boolean;
+      result?: {
+        name: string; file: string; foldedCount: number;
+        fromSha256: string; toSha256: string;
+        droppedStrikes: string[]; renumberedStrikes: number;
+      };
+      error?: string;
+    }>;
     exportNarration: (
       projectDir: string,
       options?: { stripSupMarkers?: boolean }
@@ -3186,6 +3203,13 @@ const electronAPI: ElectronAPI = {
     editNarrationDeletions: (
       projectDir: string, edit: { strike: string[]; unstrike: string[] }) =>
       ipcRenderer.invoke('narration:edit-deletions', projectDir, edit),
+    /**
+     * Fold a chapter's opening IN the book — the one gesture that edits the
+     * working copy's own elements. See electron/narration-export.ts for what is
+     * recorded about it and why the archive is never in the path.
+     */
+    mergeChapterOpening: (projectDir: string, openerKey: string, foldedKeys: string[]) =>
+      ipcRenderer.invoke('book:merge-chapter-opening', projectDir, openerKey, foldedKeys),
     exportNarration: (projectDir: string, options?: { stripSupMarkers?: boolean }) =>
       ipcRenderer.invoke('narration:export', projectDir, options),
     chapterTitles: (projectDir: string) =>

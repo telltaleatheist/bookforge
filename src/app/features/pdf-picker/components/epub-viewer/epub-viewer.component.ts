@@ -272,8 +272,9 @@ const GRID_BASE_WIDTH = 200;
             [disabled]="selectedBlockIds().length < 2"
             [title]="selectedBlockIds().length < 2
               ? 'Select the chapter opening together with the blocks that belong to it first.'
-              : 'Fold the selection into its chapter opening — the opening is read as the ' +
-                'stored chapter name, and the folded blocks are not read separately.'"
+              : 'Fold the selection into its chapter opening, in the book: the opening is ' +
+                'rewritten to the stored chapter name and the folded blocks come out of the ' +
+                'markup. The working copy is edited; the archive original is untouched.'"
             (click)="onMergeSelection()"
           >Merge into chapter opening</button>
           <button

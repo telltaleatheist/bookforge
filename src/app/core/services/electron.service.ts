@@ -2836,6 +2836,41 @@ export class ElectronService {
   }
 
   /**
+   * Fold a chapter's opening IN the book: the opening element is rewritten to
+   * say the chapter's stored name, and the elements folded into it are removed
+   * from the working copy's markup.
+   *
+   * The ONE gesture in the picker that edits the book's own elements rather
+   * than recording something about them. It is allowed because the edit is
+   * recorded — what each folded element said, and what the opening says now
+   * (`outputs.epub.bookEdits`) — and because the file it edits is the WORKING
+   * COPY; the archive original is never opened.
+   *
+   * The strike record moves with it: text-unit keys are positions, so the fold
+   * renumbers them, and main carries the record across in the same manifest
+   * transaction. `droppedStrikes` names the strikes whose element the fold
+   * removed.
+   */
+  async mergeChapterOpening(
+    projectDir: string,
+    openerKey: string,
+    foldedKeys: string[],
+  ): Promise<{
+    success: boolean;
+    result?: {
+      name: string; file: string; foldedCount: number;
+      fromSha256: string; toSha256: string;
+      droppedStrikes: string[]; renumberedStrikes: number;
+    };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.mergeChapterOpening(projectDir, openerKey, foldedKeys);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
    * Write the narration copy from the strikes as recorded.
    *
    * `options` carries the one thing the strikes do NOT describe — whether the

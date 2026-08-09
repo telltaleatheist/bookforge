@@ -27,7 +27,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import {
-  writeNarrationEpub, epubCarriesConversionStamps,
+  writeNarrationEpub, epubCarriesConversionStamps, foldChapterOpeningInBookFile,
   markupCategoriesForUnits, readEpubTocTargets, type MarkupUnit,
 } from './epub-processor';
 import { enumerateNarrationElements } from './quire-stamp';
@@ -617,4 +617,163 @@ async function mergeEditorStateDeletions(
     updatedAt: new Date().toISOString(),
   });
   return { elements, fromStrikes: onRecord.length, translated: added.length, unresolved: null };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The chapter-opening fold
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** What a fold did, in the terms the picker says out loud. */
+export interface ChapterOpeningMergeResult {
+  /** The chapter's stored name, which the opening now says. */
+  name: string;
+  /** The zip entry the fold rewrote. */
+  file: string;
+  /** How many elements were folded into the opening and are gone from the book. */
+  foldedCount: number;
+  /** The working copy's sha256 before the fold and after it. */
+  fromSha256: string;
+  toSha256: string;
+  /** Strikes the fold left naming nothing, so the record dropped them. */
+  droppedStrikes: string[];
+  /** Strikes that name the same element under a new index. */
+  renumberedStrikes: number;
+}
+
+/**
+ * Fold a chapter's opening IN THE WORKING COPY: the opening is rewritten to say
+ * the chapter's stored name, and the elements folded into it are removed from
+ * the markup.
+ *
+ * ── Why the book itself, and not an override at narration time ─────────────
+ *
+ * Because the correction is about the BOOK. A chapter that prints "2" over an
+ * "An Opportunity to Hope" subhead is called "Chapter 2: An Opportunity to
+ * Hope" in its own table of contents, and after this the working copy says so
+ * once, in one element, to every reader of it — the viewer, the aligner, the
+ * narration cut, a phone. Owen, 2026-08-09: "as long as we have a record of
+ * what it was before and what it was changed to, it can be changed." The record
+ * is `outputs.epub.bookEdits`, written in the same transaction that carries the
+ * strikes.
+ *
+ * ── What is never touched ──────────────────────────────────────────────────
+ *
+ * The ARCHIVE. `manifest.outputs.epub` is the working copy and is the only file
+ * this opens for writing — the archive original beside it is the file the user
+ * handed us, and nothing in this app writes to it (memory:
+ * pipeline-source-model-archive-as-source). The narration copy is not touched
+ * either, and does not need to be: it is DERIVED, so the next cut re-reads the
+ * folded book (`ensureNarrationEpub` re-cuts when `fromEpubSha256` no longer
+ * matches).
+ *
+ * ── All or nothing ─────────────────────────────────────────────────────────
+ *
+ * Every refusal below happens before a byte is written, and the fold itself is
+ * staged and verified before it is moved into place
+ * (`foldChapterOpeningInBookFile`). A fold that cannot be RECORDED throws with
+ * the manifest's own sentence — and that is the one case where the file has
+ * already changed, which is why the sentence says what to do about it rather
+ * than pretending nothing happened.
+ */
+export async function mergeChapterOpening(
+  projectDir: string,
+  openerKey: NarrationElementKey,
+  foldedKeys: readonly NarrationElementKey[],
+): Promise<ChapterOpeningMergeResult> {
+  const book = await manifestService.readExportEpub(projectDir);
+  if (!book || !fs.existsSync(book.absPath)) {
+    throw new Error(
+      `${path.basename(projectDir)} has no working copy on disk, so there is no book to fold a `
+      + 'chapter opening in. Open the book from Studio — an EPUB gets its working copy the moment '
+      + 'it opens, and a PDF gets one from Generate EPUB, which reads its pages.'
+    );
+  }
+
+  // The book as it stands, measured BEFORE the rewrite: it is what says whether
+  // the strike record was describing this book a moment ago, and it is what the
+  // edit log records the fold as having started from.
+  const { sha256: fromSha256 } = await sha256File(book.absPath);
+  const recorded = await manifestService.readNarrationDeletions(projectDir);
+  const stale = narrationDeletionsStaleReason(recorded, fromSha256);
+  if (stale !== null) {
+    // NOT cleared here, unlike `readNarrationState`: clearing is a write, and a
+    // fold that refuses must leave the project exactly as it found it.
+    throw new Error(
+      'This chapter opening was not folded, because the strikes recorded against this book cannot '
+      + `be carried across the edit.\n\n${stale}`
+    );
+  }
+
+  const opener = parseNarrationElementKey(openerKey);
+  if (opener.kind !== 'unit') {
+    throw new Error(
+      `${openerKey} names ${opener.kind === 'image' ? 'a picture' : 'a whole document'}, and a `
+      + 'chapter opening is a text element. Nothing was written.'
+    );
+  }
+
+  // ── The name the opening will say ─────────────────────────────────────────
+  //
+  // The book's own table of contents, which is where a chapter's name lives and
+  // the only place it lives (electron/book-chapters.ts). Not the print on the
+  // page: the print is what this fold is replacing.
+  const titles = await readChapterTitlesOfBook(book.absPath);
+  const row = titles.chapters.find((c) => c.file === opener.file);
+  if (row === undefined) {
+    throw new Error(
+      `${path.basename(book.absPath)}'s table of contents does not list ${opener.file}, so that `
+      + 'document is not a chapter of this book and has no stored name to give its opening. '
+      + 'Nothing was written.'
+    );
+  }
+  const name = row.navTitle.replace(/\s+/g, ' ').trim();
+  if (name.length === 0) {
+    throw new Error(
+      `This chapter has no stored name to give its opening — ${opener.file} is listed in `
+      + `${path.basename(book.absPath)}'s table of contents under an empty title. Rename the `
+      + 'chapter first, then fold.'
+    );
+  }
+
+  await fs.promises.mkdir(STAGING_DIR, { recursive: true });
+  const staged = path.join(STAGING_DIR, `fold-${fromSha256.slice(0, 16)}.epub`);
+  const folded = await foldChapterOpeningInBookFile(
+    book.absPath, staged, openerKey, foldedKeys, name);
+  await moveIntoPlace(staged, book.absPath);
+
+  const { sha256: toSha256 } = await sha256File(book.absPath);
+  const at = new Date().toISOString();
+
+  const record = await manifestService.recordChapterOpeningFold(
+    projectDir,
+    {
+      kind: 'merge-chapter-opening',
+      at,
+      file: folded.file,
+      openerKey: folded.openerKey,
+      openerTextBefore: folded.openerTextBefore,
+      openerTextAfter: folded.openerTextAfter,
+      folded: folded.folded.map((f) => ({ key: f.key, textBefore: f.textBefore })),
+      fromSha256,
+      toSha256,
+    },
+    folded.removedIndices,
+  );
+
+  console.log(
+    `[narration-export] ${path.basename(projectDir)}: folded ${folded.folded.length} element(s) `
+    + `into ${folded.openerKey}, which now reads "${name}". ${folded.file} held `
+    + `${folded.unitsBefore} text element(s) and holds ${folded.unitsAfter}; `
+    + `${record.droppedStrikes.length} strike(s) dropped, ${record.renumberedStrikes} renumbered.`
+  );
+
+  return {
+    name,
+    file: folded.file,
+    foldedCount: folded.folded.length,
+    fromSha256,
+    toSha256,
+    droppedStrikes: record.droppedStrikes,
+    renumberedStrikes: record.renumberedStrikes,
+  };
 }

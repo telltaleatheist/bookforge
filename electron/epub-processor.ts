@@ -6959,6 +6959,327 @@ export async function writeNarrationEpub(
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The chapter-opening fold — the one edit that rewrites the book's own markup
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One element the fold took out, and what it said before it went. */
+export interface FoldedChapterElement {
+  key: NarrationElementKey;
+  /** Its text as the book printed it, whitespace collapsed. */
+  textBefore: string;
+}
+
+/** What the fold did to one book file, in the terms an edit log records. */
+export interface ChapterOpeningFoldResult {
+  /** The zip entry the fold rewrote. */
+  file: string;
+  openerKey: NarrationElementKey;
+  /** The opening's text before the fold, whitespace collapsed. */
+  openerTextBefore: string;
+  /** The opening's text after it: the chapter's stored name, single line. */
+  openerTextAfter: string;
+  folded: FoldedChapterElement[];
+  /**
+   * The TEXT-unit indices the fold removed from that file, ascending.
+   *
+   * The whole reason the strike record has to be carried rather than
+   * re-stamped: everything after them is renumbered
+   * (shared/vlm/narration-deletions.ts, `migrateNarrationDeletionsForFold`).
+   */
+  removedIndices: number[];
+  /** How many text units the file held before the fold, and after. */
+  unitsBefore: number;
+  unitsAfter: number;
+}
+
+/**
+ * Fold a chapter's opening: the opening element is rewritten to say the
+ * chapter's stored name, and the elements folded into it are removed from the
+ * markup.
+ *
+ * ── Why this EDITS the book, where everything else copies it ────────────────
+ *
+ * Because a chapter header is a fact about the book, not about one narration.
+ * A chapter that prints "2" over an "An Opportunity to Hope" subhead is called
+ * "Chapter 2: An Opportunity to Hope" in its own table of contents, and every
+ * reader of the working copy — the viewer, the aligner, the narration cut, a
+ * phone — should see one opening that says so. Doing it as a narration-time
+ * override left the working copy still saying "2", so the correction had to be
+ * re-derived by every consumer and was visible to none of them.
+ *
+ * Owen, 2026-08-09: "as long as we have a record of what it was before and what
+ * it was changed to, it can be changed." The record is the caller's
+ * (`outputs.epub.bookEdits`); the guarantee this function makes is that the
+ * INPUT is never touched — the result is written to `outputPath`, and the
+ * caller moves it into place. The archive original is never in this path at
+ * all: the working copy is what a caller hands in.
+ *
+ * ── What it refuses ────────────────────────────────────────────────────────
+ *
+ * A key naming a picture, keys in two different files, an opener in its own
+ * folded list, a key the file does not have, and — the one that is not
+ * obvious — an element holding an `<img>`. Removing one of those would delete
+ * a picture the user never asked to lose AND renumber the image walk under
+ * every `#img<N>` strike on record, which is exactly the reconciliation the
+ * key namespaces exist to avoid.
+ */
+export async function foldChapterOpeningInBookFile(
+  inputPath: string,
+  outputPath: string,
+  openerKey: NarrationElementKey,
+  foldedKeys: readonly NarrationElementKey[],
+  name: string,
+): Promise<ChapterOpeningFoldResult> {
+  const { XMLSerializer } = require('@xmldom/xmldom');
+  const bookName = path.basename(inputPath);
+  const whatFor = `the chapter-opening fold in ${bookName}`;
+
+  const spoken = name.replace(/\s+/g, ' ').trim();
+  if (spoken.length === 0) {
+    throw new Error(
+      'A chapter opening cannot be folded into an empty name. Silencing an opening is a strike, '
+      + 'not a fold. Nothing was written.'
+    );
+  }
+
+  // ── The keys, taken apart before the book is opened ───────────────────────
+  const opener = parseNarrationElementKey(openerKey);
+  if (opener.kind !== 'unit') {
+    throw new Error(
+      `${openerKey} names ${opener.kind === 'image' ? 'a picture' : 'a whole document'}, and a `
+      + 'chapter opening is a text element. Nothing was written.'
+    );
+  }
+  const file = opener.file;
+  const foldedIndices: number[] = [];
+  const seen = new Set<NarrationElementKey>();
+  for (const key of foldedKeys) {
+    if (key === openerKey) {
+      throw new Error(
+        `${openerKey} is the chapter opening and is also listed among the elements to fold into `
+        + 'it, so the fold would remove the very element it writes the name into. Nothing was '
+        + 'written.'
+      );
+    }
+    if (seen.has(key)) continue;  // the same element named twice is one removal
+    seen.add(key);
+    const parsed = parseNarrationElementKey(key);
+    if (parsed.kind !== 'unit') {
+      throw new Error(
+        `${key} names ${parsed.kind === 'image' ? 'a picture' : 'a whole document'}, and only text `
+        + 'elements can be folded into a chapter opening. Nothing was written.'
+      );
+    }
+    if (parsed.file !== file) {
+      throw new Error(
+        `${key} is in ${parsed.file} and the chapter opening ${openerKey} is in ${file}. A fold is `
+        + 'one chapter of one document, so the two cannot be folded together. Nothing was written.'
+      );
+    }
+    foldedIndices.push(parsed.index);
+  }
+
+  // ── The one document, enumerated EXACTLY as the narration writer does ─────
+  //
+  // Same walk, same order, same minting: `collectExportUnits` then
+  // `collectImageElements`. That is what makes a key the picker recorded and a
+  // key resolved here the same element (electron/quire-stamp.ts is the third
+  // caller of the same pair, and there is no fourth).
+  const processor = new EpubProcessor();
+  let doc: any;
+  let body: any;
+  const elByKey = new Map<NarrationElementKey, any>();
+  let unitsBefore = 0;
+  let imagesBefore = 0;
+  try {
+    const structure = await processor.open(inputPath);
+    const spine = new Set(
+      structure.chapters.map((c) => normalizeZipEntryName(processor.resolvePath(c.href))));
+    if (!spine.has(file)) {
+      throw new Error(
+        `${bookName} has no spine document ${file}, so ${openerKey} names no element in this book. `
+        + 'Nothing was written.'
+      );
+    }
+    const parsed = parseXhtmlBody(await processor.readFile(file), file);
+    doc = parsed.doc;
+    body = parsed.body;
+    for (const c of collectExportUnits(doc, body, whatFor)) {
+      elByKey.set(narrationElementKey(file, unitsBefore++), c.el);
+    }
+    collectImageElements(body).forEach((el, ordinal) => {
+      elByKey.set(narrationImageElementKey(file, ordinal), el);
+      imagesBefore++;
+    });
+  } finally {
+    processor.close();
+  }
+
+  const resolve = (key: NarrationElementKey): any => {
+    const el = elByKey.get(key);
+    if (el === undefined) {
+      throw new Error(
+        `${file} holds ${unitsBefore} text element(s), so ${key} names nothing in it. The book has `
+        + 'been rewritten since these blocks were laid out; re-open it and fold again. Nothing was '
+        + 'written.'
+      );
+    }
+    return el;
+  };
+
+  const openerEl = resolve(openerKey);
+  const foldedEls = foldedIndices.map((index) => ({
+    key: narrationElementKey(file, index),
+    el: resolve(narrationElementKey(file, index)),
+  }));
+
+  // ── No picture leaves the book by accident ────────────────────────────────
+  //
+  // The opener is checked too, and not only out of politeness to the picture:
+  // its children are replaced by the name, so an `<img>` inside it would go the
+  // same way a folded one would, and the image walk under every `#img<N>` on
+  // record would renumber beneath a key namespace this fold promises not to
+  // touch.
+  const holdsImage = (el: any): boolean =>
+    (el.tagName ?? '').toLowerCase() === 'img'
+    || (el.getElementsByTagName?.('img')?.length ?? 0) > 0;
+  if (holdsImage(openerEl)) {
+    throw new Error(
+      `${openerKey} holds a picture, and writing the chapter name into it would take that picture `
+      + 'out of the book. Nothing was written.'
+    );
+  }
+  for (const folded of foldedEls) {
+    if (holdsImage(folded.el)) {
+      throw new Error(
+        `${folded.key} holds a picture, and folding it into the chapter opening would delete that `
+        + 'picture from the book. Strike it instead if it should not be narrated. Nothing was '
+        + 'written.'
+      );
+    }
+  }
+
+  const collapse = (el: any): string => getUnitTextContent(el).replace(/\s+/g, ' ').trim();
+  const openerTextBefore = collapse(openerEl);
+  const folded: FoldedChapterElement[] = foldedEls.map((f) => ({
+    key: f.key, textBefore: collapse(f.el),
+  }));
+
+  // ── The edit ──────────────────────────────────────────────────────────────
+  //
+  // The opening's children are replaced with ONE text node, because the name is
+  // the whole utterance: a `<h1>` that keeps a `<span class="num">2</span>`
+  // beside the name is a heading that says the number twice.
+  while (openerEl.firstChild) openerEl.removeChild(openerEl.firstChild);
+  openerEl.appendChild(doc.createTextNode(spoken));
+
+  for (const f of foldedEls) {
+    // An element whose parent already went with an ancestor is out of the tree
+    // already; removing it again throws in xmldom.
+    if (f.el.parentNode) f.el.parentNode.removeChild(f.el);
+  }
+  const stillThere = foldedEls.filter((f) => isStillInBody(f.el, body));
+  if (stillThere.length > 0) {
+    throw new Error(
+      `${stillThere.length} element(s) folded into ${openerKey} are still in ${file} after they `
+      + `were removed — the first is ${stillThere[0].key}. Nothing was written.`
+    );
+  }
+
+  let serialized: string = new XMLSerializer().serializeToString(doc);
+  if (!serialized.startsWith('<?xml')) {
+    serialized = `<?xml version="1.0" encoding="utf-8"?>\n${serialized}`;
+  }
+
+  // ── The book, with exactly one entry replaced ─────────────────────────────
+  const replacement = Buffer.from(serialized, 'utf8');
+  const zipReader = new ZipReader(inputPath);
+  await zipReader.open();
+  try {
+    if (!zipReader.hasEntry(file)) {
+      throw new Error(
+        `${bookName}'s spine lists ${file} but its zip does not contain it, so there is nothing to `
+        + 'rewrite. Nothing was written.'
+      );
+    }
+    const zipWriter = new ZipWriter();
+    for (const entry of zipReader.getEntries()) {
+      const data = entry === file ? replacement : await zipReader.readEntry(entry);
+      // `mimetype` is stored, never deflated — the EPUB spec requires it, and a
+      // compressed one makes the book unopenable in strict readers.
+      zipWriter.addFile(entry, data, entry !== 'mimetype');
+    }
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await zipWriter.write(outputPath);
+  } finally {
+    zipReader.close();
+  }
+
+  // ── The promise, kept or the file destroyed ───────────────────────────────
+  //
+  // The written file is re-walked with the same two enumerations that produced
+  // the keys, because the arithmetic the caller is about to migrate a strike
+  // record by is exactly this: N text units became N − |folded|, the opening
+  // sits at its old index minus the folds before it and says the name, and not
+  // one picture moved. A file that does not read back that way is deleted
+  // rather than handed to a caller that will move it over the working copy.
+  const removedIndices = foldedIndices.slice().sort((a, b) => a - b);
+  const openerIndexAfter =
+    opener.index - removedIndices.filter((i) => i < opener.index).length;
+  try {
+    const check = new ZipReader(outputPath);
+    await check.open();
+    let unitsAfter = 0;
+    let imagesAfter = 0;
+    let openerTextAfter = '';
+    try {
+      const written = parseXhtmlBody((await check.readEntry(file)).toString('utf8'), file);
+      const units = collectExportUnits(written.doc, written.body, whatFor);
+      unitsAfter = units.length;
+      imagesAfter = collectImageElements(written.body).length;
+      if (openerIndexAfter < units.length) {
+        openerTextAfter = collapse(units[openerIndexAfter].el);
+      }
+    } finally {
+      check.close();
+    }
+    if (unitsAfter !== unitsBefore - removedIndices.length) {
+      throw new Error(
+        `${file} held ${unitsBefore} text element(s), ${removedIndices.length} were folded away, `
+        + `and the rewritten file holds ${unitsAfter} rather than `
+        + `${unitsBefore - removedIndices.length}. Nothing was written.`
+      );
+    }
+    if (imagesAfter !== imagesBefore) {
+      throw new Error(
+        `${file} held ${imagesBefore} picture(s) and the rewritten file holds ${imagesAfter}. A `
+        + 'fold moves no picture, so the strikes recorded against them would now name the wrong '
+        + 'ones. Nothing was written.'
+      );
+    }
+    if (openerTextAfter !== spoken) {
+      throw new Error(
+        `${file}'s chapter opening should read "${spoken}" after the fold and reads `
+        + `"${openerTextAfter}". Nothing was written.`
+      );
+    }
+    return {
+      file,
+      openerKey,
+      openerTextBefore,
+      openerTextAfter,
+      folded,
+      removedIndices,
+      unitsBefore,
+      unitsAfter,
+    };
+  } catch (err) {
+    await fs.rm(outputPath, { force: true });
+    throw err;
+  }
+}
+
 /**
  * Sanitize text for rebuilt elements. Ported from the picker's
  * export.service.ts sanitizeText (kept byte-identical in behavior — the
