@@ -67,6 +67,7 @@ interface Opening {
             <select [value]="viewerLayout()" (change)="viewerLayout.set($any($event.target).value)">
               <option value="vertical">vertical</option>
               <option value="grid">grid</option>
+              <option value="flow">flow</option>
             </select>
           </label>
           <label>Hide category
@@ -206,7 +207,7 @@ export class EpubViewerHarnessComponent {
   protected readonly busy = signal(false);
 
   protected readonly zoom = signal(100);
-  protected readonly viewerLayout = signal<'vertical' | 'grid'>('vertical');
+  protected readonly viewerLayout = signal<'vertical' | 'grid' | 'flow'>('vertical');
   protected readonly selected = signal<string[]>([]);
   protected readonly struck = signal<ReadonlySet<string>>(new Set<string>());
   protected readonly struckPages = signal<ReadonlySet<number>>(new Set<number>());

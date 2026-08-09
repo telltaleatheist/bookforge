@@ -63,11 +63,11 @@ import { blockCategoryColor } from '@shared/ocr/block-categories';
 // build's `include`, and `mount.ts` is written to be importable from a renderer
 // (it imports nothing — see its header).
 import { mountQuirePage, type MountedQuirePage } from '../../../../../../packages/quire/src/mount';
-import type { QuirePageMount } from '../../../../../../packages/quire/src/types';
+import { QUIRE_PAGE_MARGIN, type QuirePageMount } from '../../../../../../packages/quire/src/types';
 import {
-  applyMarksScript, arrangeScript, zoomScript,
-  type QuireFrameArrangement, type QuireFrameElement, type QuireFrameMarks,
-  type QuireFramePage,
+  applyMarksScript, arrangeScript, flowArrangeScript, flowZoomScript, zoomScript,
+  type QuireFlowArrangement, type QuireFrameArrangement, type QuireFrameElement,
+  type QuireFrameMarks, type QuireFramePage,
 } from './quire-frame-scripts';
 
 /**
@@ -88,6 +88,9 @@ export interface EpubViewerSource {
   pageWidth: number;
   /** Page-box height in CSS pixels, as the book was laid out. */
   pageHeight: number;
+  /** Root font size the book was laid out at. The flow presentation sets the
+   *  same one, so a paragraph reads identically paginated and flowing. */
+  fontSize: number;
 }
 
 /** A spine document's band in the scroll column. */
@@ -529,7 +532,14 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   readonly tocSelectedBlockIds = input<ReadonlySet<string>>(new Set<string>());
   /** Percent, exactly like the raster viewer's — 100 is 1:1. */
   readonly zoom = input.required<number>();
-  readonly layout = input.required<'vertical' | 'grid'>();
+  /**
+   * `vertical` and `grid` show the book's PAGES — one column or as many as
+   * fit. `flow` shows each chapter as one continuous column, unpaginated, the
+   * way the publisher's own markup flows; the next chapter starts a new band.
+   * Identity does not move with the mode: blocks keep their paginated page
+   * numbers, because the pages are what the book was analysed as.
+   */
+  readonly layout = input.required<'vertical' | 'grid' | 'flow'>();
   /** The picker's colour layer — every categorised block wears a wash of its
    *  category's colour, exactly as the raster viewer paints it. */
   readonly showCategoryColors = input<boolean>(false);
@@ -582,6 +592,14 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
    */
   private readonly syncTargets = new Map<number, { w: number; h: number; scale: number }>();
   private readonly syncing = new Set<number>();
+  /**
+   * Measured content height of each FLOW frame, unscaled CSS pixels. A flow's
+   * height is a fact only its own layout can state, so until a frame reports,
+   * its band reserves an estimate (see {@link bands}) and is corrected here.
+   */
+  private readonly flowHeights = signal<ReadonlyMap<number, number>>(new Map());
+  /** The layout the frames were MOUNTED for — see the mode-switch effect. */
+  private prevLayoutWasFlow: boolean | null = null;
   private observer: IntersectionObserver | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private reconcileQueued = false;
@@ -599,7 +617,7 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   protected readonly scale = computed(() => {
     const z = this.zoom() / 100;
     if (this.layout() === 'grid') return (GRID_BASE_WIDTH / this.source().pageWidth) * z;
-    return z;
+    return z; // vertical and flow are both one column at the page's own width
   });
 
   /**
@@ -773,19 +791,39 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   protected readonly bands = computed<DocumentBand[]>(() => {
     const src = this.source();
     const scale = this.scale();
+    const layout = this.layout();
     const available = Math.max(1, this.viewportWidth() - 2 * PAGE_GAP);
     const pageW = src.pageWidth * scale;
     const pageH = src.pageHeight * scale;
     const gap = PAGE_GAP;
-    const fit = this.layout() === 'vertical'
-      ? 1
-      : Math.max(1, Math.floor((available + gap) / (pageW + gap)));
+    const fit = layout === 'grid'
+      ? Math.max(1, Math.floor((available + gap) / (pageW + gap)))
+      : 1;
+    const flowHeights = this.flowHeights();
 
     const out: DocumentBand[] = [];
     let firstPage = 0;
     for (let i = 0; i < src.documents.length; i++) {
       const mount = src.documents[i];
       const pageCount = mount.documentPageCount;
+      if (layout === 'flow') {
+        // One continuous column per chapter. Until the frame has measured its
+        // own flow, the band reserves the paginated CONTENT length — page
+        // count times the content box — which is a reservation awaiting the
+        // measurement, not an answer in its place: the frame's report replaces
+        // it the moment the chapter is laid out.
+        const measured = flowHeights.get(i);
+        const contentH = measured
+          ?? pageCount * (src.pageHeight - 2 * QUIRE_PAGE_MARGIN) + 2 * QUIRE_PAGE_MARGIN;
+        out.push({
+          index: i, mount, firstPage, pageCount,
+          columns: 1, rows: 1,
+          width: pageW,
+          height: contentH * scale,
+        });
+        firstPage += pageCount;
+        continue;
+      }
       const columns = Math.max(1, Math.min(fit, pageCount));
       const rows = Math.ceil(pageCount / columns);
       out.push({
@@ -866,6 +904,24 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
       this.bands();
       this.queueReconcile();
     });
+
+    // A frame's PRESENTATION is decided at mount: paginated frames ran the
+    // fragmenter, flow frames never will. Crossing that line, in either
+    // direction, therefore unmounts everything — the frames' contents are the
+    // wrong kind of thing, not the wrong arrangement of it. vertical↔grid
+    // stays cheap: same frames, re-gridded by the sync worker.
+    effect(() => {
+      const isFlow = this.layout() === 'flow';
+      const was = this.prevLayoutWasFlow;
+      this.prevLayoutWasFlow = isFlow;
+      if (was === null || was === isFlow) return;
+      queueMicrotask(() => {
+        for (const index of [...this.mounted.keys()]) this.unmountBand(index);
+        this.flowHeights.set(new Map());
+        this.queueReconcile();
+        this.reconcileVisibility();
+      });
+    });
   }
 
   ngAfterViewInit(): void {
@@ -924,6 +980,17 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     const root = this.hostRef.nativeElement as HTMLElement;
     const bandEl = root.querySelector<HTMLElement>(`[data-band="${band.index}"]`);
     if (!bandEl) return; // the band is rendered on the next tick; the caller may ask again
+
+    // A flow has no page boundaries to land on, so the chapter is entered at
+    // the page's share of its length — page 3 of a 10-page chapter lands
+    // three tenths of the way down. Approximate by construction, and honestly
+    // so: the exact position of a page break is a fact only pagination has.
+    if (this.layout() === 'flow') {
+      const frac = (page - band.firstPage) / band.pageCount;
+      viewport.scrollTop = Math.max(0, bandEl.offsetTop + frac * band.height - PAGE_GAP);
+      this.reconcileVisibility();
+      return;
+    }
 
     // Which ROW of this band's grid the page sits in. A band is the only thing
     // with a position of its own — pages inside it are laid out by the same
@@ -996,7 +1063,10 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     }
 
     this.setState(index, { kind: 'mounting' });
-    const frame = mountQuirePage(band.mount, host, { partition: this.source().partition });
+    const flow = this.layout() === 'flow';
+    const frame = mountQuirePage(band.mount, host, {
+      partition: this.source().partition, flow,
+    });
     this.mounted.set(index, frame);
     // A mount can be CANCELLED — the user scrolls past a chapter before it has
     // finished laying itself out, and an off-screen frame cannot finish anyway.
@@ -1020,21 +1090,37 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
       await this.syncGuestViewport(frame, band.width, band.height);
       if (cancelled()) return;
 
-      const arrangement = await this.evaluate<QuireFrameArrangement>(
-        frame, arrangeScript(band.columns, PAGE_GAP, this.scale()));
-      if (cancelled()) return;
-      if (arrangement.pages.length !== band.pageCount) {
-        throw new Error(
-          `quire said ${band.mount.document} has ${band.pageCount} pages but the frame laid out `
-          + `${arrangement.pages.length}. The page numbers on screen would not be the page numbers `
-          + 'the book was analysed with.');
+      if (flow) {
+        const src = this.source();
+        const flowed = await this.evaluate<QuireFlowArrangement>(
+          frame, flowArrangeScript(src.pageWidth, QUIRE_PAGE_MARGIN, src.fontSize, this.scale()));
+        if (cancelled()) return;
+        // A flow has no page boxes, so the paginated invariants (page count,
+        // orphans) have nothing to say here; every stamped element is measured
+        // in one unbroken column. The empty pages array is what turns the page
+        // chrome off in the overlay.
+        const arrangement: QuireFrameArrangement = {
+          pages: [], elements: flowed.elements, nodes: flowed.nodes, orphans: 0,
+        };
+        this.flowHeights.update((m) => new Map(m).set(index, flowed.height));
+        this.setState(index, { kind: 'ready', arrangement, columns: 1 });
+      } else {
+        const arrangement = await this.evaluate<QuireFrameArrangement>(
+          frame, arrangeScript(band.columns, PAGE_GAP, this.scale()));
+        if (cancelled()) return;
+        if (arrangement.pages.length !== band.pageCount) {
+          throw new Error(
+            `quire said ${band.mount.document} has ${band.pageCount} pages but the frame laid out `
+            + `${arrangement.pages.length}. The page numbers on screen would not be the page `
+            + 'numbers the book was analysed with.');
+        }
+        if (arrangement.orphans > 0) {
+          throw new Error(
+            `${arrangement.orphans} stamped element(s) in ${band.mount.document} are inside no `
+            + 'page box, so they could be shown but not pointed at.');
+        }
+        this.setState(index, { kind: 'ready', arrangement, columns: band.columns });
       }
-      if (arrangement.orphans > 0) {
-        throw new Error(
-          `${arrangement.orphans} stamped element(s) in ${band.mount.document} are inside no page `
-          + 'box, so they could be shown but not pointed at.');
-      }
-      this.setState(index, { kind: 'ready', arrangement, columns: band.columns });
 
       await this.evaluate(frame, applyMarksScript(this.frameMarks(band)));
       this.evictBeyondBudget();
@@ -1144,7 +1230,11 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
           if (this.syncTargets.get(index) !== target) continue;
           const band = this.bands()[index];
           if (!band) return;
-          if (band.columns !== state.columns) {
+          if (this.layout() === 'flow') {
+            // A flow is always one column; only its transform follows the zoom.
+            await this.evaluate(frame, flowZoomScript(target.scale));
+            if (this.mounted.get(index) !== frame) return;
+          } else if (band.columns !== state.columns) {
             // The zoom changed how many pages fit a row. A transform cannot
             // express that — the page boxes must actually move — so re-grid
             // and re-measure. Pagination is untouched: the boxes are the same
@@ -1208,7 +1298,12 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
       }
       frame.element.style.height = `${expected.h + 1}px`;
       frame.element.style.width = `${expected.w + 1}px`;
-      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      // A timeout, DELIBERATELY not requestAnimationFrame: an occluded or
+      // minimized window gets no animation frames at all (measured — a mount
+      // sat at the +1 nudge size forever while the window was behind another),
+      // and this wait only exists to let Electron's resize path run, which it
+      // does regardless of whether anything paints.
+      await new Promise<void>((r) => setTimeout(r, 16));
       frame.element.style.height = `${expected.h}px`;
       frame.element.style.width = `${expected.w}px`;
       await new Promise<void>((r) => setTimeout(r, 60 * (attempt + 1)));
@@ -1244,6 +1339,13 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
    * its pages will occupy, and nothing jumps when the frame arrives.
    */
   protected placeholderSlots(band: DocumentBand): PageChrome[] {
+    // A flow band is one column of one chapter: one slot, the whole band.
+    if (this.layout() === 'flow') {
+      return [{
+        globalPage: band.firstPage, localPage: 0,
+        x: 0, y: 0, w: band.width, h: band.height,
+      }];
+    }
     const src = this.source();
     const scale = this.scale();
     const w = src.pageWidth * scale;
@@ -1282,6 +1384,7 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     if (state.kind !== 'ready') return null;
     const band = this.bands()[index];
     const scale = this.scale();
+    const flow = this.layout() === 'flow';
     const byElement = this.blocksByElement();
     const hidden = this.hiddenCategoryIds();
     let best: { element: QuireFrameElement; block: LaidOutBlock } | null = null;
@@ -1292,9 +1395,14 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
       if (x < left || y < top || x > left + el.w * scale || y > top + el.h * scale) continue;
       const fragments = byElement.get(el.id);
       if (!fragments) continue;
-      // The occurrence knows its page, so a split element resolves to the
-      // fragment under the cursor, not to an arbitrary one.
-      const block = this.fragmentOn(el.id, fragments, band.firstPage + el.localPage);
+      // Paginated, the occurrence knows its page, so a split element resolves
+      // to the fragment under the cursor. In FLOW there is no page break on
+      // screen — the element is one unbroken thing — so the gesture lands on
+      // its first fragment; the marks are per element, so what the user sees
+      // highlighted is identical whichever fragment carries the gesture.
+      const block = flow
+        ? fragments[0]
+        : this.fragmentOn(el.id, fragments, band.firstPage + el.localPage);
       if (hidden.has(block.category_id)) continue;
       const area = el.w * el.h;
       if (area < bestArea) { bestArea = area; best = { element: el, block }; }
@@ -1308,6 +1416,7 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     if (state.kind !== 'ready') return [];
     const band = this.bands()[index];
     const scale = this.scale();
+    const flow = this.layout() === 'flow';
     const byElement = this.blocksByElement();
     const hidden = this.hiddenCategoryIds();
     const ids = new Set<string>();
@@ -1321,7 +1430,11 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
       if (!fragments) continue;
       // A marquee that crosses a page break meets one occurrence per page and
       // so collects each page's own fragment — the same set striking derives.
-      const block = this.fragmentOn(el.id, fragments, band.firstPage + el.localPage);
+      // In flow the element occurs once, and the first fragment stands for it
+      // (see hitTest for why that is a rule, not a guess).
+      const block = flow
+        ? fragments[0]
+        : this.fragmentOn(el.id, fragments, band.firstPage + el.localPage);
       if (hidden.has(block.category_id)) continue;
       ids.add(block.id);
     }
@@ -1430,7 +1543,10 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     this.contextMenu.set({
       x: event.clientX,
       y: event.clientY,
-      page: hit ? band.firstPage + hit.element.localPage : this.pageAt(band.index, point.y),
+      // The block's own page: identical to firstPage + localPage when
+      // paginated, and the only page a hit HAS in flow, where the overlay
+      // draws no page boxes to ask.
+      page: hit ? hit.block.page : this.pageAt(band.index, point.y),
       block: hit ? hit.block : null,
     });
   }

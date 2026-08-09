@@ -269,5 +269,16 @@ export const QUIRE_ID_SEPARATOR = '|';
  */
 export const QUIRE_COLUMN_GAP = 24;
 
+/**
+ * Inner margin of every page box, in CSS pixels, on all four sides — a layout
+ * constant of the Paged strategy (see its doc comment for the typographic
+ * arithmetic and the versioning consequences). It lives HERE, not in the
+ * strategy module, for the same reason `QUIRE_COLUMN_GAP` does: this module
+ * imports nothing, so a renderer that needs the number — the flow presentation
+ * pads its column with the same margin so text sits where paginated text sits —
+ * can have it without dragging `fs` into an Angular bundle.
+ */
+export const QUIRE_PAGE_MARGIN = 48;
+
 /** The attribute the caller stamps, and the only place quire looks for identity. */
 export const QUIRE_ID_ATTRIBUTE = 'data-quire-id';

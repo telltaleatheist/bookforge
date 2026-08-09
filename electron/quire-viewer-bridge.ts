@@ -46,6 +46,8 @@ export interface QuireViewerOpening {
     documents: QuirePageMount[];
     pageWidth: number;
     pageHeight: number;
+    /** Root font size the book was laid out at — the flow presentation must set the same one. */
+    fontSize: number;
   };
   /** Facts worth showing in a harness and worth logging in the app. */
   stats: {
@@ -219,6 +221,7 @@ export async function openBookForViewer(
         documents,
         pageWidth: geometry.width,
         pageHeight: geometry.height,
+        fontSize: geometry.fontSize,
       },
       stats: {
         documents: report.documents.length,

@@ -61,6 +61,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { quireFail } from '../errors';
+import { QUIRE_PAGE_MARGIN } from '../types';
 import type { QuireGeometry, QuirePageBoxModel } from '../types';
 import type { QuireStrategy } from './strategy';
 
@@ -80,8 +81,11 @@ export const PAGEDJS_VERSION = '0.4.3';
  *
  * 48px on a 600px page leaves a 504px measure — about 62 characters at the
  * 18px analysis font, which is a book's, not a browser's, line length.
+ *
+ * The value itself lives in `types.ts` (which imports nothing) so the renderer
+ * side can share it; this re-export keeps the strategy's own name for it.
  */
-export const PAGE_MARGIN = 48;
+export const PAGE_MARGIN = QUIRE_PAGE_MARGIN;
 
 /**
  * Slack, in CSS pixels, on box arithmetic. Sub-pixel layout makes an exact

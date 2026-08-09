@@ -709,7 +709,7 @@ interface AlertModal {
               [pageDimensions]="pageDimensions()"
               [totalPages]="totalPages()"
               [zoom]="zoom()"
-              [layout]="layout()"
+              [layout]="rasterLayout()"
               [selectedBlockIds]="selectedBlockIds()"
               [deletedBlockIds]="deletedBlockIds()"
               [pdfLoaded]="pdfLoaded()"
@@ -3217,7 +3217,20 @@ export class PdfPickerComponent implements OnInit {
   get projectPath() { return this.projectService.projectPath; }
 
   readonly zoom = signal(50); // Default 50% for grid mode
-  readonly layout = signal<'vertical' | 'grid'>('grid');
+  /** `flow` is the EPUB viewer's third mode (chapters as continuous columns);
+   *  the raster viewer never sees it — see {@link rasterLayout}. */
+  readonly layout = signal<'vertical' | 'grid' | 'flow'>('grid');
+
+  /**
+   * The layout as the RASTER viewer understands it. A rasterized page cannot
+   * flow — there is no reflowable content behind it — so if the user set flow
+   * on an EPUB and then opened a PDF, the raster viewer shows the vertical
+   * list, which is what flow degrades to when pages are pictures.
+   */
+  readonly rasterLayout = computed<'vertical' | 'grid'>(() => {
+    const l = this.layout();
+    return l === 'flow' ? 'vertical' : l;
+  });
   // Remove backgrounds state is managed by editor state service for undo/redo
   readonly removeBackgrounds = computed(() => this.editorState.removeBackgrounds());
   // Block IDs that were split (for hiding originals in pdf-viewer)
@@ -4886,7 +4899,7 @@ export class PdfPickerComponent implements OnInit {
   readonly cropMode = computed(() => this.activePanel() === 'crop');
   readonly cropCurrentPage = signal(0);
   readonly currentCropRect = signal<CropRect | null>(null);
-  private previousLayout: 'vertical' | 'grid' = 'grid';
+  private previousLayout: 'vertical' | 'grid' | 'flow' = 'grid';
 
   // Per-page crop rectangles for the viewer's persistent crop mask (display
   // only). Derived from the durable cropRegions source of truth.
@@ -5173,8 +5186,11 @@ export class PdfPickerComponent implements OnInit {
         {
           id: 'layout',
           type: 'toggle',
-          icon: this.layout() === 'grid' ? '☰' : '⊞',
-          label: this.layout() === 'grid' ? 'List' : 'Grid',
+          // The button names where a click TAKES you, as it always has. On an
+          // EPUB the cycle is grid → list → flow → grid; elsewhere it stays
+          // the two-state toggle, because a raster page has no flow to show.
+          icon: this.layout() === 'grid' ? '☰' : this.layout() === 'flow' ? '⊞' : (this.showsEpubViewer() ? '¶' : '⊞'),
+          label: this.layout() === 'grid' ? 'List' : this.layout() === 'flow' ? 'Grid' : (this.showsEpubViewer() ? 'Flow' : 'Grid'),
           tooltip: lightweight ? 'Not available in lightweight mode' : 'Toggle layout',
           active: this.layout() === 'grid',
           disabled: lightweight
@@ -5451,7 +5467,15 @@ export class PdfPickerComponent implements OnInit {
         break;
       case 'layout':
         this.layout.update(l => {
-          const newLayout = l === 'vertical' ? 'grid' : 'vertical';
+          // On an EPUB the cycle has three stops — grid, list, flow — because
+          // a live book can show its chapters as unbroken columns. A raster
+          // document keeps the two-state toggle; if it somehow stands on
+          // 'flow' (EPUB set it, then a PDF opened), the click leaves for
+          // 'grid' exactly as the label promised.
+          const epub = this.showsEpubViewer();
+          const newLayout = l === 'grid' ? 'vertical'
+            : l === 'vertical' ? (epub ? 'flow' : 'grid')
+            : 'grid';
           // When switching to grid, auto-zoom and reset pagination
           if (newLayout === 'grid') {
             this.userAdjustedZoom = false;

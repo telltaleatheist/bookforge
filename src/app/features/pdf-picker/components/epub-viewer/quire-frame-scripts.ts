@@ -249,6 +249,114 @@ export function zoomScript(scale: number): string {
   `);
 }
 
+/** What {@link flowArrangeScript} hands back: a chapter's flow, measured. */
+export interface QuireFlowArrangement {
+  /** Content height at scale 1, in CSS pixels — what the band must reserve. */
+  height: number;
+  /** Every stamped element's rectangle, `localPage` 0 throughout — a flow has no pages. */
+  elements: QuireFrameElement[];
+  nodes: number;
+}
+
+/**
+ * Style a FLOW frame — a chapter mounted without pagination — and measure it.
+ *
+ * The paginated frame's counterpart of `arrangeScript`, for a frame in which
+ * no page boxes exist and none will: the document flows top to bottom exactly
+ * as served. The stylesheet gives the flow the SAME typographic conditions the
+ * paginator used — the analysis root font size, the page's content width as
+ * the column measure, the page margin as the column padding — so a paragraph
+ * reads identically in both presentations and only the page breaks differ.
+ *
+ * Same non-negotiable order as `arrangeScript`: style, force layout and
+ * measure at scale 1 with the transform removed, and only then apply the
+ * scale, so no rectangle is ever measured through a zoom.
+ */
+export function flowArrangeScript(
+  pageWidth: number, margin: number, fontSize: number, scale: number,
+): string {
+  const cfg = JSON.stringify({
+    pageWidth, margin, fontSize, scale, attr: QUIRE_ID_ATTRIBUTE, sep: QUIRE_ID_SEPARATOR,
+  });
+  const style = JSON.stringify(QUIRE_VIEW_STYLESHEET);
+  return evaluable(`
+    var cfg = ${cfg};
+    if (document.querySelector('.pagedjs_page')) {
+      return JSON.stringify({error: 'this frame holds page boxes, so it was mounted paginated — '
+        + 'the flow arrange script styles an UNPAGINATED document and will not restyle this one'});
+    }
+
+    if (!document.getElementById('bf-quire-flow-style')) {
+      var flowSheet = document.createElement('style');
+      flowSheet.id = 'bf-quire-flow-style';
+      flowSheet.textContent = [
+        'html{margin:0!important;padding:0!important;border:0!important;',
+        'font-size:' + cfg.fontSize + 'px!important;background:#fff!important;',
+        'scrollbar-width:none!important;}',
+        'html::-webkit-scrollbar,body::-webkit-scrollbar{',
+        'width:0!important;height:0!important;display:none!important;}',
+        'body{box-sizing:border-box!important;width:' + cfg.pageWidth + 'px!important;',
+        'margin:0!important;border:0!important;padding:' + cfg.margin + 'px!important;',
+        'background:#fff!important;transform-origin:0 0;}',
+        // The same cap the paginated layout applies, for the same reason: an
+        // image is content, and the content box is the page width less the
+        // margins.
+        'body img,body svg,body video,body canvas,body object,body embed,body picture{',
+        'max-width:' + (cfg.pageWidth - 2 * cfg.margin) + 'px!important;height:auto!important;}',
+      ].join('');
+      document.head.appendChild(flowSheet);
+    }
+
+    if (!document.getElementById('bf-quire-view-style')) {
+      var sheet = document.createElement('style');
+      sheet.id = 'bf-quire-view-style';
+      sheet.textContent = ${style};
+      document.head.appendChild(sheet);
+    }
+
+    document.body.style.transform = '';
+    window.scrollTo(0, 0);
+    if (window.scrollX !== 0 || window.scrollY !== 0) {
+      return JSON.stringify({error: 'the frame will not scroll to its origin (it sits at '
+        + window.scrollX + ',' + window.scrollY + '), so no rectangle measured in it can be '
+        + 'placed on screen'});
+    }
+
+    // The flow's height is the body's own box (border-box, so the padding is
+    // in it) — never scrollHeight, which is clamped UP to the viewport and
+    // would report a short chapter as being as tall as the frame's estimate.
+    var bodyRect = document.body.getBoundingClientRect();
+    var height = Math.ceil(Math.max(bodyRect.height, document.body.scrollHeight));
+
+    var stamped = document.querySelectorAll('[' + cfg.attr + ']');
+    var elements = [];
+    for (var j = 0; j < stamped.length; j++) {
+      var er = stamped[j].getBoundingClientRect();
+      var ids = String(stamped[j].getAttribute(cfg.attr) || '').split(cfg.sep);
+      for (var k = 0; k < ids.length; k++) {
+        if (!ids[k]) continue;
+        elements.push({id: ids[k], localPage: 0,
+          x: +er.left.toFixed(2), y: +er.top.toFixed(2),
+          w: +er.width.toFixed(2), h: +er.height.toFixed(2)});
+      }
+    }
+
+    document.body.style.transform = cfg.scale === 1 ? '' : 'scale(' + cfg.scale + ')';
+
+    return JSON.stringify({height: height, elements: elements,
+      nodes: document.getElementsByTagName('*').length});
+  `);
+}
+
+/** Change a FLOW frame's zoom, and nothing else — the body-transform sibling of {@link zoomScript}. */
+export function flowZoomScript(scale: number): string {
+  return evaluable(`
+    document.body.style.transformOrigin = '0 0';
+    document.body.style.transform = ${JSON.stringify(scale === 1 ? '' : `scale(${scale})`)};
+    return JSON.stringify({ok: true, scale: ${scale}});
+  `);
+}
+
 /** The marks a frame should be wearing, as sets of element keys and page indices. */
 export interface QuireFrameMarks {
   struck: string[];

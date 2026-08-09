@@ -50,6 +50,19 @@ export interface MountQuirePageOptions {
    * `quire://` at all.
    */
   partition: string;
+  /**
+   * Show the document AS IT FLOWS instead of as pages: the frame loads the
+   * same served bytes under the same sandbox, but neither the fragmenter
+   * prelude nor the present script runs, so no page boxes are ever built and
+   * the chapter reads top to bottom the way the publisher wrote it.
+   *
+   * What this deliberately does NOT change: identity. The stamps are in the
+   * served bytes, so `data-quire-id` is present and pointable exactly as in a
+   * paginated frame; only the pagination — a thing this frame no longer has —
+   * is absent. The caller styles and measures the flow itself, the same way a
+   * grid arranges page boxes itself.
+   */
+  flow?: boolean;
 }
 
 /**
@@ -106,6 +119,10 @@ export function mountQuirePage(
     const onReady = (): void => {
       cleanup();
       if (destroyed) { resolve(); return; }
+      // A flow mount is ready when the document is: there are no page boxes to
+      // build and no page to bring to the origin, so running the pagination
+      // scripts would manufacture the very structure this mount exists to skip.
+      if (options.flow === true) { resolve(); return; }
       // The prelude first, and only then the page. Under `fragmented-boxes` the
       // page boxes do not exist in the served bytes — they are built in the
       // frame by the strategy's own engine — so a present script run without it
