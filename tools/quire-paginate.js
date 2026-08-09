@@ -5,8 +5,14 @@
  *   npm run build:electron            (or: npx tsc -p tsconfig.electron.json)
  *   node tools/quire-paginate.js <book.epub> [--width 600] [--height 900]
  *                                            [--font-size 18] [--gap 24]
+ *                                            [--strategy paged|multicol]
  *                                            [--json out.json] [--keep-stamped]
  *                                            [--png <page> <file.png>]
+ *
+ * `--strategy multicol` selects the ADVERSARIAL TEST FIXTURE rather than the
+ * product. It is here so the two can be compared on the same book on demand —
+ * that comparison is what decided gate G0 — not because a caller gets to pick a
+ * fragmenter. There is no fallback: whichever is asked for is the only one used.
  *
  * It re-launches itself under Electron, because quire paginates in a real
  * browser and there is no browser in plain Node. That is the point of the
@@ -34,7 +40,9 @@ if (!process.versions.electron) {
 }
 
 const { app } = require('electron');
-const { Quire } = require(path.join(__dirname, '..', 'dist', 'packages', 'quire', 'src', 'index.js'));
+const {
+  Quire, PagedStrategy, MultiColumnStrategy,
+} = require(path.join(__dirname, '..', 'dist', 'packages', 'quire', 'src', 'index.js'));
 const { stampEpubForQuire } = require(path.join(__dirname, '..', 'dist', 'electron', 'quire-stamp.js'));
 
 // The scheme must be privileged before the app is ready — the same constraint
@@ -50,11 +58,12 @@ app.on('window-all-closed', () => { /* the harness decides when it is done */ })
 function parseArgs(argv) {
   const args = {
     epub: null, width: 600, height: 900, fontSize: 18, gap: undefined,
-    json: null, keepStamped: false, png: null,
+    strategy: 'paged', json: null, keepStamped: false, png: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
+      case '--strategy': args.strategy = argv[++i]; break;
       case '--width': args.width = Number(argv[++i]); break;
       case '--height': args.height = Number(argv[++i]); break;
       case '--font-size': args.fontSize = Number(argv[++i]); break;
@@ -69,7 +78,15 @@ function parseArgs(argv) {
     }
   }
   if (!args.epub) throw new Error('usage: node tools/quire-paginate.js <book.epub> [options]');
+  if (args.strategy !== 'paged' && args.strategy !== 'multicol') {
+    throw new Error(`--strategy must be "paged" or "multicol", got "${args.strategy}"`);
+  }
   return args;
+}
+
+function makeStrategy(name) {
+  if (name === 'paged') return new PagedStrategy();
+  return new MultiColumnStrategy();
 }
 
 function fmtMs(ms) {
@@ -111,7 +128,7 @@ async function main() {
   const layoutOptions = { width: args.width, height: args.height, fontSize: args.fontSize };
   if (args.gap !== undefined) layoutOptions.gap = args.gap;
 
-  const doc = await Quire.openDocument(stampedPath);
+  const doc = await Quire.openDocument(stampedPath, { strategy: makeStrategy(args.strategy) });
   let report;
   try {
     const started = Date.now();
@@ -119,6 +136,7 @@ async function main() {
     const wall = Date.now() - started;
 
     console.log('── pagination (packages/quire) ──');
+    console.log(`strategy          ${doc.strategyName}`);
     console.log(`pages             ${doc.countPages()}`);
     console.log(`wall clock        ${fmtMs(wall)} (layout() reported ${fmtMs(report.layoutMs)})`);
     console.log(`documents walked  ${report.documents.length}`);
@@ -150,9 +168,9 @@ async function main() {
     }
 
     if (report.overflows.length > 0) {
-      console.log(`── fragments running past their column's right edge: ${report.overflows.length} ──`);
+      console.log(`── fragments reaching outside their page box: ${report.overflows.length} ──`);
       for (const o of report.overflows.slice(0, 10)) {
-        console.log(`  ${o.id} page ${o.page} by ${o.overshoot}px`);
+        console.log(`  ${o.id} page ${o.page} by ${o.overshoot}px on ${o.axis}`);
       }
       console.log('');
     }

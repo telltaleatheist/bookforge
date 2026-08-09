@@ -28,9 +28,11 @@ export interface QuireLayoutOptions {
    * {@link QUIRE_COLUMN_GAP}, which is a layout constant of the multi-column
    * strategy, not a stand-in for something that could not be determined.
    *
-   * It matters because the whole page arithmetic is `column pitch = width + gap`.
-   * A wrong gap does not produce slightly wrong pages, it produces fragments
-   * that land in the gutter — which quire refuses rather than rounds.
+   * It matters because the multi-column strategy's whole page arithmetic is
+   * `column pitch = width + gap`. A wrong gap does not produce slightly wrong
+   * pages, it produces fragments that land in the gutter — which quire refuses
+   * rather than rounds. `PagedStrategy` has no gutter: its pages are separate
+   * boxes, so it ignores this.
    */
   gap?: number;
 }
@@ -108,16 +110,29 @@ export interface QuireUnplaced {
 }
 
 /**
- * A fragment that starts inside its column but runs past the column's right
- * edge — a too-wide image, an unbreakable URL. The page assignment is still
- * unambiguous (it is made from the fragment's *start*), so this is reported
- * rather than refused; a fragment that *starts* in the gutter is refused.
+ * A fragment that starts inside its page box but runs past one of its edges — a
+ * too-wide image, an unbreakable URL, a plate the fragmenter could not move. The
+ * page assignment is still unambiguous (it is made from the fragment's *start*),
+ * so this is reported rather than refused; a fragment that *starts* outside the
+ * page box is refused.
  */
 export interface QuireOverflow {
   id: string;
   document: string;
   page: number;
-  /** How far past the column's right edge the fragment reaches, in CSS pixels. */
+  /**
+   * Which edge it ran past. `'x'` is a fragment wider than the page; `'y'` is
+   * one taller than it, which for a fragmenting strategy means the fragmenter
+   * could not break or move something and let it hang off the bottom instead.
+   * The two are separate numbers because they are separate faults.
+   */
+  axis: 'x' | 'y';
+  /**
+   * How far outside the page box the fragment reaches on that axis, in CSS
+   * pixels — the larger of the two excursions, so a drop cap hanging 12px into
+   * the left margin and a table running 84px past the right edge both report the
+   * distance that is actually off the page.
+   */
   overshoot: number;
 }
 
@@ -158,8 +173,9 @@ export interface QuireReport {
  *   instance. A grid can mount many pages from a single instance, and cells can
  *   be attached and detached without re-laying-out the chapter.
  *
- * quire ships `continuous-columns` today. The seam exists because the choice is
- * not settled — see README, "Strategy".
+ * quire's product strategy is `fragmented-boxes` (Paged.js). `continuous-columns`
+ * is what the multi-column TEST FIXTURE produces — see README, "Strategy —
+ * SETTLED (gate G0)".
  */
 export type QuirePageBoxModel = 'continuous-columns' | 'fragmented-boxes';
 
@@ -197,6 +213,19 @@ export interface QuirePageMount {
   documentPageCount: number;
   /** CSS the frame must carry for the document to be laid out into page boxes. */
   layoutCss: string;
+  /**
+   * Trusted code the frame must evaluate once, after loading and BEFORE
+   * `presentScript`, or `null` when the strategy needs none.
+   *
+   * For `fragmented-boxes` this is the fragmenter itself — the page boxes do not
+   * exist in the served bytes, they are made in the frame — so it is close to a
+   * megabyte and it is the same string for every page of the book. A display
+   * surface should therefore hold ONE frame per spine document and present that
+   * document's pages into it, rather than one frame per cell: that is the whole
+   * advantage of the box model, and it also means the prelude is evaluated once
+   * per chapter instead of once per page.
+   */
+  preludeScript: string | null;
   /** Script to run in the frame once loaded, to bring this page to the frame origin. */
   presentScript: string;
 }

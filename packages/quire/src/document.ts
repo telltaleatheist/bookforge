@@ -25,7 +25,7 @@ import { buildPaginationShell } from './epub/shell';
 import { assertQuireSchemeRegistered, attachQuireProtocol, type AttachedProtocol } from './host/protocol';
 import { OffscreenWindowHost } from './host/offscreen-host';
 import type { QuireHost } from './host/host';
-import { MultiColumnStrategy } from './paginate/multi-column';
+import { PagedStrategy } from './paginate/paged';
 import type { QuireStrategy, StrategyMeasurement } from './paginate/strategy';
 import {
   QUIRE_COLUMN_GAP,
@@ -40,8 +40,13 @@ import {
 
 export interface QuireOpenOptions {
   /**
-   * The pagination strategy. Defaults to CSS multi-column, which is the one we
-   * expect to keep — see `paginate/strategy.ts` for why this is a choice at all.
+   * The pagination strategy. Defaults to {@link PagedStrategy} — Paged.js 0.4.3,
+   * vendored — which is what quire paginates with; see the README's "Strategy —
+   * SETTLED (gate G0)".
+   *
+   * Passing one is for tests that need a fragmenter whose arithmetic can be
+   * doctored, not for choosing between candidates at run time. There is no
+   * fallback: if the strategy cannot paginate a book, the open fails naming why.
    */
   strategy?: QuireStrategy;
 }
@@ -109,9 +114,18 @@ export class QuireDocument {
   private presentedScale = 1;
 
   private constructor(readonly epubPath: string, options: QuireOpenOptions) {
-    this.strategy = options.strategy ?? new MultiColumnStrategy();
+    this.strategy = options.strategy ?? new PagedStrategy();
     this.archive = new QuireArchive(epubPath);
     this.sessionId = `q${crypto.randomBytes(12).toString('hex')}`;
+  }
+
+  /**
+   * The fragmenter this document was opened with, by name. Worth reporting
+   * anywhere a page map is: a cached map is only valid for the paginator that
+   * produced it.
+   */
+  get strategyName(): string {
+    return this.strategy.name;
   }
 
   /** The Electron session the book is confined to. A display surface must use it. */
@@ -191,6 +205,11 @@ export class QuireDocument {
       });
     }
 
+    // Laying the same document out again is a fresh analysis surface, and the
+    // previous one goes first. Leaving it alive would leak a BrowserWindow per
+    // re-layout and — worse — leave a second frame holding a page map for a
+    // geometry nobody is asking about any more.
+    if (this.analysisHost) { this.analysisHost.destroy(); this.analysisHost = null; }
     this.analysisHost = await OffscreenWindowHost.create({
       session: this.session, width: geometry.width, height: geometry.height,
     });
@@ -199,7 +218,7 @@ export class QuireDocument {
     this.layouts = [];
     let pageOffset = 0;
     for (const spineDoc of this.archive.spine) {
-      await this.analysisHost.load(this.urlFor(spineDoc.entry));
+      await this.loadInto(this.analysisHost, spineDoc.entry);
       const raw = await this.analysisHost.evaluate(measureScript);
       const parsed = JSON.parse(raw) as StrategyMeasurement & { error?: string; stack?: string };
       if (parsed.error) {
@@ -219,6 +238,37 @@ export class QuireDocument {
     this.buildPageIndex(pageOffset);
     this.report = this.buildReport(Date.now() - started);
     return this.report;
+  }
+
+  /**
+   * Load a spine document into a host and put the strategy's trusted code in
+   * front of it.
+   *
+   * Every path that runs a strategy script goes through here, because a frame
+   * that was loaded without the prelude is a frame where the fragmenter is not
+   * present — and the honest outcome of that is a refusal naming the prelude,
+   * not a measurement of an unpaginated document.
+   */
+  private async loadInto(host: QuireHost, entry: string): Promise<void> {
+    await host.load(this.urlFor(entry));
+    const prelude = this.strategy.preludeScript();
+    if (prelude === null) return;
+    const raw = await host.evaluate(prelude);
+    const parsed = JSON.parse(raw) as { ok?: boolean; error?: string; stack?: string };
+    if (parsed.error) {
+      quireFail(
+        'PRELUDE_FAILED',
+        `${this.strategy.name} could not put its engine into the frame for ${entry}: `
+        + `${parsed.error}\n${parsed.stack ?? ''}`.trim(),
+      );
+    }
+    if (parsed.ok !== true) {
+      quireFail(
+        'PRELUDE_FAILED',
+        `${this.strategy.name}'s prelude for ${entry} returned ${raw.slice(0, 200)}, which is `
+        + 'neither an ok nor an error',
+      );
+    }
   }
 
   private buildPageIndex(totalPages: number): void {
@@ -267,7 +317,7 @@ export class QuireDocument {
         for (const id of over.ids) {
           overflows.push({
             id, document: layout.entry,
-            page: layout.pageOffset + over.page, overshoot: over.overshoot,
+            page: layout.pageOffset + over.page, axis: over.axis, overshoot: over.overshoot,
           });
         }
       }
@@ -357,6 +407,7 @@ export class QuireDocument {
       localPage,
       documentPageCount: layout.pageCount,
       layoutCss: this.strategy.layoutCss(geometry),
+      preludeScript: this.strategy.preludeScript(),
       presentScript: this.strategy.presentScript(geometry, localPage, scale),
     };
   }
@@ -369,11 +420,11 @@ export class QuireDocument {
   async presentPage(page: number, host: QuireHost, scale = 1): Promise<void> {
     const geometry = this.requireGeometry();
     const { layout, localPage } = this.locate(page);
-    await host.load(this.urlFor(layout.entry));
+    await this.loadInto(host, layout.entry);
     const raw = await host.evaluate(this.strategy.presentScript(geometry, localPage, scale));
     const parsed = JSON.parse(raw) as { ok?: boolean; error?: string };
     if (parsed.error) {
-      quireFail('PRESENT_FAILED', `page ${page} (${layout.entry} column ${localPage}): ${parsed.error}`);
+      quireFail('PRESENT_FAILED', `page ${page} (${layout.entry} local page ${localPage}): ${parsed.error}`);
     }
   }
 
@@ -389,19 +440,23 @@ export class QuireDocument {
 
     const spineIndex = this.archive.spine.findIndex((s) => s.entry === layout.entry);
     if (this.loadedDocument !== spineIndex) {
-      await host.load(this.urlFor(layout.entry));
+      await this.loadInto(host, layout.entry);
       this.loadedDocument = spineIndex;
       this.presentedPage = -1;
     }
     if (this.presentedPage !== localPage || this.presentedScale !== scale) {
+      // The surface is sized BEFORE the page is brought to the origin, not
+      // after. With `fragmented-boxes` the pages stack down one document and the
+      // last one can only reach the origin if the viewport is exactly a page
+      // tall; sizing afterwards would move it back off again.
+      await host.resize(geometry.width * scale, geometry.height * scale);
       const raw = await host.evaluate(this.strategy.presentScript(geometry, localPage, scale));
       const parsed = JSON.parse(raw) as { ok?: boolean; error?: string };
       if (parsed.error) {
-        quireFail('PRESENT_FAILED', `page ${page} (${layout.entry} column ${localPage}): ${parsed.error}`);
+        quireFail('PRESENT_FAILED', `page ${page} (${layout.entry} local page ${localPage}): ${parsed.error}`);
       }
       this.presentedPage = localPage;
       this.presentedScale = scale;
-      await host.resize(geometry.width * scale, geometry.height * scale);
     }
     if (!host.capture) {
       quireFail('HOST_CANNOT_CAPTURE', 'the analysis host does not rasterize');

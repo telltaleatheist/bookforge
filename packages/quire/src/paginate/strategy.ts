@@ -1,24 +1,26 @@
 /**
  * How a document becomes pages.
  *
- * This is an interface because the answer is NOT settled. CSS multi-column is
- * implemented and is what we expect to keep, but a parallel spike is measuring
- * it against Paged.js on a real book — including whether Chromium's column
- * layout is deterministic run to run. If that spike changes the answer, the
- * thing that changes is a file under `strategies/`; nothing above this line
- * moves, because everything above this line talks in pages and boxes.
+ * The answer IS settled — `PagedStrategy` (Paged.js 0.4.3, vendored) is what
+ * quire paginates with, see the README's "Strategy — SETTLED (gate G0)". The
+ * interface survives the decision for two reasons that are not "we might change
+ * our minds": `MultiColumnStrategy` stays in the tree as the adversarial test
+ * fixture the pitch-refusal tests subclass, and the seam is what lets those tests
+ * doctor one number and require a refusal. It is NOT a fallback chain. A book
+ * paginates with the strategy it was opened with, or the open fails naming why.
  *
- * A strategy owns three artifacts and nothing else:
+ * A strategy owns four artifacts and nothing else:
  *
  *  - the CSS that turns a loaded document into page boxes,
+ *  - trusted code the frame needs before either script can run (a PRELUDE),
  *  - a pure script that MEASURES the laid-out document,
  *  - a pure script that PRESENTS one page at the surface origin.
  *
- * Both scripts are strings evaluated in an isolated world. They are pure in the
+ * The scripts are strings evaluated in an isolated world. They are pure in the
  * sense that matters here: they read the DOM and return a JSON string, and the
- * present script's only side effect is to move the viewport. Neither knows
- * whether the surface it runs in is visible, which is why the analysis host and
- * the display host can share them.
+ * present script's only side effects are a scroll offset and a visual transform.
+ * Neither knows whether the surface it runs in is visible, which is why the
+ * analysis host and the display host can share them.
  */
 import type { QuireGeometry, QuirePageBoxModel } from '../types';
 
@@ -30,16 +32,16 @@ export interface StrategyMeasurement {
   placed: StrategyPlacement[];
   /** One entry per stamped element that got no box at all. */
   unplaced: StrategyUnplaced[];
-  /** Fragments that started inside a column but ran past its right edge. */
-  overflows: Array<{ ids: string[]; page: number; overshoot: number }>;
+  /** Fragments that started inside a page box but ran past one of its edges. */
+  overflows: Array<{ ids: string[]; page: number; axis: 'x' | 'y'; overshoot: number }>;
   /**
-   * Numbers that describe the layout without gating it. `flowExtent` is
-   * `body.scrollWidth`; `expectedExtent` is what `pageCount` columns of content
-   * would span. `flowExtent` larger than `expectedExtent` means content
-   * overflows a column sideways, which is exactly why the page count is not
-   * derived from it.
+   * Numbers that describe the layout without gating it. What they ARE is the
+   * strategy's business — a column strip and a stack of page boxes do not have
+   * the same facts about them — so this is an open bag rather than a shape one
+   * strategy's vocabulary imposes on the other. They are reported, never used as
+   * an answer.
    */
-  diagnostics: { flowExtent: number; expectedExtent: number; emptyColumns: number };
+  diagnostics: Record<string, number>;
 }
 
 export interface StrategyPlacement {
@@ -71,6 +73,19 @@ export interface QuireStrategy {
   readonly boxModel: QuirePageBoxModel;
   /** CSS appended last to the document's `<head>`, so it wins over the book's own. */
   layoutCss(geometry: QuireGeometry): string;
+  /**
+   * Trusted code the frame must have before it can be measured or presented, or
+   * `null` for a strategy that needs none.
+   *
+   * This is where a fragmenter that is a LIBRARY gets into the frame. It is
+   * evaluated in the isolated world, from the main process, exactly like the
+   * measure script — never as a `<script>` in the book's document, which is
+   * served under `script-src 'none'` with every `<script>` already stripped from
+   * the bytes. The book's world never sees it.
+   *
+   * It must evaluate to a JSON string: `{"ok":true,…}`, or `{"error":"…"}`.
+   */
+  preludeScript(): string | null;
   /** Expression evaluating to a JSON {@link StrategyMeasurement}. */
   measureScript(geometry: QuireGeometry): string;
   /**

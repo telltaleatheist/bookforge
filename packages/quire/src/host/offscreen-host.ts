@@ -9,6 +9,27 @@
  * `offscreen: true` is what lets a never-shown window still produce a raster for
  * `toPng`, and it also pins compositing to software, which is one fewer source
  * of run-to-run variation in a measurement.
+ *
+ * ── It is also what makes pagination fast, and that is not obvious ──────────
+ *
+ * A fragmenter that drives itself from `requestAnimationFrame` — Paged.js does,
+ * `src/utils/queue.js` — runs at the speed the surface is given frames. Measured
+ * on one 13-page chapter of *Killing America*:
+ *
+ *   offscreen: true                                18 ms/page
+ *   shown at opacity 0, parked off-screen          18 ms/page
+ *   hidden and NOT offscreen                      853 ms/page
+ *
+ * The third row is not affected by `backgroundThrottling` in either position, and
+ * — the part that makes it a trap — a rAF counter running inside that window
+ * still reads 60 fps. The callbacks fire; the layout work between them does not
+ * progress. So the fix cannot be found by counting frames, and the two things
+ * that do fix it are showing the window (which puts a window on the user's
+ * desktop) or rendering it offscreen (which does not). quire does the second.
+ *
+ * `tools/test-quire.js` holds the book to milliseconds per page for this reason,
+ * because every page number would still be RIGHT if this regressed. It would
+ * just take two and a half minutes instead of four seconds.
  */
 import { quireFail } from '../errors';
 import { assertSandboxed, QUIRE_REQUIRED_WEB_PREFERENCES, type QuireHost } from './host';
