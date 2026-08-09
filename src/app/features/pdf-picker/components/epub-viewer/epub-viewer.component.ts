@@ -148,7 +148,7 @@ const GRID_BASE_WIDTH = 200;
       <div class="placeholder"><p>No book is open.</p></div>
     } @else {
       <div class="epub-viewport" #viewport (scroll)="onScroll()" (wheel)="onWheel($event)">
-        <div class="epub-content">
+        <div class="epub-content" [class.single-column]="layout() !== 'grid'">
           @for (band of bands(); track band.index) {
             <div
               class="band"
@@ -342,12 +342,17 @@ const GRID_BASE_WIDTH = 200;
     .epub-content {
       display: flex;
       flex-direction: column;
-      // Left-aligned, the way the raster viewer's grid is (flex-start on both
-      // axes). Centring made a narrow band sit under a wide one's middle, so
-      // page 1 of one document did not line up with page 1 of the next.
+      // GRID is left-aligned, the way the raster viewer's grid is (flex-start
+      // on both axes): centring made a narrow band sit under a wide one's
+      // middle, so page 1 of one document did not line up with page 1 of the
+      // next. A SINGLE COLUMN (list, flow) has no such alignment to keep —
+      // every band is the same width — so it reads better centred, like a
+      // page on a desk rather than a page against a wall.
       align-items: flex-start;
       gap: var(--ui-spacing-xl);
       padding: var(--ui-spacing-xl);
+
+      &.single-column { align-items: center; }
     }
 
     .band {
@@ -1212,12 +1217,20 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
    * await, so a zoom that lands mid-chase is simply the next lap, never a
    * second concurrent chaser. A sync failure against a target that is no
    * longer the latest is not a verdict about the frame — the size it failed to
-   * reach is not the size wanted any more — so only the CURRENT target's
-   * failure refuses the band.
+   * reach is not the size wanted any more.
+   *
+   * A failure against the CURRENT target is retried before anything drastic:
+   * a busy or occluded guest can lag its element for seconds (occlusion
+   * throttles the guest's whole event loop), and a refusal for a lag that
+   * clears itself is an error dialog about weather. Only a frame that
+   * persistently will not follow is dealt with — by REMOUNT, not refusal: the
+   * band re-lays itself out fresh, which actually fixes the stale viewport,
+   * where a refusal would just describe it and strand the chapter.
    */
   private async chaseFrameSync(index: number, frame: MountedQuirePage): Promise<void> {
     if (this.syncing.has(index)) return; // the running worker re-reads the target each lap
     this.syncing.add(index);
+    let failures = 0;
     try {
       for (;;) {
         const target = this.syncTargets.get(index);
@@ -1226,6 +1239,7 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
         if (state.kind !== 'ready') return;
         try {
           await this.syncGuestViewport(frame, target.w, target.h);
+          failures = 0;
           if (this.mounted.get(index) !== frame) return;
           if (this.syncTargets.get(index) !== target) continue;
           const band = this.bands()[index];
@@ -1250,7 +1264,20 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
         } catch (err) {
           if (this.mounted.get(index) !== frame) return;
           if (this.syncTargets.get(index) !== target) continue; // stale failure, chase the new size
-          this.setState(index, { kind: 'refused', why: String((err as Error).message) });
+          failures++;
+          if (failures < 3) {
+            // Give a lagging guest time to breathe, then try the same target
+            // again from the top (repair, nudge and all).
+            await new Promise<void>((r) => setTimeout(r, 500 * failures));
+            continue;
+          }
+          console.warn(
+            `[epub-viewer] band ${index} (${frame.element.getAttribute('src') ?? '?'}): `
+            + `${String((err as Error).message)} Remounting the band instead of stranding it.`,
+          );
+          this.unmountBand(index);
+          this.queueReconcile();
+          this.reconcileVisibility();
           return;
         }
         if (this.syncTargets.get(index) === target) return; // caught up
@@ -1278,7 +1305,7 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     const guest = frame.element as HTMLElement & { executeJavaScript(code: string): Promise<unknown> };
     const expected = { w: Math.round(width), h: Math.round(height) };
     let got = { w: 0, h: 0 };
-    for (let attempt = 0; attempt < 4; attempt++) {
+    for (let attempt = 0; attempt < 6; attempt++) {
       got = await guest.executeJavaScript(
         'JSON.parse(JSON.stringify({w: window.innerWidth, h: window.innerHeight}))',
       ) as { w: number; h: number };
