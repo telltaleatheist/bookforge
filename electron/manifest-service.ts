@@ -32,6 +32,7 @@ import type {
   AppliedPass,
   AppliedPassKind,
   MergeChapterOpeningEdit,
+  NameChapterOpenersEdit,
   SourceType,
 } from './manifest-types.js';
 import { passesAfterEpubEvent } from '../shared/document/pass-lifecycle';
@@ -1600,6 +1601,71 @@ export async function recordChapterOpeningFold(
     );
   }
   return { droppedStrikes, renumberedStrikes };
+}
+
+/**
+ * Record the chapter-opening naming: re-stamp the strikes, touch the book, log
+ * the edit — one transaction, for the same reason the fold's is one.
+ *
+ * ── Why the strikes are RE-STAMPED and not migrated ────────────────────────
+ *
+ * Because the naming pass removes no element. Every edit it makes is text
+ * inside one element, so every text-unit index and every image ordinal is
+ * exactly where it was and each strike still names the element it named —
+ * there is no renumbering to carry (contrast `recordChapterOpeningFold`, whose
+ * whole difficulty is that a fold removes units). The record follows the book's
+ * new bytes, with its keys untouched.
+ *
+ * The stamp is CHECKED against `fromSha256` rather than overwritten, exactly as
+ * the fold checks it. A record describing some other book cannot be followed —
+ * its positions are in a file nobody has — and quietly re-stamping it here
+ * would forge agreement. The caller makes the same check BEFORE writing the
+ * book, so this one should be unreachable; it is here because the manifest is
+ * the thing being written and a guard that lives beside the write is the guard
+ * that cannot be skipped by a future second caller.
+ */
+export async function recordChapterOpeningNaming(
+  projectDir: string,
+  edit: NameChapterOpenersEdit,
+): Promise<void> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  const saved = await modifyManifest(projectId, (m) => {
+    const epub = m.outputs?.epub;
+    if (!epub) {
+      throw new Error(
+        `Cannot record the chapter-opening naming in ${projectDir}: the project has no `
+        + 'outputs.epub, so there is no book to have been named.'
+      );
+    }
+
+    const recorded = epub.narrationDeletions;
+    if (recorded !== undefined) {
+      if (recorded.epubSha256 !== edit.fromSha256) {
+        throw new Error(
+          `${path.basename(projectDir)}'s narration strikes are stamped with a different book than `
+          + 'the one whose chapter openings were just named, so they name positions in a file '
+          + 'nobody has and cannot be carried onto it. The book has been edited; strike what you '
+          + 'want left out of the narration again.'
+        );
+      }
+      epub.narrationDeletions = {
+        ...recorded,
+        epubSha256: edit.toSha256,
+        updatedAt: edit.at,
+      };
+    }
+
+    epub.modifiedAt = edit.at;
+    (epub.bookEdits ??= []).push(edit);
+  });
+  if (!saved.success) {
+    throw new Error(
+      `The book's chapter openings were named, but recording that in ${projectDir}'s manifest `
+      + `failed: ${saved.error}`
+    );
+  }
 }
 
 /**

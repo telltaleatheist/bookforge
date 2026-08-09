@@ -2931,8 +2931,13 @@ export class ElectronService {
    * the renamed block's own element key. The book is the only store, so there is
    * nothing to save afterwards: asking again reads the new title back.
    */
+  /**
+   * Rename one chapter in the book. `openingsNamed` is how many chapter
+   * OPENINGS the book had rewritten as part of it — the print follows the
+   * name — and above zero means the markup on screen is out of date.
+   */
   async renameBookChapter(projectDir: string, file: string, title: string): Promise<{
-    success: boolean; result?: BookChapterRenameResult; error?: string;
+    success: boolean; result?: BookChapterRenameResult; openingsNamed?: number; error?: string;
   }> {
     if (this.isElectron) {
       return (window as any).electron.vlm.renameChapter(projectDir, file, title);

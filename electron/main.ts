@@ -3216,6 +3216,28 @@ function setupIpcHandlers(): void {
           console.warn(`[projects:load] ${staleLayoutRefusal}`);
         }
 
+        // ── The chapter openings, NAMED, before anything reads the book ─────
+        //
+        // Owen, 2026-08-09: "from the moment the book opens, the chapter
+        // openers contain the chapter's text. period. the user will delete
+        // surrounding blocks if they're unnecessary." So it happens HERE — after
+        // the layout migration, before the manifest is read and before the
+        // window is handed a single page — and the analysis, the viewer, the
+        // aligner and the narration cut only ever see the normalized file.
+        //
+        // NOT inside the try above: a refusal from this fails the open, with its
+        // own sentence. A half-normalized book, opened anyway, would be a window
+        // laying out one chapter's markup and another's, with nothing on screen
+        // saying which is which.
+        const { nameChapterOpenings } = await import('./narration-export.js');
+        const named = await nameChapterOpenings(filePath);
+        if (named.edited > 0) {
+          console.log(
+            `[projects:load] ${path.basename(filePath)}: ${named.edited} chapter opening(s) now `
+            + 'read the name the book stores for their chapter.'
+          );
+        }
+
         // Read manifest.json and convert it to the editor's project shape
         const manifestPath = path.join(filePath, 'manifest.json');
         const manifestContent = await fs.readFile(manifestPath, 'utf-8');
@@ -7260,18 +7282,48 @@ function setupIpcHandlers(): void {
    * Rename one chapter, in the book itself.
    *
    * Every table of contents the book carries, and the chapter document's
-   * `<title>`; never the print. The book is the only store — re-opening the
-   * project reads the new title back out of it — so there is nothing here that
-   * also has to be saved. See electron/book-chapters.ts for why the narration
-   * records move with it, and why renaming only one of two lists is refused.
+   * `<title>`; AND — since 2026-08-09 — the chapter's OPENING, which is the
+   * print. Owen: "if the user changes the text of the chapter name, it updates
+   * the chapter opener to reflect that accurately." That is not a second edit
+   * to keep in step with the first: the naming pass derives every opening from
+   * the nav titles this rename has just rewritten, so it is the same one rule
+   * running again over a book that changed, with no rename-specific logic at
+   * all (electron/narration-export.ts, `nameChapterOpenings`).
+   *
+   * ORDER matters and is the reason this is not two handlers. The rename
+   * re-stamps the narration strike record onto its own new bytes; the naming
+   * pass then changes those bytes again and re-stamps again. Run the other way
+   * round — or concurrently — one of them would read a stamp the other had
+   * already moved and refuse. The naming pass's own refusal is caught here
+   * rather than reported as a rename failure, because by then the rename has
+   * landed and saying otherwise would be a lie about the file on disk.
+   *
+   * See electron/book-chapters.ts for why the narration records move with the
+   * rename, and why renaming only one of two lists is refused.
    */
   ipcMain.handle('book:rename-chapter', async (
     _event, projectDir: string, file: string, title: string) => {
     try {
       const { renameBookChapter } = await import('./book-chapters.js');
       const result = await renameBookChapter(projectDir, file, title);
+
+      let openingsNamed = 0;
+      try {
+        const { nameChapterOpenings } = await import('./narration-export.js');
+        openingsNamed = (await nameChapterOpenings(projectDir)).edited;
+      } catch (err) {
+        broadcastToAllWindows('project:files-changed', projectDir);
+        return {
+          success: false,
+          error:
+            `That chapter is now called "${title}" in the book, but its opening could not be `
+            + `rewritten to match, so the page still prints the old heading: `
+            + `${(err as Error).message}`,
+        };
+      }
+
       broadcastToAllWindows('project:files-changed', projectDir);
-      return { success: true, result };
+      return { success: true, result, openingsNamed };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
