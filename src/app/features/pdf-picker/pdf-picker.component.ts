@@ -5896,10 +5896,10 @@ export class PdfPickerComponent implements OnInit {
           }
         }
 
-        // Freshly-ingested EPUB (no restored merges): consolidate its per-line
-        // blocks into one block per paragraph. Guards inside make this a no-op
-        // for PDFs and for documents that already have paragraph structure.
-        this.autoSegmentEpubParagraphs();
+        // (The mupdf-era auto-consolidation of EPUB line-blocks into paragraph
+        // blocks is gone: quire's blocks ARE the book's own paragraphs, so
+        // there are no line fragments to merge and a merged block would carry
+        // no element key for the viewer to point at.)
       }
 
       // Also update the OpenDocument in tabs so tab switching preserves text
@@ -6207,13 +6207,8 @@ export class PdfPickerComponent implements OnInit {
       }
 
       // If text not ready (cache miss), start background extraction.
-      // When text IS ready and this is a freshly-opened EPUB, consolidate its
-      // per-line blocks into paragraph blocks (the not-ready case does this in
-      // the text-ready callback instead).
       if (!quickResult.textReady) {
         this.startBackgroundTextExtraction(libraryPath, docId);
-      } else if (libraryPath.toLowerCase().endsWith('.epub')) {
-        this.autoSegmentEpubParagraphs();
       }
     } catch (err) {
       console.error('Failed to load PDF:', err);
@@ -7601,6 +7596,20 @@ export class PdfPickerComponent implements OnInit {
    * Consolidates fragmented body text into unified paragraph blocks.
    */
   async mergeAdjacentBlocks(): Promise<void> {
+    // A quire-paginated EPUB's blocks ARE the book's own paragraphs — there are
+    // no line fragments to consolidate, and a merged block would carry no
+    // element key for the live viewer to point at. Same refusal the other merge
+    // surfaces give an EPUB, said at the press.
+    if (this.isCurrentDocumentEpub()) {
+      await this.electronService.showConfirmDialog({
+        title: 'Merge is not available for EPUBs',
+        message: 'This book\'s blocks are its own paragraphs, read straight from the markup — '
+          + 'there are no line fragments to merge back together.',
+        confirmLabel: 'OK',
+        type: 'info',
+      });
+      return;
+    }
     const blocks = this.blocks();
     const deletedBlockIds = this.deletedBlockIds();
 
@@ -7661,36 +7670,6 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
-   * Freshly-ingested EPUBs arrive as one block per visual line because MuPDF
-   * reflows the EPUB and drops the <p> structure. Detect paragraphs and merge
-   * the single-line blocks back into one block per paragraph, automatically and
-   * silently (no confirm popup — this is ingestion, not a user action).
-   *
-   * Idempotent and conservative: it does nothing if paragraph structure or
-   * merges already exist (e.g. a saved project being restored) or if there is
-   * nothing to merge, so it never clobbers existing state or touches PDFs.
-   */
-  private autoSegmentEpubParagraphs(): void {
-    if (!this.isCurrentDocumentEpub()) return;
-    if (this.editorState.blocks().length === 0) return;
-    if (this.editorState.paragraphBreaks().size > 0) return;
-    if (this.editorState.blockMerges().size > 0) return;
-
-    // Detect paragraph boundaries first so each merged block is one paragraph.
-    this.detectParagraphs();
-
-    const groups = detectMergeableGroups(
-      this.blocks(),
-      this.deletedBlockIds(),
-      this.editorState.paragraphBreaks()
-    );
-    if (groups.length === 0) return;
-
-    console.log(`[autoSegmentEpubParagraphs] Consolidating line-blocks into ${groups.length} paragraphs`);
-    this.applyMergeGroups(groups);
-  }
-
-  /**
    * Unmerge a merged block back into its original source blocks.
    */
   unmergeBlock(mergedBlockId: string): void {
@@ -7731,6 +7710,19 @@ export class PdfPickerComponent implements OnInit {
    * and rebuilding merged blocks. Called during project restore (no history push).
    */
   private restoreBlockMerges(merges: Array<{ mergedBlockId: string; sourceBlockIds: string[] }>): void {
+    // Merge does not exist for EPUBs (see mergeAdjacentBlocks), so a saved EPUB
+    // project carrying merges holds state this surface can no longer honour —
+    // in practice, output of the retired auto-segmentation step. Not applying
+    // them is lossless: the source blocks are the analysis blocks, still
+    // present, and the next save writes the project without the merges.
+    if (this.isCurrentDocumentEpub()) {
+      console.warn(
+        `[restoreBlockMerges] Skipping ${merges.length} saved block merge(s): merge is not `
+        + 'available for EPUBs, and a merged block carries no element key the live viewer '
+        + 'could point at. The source blocks are shown as analyzed; saving will drop the record.',
+      );
+      return;
+    }
     const allBlocks = this.blocks();
     const blocksById = new Map(allBlocks.map(b => [b.id, b]));
 
