@@ -597,6 +597,25 @@ interface AlertModal {
             ></div>
           </div>
 
+          <!-- Chapter rail: a book's chapters beside the viewer, each row the
+               chapter's WHOLE name, clicked to jump there. This is the EPUB's
+               navigation column — the page timeline it replaces is a raster
+               affordance and is not rendered for a book at all. -->
+          @if (showsEpubViewer() && curationChapterRows().length > 0) {
+            <div class="chapter-rail">
+              <div class="chapter-rail-header">Chapters</div>
+              <div class="chapter-rail-list">
+                @for (row of curationChapterRows(); track row.id) {
+                  <button
+                    class="chapter-rail-item"
+                    [title]="'Page ' + (row.page + 1)"
+                    (click)="scrollToPage(row.page)"
+                  >{{ row.title }}</button>
+                }
+              </div>
+            </div>
+          }
+
           <!-- Viewer + Timeline wrapper (stacked vertically) -->
           <div class="viewer-timeline-wrapper">
             <!-- Viewer -->
@@ -797,19 +816,14 @@ interface AlertModal {
               </div>
             }
 
-            <!-- Page Timeline (bottom of viewer). In FLOW the rail is the
-                 book's chapters instead: flow has no page boxes on screen, so
-                 a row of page numbers would point at places the eye cannot
-                 line up with, while a chapter is exactly the unit a flowing
-                 column scrolls by. -->
+            <!-- Page Timeline (bottom of viewer). Not for an EPUB: its raster
+                 thumbnails are gone with the raster path, and its navigation
+                 job belongs to the chapter rail beside the viewer. -->
+            @if (!showsEpubViewer()) {
             <div class="page-timeline">
               <div class="timeline-header">
                 <span class="timeline-label">
-                  @if (showsEpubViewer() && layout() === 'flow') {
-                    {{ curationChapterRows().length }} chapters · {{ totalPages() }} pages
-                  } @else {
-                    {{ totalPages() }} pages
-                  }
+                  {{ totalPages() }} pages
                   @if (pagesLoaded() < totalPages()) {
                     · <span class="loading-status"><span class="mini-spinner"></span> Loading {{ pagesLoaded() }}/{{ totalPages() }}</span>
                   }
@@ -821,17 +835,6 @@ interface AlertModal {
                   }
                 </span>
               </div>
-              @if (showsEpubViewer() && layout() === 'flow') {
-                <div class="timeline-scroll timeline-chapters">
-                  @for (row of curationChapterRows(); track row.id) {
-                    <button
-                      class="timeline-chapter"
-                      [title]="row.title + ' — page ' + (row.page + 1)"
-                      (click)="scrollToPage(row.page)"
-                    >{{ row.title }}</button>
-                  }
-                </div>
-              } @else {
               <div class="timeline-scroll">
                 @for (pageNum of pageNumbers(); track pageNum) {
                   <button
@@ -851,8 +854,8 @@ interface AlertModal {
                   </button>
                 }
               </div>
-              }
             </div>
+            }
 
           </div>
         </div>
@@ -1481,30 +1484,51 @@ interface AlertModal {
       }
     }
 
-    // The flow rail: chapters as pills, vertically centred where the page
-    // thumbs would stand. Titles can be long ("Foreword: Eric Metaxas"), so
-    // each pill keeps its whole title on one line and the rail scrolls.
-    .timeline-chapters {
-      align-items: center;
+    // The chapter rail: the EPUB's navigation column beside the viewer. Rows
+    // wrap — the whole point is the WHOLE chapter name, never an ellipsis.
+    .chapter-rail {
+      width: 230px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border-subtle);
     }
 
-    .timeline-chapter {
-      flex-shrink: 0;
-      max-width: 260px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      padding: var(--ui-spacing-xs) var(--ui-spacing-md);
+    .chapter-rail-header {
+      padding: var(--ui-spacing-sm) var(--ui-spacing-lg);
       font-size: var(--ui-font-xs);
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .chapter-rail-list {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: var(--ui-spacing-sm);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .chapter-rail-item {
+      text-align: left;
+      padding: var(--ui-spacing-xs) var(--ui-spacing-md);
+      font-size: var(--ui-font-sm);
+      line-height: 1.35;
       color: var(--text-secondary);
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-subtle);
-      border-radius: 999px;
+      background: none;
+      border: 0;
+      border-radius: 6px;
       cursor: pointer;
 
       &:hover {
+        background: var(--bg-elevated);
         color: var(--text-primary);
-        border-color: var(--accent);
       }
     }
 
@@ -4253,12 +4277,12 @@ export class PdfPickerComponent implements OnInit {
       const opensDocument = file !== null && navTitles.has(file) && !claimed.has(file);
       if (file !== null) claimed.add(file);
 
-      // The PRINT, always — the chapter is named by the exact text of the
-      // block that opens it (Owen, 2026-08-09: if the page says
-      // "Foreword: Eric Metaxas", the chapter says "Foreword: Eric Metaxas",
-      // never a shortened nav entry). The nav entry still exists and renames
-      // still write it; `opensDocument` keeps deciding WHICH row may rename.
-      const title = block.text.trim();
+      // The nav entry when this row owns it; the print otherwise. The book's
+      // OWN chapter names are the authority (Owen, 2026-08-09: "the chapter
+      // names are stored in this epub") — the thing that should change to
+      // match them is the OPENER BLOCK'S TEXT, because that is what TTS
+      // reads, not the name shown here.
+      const title = opensDocument ? navTitles.get(file)! : block.text.trim();
 
       return {
         id: block.id,
