@@ -1,0 +1,318 @@
+/**
+ * What the viewer says to a page frame.
+ *
+ * A quire page is live DOM inside a sandboxed frame the app does not share an
+ * origin with. Everything this viewer does to that page — lay its page boxes
+ * into a grid, read where every stamped element ended up, strike an element out,
+ * highlight a selection — is a self-contained script evaluated in the frame,
+ * exactly the channel `packages/quire/src/mount.ts` already uses for quire's own
+ * prelude and present scripts.
+ *
+ * They live here, in one named file, for one reason: these are the ONLY places
+ * in BookForge that know what a Paged.js page box looks like in the DOM
+ * (`.pagedjs_page`, `.pagedjs_pages`). quire's mount contract hands a surface a
+ * script that brings ONE page to the origin, and no script that says "show all
+ * of this document's pages at once", so a grid has to arrange the boxes itself.
+ * That is a real seam in the contract rather than a convenience, so it is
+ * concentrated where it can be seen, named, and moved into the strategy later.
+ *
+ * Three rules hold for everything in this file:
+ *
+ *  - **No script reaches the book's own world as script.** These strings are
+ *    evaluated by the embedder against the frame; the book is still served under
+ *    `script-src 'none'` with every `<script>` stripped from its bytes. Nothing
+ *    here writes markup from the app into the book, and nothing here brings the
+ *    book's markup into the app — only ids, numbers and rectangles cross back.
+ *  - **Styling is a stylesheet, never inline markup surgery.** The viewer's
+ *    marks are CSS classes on elements that are already there, applied through
+ *    one `<style>` element, which is what quire's CSP admits
+ *    (`style-src quire: 'unsafe-inline'`).
+ *  - **Geometry is measured in the frame, after the boxes are in their final
+ *    places, and never carried over a re-parent** (gate G0: page assignment
+ *    survives a move, pixel geometry does not).
+ */
+
+/** The attribute quire reports identity from, and the only one measured here. */
+const QUIRE_ID_ATTRIBUTE = 'data-quire-id';
+/** Several ids on one element are joined by this — see quire's README, "Identity". */
+const QUIRE_ID_SEPARATOR = '|';
+
+/** Where one page box sits inside its frame, in unscaled CSS pixels. */
+export interface QuireFramePage {
+  /** Index within this spine document's own flow — `QuirePageMount.localPage`. */
+  localPage: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Where one stamped element sits inside its frame, in unscaled CSS pixels. */
+export interface QuireFrameElement {
+  /** The caller's own key, exactly as `data-quire-id` carries it. */
+  id: string;
+  localPage: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** What {@link arrangeScript} hands back. */
+export interface QuireFrameArrangement {
+  pages: QuireFramePage[];
+  elements: QuireFrameElement[];
+  /** Rendered nodes in this frame — the virtualisation budget, measured not guessed. */
+  nodes: number;
+  /** Elements carrying an id that no page box contains. Always zero, or a bug. */
+  orphans: number;
+}
+
+/** The marks the viewer paints on the live page, as class names. */
+export const QUIRE_VIEW_CLASSES = {
+  struck: 'bf-struck',
+  selected: 'bf-selected',
+  tocSelected: 'bf-toc-selected',
+  /** On a `.pagedjs_page`, not on an element: the whole page is excluded. */
+  pageStruck: 'bf-page-struck',
+} as const;
+
+/**
+ * The viewer's stylesheet.
+ *
+ * Deliberately the same vocabulary as the raster viewer's block overlay: a
+ * struck block is dimmed and crossed out in the same red, a selected block wears
+ * the accent. The raster viewer draws two SVG lines corner to corner over a
+ * bitmap; there is no bitmap here, so the cross is a pair of CSS gradients over
+ * the real element and the strikethrough is the browser's own.
+ *
+ * `!important` throughout, and only on the viewer's own properties: the book's
+ * stylesheet is a stranger's and specific enough to win otherwise, and a strike
+ * the reader cannot see is worse than no strike at all.
+ */
+export const QUIRE_VIEW_STYLESHEET = `
+[${QUIRE_ID_ATTRIBUTE}] { position: relative; }
+.${QUIRE_VIEW_CLASSES.selected} {
+  background-color: rgba(6, 182, 212, 0.18) !important;
+  outline: 2px solid #06b6d4 !important;
+  outline-offset: 1px !important;
+}
+.${QUIRE_VIEW_CLASSES.tocSelected} {
+  outline: 2px dashed #a855f7 !important;
+  outline-offset: 1px !important;
+}
+.${QUIRE_VIEW_CLASSES.struck} {
+  opacity: 0.42 !important;
+  text-decoration: line-through !important;
+  text-decoration-color: #ff4444 !important;
+  text-decoration-thickness: 2px !important;
+  background-image:
+    linear-gradient(to bottom right, transparent calc(50% - 1px), #ff4444 calc(50% - 1px),
+                    #ff4444 calc(50% + 1px), transparent calc(50% + 1px)),
+    linear-gradient(to bottom left, transparent calc(50% - 1px), #ff4444 calc(50% - 1px),
+                    #ff4444 calc(50% + 1px), transparent calc(50% + 1px)) !important;
+  background-repeat: no-repeat !important;
+  background-size: 100% 100% !important;
+}
+.${QUIRE_VIEW_CLASSES.struck} img,
+.${QUIRE_VIEW_CLASSES.struck} svg { filter: grayscale(1) !important; }
+.${QUIRE_VIEW_CLASSES.pageStruck} { opacity: 0.3 !important; }
+`;
+
+/**
+ * Wrap a body so it always answers with a JSON string, never with a value the
+ * embedder has to guess the shape of and never with a thrown error it cannot
+ * attribute. Same convention as quire's own prelude/present scripts.
+ */
+function evaluable(body: string): string {
+  return `(function(){try{${body}}catch(e){`
+    + 'return JSON.stringify({error:String((e&&e.message)||e),stack:String((e&&e.stack)||"")});'
+    + '}})()';
+}
+
+/**
+ * Lay this document's page boxes into a grid, put the viewer's stylesheet in,
+ * and measure everything the app will need to point at.
+ *
+ * Run ONCE per frame, after quire's own present script has paginated it. The
+ * order inside matters and is not interchangeable:
+ *
+ *  1. arrange the boxes,
+ *  2. force layout and measure — at scale 1, with the container transform
+ *     removed, so the numbers are the page's own and a later zoom cannot
+ *     invalidate them,
+ *  3. only then apply the zoom transform.
+ *
+ * Measuring after step 3 would fold the zoom into every rectangle and make the
+ * app's arithmetic depend on when it asked. Measuring before step 1 would
+ * measure boxes that are about to move (gate G0).
+ *
+ * Coordinates come back relative to the page-box container's own origin, so the
+ * app can place the frame and then treat every rectangle as frame-local.
+ */
+export function arrangeScript(columns: number, gap: number, scale: number): string {
+  const cfg = JSON.stringify({ columns, gap, scale, attr: QUIRE_ID_ATTRIBUTE, sep: QUIRE_ID_SEPARATOR });
+  const style = JSON.stringify(QUIRE_VIEW_STYLESHEET);
+  return evaluable(`
+    var cfg = ${cfg};
+    var container = document.querySelector('.pagedjs_pages');
+    if (!container) {
+      return JSON.stringify({error: 'this frame has no .pagedjs_page container, so it was never '
+        + 'paginated — the mount ran the arrange script before quire\\'s present script'});
+    }
+
+    // quire's layout CSS pins .pagedjs_pages{display:block!important}, so the
+    // grid has to carry !important too. A container that quietly stayed a block
+    // would look like a one-column reader rather than like a failure.
+    container.style.setProperty('display', 'grid', 'important');
+    container.style.setProperty('grid-template-columns',
+      'repeat(' + cfg.columns + ', max-content)', 'important');
+    container.style.setProperty('gap', cfg.gap + 'px', 'important');
+    container.style.setProperty('justify-content', 'start', 'important');
+    container.style.setProperty('align-content', 'start', 'important');
+    container.style.transformOrigin = '0 0';
+    container.style.transform = '';
+
+    if (!document.getElementById('bf-quire-view-style')) {
+      var sheet = document.createElement('style');
+      sheet.id = 'bf-quire-view-style';
+      sheet.textContent = ${style};
+      document.head.appendChild(sheet);
+    }
+
+    // The frame's own scroll must be at the origin, because every rectangle
+    // below is viewport-relative and the app will treat them as frame-local.
+    window.scrollTo(0, 0);
+    if (window.scrollX !== 0 || window.scrollY !== 0) {
+      return JSON.stringify({error: 'the frame will not scroll to its origin (it sits at '
+        + window.scrollX + ',' + window.scrollY + '), so no rectangle measured in it can be '
+        + 'placed on screen'});
+    }
+
+    var boxes = document.querySelectorAll('.pagedjs_page');
+    if (boxes.length === 0) return JSON.stringify({error: 'no .pagedjs_page boxes in this frame'});
+    var origin = container.getBoundingClientRect();
+    var pages = [];
+    var pageOf = new Map();
+    for (var i = 0; i < boxes.length; i++) {
+      var r = boxes[i].getBoundingClientRect();
+      pages.push({localPage: i, x: +(r.left - origin.left).toFixed(2), y: +(r.top - origin.top).toFixed(2),
+                  w: +r.width.toFixed(2), h: +r.height.toFixed(2)});
+      pageOf.set(boxes[i], i);
+    }
+
+    // Identity comes from DOM containment, the same rule quire measures by: an
+    // element is a descendant of exactly one page box. An element Paged.js split
+    // across pages appears once per box, each clone carrying the same stamp, so
+    // one id can legitimately produce several rectangles.
+    var stamped = document.querySelectorAll('[' + cfg.attr + ']');
+    var elements = [];
+    var orphans = 0;
+    for (var j = 0; j < stamped.length; j++) {
+      var el = stamped[j];
+      var box = el.closest('.pagedjs_page');
+      var local = box ? pageOf.get(box) : undefined;
+      if (local === undefined) { orphans++; continue; }
+      var er = el.getBoundingClientRect();
+      var ids = String(el.getAttribute(cfg.attr) || '').split(cfg.sep);
+      for (var k = 0; k < ids.length; k++) {
+        if (!ids[k]) continue;
+        elements.push({id: ids[k], localPage: local,
+          x: +(er.left - origin.left).toFixed(2), y: +(er.top - origin.top).toFixed(2),
+          w: +er.width.toFixed(2), h: +er.height.toFixed(2)});
+      }
+    }
+
+    // The zoom, last, so nothing above was measured through it.
+    container.style.transform = cfg.scale === 1 ? '' : 'scale(' + cfg.scale + ')';
+
+    return JSON.stringify({pages: pages, elements: elements, orphans: orphans,
+      nodes: document.getElementsByTagName('*').length});
+  `);
+}
+
+/**
+ * Change the zoom, and nothing else.
+ *
+ * A transform, never a reflow — the same mechanism and the same reason as
+ * `QuirePageMount.scale`: pagination identity must not change with zoom. If a
+ * zoom re-fragmented the flow, page 41 would stop being page 41 and every
+ * recorded page number in the project would quietly mean something else.
+ */
+export function zoomScript(scale: number): string {
+  return evaluable(`
+    var container = document.querySelector('.pagedjs_pages');
+    if (!container) return JSON.stringify({error: 'this frame has no page-box container to scale'});
+    container.style.transformOrigin = '0 0';
+    container.style.transform = ${JSON.stringify(scale === 1 ? '' : `scale(${scale})`)};
+    return JSON.stringify({ok: true, scale: ${scale}});
+  `);
+}
+
+/** The marks a frame should be wearing, as sets of element keys and page indices. */
+export interface QuireFrameMarks {
+  struck: string[];
+  selected: string[];
+  tocSelected: string[];
+  /** Page indices LOCAL to this frame's document. */
+  struckPages: number[];
+}
+
+/**
+ * Make the frame wear exactly these marks — the whole state, not a diff.
+ *
+ * Whole-state rather than incremental on purpose: a diff that drifts leaves a
+ * strike on screen for a block that is no longer struck, and a viewer that shows
+ * a deletion the project does not hold is the failure this component exists to
+ * avoid. Re-applying every class costs one pass over an index the frame builds
+ * once, which is cheaper than being wrong.
+ */
+export function applyMarksScript(marks: QuireFrameMarks): string {
+  const cfg = JSON.stringify({ ...marks, attr: QUIRE_ID_ATTRIBUTE, sep: QUIRE_ID_SEPARATOR });
+  const classes = JSON.stringify(QUIRE_VIEW_CLASSES);
+  return evaluable(`
+    var cfg = ${cfg};
+    var cls = ${classes};
+    var view = window.__bfQuireView;
+    if (!view) {
+      // One index per frame, built the first time it is marked: id -> the
+      // elements carrying it (several, when Paged.js split the element across
+      // page boxes and cloned the stamp onto each fragment).
+      view = window.__bfQuireView = {byId: new Map()};
+      var stamped = document.querySelectorAll('[' + cfg.attr + ']');
+      for (var i = 0; i < stamped.length; i++) {
+        var ids = String(stamped[i].getAttribute(cfg.attr) || '').split(cfg.sep);
+        for (var k = 0; k < ids.length; k++) {
+          if (!ids[k]) continue;
+          var list = view.byId.get(ids[k]);
+          if (list) list.push(stamped[i]); else view.byId.set(ids[k], [stamped[i]]);
+        }
+      }
+    }
+
+    var every = [cls.struck, cls.selected, cls.tocSelected];
+    view.byId.forEach(function (els) {
+      for (var i = 0; i < els.length; i++) els[i].classList.remove.apply(els[i].classList, every);
+    });
+
+    var missing = [];
+    function mark(ids, className) {
+      for (var i = 0; i < ids.length; i++) {
+        var els = view.byId.get(ids[i]);
+        if (!els) { missing.push(ids[i]); continue; }
+        for (var j = 0; j < els.length; j++) els[j].classList.add(className);
+      }
+    }
+    mark(cfg.struck, cls.struck);
+    mark(cfg.selected, cls.selected);
+    mark(cfg.tocSelected, cls.tocSelected);
+
+    var boxes = document.querySelectorAll('.pagedjs_page');
+    for (var p = 0; p < boxes.length; p++) {
+      boxes[p].classList.toggle(cls.pageStruck, cfg.struckPages.indexOf(p) !== -1);
+    }
+
+    return JSON.stringify({ok: true, marked: cfg.struck.length + cfg.selected.length,
+      unknownIds: missing.slice(0, 10), unknownIdCount: missing.length});
+  `);
+}

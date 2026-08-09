@@ -12,6 +12,8 @@ import * as ebookLibrary from './ebook-library';
 import { importEpubProject } from './import-epub-project';
 import { initializeLoggers, getMainLogger, getTTSLogger, closeLoggers } from './rolling-logger';
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
+import { Quire } from '../packages/quire/src';
+import { setupQuireViewerIpc, closeAllBooksForViewer } from './quire-viewer-bridge';
 import { registerClipforgeIpc } from './clipforge-bridge';
 import { registerDocumentIpc } from './document-ipc';
 // A project's files belong to no one window: the picker is its own BrowserWindow
@@ -10493,6 +10495,12 @@ protocol.registerSchemesAsPrivileged([
   }
 ]);
 
+// `quire://` — the only way an EPUB's own bytes reach a renderer. Registered
+// here, beside the other two, because a privileged scheme must be declared
+// before the app is ready. quire registers it on the DOCUMENT's session, never
+// on the app's, so a book never shares an origin with BookForge.
+Quire.registerScheme();
+
 // Single-instance lock: a second launch must NOT run while the first is doing
 // the first-run runtime unpack — two processes extracting/copying into the same
 // userData/runtime dir is a prime cause of a corrupted install. The second
@@ -10521,6 +10529,10 @@ app.whenReady().then(async () => {
   // Initialize rolling logger
   await initializeLoggers();
   const logger = getMainLogger();
+
+  // The live-DOM EPUB viewer's opening channel. The scheme it needs was
+  // registered at module scope above; this is only the two handles.
+  setupQuireViewerIpc();
   logger.info('BookForge starting', { version: app.getVersion(), platform: process.platform });
 
   // In development, point FOUNDRY_CLI_PATH at the locally-built binary unless
@@ -10985,6 +10997,14 @@ app.on('before-quit', async (event) => {
   cleanupDone = true;
 
   console.log('[MAIN] Running cleanup before quit...');
+
+  // Every open quire document owns an offscreen BrowserWindow and a session
+  // partition. Neither outlives the app, so both are closed by name.
+  try {
+    await closeAllBooksForViewer();
+  } catch (err) {
+    console.warn('[MAIN] closing quire documents failed:', (err as Error).message);
+  }
 
   // Stop whatever document stage is mid-flight. Each one owns a foundry process
   // which owns a llama-server holding several GB on the GPU; closing the window
