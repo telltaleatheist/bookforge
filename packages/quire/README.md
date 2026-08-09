@@ -62,8 +62,16 @@ interface QuireBlock {
   id: string;               // the caller's own id, handed straight back
   splitFrom: number | null; // first page this element occupies, if it spans pages
   splitTo: number | null;   // last page, if it spans pages
+  font: { size, family, weight, style } | null;  // how it is SET; null for images
+  lines: number;            // line boxes on THIS page; 0 for images
 }
 ```
+
+`font` and `lines` are there because they are facts **only the engine that applied the book's
+stylesheets can state**, and a caller that has to fill a `font_size` field will otherwise invent a
+number. `font` is per ELEMENT — a paragraph broken over a page turn is set in one face — and `lines`
+is per FRAGMENT, counted from the client rects of a `Range` over the fragment's contents rather than
+divided out of the box height, which is wrong the moment a paragraph mixes type sizes.
 
 An element that spans a page break produces one block per page it touches. Each carries the same
 `id` and the same `splitFrom`/`splitTo`, and each carries only the box — and only the words —
@@ -212,7 +220,14 @@ on `ch09.xhtml` of *Killing America* disagrees with the column count immediately
 
 `html`/`body` margin, padding and border are forced to 0, so the page box *is* the content box.
 Callers that want page margins add their own. This is why quire's page count for a given book will
-not match mupdf's — mupdf applies its own page margins, so it fits less text per page.
+not match mupdf's — mupdf applies its own page margins, so it fits less text per page. Measured on
+*Killing America* at `{600, 900, 18}`: quire 183 pages, mupdf 218.
+
+**TODO (display fidelity, Phase B).** With margin 0 a long unbreakable token — a bare URL in a
+citation — runs to the page edge and Paged.js clips it. quire *reports* that (`report.overflows`,
+2 fragments on *Killing America*) rather than hiding it, and no page number is affected, so it is a
+question about what the reader SEES rather than about the map. It is left for the viewer phase, where
+the answer is a page margin or a wrap rule and can be judged against a page on screen.
 
 ### The analysis host must get frames, and that is not obvious
 
@@ -408,6 +423,7 @@ because a wrong one is believed. In particular quire refuses — rather than gue
 | `PAGEDJS_BUNDLE_MISSING` / `PAGEDJS_BUNDLE_UNRECOGNISED` | the vendored fragmenter is not there, or is not the pinned version |
 | `PRELUDE_FAILED` | the strategy could not put its engine into the frame |
 | `PAGE_BOX_MISMATCH` | a laid-out page box is not the box the arithmetic assumes |
+| `FONT_UNREADABLE` | a text element's computed font size or weight is not a number |
 | `SPLIT_DISAGREEMENT` | Paged.js's record of a split and the measured pages disagree |
 | `OCCURRENCES_NOT_CONTIGUOUS` / `FRAGMENTS_NOT_CONTIGUOUS` | an element left a page and came back |
 | `REF_COLLISION` / `NO_DATA_REF` / `DUPLICATE_STAMP` | element identity cannot be reconciled |

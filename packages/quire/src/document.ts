@@ -289,6 +289,8 @@ export class QuireDocument {
               id,
               splitFrom,
               splitTo,
+              font: placement.font,
+              lines: fragment.lines,
             });
           }
         }
