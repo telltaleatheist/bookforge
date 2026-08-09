@@ -172,17 +172,44 @@ applies its own page margins, so it fits less text per page.
 
 ---
 
-## Strategy — deliberately not settled
+## Strategy — SETTLED (gate G0, 2026-08-08): Paged.js is the fragmenter
 
 Pagination sits behind `QuireStrategy` (`src/paginate/strategy.ts`). A strategy owns three
 artifacts and nothing else: the CSS that makes page boxes, a pure script that MEASURES, and a pure
 script that PRESENTS one page at the surface origin.
 
-`MultiColumnStrategy` is implemented and is what we expect to keep. It is not the settled answer —
-a parallel spike is measuring it against Paged.js on a real book, including whether Chromium's
-column layout is deterministic run to run. If that changes the answer, what changes is a file
-under `src/paginate/`; nothing above that line moves, because everything above it talks in pages
-and boxes.
+The spike (`spike/epub-paginated-viewer`, evidence JSON + screenshots in its
+`tools/spike-epub-viewer/evidence/`) measured Paged.js 0.4.3 against CSS multi-column on Killing
+America (24 spine documents, 3,475 stamped elements, 10 images). The decision is **Paged.js,
+vendored, as a `fragmented-boxes` strategy** — and these are the numbers that made it:
+
+- **Element coverage**: 0 of 3,475 elements without a page — in BOTH candidates. Coverage did not
+  decide this.
+- **Images**: Paged.js put all 10 images each on exactly ONE page. mupdf straddles two of bm01's
+  plates across page breaks; multicol reproduces exactly that failure (a different two). Paged.js
+  detects the overflow and moves each over-tall plate to a fresh page. 10 elements → 10
+  unambiguous pages.
+- **Identity is carried, not inferred**: 74 elements split across pages, and Paged.js's own
+  `data-split-from`/`data-split-to` count is exactly 74 — the mapping (`data-ref`) survives
+  re-parenting (3,732 attributes intact after moving all 183 page boxes into a grid).
+- **Grid cells**: re-parenting all 183 `.pagedjs_page` boxes into a 4-column grid took 185 ms with
+  0 of 3,549 rendered nodes changing page. Mount/unmount for virtualization: 0.9 ms/page,
+  DOM 16,374 → 1,203 nodes for a 12-page window. Multi-column cannot produce a grid at all — it
+  is one continuous strip (a 115,840 px-wide layout, and the WORSE of the two on memory:
+  288 MB vs 231 MB).
+- **Determinism**: three consecutive runs, identical page count, identical uid→page map, identical
+  rects, both candidates — so caching the page map is sound, keyed by engine version + CSS +
+  page box.
+- **Streaming**: first page at 47 ms, then ~16.7 ms/page, exactly linear. Full book 3.1 s — slower
+  than multicol's 61 ms, but pagination streams and the map is cacheable, so the speed loss buys
+  correct image placement and real per-page DOM subtrees.
+- **The known trap**: Paged.js's work queue ticks on `requestAnimationFrame`, and a hidden
+  `BrowserWindow` throttles rAF to ~1 Hz (a 60× slowdown). The host must be offscreen-rendered or
+  shown (opacity 0, parked off-screen) — never merely hidden.
+
+`MultiColumnStrategy` stays in the tree as the adversarial test fixture (the gutter/pitch
+refusal tests subclass it) — it is NOT a runtime fallback. A book paginates with Paged.js or the
+open fails naming why; a cached page map is valid only for the paginator that produced it.
 
 `QuirePageMount.boxModel` is public because it is a fact a display surface has to plan around:
 
