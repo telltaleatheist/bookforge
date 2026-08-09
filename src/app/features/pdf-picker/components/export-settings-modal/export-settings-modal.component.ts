@@ -56,6 +56,8 @@ export interface ExportResult {
                 <button
                   class="format-btn"
                   [class.active]="format() === 'pdf'"
+                  [disabled]="formatRefusal('pdf') !== null"
+                  [title]="formatRefusal('pdf') ?? ''"
                   (click)="format.set('pdf')"
                 >
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -71,6 +73,8 @@ export interface ExportResult {
                 <button
                   class="format-btn"
                   [class.active]="format() === 'epub'"
+                  [disabled]="formatRefusal('epub') !== null"
+                  [title]="formatRefusal('epub') ?? ''"
                   (click)="format.set('epub')"
                 >
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -84,6 +88,8 @@ export interface ExportResult {
                 <button
                   class="format-btn"
                   [class.active]="format() === 'txt'"
+                  [disabled]="formatRefusal('txt') !== null"
+                  [title]="formatRefusal('txt') ?? ''"
                   (click)="format.set('txt')"
                 >
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -99,6 +105,8 @@ export interface ExportResult {
                 <button
                   class="format-btn"
                   [class.active]="format() === 'audiobook'"
+                  [disabled]="formatRefusal('audiobook') !== null"
+                  [title]="formatRefusal('audiobook') ?? ''"
                   (click)="format.set('audiobook')"
                 >
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -337,6 +345,13 @@ export interface ExportResult {
       cursor: pointer;
       transition: all 0.15s;
 
+      /* Still there, still legible, plainly not choosable — the reason is on
+         its title. Hiding it would leave the user wondering where PDF went. */
+      &:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
       svg {
         opacity: 0.6;
         transition: opacity 0.15s;
@@ -533,6 +548,18 @@ export class ExportSettingsModalComponent implements OnInit {
   removeBackgrounds = input<boolean>(false);
   availableFormats = input<ExportFormat[]>(['pdf', 'epub', 'txt', 'audiobook']);
   /**
+   * Formats this document cannot be exported as, and the sentence why.
+   *
+   * Distinct from `availableFormats`, which decides what this dialog is ABOUT
+   * and removes the rest. A refusal is the other case — the format belongs on
+   * the list, this particular document just cannot produce it — and the house
+   * rule for that is disabled with its reason, never gone. Exporting an EPUB
+   * to PDF is the first of these: the PDF export photographs rendered pages and
+   * an EPUB is shown as its own live document, so there is nothing to
+   * photograph.
+   */
+  formatRefusals = input<Partial<Record<ExportFormat, string>>>({});
+  /**
    * Factual, non-gating task-status lines shown as a "Before you export"
    * summary (⚠ required-missing / ● suggested). Empty → box not rendered.
    */
@@ -555,9 +582,14 @@ export class ExportSettingsModalComponent implements OnInit {
     return this.availableFormats().includes(format);
   }
 
+  /** Why this document cannot be exported as `format`, or null when it can. */
+  formatRefusal(format: ExportFormat): string | null {
+    return this.formatRefusals()[format] ?? null;
+  }
+
   // Set initial format to first available
   ngOnInit(): void {
-    const available = this.availableFormats();
+    const available = this.availableFormats().filter(f => this.formatRefusal(f) === null);
     if (available.length > 0 && !available.includes(this.format())) {
       this.format.set(available[0]);
     }

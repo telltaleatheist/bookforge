@@ -214,6 +214,7 @@ function elementsWithNoBlock(
  */
 export async function migrateLegacyEpubEditorRecords(
   projectDir: string,
+  onProgress: (message: string) => void = () => {},
 ): Promise<LegacyLayoutOutcome> {
   const manifest = await manifestService.readProjectManifest(projectDir);
   const bookName = path.basename(projectDir);
@@ -250,7 +251,9 @@ export async function migrateLegacyEpubEditorRecords(
   // written between the two.
   const oldPages = [...(manifest.source?.deletedPages ?? [])];
   const oldBlockIds = [...(manifest.source?.deletedBlockIds ?? [])];
-  return carryDeletionsOver(projectDir, bookName, bookAbsPath, reading, oldPages, oldBlockIds);
+  return carryDeletionsOver(
+    projectDir, bookName, bookAbsPath, reading, oldPages, oldBlockIds, onProgress,
+  );
 }
 
 async function carryDeletionsOver(
@@ -260,6 +263,7 @@ async function carryDeletionsOver(
   reading: EditorLayoutReading,
   oldPages: number[],
   oldBlockIds: string[],
+  onProgress: (message: string) => void,
 ): Promise<LegacyLayoutOutcome> {
 
   // ── Nothing to carry ──────────────────────────────────────────────────────
@@ -291,6 +295,12 @@ async function carryDeletionsOver(
     + `${oldBlockIds.length} deleted block(s) across from ${describeEditorLayout(reading.recorded)}`
     + `. This lays the book out twice and happens once, ever, for this project.`,
   );
+  // Said on screen as well as in the log, in the two halves the user waits
+  // through, because the log is not where somebody watching a window looks.
+  onProgress(
+    `Carrying ${bookName}'s saved deletions into the new page layout — reading the old one. `
+    + 'This happens once for this project.',
+  );
   const oldBlocks = await legacyBlockLayer(bookAbsPath);
   const strikes = deriveNarrationStrikes(
     oldBlocks, new Set(oldBlockIds), new Set(oldPages),
@@ -308,6 +318,9 @@ async function carryDeletionsOver(
   }
 
   // ── The new layout, and the same text struck in it ────────────────────────
+  onProgress(
+    `Carrying ${bookName}'s saved deletions into the new page layout — laying the book out again.`,
+  );
   const newBlocks = await readBookBlockLayer(bookAbsPath);
   const missing = elementsWithNoBlock(strikes.elements, newBlocks);
   if (missing.length > 0) {

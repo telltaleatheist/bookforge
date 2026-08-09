@@ -507,7 +507,16 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   readonly blockClick = output<{
     block: LaidOutBlock; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean;
   }>();
-  readonly blockDoubleClick = output<{ block: LaidOutBlock }>();
+  /**
+   * Modifiers ride along because the picker reads them: a double-click with
+   * meta/ctrl held ADDS the like-this run to the selection instead of replacing
+   * it. Emitting the block alone would have made every double-click on a live
+   * book replacing, which is a quiet behaviour change rather than a missing
+   * feature — the raster viewer has carried them all along.
+   */
+  readonly blockDoubleClick = output<{
+    block: LaidOutBlock; metaKey: boolean; ctrlKey: boolean;
+  }>();
   readonly blockHover = output<LaidOutBlock | null>();
   readonly selectLikeThis = output<LaidOutBlock>();
   readonly deleteLikeThis = output<LaidOutBlock>();
@@ -741,6 +750,48 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     this.resizeObserver?.disconnect();
     for (const frame of this.mounted.values()) frame.destroy();
     this.mounted.clear();
+  }
+
+  // ── the parent's one reach-in ─────────────────────────────────────────────
+
+  /**
+   * Put a page on screen. The raster viewer's method of the same name, and the
+   * only one of its seven the parent calls that means anything to a live book —
+   * search results, the page timeline and the outline all navigate by page.
+   *
+   * Arithmetic against the band geometry rather than `scrollIntoView` on a page
+   * element, because the page in question may well not exist yet: its band's
+   * frame is mounted only once the band is on screen, so the target is usually a
+   * placeholder slot at the moment it is asked for. The bands reserve exactly
+   * the space their pages will occupy, so the arithmetic lands in the same place
+   * either way, and scrolling there is what causes the frame to mount.
+   */
+  scrollToPage(page: number): void {
+    const viewport = this.viewport()?.nativeElement;
+    if (!viewport) return; // not in the DOM yet; the initial scroll position is page 0 anyway
+
+    const bands = this.bands();
+    const band = bands.find((b) => page >= b.firstPage && page < b.firstPage + b.pageCount);
+    if (!band) {
+      throw new Error(
+        `The book on screen has ${bands.reduce((n, b) => n + b.pageCount, 0)} page(s), so page `
+        + `${page + 1} cannot be scrolled to. Nothing was moved.`,
+      );
+    }
+
+    const root = this.hostRef.nativeElement as HTMLElement;
+    const bandEl = root.querySelector<HTMLElement>(`[data-band="${band.index}"]`);
+    if (!bandEl) return; // the band is rendered on the next tick; the caller may ask again
+
+    // Which ROW of this band's grid the page sits in. A band is the only thing
+    // with a position of its own — pages inside it are laid out by the same
+    // columns/rows arithmetic the placeholder slots use.
+    const scale = this.scale();
+    const row = Math.floor((page - band.firstPage) / band.columns);
+    const rowHeight = this.source().pageHeight * scale + PAGE_GAP * scale;
+
+    viewport.scrollTop = Math.max(0, bandEl.offsetTop + row * rowHeight - PAGE_GAP);
+    this.reconcileVisibility();
   }
 
   // ── mounting ──────────────────────────────────────────────────────────────
@@ -1027,7 +1078,9 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
       const isDouble = this.lastClick.id === hit.block.id && now - this.lastClick.at < 250;
       this.lastClick = { id: hit.block.id, at: now };
       if (isDouble) {
-        this.blockDoubleClick.emit({ block: hit.block });
+        this.blockDoubleClick.emit({
+          block: hit.block, metaKey: event.metaKey, ctrlKey: event.ctrlKey,
+        });
         return;
       }
       this.blockClick.emit({

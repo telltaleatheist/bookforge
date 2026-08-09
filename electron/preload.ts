@@ -61,6 +61,18 @@ export interface ProjectSaveResult {
   canceled?: boolean;
   filePath?: string;
   error?: string;
+  /**
+   * Present on a SUCCESSFUL save that nonetheless did not write the page and
+   * block deletions, because this window was never given the project's own —
+   * they were recorded against a layout of the book this build no longer
+   * produces (`electron/legacy-epub-layout.ts`).
+   *
+   * Success and this field together are not a contradiction: the metadata, the
+   * highlights and everything that names no position DID go to disk. Only the
+   * positional records were left alone, and a window that gets this must say so
+   * rather than letting the user believe the strikes they just made are on file.
+   */
+  staleLayoutRefusal?: string;
 }
 
 export interface ProjectLoadResult {

@@ -3158,7 +3158,7 @@ function setupIpcHandlers(): void {
 
 
   // Load project from specific path - auto-imports to library if external
-  ipcMain.handle('projects:load-from-path', async (_event, filePath: string) => {
+  ipcMain.handle('projects:load-from-path', async (event, filePath: string) => {
     try {
       // Check if filePath is a manifest project directory
       const stat = await fs.stat(filePath);
@@ -3181,7 +3181,16 @@ function setupIpcHandlers(): void {
         let staleLayoutRefusal: string | null = null;
         let layoutMigrationNotice: string | null = null;
         try {
-          const carried = await migrateLegacyEpubEditorRecords(filePath);
+          // The window asking is the one told. This is the app's existing
+          // document-analysis progress channel and the picker is already
+          // listening on it around this call — a migration IS two analyses of
+          // the book, so it reports where analyses report rather than opening a
+          // second channel that says the same kind of thing.
+          const carried = await migrateLegacyEpubEditorRecords(filePath, (message) => {
+            if (!event.sender.isDestroyed()) {
+              event.sender.send('pdf:analyze-progress', { phase: 'extracting', message });
+            }
+          });
           if (carried.kind === 'migrated') {
             layoutMigrationNotice = carried.message;
             console.warn(`[projects:load] ${carried.message}`);
