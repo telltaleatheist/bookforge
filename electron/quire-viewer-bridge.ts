@@ -25,7 +25,7 @@ import { app, ipcMain } from 'electron';
 import { Quire, type QuireDocument } from '../packages/quire/src';
 import type { QuirePageMount } from '../packages/quire/src/types';
 import { enumerateNarrationElements, stampEpubForQuire } from './quire-stamp';
-import { markupCategoriesForUnits, type MarkupUnit } from './epub-processor';
+import { markupCategoriesForUnits, readEpubTocTargets, type MarkupUnit } from './epub-processor';
 import type { LaidOutBlock, LaidOutBook } from '../shared/document/laid-out-book';
 
 /** The page box a book is laid out into. The viewer scales it; it never reflows. */
@@ -106,7 +106,13 @@ export async function openBookForViewer(
       else imageKeys.add(entry.key);
     }
   }
-  const categoriesByKey = markupCategoriesForUnits(units);
+  // The book's navigation goes in with the units because a chapter opening is
+  // part of what the markup says. Reading the units without it would give this
+  // bridge a book in which no chapter is a `chapter` — the same elements the
+  // analysis path calls chapters, called headings here — and the two would
+  // disagree about the book they are both showing.
+  const { categoryByKey: categoriesByKey } =
+    markupCategoriesForUnits(units, await readEpubTocTargets(epubPath));
 
   const doc = await Quire.openDocument(stampedPath);
   let opening: QuireViewerOpening;

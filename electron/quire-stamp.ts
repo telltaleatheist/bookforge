@@ -119,7 +119,10 @@ export async function enumerateNarrationElements(
           tag: String(c.el.tagName || '').toLowerCase(),
           // The walk already knows everything the markup classifier asks, so it
           // is carried rather than re-derived from a second walk of the book.
-          unit: { file: entryName, key, tag: c.tag, el: c.el, imageOnly: c.imageOnly },
+          unit: {
+            file: entryName, key, tag: c.tag, el: c.el,
+            imageOnly: c.imageOnly, normText: c.normText,
+          },
         });
       }
       // AFTER the unit walk, because that walk MOVES stray runs into synthesized

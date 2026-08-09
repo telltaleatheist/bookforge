@@ -5562,65 +5562,59 @@ export interface MarkupUnit {
   tag: string;
   el: any;
   imageOnly: boolean;
+  /**
+   * Normalized text of the unit. Read only by the chapter-opening pass, which
+   * has to compare what a document OPENS with against what the navigation calls
+   * it, and cannot do that from tags alone.
+   */
+  normText: string;
 }
 
 /**
- * Every export unit's markup category, keyed by the unit's own element key.
+ * The whole markup reading of a book, in both the shapes its callers key by.
  *
- * The same derivation `readEpubMarkupCategories` performs, taken out of it so a
- * caller that already HAS the units does not have to go back through the block
- * aligner to reach it. A quire-paginated book is exactly that caller: its blocks
- * are the units, so there is nothing to align and the ordinal matcher — the
- * whole reason the aligner exists — has no work to do.
+ * `categoryByKey` is what a caller that already knows its elements wants; the
+ * positional `categories` is what a caller that aligned blocks onto unit INDICES
+ * wants. They are the same strings — the map is built from the array — rather
+ * than two readings that have to be kept in step.
+ */
+export interface MarkupCategoryReading {
+  /** Element key → category. One entry per unit; keys are unique or this threw. */
+  categoryByKey: Map<string, string>;
+  /** The same categories by unit position, for a caller holding unit indices. */
+  categories: string[];
+  /** Note-reference targets resolved across the whole book, as `<file>#<id>`. */
+  noteTargets: Set<string>;
+  /** Navigation entries whose document opened with a heading called `chapter`. */
+  chapterOpenings: number;
+}
+
+/**
+ * What a book's own markup says every one of its export units is.
+ *
+ * THE description of these rules — there is deliberately only one, and all three
+ * readers stand on it: the block-keyed `readEpubMarkupCategories` (mupdf's
+ * aligned blocks, and the preserving exporter's tests), the element-keyed
+ * `readEpubElementCategories` (the quire analysis path, handed the element key
+ * and needing no join at all), and `electron/quire-viewer-bridge.ts` (the live
+ * viewer, holding the units straight off the narration walk). A second copy of
+ * this loop would be a second opinion about what a `<blockquote>` is, and the
+ * three would drift apart one bug fix at a time.
  *
  * Note targets are resolved across the units handed in, so pass a whole book's
  * worth. A footnote is a footnote because something elsewhere in the book points
- * at it, and a per-document call would not be able to see that.
- */
-export function markupCategoriesForUnits(units: MarkupUnit[]): Map<string, string> {
-  const noteTargets = collectNoteReferenceTargets(units);
-  const categories = new Map<string, string>();
-  for (const unit of units) {
-    let isNoteTarget = false;
-    if (noteTargets.size > 0) {
-      const ids = new Set<string>();
-      collectIds(unit.el, ids);
-      for (const id of ids) {
-        if (noteTargets.has(`${unit.file}#${id}`)) { isNoteTarget = true; break; }
-      }
-    }
-    categories.set(unit.key, markupCategoryForUnit(unit, isNoteTarget));
-  }
-  return categories;
-}
-
-/**
- * Read each laid-out block's category off the STRUCTURE of a book that carries
- * neither of our stamps.
+ * at it, and a per-document call could not see that.
  *
- * `blocks` are the picker's blocks in the aligner's own input shape, exactly as
- * the other two readers take them.
- *
- * Every returned category is a member of the one palette
- * (`shared/ocr/block-categories.ts`) by construction — this reader writes the
- * ids itself rather than translating a stamp, so there is nothing to validate
- * and nothing that could disagree.
+ * `targets` is the book's navigation, and it is REQUIRED rather than optional:
+ * chapter openings are part of what the markup says, so a caller that omitted
+ * them would get a reading in which no chapter is a chapter — quietly different
+ * from every other caller's. A book with no navigation passes an empty list and
+ * says so.
  */
-/**
- * One category per export unit, read off the markup around it — the whole of
- * the markup reading, with no blocks in sight.
- *
- * Its own function because there are two joins onto it and only one description
- * of it may exist: the block-keyed reader below (mupdf's aligned blocks, and the
- * preserving exporter's tests) and the element-keyed reader further down (the
- * quire analysis path, which is handed the element key and needs no join at
- * all). A second copy of these rules is a second opinion about what a
- * `<blockquote>` is.
- */
-function markupCategoriesOfUnits(
-  units: ExportUnit[],
+export function markupCategoriesForUnits(
+  units: MarkupUnit[],
   targets: readonly EpubTocTarget[],
-): { categories: string[]; noteTargets: Set<string>; chapterOpenings: number } {
+): MarkupCategoryReading {
   const noteTargets = collectNoteReferenceTargets(units);
 
   const categories = units.map((unit) => {
@@ -5636,9 +5630,34 @@ function markupCategoriesOfUnits(
   });
 
   const chapterOpenings = markChapterOpenings(units, categories, targets);
-  return { categories, noteTargets, chapterOpenings };
+
+  const categoryByKey = new Map<string, string>();
+  for (let i = 0; i < units.length; i++) {
+    if (categoryByKey.has(units[i].key)) {
+      throw new Error(
+        `Markup reading: two export units both claim the element key ${units[i].key}. An element `
+        + 'key names one element of one book, so one of these two readings would silently win '
+        + 'over the other. This is a bug in the unit walk, not a book problem.',
+      );
+    }
+    categoryByKey.set(units[i].key, categories[i]);
+  }
+
+  return { categoryByKey, categories, noteTargets, chapterOpenings };
 }
 
+/**
+ * Read each laid-out block's category off the STRUCTURE of a book that carries
+ * neither of our stamps.
+ *
+ * `blocks` are the picker's blocks in the aligner's own input shape, exactly as
+ * the other two readers take them.
+ *
+ * Every returned category is a member of the one palette
+ * (`shared/ocr/block-categories.ts`) by construction — this reader writes the
+ * ids itself rather than translating a stamp, so there is nothing to validate
+ * and nothing that could disagree.
+ */
 export async function readEpubMarkupCategories(
   epubSourcePath: string,
   blocks: EpubExportBlock[],
@@ -5648,7 +5667,7 @@ export async function readEpubMarkupCategories(
     units, blockToUnits, unaligned, imageUnits, blockToImageUnit, unmatchedImages,
   } = await alignBlocksToEpub(epubSourcePath, blocks);
 
-  const { categories, noteTargets, chapterOpenings } = markupCategoriesOfUnits(units, targets);
+  const { categories, noteTargets, chapterOpenings } = markupCategoriesForUnits(units, targets);
 
   const byBlockId = new Map<string, string>();
   const elementByBlockId = new Map<string, NarrationElementKey>();
@@ -5731,7 +5750,7 @@ export async function readEpubMarkupCategories(
  * exactly that.
  */
 function markChapterOpenings(
-  units: ExportUnit[],
+  units: MarkupUnit[],
   categories: string[],
   targets: readonly EpubTocTarget[],
 ): number {
@@ -5824,7 +5843,7 @@ function markChapterOpenings(
 //
 // One walk, one enumeration, one set of category rules — the readers below share
 // `walkEpubElements`, `provenanceOnOrAbove`, `conversionStampOnOrAbove` and
-// `markupCategoriesOfUnits` with their block-keyed counterparts, so a book
+// `markupCategoriesForUnits` with their block-keyed counterparts, so a book
 // cannot be described two different ways depending on which one asked.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -5978,8 +5997,10 @@ export async function readEpubElementCategories(
 
   // ── 3. A publisher's book, which states its structure in its own markup ───
   const targets = await readEpubTocTargets(epubSourcePath);
-  const { categories, noteTargets, chapterOpenings } = markupCategoriesOfUnits(units, targets);
-  for (let i = 0; i < units.length; i++) categoryByElement.set(units[i].key, categories[i]);
+  const { categoryByKey, noteTargets, chapterOpenings } = markupCategoriesForUnits(units, targets);
+  // The reading is already keyed the way this reader answers, so it is taken as
+  // it comes rather than rebuilt from unit positions.
+  for (const [key, category] of categoryByKey) categoryByElement.set(key, category);
   // Pictures are `image` by construction here too, and that is the block's own
   // flag rather than a reading of the markup — so nothing is written for them.
   return {
