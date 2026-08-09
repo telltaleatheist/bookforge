@@ -813,6 +813,16 @@ export interface ElectronAPI {
     // WYSIWYG export from canvas-rendered images
     assembleFromImages: (pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>, chapters?: Chapter[]) => Promise<{ success: boolean; data?: string; error?: string }>;
   };
+  /**
+   * The live-DOM EPUB viewer's own opening. Separate from `pdf`, because a book
+   * shown as itself is not a book photographed: nothing here renders, caches or
+   * returns an image. `data` is a QuireViewerOpening (electron/quire-viewer-bridge.ts).
+   */
+  quire: {
+    openBook: (epubPath: string, geometry?: { width: number; height: number; fontSize: number })
+      => Promise<{ success: boolean; data?: any; error?: string }>;
+    closeBook: (handle: string) => Promise<{ success: boolean; error?: string }>;
+  };
   fs: {
     browse: (dirPath: string) => Promise<{
       path: string;
@@ -2491,6 +2501,13 @@ const electronAPI: ElectronAPI = {
     assembleFromImages: (pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>, chapters?: Chapter[]) =>
       ipcRenderer.invoke('pdf:assemble-from-images', pages, chapters),
   },
+
+  quire: {
+    openBook: (epubPath: string, geometry?: { width: number; height: number; fontSize: number }) =>
+      ipcRenderer.invoke('quire:open-book', epubPath, geometry),
+    closeBook: (handle: string) => ipcRenderer.invoke('quire:close-book', handle),
+  },
+
   fs: {
     browse: (dirPath: string) =>
       ipcRenderer.invoke('fs:browse', dirPath),

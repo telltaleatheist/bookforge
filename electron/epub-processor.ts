@@ -5482,7 +5482,7 @@ export interface EpubMarkupReading {
  *  5. The remaining structural tags, each of which means one thing.
  *  6. Anything else — a `<p>`, a `<div>`, a `<pre>` — is body text.
  */
-function markupCategoryForUnit(unit: ExportUnit, isNoteTarget: boolean): string {
+function markupCategoryForUnit(unit: MarkupUnit, isNoteTarget: boolean): string {
   if (unit.imageOnly) return 'image';
   if (MARKUP_HEADING_TAGS.has(unit.tag)) return 'heading';
   for (let node = unit.el; node && node.nodeType === 1; node = node.parentNode) {
@@ -5516,7 +5516,7 @@ function markupCategoryForUnit(unit: ExportUnit, isNoteTarget: boolean): string 
  * The `<sup>` requirement rules the untyped form of the same anchor out too:
  * Killing America wraps its backlinks in `<span class="fn">`, never `<sup>`.
  */
-function collectNoteReferenceTargets(units: ExportUnit[]): Set<string> {
+function collectNoteReferenceTargets(units: MarkupUnit[]): Set<string> {
   const targets = new Set<string>();
   for (const unit of units) {
     if (typeof unit.el.getElementsByTagName !== 'function') continue;
@@ -5544,6 +5544,54 @@ function collectNoteReferenceTargets(units: ExportUnit[]): Set<string> {
     }
   }
   return targets;
+}
+
+/**
+ * The part of an export unit the markup classifier actually reads.
+ *
+ * Narrower than {@link ExportUnit} on purpose. The classifier asks four
+ * questions — what tag is this, does it hold only a picture, what does the
+ * markup around it say, and which document is it in — and a caller that can
+ * answer those should not have to invent an alignment-stream offset it has no
+ * business having. `ExportUnit` satisfies this by having more.
+ */
+export interface MarkupUnit {
+  file: string;
+  /** `<file>#<index>` — the same key the narration walk stamps on the element. */
+  key: string;
+  tag: string;
+  el: any;
+  imageOnly: boolean;
+}
+
+/**
+ * Every export unit's markup category, keyed by the unit's own element key.
+ *
+ * The same derivation `readEpubMarkupCategories` performs, taken out of it so a
+ * caller that already HAS the units does not have to go back through the block
+ * aligner to reach it. A quire-paginated book is exactly that caller: its blocks
+ * are the units, so there is nothing to align and the ordinal matcher — the
+ * whole reason the aligner exists — has no work to do.
+ *
+ * Note targets are resolved across the units handed in, so pass a whole book's
+ * worth. A footnote is a footnote because something elsewhere in the book points
+ * at it, and a per-document call would not be able to see that.
+ */
+export function markupCategoriesForUnits(units: MarkupUnit[]): Map<string, string> {
+  const noteTargets = collectNoteReferenceTargets(units);
+  const categories = new Map<string, string>();
+  for (const unit of units) {
+    let isNoteTarget = false;
+    if (noteTargets.size > 0) {
+      const ids = new Set<string>();
+      collectIds(unit.el, ids);
+      for (const id of ids) {
+        if (noteTargets.has(`${unit.file}#${id}`)) { isNoteTarget = true; break; }
+      }
+    }
+    categories.set(unit.key, markupCategoryForUnit(unit, isNoteTarget));
+  }
+  return categories;
 }
 
 /**

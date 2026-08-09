@@ -71,6 +71,8 @@
     "test:component-upgrades": "npx tsc -p tsconfig.electron.json && node tools/test-component-upgrades.js",
     "test:quire": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/test-quire.js",
     "quire:paginate": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/quire-paginate.js",
+    "quire:probe-host": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/probe-quire-host.js",
+    "quire:viewer-bench": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/epub-viewer-harness.js",
     "build:quire-vendor": "node -e \"require('fs').cpSync('packages/quire/vendor','dist/packages/quire/vendor',{recursive:true})\""
   },
   "prettier": {

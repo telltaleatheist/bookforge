@@ -12,6 +12,8 @@ import * as ebookLibrary from './ebook-library';
 import { importEpubProject } from './import-epub-project';
 import { initializeLoggers, getMainLogger, getTTSLogger, closeLoggers } from './rolling-logger';
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
+import { Quire } from '../packages/quire/src';
+import { setupQuireViewerIpc, closeAllBooksForViewer } from './quire-viewer-bridge';
 import { registerClipforgeIpc } from './clipforge-bridge';
 import { registerDocumentIpc } from './document-ipc';
 // A project's files belong to no one window: the picker is its own BrowserWindow
@@ -51,7 +53,6 @@ import { componentManager, runInstaller as runExternalInstaller, listInstallable
 import { systemProbe } from './components/system-probe';
 import { listManagedComponents, checkComponentUpdates, installComponent } from './update/component-updater';
 import { getStarterStatus, installStarterLibrary } from './update/starter-library';
-import { Quire } from '../packages/quire/src';
 
 // Normalize the app's data directory. Electron derives userData from the app
 // name, which defaults to package.json `name` ("bookforge-app") — inconsistent
@@ -10649,14 +10650,17 @@ protocol.registerSchemesAsPrivileged([
   }
 ]);
 
-// quire serves an EPUB's own bytes to the sandboxed frame that paginates it,
-// out of the archive and through `quire://`. Registering it is a before-ready
-// operation like the two above, and quire refuses to open a book at all if it
-// was not done (SCHEME_NOT_REGISTERED) rather than serving a blank one.
+// quire serves an EPUB's own bytes — to the offscreen frame that paginates it
+// for analysis, and to the on-screen frames that show it — out of the archive
+// and through `quire://`. Registering it is a before-ready operation like the
+// two above, and quire refuses to open a book at all if it was not done
+// (SCHEME_NOT_REGISTERED) rather than serving a blank one.
 //
 // Deliberately NOT privileged the way `bookforge-page` is: `bypassCSP` is false
 // on it, because the whole point is that the book's CSP applies to the book, and
 // `supportFetchAPI` is false so nothing in a quire document can fetch anything.
+// And quire attaches the handler to the DOCUMENT's session, never to the app's,
+// so a book never shares an origin with BookForge.
 Quire.registerScheme();
 
 // Single-instance lock: a second launch must NOT run while the first is doing
@@ -10687,6 +10691,10 @@ app.whenReady().then(async () => {
   // Initialize rolling logger
   await initializeLoggers();
   const logger = getMainLogger();
+
+  // The live-DOM EPUB viewer's opening channel. The scheme it needs was
+  // registered at module scope above; this is only the two handles.
+  setupQuireViewerIpc();
   logger.info('BookForge starting', { version: app.getVersion(), platform: process.platform });
 
   // In development, point FOUNDRY_CLI_PATH at the locally-built binary unless
@@ -11151,6 +11159,14 @@ app.on('before-quit', async (event) => {
   cleanupDone = true;
 
   console.log('[MAIN] Running cleanup before quit...');
+
+  // Every open quire document owns an offscreen BrowserWindow and a session
+  // partition. Neither outlives the app, so both are closed by name.
+  try {
+    await closeAllBooksForViewer();
+  } catch (err) {
+    console.warn('[MAIN] closing quire documents failed:', (err as Error).message);
+  }
 
   // Stop whatever document stage is mid-flight. Each one owns a foundry process
   // which owns a llama-server holding several GB on the GPU; closing the window
