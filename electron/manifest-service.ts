@@ -1097,6 +1097,100 @@ async function sourceOriginalEpub(
   return null;
 }
 
+/**
+ * Throw away everything the user has recorded against this project's book.
+ *
+ * ── ONE reset shape, in one place ───────────────────────────────────────────
+ *
+ * This is the whole of what "start this book over" means, and it has exactly
+ * two callers: the rail's "Erase all changes and start over" button
+ * (`pipeline:reset-editor-state` in electron/main.ts, which additionally
+ * destroys any open editor window so its autosave cannot put the records back)
+ * and `ensureBookEpub` below, when the working copy the manifest names is not on
+ * disk any more. They MUST clear the same things — a user who deletes the file
+ * and a user who presses the button are doing the same thing by two routes — and
+ * the way to guarantee that is for there to be one list, here, rather than two
+ * that drift.
+ *
+ * ── What is cleared, and why each ───────────────────────────────────────────
+ *
+ *  1. `manifest.editor` WHOLESALE — the undo/redo stacks, block edits, custom
+ *     and OCR categories and blocks, category corrections, learned categories,
+ *     paragraph breaks, block splits and merges, crop regions, text
+ *     corrections. Wholesale is the structural point: a hardcoded list of
+ *     sub-fields is what drifted from what the editor writes and produced the
+ *     old "reset doesn't fully take" bug. Never add per-field handling.
+ *  2. A fixed subset of `manifest.source`, key by key, because that object ALSO
+ *     holds source IDENTITY (type/originalFilename/fileHash/url/fetchedAt) which
+ *     must survive. `editorLayout` is in the subset because it is not a fact
+ *     about the source document — it is the stamp saying WHICH LAYOUT the
+ *     records above were made in, and with those records gone it is a claim
+ *     about nothing.
+ *  3. `manifest.chapters` / `chaptersSource` — the editor's chapter markers.
+ *  4. The narration strikes and the book edits, both sub-fields of
+ *     `outputs.epub`. A strike IS an editor edit said as the element it names
+ *     (shared/vlm/narration-deletions.ts), and a book edit is a chapter opening
+ *     the user folded; a reset that cleared one and left the other would put the
+ *     book back on screen looking untouched and then quietly cut the narration
+ *     copy by strikes nothing on screen explains.
+ *  5. The editor's scratch and diagnostics files under `source/`, which have no
+ *     other delete path.
+ *
+ * The BOOK ITSELF is not touched, and neither is any other deliverable: this
+ * clears RECORDS. `ensureBookEpub` replaces the file in its own act, after this
+ * one; the button leaves the file exactly where it is.
+ *
+ * ── Raw read, raw atomic write ──────────────────────────────────────────────
+ *
+ * Deliberately not `modifyManifest`: that locates the file from the projectId
+ * and so refuses a directory the library does not own, and it round-trips
+ * through the typed shape, which would normalize paths and drop the very
+ * untyped sub-fields this is here to delete. A malformed manifest throws out of
+ * the JSON.parse and is never overwritten with a guessed structure.
+ */
+export async function resetEditorRecords(projectDir: string): Promise<void> {
+  const manifestPath = path.join(projectDir, MANIFEST_FILENAME);
+  if (!fs.existsSync(manifestPath)) {
+    throw new Error(`Cannot reset ${projectDir}: it has no ${MANIFEST_FILENAME}.`);
+  }
+  const manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf-8'));
+
+  delete manifest.editor;
+  if (manifest.source && typeof manifest.source === 'object') {
+    for (const key of [
+      'deletedBlockIds',
+      'deletedBlockLines',
+      'foundryAutoDiscardedLines',
+      'deletedHighlightIds',
+      'pageOrder',
+      'deletedPages',
+      'removeBackgrounds',
+      EDITOR_LAYOUT_MANIFEST_KEY,
+    ]) {
+      delete manifest.source[key];
+    }
+  }
+  delete manifest.chapters;
+  delete manifest.chaptersSource;
+  if (manifest.outputs?.epub) {
+    delete manifest.outputs.epub.narrationDeletions;
+    delete manifest.outputs.epub.bookEdits;
+  }
+
+  manifest.modifiedAt = new Date().toISOString();
+  await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+  const sourceDir = path.join(projectDir, 'source');
+  for (const file of [
+    'load-trace.log',
+    'save-diagnostics.json',
+    'export-diagnostics.json',
+    'deleted-examples.json',
+  ]) {
+    try { await fs.promises.unlink(path.join(sourceDir, file)); } catch { /* absent */ }
+  }
+}
+
 /** Where the book is, and whether making it there was a re-mint. */
 export interface EnsuredBookEpub extends ExportEpubLocation {
   /**
@@ -1143,15 +1237,20 @@ export interface EnsuredBookEpub extends ExportEpubLocation {
  * which is exactly what would happen otherwise, the recorded path being a file
  * that exists under a name the derivation no longer produces.
  *
- * ── A RE-mint is answered for, not done in silence ──────────────────────────
+ * ── A RE-mint CLEARS first, and is answered for ─────────────────────────────
  *
  * Making the FIRST copy and making it AGAIN are two different events, and only
  * the second is news: a record naming a file that is not on disk is evidence
- * that a file somebody was editing has gone — the measured case is a user who
- * deleted it believing that started the book over. The answer carries the fact
- * and the counts, and `shared/document/working-copy-remint.ts` says why and in
- * what words. Nothing is refused and nothing is thrown away here; the caller
- * that has a user in front of it is the one that tells them.
+ * that a file somebody was editing has gone. Owen, 2026-08-09: "if i delete the
+ * working copy, all of its deletions and changes should go with it. thats how it
+ * works right." So they do — `resetEditorRecords` runs first, the same wholesale
+ * reset the rail's "Erase all changes and start over" button performs, and only
+ * then is the copy made. A re-mint therefore produces a book with nothing
+ * recorded against it, which is what a book made fresh from the archive is.
+ *
+ * The answer carries the fact and the counts of what was cleared, and
+ * `shared/document/working-copy-remint.ts` says in what words; the caller that
+ * has a user in front of it is the one that tells them.
  */
 export async function ensureBookEpub(projectDir: string): Promise<EnsuredBookEpub> {
   await migrateWorkingEpubNaming(projectDir);
@@ -1179,23 +1278,51 @@ export async function ensureBookEpub(projectDir: string): Promise<EnsuredBookEpu
       + `(${target.relPath}). Refusing: the archive is the one file nothing may edit.`
     );
   }
+
+  // ── Counted BEFORE anything is cleared ─────────────────────────────────────
+  //
+  // This is the last instant at which the numbers exist: the reset below drops
+  // the two `manifest.source` lists and `registerEpubExport` later replaces
+  // `outputs.epub` wholesale, which takes the strikes with it. All three are
+  // read from one manifest snapshot, so they describe one moment.
+  //
+  // An absent list is a real state (a project nothing has been deleted in) and
+  // is the only thing its absence can mean; it is not a missing value standing
+  // in for one that should have been there.
+  const clearedBlocks = manifest.source?.deletedBlockIds?.length ?? 0;
+  const clearedPages = manifest.source?.deletedPages?.length ?? 0;
+  const strikes = manifest.outputs?.epub?.narrationDeletions?.elements.length ?? 0;
+
+  // A record that named a book, for a book that was not there. The FIRST copy
+  // has no record to have named anything, and is not this.
+  const remint: WorkingCopyRemint | null = existing === null ? null : {
+    relPath: existing.relPath,
+    deletedBlockIds: clearedBlocks,
+    deletedPages: clearedPages,
+    narrationStrikes: strikes,
+  };
+
+  // ── The deletions and changes go with the file the user deleted ────────────
+  //
+  // BEFORE the copy, not after, and that ordering is the guarantee: an interrupt
+  // between the two leaves a project with no records and no book, which the next
+  // open mints cleanly. The other order would leave a fresh copy carrying an
+  // evening's worth of strikes — the exact failure this is the fix for.
+  //
+  // It runs only here, past both refusals above, so a project that has no
+  // archive original to mint from never has its records cleared for a copy it
+  // was not going to get.
+  if (remint !== null) await resetEditorRecords(projectDir);
+
   await atomicCopyFile(original, target.absPath);
 
-  // ── The edits already made against the archive come with it ────────────────
+  // ── The copy is the archive's bytes, and that is PROVED ────────────────────
   //
-  // Nothing is translated or rewritten here, and that is the POINT: the working
-  // copy is the archive's bytes, so every record keyed to those bytes still
-  // describes it. A narration strike is a position in the aligner's traversal of
-  // the markup; a deleted block id is an md5 of where mupdf laid that block out;
-  // both are functions of the content, and the content is identical. So the
-  // user's work carries over by construction rather than by a migration that
-  // could get it wrong.
-  //
-  // It is VERIFIED rather than assumed, because "identical bytes" is the whole
-  // argument and a short copy would silently invalidate every one of those
-  // records — the strikes would name elements that had moved, and the deletions
-  // would name blocks that were not there. A copy that is not identical is a
-  // failed copy and is refused as one.
+  // Nothing is translated or rewritten here: the working copy IS the archive
+  // original. "Identical bytes" is the whole claim the naming, the analysis
+  // cache and every stamp downstream rest on, and a short copy would break all
+  // of them silently. A copy that is not identical is a failed copy and is
+  // refused as one.
   const [originalDigest, copyDigest] = await Promise.all([
     sha256Of(original),
     sha256Of(target.absPath),
@@ -1205,41 +1332,16 @@ export async function ensureBookEpub(projectDir: string): Promise<EnsuredBookEpu
     throw new Error(
       `${path.basename(projectDir)}'s working copy did not come out identical to its archive `
       + `original (${originalDigest.slice(0, 12)} vs ${copyDigest.slice(0, 12)}). The copy has been `
-      + 'removed. Every edit already recorded against this book is keyed to its exact bytes, so a '
-      + 'copy that differs would silently apply them to the wrong paragraphs. Try opening the book '
-      + 'again; if it keeps happening, the disk is the place to look.'
+      + 'removed. A working copy that is not the archive\'s bytes is not this book, and every stamp '
+      + 'written against it afterwards would name paragraphs that are not where they say. Try '
+      + 'opening the book again; if it keeps happening, the disk is the place to look.'
     );
   }
-
-  // ── Counted BEFORE the record is rewritten ─────────────────────────────────
-  //
-  // `registerEpubExport` replaces `outputs.epub` wholesale, which takes the
-  // narration strikes with it, so this is the last instant at which they can be
-  // counted. The two `manifest.source` lists survive that call — they are not
-  // inside `outputs` — and are read from the same manifest snapshot so all three
-  // numbers describe one moment.
-  //
-  // An absent list is a real state (a project nothing has been deleted in) and
-  // is the only thing its absence can mean; it is not a missing value standing
-  // in for one that should have been there.
-  const carriedBlocks = manifest.source?.deletedBlockIds?.length ?? 0;
-  const carriedPages = manifest.source?.deletedPages?.length ?? 0;
-  const strikes = manifest.outputs?.epub?.narrationDeletions?.elements.length ?? 0;
-
-  // A record that named a book, for a book that was not there. The FIRST copy
-  // has no record to have named anything, and is not this.
-  const remint: WorkingCopyRemint | null = existing === null ? null : {
-    relPath: existing.relPath,
-    deletedBlockIds: carriedBlocks,
-    deletedPages: carriedPages,
-    narrationStrikes: strikes,
-  };
 
   await registerEpubExport(projectDir, target.absPath);
   console.log(
     `[manifest-service] ${path.basename(projectDir)}: minted ${target.relPath} from its EPUB `
-    + `original, byte-identical (${copyDigest.slice(0, 12)}); ${carriedBlocks} deleted block(s) and `
-    + `${carriedPages} deleted page(s) already recorded against those bytes carry over unchanged.`
+    + `original, byte-identical (${copyDigest.slice(0, 12)}).`
   );
   if (remint !== null) {
     console.warn(`[manifest-service] ${path.basename(projectDir)}: ${describeWorkingCopyRemint(remint)}`);

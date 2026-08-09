@@ -1036,6 +1036,65 @@ function openEditorWindow(
   return { success: true };
 }
 
+/**
+ * Name the chapter openings of a working copy that has just been made AGAIN.
+ *
+ * ── Why this exists at all: the ordering ────────────────────────────────────
+ *
+ * A book's chapter openings are made to print the name the book stores for that
+ * chapter at OPEN (`projects:load-from-path` → `nameChapterOpenings`), and Owen
+ * put it there so that "from the moment the book opens, the chapter openers
+ * contain the chapter's text. period." But the picker asks to open the project
+ * BEFORE it asks where the book is, and a user who deleted the working copy has
+ * no book at the first of those calls: the naming pass finds nothing, returns
+ * "nothing edited", and the copy minted a moment later by `projects:export-info`
+ * is the archive original with the publisher's headings on it — unnamed until
+ * some later session happens to open the project again.
+ *
+ * So the pass is run HERE, immediately after the mint, which puts the three acts
+ * in the only order that is coherent: RESET the records, MINT the fresh copy,
+ * NAME its openings. The user sees the same book a first-time open would give
+ * them.
+ *
+ * ── Only a RE-mint ──────────────────────────────────────────────────────────
+ *
+ * A null remint is either a book that was already on disk (the naming pass has
+ * already run over it at open, and it is idempotent — running it again would
+ * change nothing) or a project's FIRST copy, which is the ordinary invisible
+ * first act of opening an EPUB and is named by the next open like every book
+ * before it. Neither is the case this is for.
+ *
+ * ── A refusal here does not fail the caller ─────────────────────────────────
+ *
+ * By the time this runs the copy IS made and recorded; the caller's answer —
+ * "here is your book, and here is what deleting the old one cost" — is true
+ * whatever the naming pass does. A book whose openings could not be rewritten is
+ * a book that prints the publisher's headings, which is a cosmetic difference
+ * said on the console, not a reason to tell the user their project failed to
+ * open.
+ */
+async function nameOpeningsOfRemintedCopy(
+  projectDir: string,
+  remint: WorkingCopyRemint | null,
+): Promise<void> {
+  if (remint === null) return;
+  try {
+    const { nameChapterOpenings } = await import('./narration-export.js');
+    const named = await nameChapterOpenings(projectDir);
+    if (named.edited > 0) {
+      console.log(
+        `[main] ${path.basename(projectDir)}: ${named.edited} chapter opening(s) of the re-minted `
+        + 'working copy now read the name the book stores for their chapter.'
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[main] ${path.basename(projectDir)}'s working copy was made again, but its chapter openings `
+      + `could not be rewritten to say their stored names: ${(err as Error).message}`
+    );
+  }
+}
+
 function setupIpcHandlers(): void {
   // ClipForge: open its dedicated window (second app in this workspace).
   ipcMain.handle('clipforge:open-window', () => { openClipforgeWindow(); return { success: true }; });
@@ -3438,18 +3497,21 @@ function setupIpcHandlers(): void {
       // of opening a window is not something anybody asked for. The picker shows
       // the archive with a banner offering to start it instead.
       //
-      // A copy made AGAIN is not invisible. `ensureBookEpub` answers whether the
-      // copy it made replaced one the manifest still had a record for, and that
-      // answer travels back with the path — this is the call the picker makes as
-      // the project opens, so it is the one place a window is looking when the
-      // fact is discovered. Nobody downstream re-derives it: a second derivation
-      // would need the record that has just been rewritten.
+      // A copy made AGAIN is not invisible, and it is not silent about what it
+      // cost. `ensureBookEpub` CLEARS every record made against the copy that is
+      // gone — Owen's model, 2026-08-09: "if i delete the working copy, all of
+      // its deletions and changes should go with it" — and answers with the
+      // counts of what went. That answer travels back with the path: this is the
+      // call the picker makes as the project opens, so it is the one place a
+      // window is looking when the fact is discovered. Nobody downstream
+      // re-derives it; there is nothing left to derive it from.
       let remint: WorkingCopyRemint | null = null;
       await manifestService.migrateWorkingEpubNaming(projectDir);
       const recordedBefore = await manifestService.readExportEpub(projectDir);
       if (!recordedBefore || !fsSync.existsSync(recordedBefore.absPath)) {
         if (await manifestService.archiveOriginalFormat(projectDir) === 'epub') {
           remint = (await manifestService.ensureBookEpub(projectDir)).remint;
+          await nameOpeningsOfRemintedCopy(projectDir, remint);
         }
       }
 
@@ -7138,6 +7200,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('book:ensure-working-copy', async (_event, projectDir: string) => {
     try {
       const book = await manifestService.ensureBookEpub(projectDir);
+      await nameOpeningsOfRemintedCopy(projectDir, book.remint);
       broadcastToAllWindows('project:files-changed', projectDir);
       // The re-mint travels back from here too, for the same reason it travels
       // back from `projects:export-info`: this IS that call, reached by hand.
@@ -10078,9 +10141,16 @@ function setupIpcHandlers(): void {
   });
 
   // Reset ALL persisted editor state for a project's source so re-opening the
-  // editor starts as if the archive file had just been imported. Handles both
-  // project layouts. exported.epub is a real deliverable — its removal is opt-in
-  // and routed by the renderer through the normal deleteFile path, NEVER here.
+  // editor starts as if the archive file had just been imported. exported.epub
+  // is a real deliverable — its removal is opt-in and routed by the renderer
+  // through the normal deleteFile path, NEVER here.
+  //
+  // WHAT is cleared lives in `manifestService.resetEditorRecords`, not here,
+  // because this is no longer the only way to ask for it: deleting the working
+  // copy asks for the same thing (`ensureBookEpub`), and a second list living in
+  // this handler is how the two would come to mean different things. What is
+  // left here is the part that is only true of the BUTTON — the open editor
+  // window whose autosave would put the records straight back.
   //
   // On unexpected input (missing/corrupt manifest, unknown path) this FAILS
   // LOUDLY via the returned error — it never writes a guessed structure.
@@ -10106,67 +10176,10 @@ function setupIpcHandlers(): void {
 
       if (stat.isDirectory()) {
         // ── Manifest-directory project ──────────────────────────────────────
-        const manifestPath = path.join(projectPath, 'manifest.json');
-        if (!fsSync.existsSync(manifestPath)) {
+        if (!fsSync.existsSync(path.join(projectPath, 'manifest.json'))) {
           return { success: false, error: `No manifest.json in ${projectPath}` };
         }
-        // A malformed manifest throws here and is caught below — we never
-        // overwrite it with a guessed shape.
-        const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
-
-        // Editor state in a manifest lives in exactly FOUR places, per the
-        // project:save-to-path / projects:load-from-path contract and the
-        // narration record:
-        //   1. manifest.editor — the whole container (undo/redo stacks, block
-        //      edits, custom + OCR categories/blocks, category corrections,
-        //      learned categories, paragraph breaks). Cleared WHOLESALE so this
-        //      never falls behind new sub-fields the editor adds (the structural
-        //      fix — the old hardcoded list was the source of the "reset doesn't
-        //      fully take" bug when it drifted from what the editor writes).
-        //   2. a fixed subset grafted onto manifest.source, which ALSO holds
-        //      source IDENTITY (type/originalFilename/fileHash/url/fetchedAt)
-        //      that MUST survive. So this subset is deleted key-by-key.
-        //   3. manifest.chapters / chaptersSource (editor chapter markers).
-        // NOTE: block_splits/block_merges/crop_regions/classification_thresholds/
-        // text_corrections persist as sub-keys of manifest.editor (blockSplits,
-        // blockMerges, cropRegions, …) — the wholesale delete above clears them;
-        // never add per-field handling for them here.
-        delete manifest.editor;
-        if (manifest.source && typeof manifest.source === 'object') {
-          // `editorLayout` is in this list because it is not a fact about the
-          // source document — it is the stamp that says WHICH LAYOUT the records
-          // above were made in, and with those records gone it would be a claim
-          // about nothing. Leaving it would also make the next save read
-          // "current" for a project whose records were erased, which is true but
-          // says nothing; a project with no records is `clean` and is stamped
-          // afresh the next time the user saves one.
-          for (const k of ['deletedBlockIds', 'deletedBlockLines', 'foundryAutoDiscardedLines', 'deletedHighlightIds', 'pageOrder', 'deletedPages', 'removeBackgrounds', EDITOR_LAYOUT_MANIFEST_KEY]) {
-            delete manifest.source[k];
-          }
-        }
-        delete manifest.chapters;
-        delete manifest.chaptersSource;
-        //   4. The narration strikes. Added 2026-08-08 with the picker's own
-        //      "Erase all changes and start over" button, and it belongs to this
-        //      handler rather than to a second one: a strike IS an editor edit —
-        //      the same deletion the user made in Select mode, said as the
-        //      element it names (shared/vlm/narration-deletions.ts) — so a reset
-        //      that cleared one record and left the other would put the book back
-        //      on screen unstruck and then quietly re-cut the narration copy by
-        //      strikes nothing on screen explains. The BOOK is untouched: only
-        //      this sub-field of its record goes.
-        if (manifest.outputs?.epub) delete manifest.outputs.epub.narrationDeletions;
-
-        manifest.modifiedAt = new Date().toISOString();
-        await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
-
-        // Editor scratch/diagnostics in source/ have no other delete path — always
-        // clear them. exported.epub (a deliverable) is deliberately NOT touched.
-        const sourceDir = path.join(projectPath, 'source');
-        for (const f of ['load-trace.log', 'save-diagnostics.json', 'export-diagnostics.json', 'deleted-examples.json']) {
-          try { await fs.unlink(path.join(sourceDir, f)); } catch { /* absent */ }
-        }
-
+        await manifestService.resetEditorRecords(projectPath);
         console.log(`[PIPELINE] Reset editor state (manifest) for ${projectPath}`);
         return { success: true, message: 'Editor state reset' };
       }
