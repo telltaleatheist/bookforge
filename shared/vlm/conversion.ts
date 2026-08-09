@@ -24,6 +24,8 @@
  * chain planner never sees it.
  */
 
+import type { VlmReadingsChoice } from './readings-bank';
+
 /**
  * The categories dots.ocr answers with, lower-cased, exactly as foundry stamps
  * them (`CATEGORY_ATTRIBUTE` in foundry src/vlm/dots-book.ts).
@@ -158,6 +160,19 @@ export interface VlmConvertRequest {
    * read the original would be ninety minutes producing the wrong book.
    */
   skipDeletedPages?: boolean;
+  /**
+   * What to do with the page answers already banked for this PDF — the user's
+   * own answer, given when the conversion was committed to and carried here
+   * unchanged.
+   *
+   * ABSENT means "expecting the bank", and that is a decision rather than a
+   * default: a request with no choice on it was made before the question
+   * existed — an older build's queued job, or the headless CLI, where there is
+   * nobody to ask — and the user's rule for those is that they relied on the
+   * cache being there. See shared/vlm/readings-bank.ts, which owns the whole
+   * rule and the sentence the job log prints about it.
+   */
+  readings?: VlmReadingsChoice;
 }
 
 export interface VlmConvertResult {

@@ -88,6 +88,11 @@ export type DesktopDialogType = 'none' | 'info' | 'success' | 'warning' | 'error
             {{ cancelLabel }}
           </button>
         }
+        @if (showAlternate) {
+          <button type="button" class="dlg-btn dlg-btn-secondary" (click)="onAlternate()">
+            {{ alternateLabel }}
+          </button>
+        }
         <button
           type="button"
           class="dlg-btn"
@@ -284,8 +289,21 @@ export class DesktopDialogComponent implements AfterViewInit {
   @Input() checkboxLabel = '';
   @Input() checkboxChecked = false;
 
+  /**
+   * A SECOND real answer beside the primary one, not a variant of cancelling.
+   *
+   * Some questions genuinely have three answers — do it this way, do it that
+   * way, or don't do it — and folding one of them into Cancel makes the dialog
+   * lie about what happens. Rendered as a secondary button next to Cancel; the
+   * primary button stays the default, so Enter still takes the recommended
+   * action and Escape still cancels (used by DialogService.choose).
+   */
+  @Input() showAlternate = false;
+  @Input() alternateLabel = '';
+
   @Output() confirm = new EventEmitter<void>();
   @Output() cancel = new EventEmitter<void>();
+  @Output() alternate = new EventEmitter<void>();
 
   @ViewChild('inputEl') inputEl?: ElementRef<HTMLInputElement>;
 
@@ -304,6 +322,10 @@ export class DesktopDialogComponent implements AfterViewInit {
 
   onCancel(): void {
     this.cancel.emit();
+  }
+
+  onAlternate(): void {
+    this.alternate.emit();
   }
 
   @HostListener('document:keydown.escape')
