@@ -19,9 +19,9 @@
  * functions, in the same order, with the same per-document dedupe — and writes
  * the resulting key onto the very element the walk returned. Identity is then
  * correct by construction rather than by agreement, and a future edit that makes
- * the two disagree cannot do it quietly: `tools/test-quire-identity.js` compares
- * the stamps against a reference walk, and `stampEpubForQuire` verifies the file
- * it wrote before it lets anyone have it.
+ * the two disagree cannot do it quietly: `testIdentity` in `tools/test-quire.js`
+ * compares the stamps against a reference walk, and `stampEpubForQuire` verifies
+ * the file it wrote before it lets anyone have it.
  *
  * ── The one extension to quire's contract ─────────────────────────────────
  *
