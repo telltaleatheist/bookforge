@@ -73,8 +73,13 @@ export interface EpubQuireAnalysis {
   summary: string;
 }
 
-/** A block id that is a function of what the block IS, so it survives re-analysis. */
-function blockId(elementKey: string, page: number): string {
+/**
+ * A block id that is a function of what the block IS, so it survives
+ * re-analysis. Exported because the viewer bridge derives ITS block ids the
+ * same way — one derivation, two callers, so the harness's book and the app's
+ * book can never disagree about what a block is called.
+ */
+export function blockId(elementKey: string, page: number): string {
   return crypto.createHash('md5').update(`quire:${elementKey}:${page}`).digest('hex').substring(0, 12);
 }
 

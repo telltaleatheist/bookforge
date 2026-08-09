@@ -25,7 +25,7 @@ import { ipcMain } from 'electron';
 import { Quire, type QuireDocument } from '../packages/quire/src';
 import type { QuirePageMount } from '../packages/quire/src/types';
 import { enumerateNarrationElements } from './quire-stamp';
-import { stampedCopyForViewer } from './epub-quire-analysis';
+import { blockId, stampedCopyForViewer } from './epub-quire-analysis';
 import { markupCategoriesForUnits, readEpubTocTargets, type MarkupUnit } from './epub-processor';
 import type { LaidOutBlock, LaidOutBook } from '../shared/document/laid-out-book';
 
@@ -132,21 +132,23 @@ export async function openBookForViewer(
     }
     const pageCount = doc.countPages();
 
-    // One block per stamped ELEMENT, not per page fragment. quire reports an
-    // element that spans a page break once per page it touches; the picker's
-    // idea of a block is the element, so the fragments are folded back together
-    // in page order and the block keeps the FIRST page it appears on — the same
-    // tiebreak every other reader in this app uses.
-    const byKey = new Map<string, { page: number; text: string[]; isImage: boolean }>();
+    // One block per page FRAGMENT — the same shape the analysis emits, with the
+    // same id derivation, so the harness drives the viewer with exactly the
+    // book the app will hand it. An element that spans a page break yields one
+    // block per page it touches, all sharing its element key; folding them into
+    // one block was this bridge's original shape, and it is precisely how the
+    // split-element refusal bug got past the harness while the real app hit it.
+    const byKey = new Map<string, Map<number, { text: string[]; isImage: boolean }>>();
     for (let page = 0; page < pageCount; page++) {
       for (const block of doc.loadPage(page).getBlocks()) {
-        const already = byKey.get(block.id);
-        if (already) {
-          if (block.text) already.text.push(block.text);
+        let pages = byKey.get(block.id);
+        if (!pages) { pages = new Map(); byKey.set(block.id, pages); }
+        const fragment = pages.get(page);
+        if (fragment) {
+          if (block.text) fragment.text.push(block.text);
           continue;
         }
-        byKey.set(block.id, {
-          page,
+        pages.set(page, {
           text: block.text ? [block.text] : [],
           isImage: block.type === 'image',
         });
@@ -155,8 +157,8 @@ export async function openBookForViewer(
 
     const blocks: LaidOutBlock[] = [];
     for (const stamped of stampedElements) {
-      const found = byKey.get(stamped.key);
-      if (!found) {
+      const fragments = byKey.get(stamped.key);
+      if (!fragments) {
         throw new Error(
           `${stamped.key} was stamped on the book but quire reported no block for it, so the `
           + 'viewer would show an element it cannot name. This is a bug in the stamp/pagination '
@@ -172,18 +174,22 @@ export async function openBookForViewer(
           + 'walk have gone out of step.',
         );
       }
-      blocks.push({
-        id: stamped.key,
-        page: found.page,
-        text: found.text.join(' '),
-        category_id: category,
-        is_image: found.isImage,
-        // Reading order IS the enumeration order here — the order the export
-        // writer walks the book in. Not inferred from geometry.
-        seq: seqByKey.get(stamped.key),
-        // The block IS the element, so its narration key is its own key.
-        bf_element: stamped.key,
-      });
+      for (const page of [...fragments.keys()].sort((a, b) => a - b)) {
+        const fragment = fragments.get(page)!;
+        blocks.push({
+          id: blockId(stamped.key, page),
+          page,
+          text: fragment.text.join(' '),
+          category_id: category,
+          is_image: fragment.isImage,
+          // Reading order IS the enumeration order here — the order the export
+          // writer walks the book in. Not inferred from geometry.
+          seq: seqByKey.get(stamped.key),
+          // The block IS the element, so its narration key is its own key —
+          // shared by every fragment of a split element, by design.
+          bf_element: stamped.key,
+        });
+      }
     }
 
     const documents: QuirePageMount[] = report.documentPageOffsets.map(

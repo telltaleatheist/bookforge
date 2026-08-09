@@ -562,14 +562,18 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   /**
    * The book's blocks, indexed by the element key the frame will report.
    *
-   * Refuses rather than guesses. `bf_element` is not decoration here: quire
-   * reports back the exact string `electron/quire-stamp.ts` wrote on the
-   * element, and that string IS the narration element key. A block without one
-   * cannot be pointed at on a live page, and two blocks claiming the same one
-   * cannot be told apart, so both are named instead of resolved arbitrarily.
+   * SEVERAL blocks per key is the split design, not an error: an element that
+   * crosses a page break yields one block per page it touches, every one
+   * carrying the same `bf_element` (on Killing America, 69 elements do this).
+   * The fragments are kept sorted by page, and a hit resolves to the fragment
+   * on the page the click actually landed on — deterministic, never arbitrary.
+   *
+   * What IS refused: a block without a key (nothing to point at — this viewer
+   * will not fall back to matching by position), and two blocks claiming one
+   * element on the SAME page, which no click could ever tell apart.
    */
-  private readonly blocksByElement = computed<ReadonlyMap<string, LaidOutBlock>>(() => {
-    const map = new Map<string, LaidOutBlock>();
+  private readonly blocksByElement = computed<ReadonlyMap<string, readonly LaidOutBlock[]>>(() => {
+    const map = new Map<string, LaidOutBlock[]>();
     for (const block of this.book().blocks) {
       const key = block.bf_element;
       if (key === undefined) {
@@ -579,17 +583,46 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
           + 'point with; it will not fall back to matching by position.',
         );
       }
-      const already = map.get(key);
-      if (already !== undefined) {
+      const fragments = map.get(key);
+      if (fragments === undefined) {
+        map.set(key, [block]);
+        continue;
+      }
+      const samePage = fragments.find((f) => f.page === block.page);
+      if (samePage !== undefined) {
         throw new Error(
-          `Blocks ${already.id} and ${block.id} both claim element ${key}. A click on that `
-          + 'element would have to pick one of them arbitrarily, so the book is not shown.',
+          `Blocks ${samePage.id} and ${block.id} both claim element ${key} on page `
+          + `${block.page}. Split fragments live on different pages by construction, so two on `
+          + 'one page cannot be told apart, and the book is not shown.',
         );
       }
-      map.set(key, block);
+      fragments.push(block);
     }
+    for (const fragments of map.values()) fragments.sort((a, b) => a.page - b.page);
     return map;
   });
+
+  /**
+   * The fragment of `key` on global page `page` — exact for a split element,
+   * and the only fragment there is for everything else.
+   *
+   * A miss is a refusal, not a nearest-match: the arrangement said the element
+   * has a box on this page, so a block list that disagrees means the analysis
+   * and the viewer paginated differently, which the page-count guard exists to
+   * catch — never resolved here by guessing.
+   */
+  private fragmentOn(key: string, fragments: readonly LaidOutBlock[], page: number): LaidOutBlock {
+    if (fragments.length === 1) return fragments[0];
+    const exact = fragments.find((f) => f.page === page);
+    if (exact === undefined) {
+      throw new Error(
+        `Element ${key} has a box on page ${page}, but its blocks claim only page(s) `
+        + `${fragments.map((f) => f.page).join(', ')}. The analysis and the viewer disagree `
+        + 'about this book\'s pagination, and a click will not pick a page for them.',
+      );
+    }
+    return exact;
+  }
 
   /** Element keys of the blocks the picker says are struck. */
   private readonly struckElements = computed(() => {
@@ -1010,6 +1043,7 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   { element: QuireFrameElement; block: LaidOutBlock } | null {
     const state = this.bandState(index);
     if (state.kind !== 'ready') return null;
+    const band = this.bands()[index];
     const scale = this.scale();
     const byElement = this.blocksByElement();
     const hidden = this.hiddenCategoryIds();
@@ -1019,8 +1053,12 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
       const left = el.x * scale;
       const top = el.y * scale;
       if (x < left || y < top || x > left + el.w * scale || y > top + el.h * scale) continue;
-      const block = byElement.get(el.id);
-      if (!block || hidden.has(block.category_id)) continue;
+      const fragments = byElement.get(el.id);
+      if (!fragments) continue;
+      // The occurrence knows its page, so a split element resolves to the
+      // fragment under the cursor, not to an arbitrary one.
+      const block = this.fragmentOn(el.id, fragments, band.firstPage + el.localPage);
+      if (hidden.has(block.category_id)) continue;
       const area = el.w * el.h;
       if (area < bestArea) { bestArea = area; best = { element: el, block }; }
     }
@@ -1031,6 +1069,7 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   private blocksInRect(index: number, rect: { x: number; y: number; w: number; h: number }): string[] {
     const state = this.bandState(index);
     if (state.kind !== 'ready') return [];
+    const band = this.bands()[index];
     const scale = this.scale();
     const byElement = this.blocksByElement();
     const hidden = this.hiddenCategoryIds();
@@ -1041,8 +1080,12 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
       const right = left + el.w * scale;
       const bottom = top + el.h * scale;
       if (right < rect.x || left > rect.x + rect.w || bottom < rect.y || top > rect.y + rect.h) continue;
-      const block = byElement.get(el.id);
-      if (!block || hidden.has(block.category_id)) continue;
+      const fragments = byElement.get(el.id);
+      if (!fragments) continue;
+      // A marquee that crosses a page break meets one occurrence per page and
+      // so collects each page's own fragment — the same set striking derives.
+      const block = this.fragmentOn(el.id, fragments, band.firstPage + el.localPage);
+      if (hidden.has(block.category_id)) continue;
       ids.add(block.id);
     }
     return [...ids];
