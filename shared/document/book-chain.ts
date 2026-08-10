@@ -65,6 +65,40 @@
  * on the other side of the IPC boundary, said in the layout: a project with two
  * versions must act on the one whose button was pressed, and a line that cannot
  * say which chain it is on is exactly the broken custody Owen named.
+ *
+ * ── DOCUMENTS AND LEDGERS ARE DIFFERENT THINGS (Owen, 2026-08-10) ───────────
+ *
+ * "maybe the open button should only exist on the archive file (aka the working
+ * document). the working document shouldnt have a line item, it should be
+ * invisible to the user. its only there to be opened/manipulated by the user.
+ * the archive item is the one the user should be clicking to open/view/etc. the
+ * 'working' document should only appear as an indented line item that says
+ * 'working changes' which can be cleared, just like footnotes. footnotes and
+ * working changes should not be able to be opened or exported individually. only
+ * deleted. the tts document can have process/open/etc buttons since we actually
+ * do stuff with that and its a real tangible document, not a UI device used to
+ * show the user what's been done indirectly. footnotes and working changes are
+ * more ledgers than documents, to the user's eyes"
+ *
+ * So the button matrix has TWO CLASSES of line, and this module is where the
+ * difference is stated:
+ *
+ *  - DOCUMENTS — the archive PDF, the book (the control centre), the narration
+ *    copy. Real files. They open, they export, they carry their own specials.
+ *  - LEDGERS — the working-changes line and the ledger lines. They are the
+ *    RECORD of what has been done, drawn under the document they were done to.
+ *    They carry no Open and no Export; their acts are clear/delete, plus (on a
+ *    pass) Review changes, which is a ledger's "what did this do" rather than a
+ *    door onto a file.
+ *
+ * A ledger line's Open was not merely redundant — it was DESTRUCTIVE. It opened
+ * the pass's snapshot as the project's displayed document, and the picker binds
+ * a project-owned document it cannot prove the edits belong to WITHOUT applying
+ * them, which is one autosave away from writing an empty edit set over an
+ * evening of work. Owen, 2026-08-10: "i went back and hit open on footnote
+ * removal… i closed it and reopened from the working copy and all my changes
+ * were indeed cleared." The door is gone from the model, which is why it can no
+ * longer be drawn.
  */
 
 /** The kinds of line the page draws, in the order they can appear. */
@@ -79,16 +113,26 @@ export type ChainLineKind =
    * it — a file on disk with no row is work with no door.
    */
   | 'working-pdf'
-  /** THE EPUB — the one book line the user sees, top level. */
+  /**
+   * THE EPUB — the one book line the user sees, top level, and the CONTROL
+   * CENTRE for its chain (Owen, 2026-08-10: "the archive document will be the
+   * control center"). Open lands on the working copy; Process opens the passes;
+   * Erase all changes and Delete live here. Nothing else on the chain opens.
+   */
   | 'book'
   /**
    * The standing set of working-change RECORDS, indented under the book.
    *
    * Virtual: it names no file of its own. Its delete is `book:erase-changes`
-   * with scope 'working-changes'.
+   * with scope 'working-changes'. A LEDGER line — clear only.
    */
   | 'working-changes'
-  /** One committed pass, indented under the book, in execution order. */
+  /**
+   * One committed pass, indented under the book, in execution order.
+   *
+   * A LEDGER line: Review changes (what it did) and Delete (take it back). It
+   * does not open and does not export — see the header.
+   */
   | 'ledger'
   /** The narration copy — the file TTS reads — indented under the book. */
   | 'narration'
@@ -206,13 +250,16 @@ export type ReviewAffordance = 'ready' | 'no-receipt' | 'none';
 /**
  * Which buttons a line gets.
  *
- * The three standing ones (`open`, `export`, `delete`) are on every line and are
- * laid out in fixed columns, so they line up down the page. `false` means the
- * column is EMPTY rather than absent — that is what keeps the alignment. Delete
- * is live on EVERY chain line (Owen, 2026-08-10: "it should always be
- * available"), each routed to the remover that owns that artifact's records —
- * the page may still disable one with a reason when the ROW arrives in a state
- * its remover cannot classify.
+ * The three standing ones (`open`, `export`, `delete`) are laid out in fixed
+ * columns, so they line up down the page. `false` means the column is EMPTY
+ * rather than absent — that is what keeps the alignment. Delete is live on EVERY
+ * chain line (Owen, 2026-08-10: "it should always be available"), each routed to
+ * the remover that owns that artifact's records — the page may still disable one
+ * with a reason when the ROW arrives in a state its remover cannot classify.
+ *
+ * `open` and `export` are the DOCUMENT half and are on documents only: the
+ * archive PDF, the book, the narration copy. The ledger kinds
+ * (`working-changes`, `ledger`) leave both columns empty — see the header.
  */
 export interface ChainButtons {
   /** Convert to EPUB — the archive PDF and a legacy working PDF. */
@@ -473,6 +520,7 @@ export function bookChain(input: BookChainInput): ChainLine[] {
           ...NO_BUTTONS,
           // It names no file: the book line above is the file these changes are
           // recorded against, and an Open here would be that line's Open twice.
+          // The ledger half of the matrix — clear, and nothing else.
           delete: true,
         },
       });
@@ -494,10 +542,20 @@ export function bookChain(input: BookChainInput): ChainLine[] {
         ...stamp,
         buttons: {
           ...NO_BUTTONS,
+          // A LEDGER, not a document (Owen, 2026-08-10: "footnotes and working
+          // changes are more ledgers than documents, to the user's eyes"). What
+          // this line offers is the account of what the pass did and the act
+          // that takes it back — never a door onto the snapshot.
+          //
+          // The entry still OWNS a snapshot; that file is how the pass is undone
+          // (`deriveWorkingCopy` from the ledger) and it is not a version of the
+          // book the user is meant to work in. Opening it bound the project to a
+          // document whose edits the picker could not vouch for and left the
+          // session writable, which is how an evening of working changes was
+          // destroyed by pressing Open on this line.
           review: entry.hasReceipt ? 'ready' : 'no-receipt',
-          // The entry owns a snapshot: the book exactly as this pass left it.
-          open: true,
-          export: true,
+          open: false,
+          export: false,
           delete: true,
         },
       });

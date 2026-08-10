@@ -5,7 +5,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ElectronService, WhisperModelStatus } from '../../../../core/services/electron.service';
 import { ComponentService } from '../../../../core/services/component.service';
-import { QueueService } from '../../../queue/services/queue.service';
+import { QueueService, type DirectPassRunResult } from '../../../queue/services/queue.service';
 import { VariantImportService } from '../../services/variant-import.service';
 import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-view.component';
 import { MetadataEditorComponent, EpubMetadata } from '../../../audiobook/components/metadata-editor/metadata-editor.component';
@@ -883,30 +883,56 @@ const AUDIO_EXTS = new Set([
          appears if the user hits process on the archive files."
 
          The list is DATA (shared/processing/book-passes.ts) — a pass added to
-         the pipeline appears here without this template changing. Every choice
-         is ADDED TO THE QUEUE: each of these is hours of model time over a whole
-         book, and a run that is not a queue row cannot be watched or cancelled. -->
+         the pipeline appears here without this template changing.
+
+         WHEN it runs is the user's, as of 2026-08-10. Owen: "i ran footnote
+         reference number removal on the working document. it ran in the queue. i
+         should be able to run it from the modal if i want." The queue is still
+         the default — most of these are hours of model time and a run that is
+         not a row cannot be watched or cancelled — but "Run it now" is offered
+         beside it, and it goes through the SAME pass handler the queue row calls
+         (QueueService.runProcessingRunNow). -->
     @if (passesModalOpen()) {
       <div class="gs-backdrop" (click)="closePassesModal()">
         <div class="gs-modal" (click)="$event.stopPropagation()">
           <h3 class="gs-title">What should be done to this book?</h3>
           <p class="gs-note">
-            Each of these rewrites the book itself and is added to the queue, where it can be
-            watched and cancelled. Your own changes are kept — they are recorded against the book
-            rather than written into it — and every pass becomes a line under the book that you can
-            take back on its own.
+            Each of these rewrites the book itself. Your own changes are kept — they are recorded
+            against the book rather than written into it — and every pass becomes a line under the
+            book that you can take back on its own.
           </p>
+          <div class="gs-when">
+            <button type="button" class="gs-when-choice" [class.on]="passRunMode() === 'queue'"
+                    [disabled]="passRunning() !== null"
+                    (click)="passRunMode.set('queue')"
+                    title="Put it in the queue, where it can be watched and cancelled">
+              <span class="gs-choice-name">Add to the queue</span>
+              <span class="gs-choice-note">Runs when the queue reaches it. Watch it on the Queue tab.</span>
+            </button>
+            <button type="button" class="gs-when-choice" [class.on]="passRunMode() === 'now'"
+                    [disabled]="passRunning() !== null"
+                    (click)="passRunMode.set('now')"
+                    title="Run it here, straight away. The window waits for it.">
+              <span class="gs-choice-name">Run it now</span>
+              <span class="gs-choice-note">Runs here and this window waits. Good for the quick ones;
+                a Simplify or a Translate is hours of model time.</span>
+            </button>
+          </div>
           <div class="gs-list">
             @for (p of bookPasses; track p.kind) {
-              <button class="gs-choice" type="button" (click)="choosePass(p)">
+              <button class="gs-choice" type="button" [disabled]="passRunning() !== null"
+                      (click)="choosePass(p)">
                 <span class="gs-choice-name">{{ p.label }}</span>
                 <span class="gs-choice-note">{{ p.note }}</span>
               </button>
             }
           </div>
+          @if (passRunning(); as running) {
+            <div class="pass-running">{{ running }} — running now. This window is waiting for it.</div>
+          }
           @if (passError(); as e) { <div class="pass-err">{{ e }}</div> }
           <div class="gs-actions">
-            <button class="act" (click)="closePassesModal()">Cancel</button>
+            <button class="act" [disabled]="passRunning() !== null" (click)="closePassesModal()">Cancel</button>
           </div>
         </div>
       </div>
@@ -1267,8 +1293,28 @@ const AUDIO_EXTS = new Set([
       background: var(--bg-base); color: var(--text-primary);
     }
     .gs-choice:hover { border-color: var(--accent-primary, #06b6d4); }
+    .gs-choice:disabled { opacity: 0.5; cursor: default; }
     .gs-choice-name { font-size: 0.86rem; font-weight: 600; }
     .gs-choice-note { font-size: 0.74rem; color: var(--text-secondary); line-height: 1.4; }
+
+    /* WHEN the chosen pass runs. Two boxes rather than a checkbox: the two are
+       genuinely different acts (one is watchable and cancellable, the other
+       holds this window), and a checkbox would not say so. */
+    .gs-when { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+    .gs-when-choice {
+      display: flex; flex-direction: column; gap: 3px; text-align: left;
+      font-family: inherit; cursor: pointer;
+      padding: 9px 11px; border-radius: 8px;
+      border: 1px solid var(--border-default, rgba(255,255,255,0.12));
+      background: transparent; color: var(--text-secondary);
+    }
+    .gs-when-choice:hover { border-color: var(--accent-primary, #06b6d4); }
+    .gs-when-choice.on {
+      border-color: var(--accent-primary, #06b6d4);
+      background: var(--bg-base); color: var(--text-primary);
+    }
+    .gs-when-choice:disabled { opacity: 0.5; cursor: default; }
+    .pass-running { margin: 6px 4px; font-size: 0.78rem; color: var(--text-secondary); }
   `]
 })
 export class StudioVersionsComponent {
@@ -1757,44 +1803,48 @@ export class StudioVersionsComponent {
   /**
    * Open this line.
    *
-   * A ledger line opens its SNAPSHOT — the book exactly as that pass left it —
-   * which is the only file that state exists as. Everything else opens what its
-   * row already opens, redirect and all (`editorTargetFor`).
+   * ONLY DOCUMENTS OPEN (Owen, 2026-08-10). A ledger line used to open its
+   * SNAPSHOT — the book exactly as that pass left it — and that was the act that
+   * destroyed an evening of working changes: the snapshot opens as the PROJECT's
+   * displayed document, and the picker binds a project-owned file it cannot
+   * prove the saved edits describe WITHOUT applying them, leaving the session
+   * writable. The first autosave then wrote an empty edit set over the real one.
+   * "i closed it and reopened from the working copy and all my changes were
+   * indeed cleared."
+   *
+   * The branch is gone rather than guarded, and `book-chain.ts` no longer gives
+   * a ledger line the button — two statements of one rule, so neither the model
+   * nor this method can put the door back on its own.
    */
   openLine(row: ChainRowView): void {
-    if (row.line.kind === 'ledger') {
-      const entry = row.entry;
-      if (!entry) {
-        console.error('[studio-versions] Open was pressed on a ledger line whose entry is not in '
-          + 'the versions answer. Only a line built from an entry is rendered.');
-        return;
-      }
-      this.edit.emit(entry.snapshotPath);
+    // A ledger line CARRIES the working copy as its row — that is how its delete
+    // reaches the book — so falling through here would open the book instead of
+    // refusing, which is a different wrong file rather than none. Said out loud.
+    if (this.lineIsLedger(row)) {
+      console.error(`[studio-versions] Open was pressed on the ${row.line.kind} line. A ledger is a `
+        + 'record of what was done, not a document: it has no Open, and the row it carries is the '
+        + 'book above it.');
       return;
     }
     if (row.v === null) return;
     this.openDoc(row.v);
   }
 
+  /** The two kinds that are RECORDS rather than files. See book-chain.ts. */
+  private lineIsLedger(row: ChainRowView): boolean {
+    return row.line.kind === 'working-changes' || row.line.kind === 'ledger';
+  }
+
   /** What Open does on this line, in words. */
   openLineTitle(row: ChainRowView): string {
-    if (row.line.kind === 'ledger') {
-      return 'Open the book exactly as this pass left it. It is a snapshot — nothing writes to it, '
-        + 'and your own copy is the line above.';
-    }
     return row.v === null ? '' : this.openTitle(row.v);
   }
 
-  /** Save a copy of what this line names. */
+  /** Save a copy of what this line names. Documents only, for the same reason. */
   exportLine(row: ChainRowView): void {
-    if (row.line.kind === 'ledger') {
-      const entry = row.entry;
-      if (!entry) {
-        console.error('[studio-versions] Export was pressed on a ledger line whose entry is not in '
-          + 'the versions answer. Only a line built from an entry is rendered.');
-        return;
-      }
-      this.exportDoc.emit(entry.snapshotPath);
+    if (this.lineIsLedger(row)) {
+      console.error(`[studio-versions] Export was pressed on the ${row.line.kind} line. A ledger `
+        + 'names no file of its own; the book it is recorded against is the line above it.');
       return;
     }
     if (row.v === null) return;
@@ -1802,9 +1852,6 @@ export class StudioVersionsComponent {
   }
 
   exportLineTitle(row: ChainRowView): string {
-    if (row.line.kind === 'ledger') {
-      return 'Save a copy of the book as this pass left it to your computer';
-    }
     return row.v === null ? '' : this.exportTitle(row.v);
   }
 
@@ -2162,6 +2209,22 @@ export class StudioVersionsComponent {
   readonly passOptionsKind = signal<PassOptionsKind | null>(null);
   /** Why the last submission was refused. Main's own sentence, shown verbatim. */
   readonly passError = signal<string | null>(null);
+  /**
+   * WHEN the chosen pass runs — the queue, or here and now.
+   *
+   * Owen, 2026-08-10: "i ran footnote reference number removal on the working
+   * document. it ran in the queue. i should be able to run it from the modal if i
+   * want." The queue stays the default because most passes are hours of model
+   * time and a run with no row cannot be watched or cancelled; the choice is
+   * offered because some of them finish in seconds and making the user go and
+   * find a row for those is the queue getting in the way.
+   *
+   * Both doors end in the same `runProcessingPass`. See
+   * `QueueService.runProcessingRunNow`.
+   */
+  readonly passRunMode = signal<'queue' | 'now'>('queue');
+  /** The pass being run inline, by label, or null. Locks the modal while it runs. */
+  readonly passRunning = signal<string | null>(null);
 
   openPassesModal(): void {
     this.passError.set(null);
@@ -2169,16 +2232,19 @@ export class StudioVersionsComponent {
   }
 
   closePassesModal(): void {
+    // Never while a pass is mid-run: closing would leave the user with no
+    // statement of what happened to their book, which is the whole difference
+    // between running here and running in a queue row.
+    if (this.passRunning() !== null) return;
     this.passesModalOpen.set(false);
     this.passError.set(null);
   }
 
   /**
-   * A pass was chosen. Either it needs its options, or it goes to the queue.
+   * A pass was chosen. Either it needs its options, or it is performed.
    *
-   * Nothing runs inline. Owen, 2026-08-09: "whatever the user chooses to do
-   * (particularly translate/simplify/tts/assemble) will be added to the queue…
-   * follow the vlm epub generation pattern."
+   * WHICH DOOR is `passRunMode` — the queue, or here and now. Both end in the
+   * same `runProcessingPass` in main; see `submitPasses`.
    */
   async choosePass(option: BookPassOption): Promise<void> {
     if (option.needsOptions) {
@@ -2193,16 +2259,16 @@ export class StudioVersionsComponent {
     // it; a kind this build's planner does not know is refused BY NAME and that
     // refusal is shown below, which is the honest outcome for an offer this
     // build cannot keep (see shared/processing/book-passes.ts).
-    await this.queuePasses([{ kind: option.kind as ProcessingPassKind }]);
+    await this.submitPasses([{ kind: option.kind as ProcessingPassKind }], option.label);
   }
 
   onPassOptionsConfirmed(result: PassOptionsResult): void {
     this.passOptionsKind.set(null);
-    void this.queuePasses([
-      result.kind === 'simplify'
+    void this.submitPasses(
+      [result.kind === 'simplify'
         ? { kind: 'simplify', simplify: result.simplify }
-        : { kind: 'translate', translate: result.translate },
-    ]);
+        : { kind: 'translate', translate: result.translate }],
+      result.kind === 'simplify' ? 'Simplify' : 'Translate');
   }
 
   /**
@@ -2227,6 +2293,85 @@ export class StudioVersionsComponent {
       ...(ai.openai?.apiKey ? { openaiApiKey: ai.openai.apiKey } : {}),
     };
   });
+
+  /**
+   * Perform these passes — through whichever door the user chose.
+   *
+   * TWO DOORS, ONE PASS. The queue arm submits the chain (`processing:submit-chain`),
+   * which plans it in main and hands the plan to the queue; the run-now arm plans
+   * it through the SAME planner and calls the SAME `queue:run-pass` handler each
+   * queue row calls. Neither arm knows what a pass IS — that lives in
+   * electron/processing-passes.ts and nowhere else, which is the rule the deleted
+   * synchronous footnote door (`book:remove-footnote-references`, 2026-08-10)
+   * broke and this must not re-break.
+   */
+  private async submitPasses(passes: ChainPassRequest[], label: string): Promise<void> {
+    if (this.passRunMode() === 'now') {
+      await this.runPassesNow(passes, label);
+      return;
+    }
+    await this.queuePasses(passes);
+  }
+
+  /**
+   * Run these passes here and now, and say what happened.
+   *
+   * The modal stays open and locked for the duration: a run with no queue row has
+   * no other place to report from, so this window IS the report. What ran is
+   * named, and a failure carries main's own sentence — including the footnote
+   * pass's "there were none left", which is a refusal rather than a breakage.
+   */
+  private async runPassesNow(passes: ChainPassRequest[], label: string): Promise<void> {
+    const dir = this.projectDir();
+    if (!dir) {
+      this.passError.set('A pass rewrites this project\'s book, and no project is selected.');
+      this.passesModalOpen.set(true);
+      return;
+    }
+    this.passError.set(null);
+    this.passesModalOpen.set(true);
+    // The name the user pressed, carried in rather than looked back up from the
+    // kind: the button that was pressed is the only thing that knows it.
+    this.passRunning.set(label);
+    let result: DirectPassRunResult;
+    try {
+      result = await this.queue.runProcessingRunNow({ projectDir: dir, passes });
+    } catch (err) {
+      this.passRunning.set(null);
+      this.passError.set(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    this.passRunning.set(null);
+
+    // A PLANNER refusal: nothing ran, and the modal keeps the sentence beside
+    // the choices so the user can pick another one.
+    if (result.error) {
+      this.passError.set(result.error);
+      return;
+    }
+    if (result.failure) {
+      // Whatever ran BEFORE the failure really did rewrite the book, so the
+      // sentence says so — "nothing happened" would be false.
+      this.passError.set(result.ran.length === 0
+        ? result.failure.error
+        : `${result.ran.join(', ')} ran and ${result.failure.label} did not: `
+          + result.failure.error);
+      await this.load();
+      this.changed.emit();
+      return;
+    }
+
+    this.passesModalOpen.set(false);
+    await this.electron.showMessageDialog({
+      title: result.ran.length === 1 ? `${result.ran[0]} is done` : 'The passes are done',
+      message: `${result.ran.join(', ')} rewrote this book just now. Each one is a line under the `
+        + 'book that you can review and take back on its own. Your own changes are untouched — they '
+        + 'are recorded against the book rather than written into it.',
+      type: 'info',
+    });
+    await this.load();
+    this.changed.emit();
+  }
 
   /**
    * Send passes to the queue through the ONE door — `processing:submit-chain`,

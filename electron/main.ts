@@ -11228,22 +11228,32 @@ function setupIpcHandlers(): void {
           {
             familyId: chain.id,
             builtAt: recordedEpubBuilds.get(chainExport.relPath.toLowerCase()),
-            ledger: bookLedger.map((entry) => ({
-              id: entry.id,
-              kind: entry.kind,
-              label: entry.label,
-              createdAt: entry.createdAt,
-              hasReceipt: entry.receipt !== null,
+            ledger: bookLedger.map((entry) => {
               // Resolved here, once, from the project-relative paths the entry
               // records. The renderer holds no project directory to join them
               // onto and must never learn to — the same rule the rest of these
               // rows follow, which is why every one of them carries an absolute
               // `path` rather than a relative one.
-              snapshotPath: path.resolve(projectDir, entry.snapshot.split('/').join(path.sep)),
-              receiptPath: entry.receipt === null
+              const receiptPath = entry.receipt === null
                 ? null
-                : path.resolve(projectDir, entry.receipt.split('/').join(path.sep)),
-            })),
+                : path.resolve(projectDir, entry.receipt.split('/').join(path.sep));
+              return {
+                id: entry.id,
+                kind: entry.kind,
+                label: entry.label,
+                createdAt: entry.createdAt,
+                // The FILE, not the record. This used to be `entry.receipt !==
+                // null` — a claim read off the manifest — while the comment on
+                // the field promised "a receiptPath that names a file which is
+                // not there would be a disabled button with no reason to give".
+                // It was not: a receipt whose file had gone drew an ENABLED
+                // Review changes that opened a viewer with nothing in it. Asked
+                // of the disk, the line is drawn disabled with its sentence.
+                hasReceipt: receiptPath !== null && fsSync.existsSync(receiptPath),
+                snapshotPath: path.resolve(projectDir, entry.snapshot.split('/').join(path.sep)),
+                receiptPath,
+              };
+            }),
           }
         );
         }

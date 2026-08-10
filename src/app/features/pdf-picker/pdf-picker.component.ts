@@ -11693,13 +11693,26 @@ export class PdfPickerComponent implements OnInit {
           });
         }
       }
-      // Deliberately NOT set for the !isLoadingOriginal case below. Opening a
-      // derived version from the version picker is a choice the user made about a
-      // file they can still legitimately save chapters and metadata for (the
-      // embedded editor's finalize-a-variant flow depends on it); a hash that
-      // disagrees is proof of a different file, and only proof locks the project.
-      this.projectStateNotApplied.set(sourceChanged);
       const applySavedEdits = isLoadingOriginal && !sourceChanged;
+      // ── THE LOCK IS "were the edits loaded", not "did a hash disagree" ───────
+      //
+      // This used to be `set(sourceChanged)` — the HASH signal alone — with a
+      // note that a derived version opened from the version picker stays
+      // writable. That left one state open, and it was destructive: a
+      // project-owned document that is not the original (so the edits are NOT
+      // applied) whose hash cannot prove a mismatch (no `source_file_sha256` on
+      // file, or the file is byte-identical to the book). The session then shows
+      // an EMPTY edit set and is allowed to save it. A ledger snapshot is exactly
+      // that document — it is copied from the working copy the instant a pass
+      // records it, so it is byte-identical to it — and pressing Open on the
+      // footnote line wrote that empty set over an evening of work (Owen,
+      // 2026-08-10: "all my changes were indeed cleared").
+      //
+      // `!applySavedEdits` is the honest statement of the rule the field was
+      // written for: "a session that declined to load the project's edits must
+      // not overwrite them." Exporting and finalizing still work — only the
+      // project-state WRITE is refused (`saveProjectToPath`).
+      this.projectStateNotApplied.set(!applySavedEdits);
 
       const deletedBlockIds = applySavedEdits
         ? new Set<string>(project.deleted_block_ids || [])
@@ -11755,7 +11768,10 @@ export class PdfPickerComponent implements OnInit {
           ? new Set(project.paragraph_breaks) : undefined,
         createdAt: project.created_at || undefined,
         sourceSha256: quickResult.sourceSha256,
-        projectStateNotApplied: sourceChanged,
+        // The per-document snapshot of the lock set above, and it is the same
+        // question: this tab declined to load the project's edits, so this tab
+        // may never write them.
+        projectStateNotApplied: !applySavedEdits,
       };
 
       // Add to open documents
