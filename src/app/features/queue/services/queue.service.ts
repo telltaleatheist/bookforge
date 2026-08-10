@@ -278,6 +278,23 @@ declare global {
   }
 }
 
+/**
+ * What a pass run performed HERE came to — `QueueService.runProcessingRunNow`.
+ *
+ * Three outcomes and they are genuinely different, so none of them is folded
+ * into another: the planner refused (nothing ran), a pass failed partway (the
+ * ones before it really did rewrite the book), or every one of them ran.
+ */
+export interface DirectPassRunResult {
+  success: boolean;
+  /** The passes that finished, oldest first, by label. */
+  ran: string[];
+  /** The pass that failed and why, or null when every one of them ran. */
+  failure: { label: string; error: string } | null;
+  /** A refusal from the PLANNER — nothing ran, and this says why. */
+  error?: string;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -1648,6 +1665,74 @@ export class QueueService {
     // must not be picked up by whatever chain is submitted next.
     if (!result.success) this.pendingChainFollowOn = null;
     return result;
+  }
+
+  /**
+   * Run a pass chain NOW, in place, without a queue row.
+   *
+   * ── Why this exists ─────────────────────────────────────────────────────────
+   *
+   * Owen, 2026-08-10: "i ran footnote reference number removal on the working
+   * document. it ran in the queue. i should be able to run it from the modal if i
+   * want." Removing footnote references is a string replace over a zip that
+   * finishes in seconds; making the user go and watch a queue row for it is the
+   * queue getting in the way of the act.
+   *
+   * ── ONE implementation of a pass, two doors ─────────────────────────────────
+   *
+   * This is NOT a second way to perform a pass. It plans through the SAME planner
+   * (`processing:plan-chain` → `planProcessingChain`, so the refusals are the
+   * same sentences and the stage directories are numbered from the same history)
+   * and runs each planned job through the SAME main-process handler the queue row
+   * invokes (`electron.processing.runPass` → `queue:run-pass` →
+   * `runProcessingPass`). The queue's own arm hands that call `job.config`; this
+   * hands it `planned.config`, and they are the same object — the queue stores the
+   * plan's config verbatim and adds only the row's `type`.
+   *
+   * A synchronous re-implementation of the pass itself is exactly what was
+   * deliberately deleted on 2026-08-10 (`book:remove-footnote-references`), and
+   * this must never become one.
+   *
+   * ── In ORDER, and it stops at the first failure ─────────────────────────────
+   *
+   * Each pass rewrites the book the next one reads, so they run one at a time and
+   * a failure ends the run: continuing would apply pass three to the text pass two
+   * failed to produce. What ran is reported with what did not.
+   */
+  async runProcessingRunNow(request: ProcessingChainRequest): Promise<DirectPassRunResult> {
+    const electron = window.electron;
+    if (!electron?.processing?.runPass) {
+      throw new Error('Processing passes are not available (no Electron bridge)');
+    }
+
+    const planned = await this.electron.planProcessingChain(request);
+    if (!planned.success || !planned.plan) {
+      return { success: false, ran: [], failure: null, error: planned.error };
+    }
+
+    const ran: string[] = [];
+    for (const job of planned.plan.jobs) {
+      // The id a queue row would have carried. `runProcessingPass` uses it only
+      // to address its progress messages, and a run with no row has nowhere for
+      // them to land — which is honest for passes that report none anyway.
+      const jobId = `direct-${Date.now()}-${ran.length}`;
+      const result = await electron.processing.runPass(jobId, job.config);
+      const data = result?.data;
+      const ok = data?.success ?? result?.success ?? false;
+      if (!ok) {
+        return {
+          success: false,
+          ran,
+          failure: {
+            label: job.label,
+            error: data?.error || result?.error
+              || `${job.label} failed and gave no reason.`,
+          },
+        };
+      }
+      ran.push(job.label);
+    }
+    return { success: true, ran, failure: null };
   }
 
   /** Consume the staged follow-on jobs, if they belong to this chain's project. */

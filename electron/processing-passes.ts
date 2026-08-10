@@ -346,7 +346,14 @@ async function runFootnoteRefsPass(config: PassJobConfig): Promise<PassJobResult
 
   // The before-text, read now: the pass is about to overwrite the file it came
   // from, and the diff is computed against this.
-  const before = await loadEpubForComparison(bookPath);
+  //
+  // WITH THE MARKERS LEFT IN, on both sides. The text extractor strips exactly
+  // the markers this pass removes, so reading either side the ordinary way hands
+  // the diff two identical strings and the frozen receipt records a book against
+  // itself — which is what made Review changes on this pass's line show nothing
+  // (Owen, 2026-08-10). This is the one pass whose diff is about the markers, so
+  // it is the one caller that asks to see them.
+  const before = await loadEpubForComparison(bookPath, true);
 
   const { stripFootnoteReferencesFromBook } = await import('./epub-processor.js');
   const produced = path.join(stageDir, 'footnote-refs.epub');
@@ -366,7 +373,7 @@ async function runFootnoteRefsPass(config: PassJobConfig): Promise<PassJobResult
     };
   }
 
-  const after = await loadEpubForComparison(produced);
+  const after = await loadEpubForComparison(produced, true);
   const diff = diffPaths(config);
   await writePassDiff(diff.abs, pairChapters(before.chapters, after.chapters));
 

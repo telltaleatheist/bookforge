@@ -19,6 +19,13 @@
  * document then they click the process button next to it. no ambiguity, no
  * confusion."
  *
+ * And, later the same day, the restructure this file now defends: "the archive
+ * item is the one the user should be clicking to open/view/etc… footnotes and
+ * working changes should not be able to be opened or exported individually. only
+ * deleted… footnotes and working changes are more ledgers than documents, to the
+ * user's eyes." Two classes of line — DOCUMENTS and LEDGERS — and which acts
+ * each carries is asserted as one claim per class below.
+ *
  * What is asserted here is the ARRANGEMENT and the BUTTON MATRIX, which are the
  * two things that regress silently inside a 4000-line inline template: a line
  * that quietly stops being drawn, or a button that quietly appears on a row that
@@ -139,23 +146,118 @@ test('the chain under the book is working changes, then the ledger in order, the
     ['01-simplify-aa', '02-translate-bb']);
 });
 
-test('every line carries the three standing acts', () => {
+// ── DOCUMENTS open and export; LEDGERS only clear ────────────────────────────
+//
+// Owen, 2026-08-10: "the archive item is the one the user should be clicking to
+// open/view/etc… footnotes and working changes should not be able to be opened
+// or exported individually. only deleted… the tts document can have process/open
+// /etc buttons since we actually do stuff with that and its a real tangible
+// document, not a UI device used to show the user what's been done indirectly.
+// footnotes and working changes are more ledgers than documents."
+//
+// This is the class boundary, asserted as one claim per class, because the whole
+// destructive bug of 2026-08-10 was a LEDGER line carrying a document's Open.
+
+/** Every kind that is a real file the user acts on. */
+const DOCUMENT_KINDS = ['archive-pdf', 'working-pdf', 'book', 'narration', 'loose'];
+/** Every kind that is a record of what was done, drawn under the document. */
+const LEDGER_KINDS = ['working-changes', 'ledger'];
+
+test('every DOCUMENT line carries the three standing acts', () => {
   const lines = bookChain({
-    rows: [...pdfProject, row('narration', 'narration', 'epub', PDF_CHAIN)],
+    rows: [...pdfProject, row('narration', 'narration', 'epub', PDF_CHAIN),
+      row('cleaned', 'cleaned', 'epub', null)],
     families: [pdfChain([entry('01-simplify-aa', 'simplify', 'Simplify', true)])],
   });
-  for (const line of lines) {
-    if (line.kind === 'working-changes') continue;
+  const documents = lines.filter((l) => DOCUMENT_KINDS.includes(l.kind));
+  assert.deepStrictEqual(kindsOf(documents),
+    ['archive-pdf', 'book', 'narration', 'loose'], 'every document kind is on screen');
+  for (const line of documents) {
     assert.ok(line.buttons.open, `${line.kind} opens`);
     assert.ok(line.buttons.export, `${line.kind} exports`);
     assert.ok(line.buttons.delete, `${line.kind} deletes`);
   }
-  // The one exception, and it is a fact rather than an omission: the
-  // working-changes line names no file, so the book line above IS its Open.
-  const records = lines.find((l) => l.kind === 'working-changes');
-  assert.strictEqual(records.buttons.open, false);
-  assert.strictEqual(records.buttons.export, false);
-  assert.strictEqual(records.buttons.delete, true);
+});
+
+test('no LEDGER line opens or exports — clear is the only act it has', () => {
+  const lines = bookChain({
+    rows: [...pdfProject, row('narration', 'narration', 'epub', PDF_CHAIN)],
+    families: [pdfChain([entry('01-simplify-aa', 'simplify', 'Simplify', true)])],
+  });
+  const ledgers = lines.filter((l) => LEDGER_KINDS.includes(l.kind));
+  assert.deepStrictEqual(kindsOf(ledgers), ['working-changes', 'ledger']);
+  for (const line of ledgers) {
+    // Open on the footnote line opened the pass's SNAPSHOT as the project's
+    // document, and the picker bound it writable without the project's edits —
+    // one autosave from erasing them. The affordance is gone from the model.
+    assert.strictEqual(line.buttons.open, false, `${line.kind} must not open`);
+    assert.strictEqual(line.buttons.export, false, `${line.kind} must not export`);
+    assert.strictEqual(line.buttons.delete, true, `${line.kind} clears`);
+    // And none of the document specials either: a ledger runs nothing.
+    assert.strictEqual(line.buttons.passes, false);
+    assert.strictEqual(line.buttons.process, false);
+    assert.strictEqual(line.buttons.analysis, false);
+    assert.strictEqual(line.buttons.convert, false);
+    assert.strictEqual(line.buttons.eraseEverything, false);
+  }
+});
+
+test('the ARCHIVE line is the control centre: Open, Process, Erase, Delete', () => {
+  // Owen: "the archive document will be the control center." Open lands on the
+  // working copy (shared/document/artifact-open.ts) — the working document has
+  // no line of its own and is invisible, which is asserted right above by there
+  // being no 'working' kind at all.
+  const book = bookChain({ rows: pdfProject, families: [pdfChain()] })
+    .find((l) => l.kind === 'book');
+  assert.strictEqual(book.buttons.open, true);
+  assert.strictEqual(book.buttons.export, true);
+  assert.strictEqual(book.buttons.passes, true, 'Process opens the passes here');
+  assert.strictEqual(book.buttons.analysis, true);
+  assert.strictEqual(book.buttons.eraseEverything, true);
+  assert.strictEqual(book.buttons.delete, true);
+});
+
+test('a ledger line still offers Review changes — a ledger says what it did', () => {
+  // Owen asked for it by name: "will it be possible to keep the review changes
+  // button on footnotes/working changes, so we can open the file and see what
+  // changed?" It is the one thing a ledger line shows, and it is not an Open.
+  const lines = bookChain({
+    rows: pdfProject,
+    families: [pdfChain([entry('01-footnote-refs-aa', 'footnote-refs', 'Remove footnote references', true)])],
+  });
+  const [pass] = lines.filter((l) => l.kind === 'ledger');
+  assert.strictEqual(pass.buttons.review, 'ready');
+  assert.strictEqual(pass.buttons.open, false);
+  assert.strictEqual(pass.buttons.export, false);
+});
+
+test('the TTS document keeps everything a real document has', () => {
+  // Owen: "the tts document can have process/open/etc buttons since we actually
+  // do stuff with that and its a real tangible document."
+  const tts = bookChain({
+    rows: [...pdfProject, row('narration', 'narration', 'epub', PDF_CHAIN)],
+    families: [pdfChain()],
+  }).find((l) => l.kind === 'narration');
+  assert.strictEqual(tts.buttons.process, true);
+  assert.strictEqual(tts.buttons.open, true);
+  assert.strictEqual(tts.buttons.export, true);
+  assert.strictEqual(tts.buttons.delete, true);
+});
+
+test('the working DOCUMENT has no line of its own — only its working CHANGES', () => {
+  // "the working document shouldnt have a line item, it sohuld be invisible to
+  // the user." It never had one; this is the claim said out loud, against both
+  // origins, so a future arrangement cannot quietly give it one back.
+  for (const [rows, families] of [
+    [pdfProject, [pdfChain()]],
+    [epubProject, [epubChain()]],
+  ]) {
+    const lines = bookChain({ rows, families });
+    assert.ok(!lines.some((l) => l.kind === 'working'), 'no working-copy document line');
+    assert.deepStrictEqual(
+      kindsOf(lines.filter((l) => l.depth === 1)), ['working-changes'],
+      'the copy appears only as the record of what was done to it');
+  }
 });
 
 test('Convert is on the PDF lines only, and Generate analysis is never on a PDF', () => {

@@ -469,7 +469,17 @@ export class EpubProcessor {
     return null;
   }
 
-  async getChapterText(chapterId: string): Promise<string> {
+  /**
+   * A chapter's text.
+   *
+   * `keepFootnoteMarkers` turns OFF the extractor's own footnote-marker strip —
+   * see `extractTextFromXhtml` for why the default has it on, and
+   * `loadEpubForComparison` for the one caller that must turn it off.
+   */
+  async getChapterText(
+    chapterId: string,
+    keepFootnoteMarkers = false
+  ): Promise<string> {
     if (!this.structure) {
       throw new Error('EPUB not open');
     }
@@ -483,7 +493,7 @@ export class EpubProcessor {
     const xhtml = await this.readFile(href);
 
     // Extract text from XHTML
-    return this.extractTextFromXhtml(xhtml);
+    return this.extractTextFromXhtml(xhtml, keepFootnoteMarkers);
   }
 
   /**
@@ -658,7 +668,15 @@ export class EpubProcessor {
     return join(candidates[1]);
   }
 
-  private extractTextFromXhtml(xhtml: string): string {
+  /**
+   * `keepFootnoteMarkers` leaves the digits-only superscript references IN.
+   *
+   * The default (false) is the narration reading and is what every other caller
+   * wants: the markers are not prose and nothing should read them out. The one
+   * caller that must say true is the DIFF of the pass that removes them — see
+   * `loadEpubForComparison`.
+   */
+  private extractTextFromXhtml(xhtml: string, keepFootnoteMarkers = false): string {
     // Remove the entire <head> section (contains <title> which we don't want as text)
     let text = xhtml.replace(/<head[\s\S]*?<\/head>/gi, '');
 
@@ -736,7 +754,15 @@ export class EpubProcessor {
     // `document:strip-sup-markers`, which removes the same markers from the book
     // itself. Two copies of it would mean the strip and the extractor disagreeing
     // about which superscripts are prose.
-    text = stripFootnoteMarkerSups(text).text;
+    //
+    // AND THAT IS WHY IT CAN BE TURNED OFF (2026-08-10). The Remove footnote
+    // references pass applies exactly this rule to the book, and its diff was
+    // computed from text this line had ALREADY stripped on both sides — so the
+    // frozen receipt recorded zero changes on every chapter and "Review changes"
+    // on the footnote line opened a diff of the book against itself. Measured on
+    // a real run: 3 markers removed, `2 units, 0 changes` written. The pass asks
+    // for the markers to be KEPT so its diff is a record of what it did.
+    if (!keepFootnoteMarkers) text = stripFootnoteMarkerSups(text).text;
 
     // Remove all remaining tags
     text = text.replace(/<[^>]+>/g, ' ');
@@ -1720,8 +1746,23 @@ export async function updateEpubMetadataStandalone(
 /**
  * Load an EPUB for comparison without modifying global state.
  * Returns chapter content for all chapters.
+ *
+ * ── `keepFootnoteMarkers`, and the bug it exists for ────────────────────────
+ *
+ * The text extractor removes digits-only footnote-reference superscripts
+ * (`extractTextFromXhtml` → `stripFootnoteMarkerSups`), which is right for every
+ * comparison of two books that differ in their PROSE. It is wrong for exactly
+ * one: the diff of the pass whose whole job is removing those markers. That pass
+ * read its before-text and its after-text through here, the extractor took the
+ * markers out of BOTH, and the frozen receipt it wrote recorded zero changes on
+ * every chapter — so "Review changes" on the footnote line opened a diff of the
+ * book against itself and there was nothing on screen (Owen, 2026-08-10: "when i
+ * clicked review changes on the footnote removal line, it never loaded").
+ *
+ * So the pass says true and sees its own work. Nothing else does: a Simplify
+ * diff showing marker churn would be noise about text the narrator never reads.
  */
-export async function loadEpubForComparison(epubPath: string): Promise<{
+export async function loadEpubForComparison(epubPath: string, keepFootnoteMarkers = false): Promise<{
   chapters: Array<{
     id: string;
     title: string;
@@ -1747,7 +1788,7 @@ export async function loadEpubForComparison(epubPath: string): Promise<{
     for (const chapter of structure.chapters) {
       const archivePath = processor.resolvePath(chapter.href);
       try {
-        const text = await processor.getChapterText(chapter.id);
+        const text = await processor.getChapterText(chapter.id, keepFootnoteMarkers);
         chapters.push({
           id: chapter.id,
           title: chapter.title,
