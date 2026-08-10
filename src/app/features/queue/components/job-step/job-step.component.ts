@@ -122,9 +122,10 @@ import { StageBarsComponent } from '../stage-bars/stage-bars.component';
         opacity: 0.7;
       }
 
+      /* Border only. A tinted fill on the running step made the panel read as two
+         different surfaces; the accent edge is enough to say which task is on. */
       &.processing {
         border-color: var(--accent);
-        background: color-mix(in srgb, var(--accent) 6%, var(--bg-elevated));
       }
 
       &.complete {
@@ -412,6 +413,11 @@ export class JobStepComponent {
     if (job.status === 'processing') {
       const speed = this.eta.speedLabel(job);
       if (speed) out.push({ label: 'Speed', value: speed });
+
+      // This task's own clock, beside this task's own estimate. The panel above
+      // states the whole run; a step twenty minutes into a twenty-five minute run
+      // can only say so here.
+      out.push({ label: 'Elapsed', value: this.eta.elapsedDisplay(job) });
 
       const stepEta = this.eta.etaDisplay(job, this.stages());
       if (stepEta !== '-') out.push({ label: 'ETA', value: stepEta });

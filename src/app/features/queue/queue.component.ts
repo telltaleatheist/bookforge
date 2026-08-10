@@ -88,6 +88,7 @@ import { QueueJob } from './models/queue.types';
             @if (activeJobs().length > 0) {
               <app-job-list
                 [jobs]="activeJobs()"
+                [stepsByJob]="stepsByJob()"
                 [selectedJobId]="selectedJobId()"
                 (remove)="removeJob($event)"
                 (retry)="retryJob($event)"
@@ -118,6 +119,7 @@ import { QueueJob } from './models/queue.types';
                   <div class="accordion-content">
                     <app-job-list
                       [jobs]="finishedJobs()"
+                      [stepsByJob]="stepsByJob()"
                       [selectedJobId]="selectedJobId()"
                       (remove)="removeJob($event)"
                       (retry)="retryJob($event)"
@@ -449,17 +451,30 @@ export class QueueComponent implements OnInit, OnDestroy {
    *
    * A standalone job reports itself as its own single step, so the panel has one
    * shape to render whether or not the job is part of a workflow.
+   *
+   * The anchor is resolved UP to the run it belongs to before anything is read off
+   * it. With nothing selected the panel follows whatever is RUNNING, which is a
+   * workflow CHILD, and a child knows only itself — so a narration run showed the TTS
+   * step as the entire job and the assembly queued behind it appeared on screen only
+   * once it started, carrying its own five minutes into the master's Elapsed field.
+   * The run is what the panel is about; its later steps are rows from the moment they
+   * are queued.
    */
   readonly rightPanel = computed<
     | { view: 'job'; job: QueueJob; steps: QueueJob[] }
     | { view: 'empty' }
     | { view: 'idle' }
   >(() => {
-    const job = this.selectedJob() ?? this.queueService.currentJob();
+    const anchor = this.selectedJob() ?? this.queueService.currentJob();
 
-    if (job) {
-      const isWorkflow = !!(job.workflowId && !job.parentJobId);
-      const steps = isWorkflow ? this.queueService.getChildJobs(job.id) : [job];
+    if (anchor) {
+      const master = anchor.parentJobId
+        ? this.queueService.jobs().find(j => j.id === anchor.parentJobId)
+        : anchor;
+      // A child whose master row has been cleared out from under it is still a job,
+      // and it is then a run of one — the same shape as a standalone.
+      const job = master === undefined ? anchor : master;
+      const steps = this.queueService.getChildJobs(job.id);
       // A workflow whose children haven't been created yet still needs a step to show.
       return { view: 'job', job, steps: steps.length > 0 ? steps : [job] };
     }
@@ -481,6 +496,24 @@ export class QueueComponent implements OnInit, OnDestroy {
   // Computed: finished jobs (complete + error), excluding sub-jobs
   readonly finishedJobs = computed(() => {
     return this.queueService.jobs().filter(j => (j.status === 'complete' || j.status === 'error') && !j.parentJobId);
+  });
+
+  /**
+   * The tasks belonging to each listed run, keyed by the run's row id.
+   *
+   * Built once per jobs() change and shared by both lists, so a run's whole task
+   * list is on screen the moment it is queued — not only once one of them is
+   * selected, and not only once a task starts.
+   */
+  readonly stepsByJob = computed<ReadonlyMap<string, QueueJob[]>>(() => {
+    const byMaster = new Map<string, QueueJob[]>();
+    for (const job of this.queueService.jobs()) {
+      if (!job.parentJobId) continue;
+      const steps = byMaster.get(job.parentJobId);
+      if (steps === undefined) byMaster.set(job.parentJobId, [job]);
+      else steps.push(job);
+    }
+    return byMaster;
   });
 
   // Local stats excluding sub-jobs
