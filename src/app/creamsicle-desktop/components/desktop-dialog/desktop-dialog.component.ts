@@ -113,7 +113,10 @@ export type DesktopDialogType = 'none' | 'info' | 'success' | 'warning' | 'error
     :host {
       position: fixed;
       inset: 0;
-      z-index: $z-modal;
+      // $z-dialog, not $z-modal: this dialog is spawned FROM modals (the
+      // readings choice from the conversion modal), and it must sit above
+      // whichever one asked. See _variables.scss for why the tier exists.
+      z-index: $z-dialog;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -227,6 +230,10 @@ export type DesktopDialogType = 'none' | 'info' | 'success' | 'warning' | 'error
     .dlg-actions {
       display: flex;
       justify-content: flex-end;
+      // Real answers get real sentences for labels ("Use the banked readings"),
+      // and three of them do not fit one 420px row — they wrap to new rows
+      // rather than overflowing the dialog (found live 2026-08-10).
+      flex-wrap: wrap;
       gap: $spacing-2;
       padding: $spacing-3 $spacing-5 $spacing-5;
     }
@@ -234,9 +241,13 @@ export type DesktopDialogType = 'none' | 'info' | 'success' | 'warning' | 'error
     .dlg-btn {
       @include button-base;
       @include focus-ring;
-      height: 32px;
-      padding: 0 $spacing-4;
+      // min-height, not height, and a real line-height: a label long enough to
+      // wrap inside its button gets a taller button, not clipped text.
+      min-height: 32px;
+      line-height: 1.3;
+      padding: $spacing-1 $spacing-4;
       font-size: $font-size-base;
+      text-align: center;
 
       &.dlg-btn-primary {
         background: var(--accent);

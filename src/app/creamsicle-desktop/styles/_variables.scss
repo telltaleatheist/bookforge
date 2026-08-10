@@ -198,6 +198,12 @@ $z-modal: 400;
 $z-popover: 500;
 $z-tooltip: 600;
 $z-notification: 700;
+// The desktop dialog — the app's topmost QUESTION. It can be spawned from
+// inside any modal, and several modals hardcode z-indexes up to 1200 (found
+// live 2026-08-10: the readings-choice dialog opened BEHIND the conversion
+// modal that asked it). A question nobody can see is a hang, so the dialog
+// outranks every modal, hardcoded or not.
+$z-dialog: 1500;
 $z-max: 9999;
 
 // =============================================================================
