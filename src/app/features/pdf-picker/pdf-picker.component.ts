@@ -1766,23 +1766,34 @@ interface AlertModal {
       &.disabled { opacity: 0.45; cursor: default; }
     }
 
+    /* A COLUMN whose children share its height, never a scroll container. Both
+       viewers own their scrolling internally (the raster viewer's
+       .pdf-viewport, the EPUB viewer's virtualized bands), so the pane itself
+       must not scroll: when it did (overflow: auto with the viewer at
+       height: 100%), any banner above the viewer pushed the sum past the pane
+       and grew a SECOND scrollbar beside the book's own — one bar scrolling
+       the book, one scrolling the box the book is in. Banners are
+       flex-shrink: 0 rows; the viewer takes what is left. */
     .viewer-pane {
       flex: 1;
-      height: 100%;
       min-height: 0; /* Allow flex child to shrink */
-      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
       background: var(--bg-sunken);
       position: relative;
     }
 
     /* The EPUB viewer owns its own scrolling and virtualization, so it must be
-       a BOUNDED box inside the pane — its \`:host { flex: 1 }\` is inert here
-       because the pane is not a flex container, and an unbounded host makes
-       every page-band measure "on screen": all of them mount, the frame budget
-       evicts them in a loop, and the book blinks in and goes gray. */
+       a BOUNDED box inside the pane. flex + min-height: 0 is that bound now
+       that the pane is a flex column — height: 100% was the old bound, and it
+       stopped being one the moment a banner shared the pane. An unbounded host
+       makes every page-band measure "on screen": all of them mount, the frame
+       budget evicts them in a loop, and the book blinks in and goes gray. */
     .viewer-pane app-epub-viewer {
       display: flex;
-      height: 100%;
+      flex: 1;
+      min-height: 0;
     }
 
     /* The narration copy: the one primary action of the book's flow, bottom-right.
@@ -2626,7 +2637,11 @@ interface AlertModal {
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      height: 100%;
+      /* A flex child of .viewer-pane, sized like the viewers are: height: 100%
+         would overflow the pane the moment a banner shares it, which is the
+         two-scrollbars bug this sizing exists to prevent. */
+      flex: 1;
+      min-height: 0;
       width: 100%;
       background: var(--bg-sunken);
       color: var(--text-secondary);
