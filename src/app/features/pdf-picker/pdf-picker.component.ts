@@ -14422,29 +14422,36 @@ export class PdfPickerComponent implements OnInit {
       });
     }
 
-    // ── The opening followed the name, so the PAGE has to be laid out again ──
+    // ── The book changed, so the DOCUMENTS that changed are laid out again ──
     //
     // Owen, 2026-08-09: "if the user changes the text of the chapter name, it
-    // updates the chapter opener to reflect that accurately." Main did that in
+    // updates the chapter opener to reflect that accurately." Main does that in
     // the book (`nameChapterOpenings`), which means the markup this window laid
-    // out no longer exists — the heading on screen is the old one. Only a real
-    // re-open ends with the window and the file agreeing, so it is a real
-    // re-open, and then the window goes back to the page the user was on,
-    // because being thrown to page 1 for renaming a chapter is its own kind of
-    // wrong. A long name simply wraps and pushes the chapter down; the viewer
-    // lays out the real text and needs nothing from here to do it.
-    if (answer.openingsNamed !== undefined && answer.openingsNamed > 0) {
-      const docId = this.activeDocumentId();
-      const doc = docId === null ? undefined : this.openDocuments().find(d => d.id === docId);
-      if (doc !== undefined) {
-        const target = doc.projectPath ?? doc.libraryPath;
-        const page = block.page;
-        queueMicrotask(async () => {
-          this.closeDocument(docId!);
-          await this.openTarget(target, 'restoring');
-          this.scrollBackAfterReopen(page);
-        });
-      }
+    // out no longer exists — the heading on screen is the old one.
+    //
+    // This used to be `closeDocument` + `openTarget`: a whole re-open, which
+    // re-stamps the book, paginates every spine document again and rebuilds the
+    // editor from nothing, for a dozen changed characters in one chapter. Owen,
+    // 2026-08-10: "every time i change chapter name, it reloads the whole book."
+    // Only the rewritten documents are laid out again now, in the book main
+    // still has open (`quire:relayout-entries`), and the reader stays where they
+    // were.
+    //
+    // Main says WHICH entries it rewrote. Nothing here infers them from
+    // `openingsNamed`, which is a count over the whole book and cannot name a
+    // document: a count above zero with no list would be a guess about which
+    // chapter to re-paginate.
+    const rewritten = answer.rewrittenEntries;
+    if (rewritten === undefined) {
+      this.showAlert({
+        title: 'This book may still show the old heading',
+        message: 'The rename landed in the book, but main did not say which of its documents it '
+          + 'rewrote, so the pages on screen were not laid out again. Close and re-open the book '
+          + 'to see the change.',
+        type: 'warning',
+      });
+    } else if (rewritten.length > 0) {
+      await this.relayoutBookAfterEdit(rewritten, block.bf_element);
     }
 
     if (answer.result.narrationCopy === 'already-stale') {
@@ -14460,6 +14467,132 @@ export class PdfPickerComponent implements OnInit {
         type: 'warning',
       });
     }
+  }
+
+  /**
+   * The book on screen catches up with the book on disk, without re-opening it.
+   *
+   * ── What actually has to change ───────────────────────────────────────────
+   *
+   * Three things, and they have to change TOGETHER or the window refuses itself:
+   *
+   *  - the open book's pagination, which main does incrementally in the document
+   *    it still holds (`quire:relayout-entries` → `QuireDocument.relayoutDocument`);
+   *  - the BLOCKS, because a document that gained a page moves every page number
+   *    after it and a block's id is a function of its page. They are re-read
+   *    through the analyzer's own door, which now finds the page map this
+   *    relayout wrote and does not paginate anything;
+   *  - the mounts, whose per-document page counts and offsets are what the
+   *    viewer bands are built from.
+   *
+   * They are applied in ONE synchronous run for a reason: `epubViewerState`
+   * refuses a book whose analyzed page count disagrees with its mounted one, and
+   * between two awaits that disagreement is exactly what it would see.
+   *
+   * ── There is no reopen behind this ────────────────────────────────────────
+   *
+   * A refusal is shown and the book is left as it was. Falling back to the full
+   * close-and-open would mean the slow path runs whenever the fast one is
+   * uncertain — which is how a fallback hides the bug that made it necessary.
+   * The book is re-paginated properly the next time the user opens it, and by
+   * then the page map for these bytes is already on disk.
+   *
+   * `anchorElement` is the element the user's gesture was ABOUT, by its key.
+   * Where it lands afterwards is read off the new blocks rather than computed
+   * from the page delta: the element knows its page, and arithmetic over a
+   * document that may itself have moved does not.
+   */
+  private async relayoutBookAfterEdit(
+    entries: string[],
+    anchorElement: string | undefined,
+  ): Promise<void> {
+    const handle = this.epubViewerHandle;
+    const bookPath = this.editorState.effectivePath();
+    if (handle === null || bookPath === '') {
+      this.showAlert({
+        title: 'This book is not open for viewing',
+        message: 'The edit landed in the book, but there is no open book on screen to lay out '
+          + 'again, so nothing was re-paginated. Open the book to see the change.',
+        type: 'warning',
+      });
+      return;
+    }
+
+    const answer = await this.electronService.quireRelayoutEntries(handle, bookPath, entries);
+    if (!answer.success || !answer.data) {
+      // Main's own sentence, verbatim: it names the document, the stamped copy
+      // or the verification that refused.
+      this.showAlert({
+        title: 'The pages were not laid out again',
+        message: answer.error === undefined
+          ? 'The relayout came back with no result and no reason, so the pages on screen were left '
+            + 'as they were.'
+          : `${answer.error}\n\nThe edit is in the book; only the pages on screen were not laid `
+            + 'out again. Close and re-open the book to see it.',
+        type: 'error',
+      });
+      return;
+    }
+    const relaid = answer.data;
+
+    const analyzed = await this.electronService.analyzePdfText(bookPath);
+    const text = analyzed.data;
+    if (!analyzed.success || text === undefined || text.sourceSha256 === undefined) {
+      this.showAlert({
+        title: 'The blocks were not re-read',
+        message: (analyzed.error
+          ?? 'The analysis came back with no blocks, or with no digest of the file it read, and '
+            + 'with no reason.')
+          + '\n\nThe book was laid out again but the editor still holds the previous blocks, whose '
+          + 'page numbers no longer mean what they say. Close and re-open the book.',
+        type: 'error',
+      });
+      return;
+    }
+    this.surfaceAnalysisWarnings(text.warnings, bookPath);
+
+    // ── One turn, no await between: see the header ─────────────────────────
+    const previousSource = this.epubViewerSource();
+    this.editorState.updateTextData({
+      blocks: text.blocks as TextBlock[],
+      categories: text.categories as Record<string, Category>,
+      categoryProvenance: statedProvenance(text.categoryProvenance),
+    });
+    this.editorState.pageDimensions.set(relaid.pageDimensions);
+    this.editorState.totalPages.set(relaid.pageCount);
+    this.analyzedSourceSha256.set(text.sourceSha256);
+    if (previousSource !== null) {
+      this.epubViewerSource.set({ ...previousSource, documents: relaid.documents });
+    }
+    const docId = this.activeDocumentId();
+    if (docId !== null) {
+      this.openDocuments.update(docs => docs.map(d => (d.id === docId
+        ? { ...d, blocks: text.blocks as TextBlock[], categories: text.categories as Record<string, Category> }
+        : d)));
+    }
+
+    // The frames that were already on screen loaded the OLD bytes from the same
+    // `quire://` address, so the ones whose documents changed are dropped and
+    // built again. The rest keep their frames — that is the whole difference
+    // from a re-open.
+    const relaidIndices: number[] = [];
+    relaid.documents.forEach((mount, index) => {
+      if (relaid.relaid.includes(mount.document)) relaidIndices.push(index);
+    });
+    if (relaidIndices.length > 0) this.epubViewer?.remountDocuments(relaidIndices);
+
+    // Where the user was, by IDENTITY. An element absent from the new blocks is
+    // not scrolled to and nothing is guessed in its place — the view simply
+    // stays where it is, which is the honest answer to "that thing is gone".
+    if (anchorElement !== undefined) {
+      const landed = (text.blocks as TextBlock[]).find(b => b.bf_element === anchorElement);
+      if (landed !== undefined) this.scrollToPage(landed.page);
+    }
+
+    console.log(
+      `[epub-viewer] relaid ${relaid.relaid.length} document(s) of ${bookPath} in `
+      + `${relaid.relayoutMs} ms (${relaid.totalMs} ms in all); the book is now `
+      + `${relaid.pageCount} page(s), ${relaid.pageDelta >= 0 ? '+' : ''}${relaid.pageDelta}.`);
   }
 
   /**

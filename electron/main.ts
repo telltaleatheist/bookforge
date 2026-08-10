@@ -8269,11 +8269,19 @@ function setupIpcHandlers(): void {
       // name. The picker says this sentence and nothing else about it — see
       // shared/document/chapter-opening-report.ts for why silence was the bug.
       let openingUnnamed: string | null = null;
+      // Every entry of the book these two edits between them rewrote. The
+      // window lays exactly these out again rather than re-opening the book, so
+      // the list has to be the WHOLE truth: the rename's tables of contents and
+      // chapter document, plus every document whose opening the naming pass
+      // changed — which is a different set, and can include chapters nobody
+      // renamed, because the pass normalizes the whole book.
+      const rewrittenEntries = new Set(result.rewrittenEntries);
       try {
         const { nameChapterOpenings } = await import('./narration-export.js');
         const summary = await nameChapterOpenings(projectDir, familyId);
         openingsNamed = summary.edited;
         openingUnnamed = chapterOpeningRefusal(summary, file);
+        for (const edit of summary.named) rewrittenEntries.add(edit.file);
       } catch (err) {
         broadcastToAllWindows('project:files-changed', projectDir);
         return {
@@ -8286,7 +8294,10 @@ function setupIpcHandlers(): void {
       }
 
       broadcastToAllWindows('project:files-changed', projectDir);
-      return { success: true, result, openingsNamed, openingUnnamed };
+      return {
+        success: true, result, openingsNamed, openingUnnamed,
+        rewrittenEntries: [...rewrittenEntries],
+      };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

@@ -102,6 +102,24 @@ async function stampedCopy(epubPath: string, fileHash: string): Promise<string> 
 }
 
 /**
+ * The cache key a book is kept under: its sha256, to the same 16 hex characters
+ * the analyzer truncates to (`PDFAnalyzer.analysisCacheKey`).
+ *
+ * One derivation, so the viewer, the stamped copy, the page map and the
+ * analysis payload all name the same directory for the same bytes.
+ */
+export async function bookFileHash(epubPath: string): Promise<string> {
+  const digest = await new Promise<string>((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fsSync.createReadStream(epubPath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
+  return digest.substring(0, 16);
+}
+
+/**
  * This book's stamped copy, made if it is not there, for a caller that has no
  * digest of its own.
  *
@@ -122,14 +140,7 @@ async function stampedCopy(epubPath: string, fileHash: string): Promise<string> 
 export async function stampedCopyForViewer(
   epubPath: string,
 ): Promise<{ stampedPath: string; fileHash: string; reused: boolean }> {
-  const digest = await new Promise<string>((resolve, reject) => {
-    const hash = crypto.createHash('sha256');
-    const stream = fsSync.createReadStream(epubPath);
-    stream.on('data', (chunk) => hash.update(chunk));
-    stream.on('end', () => resolve(hash.digest('hex')));
-    stream.on('error', reject);
-  });
-  const fileHash = digest.substring(0, 16);
+  const fileHash = await bookFileHash(epubPath);
   const at = stampedEpubPath(fileHash);
   let reused = true;
   try {

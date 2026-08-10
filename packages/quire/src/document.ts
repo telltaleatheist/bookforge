@@ -98,6 +98,18 @@ export class QuireDocument {
   private readonly sessionId: string;
   private readonly overrides = new Map<string, { body: Buffer; contentType: string }>();
 
+  /**
+   * Spine documents whose source is NOT the archive's any more, entry → the
+   * XHTML {@link relayoutDocument} was given.
+   *
+   * Consulted everywhere a spine document's source is read, so a second
+   * `layout()` — a geometry change — re-shells the relaid document from the
+   * bytes it was relaid with rather than silently reverting to the file the
+   * archive was opened on. Without it a relayout would hold only until the next
+   * time the reader resized, which is the kind of correctness that expires.
+   */
+  private readonly sourceOverrides = new Map<string, string>();
+
   private ses: Electron.Session | null = null;
   private attached: AttachedProtocol | null = null;
   private analysisHost: OffscreenWindowHost | null = null;
@@ -126,6 +138,17 @@ export class QuireDocument {
    */
   get strategyName(): string {
     return this.strategy.name;
+  }
+
+  /**
+   * The book's spine, as zip entry names in reading order.
+   *
+   * What {@link relayoutDocument} will accept, said before it is asked, so a
+   * caller that has rewritten some of a book's files can tell which of them have
+   * pages and which are only bytes.
+   */
+  get spine(): readonly string[] {
+    return this.archive.spine.map((s) => s.entry);
   }
 
   /** The Electron session the book is confined to. A display surface must use it. */
@@ -197,7 +220,7 @@ export class QuireDocument {
     // document — the display surface may ask for a page in a chapter the
     // analysis host never got to.
     for (const spineDoc of this.archive.spine) {
-      const source = await this.archive.readText(spineDoc.entry);
+      const source = await this.sourceFor(spineDoc.entry);
       const shell = buildPaginationShell(source, spineDoc.entry, layoutCss);
       this.overrides.set(spineDoc.entry, {
         body: Buffer.from(shell.xhtml, 'utf8'),
@@ -238,6 +261,147 @@ export class QuireDocument {
     this.buildPageIndex(pageOffset);
     this.report = this.buildReport(Date.now() - started);
     return this.report;
+  }
+
+  /**
+   * Lay ONE spine document out again from new bytes, and re-number the book
+   * around it.
+   *
+   * ── Why this can be one document ──────────────────────────────────────────
+   *
+   * `layout()` already measures every spine document as its own flow: a chapter
+   * always starts a page, so what a document does to the book is entirely
+   * described by its page COUNT. Change one document's bytes and the pages of
+   * every earlier document are untouched, the pages of every later one shift by
+   * the same delta, and nothing about any of them has to be measured again. This
+   * is that arithmetic, and it is the whole difference from a full relayout —
+   * the measurement of the changed document is the same shell, the same
+   * `layoutCss` from the same geometry, the same prelude and the SAME measure
+   * script, verification included. There is no cheaper path through the checks
+   * and none is offered: `SPLIT_DISAGREEMENT`, `CONTENT_REPEATED` and
+   * `PAGE_BOX_MISMATCH` all live inside that script and all still fire here.
+   *
+   * ── What the caller owes, and what it is owed ─────────────────────────────
+   *
+   * The document was opened on a stamped EPUB on disk. Relaying an entry out
+   * from bytes that are not in that file puts the two into disagreement, so the
+   * contract is one-directional and the caller keeps it: `newSourceXhtml` MUST
+   * be what the book on disk now says for `entry` — already written, or about to
+   * be, by the caller in the same operation. quire then holds the BOOK's state,
+   * and re-deriving the stale stamped file is the caller's (see
+   * `electron/quire-viewer-bridge.ts`, which re-stamps just these entries and
+   * writes the page map under the book's new digest).
+   *
+   * `getReport().layoutMs` afterwards is the time THIS relayout took, not the
+   * book's. Everything else the report says is exactly what a full `layout()` of
+   * the same bytes would say — proved in `tools/test-quire.js` against a fresh
+   * open of the edited book, block for block.
+   *
+   * ── Failure ───────────────────────────────────────────────────────────────
+   *
+   * Nothing is committed until the measurement is in hand. A refusal — an
+   * unparseable document, a prelude that would not load, any verification the
+   * measure script performs — leaves the document answering exactly what it
+   * answered before the call, page map included.
+   */
+  async relayoutDocument(entry: string, newSourceXhtml: string): Promise<QuireReport> {
+    this.assertLaidOut();
+    const geometry = this.geometry as QuireGeometry;
+
+    if (typeof newSourceXhtml !== 'string' || newSourceXhtml.trim().length === 0) {
+      quireFail(
+        'EMPTY_RELAYOUT_SOURCE',
+        `relayoutDocument(${entry}) was given no source. A spine document laid out from nothing `
+        + 'would be a book with a blank chapter in it, which is not what an edit to that chapter '
+        + 'means.',
+      );
+    }
+    if (this.archive.spine.findIndex((s) => s.entry === entry) < 0) {
+      quireFail(
+        'NOT_A_SPINE_DOCUMENT',
+        `${entry} is not a spine document of ${this.epubPath}, so it has no pages to lay out `
+        + `again. The spine is: ${this.archive.spine.map((s) => s.entry).join(', ')}.`,
+      );
+    }
+    const at = this.layouts.findIndex((l) => l.entry === entry);
+    if (at < 0) {
+      quireFail(
+        'NOT_LAID_OUT',
+        `${entry} is in the spine of ${this.epubPath} but carries no layout, so this document was `
+        + 'laid out from a different spine than the one it is being asked about.',
+      );
+    }
+    const host = this.analysisHost;
+    if (!host) {
+      quireFail('NOT_LAID_OUT', 'relayoutDocument() needs the analysis surface, which is gone');
+    }
+
+    const started = Date.now();
+    const shell = buildPaginationShell(newSourceXhtml, entry, this.strategy.layoutCss(geometry));
+
+    // The served bytes have to move BEFORE the host loads them — the shell is
+    // what `quire://` answers with — so the pre-relayout override is held here
+    // and put back by hand on every way out that is not success.
+    const heldOverride = this.overrides.get(entry);
+    const heldSource = this.sourceOverrides.get(entry);
+    this.overrides.set(entry, {
+      body: Buffer.from(shell.xhtml, 'utf8'),
+      contentType: 'application/xhtml+xml',
+    });
+    // Whatever happens next, the analysis surface no longer holds the document
+    // it was holding: a failed load leaves it on the rejected bytes, and a
+    // successful one leaves it on `entry`. Saying "nothing" is true in both.
+    this.loadedDocument = -1;
+    this.presentedPage = -1;
+
+    let measured: StrategyMeasurement;
+    try {
+      await this.loadInto(host, entry);
+      const raw = await host.evaluate(this.strategy.measureScript(geometry));
+      const parsed = JSON.parse(raw) as StrategyMeasurement & { error?: string; stack?: string };
+      if (parsed.error) {
+        quireFail('MEASUREMENT_FAILED', `${entry}: ${parsed.error}\n${parsed.stack ?? ''}`.trim());
+      }
+      measured = parsed;
+    } catch (err) {
+      if (heldOverride === undefined) this.overrides.delete(entry);
+      else this.overrides.set(entry, heldOverride);
+      if (heldSource === undefined) this.sourceOverrides.delete(entry);
+      else this.sourceOverrides.set(entry, heldSource);
+      throw err;
+    }
+
+    // ── Commit ────────────────────────────────────────────────────────────
+    // Staged into locals first, so a throw between here and the last assignment
+    // cannot leave a page index spliced onto layouts it does not describe.
+    const layouts = this.layouts.slice();
+    layouts[at] = {
+      entry, pageOffset: layouts[at].pageOffset, pageCount: measured.pageCount, measurement: measured,
+    };
+    let pageOffset = layouts[at].pageOffset + measured.pageCount;
+    for (let i = at + 1; i < layouts.length; i++) {
+      layouts[i] = { ...layouts[i], pageOffset };
+      pageOffset += layouts[i].pageCount;
+    }
+
+    this.layouts = layouts;
+    this.sourceOverrides.set(entry, newSourceXhtml);
+    this.loadedDocument = at;
+    this.buildPageIndex(pageOffset);
+    this.report = this.buildReport(Date.now() - started);
+    return this.report;
+  }
+
+  /**
+   * A spine document's source: what it was relaid out from, or the archive's.
+   *
+   * One reader, so a relaid document cannot come back from the file under a
+   * caller that only asked for a different page size.
+   */
+  private async sourceFor(entry: string): Promise<string> {
+    const relaid = this.sourceOverrides.get(entry);
+    if (relaid !== undefined) return relaid;
+    return this.archive.readText(entry);
   }
 
   /**
@@ -504,5 +668,6 @@ export class QuireDocument {
     }
     this.archive.close();
     this.overrides.clear();
+    this.sourceOverrides.clear();
   }
 }
