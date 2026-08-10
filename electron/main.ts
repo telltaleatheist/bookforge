@@ -10964,11 +10964,18 @@ function setupIpcHandlers(): void {
           'generated',
           'generated',
           path.basename(generatedRecord.absPath, path.extname(generatedRecord.absPath)),
+          // The parent is NAMED, not alluded to — Owen, 2026-08-10: a book line
+          // that does not say which version it came from "breaks the chain of
+          // custody". A project with several PDFs has exactly one archive
+          // original, and this book came out of that one.
           generatedRecord.origin === 'cast'
-            ? 'The book read out of your PDF\'s pages. Nothing writes to it — your working copy is '
-              + 'made from it.'
-            : 'The book read out of your PDF\'s pages, kept from when BookForge started preserving '
-              + 'them — so it carries any edits made before that. Nothing writes to it now.',
+            ? `The book read out of ${archiveOriginal
+                ? `${path.basename(archiveOriginal.absPath)}'s`
+                : 'your PDF\'s'} pages. Nothing writes to it — your working copy is made from it.`
+            : `The book read out of ${archiveOriginal
+                ? `${path.basename(archiveOriginal.absPath)}'s`
+                : 'your PDF\'s'} pages, kept from when BookForge started preserving them — so it `
+              + 'carries any edits made before that. Nothing writes to it now.',
           generatedRecord.absPath,
           '📗',
           false,
@@ -11035,8 +11042,17 @@ function setupIpcHandlers(): void {
           // Named as what it IS rather than as an output, because the act on
           // this row is now "Erase all changes": a row calling itself "the EPUB
           // with your edits applied" beside a button that clears them is a row
-          // the user has to reconcile.
-          'Your copy of the book, and every change you have made to it',
+          // the user has to reconcile. The PARENT is named too (Owen,
+          // 2026-08-10: an epub that does not point at which version it came
+          // from "breaks the chain of custody"): the generated book when the
+          // project has one, else the archive original the copy was minted
+          // from. A project with neither still has a true, if parentless,
+          // sentence — that state is real (a legacy layout mid-migration).
+          `Your copy of ${generatedRecord
+            ? path.basename(generatedRecord.absPath)
+            : archiveOriginal
+              ? path.basename(archiveOriginal.absPath)
+              : 'the book'}, and every change you have made to it`,
           exportRecord.absPath,
           '✅',
           true,
