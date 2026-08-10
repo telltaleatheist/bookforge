@@ -143,10 +143,13 @@ export interface ChainButtons {
   /**
    * Erase all changes (scope 'everything').
    *
-   * Only where the act would otherwise have no home: the book line of a
-   * PDF-origin project, whose `exported` row has been absorbed. When the book
-   * line IS the exported row, erasing everything is that line's own delete and a
-   * second button would be the same act twice.
+   * On the book line of BOTH origins, and always as a SPECIAL — never as the
+   * line's delete. It was the delete's label once, and Owen caught what that
+   * does to the grid (2026-08-10): "its a specialty button, and should be on
+   * the left side instead of covering the delete button" — the delete column is
+   * 78px wide because "Delete" is, and a longer act crammed into it paints over
+   * its neighbours. So the delete column holds acts called Delete, and the acts
+   * with real names sit in the flexible specials column where their names fit.
    */
   readonly eraseEverything: boolean;
   readonly review: ReviewAffordance;
@@ -260,12 +263,17 @@ export function bookChain(input: BookChainInput): ChainLine[] {
         // and only when it is a book. A project whose top-level line is somehow
         // not an EPUB has nothing for simplify or translate to rewrite.
         passes: bookRow.extension === 'epub',
-        // The exported row has been absorbed into this line, so its act comes
-        // with it. When this line IS the exported row, that act is its delete.
-        eraseEverything: bookType === 'generated' && exportedRow !== null,
+        // Wherever there is a working copy there are changes to erase, and the
+        // act lives HERE, as a special, whichever row this line is standing on.
+        eraseEverything: exportedRow !== null,
         open: true,
         export: true,
-        delete: true,
+        // PDF-origin: this line is the generated book, and its delete is the
+        // heavy act (the cast goes, the working copy with it). EPUB-native:
+        // this line IS the working copy, whose only honest delete is the erase
+        // special above — a second button doing the same act under the name
+        // "Delete" is how the column came to hold text it could not fit.
+        delete: bookType === 'generated',
       },
     });
 

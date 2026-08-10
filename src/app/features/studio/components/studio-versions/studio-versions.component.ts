@@ -1713,9 +1713,15 @@ export class StudioVersionsComponent {
    * the changes, not the working copy").
    */
   deleteLineLabel(row: ChainRowView): string {
-    if (row.line.kind === 'working-changes') return 'Erase changes';
-    if (row.line.kind === 'ledger') return 'Delete';
-    return row.v === null ? 'Delete' : this.deleteLabel(row.v);
+    // "Erase" alone: the row is already titled "Working changes", and the
+    // column is 78px — "Erase changes" was the label Owen caught overflowing
+    // it. The tooltip carries the whole sentence. Every other line's danger
+    // button is a real file delete and is called Delete; the act with the long
+    // name ("Erase all changes") lives in the specials column of the book line,
+    // where width is not rationed (Owen, 2026-08-10: "its a specialty button,
+    // and should be on the left side instead of covering the delete button").
+    if (row.line.kind === 'working-changes') return 'Erase';
+    return 'Delete';
   }
 
   /**
@@ -3306,17 +3312,6 @@ export class StudioVersionsComponent {
     return !['original', 'analysis', 'narration'].includes(v.type);
   }
 
-  /**
-   * What the danger button on each row is CALLED.
-   *
-   * The book row's is not "Delete" any more, and that is the whole of Owen's
-   * 2026-08-09 ruling: "the thing they 'delete' is actually the changes, not the
-   * working copy." Deleting that file was never a durable act — the next open
-   * mints it again, byte-identical — so the button says what actually happens.
-   */
-  deleteLabel(v: VersionRow): string {
-    return v.type === 'exported' ? 'Erase all changes' : 'Delete';
-  }
 
   deleteTitle(v: VersionRow): string {
     switch (v.type) {

@@ -154,15 +154,21 @@ test('Review changes is offered per ledger line, and says so when the diff is mi
   assert.strictEqual(lines.find((l) => l.kind === 'book').buttons.review, 'none');
 });
 
-test('Erase all changes only lands on a book line that ABSORBED the working copy', () => {
-  // PDF-origin: the book line is the cast, and the exported row is not drawn —
-  // so its act comes with it.
+test('Erase all changes is a SPECIAL on every book line, and never the delete', () => {
+  // Owen, 2026-08-10: "its a specialty button, and should be on the left side
+  // instead of covering the delete button." The delete column is 78px because
+  // "Delete" is; the erase act's name lives where width is not rationed.
+  //
+  // PDF-origin: the book line is the cast. Erase is a special; Delete stays,
+  // because deleting the CAST is a real, different, heavier act.
   const cast = bookChain({ rows: pdfProject, ledger: [] }).find((l) => l.kind === 'book');
   assert.strictEqual(cast.buttons.eraseEverything, true);
-  // EPUB-native: the book line IS the exported row, so erasing everything is
-  // that line's own delete and a second button would be the same act twice.
+  assert.strictEqual(cast.buttons.delete, true);
+  // EPUB-native: the book line IS the working copy, whose only honest delete
+  // is the erase — so the delete column is EMPTY, not a second name for it.
   const own = bookChain({ rows: epubProject, ledger: [] }).find((l) => l.kind === 'book');
-  assert.strictEqual(own.buttons.eraseEverything, false);
+  assert.strictEqual(own.buttons.eraseEverything, true);
+  assert.strictEqual(own.buttons.delete, false);
 });
 
 test('a PDF nobody has converted is one line, with no book and no chain', () => {
