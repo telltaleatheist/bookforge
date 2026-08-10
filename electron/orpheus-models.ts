@@ -38,7 +38,7 @@
 import { app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getConfig } from './tool-paths';
+import { getConfig, getOrpheusStreamingArtifact } from './tool-paths';
 import { isWslAliveCached, wslWedgedMessage, isWslWedged } from './wsl-lifecycle';
 
 /** True when a path lives on a \\wsl$ / \\wsl.localhost UNC mount. */
@@ -119,6 +119,36 @@ export interface OrpheusVoiceCaps {
  * migration structurally backward-compatible.
  */
 export type OrpheusArtifact = 'merged' | 'adapter';
+
+/**
+ * WHY a voice is being resolved, which is what decides the artifact form when BOTH are
+ * installed. The two render paths want opposite defaults and both are right:
+ *
+ *   'batch'   the audiobook workers (parallel-tts-bridge). Always MERGED. One voice per
+ *             worker process, hours of decode, no voice switching — so nothing is gained
+ *             from the shared base and everything from skipping vLLM's LoRA path, which
+ *             adds two rank-64 GEMMs per targeted projection per token (196 on this 3B).
+ *   'stream'  the resident streaming server (orpheus-worker-pool) and every client of it
+ *             — the /listen player, the TTS API server, the browser extension. CONFIGURABLE
+ *             via `orpheusStreamingArtifact` in tool-paths.json, default MERGED.
+ *
+ *             This one is a judgement call rather than an obvious win, which is why it is
+ *             a setting. The adapter buys warm voice switching (a LoRA registration
+ *             instead of a ~6.2 GB reload plus CUDA-graph recapture) and per-request
+ *             casting; merged buys ~10-20% fewer GEMMs on every token. Owen chose merged
+ *             on 2026-08-10: a "warm" switch still waits ~20-30 s for the next sentence,
+ *             so it was never the instant switch the shared base implied, while the
+ *             per-token saving lands on every sentence of every session. Flip the setting
+ *             to 'adapter' to get the old behaviour back — both forms stay installed, so
+ *             nothing is re-downloaded.
+ *
+ * The two forms are the same model, not an approximation of each other: verified
+ * 2026-08-09 by range-reading the deployed merged checkpoints and diffing them against a
+ * local fuse of base+adapter — 28.3 M sampled elements per voice, zero differing. So
+ * serving one when the other is absent is NOT the kind of substitution the NO-FALLBACK
+ * rule forbids; what stays forbidden is serving a voice whose BASE is missing.
+ */
+export type OrpheusServePurpose = 'batch' | 'stream';
 
 /** The shared base model an adapter voice rides on. */
 export interface OrpheusBaseRef {
@@ -299,22 +329,26 @@ export interface OrpheusManifestEntry {
    */
   kind?: 'voice' | 'base';
   /**
-   * Which artifact form of this voice is ACTIVE. Absent ⇒ merged, which is what
-   * makes every pre-existing manifest resolve byte-for-byte as before.
+   * PIN of which artifact form this voice is served from, overriding the caller's
+   * purpose. Absent is now the NORMAL state, not a default-to-one-form: both artifacts
+   * are expected to be installed, and which one serves depends on WHY it is being
+   * resolved (see OrpheusServePurpose).
    *
-   * A voice may have BOTH forms installed at once — that is the intended A/B state
-   * while adapters are being proven (deploy_voice.sh can push a merged copy and an
-   * adapter for the same voice). There is still exactly ONE manifest entry for the
-   * voice; this field says which of the two installs is served:
+   * Having BOTH forms installed is the designed steady state, not a migration artifact:
+   * the batch workers render from the merged copy and the resident streaming server
+   * swaps adapters on a warm engine. There is still exactly ONE manifest entry per
+   * voice; this field only pins it against the purpose:
    *
    *   both installed + `artifact: 'merged'`   → the merged folder (explicit pin)
-   *   both installed + `artifact: 'adapter'`  → the adapter (the curated default)
-   *   both installed + artifact ABSENT        → the adapter (adapters win by default)
+   *   both installed + `artifact: 'adapter'`  → the adapter (explicit pin)
+   *   both installed + artifact ABSENT        → purpose decides: batch→merged, stream→adapter
    *   only one installed                      → that one, whatever this field says
    *
    * The last line is NOT a fallback: a voice installed in exactly one form has only
-   * one thing to serve. What is explicitly forbidden is serving a MERGED copy because
-   * an adapter's BASE is missing — that throws (see resolveOrpheusModel).
+   * one thing to serve, and the two forms are the same weights (verified 2026-08-09,
+   * 28.3 M sampled elements, zero differing). What is explicitly forbidden is serving a
+   * MERGED copy because an adapter's BASE is missing — that throws (see
+   * resolveOrpheusModel).
    */
   artifact?: OrpheusArtifact;
   /** Folder name under the models dir for the MERGED install (defaults to id). */
@@ -788,6 +822,7 @@ export function resolveOrpheusStockBase(): { dir: string; verified: boolean } | 
  */
 function resolveOrpheusInstall(
   entry: OrpheusManifestEntry,
+  purpose: OrpheusServePurpose,
 ): { artifact: OrpheusArtifact; dir: string; baseDir?: string; base?: OrpheusBaseRef } | null {
   const root = getOrpheusModelsDir();
   const mergedDir = path.join(root, entry.dir || entry.id);
@@ -796,8 +831,11 @@ function resolveOrpheusInstall(
   const hasAdapter = isAdapterFolder(adapterDir);
   if (!hasMerged && !hasAdapter) return null;
 
-  // Both installed → the declaration decides, and only an EXPLICIT 'merged' pins the
-  // merged copy; absent means adapter, because an adapter install is a deliberate act.
+  // Both installed → an EXPLICIT `artifact` on the entry still pins the form (a curated
+  // override survives everything); absent, the CALLER'S PURPOSE decides — merged for the
+  // batch workers, and for the streaming server whatever `orpheusStreamingArtifact` says
+  // (default merged). See OrpheusServePurpose for what each form costs and why neither
+  // choice is a NO-FALLBACK breach.
   // One installed → that one (see the OrpheusManifestEntry.artifact doc block).
   //
   // ┌── CANONICAL: EVERY PLATFORM CAN SERVE A LoRA (stage B2, 2026-08-04) ─────────────┐
@@ -808,19 +846,28 @@ function resolveOrpheusInstall(
   // │                                                                                   │
   // │ There is no longer a darwin exception. e2a's orpheus.py applies a PEFT adapter to │
   // │ the resident MLX model by wrapping its projection modules (_apply_mlx_adapter —   │
-  // │ stage B2 of ORPHEUS_ADAPTER_MIGRATION.md work area B), so the Mac serves base +   │
-  // │ adapter directly and a voice switch swaps wrappers instead of reloading 6.2 GB.   │
-  // │ The old preference here forced the FUSED merged copy on darwin because MLX could  │
-  // │ not load a LoRA at all; keeping it would now cost the very thing B2 bought — a    │
-  // │ fused voice is its own weights, so every switch between two of them is a full     │
-  // │ engine reload.                                                                    │
+  // │ stage B2 of ORPHEUS_ADAPTER_MIGRATION.md work area B), so the Mac CAN serve base +│
+  // │ adapter directly. That capability is what makes the choice a SETTING rather than  │
+  // │ a platform fact: nothing here branches on os any more.                            │
+  // │                                                                                   │
+  // │ What B2 bought — a voice switch that swaps wrappers instead of reloading 6.2 GB — │
+  // │ is real but is deliberately NOT taken by default any more (2026-08-10). Measured  │
+  // │ against how streaming actually behaves, a warm switch still waits ~20-30 s for    │
+  // │ the next sentence, so the saving it delivers is far smaller than the ~10-20%      │
+  // │ per-token cost the LoRA path adds to EVERY sentence. Set                          │
+  // │ `orpheusStreamingArtifact: "adapter"` to take that trade the other way.           │
   // │                                                                                   │
   // │ The install-time fuse is NOT removed by B2 and its output is not dead: a fused    │
   // │ copy is what an explicit `artifact: 'merged'` pin selects, and it is the only     │
   // │ form that survives the shared base being uninstalled. Retiring the fuse phase is  │
   // │ a separate decision, recorded as owed in the migration doc.                       │
   // └───────────────────────────────────────────────────────────────────────────────────┘
-  const preferred: OrpheusArtifact = entry.artifact === 'merged' ? 'merged' : 'adapter';
+  const preferred: OrpheusArtifact =
+    entry.artifact !== undefined
+      ? entry.artifact
+      : purpose === 'stream'
+        ? getOrpheusStreamingArtifact()
+        : 'merged';
   const active: OrpheusArtifact =
     hasMerged && hasAdapter ? preferred : hasAdapter ? 'adapter' : 'merged';
 
@@ -892,7 +939,9 @@ function tuningFields(e: OrpheusManifestEntry): OrpheusTuningFields {
  * of throwing — a broken voice must stay visible so the UI can explain it. The RENDER
  * path (resolveOrpheusModel) throws for that same voice.
  */
-export function listOrpheusModels(): OrpheusModel[] {
+export function listOrpheusModels(
+  purpose: OrpheusServePurpose = 'batch',
+): OrpheusModel[] {
   if (!orpheusDirAccessible()) {
     console.warn('[ORPHEUS-MODELS] listOrpheusModels skipped — WSL not responding (models dir is \\\\wsl$); returning no custom models');
     return [];
@@ -910,7 +959,7 @@ export function listOrpheusModels(): OrpheusModel[] {
     const e = applyTuning<OrpheusManifestEntry>(base, catalog);
     if (e.kind === 'base') return null;
     try {
-      const install = resolveOrpheusInstall(e);
+      const install = resolveOrpheusInstall(e, purpose);
       if (!install) return null;
       return {
         id: e.id, label: e.label || prettyLabel(e.id), voice: e.token || e.id,
@@ -980,6 +1029,43 @@ export function listOrpheusModels(): OrpheusModel[] {
   return out;
 }
 
+/**
+ * Which artifact FORMS of a voice are on disk, independent of which one would be served.
+ *
+ * Exists because "is this voice installed?" stopped being one question the moment both
+ * forms became the steady state. Two callers need the per-form answer and would both be
+ * wrong asking listOrpheusModels (which reports the ONE form a given purpose resolves to):
+ *
+ *  - the HF catalog's per-repo Download button: the merged repo and the `-lora` repo of
+ *    one voice share an id, so an id-level "installed" check marks the fused copy as
+ *    already present the moment the adapter lands, and the Download that would actually
+ *    fetch it is disabled.
+ *  - the base's dependants list: a voice still NEEDS the shared base whenever its adapter
+ *    is on disk, even when batch renders resolve to the merged copy and never touch it.
+ *
+ * Mirrors resolveOrpheusInstall's folder derivation exactly (catalog-overlaid `dir` /
+ * `adapterDir`, defaulting to the id) so the two can never disagree about where a form
+ * lives. Reports both false when the models dir is unreachable, matching what
+ * listOrpheusModels does in that state — the caller renders "not installed", never a
+ * claim that something IS installed.
+ */
+export function installedArtifactsFor(id: string): { merged: boolean; adapter: boolean } {
+  if (!orpheusDirAccessible()) {
+    console.warn(`[ORPHEUS-MODELS] installedArtifactsFor('${id}') skipped — WSL not responding`);
+    return { merged: false, adapter: false };
+  }
+  const root = getOrpheusModelsDir();
+  const runtime = readManifest().models.find((e) => e.id === id);
+  const entry = applyTuning<OrpheusManifestEntry>(
+    { id, ...(runtime ?? {}) } as OrpheusManifestEntry,
+    loadTuningCatalog(),
+  );
+  return {
+    merged: isMergedModelFolder(path.join(root, entry.dir || id)),
+    adapter: isAdapterFolder(path.join(root, ADAPTERS_SUBDIR, entry.adapterDir || id)),
+  };
+}
+
 /** One installed shared base model. */
 export interface OrpheusBaseInstall {
   /** Folder name under `_base/`. */
@@ -1032,13 +1118,28 @@ export function listOrpheusBases(): OrpheusBaseInstall[] {
  * is not an installed custom model (i.e. it's a built-in voice). Uses the manifest
  * token when present, else falls back to id-as-token for an unlisted folder.
  *
+ * `purpose` decides which artifact form a both-installed voice resolves to — merged for
+ * the batch workers, adapter for the resident streaming server (see OrpheusServePurpose).
+ * It is REQUIRED rather than defaulted: every caller knows which path it is, and a
+ * default would silently hand one path the other's form.
+ *
  * This is the RENDER path, so unlike listOrpheusModels it FAILS LOUDLY rather than
- * annotating: an adapter voice whose base model is missing (or that declares no base)
- * throws. It must never quietly serve a merged copy of the same voice that happens to
- * still be on disk — mid-migration that is the likeliest state, and the substitution
- * would be inaudible until someone A/B'd the whole book.
+ * annotating: when the resolved form IS the adapter and its base model is missing (or it
+ * declares no base), this throws.
+ *
+ * Note what that does and does not forbid, because the two look alike. Serving the merged
+ * copy of a voice under `purpose: 'batch'` is now the INTENDED routing, and is safe
+ * because the two forms are the same weights (verified 2026-08-09: 28.3 M sampled
+ * elements per voice, zero differing). What stays forbidden is reaching the merged copy
+ * as a CONSOLATION for an adapter that could not be served — a failed base download
+ * silently producing a render nobody knows took a different path. Since the form is
+ * chosen from `purpose` before the base is ever looked at, that substitution has no way
+ * to happen: 'stream' resolves the adapter and throws, it never quietly retargets.
  */
-export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel | null {
+export function resolveOrpheusModel(
+  id: string | undefined | null,
+  purpose: OrpheusServePurpose,
+): OrpheusModel | null {
   if (!id) return null;
   // THROW rather than return null here: a null means "built-in voice", and silently
   // downgrading a custom voice to a built-in because WSL happens to be down would
@@ -1068,7 +1169,7 @@ export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel
       if (declaredRef) entry.base = { id: declaredRef, ref: declaredRef };
     }
   }
-  const install = resolveOrpheusInstall(entry);
+  const install = resolveOrpheusInstall(entry, purpose);
   if (!install) return null;
   return {
     id, label: entry.label || prettyLabel(id), voice: entry.token || id,
@@ -1125,7 +1226,7 @@ export function orpheusVoiceCapsForModel(model: OrpheusModel): OrpheusVoiceCaps 
  * we never silently render an artifact-laden file because the manifest couldn't be read.
  */
 export function resolveOrpheusPostRenderFilter(id: string | undefined | null): string | undefined {
-  return resolveOrpheusModel(id)?.postRenderFilter;
+  return resolveOrpheusModel(id, 'batch')?.postRenderFilter;
 }
 
 /**
@@ -1148,7 +1249,7 @@ export const DEFAULT_SENTENCE_GAP = 0.6;
  * manifest value (undefined when untested); callers apply DEFAULT_SENTENCE_GAP visibly.
  */
 export function resolveOrpheusSentenceGap(id: string | undefined | null): number | undefined {
-  return resolveOrpheusModel(id)?.sentenceGap;
+  return resolveOrpheusModel(id, 'batch')?.sentenceGap;
 }
 
 /**
@@ -1156,5 +1257,5 @@ export function resolveOrpheusSentenceGap(id: string | undefined | null): number
  * Undefined = no floor (chunk joins are the model's bare trained tail).
  */
 export function resolveOrpheusMinChunkGap(id: string | undefined | null): number | undefined {
-  return resolveOrpheusModel(id)?.minChunkGap;
+  return resolveOrpheusModel(id, 'batch')?.minChunkGap;
 }

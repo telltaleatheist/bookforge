@@ -705,7 +705,11 @@ function resolveLoadPlan(voice: string): LoadPlan {
   // Changing which WEIGHTS are served triggers a reload in the worker; registering
   // another voice over the same base does not (see loadedEngineKey).
   // resolveOrpheusModel THROWS when the \\wsl$ models dir is unreachable (WSL down).
-  const model = resolveOrpheusModel(v);
+  // 'stream' is what makes a voice with BOTH artifacts installed resolve to its ADAPTER
+  // here while the batch workers take the merged copy: switching voices is this path's
+  // whole workload, and an adapter swap on a warm engine costs no 6.2 GB reload and no
+  // CUDA-graph recapture (see OrpheusServePurpose).
+  const model = resolveOrpheusModel(v, 'stream');
   // A null model means "not a resolvable custom model folder". That's correct for a
   // built-in voice (loads token-only) or any voice the pool advertises, but for an
   // UNKNOWN id the Python worker's allowlist would silently downgrade it to the
@@ -1415,7 +1419,13 @@ export function canServeVoicePerRequest(voice: string): boolean {
   const v = (voice || '').toLowerCase();
   if (ORPHEUS_VOICES.includes(v)) return true;
   try {
-    return resolveOrpheusModel(v)?.artifact === 'adapter';
+    // 'stream' to match resolveLoadPlan: this guard asks what the STREAMING path will
+    // serve, so it must resolve through the same setting that path does. With the
+    // default `orpheusStreamingArtifact: 'merged'` this now returns FALSE for custom
+    // voices — correctly: fused voices are separate weights and genuinely cannot share
+    // one batch, so per-request casting is off until the setting is flipped back to
+    // 'adapter'. That is the known cost of the fused streaming default, not a bug.
+    return resolveOrpheusModel(v, 'stream')?.artifact === 'adapter';
   } catch {
     return false;
   }

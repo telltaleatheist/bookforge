@@ -35,6 +35,7 @@ import {
   upsertManifestEntry,
   removeManifestEntry,
   listOrpheusModels,
+  installedArtifactsFor,
   readManifest,
   resolveOrpheusBase,
   orpheusBaseFolderName,
@@ -377,9 +378,19 @@ export async function fetchOrpheusCatalog(): Promise<OrpheusCatalogEntry[]> {
         // Installed if the manifest records this repo as a source, or the voice's token
         // id is installed (the same voice from an older/other repo), or — last resort —
         // a hand-dropped folder is named after the repo short-name.
-        const localId =
-          localIdByRepoRef.get(repoId) ??
-          (installedIds.has(id) ? id : installedIds.has(shortName) ? shortName : undefined);
+        // "Installed?" is answered PER ARTIFACT FORM. A voice's merged repo and its
+        // `-lora` repo declare the SAME orpheus_token, so they share an id — and the
+        // id-level check marked the fused card Installed the moment the adapter landed,
+        // disabling the only Download that fetches what the batch renderer now wants.
+        // installedArtifactsFor derives its folders exactly as resolveOrpheusInstall
+        // does, so a card can never claim an install the resolver won't find.
+        const forms = installedArtifactsFor(id);
+        const thisFormInstalled = artifact === 'adapter' ? forms.adapter : forms.merged;
+        const localId = thisFormInstalled
+          ? localIdByRepoRef.get(repoId) ?? id
+          : installedIds.has(shortName)
+            ? shortName
+            : undefined;
         const baseInstalled = base ? isBaseRefInstalled(base) : true;
         return {
           repoId,
@@ -400,9 +411,21 @@ export async function fetchOrpheusCatalog(): Promise<OrpheusCatalogEntry[]> {
       }
     }),
   );
-  return resolved
-    .filter((e): e is OrpheusCatalogEntry => e !== null)
-    .sort((a, b) => a.label.localeCompare(b.label));
+  const entries = resolved.filter((e): e is OrpheusCatalogEntry => e !== null);
+  // A voice now ships as TWO source repos that declare the same `orpheus_token` AND the
+  // same card `label`, so the panel would show two identically-named cards with nothing
+  // to say which Download fetches the copy the audiobook renderer wants. Name the FORM,
+  // but only for a voice that actually offers both — owen and ender ship merged-only and
+  // keep their plain labels rather than being tagged with a distinction that has no
+  // second side.
+  const formsPerVoice = new Map<string, number>();
+  for (const e of entries) formsPerVoice.set(e.id, (formsPerVoice.get(e.id) || 0) + 1);
+  for (const e of entries) {
+    if ((formsPerVoice.get(e.id) || 0) > 1) {
+      e.label = `${e.label} (${e.artifact === 'adapter' ? 'adapter' : 'fused'})`;
+    }
+  }
+  return entries.sort((a, b) => a.label.localeCompare(b.label));
 }
 
 // ── install (download) ────────────────────────────────────────────────────────
@@ -893,22 +916,32 @@ export async function installOrpheusModel(
     label,
     token: voiceToken,
     // An adapter lands under adapters/<id>; a merged voice keeps the top-level <id>.
-    // `artifact` is written EXPLICITLY in both cases: this install is a deliberate
-    // choice of form, and when both forms are present it is the only thing that says
-    // which one to serve.
+    // Only the FOLDER is recorded — `artifact` is deliberately NOT written here.
     //
-    // A FUSED (macOS) install records BOTH folders and `artifact: 'merged'`, because
-    // both are real. Since stage B2 the adapter is the one that actually gets SERVED on
-    // a Mac: this field is the runtime manifest's, and the tuning catalog's
-    // `artifact: 'adapter'` is spread over it by applyTuning (catalog wins — it is a
-    // fact about the voice, not about this machine). `artifact: 'merged'` here is what
-    // an UNCATALOGUED fused voice falls back to, and it is exactly right for one: no
-    // catalog entry means nothing declares the voice ships as a LoRA.
+    // It used to be, back when installing was a choice BETWEEN the two forms and the
+    // field said which of them to serve. Both forms are now the expected steady state
+    // (merged for the batch workers, adapter for the resident streaming server — see
+    // OrpheusServePurpose), so `artifact` has become a PIN that overrides the caller's
+    // purpose. Writing it on every install would pin every voice to whichever form was
+    // installed LAST and silently defeat the routing: install the fused copy and
+    // streaming stops swapping adapters; install the adapter and every audiobook renders
+    // through the LoRA path. Which forms exist is already answered by which folders are
+    // on disk, which is exactly what resolveOrpheusInstall reads.
+    //
+    // A FUSED (macOS) install records BOTH folders, because both are real — and since
+    // stage B2 MLX serves the adapter directly, so it must not be pinned to merged
+    // either.
+    // Installing ONE form must not erase the record of the OTHER. upsertManifestEntry
+    // replaces the entry wholesale, so without carrying the sibling pointer across,
+    // installing the fused copy of a voice that already has an adapter would drop
+    // `adapterDir` (and vice versa). Today both default to the id and every deployed
+    // folder is named for its id, so the loss is invisible — which is exactly why it is
+    // worth closing now rather than after a voice ships with a non-default folder name.
     ...(artifact === 'adapter'
       ? fuseOnDarwin
-        ? { adapterDir: id, dir: id, artifact: 'merged' as const }
-        : { adapterDir: id, artifact: 'adapter' as const }
-      : { dir: id, artifact: 'merged' as const }),
+        ? { adapterDir: id, dir: id }
+        : { adapterDir: id, ...(existing?.dir ? { dir: existing.dir } : {}) }
+      : { dir: id, ...(existing?.adapterDir ? { adapterDir: existing.adapterDir } : {}) }),
     ...(base ? { base } : {}),
     format: 'hf',
     sampleRate,
@@ -957,10 +990,15 @@ export function removeOrpheusModel(id: string): { success: boolean; error?: stri
       //                       fused locally from this very base. Not counted, correctly:
       //                       the voice keeps working, and all deleting the base costs is
       //                       a re-download the next time one is installed.
-      // A darwin voice with BOTH forms on disk now resolves as 'adapter' unless its
-      // catalog entry explicitly pins 'merged', so the three deployed LoRA voices are
-      // counted on a Mac exactly as they are on Windows.
-      const dependants = listOrpheusModels().filter((m) => m.artifact === 'adapter').map((m) => m.id);
+      // NOT `listOrpheusModels().artifact` any more. That reports the ONE form a given
+      // purpose resolves to, and a voice with both forms installed reports 'merged'
+      // under the default 'batch' purpose — so the base would look unused and be
+      // deletable while the streaming server still needs it to serve that voice's
+      // adapter. The question here is "does an adapter exist on disk for this voice",
+      // which is purpose-independent and is what installedArtifactsFor answers.
+      const dependants = listOrpheusModels()
+        .filter((m) => installedArtifactsFor(m.id).adapter)
+        .map((m) => m.id);
       if (dependants.length > 0) {
         return {
           success: false,

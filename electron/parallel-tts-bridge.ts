@@ -136,11 +136,17 @@ import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedg
  * Append the voice/fine-tune CLI args for the selected voice. Centralizes the
  * cases so prep, the lightweight worker, and the app.py worker stay in sync:
  *
- *  1. Folder-discovered custom Orpheus model:
+ *  1. Folder-discovered custom Orpheus model. This is the BATCH path, so it resolves
+ *     with `purpose: 'batch'` — a voice with both artifact forms installed renders from
+ *     its MERGED copy here, while the resident streaming server takes the adapter (see
+ *     OrpheusServePurpose in orpheus-models.ts). A worker renders one voice for hours and
+ *     never switches, so it has nothing to gain from the shared base and everything to
+ *     gain from skipping vLLM's per-token LoRA GEMMs.
  *     - MERGED  → --orpheus_model_dir + the folder's voice token (orpheus.py points
  *       every backend at the dir and skips the built-in allowlist that otherwise
  *       drops it to leah).
- *     - ADAPTER → --orpheus_base_dir + --orpheus_adapter_dir + the voice token.
+ *     - ADAPTER → --orpheus_base_dir + --orpheus_adapter_dir + the voice token. Still
+ *       reached for a voice installed ONLY as an adapter (nothing else to serve).
  *       e2a loads the shared base and serves the LoRA per request; it hard-errors on
  *       a missing base, a malformed adapter, or a missing/'internal' voice, so the
  *       three flags always travel together.
@@ -170,7 +176,7 @@ function pushVoiceArgs(args: string[], settings: ParallelTtsSettings): void {
     // resolveOrpheusModel THROWS for an adapter voice whose shared base is missing —
     // that propagates out of here as a job failure, which is the point: we never fall
     // back to a merged copy of the same voice that happens to still be on disk.
-    const model = resolveOrpheusModel(settings.fineTuned);
+    const model = resolveOrpheusModel(settings.fineTuned, 'batch');
     if (model) {
       if (model.artifact === 'adapter') {
         // Belt-and-braces: resolveOrpheusModel guarantees baseDir for an adapter, so
@@ -252,7 +258,7 @@ function pushVoiceArgs(args: string[], settings: ParallelTtsSettings): void {
 function orpheusServeArtifact(settings: ParallelTtsSettings): OrpheusServeArtifact {
   if (settings.ttsEngine !== 'orpheus') return 'merged';
   if (settings.orpheusModelDir) return 'merged';
-  return resolveOrpheusModel(settings.fineTuned)?.artifact ?? 'merged';
+  return resolveOrpheusModel(settings.fineTuned, 'batch')?.artifact ?? 'merged';
 }
 
 function orpheusVoiceCaps(settings: ParallelTtsSettings): OrpheusVoiceCaps {
@@ -260,7 +266,7 @@ function orpheusVoiceCaps(settings: ParallelTtsSettings): OrpheusVoiceCaps {
   // Explicit CLI --model-dir bypasses models.json, so there's no manifest entry to
   // read caps from (mirrors pushVoiceArgs' first branch).
   if (settings.orpheusModelDir) return {};
-  const model = resolveOrpheusModel(settings.fineTuned);
+  const model = resolveOrpheusModel(settings.fineTuned, 'batch');
   if (!model) return {};
   // The flat + per-backend merge lives in orpheus-models.ts so the resident
   // streaming server resolves caps through the EXACT same channel (it used to

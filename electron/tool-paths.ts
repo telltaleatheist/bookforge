@@ -118,6 +118,32 @@ export interface ToolPathsConfig {
   // (user-hosted), so they're extracted-and-relocated rather than sha256-verified.
   rvcVoiceSources?: { url: string; name: string }[];
 
+  /**
+   * Which Orpheus artifact form the RESIDENT STREAMING path serves (the /listen player,
+   * the TTS API server and the browser extension, which are all clients of the same
+   * engine). Absent ⇒ 'merged'. The batch audiobook workers are NOT affected — they
+   * always take the merged copy.
+   *
+   * 'merged' (default) renders from the fused checkpoint: ~10-20% fewer GEMMs per token
+   * than the LoRA path, which is what streaming latency is actually made of. The cost is
+   * that each merged voice is its own engine identity, so changing voice rebuilds the
+   * engine (~6 GB load + CUDA-graph capture) instead of registering a LoRA on a warm one,
+   * and voices can no longer be mixed within one batch (canServeVoicePerRequest).
+   * Accepted deliberately (Owen, 2026-08-10): a warm switch still waits ~20-30 s for the
+   * next sentence, so it was never the instant switch the design implied, while the
+   * per-token saving applies to every sentence.
+   *
+   * 'adapter' restores the shared-base behaviour — warm voice switching and per-request
+   * casting. Flipping this value is the ONLY thing needed to go back: both artifact forms
+   * stay installed side by side, so there is nothing to re-download.
+   *
+   * A STRING rather than a boolean on purpose. Settings' tool-path draft is a
+   * Record<string,string> and sends `'true'` for a checked box, which every `=== true`
+   * reader in this file silently mis-reads (see the BOOLEAN_KEYS note below) — a string
+   * enum cannot fall into that trap.
+   */
+  orpheusStreamingArtifact?: 'adapter' | 'merged';
+
   // WSL2 Configuration (Windows only)
   useWsl2ForAllTts?: boolean;     // Use WSL2 for ALL TTS engines (not just Orpheus)
   useWsl2ForOrpheus?: boolean;    // Master toggle to use WSL2 for Orpheus (legacy, superseded by useWsl2ForAllTts)
@@ -846,6 +872,32 @@ export function shouldUseWsl2ForOrpheus(): boolean {
   if (os.platform() !== 'win32') return false;
   loadConfig();
   return state.config.useWsl2ForOrpheus === true;
+}
+
+/**
+ * Which artifact form the resident streaming engine serves — see
+ * `ToolPathsConfig.orpheusStreamingArtifact` for what each costs and why 'merged' is the
+ * default. This is the single switch between the fused and adapter streaming patterns.
+ *
+ * An unrecognised value THROWS rather than quietly reverting to the default. A typo here
+ * would otherwise route every stream down the other pattern with nothing reporting it,
+ * and the two are near-indistinguishable by ear — the difference shows up only as
+ * latency, which is exactly what someone setting this key is trying to change.
+ */
+export function getOrpheusStreamingArtifact(): 'adapter' | 'merged' {
+  loadConfig();
+  // Read as `unknown`, not as the declared union: this value comes off a JSON file that
+  // people hand-edit, and the Settings draft writes '' for a cleared field. The declared
+  // type is the CONTRACT; these checks are what enforce it at the boundary.
+  const v = state.config.orpheusStreamingArtifact as unknown;
+  if (v === undefined || v === null || v === '') return 'merged';
+  if (v !== 'adapter' && v !== 'merged') {
+    throw new Error(
+      `tool-paths.json: orpheusStreamingArtifact is ${JSON.stringify(v)}; the only valid ` +
+      `values are "merged" (fused checkpoint, the default) and "adapter" (shared base + LoRA).`,
+    );
+  }
+  return v;
 }
 
 /**
