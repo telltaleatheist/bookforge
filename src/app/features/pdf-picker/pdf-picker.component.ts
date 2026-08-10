@@ -33,13 +33,6 @@ import { MergePanelComponent } from './components/merge-panel/merge-panel.compon
 import { RegexCriteria, defaultRegexCriteria } from './shared/regex-criteria';
 import { FilePickerComponent } from './components/file-picker/file-picker.component';
 import { CropPanelComponent } from './components/crop-panel/crop-panel.component';
-import {
-  PassOptionsModalComponent,
-  type PassAiChoice,
-  type PassOptionsKind,
-  type PassOptionsResult,
-} from './components/pass-options-modal/pass-options-modal.component';
-import type { ChainPassRequest } from '@shared/processing/pass-types';
 import { QueueService } from '../queue/services/queue.service';
 import { SettingsService } from '../../core/services/settings.service';
 import { computeBaselines, learnFromBreaks, detectParagraphBreaks, getDefaultConfig, type DetectionConfig } from './services/paragraph-detector';
@@ -52,12 +45,10 @@ import {
   TASK_ORDER,
   TASK_LABELS,
   STATUS_GLYPH,
-  EPUB_PASS_IDS,
   TaskId,
   TaskGroup,
   PanelId,
   TaskStatus,
-  isEpubPassId,
   deriveAllTaskStatuses,
   deriveNarrationCopyStatus,
   isBlockFullyOutside,
@@ -68,7 +59,6 @@ import {
   railShortcutsFor,
   railTaskForDigit,
   viewedArtifactOf,
-  type EpubPassTaskId,
   type ViewedArtifact,
 } from '@shared/document/rail-tasks';
 import { samePath } from '@shared/document/same-path';
@@ -77,7 +67,7 @@ import {
   describeWorkingCopyRemint,
   type WorkingCopyRemint,
 } from '@shared/document/working-copy-remint';
-import { narrationRefusal, type PassRecord } from '@shared/document/version-family';
+import { narrationRefusal } from '@shared/document/version-family';
 import {
   deriveNarrationStrikes,
   describeUnstruckDeletions,
@@ -448,7 +438,6 @@ interface AlertModal {
     FilePickerComponent,
     CropPanelComponent,
     DocumentNavComponent,
-    PassOptionsModalComponent,
     ExportSettingsModalComponent,
     TaskRailComponent,
   ],
@@ -1160,16 +1149,6 @@ interface AlertModal {
           </div>
         </div>
       </div>
-    }
-
-    <!-- The two EPUB passes that cannot start from a button alone. -->
-    @if (passOptionsKind(); as kind) {
-      <app-pass-options-modal
-        [kind]="kind"
-        [ai]="passAiChoice()"
-        (cancel)="passOptionsKind.set(null)"
-        (confirmed)="onPassOptionsConfirmed($event)"
-      />
     }
 
     <!-- Export Settings Modal -->
@@ -3874,14 +3853,6 @@ export class PdfPickerComponent implements OnInit {
      * two read-only EPUBs apart to say why each is read-only.
      */
     generatedPath: string | null;
-    /**
-     * `manifest.outputs.epub.appliedPasses` for that book, in execution order.
-     *
-     * It arrives with the path because it is the same round trip and the same
-     * book: the rail's pass entries say what has been run, and a second ask
-     * would be a second answer about one file.
-     */
-    appliedPasses: readonly PassRecord[];
   } | null>(null);
 
   /**
@@ -3903,21 +3874,6 @@ export class PdfPickerComponent implements OnInit {
     const answer = this.bookEpubAnswer();
     const dir = this.projectPath();
     return answer && dir && answer.dir === dir ? answer.path : null;
-  });
-
-  /**
-   * What has been done to THIS project's book, or an empty list.
-   *
-   * Empty covers three real states and needs to distinguish none of them: no
-   * project, no answer yet, and a book nothing has been run over. In each of
-   * them every pass entry reads "not run", which is true — whether the entry
-   * can be PRESSED is `disabledTasks`' question, and it is answered there with
-   * its own sentence.
-   */
-  readonly bookAppliedPasses = computed<readonly PassRecord[]>(() => {
-    const answer = this.bookEpubAnswer();
-    const dir = this.projectPath();
-    return answer && dir && answer.dir === dir ? answer.appliedPasses : [];
   });
 
   /** Main's refusal about THIS project, or null. */
@@ -3980,7 +3936,6 @@ export class PdfPickerComponent implements OnInit {
         dir,
         path: info.exported ? info.exported.absPath : null,
         generatedPath: info.generated ? info.generated.absPath : null,
-        appliedPasses: info.appliedPasses,
       });
       // This is where the window first learns which chain it opened; stamped
       // the same way as the answer above, for the same reason.
@@ -5628,10 +5583,6 @@ export class PdfPickerComponent implements OnInit {
       removedBlockCount: deletedBlockIds.size,
       crop: { croppedPageCount: this.editorState.cropRegions().size },
       mergeCount: this.editorState.blockMerges().size,
-      // The book's own record of what has been run over it. A pass that has run
-      // says so, and it says it from the manifest rather than from anything this
-      // window remembers doing.
-      appliedPasses: this.bookAppliedPasses(),
     });
   });
 
@@ -5650,22 +5601,14 @@ export class PdfPickerComponent implements OnInit {
     const isEpub = this.isCurrentDocumentEpub();
     const lightweight = this.lightweightMode();
 
-    // The book's passes answer to the BOOK, not to the viewer: they rewrite the
-    // file main has recorded, and neither the page renderer nor the block layer
-    // is involved. So they are refused for the two reasons that are actually
-    // theirs, by name, and are not touched by the curation rules below.
-    const passRefusal = this.epubPassRefusal();
-    if (passRefusal) {
-      for (const id of EPUB_PASS_IDS) disabled.set(id, passRefusal);
-    }
-
     // The narration copy is not on this map any more: it left the rail on
     // 2026-08-08 for the bottom-right primary action, and its own refusal is
-    // `narrationExportRefusal` below.
+    // `narrationExportRefusal` below. The book's text passes left it entirely
+    // on 2026-08-10 — they are offered from the versions page's modal
+    // (shared/processing/book-passes.ts), so the rail has no entry to refuse.
 
     for (const id of TASK_ORDER) {
       if (id === 'select') continue;
-      if (isEpubPassId(id)) continue;
       // Curation is refused on the artifact on screen — the archive original,
       // a book handed to narration. The rail says so on each entry rather than
       // vanishing: the reason is the same sentence the banner over the viewer
@@ -5685,24 +5628,6 @@ export class PdfPickerComponent implements OnInit {
       }
     }
     return disabled;
-  });
-
-  /**
-   * Why the book's text passes cannot run here, or null.
-   *
-   * Two states, and neither is inferred from the other: a document that belongs
-   * to no project has nowhere to record a pass, and a project with no book has
-   * nothing for a pass to read. Main refuses both by name (`requireBookEpub`);
-   * this is the same refusal said before the press rather than after it.
-   */
-  private readonly epubPassRefusal = computed<string | null>(() => {
-    const noProject = this.noProjectReason();
-    if (noProject) return noProject;
-    if (this.bookEpubPath() === null) {
-      return 'This project has no book yet, and the text passes rewrite the book — convert its '
-        + 'PDF to an EPUB from the versions page first.';
-    }
-    return null;
   });
 
   /**
@@ -10528,192 +10453,6 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
-   * A rail entry that runs a pass over the book was pressed.
-   *
-   * Simplify and Translate are AI runs over a whole book — hours — so both go to
-   * the queue, and their options dialog is where their settings are chosen.
-   *
-   * Removing footnote numbers is neither: it has no settings to choose (the rule
-   * is fixed, and it is the same rule the narration copy has always been cut by)
-   * and it takes seconds. So it runs HERE, and the user watches the numbers
-   * disappear from the page they are looking at — which is the entire point of
-   * the pass, and something a queue row in another tab cannot deliver.
-   */
-  private startEpubPass(kind: EpubPassTaskId): void {
-    switch (kind) {
-      case 'footnote-refs':
-        void this.removeFootnoteReferences();
-        return;
-      case 'simplify':
-        this.passOptionsKind.set('simplify');
-        return;
-      case 'translate':
-        this.passOptionsKind.set('translate');
-        return;
-      default: {
-        const unknown: never = kind;
-        throw new Error(`There is no ${String(unknown)} pass on the rail.`);
-      }
-    }
-  }
-
-  /**
-   * Take the footnote reference numbers out of the book, now, and reload it.
-   *
-   * Owen: "does it actually edit the text? we need a way to edit the text
-   * directly." So the answer on screen has to be the book without the numbers,
-   * not a message saying they went — the view is reloaded from the rewritten
-   * file before the user is told anything.
-   *
-   * "Nothing to remove" is reported as INFORMATION, not as an error. It is the
-   * honest answer for a book that never had digits-only references and for one
-   * this has already been run over, and both are ordinary things for a user to
-   * try; a red failure dialog would send them looking for a fault that is not
-   * there.
-   */
-  private async removeFootnoteReferences(): Promise<void> {
-    const projectDir = this.projectPath();
-    if (!projectDir) {
-      this.showAlert({
-        title: 'No project',
-        message: 'This pass rewrites the project\'s book, and this document does not belong to a '
-          + 'project.',
-        type: 'error',
-      });
-      return;
-    }
-
-    this.loading.set(true);
-    this.loadingText.set('Removing footnote numbers...');
-    try {
-      const result = await this.electronService.removeFootnoteReferences(projectDir);
-      if (!result.success) {
-        this.showAlert({
-          title: 'Nothing to remove',
-          message: result.error
-            || 'The footnote numbers could not be removed, and nothing said why. Your book is '
-            + 'untouched.',
-          type: 'info',
-        });
-        return;
-      }
-
-      // The bytes on disk changed under the open book, so everything this window
-      // derived from them is stale. Re-measured in the order the open path uses
-      // — what the book is, what is struck out of it, then the document itself —
-      // which is the same sequence the erase act runs for the same reason.
-      await this.refreshBookEpub();
-      await this.refreshNarrationState();
-      const book = this.bookEpubPath();
-      if (book) await this.showArtifact(book);
-
-      this.showAlert({
-        title: 'Footnote numbers removed',
-        message: (result.summary ?? 'The reference numbers are gone from the book\'s text.')
-          + (result.ledgerRefusal
-            ? `\n\n${result.ledgerRefusal}`
-            : '\n\nIt is a line under your book on the versions page — delete that line to put the '
-              + 'numbers back.'),
-        type: 'success',
-      });
-    } catch (err) {
-      this.showAlert({
-        title: 'Nothing was changed',
-        message: err instanceof Error ? err.message : String(err),
-        type: 'error',
-      });
-    } finally {
-      this.loading.set(false);
-    }
-  }
-
-  /**
-   * Queue one text pass over this project's book.
-   *
-   * Simplify and Translate: AI rewrites of a whole book, hours each, so the
-   * queue is where they are watched and cancelled.
-   */
-  private async enqueueEpubPass(pass: ChainPassRequest): Promise<void> {
-    const projectDir = this.projectPath();
-    if (!projectDir) {
-      this.showAlert({
-        title: 'No project',
-        message: 'A text pass rewrites the project\'s book, and this document does not belong to a project.',
-        type: 'error',
-      });
-      return;
-    }
-    if (!await this.submitPassRun(projectDir, [pass])) return;
-    this.showAlert({
-      title: 'Queued',
-      message: 'It runs when the queue reaches it. Watch it on the Queue tab.',
-      type: 'success',
-    });
-  }
-
-  /**
-   * Submit passes to the queue, surfacing main's own refusal verbatim.
-   *
-   * Answers whether the run was QUEUED so a caller can tell a refusal from a
-   * submission — the refusal itself is main's own sentence, shown verbatim.
-   */
-  private async submitPassRun(projectDir: string, passes: ChainPassRequest[]): Promise<boolean> {
-    try {
-      const result = await this.queueService.submitProcessingRun({ projectDir, passes });
-      if (!result.success) {
-        this.showAlert({
-          title: 'That run was refused',
-          message: result.error || 'The run was refused and no reason was given.',
-          type: 'error',
-        });
-        return false;
-      }
-      return true;
-    } catch (err) {
-      this.showAlert({
-        title: 'That run was refused',
-        message: err instanceof Error ? err.message : String(err),
-        type: 'error',
-      });
-      return false;
-    }
-  }
-
-  /** The simplify/translate dialog is open for this pass, or null. */
-  readonly passOptionsKind = signal<PassOptionsKind | null>(null);
-
-  /**
-   * Who runs a text pass: the provider and model set in Settings → Pipeline
-   * Defaults, plus whatever credentials the AI settings hold.
-   *
-   * Read here rather than in the dialog so the dialog stays presentational, and
-   * an empty model is passed through as an empty model — the dialog refuses it
-   * by name, which is the only useful thing to do with "no model chosen".
-   */
-  readonly passAiChoice = computed<PassAiChoice>(() => {
-    const kind = this.passOptionsKind();
-    const defaults = this.settingsService.getPipelineDefaults();
-    const ai = this.settingsService.getAIConfig();
-    const provider = kind === 'translate' ? defaults.translateProvider : defaults.simplifyProvider;
-    const model = kind === 'translate' ? defaults.translateModel : defaults.simplifyModel;
-    return {
-      provider,
-      model,
-      ...(ai.ollama?.baseUrl ? { ollamaBaseUrl: ai.ollama.baseUrl } : {}),
-      ...(ai.claude?.apiKey ? { claudeApiKey: ai.claude.apiKey } : {}),
-      ...(ai.openai?.apiKey ? { openaiApiKey: ai.openai.apiKey } : {}),
-    };
-  });
-
-  onPassOptionsConfirmed(result: PassOptionsResult): void {
-    this.passOptionsKind.set(null);
-    void this.enqueueEpubPass(
-      result.kind === 'simplify'
-        ? { kind: 'simplify', simplify: result.simplify }
-        : { kind: 'translate', translate: result.translate });
-  }
-
-  /**
    * Save changes back to the source EPUB file.
    * Used when editing an EPUB directly (not via a project).
    */
@@ -13111,13 +12850,6 @@ export class PdfPickerComponent implements OnInit {
     // bypass used to sit in front of the check.
     if (this.disabledTasks().has(id as TaskId)) return;
 
-    // The book's entries START WORK rather than open a panel. They keep no
-    // `activePanel` for the same reason Select does not: what they leave behind
-    // is a file or a record, and the rail reads that back.
-    if (id !== 'analysis' && isEpubPassId(id)) {
-      this.startEpubPass(id);
-      return;
-    }
     // Select owns no panel: choosing it closes whatever panel had taken over the
     // pointer, so the click does what it looks like it does.
     if (id === 'select') {

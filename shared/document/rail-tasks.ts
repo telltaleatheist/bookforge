@@ -7,18 +7,18 @@
  *
  *  - **The rail's CONTENTS are a fact about the ARTIFACT on screen.** A PDF —
  *    the archive original or the working copy, the same pages either way —
- *    offers the curation modes and their tasks. An EPUB offers the passes that
- *    rewrite the book, and the narration copy cut from it. `ViewedArtifact` is
- *    the measured answer to "which kind of file is in the viewer", and it is
- *    measured from the file's own extension: a `.epub` is a book, anything else
- *    is a source document. Nothing else is consulted, because nothing else can
- *    change what a file IS.
+ *    offers the curation modes and their tasks. An EPUB offers NOTHING: the
+ *    text passes moved to the versions page's own modal
+ *    (shared/processing/book-passes.ts) on 2026-08-10, and the picker's job for
+ *    a book is reading it. `ViewedArtifact` is the measured answer to "which
+ *    kind of file is in the viewer", and it is measured from the file's own
+ *    extension: a `.epub` is a book, anything else is a source document.
+ *    Nothing else is consulted, because nothing else can change what a file IS.
  *  - **Whether an entry is ALLOWED is a separate question**, answered by the
  *    picker with its own sentence per entry (curation is refused on the archive
- *    original, and every pass is refused on a document with no project). The two
- *    must not be conflated: hiding the rail answered the second question by
- *    deleting the first, which is how the passes once ended up with nowhere to
- *    live.
+ *    original). The two must not be conflated: hiding the rail answered the
+ *    second question by deleting the first, which is how the passes once ended
+ *    up with nowhere to live.
  *
  * The task ids are DERIVED from the table, so a new entry is a compile error at
  * every site that switches on one (see `deriveTaskStatus`'s `assertNever` in
@@ -26,7 +26,6 @@
  */
 
 import { samePath } from './same-path';
-import { latestPassByKind, type PassRecord } from './version-family';
 
 /**
  * What the file in the viewer IS.
@@ -82,25 +81,6 @@ export interface RailGroup {
   readonly tasks: readonly string[];
 }
 
-/**
- * The book's text passes: the runs that rewrite `outputs.epub` in place.
- *
- * Declared apart from the table so `EpubPassTaskId` can be derived from THIS and
- * not from "everything on the book's rail" — the narration copy sits beside them
- * and is not a pass. It writes a second file and records no provenance, so a
- * type that swept it in would demand a pass kind for it.
- *
- * `footnote-refs` is first because it is the cheapest and the one you want to
- * have done BEFORE an AI rewrite reads the book: a paragraph handed to a model
- * with "the treaty was signed12" in it is a paragraph the model has to guess
- * about. It is also the only one of the three that answers immediately — it
- * takes seconds and does not queue.
- */
-const BOOK_PASS_GROUP = {
-  id: 'passes',
-  label: 'Text passes',
-  tasks: ['footnote-refs', 'simplify', 'translate'],
-} as const;
 
 /**
  * The rail, per artifact, in rail order.
@@ -119,37 +99,33 @@ const BOOK_PASS_GROUP = {
  * picker owns it directly — so it is deliberately NOT a rail task id any more,
  * and nothing derives a status, a digit shortcut or a disabled-reason for it
  * through the rail.
+ *
+ * The BOOK's rail is EMPTY since 2026-08-10 (Owen: "ai simplify and translate
+ * are done through that modal instead of through the pdf picker window").
+ * The text passes are offered from the book's own line on the versions page —
+ * `shared/processing/book-passes.ts` is that list — and from nowhere else, so
+ * a book in the picker carries no checklist at all: reading it is the picker's
+ * whole job for a book.
  */
 export const ARTIFACT_RAIL_GROUPS = {
   source: [
     { id: 'modes', label: 'Mode', tasks: ['select', 'crop'] },
     { id: 'cleanup', label: 'Clean up', tasks: ['merge'] },
   ],
-  book: [
-    BOOK_PASS_GROUP,
-  ],
+  book: [],
 } as const satisfies Record<ViewedArtifact, readonly RailGroup[]>;
 
 type ArtifactRailGroups = typeof ARTIFACT_RAIL_GROUPS;
 
 /** Every rail entry there is — derived from the table, never listed twice. */
 export type RailTaskId =
-  ArtifactRailGroups[keyof ArtifactRailGroups][number]['tasks'][number];
-
-/** The entries that run a PASS over the book. Derived from the pass group alone. */
-export type EpubPassTaskId = typeof BOOK_PASS_GROUP['tasks'][number];
-
-/** Those entries, in rail order. */
-export const EPUB_PASS_TASK_IDS: readonly EpubPassTaskId[] = [...BOOK_PASS_GROUP.tasks];
+  ArtifactRailGroups['source'][number]['tasks'][number];
 
 /** Human, sentence-case labels shown in the rail. */
 export const RAIL_TASK_LABELS: Record<RailTaskId, string> = {
   select: 'Select',
   crop: 'Crop',
   merge: 'Merge blocks',
-  'footnote-refs': 'Remove footnote numbers',
-  simplify: 'Simplify',
-  translate: 'Translate',
 };
 
 /**
@@ -239,64 +215,4 @@ export interface RailTaskStatus {
   readonly kind: RailTaskStatusKind;
   /** Factual, non-judgmental detail line, e.g. "applied to 12 pages", "not run". */
   readonly detail: string;
-}
-
-/**
- * Which recorded pass kind each EPUB entry IS.
- *
- * Written out rather than assumed from the id: the ids are the rail's and the
- * kinds are the manifest's (`AppliedPassKind`), and they happen to spell the
- * same today. A silent rename on either side would otherwise light the wrong
- * status.
- */
-const PASS_KIND_OF: Record<EpubPassTaskId, string> = {
-  'footnote-refs': 'footnote-refs',
-  simplify: 'simplify',
-  translate: 'translate',
-};
-
-/**
- * The day a pass ran, as the local calendar has it, or null when the record
- * carries no readable timestamp.
- *
- * Null is a real state and not a missing value standing in for one: a manifest
- * is a file that outlives the build that wrote it, and a record whose `at` this
- * app cannot read is still proof the pass RAN — which is the part the status is
- * about.
- */
-function recordedDay(at: string): string | null {
-  const parsed = Date.parse(at);
-  if (!Number.isFinite(parsed)) return null;
-  const d = new Date(parsed);
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${month}-${day}`;
-}
-
-/**
- * Whether this pass has been applied to the book on screen, from the book's own
- * provenance.
- *
- * `latestPassByKind` is the ONE implementation of latest-wins (the versions
- * page's stars and the provenance badges read it too), so a book simplified
- * twice reads here exactly as it reads there.
- *
- * `passes` is `manifest.outputs.epub.appliedPasses`, verbatim. An empty list is
- * a real value — a freshly built book has had nothing done to it — and says
- * "not run" rather than nothing at all.
- */
-export function derivePassStatus(
-  id: EpubPassTaskId,
-  passes: readonly PassRecord[]
-): RailTaskStatus {
-  const record = latestPassByKind(passes).get(PASS_KIND_OF[id]);
-  if (!record) return { kind: 'untouched', detail: 'not run' };
-  const day = recordedDay(record.latest.at);
-  const when = day ? ` ${day}` : '';
-  return {
-    kind: 'done',
-    detail: record.count === 1
-      ? `applied${when}`
-      : `applied ${record.count} times, last${when}`,
-  };
 }

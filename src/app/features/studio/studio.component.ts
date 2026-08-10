@@ -245,13 +245,17 @@ import { samePath } from '@shared/document/same-path';
                     Content
                   </button>
                 }
-                <button
-                  class="main-tab"
-                  [class.active]="mainTab() === 'audiobook'"
-                  (click)="setMainTab('audiobook')"
-                >
-                  Process
-                </button>
+                <!-- The Process page has no tab of its own (Owen, 2026-08-10:
+                     "the user doesnt need access to the processing page through
+                     the tab along the top. that tab can go"). Its doors are the
+                     Process buttons on the versions page and the narration
+                     modal's "More options" line — goToProcessing() still lands
+                     here, the strip just doesn't offer it cold. -->
+                @if (mainTab() === 'audiobook') {
+                  <button class="main-tab active">
+                    Process
+                  </button>
+                }
                 <button
                   class="main-tab"
                   [class.active]="mainTab() === 'analytics'"

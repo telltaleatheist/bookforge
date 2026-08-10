@@ -22,9 +22,9 @@
  * model, no GPU, seconds rather than hours. It is a pass all the same, and it is
  * one of these rather than a private act on the side because it does precisely
  * what the other two do: rewrites the book in place and owes the user a diff and
- * a ledger entry. Being cheap is a reason to offer it a synchronous door
- * (`book:remove-footnote-references`), not a reason to give it a second
- * mechanism.
+ * a ledger entry. (It briefly had a synchronous door of its own for the picker's
+ * rail; both went 2026-08-10 — every pass now arrives through the one queue
+ * submission, from the versions page's modal.)
  *
  * Making the book is not a pass and never was one of these: `foundry
  * vlm-convert` reads the pages and assembles them (electron/vlm-convert.ts),

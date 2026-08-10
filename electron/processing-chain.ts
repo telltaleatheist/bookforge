@@ -51,10 +51,10 @@ const JOB_TYPE_OF: Record<ProcessingPassKind, PassJobType> = {
   simplify: 'simplify',
   translate: 'translate-pass',
   // Chainable like the others — "take the reference numbers out, then simplify"
-  // is an ordinary thing to want, and the pass costs seconds. Its usual door is
-  // the synchronous one (`book:remove-footnote-references`), which is a
-  // convenience rather than a second mechanism: both build a PassJobConfig and
-  // both end in `runProcessingPass`.
+  // is an ordinary thing to want, and the pass costs seconds. Since 2026-08-10
+  // this is its ONLY door: the picker's synchronous one went with the rail's
+  // pass entries, and every pass now builds its PassJobConfig here and ends in
+  // `runProcessingPass`.
   'footnote-refs': 'footnote-refs',
 };
 

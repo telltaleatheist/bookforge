@@ -1,10 +1,6 @@
-import type { PassRecord } from '@shared/document/version-family';
 import {
   ALL_RAIL_TASK_IDS,
-  EPUB_PASS_TASK_IDS,
   RAIL_TASK_LABELS,
-  derivePassStatus,
-  type EpubPassTaskId,
   type RailGroup,
   type RailTaskId,
   type RailTaskStatus,
@@ -53,20 +49,6 @@ export type ModeId = typeof MODE_IDS[number];
 
 export function isModeId(id: TaskId): id is ModeId {
   return (MODE_IDS as readonly string[]).includes(id);
-}
-
-/**
- * The entries that run a pass over the BOOK rather than change the pointer.
- *
- * They are rail entries in every other way — a label, a shortcut, a derived
- * status — but pressing one starts work instead of opening a panel, so the
- * picker has to be able to tell them apart. Derived from the same table, so
- * Phase D's fourth pass joins this set by being added there.
- */
-export const EPUB_PASS_IDS: readonly EpubPassTaskId[] = EPUB_PASS_TASK_IDS;
-
-export function isEpubPassId(id: TaskId): id is EpubPassTaskId {
-  return (EPUB_PASS_IDS as readonly string[]).includes(id);
 }
 
 /** A panel the right pane can show. `analysis` is a tool, not a checklist task. */
@@ -204,13 +186,6 @@ export interface TaskStatusContext {
   readonly removedBlockCount: number;
   readonly crop: CropStatusInput;
   readonly mergeCount: number;
-  /**
-   * `manifest.outputs.epub.appliedPasses` for the book this window is on, in
-   * execution order. An empty list is a real value — a book nothing has been
-   * run over — and a project with no book at all has one too, because "no book"
-   * is said by the entry being disabled rather than by its status.
-   */
-  readonly appliedPasses: readonly PassRecord[];
 }
 
 function assertNever(x: never): never {
@@ -225,14 +200,6 @@ export function deriveTaskStatus(id: TaskId, ctx: TaskStatusContext): TaskStatus
       return deriveCropStatus(ctx.crop);
     case 'merge':
       return deriveMergeStatus(ctx.mergeCount);
-    // The book's own passes: what a pass says about itself is what the book
-    // RECORDS about it, so all three read the one provenance list. That is why
-    // `footnote-refs` needs no case of its own — it appears in `appliedPasses`
-    // exactly like the AI passes, and the tick beside it means the same thing.
-    case 'footnote-refs':
-    case 'simplify':
-    case 'translate':
-      return derivePassStatus(id, ctx.appliedPasses);
     default:
       return assertNever(id);
   }

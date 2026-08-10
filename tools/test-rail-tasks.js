@@ -33,14 +33,12 @@ if (!fs.existsSync(MODULE)) {
 const {
   ARTIFACT_RAIL_GROUPS,
   ALL_RAIL_TASK_IDS,
-  EPUB_PASS_TASK_IDS,
   NARRATION_EXPORT_LABEL,
   RAIL_TASK_LABELS,
   railGroupsForArtifact,
   railTaskIdsFor,
   railShortcutsFor,
   railTaskForDigit,
-  derivePassStatus,
   viewedArtifactOf,
   viewingWorkingCopy,
 } = require(MODULE);
@@ -49,9 +47,6 @@ let passed = 0;
 const failures = [];
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
-
-/** One recorded pass. `at` is what appendAppliedPass writes: an ISO timestamp. */
-const ran = (kind, at) => ({ kind, at });
 
 const ARTIFACTS = ['source', 'book'];
 
@@ -89,12 +84,11 @@ test('no working copy, or nothing open, is not a working copy', () => {
 
 // ── Contents per artifact ───────────────────────────────────────────────────
 
-test('every artifact the viewer can show has a rail', () => {
+test('every artifact answers with a rail, and only the source has rows', () => {
   for (const artifact of ARTIFACTS) {
-    const groups = railGroupsForArtifact(artifact);
-    assert.ok(Array.isArray(groups) && groups.length > 0,
-      `${artifact} has no rail groups`);
+    assert.ok(Array.isArray(railGroupsForArtifact(artifact)), `${artifact} has no rail`);
   }
+  assert.ok(railGroupsForArtifact('source').length > 0, 'source has no rail groups');
 });
 
 test('the source rail is the curation modes and their tasks', () => {
@@ -109,12 +103,12 @@ test('the source rail carries no OCR entry', () => {
   assert.ok(!ALL_RAIL_TASK_IDS.includes('ocr'));
 });
 
-test('the book rail is the text passes, and nothing else', () => {
-  // 'footnote-refs' is first because it is the cheapest and the one you want
-  // done BEFORE a model reads the book — a paragraph handed to an AI with
-  // "signed12" in it is a paragraph it has to guess about.
-  const ids = railTaskIdsFor('book');
-  assert.deepStrictEqual([...ids], ['footnote-refs', 'simplify', 'translate']);
+test('the book rail is EMPTY — the passes moved to the versions page', () => {
+  // Owen, 2026-08-10: "ai simplify and translate are done through that modal
+  // instead of through the pdf picker window." The one offer of the text passes
+  // is shared/processing/book-passes.ts, rendered by the versions page's modal;
+  // a book in the picker is there to be read.
+  assert.deepStrictEqual([...railTaskIdsFor('book')], []);
 });
 
 test('the narration copy is NOT a rail entry', () => {
@@ -130,15 +124,13 @@ test('the narration copy is NOT a rail entry', () => {
   assert.ok(NARRATION_EXPORT_LABEL.length > 0);
 });
 
-test('the AI footnote pass is gone from every rail', () => {
-  // The retired 'footnotes' kind was an AI pass that decided for itself what a
-  // footnote was, and nothing brings it back. What IS on the rail is
-  // 'footnote-refs' — the deterministic digits-only strip the narration copy has
-  // always been cut by, applied to the book itself since 2026-08-09 so the
-  // numbers leave the text the user reads. Two different acts, and the ids are
-  // deliberately not the same word.
-  assert.ok(!ALL_RAIL_TASK_IDS.includes('footnotes'));
-  assert.ok(ALL_RAIL_TASK_IDS.includes('footnote-refs'));
+test('no pass id survives on any rail', () => {
+  // The retired AI 'footnotes' pass never comes back, and since 2026-08-10 the
+  // three live passes ('footnote-refs', 'simplify', 'translate') are not rail
+  // entries either — they are the versions page modal's list.
+  for (const gone of ['footnotes', 'footnote-refs', 'simplify', 'translate']) {
+    assert.ok(!ALL_RAIL_TASK_IDS.includes(gone), `${gone} is still on a rail`);
+  }
 });
 
 test('no curation entry is ever offered over the book', () => {
@@ -153,12 +145,6 @@ test('no book entry is ever offered over the source', () => {
   for (const id of railTaskIdsFor('source')) {
     assert.ok(!bookOnly.has(id), `${id} is on both rails`);
   }
-});
-
-test('the pass ids are the pass group, and NOT the whole book rail', () => {
-  // Derived from the pass group alone, so a future non-pass entry on the book's
-  // rail can never be asked for a pass status.
-  assert.deepStrictEqual([...EPUB_PASS_TASK_IDS], ['footnote-refs', 'simplify', 'translate']);
 });
 
 test('every entry on every rail has a label', () => {
@@ -180,15 +166,10 @@ test('ALL_RAIL_TASK_IDS is every rail\'s entries, once each', () => {
 
 // ── Shortcuts ───────────────────────────────────────────────────────────────
 
-test('the digits run over the rows that are actually on screen', () => {
-  // The book's first pass is 1 — not 3, which is where a global numbering would
-  // have put it, advertising keys 1-2 that do nothing on that rail.
-  assert.strictEqual(railTaskForDigit('book', 1), 'footnote-refs');
-  assert.strictEqual(railTaskForDigit('book', 2), 'simplify');
-  assert.strictEqual(railTaskForDigit('book', 3), 'translate');
-  assert.strictEqual(railTaskForDigit('book', 4), undefined,
-    'the book rail has three rows, so 4 reaches nothing');
-  assert.strictEqual(railShortcutsFor('book')['footnote-refs'], '1');
+test('an empty rail binds no digits at all', () => {
+  assert.strictEqual(railTaskForDigit('book', 1), undefined,
+    'the book rail has no rows, so 1 reaches nothing');
+  assert.deepStrictEqual(railShortcutsFor('book'), {});
 });
 
 test('select keeps its letter and takes no digit', () => {
@@ -216,58 +197,6 @@ test('every entry on a rail has a key hint', () => {
       assert.strictEqual(typeof shortcuts[id], 'string', `${artifact}/${id} has no key hint`);
     }
   }
-});
-
-// ── Pass status ─────────────────────────────────────────────────────────────
-
-test('a pass that has never run says so', () => {
-  const status = derivePassStatus('simplify', []);
-  assert.strictEqual(status.kind, 'untouched');
-  assert.strictEqual(status.detail, 'not run');
-});
-
-test('a pass that has run says so, with the day it ran', () => {
-  const status = derivePassStatus('simplify', [ran('simplify', '2026-08-04T12:00:00.000Z')]);
-  assert.strictEqual(status.kind, 'done');
-  assert.match(status.detail, /^applied 2026-08-0[34]$/);
-});
-
-test('another kind\'s pass does not light this one', () => {
-  const passes = [ran('simplify', '2026-08-04T12:00:00.000Z')];
-  assert.strictEqual(derivePassStatus('translate', passes).kind, 'untouched');
-  assert.strictEqual(derivePassStatus('simplify', passes).kind, 'done');
-});
-
-test('the passes that PRODUCED the book light none of them', () => {
-  // The retired document passes are recorded against books that still exist, and
-  // `vlm-convert` is recorded against every converted one. None is a rail entry
-  // and none may read as one having run.
-  const passes = [
-    ran('get-text', '2026-08-04T10:00:00.000Z'),
-    ran('blocks', '2026-08-04T10:30:00.000Z'),
-    ran('reflow', '2026-08-04T11:00:00.000Z'),
-    ran('vlm-convert', '2026-08-07T11:00:00.000Z'),
-  ];
-  for (const id of EPUB_PASS_TASK_IDS) {
-    assert.strictEqual(derivePassStatus(id, passes).kind, 'untouched', `${id} lit`);
-  }
-});
-
-test('a pass run twice is counted, and the LAST run is the one described', () => {
-  const status = derivePassStatus('translate', [
-    ran('translate', '2026-08-01T12:00:00.000Z'),
-    ran('translate', '2026-08-04T12:00:00.000Z'),
-  ]);
-  assert.strictEqual(status.kind, 'done');
-  assert.match(status.detail, /^applied 2 times, last 2026-08-0[34]$/);
-});
-
-test('a record with an unreadable timestamp still reports the pass as run', () => {
-  // A manifest outlives the build that wrote it. An `at` this app cannot read is
-  // still proof the pass ran, which is what the status is about.
-  const status = derivePassStatus('simplify', [ran('simplify', 'last Tuesday')]);
-  assert.strictEqual(status.kind, 'done');
-  assert.strictEqual(status.detail, 'applied');
 });
 
 for (const t of tests) {

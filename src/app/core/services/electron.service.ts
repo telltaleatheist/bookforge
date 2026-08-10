@@ -2945,40 +2945,6 @@ export class ElectronService {
   }
 
   /**
-   * Take the footnote reference numbers out of this book's TEXT.
-   *
-   * Owen: "does it actually edit the text? we need a way to edit the text
-   * directly." It does — the superscript numbers leave the working copy, so the
-   * user sees them gone when they open the book, rather than only the narrator
-   * getting a copy without them.
-   *
-   * Only the reference NUMBERS. The footnote blocks at the end of a chapter are
-   * struck out like any other text and stay ordinary working changes.
-   *
-   * It runs to completion before answering — seconds, deterministic, no model —
-   * and comes back with the count it removed and the ledger row the user can
-   * delete to put them back. A book with no markers left answers
-   * `success: false` with a sentence saying so and records nothing: running it
-   * twice must not leave a row that undoes nothing.
-   */
-  async removeFootnoteReferences(projectDir: string): Promise<{
-    success: boolean;
-    path?: string;
-    /** e.g. "321 footnote reference number(s) removed from 12 document(s)." */
-    summary?: string;
-    /** The ledger row this created, when it could create one. */
-    ledgerEntryId?: string;
-    /** Why it could not, in full — the pass still ran. */
-    ledgerRefusal?: string;
-    error?: string;
-  }> {
-    if (this.isElectron) {
-      return (window as any).electron.vlm.removeFootnoteReferences(projectDir);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
    * Delete the book cast from this project's pages, and the working copy minted
    * from it.
    *
