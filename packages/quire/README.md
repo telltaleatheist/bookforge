@@ -160,6 +160,11 @@ compared, and `SPLIT_DISAGREEMENT` names the element when they differ. The test 
 refusal fires by wrapping `Previewer.preview` and removing one `data-split-to` from an otherwise
 perfect pagination.
 
+One shape of that disagreement is told apart before it is reported, because it is a different fault
+with a different cure: an element present **whole on two pages**, the same words on each and no
+marker on either, was never split at all — Paged.js gave up on an item it could not fragment and
+emitted it twice. That is `CONTENT_REPEATED`, and it names the page to go looking at.
+
 **The page box is checked against the layout**, the counterpart of multi-column's
 `COLUMN_GAP_MISMATCH`: if `@page { size }` never reaches the fragmenter, Paged.js silently uses its
 own default (US Letter) and every coordinate would be measured against a box that is not the page.
@@ -193,7 +198,26 @@ More than multi-column does, and all of it stated:
 - the viewport's scrollbar is taken to zero width. The page boxes must be scrollable, and a
   scrollbar would take its width out of the layout viewport, so a surface sized to the page would
   show the page minus a scrollbar and a raster of it would have its right edge sliced off. This
-  changes what is drawn, never what is laid out.
+  changes what is drawn, never what is laid out;
+- **the book's own elements are held to `overflow: visible` inside a page box**
+  (`MONOLITHIC_OVERFLOW_RULE`). CSS Fragmentation calls a box with `overflow` other than `visible`
+  *monolithic*: it is a scroll container, and a scroll container is never broken across
+  fragmentainers. Paged.js fragments by laying the page content out one column wide and moving what
+  lands past that column onto the next page, so a monolithic box **taller than the column cannot go
+  anywhere**: Chromium pushes it out of the visible column whole, Paged.js's `findBreakToken` takes
+  its "stop removal if we are in a loop" branch, warns `Unable to layout item`, keeps the overflow
+  in the page and restarts the next page at the following sibling. What comes out is a blank page
+  followed by a page whose every element is *also* still in the previous page's clipped overflow.
+  Measured on the CES letter (2026-08-10), whose converter wraps every table in
+  `.tablewrap { overflow-x: auto }`: an 859px table in an 804px content box did this three times in
+  one chapter and the book would not open. `overflow: auto` is a statement about a scrolling
+  viewport and a page box is not one, so it is neutralised — gated to descendants of
+  `.pagedjs_page_content` (never Paged.js's own chrome), to the `overflow` property alone, and not
+  to replaced elements, where `overflow` means "clip the replaced content". It is a **pagination-wide
+  change** and cost a `QUIRE_ANALYSIS_VERSION` bump (v2 → v3). It is not a substitute for the
+  refusal: a book can still defeat it with an id-selector `!important`, and `break-inside: avoid` on
+  something taller than a page reaches the same Paged.js branch by another road, so
+  `CONTENT_REPEATED` stays.
 
 ### MultiColumnStrategy — the test fixture
 
@@ -425,6 +449,7 @@ because a wrong one is believed. In particular quire refuses — rather than gue
 | `PAGE_BOX_MISMATCH` | a laid-out page box is not the box the arithmetic assumes |
 | `FONT_UNREADABLE` | a text element's computed font size or weight is not a number |
 | `SPLIT_DISAGREEMENT` | Paged.js's record of a split and the measured pages disagree |
+| `CONTENT_REPEATED` | one element is present WHOLE on two pages — Paged.js could not fragment an item and emitted it twice |
 | `OCCURRENCES_NOT_CONTIGUOUS` / `FRAGMENTS_NOT_CONTIGUOUS` | an element left a page and came back |
 | `REF_COLLISION` / `NO_DATA_REF` / `DUPLICATE_STAMP` | element identity cannot be reconciled |
 | `STYLESHEET_UNREADABLE` | a stylesheet inside the archive produced no readable CSSOM |

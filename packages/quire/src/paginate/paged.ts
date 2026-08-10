@@ -44,6 +44,10 @@
  *    percentage max-height resolves against an auto-height containing block and
  *    computes to `none` — which is how a 2400px plate ends up laid out at 2400px
  *    inside a 900px page.
+ *  - the book's own elements are held to `overflow: visible` inside a page box.
+ *    See {@link MONOLITHIC_OVERFLOW_RULE}: an element that scrolls cannot be
+ *    fragmented, and an unfragmentable element taller than the page makes
+ *    Paged.js emit the SAME content on two pages.
  *
  * ── How a page number is decided ───────────────────────────────────────────
  *
@@ -93,6 +97,55 @@ export const PAGE_MARGIN = QUIRE_PAGE_MARGIN;
  * LayoutUnit is 1/64px, so this is 32 of them.
  */
 const BOX_TOLERANCE = 0.5;
+
+/**
+ * The book's own elements do not scroll inside a page box.
+ *
+ * A PAGINATION-WIDE rule — it changes where every book breaks — and here is why
+ * it earns that. CSS Fragmentation calls a box with `overflow` other than
+ * `visible` MONOLITHIC: it establishes a scroll container, and a scroll
+ * container is never broken across fragmentainers. Paged.js fragments by laying
+ * the page content out as a one-column-wide multi-column box and moving whatever
+ * lands past the first column onto the next page. A monolithic box TALLER than
+ * that column therefore cannot go anywhere: Chromium pushes it out of the first
+ * column whole, leaving the visible column empty, and Paged.js's
+ * `findBreakToken` — reaching a break token identical to the one the page
+ * started at — takes its "stop removal if we are in a loop" branch, keeps the
+ * overflow in the page, warns `Unable to layout item`, and resumes the NEXT page
+ * at the following sibling. The result is not a slightly wrong break. It is a
+ * blank page, followed by a page whose every element is ALSO still sitting in
+ * the previous page's clipped overflow — one element, two pages, no
+ * `data-split-*` on either, which is what quire refuses as `CONTENT_REPEATED`.
+ *
+ * Measured 2026-08-10 on the CES letter, whose converter emits
+ * `.tablewrap { overflow-x: auto }` around every table: a 20-row table 859px
+ * tall in an 804px content box produced exactly that, three times in one
+ * chapter, and the book could not be opened at all.
+ *
+ * `overflow: auto` is a statement about a scrolling viewport, and a page box is
+ * not one — there is nothing to scroll on a page and nothing the reader could do
+ * about it if there were. So it is neutralised, and the book gets fragmentation
+ * instead, which is what it wanted.
+ *
+ * GATED narrowly, three ways:
+ *  - only inside `.pagedjs_page_content`, which holds the book's content and
+ *    nothing of Paged.js's own — the sheet's clip, the footnote area's, and the
+ *    page-box chrome all live outside it and are untouched;
+ *  - only `overflow`. No other property of the book is overridden;
+ *  - not on replaced elements, where `overflow` means "clip the replaced
+ *    content" rather than "refuse to be fragmented", and where forcing it
+ *    visible would let an `<svg>` paint outside its own viewport.
+ *
+ * It is not a substitute for the check. A book can still defeat it with an
+ * id-selector `!important`, and a genuinely unfragmentable element — say
+ * `break-inside: avoid` on something taller than a page — reaches the same
+ * Paged.js branch by another road. So `CONTENT_REPEATED` stays, and stays a
+ * refusal.
+ */
+export const MONOLITHIC_OVERFLOW_RULE =
+  '.pagedjs_page .pagedjs_page_content *'
+  + ':not(img):not(svg):not(video):not(canvas):not(iframe):not(object):not(embed)'
+  + '{overflow:visible!important;}';
 
 /**
  * Pages one spine document may produce before quire calls it a runaway. This is
@@ -226,6 +279,10 @@ export class PagedStrategy implements QuireStrategy {
       'body img,body svg,body video,body canvas,body object,body embed,body picture{',
       `max-width:${cw}px!important;max-height:${ch}px!important;height:auto!important;`,
       '}',
+      // The book's own elements do not scroll inside a page box, because a box
+      // that scrolls is a box that cannot be fragmented. See the rule's own
+      // documentation for the failure it exists to prevent.
+      MONOLITHIC_OVERFLOW_RULE,
     ].join('');
   }
 
@@ -746,20 +803,54 @@ const MEASURE_SOURCE = (async function quirePagedMeasure(
             + ', which are not consecutive. An element cannot leave a page and come back.');
         }
       }
+
+      /** What this element's clones on one page actually say, whitespace-collapsed. */
+      const wordsOn = (p: number): string => {
+        let s = '';
+        for (const el of group.byPage[p].els) s += el.textContent || '';
+        return collapse(s);
+      };
+
       for (let k = 0; k < pages.length; k++) {
         const occurrence = group.byPage[pages[k]];
         const expectFrom = k > 0;
         const expectTo = k < pages.length - 1;
-        if (occurrence.splitFrom !== expectFrom || occurrence.splitTo !== expectTo) {
-          fail('SPLIT_DISAGREEMENT',
-            'the element stamped "' + group.rawId + '" (<' + group.tag + '>) occupies page'
-            + (pages.length > 1 ? 's ' : ' ') + pages.join(',') + ', so its fragment on page '
-            + pages[k] + ' should ' + (expectFrom ? '' : 'not ') + 'be marked data-split-from '
-            + 'and should ' + (expectTo ? '' : 'not ') + 'be marked data-split-to; Paged.js '
-            + 'marks it split-from=' + occurrence.splitFrom + ' split-to=' + occurrence.splitTo
-            + '. quire measured the pages and Paged.js recorded the split, and they do not '
-            + 'agree — refusing rather than believing either one.');
+        if (occurrence.splitFrom === expectFrom && occurrence.splitTo === expectTo) continue;
+
+        // Told apart before either is reported, because they are different
+        // faults with different cures. A SPLIT that Paged.js mis-recorded is a
+        // bookkeeping disagreement about a page break that did happen; REPEATED
+        // content is a page break that did not happen at all — Paged.js gave up
+        // on an item it could not fragment, kept it (and everything after it) in
+        // the page it could not fit, and resumed the next page at the following
+        // sibling. Both pages then hold the WHOLE element, and no marker is on
+        // either because no split was made. The usual cause is a monolithic box
+        // taller than the page; see MONOLITHIC_OVERFLOW_RULE.
+        const repeated = pages.length > 1
+          && !occurrence.splitFrom && !occurrence.splitTo
+          && wordsOn(pages[k]).length > 0
+          && pages.some((p) => p !== pages[k] && wordsOn(p) === wordsOn(pages[k]));
+        if (repeated) {
+          fail('CONTENT_REPEATED',
+            'the element stamped "' + group.rawId + '" (<' + group.tag + '>) is present WHOLE on '
+            + 'pages ' + pages.join(',') + ' — the same words on each, and no data-split-from or '
+            + 'data-split-to on any of them. Paged.js did not split it; it emitted it twice, '
+            + 'which it does when it cannot fragment an item (a box that scrolls, or one that '
+            + 'refuses to break, taller than the page): it leaves the item and everything after '
+            + 'it in the page as clipped overflow and restarts the next page at the following '
+            + 'sibling. quire will not hand out a page number for content that is on two pages '
+            + 'at once. Look at the page BEFORE the first one listed here for a box the '
+            + 'fragmenter could not break.');
         }
+        fail('SPLIT_DISAGREEMENT',
+          'the element stamped "' + group.rawId + '" (<' + group.tag + '>) occupies page'
+          + (pages.length > 1 ? 's ' : ' ') + pages.join(',') + ', so its fragment on page '
+          + pages[k] + ' should ' + (expectFrom ? '' : 'not ') + 'be marked data-split-from '
+          + 'and should ' + (expectTo ? '' : 'not ') + 'be marked data-split-to; Paged.js '
+          + 'marks it split-from=' + occurrence.splitFrom + ' split-to=' + occurrence.splitTo
+          + '. The pages come from Paged.js\'s own page boxes and the markers from Paged.js\'s '
+          + 'own record of the split, and the two do not agree — refusing rather than believing '
+          + 'either one.');
       }
 
       // 2. quire's own account: which page boxes the element actually inks, and
