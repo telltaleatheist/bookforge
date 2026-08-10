@@ -3308,6 +3308,55 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /**
+   * Say, in the book itself, what one of its elements IS.
+   *
+   * The category palette's write for a BOOK. A relabel used to be recorded on
+   * this side only (`editorState.categoryCorrections`), which made it a fact
+   * about the picker's session rather than about the book — so the naming pass,
+   * the Chapter tab's own derivation, the narration cut and every exporter kept
+   * reading the book's original markup and the correction was invisible to all
+   * of them. It is now written into the working copy
+   * (electron/book-categories.ts), recorded in `outputs.epub.bookEdits`, and the
+   * archive original is never opened.
+   *
+   * `elementKey` is the block's `bf_element`. `written: false` means the book
+   * already said this and no byte moved.
+   *
+   * `openingsNamed` is how many chapter OPENINGS the book had rewritten
+   * afterwards — promoting a block to `chapter` makes it its document's opening,
+   * and an opening prints its chapter's stored name — and above zero means the
+   * markup on screen is out of date. `openingUnnamed` is said only for a
+   * promotion whose page did not follow, in the pass's own words.
+   */
+  async setBookBlockCategory(
+    projectDir: string,
+    elementKey: string,
+    categoryId: string,
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
+  ): Promise<{
+    success: boolean;
+    result?: {
+      file: string; elementKey: string;
+      categoryBefore: string | null; categoryAfter: string;
+      written: boolean; fromSha256: string; toSha256: string;
+    };
+    openingsNamed?: number;
+    openingUnnamed?: string | null;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.setBlockCategory(
+        projectDir, elementKey, categoryId, familyId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   async precomputeDiffPair(originalPath: string, targetPath: string): Promise<{ success: boolean; cached?: boolean; chapters?: number; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.diff.precomputePair(originalPath, targetPath);

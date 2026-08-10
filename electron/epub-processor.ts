@@ -5189,6 +5189,85 @@ export async function readEpubConversionStamps(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// The stamp the USER writes: a relabel, in the book
+//
+// ── Why the book and not the picker ────────────────────────────────────────
+//
+// Owen, 2026-08-10, after promoting a `title` to `chapter` in the picker and
+// finding the naming pass would not name it: "it apparently didnt actually
+// change it to chapter, just visually?" It had not. The relabel was recorded in
+// the picker's editor state (`categoryCorrections`), which is a record about a
+// SESSION, and every real derivation — the naming pass that re-runs at every
+// project open, the chapter recovery, the narration cut, the exporters — reads
+// the BOOK. So the book still said `title` and the overlay was invisible
+// everywhere it mattered.
+//
+// A category change on a book block is therefore an EDIT OF THE BOOK, and this
+// attribute is where it lands. One authority, one derivation, exactly as a
+// chapter's name lives in the table of contents and nowhere else
+// (electron/book-chapters.ts).
+//
+// ── Why a THIRD attribute rather than rewriting the book's own stamp ───────
+//
+// Because the two existing stamps are the book's record of what WROTE it, and
+// neither can carry a user's correction without lying or breaking:
+//
+//  - `data-bf-category` is written with `data-bf-group` and `data-bf-blocks` in
+//    one expression, and `provenanceOnOrAbove` THROWS on a partial stamp — so a
+//    publisher's EPUB cannot be given one (there is no group and no working-PDF
+//    block to name). Worse, `epubCarriesProvenance` is a raw substring test over
+//    the spine, so a single stamped element would re-class the WHOLE book as a
+//    reflow of ours and leave every other element with no category at all.
+//  - `data-bf-cat` is dots' own word for what it saw, in dots' vocabulary. Four
+//    of BookForge's thirteen classes (`subheading`, `header`, `footer`,
+//    `discard`) have no spelling in it, and overwriting it would launder a
+//    person's correction as the model's answer — destroying the one record that
+//    says what the model actually read.
+//
+// So the user's statement gets its own attribute, in the ONE palette's
+// vocabulary, and it OUTRANKS both stamps and the markup wherever a category is
+// read. It is additive: the book's own record of what wrote it survives
+// untouched beside it, which is what makes the edit reversible and auditable.
+// The name shares no prefix with either stamp on purpose — `data-bf-user-cat`
+// contains neither `data-bf-category` nor `data-bf-cat="`, so neither class test
+// can mistake an override for the thing it is testing for.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The attribute a user's relabel of a book element is written as. */
+export const USER_CATEGORY_ATTR = 'data-bf-user-cat';
+
+/**
+ * What the USER says this element is, or null when they have said nothing.
+ *
+ * Read off the element ITSELF and never off an ancestor, which is the one place
+ * it differs from the two stamp readers. They walk up because foundry stamps the
+ * outermost element of a group while the unit collector may pick either; this is
+ * written by `setElementCategoryInBookFile` onto the very element the unit
+ * collector picked, resolved through the same walk. An ancestor search could
+ * only find an override meant for a DIFFERENT element and spread it to its
+ * neighbours.
+ *
+ * A value outside the one palette is a book edited by something that does not
+ * share BookForge's vocabulary, and it throws naming the value — the same rule
+ * `provenanceOnOrAbove` follows, and for the same reason: painting it as body
+ * text would hide the disagreement behind a plausible screen.
+ */
+export function userCategoryOf(el: any, whatFor: string): string | null {
+  if (el === null || el === undefined || el.nodeType !== 1) return null;
+  if (typeof el.getAttribute !== 'function') return null;
+  const stated = el.getAttribute(USER_CATEGORY_ATTR);
+  if (stated === null || stated === '') return null;
+  if (!BLOCK_CATEGORY_IDS.includes(stated)) {
+    throw new Error(
+      `${whatFor}: a <${el.tagName}> carries ${USER_CATEGORY_ATTR}="${stated}", which is not a `
+      + `block category BookForge knows. The palette is shared/ocr/block-categories.ts: `
+      + `${BLOCK_CATEGORY_IDS.join(', ')}.`,
+    );
+  }
+  return stated;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // The THIRD reading: a publisher's EPUB, which states its structure in the only
 // place it has — its own markup
 //
@@ -5671,7 +5750,11 @@ export function markupCategoriesForUnits(
     return markupCategoryForUnit(unit, isNoteTarget);
   });
 
-  const chapterOpenings = markChapterOpenings(units, categories, targets);
+  // The navigation's reading first, then the USER's over the top of it: a
+  // person looking at the page is correcting exactly this heuristic, so their
+  // word is the last one said. See `applyUserCategories`.
+  const chapterOpenings = markChapterOpenings(units, categories, targets)
+    + applyUserCategories(units, categories);
 
   const categoryByKey = new Map<string, string>();
   for (let i = 0; i < units.length; i++) {
@@ -5871,6 +5954,67 @@ function markChapterOpenings(
   return found;
 }
 
+/** The documents this reading says a chapter opens in. */
+function filesOpeningAChapter(units: MarkupUnit[], categories: readonly string[]): Set<string> {
+  const files = new Set<string>();
+  for (let i = 0; i < units.length; i++) {
+    if (categories[i] === 'chapter') files.add(units[i].file);
+  }
+  return files;
+}
+
+/**
+ * Overlay what the USER said about these elements, in place on `categories`.
+ * Returns how the number of documents a chapter opens in moved.
+ *
+ * ── Why LAST ───────────────────────────────────────────────────────────────
+ *
+ * Because the user's word is the one that wins. `markChapterOpenings` reads the
+ * navigation and the tags and is right about most books; a person with the page
+ * in front of them, relabelling a heading in the picker, is CORRECTING that
+ * reading, and a correction that ran first and was then overwritten by the thing
+ * it corrects would be no correction at all. This is the same order the picker's
+ * palette implies and the reason the override lives in the book: it is read by
+ * the naming pass, the Chapter tab, the narration cut and the exporters through
+ * this one function.
+ *
+ * ── One chapter opening per document, kept ─────────────────────────────────
+ *
+ * `markChapterOpenings` guarantees it and the naming pass depends on it: that
+ * pass writes a chapter's stored name into the FIRST element of its document
+ * this reading calls `chapter`. So when a user names an opening in a document
+ * that already had one, the other becomes `heading` — exactly what the rest of a
+ * marked run becomes, and the true thing to say about it: still the chapter's
+ * heading, no longer the split point. Two would put one chapter in the Chapter
+ * tab twice and let the naming pass write the name into whichever came first,
+ * which is the element the user just said was not the opening.
+ *
+ * A user's own labels are never demoted by this: only the reading's are.
+ */
+function applyUserCategories(units: MarkupUnit[], categories: string[]): number {
+  const whatFor = "the user's own labels";
+  const stated = new Map<number, string>();
+  for (let i = 0; i < units.length; i++) {
+    const said = userCategoryOf(units[i].el, whatFor);
+    if (said !== null) stated.set(i, said);
+  }
+  if (stated.size === 0) return 0;
+
+  const before = filesOpeningAChapter(units, categories);
+  for (const [at, said] of stated) categories[at] = said;
+
+  const namedOpening = new Set<string>();
+  for (const [at, said] of stated) {
+    if (said === 'chapter') namedOpening.add(units[at].file);
+  }
+  for (let i = 0; i < units.length; i++) {
+    if (categories[i] !== 'chapter' || stated.has(i)) continue;
+    if (namedOpening.has(units[i].file)) categories[i] = 'heading';
+  }
+
+  return filesOpeningAChapter(units, categories).size - before.size;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The same three readings, keyed by ELEMENT instead of by block
 //
@@ -5991,8 +6135,17 @@ export async function readEpubElementCategories(
     const legal = new Set<string>(BLOCK_CATEGORY_IDS);
     let unstamped = 0;
     for (const u of units) {
+      // The USER's own label first, because it is a correction OF the stamp —
+      // see USER_CATEGORY_ATTR. The stamp is still read and still reported: it
+      // is the book's record of what wrote the element, which the correction
+      // does not erase and `bf_group`/`bf_blocks` still come off.
+      const said = userCategoryOf(u.el, whatFor);
       const stamp = provenanceOnOrAbove(u.el, whatFor);
-      if (stamp === null) { unstamped++; continue; }
+      if (stamp === null) {
+        if (said === null) { unstamped++; continue; }
+        categoryByElement.set(u.key, said);
+        continue;
+      }
       if (!legal.has(stamp.category)) {
         throw new Error(
           `${whatFor}: element <${u.tag}> in ${u.file} is stamped `
@@ -6002,7 +6155,7 @@ export async function readEpubElementCategories(
         );
       }
       provenanceByElement.set(u.key, stamp);
-      categoryByElement.set(u.key, stamp.category);
+      categoryByElement.set(u.key, said === null ? stamp.category : said);
     }
     if (provenanceByElement.size > 0) {
       // Pictures take no category from the stamp — the block IS a picture, which
@@ -6023,10 +6176,18 @@ export async function readEpubElementCategories(
   if (await epubCarriesConversionStamps(epubSourcePath)) {
     let unstamped = 0;
     const readOnto = (el: any, key: NarrationElementKey): void => {
+      // The USER's own label outranks the model's, for the same reason it
+      // outranks the reflow's above — and the model's word is still recorded, so
+      // `bf_cat` keeps saying what dots actually read.
+      const said = userCategoryOf(el, whatFor);
       const read = conversionStampOnOrAbove(el, whatFor);
-      if (read === null) { unstamped++; return; }
+      if (read === null) {
+        if (said === null) { unstamped++; return; }
+        categoryByElement.set(key, said);
+        return;
+      }
       conversionByElement.set(key, { ...read, element: key });
-      categoryByElement.set(key, read.category);
+      categoryByElement.set(key, said === null ? read.category : said);
     };
     for (const u of units) readOnto(u.el, u.key);
     for (const i of imageUnits) readOnto(i.el, i.key);
@@ -7892,6 +8053,239 @@ export async function nameChapterOpeningsInBookFile(
   }
 
   return { edits, skipped };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Relabelling one element — the picker's category change, written into the book
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One element relabelled, in the terms an edit log records. */
+export interface BookElementCategoryEdit {
+  /** The zip entry the element lives in. */
+  file: string;
+  /** `<zip entry>#<index>` — the element, unmoved by this edit. */
+  elementKey: NarrationElementKey;
+  /** The element's tag, so the record names something a person can find. */
+  tag: string;
+  /**
+   * What the BOOK said this element was before, or null when it said nothing.
+   *
+   * Null is a real state and not a missing value: a `document`-class book can
+   * carry an element nothing stamped (its nav TOC, hand-added markup), and the
+   * category such a block wears on screen is the analyzer's classifier's rather
+   * than the book's. Recording `''` there would claim the book had said
+   * something it never said.
+   */
+  categoryBefore: string | null;
+  /** What it says now — a member of the one palette. */
+  categoryAfter: string;
+  /** Its text, whitespace collapsed and cut short, so the record names the thing. */
+  excerpt: string;
+}
+
+/** What a relabel did to one book file. */
+export interface BookElementCategoryResult {
+  /** False when the book already said this and no byte was written. */
+  written: boolean;
+  edit: BookElementCategoryEdit;
+}
+
+/**
+ * Write a user's category for one element INTO the book.
+ *
+ * ── What this actually has to satisfy ──────────────────────────────────────
+ *
+ * Not "stamp an attribute" — "make every reader read it". The reader that
+ * matters most is the unattended naming pass, which finds a chapter's opening
+ * through `markupCategoriesForUnits` and re-runs at every project open; before
+ * this existed it read the book's TAGS and the navigation labels and knew
+ * nothing about a relabel, which is exactly why Owen's promoted `title` was
+ * refused with "its markup marks no chapter opening in it". So the override is
+ * applied inside that one classifier and inside both stamp readers, and the
+ * check at the bottom of this function re-reads the WRITTEN FILE through
+ * `readEpubElementCategories` and destroys it unless the book now answers with
+ * the category that was asked for. The guarantee is the reading, not the
+ * attribute.
+ *
+ * ── What it refuses ────────────────────────────────────────────────────────
+ *
+ * A category outside the palette; a key naming a picture or a whole document; a
+ * document this book's spine does not have; a key naming no element in that
+ * document. Each names the thing and why, and nothing is written.
+ *
+ * ── What it does NOT do ────────────────────────────────────────────────────
+ *
+ * It moves no element, removes none and adds none — the edit is one attribute on
+ * one element — so every text-unit index and every image ordinal is where it
+ * was, and the caller re-stamps the positional strike record onto the new bytes
+ * rather than migrating its keys. That is the same claim the naming pass makes,
+ * and it is checked the same way: the rewritten document must hold the same
+ * number of text units and the same number of pictures.
+ *
+ * The TAG is deliberately left alone. A chapter opening is not a `<h1>` — it is
+ * whatever the reading calls `chapter` — and rewriting a publisher's `<p
+ * class="ct">` into a heading would restyle their page to make a category
+ * legible to a reader that now reads the category directly.
+ */
+export async function setElementCategoryInBookFile(
+  inputPath: string,
+  outputPath: string,
+  elementKey: NarrationElementKey,
+  categoryId: string,
+): Promise<BookElementCategoryResult> {
+  const bookName = path.basename(inputPath);
+  const whatFor = `the relabel of ${elementKey} in ${bookName}`;
+
+  if (!BLOCK_CATEGORY_IDS.includes(categoryId)) {
+    throw new Error(
+      `"${categoryId}" is not a block category BookForge knows, so it cannot be written into `
+      + `${bookName} as what ${elementKey} is. The palette is shared/ocr/block-categories.ts: `
+      + `${BLOCK_CATEGORY_IDS.join(', ')}. Nothing was written.`
+    );
+  }
+
+  const target = parseNarrationElementKey(elementKey);
+  if (target.kind === 'doc') {
+    throw new Error(
+      `${elementKey} names a whole document, and a category is what one ELEMENT is. A document is `
+      + 'not labelled; the things in it are. Nothing was written.'
+    );
+  }
+  if (target.kind === 'image') {
+    throw new Error(
+      `${elementKey} names a picture, and a picture's category is what it is — every reading of `
+      + 'every book calls it `image` because the block IS the plate, not because anything guessed. '
+      + 'To keep a picture out of the audiobook, strike it instead. Nothing was written.'
+    );
+  }
+  const file = target.file;
+
+  // ── What the book says about it NOW ───────────────────────────────────────
+  //
+  // Through the ONE reader the analysis uses, so "the book already says this"
+  // means the same thing here as it means on screen — and so a book that would
+  // read the new category out of its own markup anyway is not rewritten for
+  // nothing (the idempotence the naming pass keeps, for the same reasons: the
+  // bytes carry the narration strikes' stamp and the analysis cache key).
+  const reading = await readEpubElementCategories(inputPath);
+  const fact = reading.elements.find((e) => e.key === elementKey);
+  if (fact === undefined) {
+    const inFile = reading.elements.filter((e) => e.file === file && e.kind === 'text').length;
+    throw new Error(
+      inFile === 0
+        ? `${bookName} has no document ${file}, so ${elementKey} names no element in this book. `
+          + 'Nothing was written.'
+        : `${file} holds ${inFile} text element(s), so ${elementKey} names nothing in it. The book `
+          + 'has been rewritten since these blocks were laid out; re-open it and relabel again. '
+          + 'Nothing was written.'
+    );
+  }
+  const stated = reading.categoryByElement.get(elementKey);
+  const categoryBefore = stated === undefined ? null : stated;
+
+  // ── The one document, enumerated EXACTLY as the narration writer does ─────
+  const processor = new EpubProcessor();
+  let doc: any;
+  let body: any;
+  let el: any = null;
+  let unitsBefore = 0;
+  let imagesBefore = 0;
+  try {
+    const structure = await processor.open(inputPath);
+    const spine = new Set(
+      structure.chapters.map((c) => normalizeZipEntryName(processor.resolvePath(c.href))));
+    if (!spine.has(file)) {
+      throw new Error(
+        `${bookName} has no spine document ${file}, so ${elementKey} names no element in this book. `
+        + 'Nothing was written.'
+      );
+    }
+    const parsed = parseXhtmlBody(await processor.readFile(file), file);
+    doc = parsed.doc;
+    body = parsed.body;
+    for (const c of collectExportUnits(doc, body, whatFor)) {
+      if (unitsBefore === target.index) el = c.el;
+      unitsBefore++;
+    }
+    imagesBefore = collectImageElements(body).length;
+  } finally {
+    processor.close();
+  }
+  if (el === null) {
+    throw new Error(
+      `${file} holds ${unitsBefore} text element(s), so ${elementKey} names nothing in it. The book `
+      + 'has been rewritten since these blocks were laid out; re-open it and relabel again. Nothing '
+      + 'was written.'
+    );
+  }
+
+  const edit: BookElementCategoryEdit = {
+    file,
+    elementKey,
+    tag: fact.tag,
+    categoryBefore,
+    categoryAfter: categoryId,
+    excerpt: collapsedUnitText(el).slice(0, 120),
+  };
+
+  // The book already answers with this, and no override is needed to make it —
+  // so nothing is written, exactly as a book whose openings already read their
+  // names is not copied. The user's screen already showed this category.
+  if (categoryBefore === categoryId && userCategoryOf(el, whatFor) === null) {
+    return { written: false, edit };
+  }
+  if (userCategoryOf(el, whatFor) === categoryId) return { written: false, edit };
+
+  el.setAttribute(USER_CATEGORY_ATTR, categoryId);
+  await writeBookWithReplacedEntries(
+    inputPath, outputPath, new Map([[file, serializeEditedDocument(doc)]]));
+
+  // ── The promise, kept or the file destroyed ───────────────────────────────
+  //
+  // Two claims, both measured against the file on disk. That the edit MOVED
+  // nothing, which is what entitles the caller to re-stamp the strike record
+  // without migrating a key. And that the book now READS the new category
+  // through the same reader the analysis uses — the claim that matters, because
+  // an attribute no reader honours is the invisible overlay this replaces.
+  try {
+    const check = new ZipReader(outputPath);
+    await check.open();
+    let unitsAfter = 0;
+    let imagesAfter = 0;
+    try {
+      const written = parseXhtmlBody((await check.readEntry(file)).toString('utf8'), file);
+      unitsAfter = collectExportUnits(written.doc, written.body, whatFor).length;
+      imagesAfter = collectImageElements(written.body).length;
+    } finally {
+      check.close();
+    }
+    if (unitsAfter !== unitsBefore) {
+      throw new Error(
+        `${file} held ${unitsBefore} text element(s) and the rewritten file holds ${unitsAfter}. `
+        + 'Relabelling an element removes nothing, so every narration strike recorded against this '
+        + 'book would now name the wrong element. Nothing was written.'
+      );
+    }
+    if (imagesAfter !== imagesBefore) {
+      throw new Error(
+        `${file} held ${imagesBefore} picture(s) and the rewritten file holds ${imagesAfter}. `
+        + 'Relabelling an element moves no picture. Nothing was written.'
+      );
+    }
+    const after = (await readEpubElementCategories(outputPath)).categoryByElement.get(elementKey);
+    if (after !== categoryId) {
+      throw new Error(
+        `${elementKey} was written as "${categoryId}" and ${bookName} reads it back as `
+        + `${after === undefined ? 'nothing at all' : `"${after}"`}. A label the book does not `
+        + 'answer with is the invisible correction this edit exists to end. Nothing was written.'
+      );
+    }
+  } catch (err) {
+    await fs.rm(outputPath, { force: true });
+    throw err;
+  }
+
+  return { written: true, edit };
 }
 
 /**

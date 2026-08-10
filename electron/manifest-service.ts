@@ -38,6 +38,7 @@ import type {
   BookEdit,
   MergeChapterOpeningEdit,
   NameChapterOpenersEdit,
+  SetBlockCategoryEdit,
   SourceType,
 } from './manifest-types.js';
 import { passesAfterEpubEvent } from '../shared/document/pass-lifecycle';
@@ -3605,6 +3606,65 @@ export async function recordChapterOpeningNaming(
     throw new Error(
       `The book's chapter openings were named, but recording that in ${projectDir}'s manifest `
       + `failed: ${saved.error}`
+    );
+  }
+}
+
+/**
+ * Record a RELABEL: re-stamp the strikes, touch the book, log the edit — one
+ * transaction, for the same reason the naming pass's is one.
+ *
+ * The strikes are RE-STAMPED and not migrated because a relabel writes one
+ * attribute on one element: nothing is added, removed or moved, so every
+ * text-unit index and every image ordinal is exactly where it was and each
+ * strike still names the element it named. `setElementCategoryInBookFile`
+ * measures that claim against the written file before this is ever reached.
+ *
+ * The stamp is CHECKED against `fromSha256` rather than overwritten, exactly as
+ * the naming pass's record is. A record describing some other book cannot be
+ * followed, and quietly re-stamping it here would forge agreement.
+ */
+export async function recordBlockCategoryChange(
+  projectDir: string,
+  edit: SetBlockCategoryEdit,
+  familyId?: string,
+): Promise<void> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  const saved = await modifyManifest(projectId, (m) => {
+    const epub = familyIn(m, family.id).epub;
+    if (!epub) {
+      throw new Error(
+        `Cannot record the relabel in ${projectDir}: its ${family.id} chain records no book, so `
+        + 'there is no element to have been relabelled.'
+      );
+    }
+
+    const recorded = epub.narrationDeletions;
+    if (recorded !== undefined) {
+      if (recorded.epubSha256 !== edit.fromSha256) {
+        throw new Error(
+          `${path.basename(projectDir)}'s narration strikes are stamped with a different book than `
+          + 'the one whose element was just relabelled, so they name positions in a file nobody has '
+          + 'and cannot be carried onto it. The book has been edited; strike what you want left out '
+          + 'of the narration again.'
+        );
+      }
+      epub.narrationDeletions = {
+        ...recorded,
+        epubSha256: edit.toSha256,
+        updatedAt: edit.at,
+      };
+    }
+
+    epub.modifiedAt = edit.at;
+    (epub.bookEdits ??= []).push(edit);
+  });
+  if (!saved.success) {
+    throw new Error(
+      `${edit.elementKey} was relabelled in the book, but recording that in ${projectDir}'s `
+      + `manifest failed: ${saved.error}`
     );
   }
 }

@@ -1548,6 +1548,35 @@ export interface ElectronAPI {
         openingUnnamed?: string | null;
         error?: string;
       }>;
+    /**
+     * Say what one ELEMENT of the book is — a relabel, written into the working
+     * copy's own markup (`data-bf-user-cat`) so that the naming pass, the
+     * Chapter tab, the narration cut and every exporter read one answer.
+     * `elementKey` is the block's `bf_element`.
+     *
+     * `written: false` means the book already said this and no byte moved.
+     *
+     * `openingsNamed` and `openingUnnamed` carry the same two facts they carry
+     * for a rename: promoting a block to `chapter` makes it its document's
+     * opening, and an opening prints its chapter's stored name — so the same
+     * naming pass runs, the same count says whether the markup on screen is
+     * stale, and the same per-chapter sentence says why a page did not follow.
+     * `openingUnnamed` is only ever set for a promotion: for a demotion, "this
+     * document marks no chapter opening" is what was asked for.
+     */
+    setBlockCategory: (
+      projectDir: string, elementKey: string, categoryId: string, familyId?: string
+    ) => Promise<{
+      success: boolean;
+      result?: {
+        file: string; elementKey: string;
+        categoryBefore: string | null; categoryAfter: string;
+        written: boolean; fromSha256: string; toSha256: string;
+      };
+      openingsNamed?: number;
+      openingUnnamed?: string | null;
+      error?: string;
+    }>;
   };
   window: {
     hide: () => Promise<{ success: boolean }>;
@@ -3393,6 +3422,15 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('book:chapter-titles', projectDir, familyId),
     renameChapter: (projectDir: string, file: string, title: string, familyId?: string) =>
       ipcRenderer.invoke('book:rename-chapter', projectDir, file, title, familyId),
+    /**
+     * Say what one element of the book IS — a relabel, written into the working
+     * copy's own markup so every derivation reads the same answer. See
+     * electron/book-categories.ts.
+     */
+    setBlockCategory: (
+      projectDir: string, elementKey: string, categoryId: string, familyId?: string) =>
+      ipcRenderer.invoke(
+        'book:set-block-category', projectDir, elementKey, categoryId, familyId),
   },
   play: {
     startSession: () =>
