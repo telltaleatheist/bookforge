@@ -136,6 +136,65 @@ test('the caller\'s array is not reordered under it', () => {
   assert.deepStrictEqual(ids(given), ids(BOOK));
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// What the picker says after a rename, about THIS chapter's opening
+//
+// A chapter's name lives in the book's table of contents; the heading printed at
+// the top of the chapter is derived from it by the naming pass. The pass can
+// decline one chapter and say why, and the window has to pass that on — a rename
+// that leaves the page printing the old heading in silence is what Owen hit on
+// 2026-08-10. `chapterOpeningRefusal` is the whole of that decision.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const { chapterOpeningRefusal } =
+  require(path.join(REPO, 'dist', 'shared', 'document', 'chapter-opening-report.js'));
+
+const CH2 = 'OEBPS/ch02.xhtml';
+
+test('an opening that was rewritten says nothing — the page followed the name', () => {
+  assert.strictEqual(
+    chapterOpeningRefusal({ named: [{ file: CH2 }], skipped: [] }, CH2),
+    null);
+});
+
+test('an opening that already read the name says nothing either — same fact', () => {
+  assert.strictEqual(
+    chapterOpeningRefusal({
+      named: [],
+      skipped: [{ file: CH2, kind: 'already-named', reason: 'it already reads that.' }],
+    }, CH2),
+    null);
+});
+
+test('a document with no chapter opening in its markup reports the pass\'s own words', () => {
+  const reason = 'ch02.xhtml is called "Chapter 2" in the table of contents, and its markup marks '
+    + 'no chapter opening in it.';
+  assert.strictEqual(
+    chapterOpeningRefusal({ named: [], skipped: [{ file: CH2, kind: 'no-chapter-element', reason }] },
+      CH2),
+    reason);
+});
+
+test('an opening holding a picture reports why it was left alone', () => {
+  const reason = 'ch02.xhtml\'s chapter opening holds a picture.';
+  assert.strictEqual(
+    chapterOpeningRefusal({ named: [], skipped: [{ file: CH2, kind: 'holds-image', reason }] }, CH2),
+    reason);
+});
+
+test('another chapter being named is not this chapter being named', () => {
+  const answer = chapterOpeningRefusal(
+    { named: [{ file: 'OEBPS/ch07.xhtml' }], skipped: [] }, CH2);
+  assert.notStrictEqual(answer, null);
+  assert.ok(answer.includes(CH2), 'the sentence names the document it is about');
+});
+
+test('a chapter in neither list is its own answer, not a silent pass', () => {
+  const answer = chapterOpeningRefusal({ named: [], skipped: [] }, CH2);
+  assert.notStrictEqual(answer, null);
+  assert.ok(answer.includes(CH2), 'the sentence names the document it is about');
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed`);
 for (const failure of failures) console.error(`  FAIL ${failure}`);
 process.exit(failures.length === 0 ? 0 : 1);

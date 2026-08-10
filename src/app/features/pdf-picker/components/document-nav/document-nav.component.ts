@@ -1,4 +1,7 @@
-import { ChangeDetectionStrategy, Component, computed, input, output, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy, Component, ElementRef, computed, effect, input, output, signal,
+  viewChild,
+} from '@angular/core';
 import { CommonModule } from '@angular/common';
 
 import { BLOCK_CATEGORIES } from '@shared/ocr/block-categories';
@@ -212,7 +215,13 @@ export interface ChapterRow {
               [class.selected]="row.blockId !== null && isSelected(row.blockId)"
             >
               @if (editingId() === row.id) {
+                <!--
+                  The caret is put in here the moment this appears — see
+                  focusEditor, and why an unfocused box was a deletion. Only one
+                  row is ever open, so the query names one element.
+                -->
                 <input
+                  #titleInput
                   class="chapter-input"
                   type="text"
                   [value]="draftTitle()"
@@ -626,6 +635,38 @@ export class DocumentNavComponent {
   private readonly editing = signal<string | null>(null);
   readonly editingId = this.editing.asReadonly();
   readonly draftTitle = signal('');
+
+  /** The open title box, while one is open. See {@link focusEditor}. */
+  private readonly titleInput = viewChild<ElementRef<HTMLInputElement>>('titleInput');
+
+  /**
+   * Put the caret in the box the double-click just opened.
+   *
+   * NOT a nicety. The double-click replaces the row's `<button>` with this
+   * `<input>`, and the button is what had focus — so removing it drops focus to
+   * the document body, and every keystroke that follows goes to the WINDOW.
+   * The picker's window-level shortcuts are there, and Backspace among them
+   * means "strike the selection", which the same double-click had just made
+   * this chapter (Owen, 2026-08-10: "i hit backspace to erase part of it. it
+   * marked the item as deleted"). A rename that types into nothing and deletes
+   * the row instead is what an unfocused editor IS.
+   *
+   * The caret goes to the END rather than selecting the whole title: this box is
+   * opened to correct a name far more often than to replace one, and select-all
+   * would make that same first Backspace erase all of it.
+   *
+   * Guarded on `activeElement` so a re-render while the user is typing — a
+   * chapter list that reordered, a category count that changed — cannot yank the
+   * caret back to the end of the box mid-word.
+   */
+  private readonly focusEditor = effect(() => {
+    const box = this.titleInput();
+    if (box === undefined) return;
+    const el = box.nativeElement;
+    if (el.ownerDocument.activeElement === el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  });
 
   /**
    * The chapter row a shift-click measures from: the last one clicked without

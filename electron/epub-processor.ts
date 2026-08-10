@@ -15,6 +15,7 @@ import * as cheerio from 'cheerio';
 import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
 import { blockCategoryForVlm } from '../shared/vlm/conversion';
 import { isFootnoteMarkerSupText, stripFootnoteMarkerSups } from '../shared/text/sup-markers';
+import type { UnnamedChapterOpeningKind } from '../shared/document/chapter-opening-report';
 import {
   narrationDocumentKey,
   narrationElementKey,
@@ -7613,7 +7614,13 @@ export interface UnnamedChapterOpening {
   file: string;
   /** The opening it was about, or null when the document has none. */
   openerKey: NarrationElementKey | null;
-  kind: 'no-chapter-element' | 'already-named' | 'holds-image';
+  /**
+   * Declared in `shared/` because the PICKER is told which of these happened to
+   * the chapter it just renamed, and the sentence it says about that is chosen
+   * by one pure rule over these kinds (`chapterOpeningRefusal`). A second
+   * spelling of the union here would let the two drift.
+   */
+  kind: UnnamedChapterOpeningKind;
   /** The sentence a log says about it. */
   reason: string;
 }
