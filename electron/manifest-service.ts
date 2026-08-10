@@ -1674,6 +1674,38 @@ export async function requireFamily(
 }
 
 /**
+ * The family a LISTING is about, or null when the project simply has no working
+ * chain yet.
+ *
+ * `requireFamily` is for ACTS, and its refusal is the right answer there: a
+ * pass, a narration cut, an export each need a book to be about. A listing —
+ * "what has been done to this book", "what would a reset remove" — has a
+ * truthful answer for a project with no chain: nothing. Routing listings
+ * through the act's refusal paints an ordinary project (a PDF nobody has
+ * converted yet) as a broken record — the versions page drew "The record of
+ * what's been done to this book could not be read" in red over exactly that
+ * state, which `FamiliesAdoption.refusal` documents as NOT an exception.
+ *
+ * Null ONLY when no chain exists, none can be minted, and none was asked for
+ * by name. A caller that names a family is asking about a specific chain, and
+ * a named chain that is not there is still an error — `requireFamily`'s, with
+ * its alternatives.
+ */
+export async function familyForListing(
+  projectDir: string,
+  familyId?: string
+): Promise<ResolvedFamily | null> {
+  if (familyId === undefined) {
+    const manifest = await readManifestAt(projectDir);
+    if ((manifest.families ?? []).length === 0
+      && (await ensureBookFamilies(projectDir)).refusal !== null) {
+      return null;
+    }
+  }
+  return requireFamily(projectDir, familyId);
+}
+
+/**
  * The same family, located inside a manifest a `modifyManifest` callback is
  * holding — by ID, never by position.
  *
@@ -3580,18 +3612,19 @@ export async function recordChapterOpeningNaming(
 /**
  * What has been done to the project's book, in execution order.
  *
- * The manifest's own list, verbatim. An empty array is a real answer twice
- * over: a project with no book has had no passes applied to one, and a freshly
- * built book has had nothing done to it yet — and neither is worth
- * distinguishing here, because the caller that cares whether there IS a book
- * asks `readExportEpub`, which answers that question exactly.
+ * The manifest's own list, verbatim. An empty array is a real answer three
+ * times over: a project with no chain yet has had nothing done to any book, a
+ * project with no book has had no passes applied to one, and a freshly built
+ * book has had nothing done to it yet — and none is worth distinguishing here,
+ * because the caller that cares whether there IS a book asks `readExportEpub`,
+ * which answers that question exactly.
  */
 export async function readAppliedPasses(
   projectDir: string,
   familyId?: string
 ): Promise<AppliedPass[]> {
-  const { family } = await requireFamily(projectDir, familyId);
-  return family.epub?.appliedPasses ?? [];
+  const resolved = await familyForListing(projectDir, familyId);
+  return resolved?.family.epub?.appliedPasses ?? [];
 }
 
 /** Every pass that has a diff, in execution order, with the diff resolved. */
@@ -3602,8 +3635,8 @@ export async function listPassDiffs(projectDir: string, familyId?: string): Prom
   relPath: string;
   absPath: string;
 }>> {
-  const { family } = await requireFamily(projectDir, familyId);
-  return (family.epub?.appliedPasses ?? [])
+  const resolved = await familyForListing(projectDir, familyId);
+  return (resolved?.family.epub?.appliedPasses ?? [])
     .filter((p) => !!p.diff)
     .map((p) => ({
       kind: p.kind,
@@ -4120,18 +4153,25 @@ export async function clearProcessingRecords(projectDir: string, familyId?: stri
   appliedPasses: number;
   clearedSourceKeys: string[];
 }> {
-  const { manifest, family } = await requireFamily(projectDir, familyId);
+  // Through the listing resolver, not the act's: a project with no working
+  // chain yet still has source records a reset must clear — the PDF editor's
+  // block deletions live under `manifest.source`, not under any chain.
+  const resolved = await familyForListing(projectDir, familyId);
+  const manifest = resolved ? resolved.manifest : await readManifestAt(projectDir);
+  const family = resolved?.family ?? null;
   const projectId = requireLibraryProjectId(projectDir, manifest);
-  const hadEpubRecord = !!family.epub;
-  const appliedPasses = family.epub?.appliedPasses?.length ?? 0;
+  const hadEpubRecord = !!family?.epub;
+  const appliedPasses = family?.epub?.appliedPasses?.length ?? 0;
   const clearedSourceKeys = foundrySourceRecordKeys(manifest);
 
   const saved = await modifyManifest(projectId, (m) => {
-    const target = familyIn(m, family.id);
-    delete target.epub;
-    // Cut from the book, and going with it. Its file is in the reset's own
-    // item list, named, so the user reads it before saying yes.
-    delete target.ttsEpub;
+    if (family) {
+      const target = familyIn(m, family.id);
+      delete target.epub;
+      // Cut from the book, and going with it. Its file is in the reset's own
+      // item list, named, so the user reads it before saying yes.
+      delete target.ttsEpub;
+    }
     const source = m.source as unknown as Record<string, unknown> | undefined;
     if (source) for (const key of clearedSourceKeys) delete source[key];
   });

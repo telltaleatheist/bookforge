@@ -263,7 +263,13 @@ export async function resetBookProcessing(
   // ── The book EPUB and its provenance ───────────────────────────────────────
   // Located through the RECORD, never by filename pattern: the export is named
   // after the book and `outputs.epub` is the one authority on where it is.
-  const record = await manifestService.readExportEpub(projectDir);
+  //
+  // Through the LISTING resolver: a project with no working chain yet (a PDF
+  // nobody has converted) has no book — a real state, not a failure — and it
+  // can still have a working PDF and stages worth resetting. `readExportEpub`
+  // resolves through the act's chokepoint and would refuse the whole plan.
+  const hasChain = (await manifestService.familyForListing(projectDir)) !== null;
+  const record = hasChain ? await manifestService.readExportEpub(projectDir) : null;
   const bookExists = !!record && fs.existsSync(record.absPath);
   items.push({
     kind: 'book-epub',
@@ -277,7 +283,7 @@ export async function resetBookProcessing(
 
   // The narration copy is cut from that book, so it dies with it — same kind,
   // same rule: the user reads its name in the confirmation before it goes.
-  const narration = await manifestService.readNarrationEpub(projectDir);
+  const narration = hasChain ? await manifestService.readNarrationEpub(projectDir) : null;
   const narrationExists = !!narration && fs.existsSync(narration.absPath);
   if (narration) {
     items.push({
