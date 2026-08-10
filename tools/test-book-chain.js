@@ -55,10 +55,13 @@ const row = (id, type, extension, familyId) => ({ id, type, extension, familyId:
 
 /**
  * A chain, as the arrangement needs it. `ledger` and `archiveRowId` are the two
- * things the LAYOUT reads; the rest is identity.
+ * things the LAYOUT reads; the rest is identity. `hasWorkingChanges` defaults
+ * TRUE here so every arrangement claim below keeps asserting the full chain;
+ * the gate it drives has its own tests.
  */
-const family = (id, sourceKind, sourceName, ledger, archiveRowId) => ({
+const family = (id, sourceKind, sourceName, ledger, archiveRowId, hasWorkingChanges) => ({
   id, sourceKind, sourceName, ledger: ledger ?? [], archiveRowId: archiveRowId ?? null,
+  hasWorkingChanges: hasWorkingChanges ?? true,
 });
 
 // ── The two fixtures every sole-chain claim is made against ──────────────────
@@ -288,6 +291,27 @@ test('every line key is unique, so the list can be tracked', () => {
   });
   const keys = lines.map((l) => l.key);
   assert.strictEqual(new Set(keys).size, keys.length, `duplicate key in ${keys.join(', ')}`);
+});
+
+test('a chain with nothing to erase draws NO working-changes line', () => {
+  // The line used to draw whenever a working copy existed — and a successful
+  // erase re-mints the copy on the spot, so it reappeared instantly and the
+  // erase looked like it did nothing (Owen, 2026-08-10: "it blinked and
+  // reloaded, and it was still there").
+  const untouched = { ...epubChain(), hasWorkingChanges: false };
+  const lines = bookChain({ rows: epubProject, families: [untouched] });
+  assert.deepStrictEqual(kindsOf(lines), ['book']);
+});
+
+test('the ledger still draws when the working changes are gone', () => {
+  // Erasing at the 'working-changes' scope keeps the passes: the records line
+  // goes, the ledger lines stand — they are different deletes.
+  const erased = {
+    ...pdfChain([entry('01-simplify-aa', 'simplify', 'Simplify', true)]),
+    hasWorkingChanges: false,
+  };
+  const lines = bookChain({ rows: pdfProject, families: [erased] });
+  assert.deepStrictEqual(kindsOf(lines), ['archive-pdf', 'book', 'ledger']);
 });
 
 test('the working-changes confirmation names the passes it KEEPS', () => {

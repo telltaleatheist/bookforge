@@ -1527,6 +1527,12 @@ export class ElectronService {
       sourceName: string;
       /** The archive PDF this chain's book was read out of, or null. */
       archiveRowId: string | null;
+      /**
+       * Whether erasing this chain's changes would erase anything — main
+       * measures it against the same list the erase clears, and it gates the
+       * working-changes line. See ChainFamily.hasWorkingChanges.
+       */
+      hasWorkingChanges: boolean;
     }>;
   }> {
     if (this.isElectron) {

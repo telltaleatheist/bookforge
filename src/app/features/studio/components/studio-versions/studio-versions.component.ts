@@ -1327,6 +1327,7 @@ export class StudioVersionsComponent {
     sourceKind: 'archive-epub' | 'generated-epub';
     sourceName: string;
     archiveRowId: string | null;
+    hasWorkingChanges: boolean;
   }>>([]);
   readonly loading = signal(false);
   readonly cache = signal<SentenceCacheInfo | null>(null);
@@ -1547,6 +1548,7 @@ export class StudioVersionsComponent {
       sourceKind: chain.sourceKind,
       sourceName: chain.sourceName,
       archiveRowId: chain.archiveRowId,
+      hasWorkingChanges: chain.hasWorkingChanges,
       ledger: ledgerOf(chain.id),
     }));
 

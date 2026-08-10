@@ -7604,6 +7604,20 @@ function setupIpcHandlers(): void {
         if (fsSync.existsSync(forgotten.absPath)) await fs.unlink(forgotten.absPath);
       }
 
+      // The chains that hang off the cast go with it, BEFORE the cast's own
+      // record: a family whose source is a book the project no longer records
+      // is a chain whose source cannot exist, which is precisely the state the
+      // versions page refuses by name (found live 2026-08-10). Their book and
+      // narration records die in the same transaction; any files those records
+      // still vouched for are unlinked here — the common case has none, because
+      // `forgetEpubExport` above already took the working copy.
+      const removedChains = await manifestService.removeGeneratedBookFamilies(projectDir);
+      for (const chain of removedChains) {
+        for (const strayPath of [chain.epubAbsPath, chain.ttsAbsPath]) {
+          if (strayPath !== null && fsSync.existsSync(strayPath)) await fs.unlink(strayPath);
+        }
+      }
+
       const forgottenGenerated = await manifestService.forgetGeneratedEpub(projectDir);
       let fileRemoved = false;
       if (fsSync.existsSync(forgottenGenerated.absPath)) {
@@ -7619,6 +7633,7 @@ function setupIpcHandlers(): void {
           fileRemoved,
           workingCopyRelPath: book === null ? null : book.relPath,
           droppedPasses,
+          removedChains: removedChains.map((chain) => chain.sourceName),
         },
       };
     } catch (err) {
@@ -11431,6 +11446,12 @@ function setupIpcHandlers(): void {
           (pdf) => pdf.relPath.toLowerCase() === archiveOriginal.relPath.toLowerCase())
         ? `archive:${archiveOriginal.relPath}`
         : null;
+      // Whether each chain has anything an erase would remove — what gates the
+      // working-changes line. Measured against the same list the erase clears
+      // (`workingChangesByFamily` mirrors `resetEditorRecords`), because a line
+      // drawn for the copy's mere existence survives its own successful delete:
+      // the erase re-mints the copy on the spot.
+      const erasableByFamily = await manifestService.workingChangesByFamily(projectDir);
       const chains = families.map((chain) => ({
         id: chain.id,
         sourceKind: chain.source.kind,
@@ -11439,6 +11460,11 @@ function setupIpcHandlers(): void {
         // only thing that tells them apart.
         sourceName: chain.source.path.split('/').pop() ?? chain.source.path,
         archiveRowId: chain.source.kind === 'generated-epub' ? archivePdfRowId : null,
+        // `=== true` rather than a lookup with a default: the map was built from
+        // the same manifest one read ago, so an absent id means the family list
+        // changed between the two reads — false draws less, and the change that
+        // raced us will broadcast its own refresh.
+        hasWorkingChanges: erasableByFamily[chain.id] === true,
       }));
 
       return { success: true, versions, families: chains };

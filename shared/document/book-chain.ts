@@ -155,6 +155,19 @@ export interface ChainFamily {
    * looked up again by whoever is rendering.
    */
   readonly sourceName: string;
+  /**
+   * Whether erasing this chain's working changes would erase ANYTHING — the
+   * picker's records (when this chain owns them), narration strikes, or a
+   * deliberate book edit. Measured by main against the same list
+   * `resetEditorRecords` clears, minus the automatic chapter-opener naming that
+   * every fresh mint writes.
+   *
+   * This is what gates the working-changes line. It used to be drawn whenever a
+   * working copy existed, and a successful erase re-mints the copy on the spot —
+   * so the line reappeared instantly and the erase looked like it did nothing
+   * (Owen, 2026-08-10: "it blinked and reloaded, and it was still there").
+   */
+  readonly hasWorkingChanges: boolean;
   /** This chain's ledger, in execution order. Empty is the ordinary case. */
   readonly ledger: readonly ChainLedgerEntry[];
   /**
@@ -444,9 +457,11 @@ export function bookChain(input: BookChainInput): ChainLine[] {
       },
     });
 
-    // The standing record set. It exists exactly when a working copy does —
-    // that is the file the records are made against.
-    if (exportedRow !== null) {
+    // The standing record set — drawn only when there ARE records to erase.
+    // The working copy alone is not enough: every mint writes the automatic
+    // chapter-opener naming, so "a copy exists" is true the instant an erase
+    // finishes, and gating on it made the line survive its own delete.
+    if (exportedRow !== null && family.hasWorkingChanges) {
       lines.push({
         key: `${exportedRow.id}:working-changes`,
         kind: 'working-changes',

@@ -1209,6 +1209,86 @@ export async function forgetGeneratedEpub(projectDir: string): Promise<Generated
   return answer;
 }
 
+/** One chain removed with the cast it hung off, and what its records still vouched for. */
+export interface RemovedGeneratedChain {
+  id: string;
+  /** The source basename the chain's custody was stated in. */
+  sourceName: string;
+  /**
+   * Absolute paths of any book / narration copy the chain still recorded when it
+   * went. The records die with the family in the same transaction; the FILES are
+   * the caller's act, after this returns — records first, files last.
+   */
+  epubAbsPath: string | null;
+  ttsAbsPath: string | null;
+}
+
+/**
+ * Remove every working chain that hangs off the project's generated book.
+ *
+ * The other half of deleting the cast, and the reason it exists: a family whose
+ * `source` is the generated book describes where its working copies come FROM,
+ * so a cast deleted out from under it leaves a chain whose source cannot exist —
+ * exactly the state `classifyRecordedFamilySource` refuses by name (found live
+ * 2026-08-10: deleting the generated book left the versions page refusing the
+ * whole project). Chains sourced on an archive EPUB the user handed us are not
+ * touched; the cast was never their source.
+ *
+ * Must be called while `outputs.generatedEpub` still stands — the record is the
+ * only thing that says which file the chains hang off.
+ */
+export async function removeGeneratedBookFamilies(
+  projectDir: string
+): Promise<RemovedGeneratedChain[]> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+  const record = manifest.outputs?.generatedEpub;
+  if (!record?.path) {
+    throw new Error(
+      `${path.basename(projectDir)} has no outputs.generatedEpub, so there is no cast to remove `
+      + 'chains for. Call this before the generated book is forgotten, not after.'
+    );
+  }
+
+  const removed: RemovedGeneratedChain[] = [];
+  const saved = await modifyManifest(projectId, (m) => {
+    // The callback can be re-run against a re-read manifest; the answer is
+    // whatever the LAST run measured, never an accumulation across runs.
+    removed.length = 0;
+    const families = m.families ?? [];
+    const kept: BookFamily[] = [];
+    for (const family of families) {
+      if (family.source.kind !== 'generated-epub' || family.source.path !== record.path) {
+        if (family.source.kind === 'generated-epub') {
+          // A chain claiming a generated source that is not THE generated book —
+          // a state nothing writes (one cast per project). Left alone and said
+          // out loud rather than swept up on a guess.
+          console.warn(
+            `[manifest-service] ${path.basename(projectDir)}: chain ${family.id} names generated `
+            + `source ${family.source.path}, but the project's cast is ${record.path}; not removed.`
+          );
+        }
+        kept.push(family);
+        continue;
+      }
+      removed.push({
+        id: family.id,
+        sourceName: path.basename(family.source.path),
+        epubAbsPath: family.epub?.path ? toAbs(projectDir, family.epub.path) : null,
+        ttsAbsPath: family.ttsEpub?.path ? toAbs(projectDir, family.ttsEpub.path) : null,
+      });
+    }
+    m.families = kept;
+  });
+  if (!saved.success) {
+    throw new Error(
+      `Could not remove ${path.basename(projectDir)}'s cast-sourced chains: ${saved.error}. `
+      + 'Nothing was deleted — the generated book and its chains still stand.'
+    );
+  }
+  return removed;
+}
+
 /** What a naming migration did, so a caller can say it once on the console. */
 export interface WorkingEpubRenameSummary {
   /** The book's path before and after, project-relative. Null when nothing moved. */
@@ -2339,6 +2419,28 @@ export async function ensureGeneratedEpub(projectDir: string): Promise<Generated
 }
 
 /**
+ * The keys under `manifest.source` that are the picker's RECORDS — deletions,
+ * ordering, the layout stamp — as opposed to the source IDENTITY keys
+ * (type/originalFilename/fileHash/url/fetchedAt) that must survive every reset.
+ *
+ * ONE list, shared by the reset that clears them (`resetEditorRecords`) and the
+ * measurement that says whether there is anything to clear
+ * (`workingChangesByFamily`). Two lists here would drift, and the drift would be
+ * a working-changes line that shows for records the erase does not remove — or
+ * an erase that removes records the line never admitted to.
+ */
+const PICKER_SOURCE_RECORD_KEYS = [
+  'deletedBlockIds',
+  'deletedBlockLines',
+  'foundryAutoDiscardedLines',
+  'deletedHighlightIds',
+  'pageOrder',
+  'deletedPages',
+  'removeBackgrounds',
+  EDITOR_LAYOUT_MANIFEST_KEY,
+] as const;
+
+/**
  * Throw away everything the user has recorded against this project's book.
  *
  * ── ONE reset shape, in one place ───────────────────────────────────────────
@@ -2420,16 +2522,7 @@ export async function resetEditorRecords(projectDir: string, familyId?: string):
   if (familyOwnsPickerRecords(family, archiveOriginal?.relPath ?? null)) {
     delete manifest.editor;
     if (manifest.source && typeof manifest.source === 'object') {
-      for (const key of [
-        'deletedBlockIds',
-        'deletedBlockLines',
-        'foundryAutoDiscardedLines',
-        'deletedHighlightIds',
-        'pageOrder',
-        'deletedPages',
-        'removeBackgrounds',
-        EDITOR_LAYOUT_MANIFEST_KEY,
-      ]) {
+      for (const key of PICKER_SOURCE_RECORD_KEYS) {
         delete manifest.source[key];
       }
     }
@@ -2463,6 +2556,58 @@ export async function resetEditorRecords(projectDir: string, familyId?: string):
       try { await fs.promises.unlink(path.join(sourceDir, file)); } catch { /* absent */ }
     }
   }
+}
+
+/**
+ * Whether erasing each chain's working changes would erase ANYTHING, by family
+ * id. The versions page gates its working-changes line on this — a line that
+ * drew whenever a working copy existed reappeared the instant a successful
+ * erase re-minted the copy, which read as the erase having done nothing.
+ *
+ * The measurement mirrors `resetEditorRecords` clause for clause, against the
+ * same shared key list, with ONE deliberate exception: an automatic
+ * `name-chapter-openers` book edit does not count. Every fresh mint writes one
+ * (it is unattended — it runs when the project opens), so counting it would put
+ * the answer back to "always yes".
+ *
+ * Empty containers do not count either: the picker's save writes
+ * `undoStack: []` / `redoStack: []` on every save, so the KEY existing is a
+ * fact about the picker having saved, not about the user having changed
+ * anything.
+ */
+export async function workingChangesByFamily(
+  projectDir: string
+): Promise<Record<string, boolean>> {
+  const manifestPath = path.join(projectDir, MANIFEST_FILENAME);
+  // Raw read for the same reason resetEditorRecords reads raw: the records
+  // being measured include untyped sub-fields the typed round-trip would drop.
+  const manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf-8'));
+  const archiveOriginal = await readArchiveOriginal(projectDir);
+
+  const hasContent = (v: unknown): boolean => {
+    if (v === null || v === undefined) return false;
+    if (Array.isArray(v)) return v.length > 0;
+    if (typeof v === 'object') return Object.values(v).some(hasContent);
+    return true;
+  };
+
+  const pickerRecords =
+    hasContent(manifest.editor)
+    || PICKER_SOURCE_RECORD_KEYS.some((key) => hasContent(manifest.source?.[key]))
+    || hasContent(manifest.chapters)
+    || hasContent(manifest.chaptersSource);
+
+  const answer: Record<string, boolean> = {};
+  for (const family of (manifest.families ?? []) as BookFamily[]) {
+    // The book's OWN records — positional inside this family's working copy.
+    const strikes = hasContent(family.epub?.narrationDeletions?.elements);
+    const deliberateEdits = (family.epub?.bookEdits ?? [])
+      .some((edit) => edit.kind !== 'name-chapter-openers');
+    answer[family.id] = strikes || deliberateEdits
+      || (pickerRecords
+        && familyOwnsPickerRecords(family, archiveOriginal?.relPath ?? null));
+  }
+  return answer;
 }
 
 /** Where the book is, and whether making it there was a re-mint. */
