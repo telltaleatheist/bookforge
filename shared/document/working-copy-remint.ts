@@ -6,7 +6,7 @@
  * A project's working copy is `source/<archive basename>.working.epub`, and the
  * edits made to it are RECORDS in the manifest rather than bytes in the file:
  * `source.deletedBlockIds` and `source.deletedPages` say which blocks and pages
- * the user struck out, `manifest.editor` holds everything else, and
+ * the user struck out, the project's `editor-state.json` holds everything else, and
  * `outputs.epub.narrationDeletions` holds the narration strikes.
  *
  * A user who wanted to start a book over DELETED that file, which is the obvious
@@ -51,7 +51,7 @@
  * was made again.
  *
  * Every count is taken BEFORE the reset runs. It is the only instant at which
- * they exist: the reset clears `manifest.editor`, the `manifest.source` deletion
+ * they exist: the reset clears the editor state, the `manifest.source` deletion
  * keys and the chapter markers, and `registerEpubExport` then replaces
  * `outputs.epub` wholesale.
  */

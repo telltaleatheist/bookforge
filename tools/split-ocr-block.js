@@ -13,9 +13,9 @@
  * under-segmentation is not, which is why `tools/aligner/ocr-book.mjs` keeps
  * per-line boxes so ground truth can drive granularity instead of Tesseract's guess.
  *
- * The picker's own split popover cannot do this job, because `manifest.editor.ocrBlocks`
- * stores only the paragraph bbox — the per-line boxes are dropped on the way in, so
- * there is nothing in the manifest to cut on. This re-OCRs the ONE page to recover
+ * The picker's own split popover cannot do this job, because the stored `ocrBlocks`
+ * hold only the paragraph bbox — the per-line boxes are dropped on the way in, so
+ * there is nothing on file to cut on. This re-OCRs the ONE page to recover
  * the line geometry, then applies the cut to the stored block.
  *
  * The stored TEXT is kept, not the re-OCR's text. Two runs of Tesseract on the same
@@ -26,8 +26,9 @@
  * keyed to this block stays attached to it. Later parts get `<id>s1`, `<id>s2`. That
  * means splitting never orphans an existing label, only narrows what it refers to.
  *
- * RACE WARNING: the picker writes `editor.ocrBlocks` on save. If the book is open,
- * reload it after this runs, or the app's in-memory copy will overwrite the split.
+ * RACE WARNING: the picker writes `ocrBlocks` into the project's `editor-state.json`
+ * on save. If the book is open, reload it after this runs, or the app's in-memory
+ * copy will overwrite the split.
  */
 'use strict';
 
@@ -65,11 +66,24 @@ const cats = (opt('cats', '') || '').split(',').map(s => s.trim()).filter(Boolea
 const textAt = opt('text-at', null);
 const dryRun = flag('dry-run');
 
-const manifestPath = path.join(path.resolve(projectDir), 'manifest.json');
+const projectPath = path.resolve(projectDir);
+const manifestPath = path.join(projectPath, 'manifest.json');
 if (!fs.existsSync(manifestPath)) usage(`no manifest at ${manifestPath}`);
-const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-const blocks = manifest.editor && manifest.editor.ocrBlocks;
-if (!Array.isArray(blocks) || !blocks.length) usage(`${manifestPath} has no editor.ocrBlocks`);
+
+// Editor state is a per-project sidecar (`editor-state.json`), read and written
+// through the ONE module that owns it — electron/editor-state-store.ts, compiled.
+// Restating the sidecar-vs-legacy-manifest precedence rule here is how this tool
+// and the app would come to disagree about a half-migrated project.
+const storePath = path.join(REPO_ROOT, 'dist', 'electron', 'editor-state-store.js');
+if (!fs.existsSync(storePath)) {
+  console.error(`split-ocr-block: ${storePath} is not built. Compile first:`);
+  console.error('  npx tsc -p tsconfig.electron.json');
+  process.exit(1);
+}
+const editorStateStore = require(storePath);
+const editorState = editorStateStore.peekEditorStateSync(projectPath);
+const blocks = editorState && editorState.ocrBlocks;
+if (!Array.isArray(blocks) || !blocks.length) usage(`${projectPath} has no editor ocrBlocks`);
 
 const idx = blocks.findIndex(b => b.id === blockId);
 if (idx < 0) usage(`no block ${blockId} in this manifest`);
@@ -170,11 +184,10 @@ if (dryRun) { console.log('\n[split] --dry-run, nothing written'); process.exit(
 
 blocks.splice(idx, 1, ...parts);
 
-// Atomic write: the library folder is Syncthing-monitored, so a partial manifest
-// is a syncable event. Temp beside the target keeps the rename on one filesystem.
-const tmp = `${manifestPath}.split-tmp`;
-fs.writeFileSync(tmp, JSON.stringify(manifest, null, 2));
-fs.renameSync(tmp, manifestPath);
-console.log(`\n[split] wrote ${manifestPath} (${blocks.length} blocks)`);
+// Written through the store, which stages beside the target so the publishing
+// rename is same-filesystem — the library folder is Syncthing-monitored and a
+// partial file is a syncable event.
+editorStateStore.writeEditorStateSync(projectPath, editorState);
+console.log(`\n[split] wrote ${path.join(projectPath, 'editor-state.json')} (${blocks.length} blocks)`);
 console.log('[split] If the book is OPEN in the picker, reload it now — the app writes');
-console.log('        editor.ocrBlocks on save and would overwrite this split.');
+console.log('        the editor ocrBlocks on save and would overwrite this split.');

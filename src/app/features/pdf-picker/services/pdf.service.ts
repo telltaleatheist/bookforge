@@ -3,7 +3,7 @@ import { ElectronService, Chapter } from '../../../core/services/electron.servic
 
 // TextBlock / Category / PageDimension are declared in shared/ocr/text-block.ts
 // so the main process and the CLI can describe the same blocks the picker edits —
-// `manifest.editor.ocrBlocks` is literally a TextBlock[]. Re-exported here because
+// the stored `ocrBlocks` are literally a TextBlock[]. Re-exported here because
 // this file has always been where the rest of the app imports them from.
 export type { TextBlock, Category, PageDimension, BlockCategoryProvenance } from '@shared/ocr/text-block';
 import type { TextBlock, Category, PageDimension, BlockCategoryProvenance } from '@shared/ocr/text-block';

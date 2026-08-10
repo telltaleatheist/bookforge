@@ -115,6 +115,7 @@ import {
 } from './editor-layout';
 import { describeEditorLayout, describeLayoutMigration } from '../shared/document/editor-layout';
 import * as manifestService from './manifest-service';
+import { peekEditorState } from './editor-state-store';
 import { readBookBlockLayer } from './narration-editor-state';
 import { sha256File } from './sidecar-binding';
 import {
@@ -218,7 +219,21 @@ export async function migrateLegacyEpubEditorRecords(
 ): Promise<LegacyLayoutOutcome> {
   const manifest = await manifestService.readProjectManifest(projectDir);
   const bookName = path.basename(projectDir);
-  const reading = readEditorLayoutState(bookName, manifest.source?.type ?? '', manifest);
+  // The census counts editor records, and those live in the project's sidecar
+  // now (electron/editor-state-store.ts) rather than under `manifest.editor` —
+  // reading the manifest alone would count a legacy project's undo stack as
+  // zero and call it `clean`, which is the one answer that must not be given
+  // about a project whose deletions were made in a layout this build cannot
+  // produce.
+  //
+  // PEEKED, not read: this function must leave a project it declines to touch
+  // byte-identical, and a PDF project is declined one line below.
+  const editor = await peekEditorState(projectDir);
+  const reading = readEditorLayoutState(
+    bookName,
+    manifest.source?.type ?? '',
+    { source: manifest.source, editor, chapters: manifest.chapters },
+  );
 
   if (reading.status === 'not-an-epub') return { kind: 'not-an-epub' };
   if (reading.status === 'current') return { kind: 'current' };

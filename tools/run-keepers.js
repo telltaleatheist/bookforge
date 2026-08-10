@@ -11,6 +11,7 @@ const { execFileSync } = require('child_process');
 const path = require('path');
 
 const SUITES = [
+  'test-editor-state-store',
   'test-family-lifecycle',
   'test-book-chain',
   'test-working-copy-remint',

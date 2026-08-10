@@ -39,6 +39,12 @@ if (!fs.existsSync(path.join(DIST, 'electron', 'book-ledger.js'))) {
 }
 const manifestService = require(path.join(DIST, 'electron', 'manifest-service.js'));
 const { registerLedgerPass } = require(path.join(DIST, 'electron', 'book-ledger.js'));
+// The picker's working state is a per-project sidecar, so "was the curation
+// cleared?" is a question about `editor-state.json` — asked through the module
+// that owns the file, not by reaching for `manifest.editor`, which is only the
+// pre-sidecar location a fixture may still be written in.
+const { peekEditorStateSync } =
+  require(path.join(DIST, 'electron', 'editor-state-store.js'));
 const { ZipReader, ZipWriter } = require(path.join(DIST, 'electron', 'epub-processor.js'));
 const { runProcessingPass } = require(path.join(DIST, 'electron', 'processing-passes.js'));
 const {
@@ -186,7 +192,7 @@ function populateRecords(dir) {
 
 function assertRecordsPresent(dir, label) {
   const m = readManifest(dir);
-  assert.ok(m.editor, `${label}: manifest.editor was cleared`);
+  assert.ok(peekEditorStateSync(dir), `${label}: the editor state was cleared`);
   assert.deepStrictEqual(
     m.source.deletedBlockIds, ['b-1', 'b-2'], `${label}: block deletions were cleared`);
   assert.deepStrictEqual(m.source.deletedPages, [4], `${label}: page deletions were cleared`);
@@ -197,6 +203,8 @@ function assertRecordsPresent(dir, label) {
 function assertRecordsCleared(dir, label) {
   const m = readManifest(dir);
   assert.strictEqual(m.editor, undefined, `${label}: manifest.editor survived`);
+  assert.strictEqual(
+    peekEditorStateSync(dir), null, `${label}: the editor state sidecar survived`);
   assert.strictEqual(m.source.deletedBlockIds, undefined, `${label}: block deletions survived`);
   assert.strictEqual(m.source.deletedPages, undefined, `${label}: page deletions survived`);
   assert.strictEqual(m.chapters, undefined, `${label}: chapter markers survived`);

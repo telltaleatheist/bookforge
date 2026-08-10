@@ -23,7 +23,7 @@
  *
  * It lives under `shared/` (moved out of the renderer Jul 2026) because it is now
  * also the authority for the CLI: `cli/ocr-pdf.js --project` writes
- * `manifest.editor.ocrCategories` for hand-labelling on another machine, and those
+ * the editor state's `ocrCategories` for hand-labelling on another machine, and those
  * records have to be the same thirteen with the same names and colours the app
  * shows. `electron/pdf-analyzer.ts` derives CATEGORY_TYPE_COLORS from this list
  * rather than mirroring it, for the same reason.

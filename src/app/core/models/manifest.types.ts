@@ -37,7 +37,15 @@ export interface ProjectManifest {
   pipeline: ManifestPipeline;
   outputs: ManifestOutputs;
 
-  // Editor state (for books from PDF)
+  /**
+   * LEGACY LOCATION — see electron/manifest-types.ts.
+   *
+   * Editor state lives in `<projectDir>/editor-state.json` now, and a manifest
+   * that comes back from `manifest:get` / `manifest:list` will not carry this
+   * key once its project has been migrated. Renderer code must ask for editor
+   * state through `projects:load-from-path` or `manifest:get-editor-state`,
+   * never off a manifest object.
+   */
   editor?: ManifestEditorState;
 
   // Organization

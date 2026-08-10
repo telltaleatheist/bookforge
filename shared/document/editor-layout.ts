@@ -170,7 +170,7 @@ export interface LayoutKeyedRecordCensus {
    * `customCategories`, and whatever the editor grows next.
    *
    * A LIST rather than named fields because the set has drifted before and will
-   * again: main's reset handler already clears `manifest.editor` wholesale
+   * again: main's reset handler already clears the editor state wholesale
    * rather than by name, for exactly that reason, and a census that hard-coded
    * the field list would go quietly incomplete the same way.
    */
@@ -178,7 +178,7 @@ export interface LayoutKeyedRecordCensus {
 }
 
 /**
- * The `manifest.editor` fields whose contents are keyed by BLOCK ID or by PAGE,
+ * The editor-state fields whose contents are keyed by BLOCK ID or by PAGE,
  * and therefore mean nothing in a layout that mints neither the same way.
  *
  * Measured against the 378 projects in the library, 2026-08-09, so this is a
@@ -191,7 +191,7 @@ export interface LayoutKeyedRecordCensus {
  *   ocrBlocks            whole blocks, each with an id and a page
  *   customCategories     highlight rectangles, each on a page
  *
- * The rest of `manifest.editor` is NOT here and is deliberately left alone:
+ * The rest of the editor state is NOT here and is deliberately left alone:
  * `ocrCategories` is keyed by CATEGORY id ("title", "caption"),
  * `classificationThresholds` is numbers, `sourceFileSha256` is a hash of the
  * file, and `rubricPredictions` is a record of an external rubric run keyed in

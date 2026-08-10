@@ -583,7 +583,31 @@ export class StudioService {
       // Single IPC call for all articles
       const existsMap = await this.electronService.fsBatchExists(allPaths);
 
+      // ── The article editor's state, from its own file ──────────────────────
+      //
+      // `manifest.editor` is gone: editor state is a per-project sidecar
+      // (electron/editor-state-store.ts) precisely so the catalog does not carry
+      // it. An article's is small — deleted selectors and two history stacks —
+      // and only articles need it here, so it is fetched per article, in
+      // parallel, rather than by putting the key back on the list result and
+      // making every BOOK's OCR blocks travel with it again.
+      const editorStates = new Map<string, any>();
+      await Promise.all(articlePathMaps.map(async ({ manifest }) => {
+        const result = await this.electronService.manifestGetEditorState(manifest.projectId);
+        if (!result.success) {
+          // Loudly, and not papered over with an empty set: an article whose
+          // saved deletions could not be read must not be shown as an article
+          // with no deletions, because the editor would then save that back.
+          console.error(
+            `[StudioService] ${manifest.projectId}: could not read its editor state — `
+            + `${result.error}`);
+          return;
+        }
+        if (result.editor) editorStates.set(manifest.projectId, result.editor);
+      }));
+
       const articles: StudioItem[] = articlePathMaps.map(({ manifest, projectDir, paths }) => {
+        const editor = editorStates.get(manifest.projectId);
         const exists = (key: string) => !!existsMap[paths[key]];
 
         // Same provenance rule as books — see loadBooks.
@@ -633,9 +657,9 @@ export class StudioService {
           originalSourcePath: null,
           projectDir,
           htmlPath: `${projectDir}/source/article.html`,
-          deletedSelectors: manifest.editor?.deletedSelectors || [],
-          undoStack: (manifest.editor?.undoStack as EditAction[] | undefined) || [],
-          redoStack: (manifest.editor?.redoStack as EditAction[] | undefined) || [],
+          deletedSelectors: editor?.deletedSelectors || [],
+          undoStack: (editor?.undoStack as EditAction[] | undefined) || [],
+          redoStack: (editor?.redoStack as EditAction[] | undefined) || [],
           appliedPasses,
           hasCleaned,
           archived: manifest.archived,
