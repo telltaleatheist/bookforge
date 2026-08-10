@@ -1,5 +1,6 @@
 import { Component, inject, signal, computed, untracked, HostListener, ViewChild, ElementRef, effect, DestroyRef, ChangeDetectionStrategy, input, output, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension, BlockCategoryProvenance } from './services/pdf.service';
 import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits } from '../../core/services/electron.service';
@@ -70,6 +71,12 @@ import {
   type ViewedArtifact,
 } from '@shared/document/rail-tasks';
 import { samePath } from '@shared/document/same-path';
+import { autosaveRetryDelay } from '@shared/document/autosave-retry';
+import {
+  dropFrontNotice,
+  frontNotice,
+  queueSessionNotice,
+} from '@shared/document/session-notices';
 import { planArtifactOpen, type ArtifactOpenPlan } from '@shared/document/artifact-open';
 import {
   describeWorkingCopyRemint,
@@ -2894,10 +2901,26 @@ export class PdfPickerComponent implements OnInit {
         localStorage.removeItem(this.OPEN_TABS_KEY);
         localStorage.removeItem(this.ACTIVE_TAB_KEY);
       }
-    } catch {
-      // Ignore localStorage errors
+    } catch (err) {
+      // NOT ignored. This is the record of which books are open, and a window
+      // that stops writing it looks perfectly healthy until the next launch
+      // comes up empty. Said on the console every time, and to the user once.
+      console.error('[tabs] could not persist the open tabs:', err);
+      this.announceStorageFailure();
     }
   });
+
+  /** So the storage sentence is said once a session, not once a keystroke. */
+  private storageFailureAnnounced = false;
+
+  private announceStorageFailure(): void {
+    if (this.storageFailureAnnounced) return;
+    this.storageFailureAnnounced = true;
+    this.pushSessionNotice(
+      'This window could not save which documents are open, so they will not come back the next '
+      + 'time the app starts. Your edits are unaffected — they are written to the project itself.',
+    );
+  }
 
   // Task-rail UI persistence — collapsed groups only. The active panel is
   // document-scoped transient state and deliberately does NOT survive restarts
@@ -2915,8 +2938,11 @@ export class PdfPickerComponent implements OnInit {
         this.RAIL_STATE_KEY,
         JSON.stringify({ collapsedGroups })
       );
-    } catch {
-      // Ignore localStorage errors
+    } catch (err) {
+      // Pure UI state, so no banner — but not silence either: this failing and
+      // the tab record failing have one cause, and a console with nothing in it
+      // is how that cause stays unfound.
+      console.error('[task-rail] could not persist the rail state:', err);
     }
   });
 
@@ -2924,25 +2950,67 @@ export class PdfPickerComponent implements OnInit {
   // This prevents race conditions where embedded() returns false before Angular sets the input
 
   // Nav-rail "home" button handler - when clicking library while already on library
+  //
+  // `takeUntilDestroyed` because a router observable outlives the component that
+  // subscribed to it: without it a destroyed picker keeps answering `?home=` —
+  // calling `showLibraryView` on dead signals and then NAVIGATING, from a
+  // component that is no longer on screen, against the live one's URL.
   private readonly navHomeHandler = (() => {
-    this.route.queryParams.subscribe(params => {
-      if (params['home'] && this.pdfLoaded()) {
-        // Clicking library button while on library - show library view but keep tabs
-        this.showLibraryView();
-        // Clear the query param to avoid re-triggering
-        this.router.navigate([], { queryParams: {}, replaceUrl: true });
-      }
-    });
+    this.route.queryParams
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(params => {
+        if (params['home'] && this.pdfLoaded()) {
+          // Clicking library button while on library - show library view but keep tabs
+          void this.showLibraryView();
+          // Clear the query param to avoid re-triggering
+          this.router.navigate([], { queryParams: {}, replaceUrl: true });
+        }
+      });
   })();
+
+  /**
+   * The window is going away — MAKE the write it had scheduled.
+   *
+   * Registered on `beforeunload` as well as on destroy, because the two cover
+   * different ways of leaving: a route change destroys the component while the
+   * window lives, and closing the window unloads the document without ever
+   * destroying anything. Both used to end at the same place — a cancelled timer
+   * — and an edit made within the debounce window (one second) was simply gone.
+   *
+   * Fire-and-forget by necessity: neither hook can await. What makes it work
+   * anyway is that `saveProjectToPath` serializes the whole payload
+   * SYNCHRONOUSLY and only then awaits the IPC, so the message is already handed
+   * to main by the time this returns — and main finishes what it was asked to do
+   * whatever the renderer does next. The window's close is also held open by
+   * main for exactly this round trip (`openEditorWindow`'s close handler), which
+   * is what turns "already sent" into "already written".
+   */
+  private readonly flushOnUnload = (): void => {
+    void this.flushScheduledProjectWrites();
+  };
 
   // Component teardown — release event subscriptions, timers, and global callbacks
   private readonly destroyCleanup = (() => {
+    window.addEventListener('beforeunload', this.flushOnUnload);
     this.destroyRef.onDestroy(() => {
+      window.removeEventListener('beforeunload', this.flushOnUnload);
+
       // Unsubscribe all pending pdf:text-ready listeners
       for (const unsub of this.textReadyUnsubs.values()) {
         unsub();
       }
       this.textReadyUnsubs.clear();
+
+      // A drag that was still in progress owns four document listeners and a
+      // window one, all of them closures over this component. Nothing else ever
+      // removes them: `onSidebarResizeEnd` runs on mouseup, and the component
+      // can be destroyed before the button comes back up.
+      if (this.sidebarResizeCleanup) {
+        this.sidebarResizeCleanup();
+        this.sidebarResizeCleanup = null;
+      }
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
 
       // Clear pending timers
       if (this.searchDebounceTimer) {
@@ -2957,10 +3025,12 @@ export class PdfPickerComponent implements OnInit {
         clearTimeout(this.pulseTimer);
         this.pulseTimer = null;
       }
-      if (this.autoSaveTimeout) {
-        clearTimeout(this.autoSaveTimeout);
-        this.autoSaveTimeout = null;
-      }
+      // NOT cancelled — MADE. The scheduled write is the user's last edit, and
+      // this is the last moment anything can send it. It answers the same gates
+      // as any other timer that fires late (an erase in flight, a book on
+      // screen, a session that declined to load the project's edits), so a
+      // window that owns no edits still writes nothing.
+      this.flushOnUnload();
     });
   })();
 
@@ -3494,11 +3564,48 @@ export class PdfPickerComponent implements OnInit {
     // Studio mints working copies and converts PDFs into books, and those run in
     // MAIN. So what is on screen is re-measured whenever any stage for THIS
     // project lands.
+    // `samePath`, not `!==`. The two sides of this comparison have been through
+    // different hands — main resolves with backslashes, a manifest-derived path
+    // can be NFD where the disk entry is NFC — and two spellings of one project
+    // read as two projects, so the window silently ignored stages that finished
+    // for the book it is showing.
     const unwatchFinished = this.electronService.onDocumentStageFinished((event) => {
-      if (event.projectDir !== this.projectPath()) return;
+      const mine = this.projectPath();
+      if (!mine || !samePath(event.projectDir, mine)) return;
       void this.onProjectStageFinished();
     });
     this.destroyRef.onDestroy(unwatchFinished);
+
+    // Somebody else changed this project's FILES — the same fact, arriving on
+    // the other channel.
+    //
+    // `project:files-changed` is broadcast by every main-process write that
+    // lands in a project directory: a rename, a category write, a pass's
+    // output, an export from another window, the queue. The picker never
+    // listened, so an open window went on holding the state it read at open and
+    // wrote that stale copy back over the other window's work at the next edit.
+    //
+    // It re-runs the same re-measure a finished stage does, and for the same
+    // reason: nothing here is remembered, it is measured. The refresh itself
+    // bails if the project on screen changed while it was in flight, so a burst
+    // of broadcasts during a tab switch cannot land the old project's answers
+    // in the new one.
+    const unwatchFiles = this.electronService.onProjectFilesChanged((projectDir) => {
+      const mine = this.projectPath();
+      if (!mine || !samePath(projectDir, mine)) return;
+      void this.onProjectStageFinished();
+    });
+    this.destroyRef.onDestroy(unwatchFiles);
+
+    // This window is being closed and main is holding the close open until the
+    // pending write is made. THE reason an edit made a second before pressing
+    // the X now survives — `beforeunload` alone cannot wait for anything.
+    const unwatchFlush = this.electronService.onEditorFlushBeforeClose((replyChannel) => {
+      void this.flushScheduledProjectWrites().finally(() => {
+        this.electronService.editorFlushComplete(replyChannel);
+      });
+    });
+    this.destroyRef.onDestroy(unwatchFlush);
 
     if (this.embedded() && this.projectDir()) {
       // Embedded mode - load whatever projectDir() points at (see openTarget)
@@ -3650,14 +3757,18 @@ export class PdfPickerComponent implements OnInit {
       this.redo();
     }
 
-    // Ctrl/Cmd + O to show library view
-    if ((event.metaKey || event.ctrlKey) && event.key === 'o') {
+    // Ctrl/Cmd + O to show library view (not while typing in a field).
+    if ((event.metaKey || event.ctrlKey) && event.key === 'o'
+        && !this.isTextInputTarget(event.target)) {
       event.preventDefault();
-      this.showLibraryView();
+      void this.showLibraryView();
     }
 
-    // Ctrl/Cmd + W to close current tab or hide window
-    if ((event.metaKey || event.ctrlKey) && event.key === 'w') {
+    // Ctrl/Cmd + W to close current tab or hide window (not while typing in a
+    // field — this one CLOSES THE DOCUMENT, and a chapter rename box is a text
+    // field the user is standing in when they reach for it).
+    if ((event.metaKey || event.ctrlKey) && event.key === 'w'
+        && !this.isTextInputTarget(event.target)) {
       event.preventDefault();
       this.closeCurrentTabOrHideWindow();
     }
@@ -3671,14 +3782,17 @@ export class PdfPickerComponent implements OnInit {
       }
     }
 
-    // Ctrl/Cmd + Shift + S for Save EPUB As
-    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === 'S') {
+    // Ctrl/Cmd + Shift + S for Save EPUB As (not while typing in a field).
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === 'S'
+        && !this.isTextInputTarget(event.target)) {
       event.preventDefault();
       this.saveEpubAs();
     }
 
-    // Ctrl/Cmd + F for search
-    if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
+    // Ctrl/Cmd + F for search (not while typing in a field — Cmd+F inside a text
+    // box means find-in-this-field to everyone who has used one).
+    if ((event.metaKey || event.ctrlKey) && event.key === 'f'
+        && !this.isTextInputTarget(event.target)) {
       event.preventDefault();
       if (this.pdfLoaded()) {
         this.toggleSearch();
@@ -3686,13 +3800,22 @@ export class PdfPickerComponent implements OnInit {
     }
 
     // Escape closes the search bar first, otherwise closes the active panel.
+    //
+    // Guarded like every other branch, with ONE exception that is not an
+    // exception to the rule: the search box is where Escape is BOUND (the close
+    // button says "Close (Esc)", and opening search puts the caret in it), so
+    // Escape there is the shortcut being used rather than typing being
+    // interrupted. Everywhere else a text field owns its own Escape — that is
+    // how cancelling a chapter rename also shut the panel the rename box was in.
     if (event.key === 'Escape') {
-      if (this.showSearch()) {
+      const typing = this.isTextInputTarget(event.target);
+      const inSearchBox = event.target === this.searchInputRef?.nativeElement;
+      if (this.showSearch() && (inSearchBox || !typing)) {
         event.preventDefault();
         this.closeSearch();
         return;
       }
-      if (this.activePanel() !== null) {
+      if (this.activePanel() !== null && !typing) {
         event.preventDefault();
         this.activatePanel(null);
         return;
@@ -5390,10 +5513,24 @@ export class PdfPickerComponent implements OnInit {
    * worked, and here is what it cost", which is what a completed layout
    * migration is. Interrupting a book that opened correctly trains people to
    * dismiss without reading, which is exactly how the refusals stop working.
+   *
+   * A QUEUE rather than one slot. Two of these can be true at once — a layout
+   * migration on open and an autosave that failed a minute later — and a second
+   * `.set()` over the first would have deleted a sentence the user never saw.
+   * The banner shows the oldest; dismissing it brings the next one forward.
    */
-  readonly sessionNotice = signal<string | null>(null);
+  private readonly sessionNotices = signal<string[]>([]);
 
-  dismissSessionNotice(): void { this.sessionNotice.set(null); }
+  readonly sessionNotice = computed<string | null>(() => frontNotice(this.sessionNotices()));
+
+  dismissSessionNotice(): void {
+    this.sessionNotices.update(dropFrontNotice);
+  }
+
+  /** Say one thing, once — see shared/document/session-notices.ts. */
+  private pushSessionNotice(text: string): void {
+    this.sessionNotices.update(queue => queueSessionNotice(queue, text));
+  }
 
   /** Projects whose layout-guard verdict has already been said, this session. */
   private readonly layoutStateAnnounced = new Set<string>();
@@ -5436,14 +5573,14 @@ export class PdfPickerComponent implements OnInit {
       // modal here interrupted nearly every open (Owen, 2026-08-10: "warnings
       // should be sparse. they should almost never appear"). The sentence is
       // already short; the full reasoning is in main's log.
-      this.sessionNotice.set(refusal);
+      this.pushSessionNotice(refusal);
       return;
     }
 
     const notice = project.layout_migration_notice;
     if (notice) {
       console.log(`[loadProjectFromPath] layout migration: ${notice}`);
-      this.sessionNotice.set(notice);
+      this.pushSessionNotice(notice);
     }
   }
 
@@ -6174,7 +6311,17 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  showLibraryView(): void {
+  /**
+   * Leave the document and show the library.
+   *
+   * Async because of the flush: the document going off screen may have a write
+   * scheduled against it, and once `pdfLoaded` is false `performAutoSave`
+   * refuses outright — the edit made a second before pressing Library would
+   * simply never be written. The snapshot on the tab is not a substitute: it
+   * lives in this window's memory and dies with it.
+   */
+  async showLibraryView(): Promise<void> {
+    await this.flushScheduledProjectWrites();
     // Save current document state and show library view
     this.saveCurrentDocumentState();
     this.activeDocumentId.set(null);
@@ -6425,13 +6572,20 @@ export class PdfPickerComponent implements OnInit {
     // Check if this document is already open (by original path or library path)
     const existingDoc = this.openDocuments().find(d => d.path === effectivePath || d.libraryPath === effectivePath);
     if (existingDoc) {
-      // Switch to existing tab
+      // Switch to existing tab. The write scheduled for the tab being LEFT is
+      // made first: the timer serializes the live editor to `projectPath()`, and
+      // one line below both of those become the other document — so a late timer
+      // either writes B's state or is refused for B, and A's last edit is lost
+      // either way.
+      await this.flushScheduledProjectWrites();
       this.saveCurrentDocumentState();
       this.restoreDocumentState(existingDoc.id);
       return;
     }
 
-    // Save current document state before loading new one
+    // Save current document state before loading new one (pending write first —
+    // same reason as the tab switch above).
+    await this.flushScheduledProjectWrites();
     this.saveCurrentDocumentState();
 
     this.loading.set(true);
@@ -6460,6 +6614,7 @@ export class PdfPickerComponent implements OnInit {
         // Check if already open by hash (same file, different path)
         const existingByHash = this.openDocuments().find(d => d.fileHash === fileHash && fileHash);
         if (existingByHash) {
+          await this.flushScheduledProjectWrites();
           this.saveCurrentDocumentState();
           this.restoreDocumentState(existingByHash.id);
           this.loading.set(false);
@@ -9233,6 +9388,20 @@ export class PdfPickerComponent implements OnInit {
     } catch (err) {
       console.info('[document] this project has no working document to re-measure:', err);
     }
+    // The window can move between books while this is in flight — a files-changed
+    // burst arrives with no overlay in front of it, and a tab switch is one
+    // click. Bailing here is the same rule the load it was triggered by follows:
+    // an answer about project A may not be applied to project B. (`refreshBookEpub`
+    // also STAMPS its own answers with the project they are about, so this is the
+    // cheap half of a guarantee that does not depend on it.)
+    const stillMine = this.projectPath();
+    if (!stillMine || !samePath(stillMine, projectDir)) {
+      console.log(
+        `[picker] dropping the re-measure of ${projectDir}: the window is on `
+        + `${stillMine ?? 'no project'} now.`,
+      );
+      return;
+    }
     await this.refreshBookEpub();
   }
 
@@ -9407,6 +9576,41 @@ export class PdfPickerComponent implements OnInit {
       this.autoSaveTimeout = null;
     }
     this.appliedNarrationKey = '';
+  }
+
+  /**
+   * MAKE the write this window has scheduled, now, and wait for it.
+   *
+   * The other half of `cancelScheduledProjectWrites`, and the one every swap
+   * needs. The scheduled write serializes the LIVE editor signals to
+   * `projectPath()`, and both of those are about to be replaced — by a tab
+   * switch, by an artifact swap, by the window closing. Firing the timer late
+   * therefore either writes nothing (`viewingBook` refuses it, correctly, for a
+   * document the user has already left) or writes the NEW document's state to
+   * whichever project is bound by then. Either way the edit made one second
+   * before the swap is simply gone.
+   *
+   * Deliberately routed through `performAutoSave` rather than straight to the
+   * path: every refusal a late timer must answer — an erase in flight, a book on
+   * screen, a session that declined to load the project's edits — lives there
+   * and in `saveProjectToPath`, and a second door past them is a second set of
+   * rules. A session that owns no edits still reaches this and is still refused,
+   * exactly as its timer would have been.
+   *
+   * Does nothing when no write is scheduled, which is the common case.
+   */
+  private async flushScheduledProjectWrites(): Promise<void> {
+    if (!this.autoSaveTimeout) return;
+    clearTimeout(this.autoSaveTimeout);
+    this.autoSaveTimeout = null;
+    try {
+      await this.performAutoSave();
+    } catch (err) {
+      // Never allowed to stop the swap that asked for it: the user pressed
+      // something, and a failed background write is not a reason to leave them
+      // looking at the old document.
+      console.error('[flushScheduledProjectWrites] the pending save failed:', err);
+    }
   }
 
   /**
@@ -9619,6 +9823,13 @@ export class PdfPickerComponent implements OnInit {
     this.loading.set(true);
     this.loadingText.set('Opening the book...');
     try {
+      // The document that is leaving may have a write scheduled against it, and
+      // the tab is about to be dropped: a second later the timer would fire with
+      // the BOOK on screen and be refused by `viewingBook` — refused for the
+      // wrong document, and never made for the right one. So the edit made
+      // within a second of pressing a rail swap used to vanish. Flushed first,
+      // exactly as `closeDocument` saves before it drops a tab.
+      await this.flushScheduledProjectWrites();
       // The tab is dropped first because `loadPdf` refuses a document that is
       // already open, and `artifactSwapping` is what keeps the close-then-open
       // from being read as the user leaving the project.
@@ -9692,6 +9903,27 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
+    // A background tab's edits can only be saved from that tab — `saveProject`
+    // serializes the LIVE editor, which is this book. The hand-off closes the
+    // window, so those edits are about to be dropped, and being asked is the
+    // only thing that can stop it. A decision the user is making right now, so
+    // it is a question rather than a banner nobody will see.
+    const unsaved = this.openDocuments()
+      .filter(d => d.hasUnsavedChanges && d.id !== this.activeDocumentId());
+    if (unsaved.length > 0) {
+      const ok = await this.dialogService.confirm({
+        title: 'Other tabs have unsaved changes',
+        message:
+          `${unsaved.map(d => d.name).join(', ')} still hold unsaved changes, and they can only be `
+          + 'saved from their own tab. Handing the book to narration closes this window and drops '
+          + 'them.',
+        confirmLabel: 'Hand off anyway',
+        cancelLabel: 'Cancel',
+        type: 'warning',
+      });
+      if (!ok) return;
+    }
+
     try {
       await this.electronService.showNarration(projectDir);
     } catch (err) {
@@ -9706,7 +9938,13 @@ export class PdfPickerComponent implements OnInit {
 
     // The window holds no unsaved book state: every curation edit is already an
     // incremental update in the working document, and the strikes on a book are
-    // saved before this. Cleared only now, once the hand-off has been accepted.
+    // saved before this. What it CAN hold is a scheduled manifest write —
+    // chapters, metadata, the deletion keys — and clearing the dirty flag with
+    // one armed is how that write stopped being made at all: the flag is what
+    // the auto-save effect fires on, and the window is closed by the host a
+    // moment later. So the pending write is made first, and only then is the
+    // hand-off accepted.
+    await this.flushScheduledProjectWrites();
     this.editorState.hasUnsavedChanges.set(false);
     this.handedOffToNarration.emit({ projectDir, epubPath });
   }
@@ -10752,8 +10990,11 @@ export class PdfPickerComponent implements OnInit {
       const filtered = recent.filter((f: any) => f.path !== path);
       filtered.unshift({ path, name, timestamp: Date.now() });
       localStorage.setItem(key, JSON.stringify(filtered.slice(0, 50))); // Increased limit for library
-    } catch {
-      // Ignore localStorage errors
+    } catch (err) {
+      // The recents list is a convenience, so it does not interrupt anything —
+      // but it fails for the same reasons the tab record does, and it says so.
+      console.error('[library] could not record this file as recent:', err);
+      this.announceStorageFailure();
     }
   }
 
@@ -10934,10 +11175,56 @@ export class PdfPickerComponent implements OnInit {
   }
 
   private async restoreProjectState(projectFilePath: string): Promise<void> {
+    // WHICH document this load is for, captured before the round trip. Every
+    // write below lands in the LIVE editor signals, and the live editor is
+    // whatever tab is on screen when the IPC returns — not necessarily the one
+    // that asked. The autosave timer reaches here with no loading overlay in
+    // front of it, so a tab switch during the await is an ordinary thing to do,
+    // and without this it lands project A's deletions, page order, undo stack
+    // and chapters in tab B — which B then autosaves into B's manifest.
+    //
+    // The `superseded()` closure over a captured identity, as studio-versions
+    // does it. Checked at every await boundary, not just the first.
+    const forDocId = this.activeDocumentId();
+    const forPath = this.effectivePath() ?? '';
+    const superseded = (): string | null => {
+      const nowDocId = this.activeDocumentId();
+      if (nowDocId !== forDocId) {
+        return `the open document changed (${forDocId ?? 'none'} → ${nowDocId ?? 'none'})`;
+      }
+      const nowPath = this.effectivePath() ?? '';
+      if (!samePath(nowPath, forPath)) {
+        return `the file on screen changed (${forPath || 'none'} → ${nowPath || 'none'})`;
+      }
+      return null;
+    };
+
     const result = await this.electronService.projectsLoadFromPath(projectFilePath);
+
+    const changedDuringLoad = superseded();
+    if (changedDuringLoad) {
+      console.warn(
+        `[restoreProjectState] Dropping ${projectFilePath}: ${changedDuringLoad}. Nothing was `
+        + 'applied — this project\'s state belongs to a document that is no longer on screen.',
+      );
+      return;
+    }
+
     if (!result.success || !result.data) {
       console.warn('[restoreProjectState] Failed to load project:', projectFilePath);
-      this.projectPath.set(projectFilePath); // Still set path for future saves
+      // Bound for READING only. The path is still set — exports and the pipeline
+      // need to know which project this document belongs to — but this session
+      // holds NONE of the project's edits, so the same lock the two branches
+      // below use is taken here as well. Without it the first edit would arm the
+      // autosave, and the autosave would write this session's empty
+      // deleted_block_ids / undo_stack / chapters over the whole saved edit set,
+      // silently, because a load failed once.
+      this.projectPath.set(projectFilePath);
+      this.projectStateNotApplied.set(true);
+      if (this.autoSaveTimeout) {
+        clearTimeout(this.autoSaveTimeout);
+        this.autoSaveTimeout = null;
+      }
       return;
     }
 
@@ -11143,6 +11430,16 @@ export class PdfPickerComponent implements OnInit {
     // Restore block splits: re-fetch spans and rebuild child blocks
     if (project.block_splits && project.block_splits.length > 0) {
       await this.restoreBlockSplits(project.block_splits);
+      // The splits fetch spans, so this is the second place the document can
+      // change underneath. Everything above already landed on the right tab;
+      // the merges and the markSaved below must not land on a different one.
+      const changedDuringSplits = superseded();
+      if (changedDuringSplits) {
+        console.warn(
+          `[restoreProjectState] Stopping partway through ${projectFilePath}: ${changedDuringSplits}.`,
+        );
+        return;
+      }
     }
 
     // Restore block merges: find source blocks and rebuild merged blocks
@@ -11504,6 +11801,9 @@ export class PdfPickerComponent implements OnInit {
         });
       }
       this.projectCreatedAt = projectData.created_at;
+      // A write landed, so the retry ladder starts again from the bottom for
+      // whatever fails next.
+      this.autoSaveRetries = 0;
       // Only clear the dirty flag if no edit occurred while the save was in
       // flight — otherwise the newer changes would be silently marked saved
       if (this.editorState.changeGeneration() === generationAtSerialize) {
@@ -11523,7 +11823,61 @@ export class PdfPickerComponent implements OnInit {
           type: 'error'
         });
       }
+      // A failed write must not end the session's autosaving.
+      //
+      // The auto-save EFFECT fires on the edge of `hasUnsavedChanges` going
+      // true, and a failure leaves it true — so it never fires again, and one
+      // transient write error (a locked manifest, a drive that blinked) used to
+      // disarm autosave for the whole window, invisibly. The success path
+      // already re-schedules itself when an edit raced the write; this is the
+      // same move for the failure, with a backoff so a permanent failure is a
+      // slow retry rather than a spin.
+      this.retryFailedSave(filePath, result.error);
     }
+  }
+
+  /** How many consecutive autosaves have failed — the backoff's rung. */
+  private autoSaveRetries = 0;
+
+  /**
+   * Try the write again, later, and say so once it is clear it is not coming
+   * back.
+   *
+   * A BANNER rather than a modal: nothing is being decided, the edits are still
+   * in the window, and a save failure that interrupts typing is how people learn
+   * to dismiss dialogs unread. Said even for a `silent` autosave — silence is
+   * for routine success, and "your edits are not reaching the disk" is not that.
+   *
+   * The ladder itself is `shared/document/autosave-retry.ts`.
+   */
+  private retryFailedSave(filePath: string, error: string | undefined): void {
+    // The same two locks the writer itself answers to. A session that may not
+    // write this project must not schedule a retry that would.
+    if (this.erasing() || this.projectStateNotApplied()) return;
+    const delay = autosaveRetryDelay(this.autoSaveRetries + 1, this.AUTO_SAVE_DELAY);
+    if (delay === null) {
+      this.pushSessionNotice(
+        `This project could not be saved (${error || 'no reason given'}), and the retries have `
+        + 'stopped. Your edits are still in this window — use Save to try again once whatever is '
+        + 'holding the project has let go.',
+      );
+      return;
+    }
+    this.autoSaveRetries++;
+    this.pushSessionNotice(
+      `This project could not be saved (${error || 'no reason given'}). It will be tried again; `
+      + 'until it succeeds your edits exist only in this window.',
+    );
+    if (this.autoSaveTimeout) clearTimeout(this.autoSaveTimeout);
+    this.autoSaveTimeout = setTimeout(() => {
+      this.autoSaveTimeout = null;
+      // Through performAutoSave rather than straight back to the path, so the
+      // retry answers the same gates as any other timer that fires late: an
+      // erase that started meanwhile, a book swapped onto the screen, a closed
+      // document.
+      void this.performAutoSave();
+    }, delay);
+    console.warn(`[saveProjectToPath] retry ${this.autoSaveRetries} for ${filePath} in ${delay}ms`);
   }
 
   /**
@@ -11576,7 +11930,9 @@ export class PdfPickerComponent implements OnInit {
     // Check if this project is already open
     const existingDoc = this.openDocuments().find(d => d.projectPath === filePath);
     if (existingDoc) {
-      // Switch to existing tab
+      // Switch to existing tab — pending write for the tab being left first,
+      // exactly as `loadPdf` does it.
+      await this.flushScheduledProjectWrites();
       this.saveCurrentDocumentState();
       this.restoreDocumentState(existingDoc.id);
       return;
@@ -11651,7 +12007,9 @@ export class PdfPickerComponent implements OnInit {
     // EPUBs are now handled by the PDF picker via mupdf (renders them as pages)
     // No special routing needed - both PDFs and EPUBs load the same way
 
-    // Save current document state before loading new one
+    // Save current document state before loading new one — the write scheduled
+    // against it first, for the reason given at the tab switch above.
+    await this.flushScheduledProjectWrites();
     this.saveCurrentDocumentState();
 
     // Load the source file - check override, then original, then fall back to exported EPUB
@@ -14498,6 +14856,11 @@ export class PdfPickerComponent implements OnInit {
         // Save in background before closing
         this.saveProject().catch(err => console.error('Auto-save on close failed:', err));
       }
+    } else {
+      // No dirty flag, but a write can still be SCHEDULED: `markSaved` runs when
+      // a save completes, and the debounce window is a second wide. Made now,
+      // because a second from now this document is gone.
+      void this.flushScheduledProjectWrites();
     }
 
     this.removeClosedDocument(docId);
@@ -14520,13 +14883,24 @@ export class PdfPickerComponent implements OnInit {
     // If closing the document on screen, switch to another or show the empty
     // workspace.
     if (docId === this.activeDocumentId()) {
+      // The write this window had scheduled was for the document that just
+      // left. `closeDocument` has already made it (it saves before it drops a
+      // tab with unsaved changes), and letting the timer fire now would run it
+      // against whatever comes forward next.
+      this.cancelScheduledProjectWrites();
       if (newDocs.length > 0) {
         // Switch to previous tab or first available
         const newIndex = Math.max(0, docIndex - 1);
         this.restoreDocumentState(newDocs[newIndex].id);
       } else {
-        // No more documents - show library view
-        this.activeDocumentId.set(null);
+        // No more documents — show the library, and let go of everything the
+        // closed one owned. `clearDocumentState` is what does that, and it was
+        // never called from here: `curatedPdfPath`, the project binding, the
+        // hidden categories and the whole editor state survived into the NEXT
+        // document, which is precisely what that function's own comments say
+        // must not happen (a PDF path from book A named inside book B's project
+        // directory, which main refuses by name).
+        this.clearDocumentState();
         this.pdfLoaded.set(false);
       }
     }
@@ -14681,6 +15055,25 @@ export class PdfPickerComponent implements OnInit {
   /**
    * Restore open tabs from localStorage.
    * Called on component init to preserve tabs across route navigation.
+   *
+   * ── The restore gives way to the user ────────────────────────────────────
+   *
+   * Each project is opened in turn, and each open makes ITS document the active
+   * one. A restore of four projects is therefore several seconds long, and
+   * anything the user opens during it — from the library, from Studio, from a
+   * file association — is shoved aside by the next one to finish. So the loop
+   * watches the document it last put on screen: if that is not what is on screen
+   * when the next iteration begins, somebody else opened something and the
+   * restore stops. The remaining tabs are not lost, they are simply not restored
+   * this session (they are still in the record until the persistence effect
+   * rewrites it, which it only does from what is actually open — see below).
+   *
+   * ── A project that will not open is SAID ─────────────────────────────────
+   *
+   * A failed load leaves no document, the persistence effect writes the tab
+   * record from the documents that ARE open, and the tab quietly disappears from
+   * the next launch too. That is a book vanishing from the user's workspace with
+   * nothing said about it, so it is said — once, as a banner, naming them.
    */
   private async restoreOpenTabs(): Promise<void> {
     try {
@@ -14692,22 +15085,51 @@ export class PdfPickerComponent implements OnInit {
       const projectPaths: string[] = JSON.parse(savedPaths);
       if (!Array.isArray(projectPaths) || projectPaths.length === 0) return;
 
+      const failed: string[] = [];
+      let interrupted = false;
+      // What the restore itself last put on screen. Starts as whatever is there
+      // now, which for a fresh window is nothing.
+      let restoredActiveId = this.activeDocumentId();
 
       // Load each project
       for (const path of projectPaths) {
+        if (this.activeDocumentId() !== restoredActiveId) {
+          interrupted = true;
+          console.log(
+            '[restoreOpenTabs] Stopping: a document was opened while the tabs were being '
+            + `restored, so ${path} and anything after it is left alone.`,
+          );
+          break;
+        }
         try {
           await this.loadProjectFromPath(path, 'restoring');
         } catch (err) {
           console.error('[restoreOpenTabs] Failed to load project:', path, err);
         }
+        // Measured, not inferred from whether it threw: the loader reports most
+        // failures by returning, so "did a document for this project appear" is
+        // the only question with a reliable answer.
+        if (!this.openDocuments().some(d => d.projectPath && samePath(d.projectPath, path))) {
+          failed.push(path);
+        }
+        restoredActiveId = this.activeDocumentId();
       }
 
-      // Restore active tab if specified and still exists
-      if (activeTabPath) {
+      // Restore active tab if specified and still exists. Never over a document
+      // the user opened themselves — they are looking at it.
+      if (activeTabPath && !interrupted) {
         const activeDoc = this.openDocuments().find(d => d.projectPath === activeTabPath);
         if (activeDoc) {
           this.restoreDocumentState(activeDoc.id);
         }
+      }
+
+      if (failed.length > 0) {
+        this.pushSessionNotice(
+          `${failed.length} document(s) that were open last time could not be reopened: `
+          + `${failed.map(p => p.split(/[\\/]/).pop()).join(', ')}. They are still on disk — open `
+          + 'one from the library to see what it says.',
+        );
       }
     } catch (err) {
       console.error('[restoreOpenTabs] Failed to restore tabs:', err);

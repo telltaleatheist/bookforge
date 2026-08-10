@@ -2501,10 +2501,13 @@ export interface ElectronAPI {
         archiveRowId: string | null;
       }>;
     }>;
-    onWindowClosed: (callback: (projectPath: string) => void) => void;
-    offWindowClosed: () => void;
-    onFilesChanged: (callback: (projectPath: string) => void) => void;
-    offFilesChanged: () => void;
+    /** Returns the unsubscribe closure for THIS listener (see the impl). */
+    onWindowClosed: (callback: (projectPath: string) => void) => () => void;
+    /** Returns the unsubscribe closure for THIS listener (see the impl). */
+    onFilesChanged: (callback: (projectPath: string) => void) => () => void;
+    /** Main is holding a close open; the payload is the channel to answer on. */
+    onFlushBeforeClose: (callback: (replyChannel: string) => void) => () => void;
+    flushComplete: (replyChannel: string) => void;
     saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) => Promise<{ success: boolean; error?: string }>;
   };
   analysis: {
@@ -4428,17 +4431,41 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('editor:close-window', projectPath),
     getVersions: (projectDir: string) =>
       ipcRenderer.invoke('editor:get-versions', projectDir),
+    // ── Per-listener subscriptions, as every other channel here does them ────
+    //
+    // These two used to be `on` + a bare `off` that called
+    // `removeAllListeners`, which is a channel-wide act performed by one
+    // subscriber: Studio's teardown unsubscribed the picker, and there was no
+    // spelling of "unsubscribe me" that did not. So they return the closure that
+    // removes the listener that was just added — the `tts.onProgress` /
+    // `document.onStageProgress` shape — and there is no `off*` any more.
     onWindowClosed: (callback: (projectPath: string) => void) => {
-      ipcRenderer.on('editor:window-closed', (_event, projectPath) => callback(projectPath));
-    },
-    offWindowClosed: () => {
-      ipcRenderer.removeAllListeners('editor:window-closed');
+      const listener = (_event: Electron.IpcRendererEvent, projectPath: string) =>
+        callback(projectPath);
+      ipcRenderer.on('editor:window-closed', listener);
+      return () => { ipcRenderer.removeListener('editor:window-closed', listener); };
     },
     onFilesChanged: (callback: (projectPath: string) => void) => {
-      ipcRenderer.on('project:files-changed', (_event, projectPath) => callback(projectPath));
+      const listener = (_event: Electron.IpcRendererEvent, projectPath: string) =>
+        callback(projectPath);
+      ipcRenderer.on('project:files-changed', listener);
+      return () => { ipcRenderer.removeListener('project:files-changed', listener); };
     },
-    offFilesChanged: () => {
-      ipcRenderer.removeAllListeners('project:files-changed');
+    /**
+     * Main is holding this window's close open until the editor says it is done.
+     *
+     * The payload is the channel to answer on — one per window, minted by main —
+     * so two editor windows closing at once cannot answer for each other.
+     */
+    onFlushBeforeClose: (callback: (replyChannel: string) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, replyChannel: string) =>
+        callback(replyChannel);
+      ipcRenderer.on('editor:flush-before-close', listener);
+      return () => { ipcRenderer.removeListener('editor:flush-before-close', listener); };
+    },
+    /** "Everything I had is written — you may close." */
+    flushComplete: (replyChannel: string) => {
+      ipcRenderer.send(replyChannel);
     },
     saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) =>
       ipcRenderer.invoke('editor:save-epub', epubPath, epubData),

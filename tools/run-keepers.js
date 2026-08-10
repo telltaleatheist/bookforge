@@ -28,6 +28,7 @@ const SUITES = [
   'test-processing-chain',
   'test-job-timing',
   'test-vlm-convert-plan',
+  'test-picker-session-state',
 ];
 
 let failed = 0;
