@@ -2,94 +2,34 @@ import { Injectable, signal, computed } from '@angular/core';
 import { TextBlock, Category, PageDimension, BlockCategoryProvenance } from './pdf.service';
 import { ClassificationThresholds, getDefaultThresholds } from './category-learner';
 import { normalizeCategories } from '@shared/ocr/block-categories';
+import {
+  HistoryAction,
+  MAX_EDITOR_HISTORY,
+  MergeDefinition,
+  SplitDefinition,
+  blocksAfterMerge,
+  blocksAfterMergeUndone,
+  blocksAfterSplit,
+  blocksAfterSplitUndone,
+  pruneBlockTable,
+  requireBlocks,
+  trimUndoStack,
+} from '@shared/document/editor-history';
 
-export interface SplitDefinition {
-  originalBlockId: string;
-  splitPoints: number[];       // line-group indices where splits were placed
-  childBlockIds: string[];     // IDs of generated child blocks
-  childBlocks: TextBlock[];    // full block data (needed for undo/redo)
-  // True when the split was derived from the block's TEXT (no span geometry was
-  // available, e.g. OCR-generated or synthetic blocks). Text-mode splits cannot
-  // be rebuilt from spans on reload, so their childBlocks must be persisted.
-  textMode?: boolean;
-}
+// The history record types live in shared/document/editor-history.ts — the main
+// process reads the same records out of editor-state.json, and the migration
+// that reads projects written before block ids replaced embedded block copies
+// has to describe them with one declaration. Re-exported so every import site in
+// the picker is unchanged.
+export type {
+  CropGeometryRect,
+  CropRegion,
+  HistoryAction,
+  MergeDefinition,
+  SplitDefinition,
+} from '@shared/document/editor-history';
 
-export interface MergeDefinition {
-  mergedBlockId: string;
-  sourceBlockIds: string[];
-  sourceBlocks: TextBlock[];   // full source block data (needed for undo)
-  mergedBlock: TextBlock;
-}
-
-/** Axis-aligned rectangle in PDF page-point space (same space as TextBlock.x/y/w/h). */
-export interface CropGeometryRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-/**
- * A persistent crop applied to one page. The crop is a display-only region that
- * marks everything OUTSIDE `rect` as removed. `deletedBlockIds` records exactly
- * which live blocks THIS crop deleted on that page, so the crop can be reversed
- * without disturbing blocks that were already deleted by other means.
- */
-export interface CropRegion {
-  rect: CropGeometryRect;
-  deletedBlockIds: string[];
-}
-
-export interface HistoryAction {
-  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds' | 'move' | 'resize' | 'deletePage' | 'restorePage' | 'reorderPages' | 'selection' | 'paragraphBreak' | 'categoryCorrection' | 'splitBlock' | 'mergeBlocks' | 'cropApply' | 'cropClear';
-  blockIds: string[];
-  selectionBefore: string[];
-  selectionAfter: string[];
-  // For textEdit actions
-  textBefore?: string | null;  // null means no correction (original text)
-  textAfter?: string | null;
-  // For toggleBackgrounds actions
-  backgroundsBefore?: boolean;
-  backgroundsAfter?: boolean;
-  // For move actions
-  offsetXBefore?: number;
-  offsetYBefore?: number;
-  offsetXAfter?: number;
-  offsetYAfter?: number;
-  // For resize actions
-  widthBefore?: number;
-  heightBefore?: number;
-  widthAfter?: number;
-  heightAfter?: number;
-  // For page actions
-  pageNumbers?: number[];
-  pageOrderBefore?: number[];
-  pageOrderAfter?: number[];
-  // For paragraph break actions
-  paragraphBreaksBefore?: string[];
-  paragraphBreaksAfter?: string[];
-  // For category correction actions
-  categoryCorrectionsBefore?: [string, string][];
-  categoryCorrectionsAfter?: [string, string][];
-  blockCategoryBefore?: string;  // block's category_id before correction
-  blockCategoryAfter?: string;   // block's category_id after correction
-  bulkBlockCategoriesBefore?: [string, string][];  // for bulk: blockId → previous categoryId
-  bulkBlockCategoriesAfter?: [string, string][];   // for bulk: blockId → new categoryId
-  // For splitBlock actions
-  splitDefinition?: SplitDefinition;
-  // For mergeBlocks actions
-  mergeDefinitions?: MergeDefinition[];
-  // For cropApply / cropClear actions — composite crop region + block-deletion
-  // reversal. Stored as plain Records (page number → value) so the action
-  // round-trips through JSON when history is serialized into the project file.
-  // A null value means "no crop region on that page".
-  cropPagesBefore?: Record<string, CropRegion | null>;
-  cropPagesAfter?: Record<string, CropRegion | null>;
-  // Block IDs whose deleted-state this action toggled. On cropApply these were
-  // newly deleted (apply/redo add them, undo restores them). On cropClear these
-  // were restored (apply/redo restore them, undo re-deletes them).
-  cropBlockIdsToggled?: string[];
-}
+import type { CropGeometryRect, CropRegion } from '@shared/document/editor-history';
 
 /**
  * BlockEdit - Stores all edits for a single text block
@@ -189,6 +129,23 @@ export class PdfEditorStateService {
 
   // Block merges: mergedBlockId → MergeDefinition (user-driven block merging)
   readonly blockMerges = signal<Map<string, MergeDefinition>>(new Map());
+
+  /**
+   * The document's block table — every block a history action, a split record or
+   * a merge record names, stored ONCE and keyed by its id.
+   *
+   * The records themselves hold ids and nothing else. Before this existed, a
+   * `mergeBlocks` action carried a full copy of every source block AND of the
+   * merged block those sources were joined into, so one bulk merge was a 15 MB
+   * history entry (measured on the live library, 2026-08-10) and every autosave
+   * rewrote it. See shared/document/editor-history.ts for the whole argument,
+   * including which of these blocks are worth writing to disk and which the
+   * document simply produces again.
+   *
+   * NOT a signal: nothing renders from it. It is the storage the history reads
+   * through, and it changes in lockstep with the records that reference it.
+   */
+  private blocksById = new Map<string, TextBlock>();
 
   // Persistent crop regions: 0-indexed page number → CropRegion. The single
   // source of truth for crop — durable, undoable, and serialized into the
@@ -328,6 +285,7 @@ export class PdfEditorStateService {
     this.deletedPages.set(data.deletedPages || new Set());
     this.blockSplits.set(new Map());
     this.blockMerges.set(new Map());
+    this.blocksById = new Map();
     this.cropRegions.set(data.cropRegions || new Map());
     this.removeBackgrounds.set(false);  // Always reset background removal for new document
     this.showTextLayer.set(false);  // Always reset text layer visibility for new document
@@ -418,6 +376,7 @@ export class PdfEditorStateService {
     this.blockEdits.set(new Map());
     this.blockSplits.set(new Map());
     this.blockMerges.set(new Map());
+    this.blocksById = new Map();
     this.cropRegions.set(new Map());
     this.clearHistory();
     this.hasUnsavedChanges.set(false);
@@ -934,8 +893,7 @@ export class PdfEditorStateService {
     } else if (action.type === 'splitBlock' && action.splitDefinition) {
       const def = action.splitDefinition;
       // Remove child blocks from blocks array
-      const childIds = new Set(def.childBlockIds);
-      this.blocks.update(blocks => blocks.filter(b => !childIds.has(b.id)));
+      this.blocks.update(blocks => blocksAfterSplitUndone(blocks, def));
       // Remove original from deletedBlockIds
       this.deletedBlockIds.update(deleted => {
         const next = new Set(deleted);
@@ -949,13 +907,13 @@ export class PdfEditorStateService {
         return next;
       });
     } else if (action.type === 'mergeBlocks' && action.mergeDefinitions) {
-      // Undo merge: remove merged blocks, re-add source blocks
-      const mergedIds = new Set(action.mergeDefinitions.map(d => d.mergedBlockId));
-      const restoredBlocks = action.mergeDefinitions.flatMap(d => d.sourceBlocks);
-      this.blocks.update(blocks => [
-        ...blocks.filter(b => !mergedIds.has(b.id)),
-        ...restoredBlocks,
-      ]);
+      // Undo merge: remove merged blocks, re-add source blocks — resolved from
+      // the block table, which is where the sources have been stored since the
+      // action itself stopped carrying copies of them.
+      const defs = action.mergeDefinitions;
+      const restoredBlocks = defs.flatMap(
+        d => this.requireBlocksById(d.sourceBlockIds, `undo the merge into ${d.mergedBlockId}`));
+      this.blocks.update(blocks => blocksAfterMergeUndone(blocks, defs, restoredBlocks));
       // Remove from blockMerges map
       this.blockMerges.update(map => {
         const next = new Map(map);
@@ -1063,8 +1021,10 @@ export class PdfEditorStateService {
       this.updateCategoryStats();
     } else if (action.type === 'splitBlock' && action.splitDefinition) {
       const def = action.splitDefinition;
-      // Re-add child blocks
-      this.blocks.update(blocks => [...blocks, ...def.childBlocks]);
+      // Re-add child blocks, resolved from the block table
+      const childBlocks = this.requireBlocksById(
+        def.childBlockIds, `redo the split of ${def.originalBlockId}`);
+      this.blocks.update(blocks => blocksAfterSplit(blocks, childBlocks));
       // Re-delete original
       this.deletedBlockIds.update(deleted => {
         const next = new Set(deleted);
@@ -1079,14 +1039,10 @@ export class PdfEditorStateService {
       });
     } else if (action.type === 'mergeBlocks' && action.mergeDefinitions) {
       // Redo merge: remove source blocks, re-add merged blocks
-      const allSourceIds = new Set<string>();
-      for (const def of action.mergeDefinitions) {
-        for (const srcId of def.sourceBlockIds) allSourceIds.add(srcId);
-      }
-      this.blocks.update(blocks => [
-        ...blocks.filter(b => !allSourceIds.has(b.id)),
-        ...action.mergeDefinitions!.map(d => d.mergedBlock),
-      ]);
+      const defs = action.mergeDefinitions;
+      const mergedBlocks = this.requireBlocksById(
+        defs.map(d => d.mergedBlockId), 'redo a block merge');
+      this.blocks.update(blocks => blocksAfterMerge(blocks, defs, mergedBlocks));
       // Re-store merge definitions
       this.blockMerges.update(map => {
         const next = new Map(map);
@@ -1151,10 +1107,49 @@ export class PdfEditorStateService {
     return after;
   }
 
+  // ── The block table ───────────────────────────────────────────────────────
+
+  /**
+   * Put blocks into the document's block table, keyed by their own ids.
+   *
+   * Called by every operation that creates a block a record will name later —
+   * a split's children, a merge's sources and the block they were joined into.
+   */
+  registerBlocks(blocks: readonly TextBlock[]): void {
+    for (const block of blocks) this.blocksById.set(block.id, block);
+  }
+
+  /** This document's table, read through the shared resolver. */
+  requireBlocksById(ids: readonly string[], purpose: string): TextBlock[] {
+    return requireBlocks(this.blocksById, ids, purpose);
+  }
+
+  /** The whole block table — for tab snapshots and for the project save. */
+  blockTable(): ReadonlyMap<string, TextBlock> {
+    return this.blocksById;
+  }
+
   // Block split methods
-  splitBlock(definition: SplitDefinition, addToHistory: boolean = true): void {
+  /**
+   * Apply a split.
+   *
+   * `childBlocks` is passed alongside the definition rather than inside it: the
+   * definition is a RECORD (ids), and the blocks are storage. They are checked
+   * against each other here so a caller cannot register one set of blocks under
+   * another set of ids and only find out at the next undo.
+   */
+  splitBlock(definition: SplitDefinition, childBlocks: TextBlock[], addToHistory: boolean = true): void {
+    const actualIds = childBlocks.map(b => b.id).join(',');
+    if (actualIds !== definition.childBlockIds.join(',')) {
+      throw new Error(
+        `Split of ${definition.originalBlockId} names children [${definition.childBlockIds.join(', ')}] `
+        + `but was given blocks [${actualIds}]. The record and the blocks must be the same list.`,
+      );
+    }
+    this.registerBlocks(childBlocks);
+
     // Add child blocks to the blocks array
-    this.blocks.update(blocks => [...blocks, ...definition.childBlocks]);
+    this.blocks.update(blocks => blocksAfterSplit(blocks, childBlocks));
 
     // Hide the original block by adding it to deletedBlockIds
     this.deletedBlockIds.update(deleted => {
@@ -1186,18 +1181,48 @@ export class PdfEditorStateService {
   }
 
   // Block merge methods
-  mergeBlocks(definitions: MergeDefinition[], addToHistory: boolean = true): void {
-    // Remove source blocks from blocks array and add merged blocks in one update
-    const allSourceIds = new Set<string>();
-    for (const def of definitions) {
+  /**
+   * Apply merges.
+   *
+   * `mergedBlocks` runs parallel to `definitions` — one joined block per record,
+   * in the same order — for the reason `splitBlock` gives. The SOURCE blocks are
+   * not passed at all: they are live blocks at the moment a merge is applied, so
+   * they are taken from the document and put in the block table here, which is
+   * what makes the undo of this merge resolvable later.
+   */
+  mergeBlocks(definitions: MergeDefinition[], mergedBlocks: TextBlock[], addToHistory: boolean = true): void {
+    if (mergedBlocks.length !== definitions.length) {
+      throw new Error(
+        `${definitions.length} merge record(s) were given ${mergedBlocks.length} merged block(s).`,
+      );
+    }
+    const liveById = new Map(this.blocks().map(b => [b.id, b]));
+    for (let i = 0; i < definitions.length; i++) {
+      const def = definitions[i];
+      if (mergedBlocks[i].id !== def.mergedBlockId) {
+        throw new Error(
+          `Merge record ${i} names merged block ${def.mergedBlockId} but was given `
+          + `${mergedBlocks[i].id}. The record and the block must agree.`,
+        );
+      }
       for (const srcId of def.sourceBlockIds) {
-        allSourceIds.add(srcId);
+        // The source is either still on screen (this is a fresh merge) or
+        // already in the table (this merge is being re-applied). Neither means
+        // the merge is describing blocks this document does not have.
+        const source = liveById.get(srcId) ?? this.blocksById.get(srcId);
+        if (!source) {
+          throw new Error(
+            `Cannot merge into ${def.mergedBlockId}: source block ${srcId} is neither in the `
+            + 'document nor in its block table.',
+          );
+        }
+        this.blocksById.set(srcId, source);
       }
     }
-    this.blocks.update(blocks => [
-      ...blocks.filter(b => !allSourceIds.has(b.id)),
-      ...definitions.map(d => d.mergedBlock),
-    ]);
+    this.registerBlocks(mergedBlocks);
+
+    // Remove source blocks from blocks array and add merged blocks in one update
+    this.blocks.update(blocks => blocksAfterMerge(blocks, definitions, mergedBlocks));
 
     // Store merge definitions
     this.blockMerges.update(map => {
@@ -1645,16 +1670,19 @@ export class PdfEditorStateService {
     });
   }
 
-  // Cap so long sessions don't grow saves unboundedly — split/merge actions
-  // embed full block payloads and history is serialized into the project file
-  private static readonly MAX_HISTORY = 200;
-
   private pushHistory(action: HistoryAction): void {
     this.undoStack.push(action);
-    if (this.undoStack.length > PdfEditorStateService.MAX_HISTORY) {
-      this.undoStack.splice(0, this.undoStack.length - PdfEditorStateService.MAX_HISTORY);
-    }
     this.redoStack = []; // Clear redo stack on new action
+    // Trimming is the only thing that can drop the LAST reference to a block, so
+    // it is the only place the table has to be swept. Clearing the redo stack
+    // above cannot: an action leaves the redo stack by being redone, which puts
+    // it back on the undo stack, and a redo stack thrown away here was already
+    // thrown away by the edit that replaced it.
+    if (trimUndoStack(this.undoStack, MAX_EDITOR_HISTORY).length > 0) {
+      pruneBlockTable(
+        this.blocksById, this.undoStack, this.redoStack,
+        this.blockSplits().values(), this.blockMerges().values());
+    }
     this.updateHistorySignals();
   }
 
@@ -1669,18 +1697,39 @@ export class PdfEditorStateService {
     this.canRedo.set(this.redoStack.length > 0);
   }
 
-  // Get history for serialization
-  getHistory(): { undoStack: HistoryAction[]; redoStack: HistoryAction[] } {
+  /**
+   * The history, for serialization and for the tab snapshot.
+   *
+   * `blocks` is the WHOLE in-memory table. A tab switch has to carry all of it,
+   * because a tab that comes forward has no analysis to re-derive anything from;
+   * the project SAVE narrows it (see persistedBlockTable) precisely because a
+   * reopened project does.
+   */
+  getHistory(): { undoStack: HistoryAction[]; redoStack: HistoryAction[]; blocks: Map<string, TextBlock> } {
     return {
       undoStack: [...this.undoStack],
-      redoStack: [...this.redoStack]
+      redoStack: [...this.redoStack],
+      blocks: new Map(this.blocksById),
     };
   }
 
-  // Restore history from serialization
-  setHistory(history: { undoStack: HistoryAction[]; redoStack: HistoryAction[] }): void {
+  /**
+   * Restore history from serialization.
+   *
+   * The blocks are MERGED into the table rather than replacing it: a project
+   * load hands over the sparse table that was on disk and the merge/split
+   * restores that follow add back the blocks the document produced for itself,
+   * and both are the same block table. A block id is a document-wide identity,
+   * so two sources for one id are two spellings of one block.
+   */
+  setHistory(history: {
+    undoStack: HistoryAction[];
+    redoStack: HistoryAction[];
+    blocks: Map<string, TextBlock>;
+  }): void {
     this.undoStack = [...history.undoStack];
     this.redoStack = [...history.redoStack];
+    for (const [id, block] of history.blocks) this.blocksById.set(id, block);
     this.updateHistorySignals();
   }
 

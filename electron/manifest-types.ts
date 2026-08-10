@@ -841,6 +841,13 @@ export interface ManifestEditorState {
   blockSplits?: unknown;
   /** `[{ mergedBlockId, sourceBlockIds }]`. */
   blockMerges?: unknown;
+  /**
+   * `{ "<block id>": TextBlock }` — the ONE table the undo/redo stacks, the
+   * splits and the merges name their blocks in, holding only the blocks the
+   * document cannot produce again on the next open (see
+   * shared/document/editor-history.ts). Every record above is ids alone.
+   */
+  historyBlocks?: unknown;
   /** Crop rectangles, each on a page of the layout. */
   cropRegions?: unknown;
   /** Text fixes, keyed by block id. */

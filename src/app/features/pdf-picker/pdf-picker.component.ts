@@ -23,6 +23,14 @@ import {
   type ChapterRow,
 } from './components/document-nav/document-nav.component';
 import type { DocumentRef, ResetTarget } from '@shared/document/pipeline-types';
+import {
+  blockTableFromRecord,
+  editorHistoryShape,
+  normalizeEditorHistory,
+  persistedBlockTable,
+  reproducibleBlockIds,
+  type EditorBlockTable,
+} from '@shared/document/editor-history';
 import { toLaidOutBook, type LaidOutBlock, type LaidOutBook } from '@shared/document/laid-out-book';
 import { PdfViewerComponent, CropRect } from './components/pdf-viewer/pdf-viewer.component';
 import {
@@ -147,6 +155,13 @@ interface OpenDocument {
   projectPath: string | null;
   undoStack: HistoryAction[];
   redoStack: HistoryAction[];
+  /**
+   * The block table the two stacks above name their blocks in — the WHOLE of
+   * it, unlike the project file's, because a tab that comes forward has no
+   * analysis running to produce anything again. See
+   * PdfEditorStateService.blockTable.
+   */
+  historyBlocks: Map<string, TextBlock>;
   lightweightMode?: boolean;  // Process without rendering pages
   paragraphBreaks?: Set<string>;
   categoryCorrections?: Map<string, string>;
@@ -302,6 +317,19 @@ interface BookForgeProject {
   text_corrections?: Record<string, string>;  // Legacy: OCR corrections only
   undo_stack?: HistoryAction[];  // Persisted undo history
   redo_stack?: HistoryAction[];  // Persisted redo history
+  /**
+   * The block table the history, `block_splits` and `block_merges` name their
+   * blocks in — and ONLY the blocks this document cannot produce again when it
+   * is reopened (a text-mode split's children; a block named by a history entry
+   * no live record replays). Everything else is left out on purpose, because the
+   * analysis and the two restores below put it back.
+   *
+   * ABSENT on projects saved before the history was normalized: those carry
+   * whole `TextBlock`s inside their `undo_stack` entries instead, and
+   * `normalizeProjectHistory` converts them on load. See
+   * shared/document/editor-history.ts.
+   */
+  history_blocks?: EditorBlockTable;
   remove_backgrounds?: boolean;  // Background removal state
   ocr_blocks?: TextBlock[];  // OCR-generated blocks (independent from PDF analysis)
   /** User-authored blocks (chapter boxes). Restored with addBlocks, never with
@@ -316,16 +344,10 @@ interface BookForgeProject {
   category_corrections?: [string, string][];  // [blockId, categoryId][] explicit user overrides
   learned_categories?: [string, string][];  // [blockId, categoryId][] from re-detect
   classification_thresholds?: ClassificationThresholds;
-  block_splits?: Array<{
-    originalBlockId: string;
-    splitPoints: number[];
-    childBlockIds: string[];
-    // Text-mode splits (no span geometry) can't be rebuilt from spans on reload,
-    // so their full child block data is persisted directly.
-    textMode?: boolean;
-    childBlocks?: TextBlock[];
-  }>;
-  block_merges?: Array<{ mergedBlockId: string; sourceBlockIds: string[] }>;
+  // Splits and merges, by id. A text-mode split's children (no span geometry to
+  // rebuild them from) are in `history_blocks`, not inline here.
+  block_splits?: SplitDefinition[];
+  block_merges?: MergeDefinition[];
   // Persistent crop regions keyed by 0-indexed page number (as a string key in
   // JSON). Each records the crop rect plus the block IDs that crop deleted.
   crop_regions?: Record<string, { rect: { x: number; y: number; width: number; height: number }; deletedBlockIds: string[] }>;
@@ -6253,22 +6275,26 @@ export class PdfPickerComponent implements OnInit {
           const allBlocks = this.editorState.blocks();
           const blocksById = new Map(allBlocks.map(b => [b.id, b]));
           const definitions: MergeDefinition[] = [];
+          const mergedBlocks: TextBlock[] = [];
           for (const [, def] of blockMerges) {
             const sourceBlocks = def.sourceBlockIds
               .map(id => blocksById.get(id))
               .filter((b): b is TextBlock => !!b);
             if (sourceBlocks.length >= 2) {
+              // The record is restated over the sources that were actually
+              // found: the merged block is built from those, so naming a source
+              // that is not in it would describe a merge nothing performed.
               definitions.push({
-                ...def,
-                sourceBlocks,
-                mergedBlock: createMergedBlock(def.mergedBlockId, sourceBlocks),
+                mergedBlockId: def.mergedBlockId,
+                sourceBlockIds: sourceBlocks.map(b => b.id),
               });
+              mergedBlocks.push(createMergedBlock(def.mergedBlockId, sourceBlocks));
             }
           }
           if (definitions.length > 0) {
             // Clear existing merge map first (mergeBlocks appends)
             this.editorState.blockMerges.set(new Map());
-            this.editorState.mergeBlocks(definitions, false);
+            this.editorState.mergeBlocks(definitions, mergedBlocks, false);
           }
         }
 
@@ -6481,6 +6507,7 @@ export class PdfPickerComponent implements OnInit {
         projectPath: null,
         undoStack: [],
         redoStack: [],
+        historyBlocks: new Map(),
         lightweightMode: lightweight,
         sourceSha256: quickResult.sourceSha256,
       };
@@ -7727,10 +7754,9 @@ export class PdfPickerComponent implements OnInit {
       originalBlockId: block.id,
       splitPoints: sortedPoints,
       childBlockIds,
-      childBlocks,
     };
 
-    this.editorState.splitBlock(definition);
+    this.editorState.splitBlock(definition, childBlocks);
     this.editorState.updateCategoryStats();
     this.splitPopoverBlock.set(null);
   }
@@ -7818,11 +7844,10 @@ export class PdfPickerComponent implements OnInit {
       originalBlockId: block.id,
       splitPoints: sortedPoints,
       childBlockIds,
-      childBlocks,
       textMode: true,
     };
 
-    this.editorState.splitBlock(definition);
+    this.editorState.splitBlock(definition, childBlocks);
     this.editorState.updateCategoryStats();
     this.splitPopoverBlock.set(null);
     this.splitPopoverTextMode.set(false);
@@ -7832,13 +7857,7 @@ export class PdfPickerComponent implements OnInit {
    * Restore block splits from persisted data by re-fetching spans and rebuilding
    * child blocks. Called during project restore (no history push).
    */
-  private async restoreBlockSplits(splits: Array<{
-    originalBlockId: string;
-    splitPoints: number[];
-    childBlockIds: string[];
-    textMode?: boolean;
-    childBlocks?: TextBlock[];
-  }>): Promise<void> {
+  private async restoreBlockSplits(splits: SplitDefinition[]): Promise<void> {
     const allBlocks = this.blocks();
     const pageDimensions = this.pageDimensions();
     const baselines = computeCategoryBaselines(allBlocks);
@@ -7871,16 +7890,18 @@ export class PdfPickerComponent implements OnInit {
         continue;
       }
 
-      // Text-mode splits carry their full child blocks (no spans exist to rebuild
-      // from). Restore them directly.
-      if (split.textMode && split.childBlocks && split.childBlocks.length > 1) {
-        this.editorState.splitBlock({
-          originalBlockId: split.originalBlockId,
-          splitPoints: split.splitPoints,
-          childBlockIds: split.childBlockIds,
-          childBlocks: split.childBlocks,
-          textMode: true,
-        }, false); // false = don't push to history
+      // A text-mode split has no spans to rebuild its children from, so those
+      // children are the one class of block the project file has to carry. They
+      // came back in `history_blocks` and are already in the block table (the
+      // history is restored before this runs); resolving them there THROWS if
+      // they are missing, which is the honest answer — a text split whose
+      // children are gone cannot be re-derived from anything.
+      if (split.textMode) {
+        const childBlocks = this.editorState.requireBlocksById(
+          split.childBlockIds, `restore the text split of ${split.originalBlockId}`);
+        if (childBlocks.length > 1) {
+          this.editorState.splitBlock(split, childBlocks, false); // false = don't push to history
+        }
         continue;
       }
 
@@ -8013,8 +8034,7 @@ export class PdfPickerComponent implements OnInit {
           originalBlockId: split.originalBlockId,
           splitPoints: sortedPoints,
           childBlockIds,
-          childBlocks,
-        }, false); // false = don't push to history
+        }, childBlocks, false); // false = don't push to history
       }
     }
 
@@ -8095,17 +8115,15 @@ export class PdfPickerComponent implements OnInit {
 
   /** Turn detected merge groups into merged blocks and apply them. */
   private applyMergeGroups(groups: MergeGroup[]): void {
-    const definitions: MergeDefinition[] = groups.map(group => {
+    const definitions: MergeDefinition[] = [];
+    const mergedBlocks: TextBlock[] = [];
+    for (const group of groups) {
       const mergedId = this.mergeHash('merge:' + group.blockIds.join(','));
-      return {
-        mergedBlockId: mergedId,
-        sourceBlockIds: group.blockIds,
-        sourceBlocks: group.blocks,
-        mergedBlock: createMergedBlock(mergedId, group.blocks),
-      };
-    });
+      definitions.push({ mergedBlockId: mergedId, sourceBlockIds: group.blockIds });
+      mergedBlocks.push(createMergedBlock(mergedId, group.blocks));
+    }
 
-    this.editorState.mergeBlocks(definitions);
+    this.editorState.mergeBlocks(definitions, mergedBlocks);
     this.editorState.updateCategoryStats();
   }
 
@@ -8116,10 +8134,13 @@ export class PdfPickerComponent implements OnInit {
     const def = this.editorState.blockMerges().get(mergedBlockId);
     if (!def) return;
 
-    // Remove merged block from blocks array and re-add source blocks
+    // Remove merged block from blocks array and re-add source blocks, which the
+    // merge put in the document's block table when it consumed them.
+    const sourceBlocks = this.editorState.requireBlocksById(
+      def.sourceBlockIds, `unmerge ${mergedBlockId}`);
     this.editorState.blocks.update(blocks => [
       ...blocks.filter(b => b.id !== mergedBlockId),
-      ...def.sourceBlocks,
+      ...sourceBlocks,
     ]);
 
     // Remove from blockMerges map
@@ -8149,7 +8170,7 @@ export class PdfPickerComponent implements OnInit {
    * Restore block merges from persisted data by finding source blocks
    * and rebuilding merged blocks. Called during project restore (no history push).
    */
-  private restoreBlockMerges(merges: Array<{ mergedBlockId: string; sourceBlockIds: string[] }>): void {
+  private restoreBlockMerges(merges: MergeDefinition[]): void {
     // Merge does not exist for EPUBs (see mergeAdjacentBlocks), so a saved EPUB
     // project carrying merges holds state this surface can no longer honour —
     // in practice, output of the retired auto-segmentation step. Not applying
@@ -8167,6 +8188,7 @@ export class PdfPickerComponent implements OnInit {
     const blocksById = new Map(allBlocks.map(b => [b.id, b]));
 
     const definitions: MergeDefinition[] = [];
+    const mergedBlocks: TextBlock[] = [];
     for (const merge of merges) {
       const sourceBlocks = merge.sourceBlockIds
         .map(id => blocksById.get(id))
@@ -8177,16 +8199,18 @@ export class PdfPickerComponent implements OnInit {
         continue;
       }
 
+      // Restated over the sources actually found, for the reason the re-apply
+      // after text extraction gives: the merged block is built from these, so
+      // the record must not claim one that is not in it.
       definitions.push({
         mergedBlockId: merge.mergedBlockId,
-        sourceBlockIds: merge.sourceBlockIds,
-        sourceBlocks: sourceBlocks,
-        mergedBlock: createMergedBlock(merge.mergedBlockId, sourceBlocks),
+        sourceBlockIds: sourceBlocks.map(b => b.id),
       });
+      mergedBlocks.push(createMergedBlock(merge.mergedBlockId, sourceBlocks));
     }
 
     if (definitions.length > 0) {
-      this.editorState.mergeBlocks(definitions, false); // false = don't push to history
+      this.editorState.mergeBlocks(definitions, mergedBlocks, false); // false = don't push to history
     }
   }
 
@@ -10820,6 +10844,78 @@ export class PdfPickerComponent implements OnInit {
     return norm(a) === norm(b);
   }
 
+  /**
+   * Put this project's history records into the normalized shape — ids in the
+   * records, blocks in ONE table — whichever shape they were written in, IN
+   * PLACE, so that every reader below (and the deferred text-ready pass, which
+   * captures these same fields) sees one shape.
+   *
+   * Called once per project load, immediately after the file is read and before
+   * anything looks at `undo_stack`, `block_splits` or `block_merges`. A record
+   * that is neither shape THROWS out of here naming the project: an unreadable
+   * history is not an empty one, and quietly opening the book with no undo stack
+   * is indistinguishable from losing it.
+   */
+  private normalizeProjectHistory(project: BookForgeProject, projectFilePath: string): void {
+    const shape = editorHistoryShape({
+      historyBlocks: project.history_blocks,
+      undoStack: project.undo_stack,
+      redoStack: project.redo_stack,
+      blockSplits: project.block_splits,
+      blockMerges: project.block_merges,
+    });
+    const normalized = normalizeEditorHistory({
+      historyBlocks: project.history_blocks,
+      undoStack: project.undo_stack,
+      redoStack: project.redo_stack,
+      blockSplits: project.block_splits,
+      blockMerges: project.block_merges,
+    }, projectFilePath);
+
+    project.history_blocks = normalized.blocks;
+    project.undo_stack = normalized.undoStack;
+    project.redo_stack = normalized.redoStack;
+    project.block_splits = normalized.blockSplits;
+    project.block_merges = normalized.blockMerges;
+
+    if (shape === 'embedded') {
+      console.log(
+        `[normalizeProjectHistory] ${projectFilePath}: history was written with blocks embedded in `
+        + `its records — ${normalized.undoStack.length} undo and ${normalized.redoStack.length} redo `
+        + `step(s) re-read against a table of ${Object.keys(normalized.blocks).length} block(s). The `
+        + 'next save writes the normalized shape.',
+      );
+    }
+  }
+
+  /**
+   * This project's history, in the form `setHistory` takes.
+   *
+   * Only ever called after `normalizeProjectHistory`, which always sets all
+   * three fields (empty ones for a project nobody has edited). An absent one
+   * therefore means a load path reached the history without normalizing it — a
+   * bug in this file, said out loud rather than papered over with an empty
+   * stack, which would look exactly like an undo history somebody lost.
+   */
+  private projectHistory(project: BookForgeProject): {
+    undoStack: HistoryAction[];
+    redoStack: HistoryAction[];
+    blocks: Map<string, TextBlock>;
+  } {
+    const { undo_stack, redo_stack, history_blocks } = project;
+    if (!undo_stack || !redo_stack || !history_blocks) {
+      throw new Error(
+        'This project\'s history was read before normalizeProjectHistory ran, so the blocks its '
+        + 'undo records name cannot be resolved.',
+      );
+    }
+    return {
+      undoStack: undo_stack,
+      redoStack: redo_stack,
+      blocks: blockTableFromRecord(history_blocks),
+    };
+  }
+
   private async restoreProjectState(projectFilePath: string): Promise<void> {
     const result = await this.electronService.projectsLoadFromPath(projectFilePath);
     if (!result.success || !result.data) {
@@ -10829,6 +10925,7 @@ export class PdfPickerComponent implements OnInit {
     }
 
     const project = result.data as BookForgeProject;
+    this.normalizeProjectHistory(project, projectFilePath);
     this.announceLayoutState(project, projectFilePath);
     this.projectPath.set(projectFilePath);
     this.projectCreatedAt = project.created_at || null;
@@ -10914,12 +11011,19 @@ export class PdfPickerComponent implements OnInit {
       this.editorState.pageOrder.set(project.page_order);
     }
 
-    // Restore undo/redo history
-    if (project.undo_stack || project.redo_stack) {
-      this.editorState.setHistory({
-        undoStack: project.undo_stack || [],
-        redoStack: project.redo_stack || []
-      });
+    // Restore undo/redo history, and the block table its records name. This runs
+    // BEFORE the split/merge restores below, which add the blocks the document
+    // produced for itself back into the same table.
+    //
+    // The TABLE is adopted unconditionally — the text-mode split children below
+    // are resolved out of it, and merging one table into another can never lose
+    // a record. The STACKS are only replaced when the project has some, because
+    // this also runs mid-session when an unbound edit triggers autoCreateProject,
+    // and a brand-new project's empty stack must not erase the session's own.
+    const savedHistory = this.projectHistory(project);
+    this.editorState.registerBlocks([...savedHistory.blocks.values()]);
+    if (savedHistory.undoStack.length > 0 || savedHistory.redoStack.length > 0) {
+      this.editorState.setHistory(savedHistory);
     }
 
     // Restore custom categories
@@ -11284,6 +11388,28 @@ export class PdfPickerComponent implements OnInit {
     const chapters = this.chapters();
     const chaptersSource = this.chaptersSource();
 
+    // ── The block table, narrowed to what has to be written ──────────────────
+    //
+    // The history names its blocks by id and reads them out of ONE table. Most
+    // of that table is blocks the next open produces again by itself — the
+    // analyzer's blocks, the merged blocks `restoreBlockMerges` rebuilds from
+    // them, the children `restoreBlockSplits` rebuilds from spans — so writing
+    // them here would be writing a second copy of the document. What is left is
+    // what nothing can re-derive: a text-mode split's children, and any block
+    // named only by a history entry no live record replays. See
+    // shared/document/editor-history.ts.
+    const historyBlockRecord = persistedBlockTable(
+      this.editorState.blockTable(),
+      reproducibleBlockIds(
+        this.blocks().map(b => b.id),
+        this.editorState.blockMerges().values(),
+        this.editorState.blockSplits().values(),
+      ),
+    );
+    const historyBlocksToSave = Object.keys(historyBlockRecord).length > 0
+      ? historyBlockRecord
+      : undefined;
+
     const projectData: BookForgeProject = {
       version: 1,
       source_path: this.pdfPath(),
@@ -11316,22 +11442,12 @@ export class PdfPickerComponent implements OnInit {
       classification_thresholds: isDefaultThresholds(this.editorState.classificationThresholds())
         ? undefined : this.editorState.classificationThresholds(),
       block_splits: this.editorState.blockSplits().size > 0
-        ? [...this.editorState.blockSplits().values()].map(s => ({
-            originalBlockId: s.originalBlockId,
-            splitPoints: s.splitPoints,
-            childBlockIds: s.childBlockIds,
-            // Persist full child data only for text-mode splits, which have no
-            // spans to rebuild from on reload. Span-based splits stay lean.
-            textMode: s.textMode || undefined,
-            childBlocks: s.textMode ? s.childBlocks : undefined,
-          }))
+        ? [...this.editorState.blockSplits().values()]
         : undefined,
       block_merges: this.editorState.blockMerges().size > 0
-        ? [...this.editorState.blockMerges().values()].map(m => ({
-            mergedBlockId: m.mergedBlockId,
-            sourceBlockIds: m.sourceBlockIds,
-          }))
+        ? [...this.editorState.blockMerges().values()]
         : undefined,
+      history_blocks: historyBlocksToSave,
       crop_regions: this.serializeCropRegions(),
       created_at: this.projectCreatedAt ?? new Date().toISOString(),
       modified_at: new Date().toISOString()
@@ -11341,7 +11457,9 @@ export class PdfPickerComponent implements OnInit {
       'category_corrections:', projectData.category_corrections?.length ?? 0,
       'paragraph_breaks:', projectData.paragraph_breaks?.length ?? 0,
       'block_splits:', projectData.block_splits?.length ?? 0,
-      'block_merges:', projectData.block_merges?.length ?? 0);
+      'block_merges:', projectData.block_merges?.length ?? 0,
+      'history_blocks:', Object.keys(historyBlockRecord).length,
+      `(of ${this.editorState.blockTable().size} in the table)`);
 
     const result = await this.electronService.saveProjectToPath(filePath, projectData);
 
@@ -11480,6 +11598,7 @@ export class PdfPickerComponent implements OnInit {
     }
 
     const project = result.data as BookForgeProject;
+    this.normalizeProjectHistory(project, result.filePath || filePath);
     this.announceLayoutState(project, result.filePath || filePath);
     // Use the returned filePath - may be different if project was imported to library
     const actualProjectPath = result.filePath || filePath;
@@ -11713,6 +11832,16 @@ export class PdfPickerComponent implements OnInit {
       const cropRegions = applySavedEdits
         ? this.deserializeCropRegions(project.crop_regions)
         : new Map<number, CropRegion>();
+      // Undo/redo entries are edits recorded against the ORIGINAL's blocks and
+      // pages, and the block table is the storage they name — all three are
+      // gated together, for the reason the tab's own comment gives below.
+      const savedHistory: {
+        undoStack: HistoryAction[];
+        redoStack: HistoryAction[];
+        blocks: Map<string, TextBlock>;
+      } = applySavedEdits
+        ? this.projectHistory(project)
+        : { undoStack: [], redoStack: [], blocks: new Map<string, TextBlock>() };
 
       const newDoc: OpenDocument = {
         id: docId,
@@ -11744,8 +11873,9 @@ export class PdfPickerComponent implements OnInit {
         // never had those blocks — the same reason deletedBlockIds and crops
         // are gated. A version whose saved edits were not applied has no
         // history either.
-        undoStack: applySavedEdits ? (project.undo_stack || []) : [],
-        redoStack: applySavedEdits ? (project.redo_stack || []) : [],
+        undoStack: savedHistory.undoStack,
+        redoStack: savedHistory.redoStack,
+        historyBlocks: savedHistory.blocks,
         lightweightMode: lightweight,
         categoryCorrections: applySavedEdits && project.category_corrections?.length
           ? new Map(project.category_corrections) : undefined,
@@ -11814,14 +11944,12 @@ export class PdfPickerComponent implements OnInit {
         cropRegions,
       });
 
-      // Restore undo/redo history from project (loadDocument clears it)
-      // Only load history when loading the original - it's not relevant for exported versions
-      if (applySavedEdits && (project.undo_stack || project.redo_stack)) {
-        this.editorState.setHistory({
-          undoStack: project.undo_stack || [],
-          redoStack: project.redo_stack || []
-        });
-      }
+      // Restore undo/redo history from project (loadDocument clears it), and the
+      // block table its records name — the split/merge restores further down add
+      // to that same table. Only load history when loading the original: it's
+      // not relevant for exported versions (see `savedHistory` above, which is
+      // already empty when the saved edits are not being applied).
+      this.editorState.setHistory(savedHistory);
 
       // Restore custom categories - keep these for non-original versions too
       // as they define patterns that might still be useful
@@ -14259,6 +14387,7 @@ export class PdfPickerComponent implements OnInit {
             projectPath: this.projectPath(),
             undoStack: history.undoStack,
             redoStack: history.redoStack,
+            historyBlocks: history.blocks,
             paragraphBreaks: this.editorState.paragraphBreaks(),
             categoryCorrections: this.editorState.categoryCorrections(),
             learnedCategories: this.editorState.learnedCategories(),
@@ -14312,7 +14441,8 @@ export class PdfPickerComponent implements OnInit {
     this.deletedPages.set(doc.deletedPages);
     this.editorState.setHistory({
       undoStack: doc.undoStack,
-      redoStack: doc.redoStack
+      redoStack: doc.redoStack,
+      blocks: doc.historyBlocks,
     });
 
     this.pageRenderService.restorePageImages(doc.pageImages);

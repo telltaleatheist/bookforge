@@ -188,6 +188,9 @@ export interface LayoutKeyedRecordCensus {
  *   learnedCategories    the same pairs, learned rather than hand-set
  *   paragraphBreaks      `["<block id>", …]`
  *   blockMerges          `[{ mergedBlockId, sourceBlockIds: ["<block id>"] }]`
+ *   historyBlocks        `{ "<block id>": TextBlock }` — the table the undo and
+ *                        redo stacks, the splits and the merges all name their
+ *                        blocks in (shared/document/editor-history.ts)
  *   ocrBlocks            whole blocks, each with an id and a page
  *   customCategories     highlight rectangles, each on a page
  *
@@ -206,6 +209,7 @@ export const LAYOUT_KEYED_EDITOR_FIELDS: readonly string[] = [
   'categoryCorrections',
   'cropRegions',
   'customCategories',
+  'historyBlocks',
   'learnedCategories',
   'manualBlocks',
   'ocrBlocks',
