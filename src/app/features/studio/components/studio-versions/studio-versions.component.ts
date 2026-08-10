@@ -50,6 +50,7 @@ import {
   type PassOptionsKind,
   type PassOptionsResult,
 } from '../../../pdf-picker/components/pass-options-modal/pass-options-modal.component';
+import { NarrationModalComponent } from '../narration-modal/narration-modal.component';
 import type { ChainPassRequest, ProcessingPassKind } from '@shared/processing/pass-types';
 import { BOOK_PASS_OPTIONS, type BookPassOption } from '@shared/processing/book-passes';
 
@@ -253,7 +254,7 @@ const AUDIO_EXTS = new Set([
   standalone: true,
   imports: [
     CommonModule, FormsModule, DiffViewComponent, MetadataEditorComponent, DesktopSelectComponent,
-    StudioConvertModalComponent, PassOptionsModalComponent,
+    StudioConvertModalComponent, PassOptionsModalComponent, NarrationModalComponent,
   ],
   host: { '[class.comparing]': '!!comparing()' },
   template: `
@@ -900,6 +901,25 @@ const AUDIO_EXTS = new Set([
         [ai]="passAiChoice()"
         (cancel)="passOptionsKind.set(null)"
         (confirmed)="onPassOptionsConfirmed($event)"
+      />
+    }
+
+    <!-- Narration. Opened by the Process button on the narration copy's line,
+         and handed THAT line's file — the identity law, as an input rather than
+         a lookup. Everything it collects goes to the queue. -->
+    @if (narrationFile(); as file) {
+      <app-narration-modal
+        [epubPath]="file"
+        [projectDir]="projectDir()"
+        [title]="item()?.title || ''"
+        [author]="item()?.author || ''"
+        [year]="item()?.year || ''"
+        [coverPath]="item()?.coverPath || ''"
+        [outputFilename]="item()?.outputFilename || ''"
+        [isArticle]="item()?.type === 'article'"
+        (cancelled)="closeNarrationModal()"
+        (moreOptions)="openProcessPage()"
+        (queued)="onNarrationQueued()"
       />
     }
   `,
@@ -1943,7 +1963,56 @@ export class StudioVersionsComponent {
         + 'a line naming a document carries that button.');
       return;
     }
-    this.process.emit({ path });
+    // The dialog, not the page. Owen, 2026-08-09: "maybe we turn the tts/assembly
+    // page into a modal that appears when the user hits process on the tts file."
+    // The path goes into it as an input rather than into a lookup on the far
+    // side, which is the whole of the identity law.
+    this.narrationFile.set(path);
+  }
+
+  // ── Narration, configured here and queued from here ────────────────────────
+
+  /**
+   * The file the narration dialog is open on, or null.
+   *
+   * The PATH rather than a boolean: it IS the dialog's subject, and holding it
+   * here means there is exactly one place the run's document can come from.
+   */
+  readonly narrationFile = signal<string | null>(null);
+
+  closeNarrationModal(): void {
+    this.narrationFile.set(null);
+  }
+
+  /**
+   * The rows are in. Say where to watch them, in the same words the passes use.
+   *
+   * Nothing is synthesized onto this page from the answer: the audiobook appears
+   * as a line when it exists, which is what `document:stage-finished` and
+   * `project:files-changed` already bring.
+   */
+  async onNarrationQueued(): Promise<void> {
+    this.closeNarrationModal();
+    await this.electron.showMessageDialog({
+      title: 'Added to the queue',
+      message: 'It runs when the queue reaches it. Watch it on the Queue tab.',
+      type: 'info',
+    });
+    this.changed.emit();
+  }
+
+  /**
+   * Take this file to the full Process page instead.
+   *
+   * The dialog covers a run about a BOOK. Resuming a half-rendered session and
+   * reassembling a cached one are runs about something already on disk, and the
+   * Process page still owns finding those — so the door to it stays open, and it
+   * carries the same path, so crossing over cannot change which file is read.
+   */
+  openProcessPage(): void {
+    const path = this.narrationFile();
+    this.closeNarrationModal();
+    if (path) this.process.emit({ path });
   }
 
   // ── The book passes, offered from the book and queued from here ────────────

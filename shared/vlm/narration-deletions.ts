@@ -142,6 +142,23 @@ export interface NarrationEpubOutput {
    */
   removedSupMarkers?: number;
   /**
+   * Whether the cut was ASKED to take the footnote reference numbers out —
+   * `stripSupMarkers`, the one thing about this file the strike record does not
+   * describe.
+   *
+   * Recorded because the copy is re-cut in place when a deletion is made on it
+   * (electron/narration-export.ts, `strikeInNarrationCopy`), and a re-cut that
+   * guessed would silently flip a choice the user made in the export dialog. It
+   * is a boolean rather than something inferred from `removedSupMarkers`,
+   * because zero markers removed is what a book with no footnotes looks like
+   * either way.
+   *
+   * OPTIONAL because records written before this field have no answer, and
+   * inventing one would be exactly the guess it exists to prevent — the re-cut
+   * refuses those BY NAME and asks for the copy to be generated again.
+   */
+  strippedSupMarkers?: boolean;
+  /**
    * The spine documents that were removed, by zip entry name.
    *
    * A document whose every element was struck is left as a blank page in the

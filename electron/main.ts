@@ -7638,6 +7638,32 @@ function setupIpcHandlers(): void {
   });
 
   /**
+   * ONE GESTURE, made on the TTS COPY, applied to the book's record.
+   *
+   * The copy is where a stray footnote is finally visible, and Owen ratified the
+   * rule for deleting one there on 2026-08-09: it must write a RECORD as well as
+   * change the file, because the copy is re-cut from the book and the record on
+   * every export, so a file-only edit would be undone by the next one.
+   *
+   * `strikeInNarrationCopy` translates the copy's element keys into the book's,
+   * strikes them through the same transaction the working-copy view uses, and
+   * cuts the copy again through `writeNarrationEpub` — the only thing allowed to
+   * write that file. It refuses BY NAME rather than guessing when the copy on
+   * disk and the book have come apart.
+   */
+  ipcMain.handle('narration:strike-in-copy', async (
+    _event, projectDir: string, copyKeys: string[]) => {
+    try {
+      const { strikeInNarrationCopy } = await import('./narration-export.js');
+      const result = await strikeInNarrationCopy(projectDir, copyKeys);
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return { success: true, result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
    * Fold a chapter's opening IN THE BOOK: the opening is rewritten to say the
    * chapter's stored name, and the elements folded into it are removed from the
    * markup.

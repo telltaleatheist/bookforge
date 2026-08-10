@@ -1467,6 +1467,23 @@ export interface ElectronAPI {
       projectDir: string, edit: { strike: string[]; unstrike: string[] }
     ) => Promise<{ success: boolean; deletions?: NarrationDeletions; error?: string }>;
     /**
+     * Delete elements by pointing at them IN THE TTS COPY.
+     *
+     * The keys name elements of the COPY; main pairs them back to the book, puts
+     * the strike on the book's record, and cuts the copy again so the file on
+     * disk matches. Refuses by name — with nothing written — when the copy and
+     * the book have come apart.
+     */
+    strikeInNarrationCopy: (projectDir: string, copyKeys: string[]) => Promise<{
+      success: boolean;
+      result?: {
+        struckInBook: string[];
+        epubPath: string; relPath: string;
+        removedElements: number; recutMs: number;
+      };
+      error?: string;
+    }>;
+    /**
      * Fold a chapter's opening IN the working copy: the opening is rewritten to
      * say the chapter's stored name and the folded elements come out of the
      * markup. The archive original is never touched, and the manifest keeps what
@@ -3316,6 +3333,12 @@ const electronAPI: ElectronAPI = {
     editNarrationDeletions: (
       projectDir: string, edit: { strike: string[]; unstrike: string[] }) =>
       ipcRenderer.invoke('narration:edit-deletions', projectDir, edit),
+    /**
+     * One gesture made ON THE TTS COPY: the keys name elements of that file, and
+     * main translates them into the book's before recording them.
+     */
+    strikeInNarrationCopy: (projectDir: string, copyKeys: string[]) =>
+      ipcRenderer.invoke('narration:strike-in-copy', projectDir, copyKeys),
     /**
      * Fold a chapter's opening IN the book — the one gesture that edits the
      * working copy's own elements. See electron/narration-export.ts for what is

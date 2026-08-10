@@ -3004,6 +3004,34 @@ export class ElectronService {
   }
 
   /**
+   * ONE GESTURE, made on the TTS COPY.
+   *
+   * The keys name elements of the COPY — that is the file on screen — and main
+   * pairs them back to the book before recording them, because the record keys
+   * against the book and the copy is rewritten from scratch on every export. So
+   * a delete made here survives every future regeneration, which a file-only
+   * edit would not.
+   *
+   * The file is cut again as part of the same call: `writeNarrationEpub` is the
+   * only thing allowed to write it, and a second partial editing path would be a
+   * second answer to what is in it. `recutMs` is how long that took.
+   */
+  async strikeInNarrationCopy(projectDir: string, copyKeys: string[]): Promise<{
+    success: boolean;
+    result?: {
+      struckInBook: string[];
+      epubPath: string; relPath: string;
+      removedElements: number; recutMs: number;
+    };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.strikeInNarrationCopy(projectDir, copyKeys);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
    * Fold a chapter's opening IN the book: the opening element is rewritten to
    * say the chapter's stored name, and the elements folded into it are removed
    * from the working copy's markup.

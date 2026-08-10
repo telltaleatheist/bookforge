@@ -6341,14 +6341,14 @@ function narrationUnitText(el: any, stripSups: boolean): string {
  * cuts. The tag travels with the text because a paragraph and the heading above
  * it can carry the same words.
  */
-function narrationUnitSignature(el: any, stripSups: boolean): string {
+export function narrationUnitSignature(el: any, stripSups: boolean): string {
   const tag = (el.tagName ?? '').toLowerCase();
   const text = narrationUnitText(el, stripSups).replace(/[\s ]+/g, '');
   return `${tag}|${text}`;
 }
 
 /** What an IMAGE element is: its tag and whatever it points at. */
-function narrationImageSignature(el: any): string {
+export function narrationImageSignature(el: any): string {
   const tag = (el.tagName ?? '').toLowerCase();
   const src = el.getAttribute?.('src')
     ?? el.getAttribute?.('xlink:href')
@@ -6372,6 +6372,83 @@ function isStillInBody(el: any, body: any): boolean {
 interface NarrationSignedElement {
   key: NarrationElementKey;
   signature: string;
+}
+
+/** One element of a book, signed, and whether the CUT book will still hold it. */
+export interface NarrationSignedUnit extends NarrationSignedElement {
+  kind: 'unit' | 'image';
+  /** Will a walk of the cut book still enumerate this element? */
+  admitted: boolean;
+}
+
+/**
+ * Sign every element of a book, and say which of them the cut leaves behind.
+ *
+ * ── Why "admitted" is not just "not struck" ─────────────────────────────────
+ *
+ * `collectExportUnits` admits an element as a unit when it holds an `<img>` OR
+ * any text at all. So a wrapper whose ONLY content is a picture — the
+ * `<div class="image">` a plate lives in — stops being a unit the moment that
+ * picture is struck. It is not removed and it was never struck; it simply is not
+ * there to be enumerated any more. The mirror of it: a picture INSIDE a struck
+ * paragraph goes with the paragraph, unnamed.
+ *
+ * Two callers need that answer and must never disagree about it. `writeNarrationEpub`
+ * uses it to state what the copy must contain before it removes anything, and
+ * the narration-copy pairing (electron/narration-export.ts) uses it to line the
+ * copy's elements back up with the book's. A second spelling of this rule would
+ * put a strike made on the copy of an illustrated book onto the wrong paragraph,
+ * which is the one failure the whole verification story exists to prevent — so
+ * there is one spelling, here, beside the writer that owns it.
+ *
+ * `perFile` is the enumeration in the book's own order, per spine document, text
+ * units then pictures — what `enumerateNarrationElements` walks and what the key
+ * of every element was minted from.
+ */
+export function signNarrationElements(
+  perFile: ReadonlyMap<string, ReadonlyArray<{ key: string; el: any }>>,
+  struck: ReadonlySet<string>,
+  stripSups: boolean,
+): Map<string, NarrationSignedUnit[]> {
+  const struckImageElements = new Set<any>();
+  const struckUnitElements: any[] = [];
+  for (const [, fileUnits] of perFile) {
+    for (const unit of fileUnits) {
+      if (!struck.has(unit.key)) continue;
+      if (parseNarrationElementKey(unit.key).kind === 'image') struckImageElements.add(unit.el);
+      else struckUnitElements.push(unit.el);
+    }
+  }
+  const goesWithAStruckUnit = (el: any): boolean =>
+    struckUnitElements.some((struckEl) => el === struckEl || isDescendantOf(el, struckEl));
+
+  const out = new Map<string, NarrationSignedUnit[]>();
+  for (const [file, fileUnits] of perFile) {
+    const signed: NarrationSignedUnit[] = [];
+    for (const unit of fileUnits) {
+      const kind = parseNarrationElementKey(unit.key).kind === 'image' ? 'image' : 'unit';
+      const signature = kind === 'image'
+        ? narrationImageSignature(unit.el)
+        : narrationUnitSignature(unit.el, stripSups);
+      let admitted: boolean;
+      if (struck.has(unit.key)) {
+        admitted = false;
+      } else if (kind === 'image') {
+        admitted = !goesWithAStruckUnit(unit.el);
+      } else {
+        const imgs = unit.el.tagName?.toLowerCase() === 'img'
+          ? [unit.el]
+          : Array.from(unit.el.getElementsByTagName('img') as ArrayLike<any>);
+        const keepsAnImage = imgs.some((img: any) => !struckImageElements.has(img));
+        const keepsText =
+          normalizeForAlignment(narrationUnitText(unit.el, stripSups)).length >= 1;
+        admitted = keepsAnImage || keepsText;
+      }
+      signed.push({ key: unit.key, signature, kind, admitted });
+    }
+    out.set(file, signed);
+  }
+  return out;
 }
 
 /** What one spine document of the OUTPUT must look like for the cut to be right. */
@@ -6670,48 +6747,14 @@ export async function writeNarrationEpub(
   // The mirror of it: a picture INSIDE a struck paragraph goes with the
   // paragraph. It was not struck by name and it is not coming back, because the
   // element that held it is what the user struck.
-  const struckImageElements = new Set<any>();
-  const struckUnitElements: any[] = [];
-  for (const [, { units: fileUnits }] of perFile) {
-    for (const unit of fileUnits) {
-      if (!struck.has(unit.key)) continue;
-      if (parseNarrationElementKey(unit.key).kind === 'image') struckImageElements.add(unit.el);
-      else struckUnitElements.push(unit.el);
-    }
-  }
-  const goesWithAStruckUnit = (el: any): boolean =>
-    struckUnitElements.some((struckEl) => el === struckEl || isDescendantOf(el, struckEl));
-
-  const signedPerFile = new Map<string, Array<NarrationSignedElement & {
-    kind: 'unit' | 'image';
-    /** Will the output's own walk still enumerate this element? */
-    admitted: boolean;
-  }>>();
-  for (const [file, { units: fileUnits }] of perFile) {
-    const signed: Array<NarrationSignedElement & { kind: 'unit' | 'image'; admitted: boolean }> = [];
-    for (const unit of fileUnits) {
-      const kind = parseNarrationElementKey(unit.key).kind === 'image' ? 'image' : 'unit';
-      const signature = kind === 'image'
-        ? narrationImageSignature(unit.el)
-        : narrationUnitSignature(unit.el, stripSups);
-      let admitted: boolean;
-      if (struck.has(unit.key)) {
-        admitted = false;
-      } else if (kind === 'image') {
-        admitted = !goesWithAStruckUnit(unit.el);
-      } else {
-        const imgs = unit.el.tagName?.toLowerCase() === 'img'
-          ? [unit.el]
-          : Array.from(unit.el.getElementsByTagName('img') as ArrayLike<any>);
-        const keepsAnImage = imgs.some((img: any) => !struckImageElements.has(img));
-        const keepsText =
-          normalizeForAlignment(narrationUnitText(unit.el, stripSups)).length >= 1;
-        admitted = keepsAnImage || keepsText;
-      }
-      signed.push({ key: unit.key, signature, kind, admitted });
-    }
-    signedPerFile.set(file, signed);
-  }
+  // The rule itself lives in `signNarrationElements` above, because the pairing
+  // that translates a strike made on the narration COPY back into the book needs
+  // exactly this answer and the two must never disagree about it.
+  const signedPerFile = signNarrationElements(
+    new Map([...perFile].map(([file, { units: fileUnits }]) => [file, fileUnits])),
+    struck,
+    stripSups,
+  );
 
   const rewrittenFiles: string[] = [];
   const emptied: string[] = [];

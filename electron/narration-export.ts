@@ -29,12 +29,18 @@ import * as path from 'path';
 import {
   writeNarrationEpub, epubCarriesConversionStamps, foldChapterOpeningInBookFile,
   nameChapterOpeningsInBookFile,
-  markupCategoriesForUnits, readEpubTocTargets,
+  markupCategoriesForUnits, readEpubTocTargets, signNarrationElements,
   type MarkupUnit, type NamedChapterOpening, type UnnamedChapterOpening,
+  type NarrationSignedUnit,
 } from './epub-processor';
 import { enumerateNarrationElements } from './quire-stamp';
 import { readChapterTitlesOfBook } from './book-chapters';
-import { parseNarrationElementKey } from '../shared/vlm/narration-deletions';
+import {
+  parseNarrationElementKey, splitNarrationDeletions,
+} from '../shared/vlm/narration-deletions';
+import {
+  bookKeysForCopyKeys, pairNarrationCopyToBook,
+} from '../shared/vlm/narration-pairing';
 import {
   editorStateTranslationRefusal,
   translateEditorStateDeletions,
@@ -446,6 +452,10 @@ export async function exportNarrationEpub(
     fromEpubSha256: sha256,
     removedElements: written.removedElements,
     removedSupMarkers: written.removedSupMarkers,
+    // The one choice about this file that no other record describes. Kept so a
+    // re-cut made by a deletion on the copy itself reproduces it rather than
+    // quietly reverting to the default — see `strikeInNarrationCopy`.
+    strippedSupMarkers: options?.stripSupMarkers !== false,
     removedDocuments: written.removedDocuments,
   });
 
@@ -505,6 +515,175 @@ async function chapterSpeechOverrides(bookPath: string): Promise<Record<string, 
     }
   }
   return overrides;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Deleting on the TTS copy itself
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** What one deletion made on the narration copy did. */
+export interface NarrationCopyStrikeResult {
+  /** The BOOK keys the gesture struck — what actually went on record. */
+  struckInBook: NarrationElementKey[];
+  /** The re-cut copy, absolute. */
+  epubPath: string;
+  relPath: string;
+  removedElements: number;
+  /** How long the re-cut took, so the UI can say whether this is an inline act. */
+  recutMs: number;
+}
+
+/**
+ * Every element of a book, signed the way the CUT will spell it.
+ *
+ * `overrides` is the chapter-speech map for the BOOK side and empty for the copy
+ * — the copy already says the overridden text, because the cut that wrote it put
+ * it there. Applied by mutating the in-memory tree exactly as `writeNarrationEpub`
+ * does, so the signature comes out of the same rule rather than a restatement of
+ * it. Nothing is written: this DOM is parsed here and thrown away.
+ */
+async function signBookElements(
+  epubPath: string,
+  struck: ReadonlySet<NarrationElementKey>,
+  stripSups: boolean,
+  overrides: Record<string, string>,
+): Promise<NarrationSignedUnit[]> {
+  const walked = await enumerateNarrationElements(epubPath, path.basename(epubPath));
+  const perFile = new Map<string, Array<{ key: string; el: any }>>();
+  for (const doc of walked) {
+    perFile.set(doc.file, doc.entries.map((entry) => ({ key: entry.key, el: entry.el })));
+    for (const entry of doc.entries) {
+      const spoken = overrides[entry.key];
+      if (spoken === undefined) continue;
+      // The same three lines the writer runs (epub-processor.ts, `textOverrides`):
+      // the override IS the whole utterance, one text node, single line.
+      const text = spoken.replace(/\s+/g, ' ').trim();
+      if (text.length === 0) continue;
+      while (entry.el.firstChild) entry.el.removeChild(entry.el.firstChild);
+      entry.el.appendChild(entry.el.ownerDocument.createTextNode(text));
+    }
+  }
+  return [...signNarrationElements(perFile, struck, stripSups).values()].flat();
+}
+
+/**
+ * Strike elements out of the book by pointing at them IN THE TTS COPY, and cut
+ * the copy again so the file matches.
+ *
+ * ── Why the gesture cannot just edit the copy ───────────────────────────────
+ *
+ * Owen ratified the rule on 2026-08-09: a delete made on the TTS copy must write
+ * a RECORD as well as change the file. The copy is derived — `exportNarrationEpub`
+ * rewrites it from scratch from the book and the record every time — so an edit
+ * that only touched the file would be undone by the very next export, silently,
+ * some days later. The record is the durable thing; the file is a consequence.
+ *
+ * ── Why the file is re-cut rather than patched ──────────────────────────────
+ *
+ * Because a second, partial file-editing path would be a second answer to "what
+ * is in the TTS copy", and the two would drift. `writeNarrationEpub` already
+ * verifies every cut it makes against the record it made it from, and it is the
+ * only thing allowed to write this file. So the strike goes on record and the
+ * copy is cut again through that one verified door. `recutMs` is reported so the
+ * caller can say honestly whether that felt like an inline edit.
+ *
+ * ── The three refusals ──────────────────────────────────────────────────────
+ *
+ * A gesture is refused, with nothing written, when there is no copy to point at,
+ * when the copy on disk was not cut from the book that is there now, and when
+ * the record does not say whether that cut removed the footnote numbers — the
+ * one thing about the file no other record describes, and a re-cut that guessed
+ * it would flip a choice the user made. All three name the act that fixes them.
+ */
+export async function strikeInNarrationCopy(
+  projectDir: string,
+  copyKeys: readonly NarrationElementKey[],
+): Promise<NarrationCopyStrikeResult> {
+  if (copyKeys.length === 0) {
+    throw new Error(
+      'A deletion on the TTS copy named no elements, so there is nothing to strike. This is a bug '
+      + 'in the window that sent it, not something you did.'
+    );
+  }
+
+  const book = await manifestService.readExportEpub(projectDir);
+  if (!book || !fs.existsSync(book.absPath)) {
+    throw new Error(
+      `${path.basename(projectDir)} has no working copy on disk, so a deletion made on its TTS copy `
+      + 'has no book to be recorded against.'
+    );
+  }
+  const { sha256 } = await sha256File(book.absPath);
+
+  const record = await manifestService.readNarrationEpubRecord(projectDir);
+  if (record === null) {
+    throw new Error(
+      'This project has no TTS copy on record, so there is nothing to have deleted from. Generate '
+      + 'it from your book first.'
+    );
+  }
+  const copyPath = path.join(projectDir, record.path.split('/').join(path.sep));
+  if (!fs.existsSync(copyPath)) {
+    throw new Error(
+      `The TTS copy this project recorded (${record.path}) is not on disk any more. Generate it `
+      + 'again from your book, then make the deletion.'
+    );
+  }
+  if (record.fromEpubSha256 !== sha256) {
+    throw new Error(
+      'The TTS copy on disk was cut from an earlier version of your book, so a deletion made on it '
+      + 'would land on a different paragraph. Generate the TTS copy again from your book, then make '
+      + 'the deletion.'
+    );
+  }
+  if (record.strippedSupMarkers === undefined) {
+    throw new Error(
+      'This TTS copy was written before BookForge recorded whether the footnote reference numbers '
+      + 'were taken out of it, so cutting it again would have to guess that choice. Generate the '
+      + 'TTS copy again from your book — the new record answers it — then make the deletion.'
+    );
+  }
+
+  const recorded = await manifestService.readNarrationDeletions(projectDir);
+  const stale = narrationDeletionsStaleReason(recorded, sha256);
+  if (stale !== null) {
+    await manifestService.clearNarrationDeletions(projectDir);
+    throw new Error(stale);
+  }
+  const onRecord = recorded?.elements ?? [];
+  const split = splitNarrationDeletions(onRecord);
+
+  // BOTH sides signed with the strip applied, whatever the cut chose — on the
+  // book it removes the markers, on the copy it finds none to remove, and the
+  // two meet either way (shared/vlm/narration-pairing.ts).
+  const struck = new Set(split.elements);
+  const signedBook = await signBookElements(
+    book.absPath, struck, true, await chapterSpeechOverrides(book.absPath));
+  const signedCopy = await signBookElements(copyPath, new Set(), true, {});
+
+  const pairing = pairNarrationCopyToBook({
+    book: signedBook,
+    copy: signedCopy,
+    struckDocuments: split.documents,
+  });
+  const translated = bookKeysForCopyKeys(pairing, copyKeys);
+  if (!translated.ok) throw new Error(translated.reason);
+
+  await editNarrationDeletions(projectDir, { strike: translated.keys, unstrike: [] });
+
+  const startedAt = Date.now();
+  const written = await exportNarrationEpub(projectDir, {
+    stripSupMarkers: record.strippedSupMarkers,
+  });
+  const recutMs = Date.now() - startedAt;
+
+  return {
+    struckInBook: translated.keys,
+    epubPath: written.epubPath,
+    relPath: written.relPath,
+    removedElements: written.removedElements,
+    recutMs,
+  };
 }
 
 interface MergedNarrationDeletions {
