@@ -958,7 +958,7 @@ export interface ElectronAPI {
   };
   audiobook: {
     // Unified audiobook export (saves into the project directory)
-    exportFromProject: (projectDir: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>, savePath?: string) => Promise<{
+    exportFromProject: (projectDir: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>, savePath?: string, familyId?: string) => Promise<{
       success: boolean;
       audiobookFolder?: string;
       epubPath?: string;
@@ -1063,6 +1063,7 @@ export interface ElectronAPI {
       savePathOverride: string | null,
       edits: EpubPreservingEdits,
       deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
+      familyId?: string,
     ) => Promise<{
       success: boolean;
       epubPath?: string;
@@ -2366,11 +2367,6 @@ export interface ElectronAPI {
       projectPath?: string;
       error?: string;
     }>;
-    save: (manifest: Record<string, unknown>) => Promise<{
-      success: boolean;
-      manifestPath?: string;
-      error?: string;
-    }>;
     update: (update: {
       projectId: string;
       source?: Record<string, unknown>;
@@ -2825,8 +2821,8 @@ const electronAPI: ElectronAPI = {
     // 2026) along with their handlers — the legacy `project.json` folder layout
     // they served, and the `exported.epub` name they wrote, are retired.
     // Unified audiobook export (saves into the project directory)
-    exportFromProject: (projectDir: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>, savePath?: string) =>
-      ipcRenderer.invoke('audiobook:export-from-project', projectDir, epubData, deletedBlockExamples, savePath),
+    exportFromProject: (projectDir: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>, savePath?: string, familyId?: string) =>
+      ipcRenderer.invoke('audiobook:export-from-project', projectDir, epubData, deletedBlockExamples, savePath, familyId),
     // Extract metadata from EPUB without importing
     extractMetadata: (epubSourcePath: string) =>
       ipcRenderer.invoke('audiobook:extract-epub-metadata', epubSourcePath),
@@ -2920,10 +2916,11 @@ const electronAPI: ElectronAPI = {
       savePathOverride: string | null,
       edits: EpubPreservingEdits,
       deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
+      familyId?: string,
     ) =>
       ipcRenderer.invoke(
         'epub:export-preserving-markup',
-        projectDir, epubSourcePath, savePathOverride, edits, deletedBlockExamples,
+        projectDir, epubSourcePath, savePathOverride, edits, deletedBlockExamples, familyId,
       ),
     classifyEditorSource: (targetPath: string) =>
       ipcRenderer.invoke('editor:classify-source', targetPath),
@@ -4267,13 +4264,6 @@ const electronAPI: ElectronAPI = {
       projectPath?: string;
       error?: string;
     }> => ipcRenderer.invoke('manifest:get', projectId),
-
-    // Save (update) a manifest
-    save: (manifest: any): Promise<{
-      success: boolean;
-      manifestPath?: string;
-      error?: string;
-    }> => ipcRenderer.invoke('manifest:save', manifest),
 
     // Update specific fields in a manifest
     update: (update: {

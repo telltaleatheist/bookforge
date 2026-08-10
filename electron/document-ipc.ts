@@ -217,6 +217,11 @@ export function registerDocumentIpc(): void {
       const project = await projectOf(ref);
       const working = workingDocumentPath(project.projectDir, project.primaryRelPath);
       const result = await applyWorkingDocumentEdits(working, edits);
+      // The working document ON DISK changed, and every other window drawing
+      // this project — the versions page's working-copy row, a second picker —
+      // is now showing bytes that are one edit old. Same broadcast every other
+      // mutating door here makes.
+      broadcast('project:files-changed', project.projectDir);
       return { success: true, ...result };
     } catch (err) {
       return { success: false, error: (err as Error).message };

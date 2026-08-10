@@ -230,11 +230,19 @@ export interface WorkingDocumentEntry {
  * project with two working copies has two of them. So this enumerates instead
  * of choosing, and never throws for a project with none.
  *
- * A binding that is PRESENT AND UNREADABLE still throws, from
- * `readDocumentBinding`. That is not a listing failing to find something: it is
- * a record that binds a working document to an original, sitting right there,
- * refusing to parse — and answering "this book has no working copy" would send
- * the user off to re-cast a document that already exists.
+ * A binding that is PRESENT AND UNREADABLE is still not silence. That is not a
+ * listing failing to find something: it is a record that binds a working
+ * document to an original, sitting right there, refusing to parse — and
+ * answering "this book has no working copy" would send the user off to re-cast a
+ * document that already exists.
+ *
+ * But it costs ONE DOCUMENT'S ROWS, not the page. `readDocumentBinding` throws,
+ * and thrown from here it propagated out of `editor:get-versions` and blanked
+ * the whole versions page of a project that might hold three other perfectly
+ * readable PDFs — so one corrupt sidecar took away the doors to everything else.
+ * It is caught per candidate now: that document gets no rows and the reason is
+ * said on the console, exactly as the chain loop in `editor:get-versions` does
+ * for a chain that vanished mid-listing. A listing draws what it can prove.
  */
 export async function listWorkingDocuments(
   projectDir: string
@@ -243,7 +251,16 @@ export async function listWorkingDocuments(
   const entries: WorkingDocumentEntry[] = [];
 
   for (const candidate of pdfVariants(projectDir, manifest)) {
-    const binding = readDocumentBinding(documentBindingPath(projectDir, candidate.relPath));
+    let binding: DocumentBinding | null;
+    try {
+      binding = readDocumentBinding(documentBindingPath(projectDir, candidate.relPath));
+    } catch (err) {
+      console.warn(
+        `[document-project] ${path.basename(projectDir)}: the record binding a working document to `
+        + `${candidate.relPath} could not be read (${(err as Error).message}); that document has no `
+        + 'rows on this listing. Everything else in the project is unaffected.');
+      continue;
+    }
     // No binding means Get Text has never cast a working document for this PDF.
     // An ordinary state, and the whole of what "no working copy row" means.
     if (!binding) continue;
@@ -285,8 +302,16 @@ export async function listWorkingDocuments(
  * `<archive basename>.working.epub` — rather than a second editable book beside
  * it. The manifest owns that name, so the file a user finds in the versions page
  * and the file Reflow writes are one file rather than two conventions.
+ *
+ * `familyId` names WHICH chain's working copy that is. `exportEpubTarget` goes
+ * through the act chokepoint, so a project with two versions refuses to be asked
+ * without one rather than pointing Reflow at whichever book it reached first —
+ * which would write an hour of work over a different version's copy.
  */
-export async function reflowOutputPath(projectDir: string): Promise<string> {
-  const target = await manifestService.exportEpubTarget(projectDir);
+export async function reflowOutputPath(
+  projectDir: string,
+  familyId?: string
+): Promise<string> {
+  const target = await manifestService.exportEpubTarget(projectDir, familyId);
   return target.absPath;
 }

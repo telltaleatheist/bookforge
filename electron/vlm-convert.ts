@@ -894,9 +894,33 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     };
   }
 
+  // ── The hour of GPU is RECORDED as soon as it is on disk ──────────────────
+  //
+  // The move and the record used to be two statements with nothing tying them
+  // together, and a crash in the gap left `source/<stem>.generated.epub` sitting
+  // there unrecorded — invisible to every consumer (the record is the only thing
+  // that says a project has a cast book) and silently overwritten by the next
+  // run, which is an hour of somebody's GPU thrown away without a word.
+  //
+  // So the record is written IMMEDIATELY after the move, and a failure to write
+  // it takes the file back out: better an interrupted conversion the user can
+  // simply run again than a book on disk that nothing can find and nothing can
+  // account for. `registerGeneratedEpub` measures the file's digest, so it has
+  // to run after the bytes are in place — this is the one act whose record
+  // cannot come first.
   await moveIntoPlace(stagedEpub, generatedTarget.absPath);
-  const generated = await manifestService.registerGeneratedEpub(
-    project.projectDir, generatedTarget.absPath, 'cast');
+  let generated: Awaited<ReturnType<typeof manifestService.registerGeneratedEpub>>;
+  try {
+    generated = await manifestService.registerGeneratedEpub(
+      project.projectDir, generatedTarget.absPath, 'cast');
+  } catch (err) {
+    try { await fs.promises.unlink(generatedTarget.absPath); } catch { /* already gone */ }
+    throw new Error(
+      `The pages were read, but the book could not be recorded in ${path.basename(project.projectDir)}`
+      + `'s manifest: ${(err as Error).message}. The file was removed rather than left where nothing `
+      + 'can find it — run Convert to EPUB again once the project can be written to.'
+    );
+  }
   const target = await manifestService.mintWorkingCopyFrom(
     project.projectDir, { absPath: generated.absPath, kind: 'generated-epub' });
 
