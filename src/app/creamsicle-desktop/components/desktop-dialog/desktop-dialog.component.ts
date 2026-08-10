@@ -231,10 +231,12 @@ export type DesktopDialogType = 'none' | 'info' | 'success' | 'warning' | 'error
     .dlg-actions {
       display: flex;
       justify-content: flex-end;
-      // Real answers get real sentences for labels ("Use the banked readings"),
-      // and three of them do not fit one 420px row — they wrap to new rows
-      // rather than overflowing the dialog (found live 2026-08-10).
-      flex-wrap: wrap;
+      // ONE row, always. Real answers get real sentences for labels ("Use the
+      // banked readings"), and the first fix here let the row WRAP — which put
+      // each button on its own line, stacked and ragged (Owen, 2026-08-10:
+      // "they should be next to each other, horizontally"). The buttons stay
+      // side by side and shrink; it is the LABEL that wraps, inside its button.
+      flex-wrap: nowrap;
       gap: $spacing-2;
       padding: $spacing-3 $spacing-5 $spacing-5;
     }
@@ -243,8 +245,12 @@ export type DesktopDialogType = 'none' | 'info' | 'success' | 'warning' | 'error
       @include button-base;
       @include focus-ring;
       // min-height, not height, and a real line-height: a label long enough to
-      // wrap inside its button gets a taller button, not clipped text.
+      // wrap inside its button gets a taller button, not clipped text. min-width
+      // 0 is what lets a button shrink below its label's one-line width so the
+      // row never has to break.
       min-height: 32px;
+      min-width: 0;
+      flex: 0 1 auto;
       line-height: 1.3;
       padding: $spacing-1 $spacing-4;
       font-size: $font-size-base;
