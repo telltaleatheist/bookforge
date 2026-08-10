@@ -457,10 +457,19 @@ export interface ProjectExportInfo {
    * which version it wanted still learns which one it got — and quotes it in
    * every act it performs afterwards rather than asking again and being answered
    * about a different one.
+   *
+   * NULL for a project with no working chain yet — a bare PDF nobody has
+   * converted. That project still opens (its pages are scannable); there is
+   * simply no chain to quote, and every act that needs one refuses downstream
+   * in its own words.
    */
-  familyId: string;
-  /** Where the NEXT export must be written — derived from the manifest's title. */
-  target: { relPath: string; absPath: string };
+  familyId: string | null;
+  /**
+   * Where the NEXT export must be written — derived from the manifest's title.
+   * Null exactly when `familyId` is: a book that cannot exist yet has no place
+   * it must be written to.
+   */
+  target: { relPath: string; absPath: string } | null;
   /** The existing export, or null when the project has never exported. */
   exported: { relPath: string; absPath: string; modifiedAt?: string } | null;
   /**

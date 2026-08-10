@@ -589,7 +589,9 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
     try {
       const info = await this.electronService.projectsExportInfo(dir);
       this.exportedEpubPath = info.exported?.absPath ?? null;
-      this.exportedFamilyId = info.familyId;
+      // Null (a bare PDF with no chain) folds to undefined: this field's
+      // absent-state, which Reset edits already treats as "no chain to name".
+      this.exportedFamilyId = info.familyId ?? undefined;
     } catch (err) {
       console.warn('[ProjectFiles] Could not resolve the project export:', (err as Error).message);
       this.exportedEpubPath = null;

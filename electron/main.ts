@@ -3576,7 +3576,16 @@ function setupIpcHandlers(): void {
       let remint: WorkingCopyRemint | null = null;
       const adoption = await manifestService.ensureGeneratedEpub(projectDir);
       if (adoption.missing !== null) console.warn(`[projects:export-info] ${adoption.missing}`);
-      await manifestService.migrateWorkingEpubNaming(projectDir, familyId);
+      // WHICH chain this ask is about — through the LISTING resolver, first: a
+      // bare PDF has no chain yet, and opening it to scan its pages is not an
+      // act on a book. Null here means every chain-scoped step below is skipped
+      // and the answer carries no familyId — the honest shape of a project that
+      // has pages and nothing else (found live 2026-08-10: "Could not open this
+      // book … has no working chain yet" on a project whose PDF opens fine).
+      // A caller that NAMES a familyId still gets the refusal for a chain that
+      // is not there.
+      const resolvedChain = await manifestService.familyForListing(projectDir, familyId);
+      if (resolvedChain !== null) await manifestService.migrateWorkingEpubNaming(projectDir, familyId);
       const recordedBefore = await manifestService.readExportEpub(projectDir, familyId);
       if (!recordedBefore || !fsSync.existsSync(recordedBefore.absPath)) {
         // Asked as "is there something to copy", not as "did it work": a project
@@ -3589,7 +3598,12 @@ function setupIpcHandlers(): void {
         }
       }
 
-      const target = await manifestService.exportEpubTarget(projectDir, familyId);
+      // Null when the project has no chain: a book that cannot exist yet has no
+      // place it must be written to, and inventing one would derive a name from
+      // a source the project does not record.
+      const target = resolvedChain === null
+        ? null
+        : await manifestService.exportEpubTarget(projectDir, familyId);
       const record = await manifestService.readExportEpub(projectDir, familyId);
       const exported = record && fsSync.existsSync(record.absPath) ? record : null;
       // The book cast from this project's pages, when it has one ON DISK. The
@@ -3621,10 +3635,11 @@ function setupIpcHandlers(): void {
       // WHICH chain everything above is about, handed back so the window that
       // opened can quote it in every act it performs afterwards rather than
       // asking again and possibly being answered about a different version.
-      const { family } = await manifestService.requireFamily(projectDir, familyId);
+      // Null for a project with no chain yet — there is nothing to quote, and
+      // every act that needs one refuses downstream in its own words.
       return {
         success: true, target, exported, generated, archive, coverPath, appliedPasses, remint,
-        familyId: family.id,
+        familyId: resolvedChain === null ? null : resolvedChain.family.id,
       };
     } catch (err) {
       return { success: false, error: (err as Error).message };

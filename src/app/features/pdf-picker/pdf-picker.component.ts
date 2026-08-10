@@ -4000,8 +4000,9 @@ export class PdfPickerComponent implements OnInit {
         generatedPath: info.generated ? info.generated.absPath : null,
       });
       // This is where the window first learns which chain it opened; stamped
-      // the same way as the answer above, for the same reason.
-      this.workingChain.set({ dir, familyId: info.familyId });
+      // the same way as the answer above, for the same reason. Null familyId is
+      // a bare PDF with no chain yet — nothing to quote, nothing to act on.
+      this.workingChain.set(info.familyId === null ? null : { dir, familyId: info.familyId });
       // ── The working copy was made AGAIN, and the user is told ───────────────
       //
       // Main sets this on exactly the ask that re-minted the file, so showing it
@@ -9712,8 +9713,9 @@ export class PdfPickerComponent implements OnInit {
     if (info.remint !== null) this.announceRemint(projectDir, info.remint);
     // This is often the FIRST ask a freshly opened window makes, so it is also
     // where `workingChain` gets its first stamp — the same discipline as
-    // `refreshBookEpub`, for the same project.
-    this.workingChain.set({ dir: projectDir, familyId: info.familyId });
+    // `refreshBookEpub`, for the same project. A bare PDF answers with no
+    // chain, and no stamp is the honest record of that.
+    this.workingChain.set(info.familyId === null ? null : { dir: projectDir, familyId: info.familyId });
 
     const plan = planArtifactOpen({
       asked,
@@ -9731,6 +9733,16 @@ export class PdfPickerComponent implements OnInit {
     // `info.familyId` directly, not the signal: this call can run before the
     // stamp above has been read back through `projectPath`'s own effects, and
     // the id this ask just received is already known to be right for it.
+    //
+    // A working-copy plan REQUIRES a chain: the plan only says 'working-copy'
+    // when the project has an archive book or a generated one, and both mint
+    // chains. A null id here is a broken invariant, not a state to work around.
+    if (info.familyId === null) {
+      throw new Error(
+        'This project was planned to open on its working copy, but it reports no working chain — '
+        + 'those two answers cannot both be true. Nothing was opened; reload the window and report '
+        + 'this if it happens again.');
+    }
     const answer = await this.electronService.ensureWorkingEpub(projectDir, info.familyId);
     if (!answer.success || !answer.path) {
       throw new Error(answer.error
