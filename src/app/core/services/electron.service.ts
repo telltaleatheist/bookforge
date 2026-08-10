@@ -2082,43 +2082,46 @@ export class ElectronService {
   }
 
   /**
-   * Check if a file exists at the given path
+   * Check if a file exists at the given path.
+   *
+   * ── Why these three no longer catch ─────────────────────────────────────────
+   *
+   * They used to answer an IPC failure with `false` / `{}` — which is not "the
+   * call failed", it is "the file is gone" and "this project has no stages". The
+   * callers act on that: a book's audiobook path is dropped, the picker decides
+   * an analysis was never run, the wizard offers to redo finished work. A
+   * transient failure to ASK is not an answer about the filesystem, and the
+   * house rule is that a missing answer surfaces rather than being substituted
+   * (CLAUDE.md, "Avoid fallbacks — they hide bugs").
+   *
+   * The MAIN side answers a genuinely absent file with `false` without throwing;
+   * a rejection here means the question itself did not get through.
    */
   async fsExists(filePath: string): Promise<boolean> {
     if (this.isElectron) {
-      try {
-        return await (window as any).electron.fs.exists(filePath);
-      } catch {
-        return false;
-      }
+      return (window as any).electron.fs.exists(filePath);
     }
     return false;
   }
 
   /**
-   * Check multiple file paths for existence in a single IPC call
+   * Check multiple file paths for existence in a single IPC call.
+   * Throws when the call fails — see {@link fsExists}.
    */
   async fsBatchExists(filePaths: string[]): Promise<Record<string, boolean>> {
     if (this.isElectron) {
-      try {
-        return await (window as any).electron.fs.batchExists(filePaths);
-      } catch {
-        return {};
-      }
+      return (window as any).electron.fs.batchExists(filePaths);
     }
     return {};
   }
 
   /**
-   * Get file stats (mtime) for multiple paths in a single IPC call
+   * Get file stats (mtime) for multiple paths in a single IPC call.
+   * Throws when the call fails — see {@link fsExists}.
    */
   async fsBatchStat(filePaths: string[]): Promise<Record<string, { mtimeMs: number } | null>> {
     if (this.isElectron) {
-      try {
-        return await (window as any).electron.fs.batchStat(filePaths);
-      } catch {
-        return {};
-      }
+      return (window as any).electron.fs.batchStat(filePaths);
     }
     return {};
   }

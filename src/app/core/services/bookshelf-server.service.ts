@@ -27,8 +27,21 @@ export class BookshelfServerService {
     setInterval(() => void this.refresh(), 30_000);
   }
 
+  /**
+   * True while a start/stop this service issued is still waiting for its answer.
+   *
+   * The 30s poll and the nav-rail button write the SAME signal, and the poll has
+   * no idea a start is in progress: a refresh that lands between "starting" and
+   * the server actually listening reports `running: false` and flips the button
+   * back to stopped under the user's finger — which reads as "the start failed"
+   * for a start that is working. A transition owns the state until it answers.
+   */
+  private transitioning = false;
+
   async refresh(): Promise<void> {
     const result = await this.electronService.bookshelfGetStatus();
+    // A start/stop that began after this poll went out knows more than it does.
+    if (this.transitioning) return;
     if (result.success && result.data) {
       this.state.set(result.data.running ? 'running' : 'stopped');
       this.port.set(result.data.port);
@@ -37,20 +50,34 @@ export class BookshelfServerService {
   }
 
   async start(): Promise<{ success: boolean; error?: string }> {
+    this.transitioning = true;
     this.state.set('starting'); // optimistic; the status confirms
-    const result = await this.electronService.bookshelfStart({ port: this.port() });
-    if (result.success && result.data) {
-      this.state.set(result.data.running ? 'running' : 'stopped');
-      this.addresses.set(result.data.addresses ?? []);
-    } else {
-      this.state.set('stopped');
+    try {
+      const result = await this.electronService.bookshelfStart({ port: this.port() });
+      if (result.success && result.data) {
+        this.state.set(result.data.running ? 'running' : 'stopped');
+        this.addresses.set(result.data.addresses ?? []);
+      } else {
+        this.state.set('stopped');
+      }
+      return result;
+    } finally {
+      this.transitioning = false;
     }
-    return result;
   }
 
-  async stop(): Promise<void> {
-    await this.electronService.bookshelfStop();
-    this.state.set('stopped');
+  async stop(): Promise<{ success: boolean; error?: string }> {
+    this.transitioning = true;
+    try {
+      const result = await this.electronService.bookshelfStop();
+      // A stop that failed left the server LISTENING. Saying "stopped" would
+      // put a running server behind a button offering to start it, and the
+      // next poll would flip it back with no explanation.
+      this.state.set(result.success ? 'stopped' : 'running');
+      return result;
+    } finally {
+      this.transitioning = false;
+    }
   }
 
   async toggle(): Promise<void> {

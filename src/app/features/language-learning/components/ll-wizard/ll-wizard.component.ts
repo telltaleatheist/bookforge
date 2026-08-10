@@ -129,6 +129,15 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
         </div>
       </div>
 
+      <!-- The project's files could not be read. Said out loud, on every step,
+           because the EPUB list and the stage dots below are what the user reads
+           "there is nothing here yet" from — and acts on by re-running finished
+           work. A stale list with a reason beside it is honest; an empty one is
+           not. -->
+      @if (epubScanFailedReason(); as reason) {
+        <div class="scan-failed-banner">{{ reason }}</div>
+      }
+
       <!-- Step Content -->
       <div class="step-content">
         @switch (currentStep()) {
@@ -1217,6 +1226,18 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
       width: 16px;
       height: 2px;
       background: var(--border-default);
+    }
+
+    /* The project's files could not be read — the list below may be stale. */
+    .scan-failed-banner {
+      flex: 0 0 auto;
+      margin-bottom: 12px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--warning);
+      background: rgba(245, 158, 11, 0.12);
+      color: var(--text-primary);
+      font-size: 0.8125rem;
     }
 
     /* Step Content */
@@ -2819,6 +2840,19 @@ export class LLWizardComponent implements OnInit {
   readonly narrationBlockedReason = signal<string | null>(null);
 
   /**
+   * The project directory `narrationEpubPath`/`narrationFamilyId` were resolved
+   * FOR, or null when nothing is resolved.
+   *
+   * The three of them are one answer to one question — which file, on which
+   * chain, for which book — and the only way to keep them from being read apart
+   * is to carry the book with them. `narrationRunBook` refuses when this does
+   * not match the directory the job is about to be filed under.
+   */
+  private narrationResolvedFor: string | null = null;
+  /** Bumped by every `resolveNarrationInput`; the older one publishes nothing. */
+  private narrationResolveGeneration = 0;
+
+  /**
    * Why the narration copy was cut just now, or null when the one on record
    * already described the book.
    *
@@ -3076,10 +3110,8 @@ export class LLWizardComponent implements OnInit {
 
   readonly supportedLanguages = SUPPORTED_LANGUAGES;
 
-  /** Translation EPUBs that already exist in the project (e.g., en.epub, de.epub) */
-  readonly existingTranslationEpubs = computed(() => {
-    return this.availableEpubs().filter(e => e.isTranslated);
-  });
+  // `existingTranslationEpubs` is gone with `deleteAllTranslationEpubs`, the only
+  // thing that read it — see the note where those two used to live.
 
   // ─────────────────────────────────────────────────────────────────────────
   // Step 3: TTS
@@ -3603,11 +3635,14 @@ export class LLWizardComponent implements OnInit {
       }
     });
 
-    // Re-scan project EPUBs whenever project dir changes (e.g. after exporting from PDF viewer)
+    // Re-scan project EPUBs whenever project dir changes (e.g. after exporting from PDF viewer).
+    // Called even with no project: scanProjectEpubs answers that case by clearing
+    // the list — leaving the previous book's EPUBs standing is the same wrong
+    // answer the superseded guard inside it exists to prevent.
     effect(() => {
-      const dir = this.effectiveProjectDir();
+      this.effectiveProjectDir();
       this.refreshTrigger();  // re-scan stages when the host bumps this (after delete/reset)
-      if (dir) this.scanProjectEpubs();
+      void this.scanProjectEpubs();
     });
 
     // Which file a standard run narrates, resolved as soon as there is a project.
@@ -3927,14 +3962,29 @@ export class LLWizardComponent implements OnInit {
   private async resolveNarrationInput(): Promise<void> {
     const projectDir = this.effectiveProjectDir();
     if (!projectDir) {
+      this.narrationResolvedFor = null;
       this.narrationEpubPath.set(null);
       this.narrationCutReason.set(null);
       this.narrationBlockedReason.set(null);
       return;
     }
 
+    // OWNERSHIP. `narration:ensure-copy` may CUT a fresh copy — seconds of work
+    // against a whole book — and everything it answers with (the file, the
+    // chain, the refusal) describes `projectDir` and nothing else. Selecting a
+    // different book while it runs used to land A's file and A's chain under B's
+    // identity, and the very next Add-to-queue filed hours of TTS from A's text
+    // against B's project. The superseded test is studio-versions' (:3610): a
+    // newer resolution has started, or the page has moved on.
+    const generation = ++this.narrationResolveGeneration;
+    const superseded = () =>
+      generation !== this.narrationResolveGeneration
+      || this.effectiveProjectDir() !== projectDir;
+
     const answer = await this.electronService.ensureNarrationEpub(projectDir);
+    if (superseded()) return;
     if (!answer.success || !answer.narration) {
+      this.narrationResolvedFor = null;
       this.narrationEpubPath.set(null);
       this.narrationCutReason.set(null);
       this.narrationFamilyId.set(null);
@@ -3942,6 +3992,10 @@ export class LLWizardComponent implements OnInit {
         answer.error ?? 'This project could not say which file to narrate.');
       return;
     }
+    // WHICH project these three answers describe. `narrationRunBook` checks it
+    // against the directory the job is being filed under, so a resolution that
+    // slipped through against a stale page can never be queued.
+    this.narrationResolvedFor = projectDir;
     this.narrationEpubPath.set(answer.narration.epubPath);
     this.narrationCutReason.set(answer.narration.cutReason);
     // The chain the file is on, said back by the same call. Absent means an
@@ -3986,13 +4040,43 @@ export class LLWizardComponent implements OnInit {
   // EPUB Scanning
   // ─────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Which project the EPUB list and `stagesWithData` were scanned FOR, and the
+   * generation that scanned them.
+   *
+   * Six sequential IPCs, published in one go at the end. Two scans in flight
+   * resolve in whatever order the filesystem answers, so the LAST to finish used
+   * to win regardless of which book is on screen — offering the previous book's
+   * EPUBs in the source dropdowns and driving the skip/overwrite prompts from
+   * the wrong project's stages. Same superseded shape as studio-versions:3610.
+   */
+  private epubScanGeneration = 0;
+
+  /**
+   * Why the last EPUB scan could not answer, or null.
+   *
+   * Kept, and shown INSTEAD of an empty list, because "the scan failed" and
+   * "this project has no EPUBs" lead to opposite acts: the second one invites
+   * the user to re-run every stage from scratch over a book that is still
+   * there. Same shape as `narrationBlockedReason`.
+   */
+  readonly epubScanFailedReason = signal<string | null>(null);
+
   async scanProjectEpubs(): Promise<void> {
     const projectDir = this.effectiveProjectDir();
 
     if (!projectDir) {
+      this.epubScanGeneration++;
       this.availableEpubs.set([]);
+      this.epubScanFailedReason.set(null);
+      this.scanningEpubs.set(false);
       return;
     }
+
+    const generation = ++this.epubScanGeneration;
+    const superseded = () =>
+      generation !== this.epubScanGeneration
+      || this.effectiveProjectDir() !== projectDir;
 
     console.log('[LL-WIZARD] Scanning for EPUBs in unified structure:', projectDir);
     this.scanningEpubs.set(true);
@@ -4108,7 +4192,12 @@ export class LLWizardComponent implements OnInit {
         isSource: e.isSource,
         mtimeMs: e.mtimeMs
       })));
+      // Nothing is published before this point, so a scan overtaken along the
+      // way simply drops what it read — the list on screen keeps belonging to
+      // the book on screen.
+      if (superseded()) return;
       this.availableEpubs.set(epubs);
+      this.epubScanFailedReason.set(null);
 
       // Detect which stages have existing data
       const dataSet = new Set<string>();
@@ -4123,15 +4212,25 @@ export class LLWizardComponent implements OnInit {
       const ttsDir = `${projectDir}/stages/03-tts/sessions`;
       const outputDir = `${projectDir}/output`;
       const existsMap = await this.electronService.fsBatchExists([ttsDir, outputDir]);
+      if (superseded()) return;
       if (existsMap[ttsDir]) dataSet.add('tts');
       if (existsMap[outputDir]) dataSet.add('assembly');
 
       this.stagesWithData.set(dataSet);
     } catch (err) {
       console.error('Failed to scan project EPUBs:', err);
-      this.availableEpubs.set([]);
+      if (superseded()) return;
+      // The list is NOT emptied. An empty list reads as "this project has no
+      // EPUBs", which is the sentence that invites re-running every stage from
+      // scratch over work that is still on disk. Keep the last good answer and
+      // say why it may be out of date.
+      this.epubScanFailedReason.set(
+        `The project's files could not be read, so this list may be out of date: `
+        + `${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      this.scanningEpubs.set(false);
+      // Only the CURRENT scan owns the spinner: an overtaken one turning it off
+      // would hide the one still running.
+      if (generation === this.epubScanGeneration) this.scanningEpubs.set(false);
     }
   }
 
@@ -4318,33 +4417,21 @@ export class LLWizardComponent implements OnInit {
     }
   }
 
-  async deleteTranslationEpub(epub: AvailableEpub): Promise<void> {
-    const projectDir = this.effectiveProjectDir();
-    if (!projectDir) return;
-
-    // Delete the EPUB file
-    await this.electronService.deleteFile(epub.path);
-
-    // Delete the corresponding sentence cache
-    await this.electronService.deleteFile(`${projectDir}/stages/02-translate/sentences/${epub.lang}.json`);
-
-    // Delete the TTS session folder for this language (contains wav/flac audio)
-    await this.electronService.deleteDirectory(`${projectDir}/stages/03-tts/sessions/${epub.lang}`);
-
-    // Delete the sentence pairs file (may be stale)
-    await this.electronService.deleteFile(`${projectDir}/stages/02-translate/sentence_pairs_${epub.lang}.json`);
-
-    // Re-scan EPUBs and sessions to update all UI
-    await this.scanProjectEpubs();
-    await this.scanAvailableSessions();
-  }
-
-  async deleteAllTranslationEpubs(): Promise<void> {
-    const epubs = [...this.existingTranslationEpubs()];
-    for (const epub of epubs) {
-      await this.deleteTranslationEpub(epub);
-    }
-  }
+  // ── deleteTranslationEpub / deleteAllTranslationEpubs are DELETED ──────────
+  //
+  // Four unlinks — the translated EPUB, its sentence cache, its sentence-pair
+  // export, and the WHOLE `stages/03-tts/sessions/<lang>` folder, which is the
+  // rendered audio — fired with no confirmation, every envelope discarded, and
+  // with paths this component composed itself rather than through the stage-aware
+  // handler that owns them. `deleteAllTranslationEpubs` did it for every language
+  // in a loop. Nothing in the template ever called either one.
+  //
+  // Not repaired, removed: `pipeline:deleteTranslation` already deletes one
+  // language's whole set correctly, `studio-versions.removeDoc` already routes
+  // through it behind a confirmation, and the studio context menu's Delete
+  // Translation does too. A fourth door onto the same act — the only one with no
+  // question and no error reporting — is not a feature that was missing a
+  // confirm; it is a duplicate that should never have been kept.
 
   // ─────────────────────────────────────────────────────────────────────────
   // TTS
@@ -6178,6 +6265,17 @@ export class LLWizardComponent implements OnInit {
    * narration job runs.
    */
   private narrationRunBook(projectDir: string): NarrationRunBook {
+    // The file and the chain were resolved FOR a project. If that is not the
+    // project this job is being filed under, the two halves came from different
+    // books — which is a job that reads A's text, is recorded on A's chain and
+    // lands in B's folder. There is no correct guess between them, so refuse.
+    if (this.narrationResolvedFor !== projectDir) {
+      throw new Error(
+        'The file this run would narrate was resolved for a different book than the one the '
+        + 'job is being filed under, so the run cannot say which book it is reading. Reselect '
+        + 'the book and try again.'
+      );
+    }
     const familyId = this.narrationFamilyId();
     if (familyId === null) {
       throw new Error(

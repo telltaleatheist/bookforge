@@ -6,6 +6,7 @@ import {
   HostListener,
   ChangeDetectionStrategy,
   AfterViewInit,
+  OnDestroy,
   ViewChild,
   ElementRef,
 } from '@angular/core';
@@ -268,7 +269,32 @@ export type DesktopDialogType = 'none' | 'info' | 'success' | 'warning' | 'error
     }
   `],
 })
-export class DesktopDialogComponent implements AfterViewInit {
+export class DesktopDialogComponent implements AfterViewInit, OnDestroy {
+  /**
+   * Every mounted dialog, oldest first. The LAST one is the one on top.
+   *
+   * These listen on `document`, so two stacked dialogs both used to hear one
+   * keystroke and both resolve from it — Escape cancelled the question the user
+   * was reading AND the one waiting behind it, and Enter confirmed both. Only
+   * the topmost answers now; the one underneath goes back to waiting for its own
+   * turn, which is what "modal" means.
+   */
+  private static readonly stack: DesktopDialogComponent[] = [];
+
+  constructor() {
+    DesktopDialogComponent.stack.push(this);
+  }
+
+  ngOnDestroy(): void {
+    const i = DesktopDialogComponent.stack.indexOf(this);
+    if (i !== -1) DesktopDialogComponent.stack.splice(i, 1);
+  }
+
+  private get isTopmost(): boolean {
+    const s = DesktopDialogComponent.stack;
+    return s.length > 0 && s[s.length - 1] === this;
+  }
+
   @Input() title = '';
   @Input() message = '';
   @Input() detail?: string;
@@ -330,12 +356,25 @@ export class DesktopDialogComponent implements AfterViewInit {
 
   @HostListener('document:keydown.escape')
   onEscape(): void {
+    if (!this.isTopmost) return;
     // Escape resolves as a cancel (or a dismiss for plain alerts).
     this.cancel.emit();
   }
 
-  @HostListener('document:keydown.enter')
-  onEnter(): void {
+  // `$event` is typed as the base Event by Angular's key-pseudo-event binding.
+  @HostListener('document:keydown.enter', ['$event'])
+  onEnter(event: Event): void {
+    if (!this.isTopmost) return;
+    const target = event.target;
+    // Enter belongs to the field it is typed in, not to the dialog around it.
+    // A textarea or a contenteditable is a place where Enter means "new line",
+    // and a focused button already fires its own click — so confirming here as
+    // well made Enter on Cancel both cancel AND confirm the same question. The
+    // dialog's OWN single-line prompt field is the one exception: Enter there is
+    // "I'm done typing", which is the confirm.
+    if (target instanceof HTMLTextAreaElement) return;
+    if (target instanceof HTMLButtonElement) return;
+    if (target instanceof HTMLElement && target.isContentEditable) return;
     this.confirm.emit();
   }
 }

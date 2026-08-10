@@ -24,6 +24,14 @@
   position: relative;
   background: var(--bg-content);
   -webkit-touch-callout: none;
+
+  // Focusable (see the template comment) but not ringed on every click —
+  // :focus-visible keeps the indicator for the keyboard users it is for.
+  &:focus { outline: none; }
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
 }
 
 .cascade-content {

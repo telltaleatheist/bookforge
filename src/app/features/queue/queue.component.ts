@@ -623,7 +623,20 @@ export class QueueComponent implements OnInit, OnDestroy {
       next.delete(jobId);
       this.collapsedStepIds.set(next);
     }
-    if (this.selectedJobId() === jobId) {
+    // Removing a MASTER takes its whole workflow with it (queue.service:1904-1910),
+    // so the selection has to be checked against every row that is about to go —
+    // not just the one that was clicked. Left pointing at a removed child, the
+    // detail panel silently falls back to `currentJob()` and shows a different
+    // job's progress under the row the user had open.
+    const removed = this.queueService.jobs().find(j => j.id === jobId);
+    const goingIds = new Set<string>([jobId]);
+    if (removed?.workflowId && !removed.parentJobId) {
+      for (const j of this.queueService.jobs()) {
+        if (j.workflowId === removed.workflowId) goingIds.add(j.id);
+      }
+    }
+    const selected = this.selectedJobId();
+    if (selected !== null && goingIds.has(selected)) {
       this.selectedJobId.set(null);
     }
     this.jobEta.forget(jobId);

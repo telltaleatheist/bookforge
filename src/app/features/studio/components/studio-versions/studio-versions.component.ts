@@ -4345,6 +4345,13 @@ export class StudioVersionsComponent {
     }
     if (v.type === 'narration') { await this.removeTtsCopy(v, familyId); return; }
 
+    // Read BEFORE the confirm, as every sibling remover does (removeWorkingCopy,
+    // removeGeneratedEpub, removeTtsCopy all take `projectDir()` on their first
+    // line). Read after, it is whatever book the page has moved to while the
+    // dialog was up — and the stage deletes below would clear THAT project's
+    // cleanup or translation directory while naming this row.
+    const projectDir = this.projectDir();
+
     const { confirmed } = await this.electron.showConfirmDialog({
       title: 'Delete version',
       message: `Delete "${v.label}"? The original archived copy is not affected.`,
@@ -4369,7 +4376,6 @@ export class StudioVersionsComponent {
     // isn't there.
     const inCleanupStage = /[\\/]stages[\\/]01-cleanup[\\/]/.test(v.path);
     const inTranslateStage = /[\\/]stages[\\/]02-translate[\\/]/.test(v.path);
-    const projectDir = this.projectDir();
     const pipeline = (window as any).electron?.pipeline;
     const epubName = v.path.split(/[\\/]/).pop();
     let res: { success: boolean; error?: string };
