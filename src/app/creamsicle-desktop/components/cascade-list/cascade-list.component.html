@@ -1,4 +1,9 @@
-<div class="cascade-list" (click)="clearSelection()" (mousedown)="onDragSelectStart($event)">
+<!-- tabindex="0" is load-bearing, not decoration: this list claims Delete, Enter,
+     Space and the arrow keys from a document-level listener, and a widget that
+     takes keys has to be somewhere the keyboard can BE. Without it there is no
+     focus for the listener to check against, so either the list answers every
+     keystroke in the window or it answers none. -->
+<div class="cascade-list" tabindex="0" (click)="clearSelection()" (mousedown)="onDragSelectStart($event)">
   <!-- Empty State -->
   @if (virtualItems().length === 0) {
     <div class="cascade-content empty">

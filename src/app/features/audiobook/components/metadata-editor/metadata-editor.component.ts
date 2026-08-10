@@ -1,4 +1,6 @@
-import { Component, input, output, signal, computed, effect, HostListener } from '@angular/core';
+import {
+  Component, input, output, signal, computed, effect, inject, HostListener, ElementRef,
+} from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
@@ -30,7 +32,10 @@ export interface EpubMetadata {
     <div class="metadata-editor">
       <!-- Cover Section -->
       <div class="cover-section">
-        <div class="cover-preview" (click)="selectCover()"
+        <!-- tabindex so the box can HOLD the focus its own label promises:
+             "Click or paste image" only works if clicking makes this the thing
+             the next paste is aimed at (see onPaste). -->
+        <div class="cover-preview" tabindex="0" (click)="selectCover()"
              [class.empty]="!coverPreview()"
              [style.aspect-ratio]="coverPreview() ? coverAspect() : null">
           @if (coverPreview()) {
@@ -378,6 +383,9 @@ export interface EpubMetadata {
   `]
 })
 export class MetadataEditorComponent {
+  /** This editor's own DOM, for deciding whether a window-level paste is ours. */
+  private readonly hostEl = inject<ElementRef<HTMLElement>>(ElementRef);
+
   // Inputs
   readonly metadata = input<EpubMetadata | null>(null);
   readonly saving = input<boolean>(false);
@@ -677,8 +685,32 @@ export class MetadataEditorComponent {
   }
 
 
+  /**
+   * Paste an image from the clipboard as the cover.
+   *
+   * ── Why the gate ────────────────────────────────────────────────────────────
+   *
+   * The listener is on `window`, and several of these are mounted at once (the
+   * project editor plus one per variant, across tabs). Ungated, ANY image on the
+   * clipboard became the cover of every instance in the window — including ones
+   * on a tab nobody is looking at, and including a paste the user aimed at a
+   * text field somewhere else entirely.
+   *
+   * Two conditions, both about where the paste was aimed: the editor has to be
+   * on screen, and the focus has to be inside it — or nowhere at all, which is
+   * the ordinary state after clicking the cover box (see the `tabindex` there:
+   * "Click or paste image" is only true if clicking gives it the focus).
+   */
   @HostListener('window:paste', ['$event'])
   onPaste(event: ClipboardEvent): void {
+    const host = this.hostEl.nativeElement;
+    // A hidden or detached editor cannot be what the user is pasting into.
+    if (host.offsetParent === null && host.getClientRects().length === 0) return;
+    const active = document.activeElement;
+    const focusIsElsewhere =
+      active !== null && active !== document.body && !host.contains(active);
+    if (focusIsElsewhere) return;
+
     const items = event.clipboardData?.items;
     if (!items) return;
 

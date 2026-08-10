@@ -9,6 +9,7 @@ import {
   ChangeDetectorRef,
   effect,
   HostListener,
+  ElementRef,
   ViewChild
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
@@ -42,10 +43,12 @@ export type VirtualListItem =
 })
 export class CascadeListComponent {
   private cdr: ChangeDetectorRef;
+  private readonly host: ElementRef<HTMLElement>;
   private initialized = false;
 
-  constructor(cdr: ChangeDetectorRef) {
+  constructor(cdr: ChangeDetectorRef, host: ElementRef<HTMLElement>) {
     this.cdr = cdr;
+    this.host = host;
 
     effect(() => {
       const ids = this.selectedItems();
@@ -454,10 +457,39 @@ export class CascadeListComponent {
     }
   }
 
+  /** True when the event target is a text-entry element. Same test as the
+   *  picker's `isTextInputTarget` (pdf-picker:3578) — the contenteditable arm
+   *  matters because a rich-text field is where Delete and Enter are ordinary
+   *  typing, and this listener is on `document`. */
+  private isTextInputTarget(target: EventTarget | null): boolean {
+    return target instanceof HTMLInputElement
+      || target instanceof HTMLTextAreaElement
+      || target instanceof HTMLSelectElement
+      || (target instanceof HTMLElement && target.isContentEditable);
+  }
+
+  /**
+   * True when the keystroke belongs to THIS list.
+   *
+   * The listener is on `document`, so without this every mounted cascade-list
+   * hears every keystroke in the window: Delete anywhere on the page emitted a
+   * delete for whatever this list happened to have selected, and Enter opened
+   * it. The list only answers keys typed while the focus is inside it.
+   */
+  private hasKeyboardFocus(target: EventTarget | null): boolean {
+    const el = this.host.nativeElement;
+    if (target instanceof Node && el.contains(target)) return true;
+    const active = document.activeElement;
+    return active !== null && active !== document.body && el.contains(active);
+  }
+
   // Keyboard navigation
   @HostListener('document:keydown', ['$event'])
   onKeyDown(event: KeyboardEvent): void {
-    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+    if (this.isTextInputTarget(event.target)) {
+      return;
+    }
+    if (!this.hasKeyboardFocus(event.target)) {
       return;
     }
 

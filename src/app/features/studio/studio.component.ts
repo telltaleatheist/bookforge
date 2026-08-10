@@ -129,6 +129,17 @@ import { samePath } from '@shared/document/same-path';
         }
       </div>
 
+      <!-- The library could not be listed. Said here rather than swallowed,
+           because "the list did not change" and "the list could not be read"
+           look identical on screen and only one of them means the books below
+           are still true. -->
+      @if (studioService.error(); as err) {
+        <div class="library-error-banner">
+          <span>{{ err }}</span>
+          <button (click)="studioService.loadAll()">Try again</button>
+        </div>
+      }
+
       @if (viewMode() === 'browse') {
         @if (allTags().length > 0) {
           <div class="tag-filter-bar browse-tags">
@@ -594,6 +605,34 @@ import { samePath } from '@shared/document/same-path';
       position: relative;
       display: flex;
       flex-direction: column;
+    }
+
+    /* The library listing failed — the rows below may be stale. */
+    .library-error-banner {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 0 12px 8px;
+      padding: 8px 12px;
+      border: 1px solid var(--error);
+      border-radius: 6px;
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--text-primary);
+      font-size: 0.8125rem;
+
+      span { flex: 1; min-width: 0; }
+
+      button {
+        flex: 0 0 auto;
+        padding: 3px 10px;
+        border: 1px solid var(--border-default);
+        border-radius: 4px;
+        background: var(--bg-surface);
+        color: var(--text-primary);
+        font-size: 0.75rem;
+        cursor: pointer;
+      }
     }
 
     /* Browse/Workspace content fills the area below the top bar */
@@ -1880,7 +1919,10 @@ export class StudioComponent implements OnInit, OnDestroy {
     // Only now can a project be looked up by name — see itemsLoaded.
     this.itemsLoaded.set(true);
     this.loadAllTags();
-    document.addEventListener('click', () => this.hideContextMenu());
+    // Kept so ngOnDestroy can take it off again. An anonymous listener on
+    // `document` cannot be removed, so every visit to Studio used to leave
+    // another one behind, each holding a reference to its own dead component.
+    document.addEventListener('click', this.documentClickListener);
 
     // Listen for editor window close events to refresh the item
     this.electronService.onEditorWindowClosed((projectPath: string) => {
@@ -1899,7 +1941,11 @@ export class StudioComponent implements OnInit, OnDestroy {
     });
   }
 
+  /** Any click anywhere dismisses the context menu. Named so it can be removed. */
+  private readonly documentClickListener = (): void => this.hideContextMenu();
+
   ngOnDestroy(): void {
+    document.removeEventListener('click', this.documentClickListener);
     this.electronService.offEditorWindowClosed();
     this.electronService.offProjectFilesChanged();
     if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer);
@@ -2229,10 +2275,21 @@ export class StudioComponent implements OnInit, OnDestroy {
   // Cached Session
   // ─────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Read the project's cached TTS session so the LL wizard can offer
+   * Continue / start-fresh.
+   *
+   * The answer describes ONE project. Selecting another book while the read is
+   * in flight used to land A's session under B — and the wizard's Continue then
+   * resumed A's half-rendered sentences into B's run. The `forId` re-check is
+   * `editorCoverEffect`'s, two blocks up (:1720).
+   */
   async checkCachedSession(projectDir: string): Promise<void> {
     const electron = (window as any).electron;
     if (!electron?.reassembly?.getBfpSession) return;
+    const forDir = projectDir;
     const result = await electron.reassembly.getBfpSession(projectDir);
+    if (this.selectedItem()?.projectDir !== forDir) return;
     if (result.success && result.data) {
       this.cachedSession.set(result.data);
     } else {
@@ -2280,6 +2337,19 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.hideContextMenu();
   }
 
+  /**
+   * Delete the whole project — the biggest destructive act in the app, and until
+   * now the only one that asked nothing.
+   *
+   * `studioService.deleteItem` → `manifest:delete` removes the project
+   * DIRECTORY: the file that was imported, the working copy and every edit
+   * recorded against it, the finished audiobook, and the manifest itself. Every
+   * smaller delete on the Versions page confirms first (studio-versions
+   * `removeGeneratedEpub` / `removeTtsCopy` / `deleteCache`), and each of those
+   * destroys strictly less than this one does. So this asks too, and it asks by
+   * NAME: a multi-selection right-click is exactly the case where "Delete (7
+   * items)" is not enough to tell you what you are about to lose.
+   */
   async deleteContextMenuItem(): Promise<void> {
     const item = this.contextMenuItem();
     if (!item) return;
@@ -2287,6 +2357,38 @@ export class StudioComponent implements OnInit, OnDestroy {
     const ids = selectedIds.length > 1
       ? selectedIds
       : [item.id];
+    // The menu must not hang over the dialog it opens.
+    this.hideContextMenu();
+
+    // Titles, from the rows themselves — the clicked row is in hand, the rest
+    // are looked up. A row that has gone in the meantime is named by its id so
+    // the count in the message and the list under it always agree.
+    const titles = ids.map(id =>
+      (id === item.id ? item.title : this.studioService.getItem(id)?.title) || id);
+    const NAMED = 8;
+    const lines = titles.slice(0, NAMED).map(t => `  • ${t}`);
+    if (titles.length > NAMED) lines.push(`  • …and ${titles.length - NAMED} more`);
+    const detail = [
+      ...lines,
+      '',
+      'The whole project folder goes with each one: the file you imported, your working '
+      + 'copy and every edit recorded against it, any finished audiobook, and the record '
+      + 'of all of it. This cannot be undone.',
+    ].join('\n');
+
+    const many = ids.length > 1;
+    const { confirmed } = await this.electronService.showConfirmDialog({
+      title: many ? `Delete ${ids.length} projects` : 'Delete project',
+      message: many
+        ? `Delete these ${ids.length} projects and everything in them?`
+        : `Delete "${titles[0]}" and everything in it?`,
+      detail,
+      confirmLabel: many ? `Delete ${ids.length} projects` : 'Delete',
+      cancelLabel: 'Cancel',
+      type: 'warning',
+    });
+    if (!confirmed) return;
+
     const failures: string[] = [];
     for (const id of ids) {
       const result = await this.studioService.deleteItem(id);
@@ -2300,7 +2402,6 @@ export class StudioComponent implements OnInit, OnDestroy {
       // Surface the failure instead of silently leaving the folder on disk.
       this.exportStatus.set(`Couldn't delete ${failures.length} item${failures.length > 1 ? 's' : ''}: ${failures[0]}`);
     }
-    this.hideContextMenu();
   }
 
   /**
@@ -2508,6 +2609,55 @@ export class StudioComponent implements OnInit, OnDestroy {
     return !!(item.hasCleaned || item.hasSimplified || item.hasCleanupCheckpoint || item.hasTranslated || item.hasTtsCache || item.audiobookPath || item.bilingualAudioPath);
   }
 
+  /**
+   * What each stage delete costs, in the words of the thing being destroyed.
+   *
+   * The TTS line names the SENTENCE COUNT, read fresh from the project the menu
+   * was opened on — that is the number that says "hours of GPU" out loud, and it
+   * is the same number `studio-versions.deleteCache` puts in its own confirm for
+   * the very same act. (Read here rather than taken from `cachedSession()`,
+   * which tracks the SELECTED book: a right-click does not move the selection,
+   * so the two are routinely different books.)
+   */
+  private async stageDeleteCost(
+    stage: 'cleanup' | 'simplify' | 'translation' | 'tts' | 'output',
+    item: StudioItem,
+  ): Promise<string> {
+    switch (stage) {
+      case 'cleanup':
+        return 'The cleaned EPUB goes, with its diff record, its resume checkpoint and its '
+          + 'edit-list audit — the next run starts the model pass over from the beginning.';
+      case 'simplify':
+        return 'The simplified EPUB goes, with its diff record and resume checkpoint — the '
+          + 'next run starts the model pass over from the beginning.';
+      case 'translation':
+        return 'Every translated EPUB goes, with its sentence pairs and resume cache. Each '
+          + 'language has to be translated again.';
+      case 'tts': {
+        const electron = (window as any).electron;
+        let sentences: number | null = null;
+        if (electron?.reassembly?.getBfpSession && item.projectDir) {
+          const res = await electron.reassembly.getBfpSession(item.projectDir);
+          const d = res?.success ? res.data : null;
+          if (typeof d?.completedSentences === 'number') sentences = d.completedSentences;
+        }
+        return `${sentences === null ? 'Every' : sentences.toLocaleString()} cached sentence-audio `
+          + 'file goes. Re-rendering them is hours of GPU. The finished audiobook, if there is '
+          + 'one, is not affected.';
+      }
+      case 'output': {
+        const named = [item.audiobookPath, item.bilingualAudioPath]
+          .filter((p): p is string => !!p)
+          .map(p => `  • ${p.split(/[\\/]/).pop()}`);
+        return [
+          ...(named.length ? [...named, ''] : []),
+          'The finished audiobook and everything else under the project\'s output folder goes. '
+          + 'The sentence cache stays, so it can be assembled again without re-rendering.',
+        ].join('\n');
+      }
+    }
+  }
+
   async deleteStage(stage: 'cleanup' | 'simplify' | 'translation' | 'tts' | 'output'): Promise<void> {
     const item = this.contextMenuItem();
     if (!item?.projectDir) return;
@@ -2521,6 +2671,19 @@ export class StudioComponent implements OnInit, OnDestroy {
       tts: 'TTS Cache',
       output: 'Output',
     };
+
+    // Ask first. `studio-versions.deleteCache` confirms for the SAME TTS cache
+    // this menu discards, and `removeDoc` confirms for the same stage EPUBs —
+    // two doors onto one act, and this was the one that fired on a single click.
+    const { confirmed } = await this.electronService.showConfirmDialog({
+      title: `Delete ${labels[stage]}`,
+      message: `Delete the ${labels[stage]} for "${item.title || 'this project'}"?`,
+      detail: `${await this.stageDeleteCost(stage, item)}\n\nThis cannot be undone.`,
+      confirmLabel: `Delete ${labels[stage]}`,
+      cancelLabel: 'Cancel',
+      type: 'warning',
+    });
+    if (!confirmed) return;
 
     try {
       let result: { success: boolean; message?: string; error?: string };

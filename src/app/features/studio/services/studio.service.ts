@@ -89,6 +89,19 @@ export class StudioService {
   // over the new list.
   private loadGeneration = 0;
 
+  /**
+   * Bumped by every list load. `project:files-changed` arrives in storms — one
+   * per write from every window and every queue job — and each one used to start
+   * a fresh, uncancelled `loadBooks`. Whichever finished LAST published, which on
+   * a busy filesystem is routinely an EARLIER snapshot than the one already on
+   * screen; the stale flags it carries (hasTtsCache, audiobookPath) then decide
+   * which destructive context-menu items appear. Same superseded shape as
+   * studio-versions:3610 — an overtaken load reads its data and publishes none of
+   * it.
+   */
+  private bookListGeneration = 0;
+  private articleListGeneration = 0;
+
   constructor() {
     // Reload projects whenever the library location changes to a different
     // folder (e.g. the user picks a new library in Settings) so Studio updates
@@ -111,7 +124,10 @@ export class StudioService {
   async loadAll(): Promise<void> {
     this._loading.set(true);
     this._error.set(null);
-    this._archived.set([]);
+    // `_archived` is NOT blanked here. Both halves replace their own type's
+    // slice when they publish (publishBooks / loadArticles), so emptying it up
+    // front bought nothing except a visible flicker on every refresh — and left
+    // the Archived view empty for the whole duration of a slow load.
 
     try {
       await Promise.all([
@@ -139,9 +155,26 @@ export class StudioService {
     const started = performance.now();
     const since = () => `${Math.round(performance.now() - started)}ms`;
 
+    // True once a NEWER loadBooks has started. Everything below belongs to this
+    // one's snapshot, so publishing after that point would put an older reading
+    // of the library over a newer one.
+    const generation = ++this.bookListGeneration;
+    const superseded = () => generation !== this.bookListGeneration;
+
     try {
       const result = await this.electronService.manifestList({ type: 'book' });
-      if (!result.success || !result.projects) return;
+      if (superseded()) return;
+      if (!result.success || !result.projects) {
+        // A failed envelope is not "no change". Silently returning made an IPC
+        // failure — an unmounted library, a main process that died — read
+        // exactly like a library that happens to hold the same books as before,
+        // and the very next line of this function throws loudly for a missing
+        // field. Say it in the same voice.
+        this._error.set(result.error
+          ?? 'The library could not be listed, and gave no reason. The books on screen may be out of date.');
+        return;
+      }
+      this._error.set(null);
       this.logTiming(`[StudioService] manifests read: ${since()} (${result.projects.length} projects)`);
 
       // listProjects populates this for every project it returns. Its absence means the
@@ -259,6 +292,7 @@ export class StudioService {
 
       // Single IPC call to check all paths at once
       const existsMap = await this.electronService.fsBatchExists(allPaths);
+      if (superseded()) return;
       this.logTiming(`[StudioService] stage probes: ${since()} (${allPaths.length} paths)`);
 
       // Build all book objects synchronously (no IPC needed — uses existsMap from batch check)
@@ -454,6 +488,7 @@ export class StudioService {
         this.logTiming(`[StudioService] covers complete: ${since()}`));
     } catch (e) {
       console.error('[StudioService] Failed to load books:', e);
+      if (!superseded()) this._error.set((e as Error).message);
     }
   }
 
@@ -550,9 +585,19 @@ export class StudioService {
       return;
     }
 
+    // Same superseded rule as loadBooks — the files-changed storm reaches both.
+    const generation = ++this.articleListGeneration;
+    const superseded = () => generation !== this.articleListGeneration;
+
     try {
       const result = await this.electronService.manifestList({ type: 'article' });
-      if (!result.success || !result.projects) return;
+      if (superseded()) return;
+      if (!result.success || !result.projects) {
+        this._error.set(result.error
+          ?? 'The library could not be listed, and gave no reason. The articles on screen may be out of date.');
+        return;
+      }
+      this._error.set(null);
 
       const projectsPath = this.libraryService.projectsPath();
       if (!projectsPath) return;
@@ -582,6 +627,7 @@ export class StudioService {
 
       // Single IPC call for all articles
       const existsMap = await this.electronService.fsBatchExists(allPaths);
+      if (superseded()) return;
 
       // ── The article editor's state, from its own file ──────────────────────
       //
@@ -605,6 +651,7 @@ export class StudioService {
         }
         if (result.editor) editorStates.set(manifest.projectId, result.editor);
       }));
+      if (superseded()) return;
 
       const articles: StudioItem[] = articlePathMaps.map(({ manifest, projectDir, paths }) => {
         const editor = editorStates.get(manifest.projectId);
@@ -680,6 +727,7 @@ export class StudioService {
       });
     } catch (e) {
       console.error('[StudioService] Failed to load articles:', e);
+      if (!superseded()) this._error.set((e as Error).message);
     }
   }
 

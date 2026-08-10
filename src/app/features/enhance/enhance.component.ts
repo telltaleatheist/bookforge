@@ -220,8 +220,11 @@ interface EnhanceFileRow {
                 {{ selectedRow()!.name }} · {{ formatDuration(selectedRow()!.durationSec) }} · {{ formatSize(selectedRow()!.sizeBytes) }}
               </p>
 
-              @if (selectedRow()!.status === 'error') {
-                <div class="panel-error">{{ selectedRow()!.error }}</div>
+              <!-- Keyed on the MESSAGE, not on the 'error' status: a Stop that
+                   failed leaves the row still processing and still has something
+                   the user needs to read. -->
+              @if (selectedRow()!.error; as err) {
+                <div class="panel-error">{{ err }}</div>
               }
 
               @if (selectedRow()!.status === 'processing') {
@@ -814,12 +817,25 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   private unsubscribeProgress: (() => void) | null = null;
   private nextId = 1;
 
+  /**
+   * True once this component is gone.
+   *
+   * ngOnInit's three startup reads are IPC round-trips against a synced library
+   * and routinely outlive a quick tab switch. Writing signals afterwards is
+   * writing into a destroyed view — and, worse, `restoreSessions` also calls
+   * `selectFile`, which starts audio playback machinery on a component nobody
+   * can stop again. Checked after every await that publishes.
+   */
+  private destroyed = false;
+
   async ngOnInit(): Promise<void> {
     await this.recheckReadiness();
+    if (this.destroyed) return;
     // Load the add-ons catalog so the setup panel can show install state/actions.
     this.addons.ensureLoaded();
     // Rebuild the working set from disk so files persist across app restarts.
     await this.restoreSessions();
+    if (this.destroyed) return;
 
     this.unsubscribeProgress = this.electron.onEnhanceProgress((data) => {
       this.zone.run(() => this.applyProgress(data.jobId, data.key, data.progress));
@@ -837,7 +853,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
    *  adopts the job's id so Stop and later progress events target the right run. */
   private async reconnectActiveJobs(): Promise<void> {
     const res = await this.electron.enhanceListActive();
-    if (!res.success || !res.data) return;
+    if (this.destroyed || !res.success || !res.data) return;
     for (const job of res.data) {
       const row = this.files().find((f) => (job.key && f.key === job.key) || f.path === job.sourcePath);
       if (!row) continue;
@@ -856,7 +872,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
    *  persists across restarts (until the user deletes or exports them). */
   private async restoreSessions(): Promise<void> {
     const res = await this.electron.enhanceListSessions();
-    if (!res.success || !res.data) return;
+    if (this.destroyed || !res.success || !res.data) return;
     const existingKeys = new Set(this.files().map((f) => f.key).filter(Boolean));
     const restored: EnhanceFileRow[] = res.data
       .filter((s) => !existingKeys.has(s.key))
@@ -889,6 +905,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   /** Re-evaluate whether Enhance can run (env presence, script, etc.). */
   async recheckReadiness(): Promise<void> {
     const r = await this.electron.enhanceReadiness();
+    if (this.destroyed) return;
     if (r.success && r.data) this.readiness.set(r.data);
   }
 
@@ -900,6 +917,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.destroyed = true;
     this.unsubscribeProgress?.();
     this.pausePreview();
   }
@@ -1040,15 +1058,31 @@ export class EnhanceComponent implements OnInit, OnDestroy {
 
   // ── Advanced params (per-file overrides) ──
 
+  /** The stock Advanced values — the same numbers the signals are declared with,
+   *  named once so "this file has no overrides" has something to say. */
+  private static readonly DEFAULT_PARAMS = {
+    nfe: 64, tau: 0.75, lambd: 0.1, solver: 'midpoint',
+    seeds: 5, smartChunk: true, anchor: true,
+  } as const;
+
+  /**
+   * Show the SELECTED file's Advanced params.
+   *
+   * Every key is written on every call. Early-returning on null left the
+   * previous file's overrides sitting in the sliders while the panel claimed to
+   * describe the newly selected one — and the moment the user nudged any single
+   * control, `onParamChange` persisted THAT key onto the new file, giving it one
+   * borrowed value out of the seven on screen.
+   */
   private applyParamsToInputs(params: EnhanceProcessParams | null): void {
-    if (!params) return;
-    if (typeof params['nfe'] === 'number') this.nfe.set(params['nfe']);
-    if (typeof params['tau'] === 'number') this.tau.set(params['tau']);
-    if (typeof params['lambd'] === 'number') this.lambd.set(params['lambd']);
-    if (typeof params['solver'] === 'string') this.solver.set(params['solver']);
-    if (typeof params['seeds'] === 'number') this.seeds.set(params['seeds']);
-    if (typeof params['smartChunk'] === 'boolean') this.smartChunk.set(params['smartChunk']);
-    if (typeof params['anchor'] === 'boolean') this.anchor.set(params['anchor']);
+    const d = EnhanceComponent.DEFAULT_PARAMS;
+    this.nfe.set(typeof params?.['nfe'] === 'number' ? params['nfe'] : d.nfe);
+    this.tau.set(typeof params?.['tau'] === 'number' ? params['tau'] : d.tau);
+    this.lambd.set(typeof params?.['lambd'] === 'number' ? params['lambd'] : d.lambd);
+    this.solver.set(typeof params?.['solver'] === 'string' ? params['solver'] : d.solver);
+    this.seeds.set(typeof params?.['seeds'] === 'number' ? params['seeds'] : d.seeds);
+    this.smartChunk.set(typeof params?.['smartChunk'] === 'boolean' ? params['smartChunk'] : d.smartChunk);
+    this.anchor.set(typeof params?.['anchor'] === 'boolean' ? params['anchor'] : d.anchor);
   }
 
   /** Populate the method selector + RVC controls from a row's persisted settings. */
@@ -1144,6 +1178,9 @@ export class EnhanceComponent implements OnInit, OnDestroy {
    *  of cache; the default 'auto' does only what's needed (the primary Process). */
   async processFile(row: EnhanceFileRow, reprocess: ReprocessScope = 'auto'): Promise<void> {
     if (this.readiness() && !this.readiness()!.ok) return;
+    // This run now owns the row: any earlier run's in-flight completion read is
+    // stale from here on.
+    const generation = this.beginRowRun(row.id);
     this.patchRow(row.id, { jobId: row.id, status: 'processing', phase: 'preparing', percentage: 0, error: null });
 
     // No explicit resemble params: the bridge resolves defaults ← config ← this
@@ -1165,6 +1202,10 @@ export class EnhanceComponent implements OnInit, OnDestroy {
         : undefined,
       reprocess,
     });
+    // A newer run (or a Stop) took the row over while this one was in flight —
+    // its state is the live one, and this result describes a run nobody is
+    // waiting on.
+    if ((this.rowRunGeneration.get(row.id) ?? 0) !== generation) return;
     // The terminal 'complete'/'error' progress event usually lands first; this
     // reconciles the row in case the invoke result arrives on its own.
     if (res.success && res.data) {
@@ -1214,8 +1255,33 @@ export class EnhanceComponent implements OnInit, OnDestroy {
 
   async stopFile(row: EnhanceFileRow): Promise<void> {
     // Target the main-process job id (may differ from row.id after a re-adopt).
-    await this.electron.enhanceStop(row.jobId ?? row.id);
+    const res = await this.electron.enhanceStop(row.jobId ?? row.id);
+    if (!res.success) {
+      // The child is still running. Saying "stopped" here would leave the row
+      // idle-looking while the GPU keeps going, and clearing jobId would take
+      // away the only handle Stop has to try again.
+      this.patchRow(row.id, {
+        error: res.error || 'This run could not be stopped, and gave no reason. It is still running.',
+      });
+      return;
+    }
+    this.beginRowRun(row.id);
     this.patchRow(row.id, { status: 'stopped', phase: null, jobId: null });
+  }
+
+  /**
+   * Bumped whenever a row's state is taken over by a NEW run (process / stop).
+   *
+   * The terminal-progress cache read below is an await against the filesystem,
+   * and a user who presses Process again while it is in flight gets the old
+   * run's finished snapshot written over the fresh 'processing' row — the row
+   * then reads 'ready' with a job still going.
+   */
+  private rowRunGeneration = new Map<string, number>();
+  private beginRowRun(id: string): number {
+    const next = (this.rowRunGeneration.get(id) ?? 0) + 1;
+    this.rowRunGeneration.set(id, next);
+    return next;
   }
 
   private applyProgress(jobId: string, key: string, progress: EnhanceProgress): void {
@@ -1227,7 +1293,11 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     const id = row.id;
 
     if (progress.phase === 'complete') {
+      const generation = this.rowRunGeneration.get(id) ?? 0;
       this.electron.enhanceGetCache(row.path).then((cache) => {
+        // A newer run took this row over while the cache was being read; its
+        // own completion owns these fields.
+        if ((this.rowRunGeneration.get(id) ?? 0) !== generation) return;
         if (cache.success && cache.data) {
           const d = cache.data;
           const av = d.available ?? null;

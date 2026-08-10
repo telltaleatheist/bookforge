@@ -1,4 +1,5 @@
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, DestroyRef, OnInit, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute } from '@angular/router';
 import { PdfPickerComponent } from '../../../pdf-picker/pdf-picker.component';
@@ -130,6 +131,7 @@ import { EditorRouteService } from '../../services/editor-route.service';
 export class EditorWindowComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly editorRoute = inject(EditorRouteService);
+  private readonly destroyRef = inject(DestroyRef);
 
   readonly projectPath = signal<string | null>(null);
   readonly sourcePath = signal<string | null>(null);  // Optional: specific version to load
@@ -146,36 +148,59 @@ export class EditorWindowComponent implements OnInit {
    */
   readonly resolved = signal(false);
 
+  /**
+   * Bumped by every query-param arrival. A resolution that finishes after a
+   * newer one started belongs to the previous URL, and publishing it would put
+   * the previous project's file under the current project's identity.
+   */
+  private routeGeneration = 0;
+
   ngOnInit(): void {
-    // Get project path and optional source path from query params
-    this.route.queryParams.subscribe(params => {
-      const project = params['project'];
-      const source = params['source'];
+    // Get project path and optional source path from query params.
+    //
+    // `takeUntilDestroyed` because a router observable outlives the component
+    // that subscribed to it: without it, a torn-down window's callback stays
+    // live and fights the current instance for these signals.
+    this.route.queryParams
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(params => {
+        const project = params['project'];
+        const source = params['source'];
 
-      if (project) {
-        // Decode the paths
-        const decodedPath = decodeURIComponent(project);
-        this.projectPath.set(decodedPath);
+        if (project) {
+          // Decode the paths
+          const decodedPath = decodeURIComponent(project);
+          this.projectPath.set(decodedPath);
 
-        if (source) {
-          const decodedSource = decodeURIComponent(source);
-          this.sourcePath.set(decodedSource);
+          // EVERY param is set on EVERY arrival, present or not. These describe
+          // the project in the URL, and a `?project=B` with no `?source=` used
+          // to keep A's source path — which opened B's project over A's FILE,
+          // writable, with B's edit set landing on A's bytes (the sha guard
+          // cannot catch it: most projects have no source_file_sha256). An
+          // absent param is an answer — "this project, its own file" — not a
+          // reason to keep the last one.
+          this.sourcePath.set(source ? decodeURIComponent(source) : null);
+          this.libraryMode.set(params['mode'] === 'library');
+          // A fresh route has not resolved yet, and the last route's error is
+          // not this one's.
+          this.resolved.set(false);
+          this.error.set(null);
+
+          void this.resolveRoute(decodedPath);
+        } else {
+          this.resolved.set(false);
+          this.error.set('No project path provided');
         }
-
-        if (params['mode'] === 'library') {
-          this.libraryMode.set(true);
-        }
-
-        void this.resolveRoute(decodedPath);
-      } else {
-        this.error.set('No project path provided');
-      }
-    });
+      });
   }
 
   /** Shared with the Studio's Editor tab so the two can never disagree. */
   private async resolveRoute(projectDir: string): Promise<void> {
+    const generation = ++this.routeGeneration;
     const route = await this.editorRoute.resolve(projectDir);
+    // A newer URL arrived while the manifest was being read; its own resolution
+    // owns these signals now.
+    if (generation !== this.routeGeneration) return;
 
     if (route.kind === 'error') {
       this.error.set(route.message);
