@@ -247,38 +247,43 @@ export async function migrateLegacyEpubEditorRecords(
   if (reading.status === 'current') return { kind: 'current' };
   if (reading.status === 'clean') return { kind: 'clean' };
 
-  // A layout that is neither this build's nor the mupdf era's. Nothing here can
-  // lay a book out the way an unknown paginator did, so there is nothing to
-  // translate through and the refusal is the whole answer.
+  // ── Records that can NEVER apply are REMOVED, once, quietly ───────────────
+  //
+  // Owen, 2026-08-10: "Get rid of the deletions from the old stuff. We should
+  // be left with only the bare PDFs for those projects." A foreign layout has
+  // no paginator to translate through, and a project with no recorded book has
+  // no file to reproduce any layout from — in both, the records are dead by
+  // construction and keeping them meant announcing them on EVERY open, forever
+  // (a refusal writes no stamp). They are retired in one transaction and the
+  // project is stamped, so this happens once and is said once, in the banner.
+  //
+  // (Why an unrecorded `source/exported.epub` is not adopted as the book
+  // instead: nothing proves it is the file the records describe, and positional
+  // keys read out of the wrong file strike the wrong text while appearing to
+  // work. So the records go, rather than being guessed at.)
   if (reading.status === 'foreign') {
+    console.warn(`[legacy-epub-layout] ${bookName}: removing dead records. ${reading.refusal!}`);
+    await retireAndStamp(projectDir, reading.current, null, null);
     return {
-      kind: 'refused',
+      kind: 'migrated',
       message:
-        `${bookName}'s saved deletions were recorded against a page layout this build cannot `
-        + 'reproduce, so they are not shown. Nothing was changed — the records stay in the '
-        + 'project. Strike what you want left out again and save.',
-      detail: reading.refusal!,
+        `${bookName}'s saved deletions were from a page layout this build cannot reproduce and `
+        + 'were removed. Strike what you want left out again.',
     };
   }
 
   const bookAbsPath = await bookOf(projectDir);
   if (bookAbsPath === null) {
+    console.warn(
+      `[legacy-epub-layout] ${bookName}: no recorded book to reproduce the old layout from — `
+      + `removing dead records. ${reading.refusal!}`);
+    await retireAndStamp(projectDir, reading.current, null, null);
     return {
-      kind: 'refused',
+      kind: 'migrated',
       message:
-        `${bookName}'s saved deletions were recorded against an older layout of a book this `
-        + 'project no longer records, so they cannot be shown. Nothing was changed — the records '
-        + 'stay in the project. Strike what you want left out again once the book is rebuilt.',
-      // Why an unrecorded `source/exported.epub` is not adopted as that book:
-      // nothing proves it is the file the records describe, and two EPUBs of
-      // one title both have an `OEBPS/chapter-01.xhtml#12` naming different
-      // paragraphs — striking through the wrong one would work-look while
-      // cutting the wrong text. That reasoning lives HERE and in the log, not
-      // in the dialog (Owen, 2026-08-10: "warnings should be short").
-      detail:
-        'An unrecorded `source/exported.epub` from before the working-copy model is not adopted: '
-        + 'nothing proves it is the book these records describe, and positional keys read out of '
-        + `the wrong file strike the wrong text. ${reading.refusal!}`,
+        `${bookName}'s old page and block deletions described a book this project no longer `
+        + 'records and were removed. The project is back to its source; strike again once the '
+        + 'book is rebuilt.',
     };
   }
 
@@ -343,13 +348,16 @@ async function carryDeletionsOver(
   );
   const unresolved = describeUnstruckDeletions(strikes);
   if (unresolved !== null) {
+    // The carry is deterministic — it will fail identically on every open — so
+    // per Owen's ruling these records are dead too: removed once, said once.
+    console.warn(`[legacy-epub-layout] ${bookName}: carry failed — removing dead records. ${unresolved}`);
+    await retireAndStamp(projectDir, reading.current, null, null);
     return {
-      kind: 'refused',
+      kind: 'migrated',
       message:
         `${bookName}'s ${oldPages.length} deleted page(s) and ${oldBlockIds.length} deleted `
-        + 'block(s) could not all be re-read against the layout they were recorded in, so none '
-        + 'were carried over and nothing was changed. Strike what you want left out again.',
-      detail: unresolved,
+        + 'block(s) could not be carried into the new page layout and were removed. Strike what '
+        + 'you want left out again.',
     };
   }
 
@@ -360,15 +368,17 @@ async function carryDeletionsOver(
   const newBlocks = await readBookBlockLayer(bookAbsPath);
   const missing = elementsWithNoBlock(strikes.elements, newBlocks);
   if (missing.length > 0) {
+    // Same ruling as the unresolved case above: deterministic failure, dead
+    // records, removed once. The disagreement itself still goes to the log.
+    console.warn(
+      `[legacy-epub-layout] ${bookName}: ${missing.length} of ${strikes.elements.length} struck `
+      + `element(s) are not in this build's layout (first: ${missing[0]}) — removing dead records.`);
+    await retireAndStamp(projectDir, reading.current, null, null);
     return {
-      kind: 'refused',
+      kind: 'migrated',
       message:
-        `${bookName}: ${missing.length} of the ${strikes.elements.length} element(s) those `
-        + 'deletions name are not in this build\'s layout of the book, so none were carried and '
-        + 'nothing was changed. Strike what you want left out again.',
-      detail:
-        `The first missing element is ${missing[0]}. Both paginators read the same markup, so a `
-        + 'disagreement about what is in the book is not something to guess past.',
+        `${bookName}'s old deletions named text this build's layout of the book does not have, `
+        + 'and were removed. Strike what you want left out again.',
     };
   }
 

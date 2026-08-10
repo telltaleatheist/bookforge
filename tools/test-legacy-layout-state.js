@@ -212,37 +212,43 @@ test('(a) a migrated project then reads current, and the translation stops refus
     assert.strictEqual(editorStateTranslationRefusal(deletions, dir), null);
   });
 
-test('(a) a legacy project with NO book on disk is refused, not half-migrated', async () => {
+test('(a) a legacy project with NO book on disk has its dead records REMOVED, once', async () => {
+  // Owen, 2026-08-10: "Get rid of the deletions from the old stuff. We should
+  // be left with only the bare PDFs for those projects." No book to reproduce
+  // the old layout from means the records can never apply: they are retired in
+  // one transaction, the project is stamped, and the banner says it ONCE — a
+  // refusal here used to re-announce itself on every open, forever.
   const dir = project('legacy-no-book', legacyRecords);
   const outcome = await migrateLegacyEpubEditorRecords(dir);
-  assert.strictEqual(outcome.kind, 'refused');
-  // The USER's sentence is short (Owen: "very short. like, 3 sentences") and
-  // states the three things: what happened, that nothing changed, what to do.
-  assert.ok(/no longer records/.test(outcome.message), outcome.message);
-  assert.ok(/Nothing was changed/.test(outcome.message), outcome.message);
-  assert.ok(outcome.message.split(/[.!?]\s/).length <= 4, `too long for a dialog: ${outcome.message}`);
-  // The trap it refuses to walk into is still named — in the DETAIL, which is
-  // the log's, not the dialog's.
-  assert.ok(/strike the wrong text/.test(outcome.detail), outcome.detail);
-  // Nothing was changed.
+  assert.strictEqual(outcome.kind, 'migrated');
+  // The USER's sentence is short (Owen: "very short. like, 3 sentences").
+  assert.ok(/were removed/.test(outcome.message), outcome.message);
+  assert.ok(outcome.message.split(/[.!?]\s/).length <= 4, `too long for a banner: ${outcome.message}`);
+  // The records are GONE and the stamp is written, so the question is settled.
   const m = readManifest(dir);
-  assert.deepStrictEqual(m.source.deletedPages, [12, 13, 140, 141]);
-  assert.strictEqual(m.source[EDITOR_LAYOUT_MANIFEST_KEY], undefined);
+  assert.ok(!m.source.deletedPages || m.source.deletedPages.length === 0,
+    `dead deletedPages survived: ${JSON.stringify(m.source.deletedPages)}`);
+  assert.ok(m.source[EDITOR_LAYOUT_MANIFEST_KEY], 'no stamp written — the purge would repeat');
+  // And a second open says NOTHING: the project now reads as current.
+  const again = await migrateLegacyEpubEditorRecords(dir);
+  assert.strictEqual(again.kind, 'current');
 });
 
-test('(a) a FOREIGN stamp is refused outright — no layout can reproduce it', async () => {
+test('(a) a FOREIGN stamp has its dead records REMOVED the same way', async () => {
   const foreign = { ...currentEpubEditorLayout('x'), strategy: 'pagedjs-9.9.9' };
   const dir = project('foreign-epub', {
     ...legacyRecords,
     source: { ...legacyRecords.source, [EDITOR_LAYOUT_MANIFEST_KEY]: foreign },
   });
   const outcome = await migrateLegacyEpubEditorRecords(dir);
-  assert.strictEqual(outcome.kind, 'refused');
-  // The layout identity moved to the detail with the rest of the reasoning;
-  // the dialog sentence stays short and states that nothing changed.
-  assert.ok(/Nothing was changed/.test(outcome.message), outcome.message);
-  assert.ok(outcome.detail.includes('pagedjs-9.9.9'), outcome.detail);
-  assert.deepStrictEqual(readManifest(dir).source.deletedPages, [12, 13, 140, 141]);
+  assert.strictEqual(outcome.kind, 'migrated');
+  assert.ok(/were removed/.test(outcome.message), outcome.message);
+  const m = readManifest(dir);
+  assert.ok(!m.source.deletedPages || m.source.deletedPages.length === 0,
+    `dead deletedPages survived: ${JSON.stringify(m.source.deletedPages)}`);
+  assert.strictEqual(m.source[EDITOR_LAYOUT_MANIFEST_KEY].strategy,
+    currentEpubEditorLayout('x').strategy, 'the stamp must now be this build\'s');
+  assert.strictEqual((await migrateLegacyEpubEditorRecords(dir)).kind, 'current');
 });
 
 // ── (b) A post-cutover project ─────────────────────────────────────────────
