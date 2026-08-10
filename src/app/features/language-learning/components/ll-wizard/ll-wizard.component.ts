@@ -38,6 +38,13 @@ import { collapseFilenameDots } from '../../../../core/utils/filename-utils';
 import { QueueService } from '../../../queue/services/queue.service';
 import { ComponentService } from '../../../../core/services/component.service';
 import { TtsConversionConfig, ReassemblyJobConfig, CleanupStages } from '../../../queue/models/queue.types';
+// The shared description of a narration run — the same one the TTS copy's
+// Process modal asks, so the two doors cannot compose different runs.
+import {
+  narrationTtsRequest, narrationRvcRequest, narrationReassemblyRequest,
+  type NarrationRunBook, type NarrationRunSettings,
+} from '../../../queue/jobs/narration-run';
+import { NarrationVoicesService } from '../../../queue/jobs/narration-voices.service';
 import { AssembleAuditionPlayerComponent } from './assemble-audition-player.component';
 import type { CorrectSentencesSession } from '../../../correct-sentences/models/correct-sentences.types';
 import { EpubResolverService } from '../../services/epub-resolver.service';
@@ -2653,6 +2660,14 @@ export class LLWizardComponent implements OnInit {
   protected readonly ai = inject(AiService);
   protected readonly langPacks = inject(LanguagePackService);
   protected readonly workerCfg = inject(WorkerConfigService);
+  /**
+   * The narration voice catalog, shared with the TTS copy's Process modal.
+   *
+   * Declared here, above the fields that read it: an `inject()` in a field
+   * initializer runs in declaration order, and `xttsVoiceOptions` below IS one
+   * of its signals rather than a copy of it.
+   */
+  private readonly narrationVoices = inject(NarrationVoicesService);
 
   /**
    * Languages the TTS step needs a Stanza segmentation pack for, that aren't
@@ -3223,46 +3238,24 @@ export class LLWizardComponent implements OnInit {
   readonly monoTtsLanguage = computed(() => this.detectedSourceLang());
   readonly partialTtsSessions = signal<{ language: string; completedSentences: number; totalSentences: number; sessionDir: string; sentencesDir: string }[]>([]);
 
-  // Voices selectable for audiobook generation, loaded from the main process
-  // (installed voices only — Default XTTS + installed fine-tuned/downloaded +
-  // user custom — so every option actually works). Seeded with the always-present
-  // bundled voice so the dropdown is never empty before the async load resolves.
-  readonly xttsVoiceOptions = signal<{ value: string; label: string }[]>([
-    { value: 'internal', label: 'Default XTTS' },
-    { value: 'ScarlettJohansson', label: 'Scarlett Johansson' },
-  ]);
+  /**
+   * The narration voice catalog, which this page no longer owns.
+   *
+   * It lives in `queue/jobs/narration-voices.service.ts` because the TTS copy's
+   * Process modal offers the same choice, and a second copy of the list is a
+   * second answer to "what voices are installed" — which is how a picker starts
+   * offering a voice whose reference clip is not on disk. Everything the lists
+   * did here they still do: the XTTS list is what main says is installed, and
+   * the Orpheus one is the built-ins plus whatever custom models are in the
+   * models folder.
+   */
+  readonly xttsVoiceOptions = this.narrationVoices.xttsVoices;
+  readonly orpheusVoices = this.narrationVoices.orpheusVoices;
 
-  // Ordered best → worst prosody (user-ranked). Accent noted in the label. Built-in
-  // voices seed the list; folder-discovered custom models (runtime/orpheus-models/)
-  // are appended at init by loadOrpheusModels().
-  readonly orpheusVoices = signal<{ value: string; label: string }[]>([
-    { value: 'leah', label: 'Leah (Female, American)' },
-    { value: 'tara', label: 'Tara (Female, American)' },
-    { value: 'zoe', label: 'Zoe (Female, American)' },
-    { value: 'mia', label: 'Mia (Female, American)' },
-    { value: 'jess', label: 'Jess (Female, American)' },
-    { value: 'zac', label: 'Zac (Male, American)' },
-    { value: 'dan', label: 'Dan (Male, Cockney)' },
-    { value: 'leo', label: 'Leo (Male, American)' },
-  ]);
-
-  /** Append folder-discovered custom Orpheus models as selectable voices. Labeled
-   *  "(Custom)" so they're distinguishable from the built-ins. */
+  /** Load the shared catalog, which appends folder-discovered custom Orpheus
+   *  models to the built-ins. Idempotent — it is loaded once per app. */
   private async loadOrpheusModels(): Promise<void> {
-    try {
-      const api = (window as any).electron?.orpheusModels;
-      const res = await api?.list();
-      if (!res?.success || !res.data?.length) return;
-      const custom: { value: string; label: string }[] = res.data.map(
-        (m: { id: string; label: string }) => ({ value: m.id, label: `${m.label} (Custom)` }),
-      );
-      // Drop any built-in colliding with a custom folder name, then append.
-      const customValues = new Set(custom.map((c) => c.value));
-      const builtins = this.orpheusVoices().filter((v) => !customValues.has(v.value));
-      this.orpheusVoices.set([...builtins, ...custom]);
-    } catch {
-      // Discovery is best-effort — built-in voices remain available.
-    }
+    await this.narrationVoices.load();
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -3374,17 +3367,15 @@ export class LLWizardComponent implements OnInit {
   );
 
   /** Installed RVC enhancement voices (kind 'rvc-model', state installed). */
-  readonly installedRvcVoices = computed(() =>
-    this.componentService.components().filter((c) => c.component.kind === 'rvc-model' && c.state === 'installed'),
-  );
+  readonly installedRvcVoices = this.narrationVoices.rvcVoices;
   readonly rvcVoiceOptions = computed<DesktopSelectItems>(() =>
-    this.installedRvcVoices().map((c) => ({ value: c.component.id, label: c.component.name })),
+    this.narrationVoices.rvcVoices().map((v) => ({ value: v.value, label: v.label })),
   );
 
   /** Display label for an installed RVC voice id (falls back to the id if the
    *  voice isn't found — e.g. a preset referencing an un-downloaded voice). */
   rvcVoiceLabel(voiceId: string): string {
-    return this.installedRvcVoices().find((c) => c.component.id === voiceId)?.component.name || voiceId;
+    return this.narrationVoices.rvcVoiceLabel(voiceId);
   }
 
   /** Human label for a cached session's TTS provenance (engine + voice), shown in
@@ -4558,19 +4549,10 @@ export class LLWizardComponent implements OnInit {
    * reference clip was no longer bundled.
    */
   private async loadXttsVoiceOptions(): Promise<void> {
-    try {
-      const api = (window as any).electron?.customVoices;
-      if (!api?.listAudiobook) return;
-      const res = await api.listAudiobook();
-      if (res?.success && Array.isArray(res.data) && res.data.length > 0) {
-        this.xttsVoiceOptions.set(res.data);
-      }
-    } catch {
-      /* keep the seeded default options */
-    }
+    await this.narrationVoices.load();
   }
 
-  getVoicesForEngine(): { value: string; label: string }[] {
+  getVoicesForEngine(): readonly { value: string; label: string }[] {
     return this.ttsEngine() === 'orpheus'
       ? this.orpheusVoices()
       : this.xttsVoiceOptions();
@@ -6042,48 +6024,16 @@ export class LLWizardComponent implements OnInit {
           },
         });
       } else {
-        const ttsConfig: Partial<TtsConversionConfig> = {
-          type: 'tts-conversion',
-          device: this.ttsDevice(),
-          language: this.monoTtsLanguage(),
-          ttsEngine: this.ttsEngine(),
-          fineTuned: this.monoTtsVoice(),
-          temperature: this.ttsTemperature(),
-          topP: this.ttsTopP(),
-          topK: 50,
-          repetitionPenalty: this.ttsRepetitionPenalty(),
-          speed: this.monoTtsSpeed(),
-          enableTextSplitting: true,
-          useParallel: true,
-          parallelMode: 'sentences',
-          parallelWorkers: this.effectiveTtsWorkers(),
-          outputDir,
+        // Built by the shared description of a narration run
+        // (queue/jobs/narration-run.ts), which the TTS copy's Process modal also
+        // asks. Two callers writing these object literals is two answers to
+        // "what does a narration run consist of", and they drift the day one of
+        // them gains a field.
+        requests.push(narrationTtsRequest(
+          this.narrationRunBook(jobProjectDir),
+          this.narrationRunSettings(outputDir),
           skipAssembly,
-          // Final-assembly denoise (only consumed when this job assembles inline)
-          finalDenoise: this.finalDenoise(),
-          // The user saw the Continue/Start-fresh toggle (partial cached
-          // session exists) and chose Start fresh — the queue must not
-          // auto-resume the old cache, and clears it.
-          startFresh: this.partialTtsSessions().length > 0,
-        };
-
-        requests.push({
-          type: 'tts-conversion',
-          // The book this run leaves behind. When passes are queued ahead of it
-          // the file does not exist yet — the chain writes it before this runs.
-          epubPath: this.ttsInputPath(),
-          projectDir: isArticle ? projectDir : undefined,
-          bfpPath: isArticle ? undefined : jobProjectDir,
-          metadata: {
-            title: 'TTS',
-            bookTitle: this.title(),
-            author: this.author(),
-            year: this.year() || undefined,
-            coverPath: this.coverPath() || undefined,
-            outputFilename: this.generateOutputFilename(),
-          },
-          config: ttsConfig,
-        });
+        ));
       }
     }
 
@@ -6109,46 +6059,14 @@ export class LLWizardComponent implements OnInit {
       } : null;
 
       if (wantsTts) {
-        // MODE A: TTS + Assembly chained — session data discovered at runtime by queue service
-        if (rvcParams) {
-          requests.push({
-            type: 'rvc-enhancement',
-            bfpPath: jobProjectDir,
-            config: {
-              type: 'rvc-enhancement',
-              sessionId: '', sessionDir: '', processDir: '',  // filled at runtime via session discovery
-              ...rvcParams,
-            },
-            metadata: { title: this.title(), author: this.author(), year: this.year() || undefined },
-          });
-        }
-        requests.push({
-          type: 'reassembly',
-          bfpPath: jobProjectDir,
-          config: {
-            type: 'reassembly',
-            sessionId: '',   // filled at runtime via session discovery
-            sessionDir: '',
-            processDir: '',
-            outputDir: audiobookDir,
-            metadata: {
-              title: this.title() || '',
-              author: this.author() || '',
-              coverPath: this.coverPath() || undefined,
-              year: this.year() || undefined,
-              outputFilename: this.generateOutputFilename(),
-            },
-            excludedChapters: [],
-            // Three opt-in assembly passes — all default OFF (see the toggles above).
-            finalDenoise: this.finalDenoise(),
-            applyDeRing: this.applyDeRing(),
-          },
-          metadata: {
-            title: this.title(),
-            author: this.author(),
-            year: this.year() || undefined,
-          },
-        });
+        // MODE A: TTS + Assembly chained — session data discovered at runtime by
+        // queue service. Built by the shared description, as the narration job
+        // above is; `audiobookDir` is the same `<projectDir>/output` it derives.
+        const book = this.narrationRunBook(jobProjectDir);
+        const settings = this.narrationRunSettings(outputDir);
+        const rvc = narrationRvcRequest(book, settings);
+        if (rvc !== null) requests.push(rvc);
+        requests.push(narrationReassemblyRequest(book, settings));
       } else if (this.cachedSession()) {
         // MODE B: no narration in this run — reassemble the cached session
         const session = this.cachedSession();
@@ -6230,6 +6148,69 @@ export class LLWizardComponent implements OnInit {
     }
 
     return requests;
+  }
+
+  /**
+   * WHICH file this run reads, and what the audiobook is called — in the shape
+   * the shared narration-run description takes.
+   *
+   * `ttsInputPath()` is the book this run leaves behind: when passes are queued
+   * ahead of it the file does not exist yet, and the chain writes it before the
+   * narration job runs.
+   */
+  private narrationRunBook(projectDir: string): NarrationRunBook {
+    return {
+      epubPath: this.ttsInputPath(),
+      projectDir,
+      title: this.title(),
+      author: this.author(),
+      year: this.year(),
+      coverPath: this.coverPath(),
+      outputFilename: this.generateOutputFilename(),
+      isArticle: this.itemType() === 'article',
+    };
+  }
+
+  /**
+   * The wizard's controls, as the shared narration-run description reads them.
+   *
+   * `outputDir` is the LIBRARY's audiobooks folder — where the finished M4B is
+   * filed — which is a different thing from the assembly's own output folder
+   * inside the project, and both are needed.
+   */
+  private narrationRunSettings(outputDir: string): NarrationRunSettings {
+    // The same three-part gate the pre-flight check uses: asked for, named, and
+    // installed. An enabled toggle with no voice is caught before anything is
+    // built (see `buildDownstreamJobs`), so this can read as a plain condition.
+    const rvcEnabled = this.rvcEnhanceEnabled()
+      && !!this.rvcEnhanceVoiceId()
+      && this.componentService.isInstalled('rvc-env');
+    return {
+      language: this.monoTtsLanguage(),
+      ttsEngine: this.ttsEngine(),
+      voice: this.monoTtsVoice(),
+      device: this.ttsDevice(),
+      temperature: this.ttsTemperature(),
+      topP: this.ttsTopP(),
+      repetitionPenalty: this.ttsRepetitionPenalty(),
+      speed: this.monoTtsSpeed(),
+      workers: this.effectiveTtsWorkers(),
+      outputDir,
+      finalDenoise: this.finalDenoise(),
+      applyDeRing: this.applyDeRing(),
+      rvc: rvcEnabled
+        ? {
+            voiceId: this.rvcEnhanceVoiceId(),
+            indexRate: this.rvcEnhanceIndexRate(),
+            protectRate: this.rvcEnhanceProtectRate(),
+            nSemitones: this.rvcEnhanceNSemitones(),
+          }
+        : null,
+      // The user saw the Continue/Start-fresh toggle (a partial cached session
+      // exists) and chose Start fresh — the queue must not auto-resume the old
+      // cache, and clears it.
+      startFresh: this.partialTtsSessions().length > 0,
+    };
   }
 
   /**

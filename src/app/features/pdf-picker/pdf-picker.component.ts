@@ -4009,6 +4009,117 @@ export class PdfPickerComponent implements OnInit {
   /** What the export button is called. One name, stated once. */
   readonly narrationExportLabel = NARRATION_EXPORT_LABEL;
 
+  // ── Deleting ON the TTS copy ───────────────────────────────────────────────
+  //
+  // Owen, 2026-08-09: "maybe they forgot to remove a footnote and on their final
+  // review they want to cut it. they can delete it, hit save, and then process."
+  // And the amendment he ratified in the same breath: the gesture must write a
+  // RECORD as well as change the file, because the copy is re-cut from the book
+  // and the record on every export — a file-only edit would be undone by the
+  // next regeneration, silently, some days later.
+  //
+  // So this is not a second curation surface. It is ONE gesture — delete —
+  // routed to `narration:strike-in-copy`, which translates the copy's element
+  // keys back into the book's, records the strike through the same transaction
+  // the working-copy view uses, and cuts the copy again through the one verified
+  // writer. Everything else on this artifact stays locked (`curationLocked`).
+
+  /**
+   * Why a delete on the TTS copy cannot happen right now, or null.
+   *
+   * Deliberately NOT the artifact banner's reason: the banner explains why this
+   * file is not CURATED here, and deleting is the one thing that is offered on
+   * it. The three refusals are the three states in which the gesture would have
+   * nowhere to land.
+   */
+  readonly narrationCopyDeleteRefusal = computed<string | null>(() => {
+    if (!this.viewingNarrationCopy()) {
+      return 'The file on screen is not this project\'s TTS copy.';
+    }
+    if (this.loading()) return 'This book is still opening.';
+    return this.noProjectReason();
+  });
+
+  /** True when a delete gesture on screen should go to the book's record. */
+  readonly canDeleteInNarrationCopy = computed(() =>
+    this.narrationCopyDeleteRefusal() === null);
+
+  /** One strike at a time: the re-cut rewrites the file the next one would read. */
+  private readonly narrationCopyDeleting = signal(false);
+
+  /**
+   * Delete these blocks by striking the elements they are out of the BOOK, then
+   * show the re-cut copy.
+   *
+   * The blocks name COPY elements (`bf_element` is the key the viewer stamped
+   * from the file on screen); main does the translation, because it is the only
+   * side that can open both files and prove they still line up. A block with no
+   * element key is a refusal rather than a skip — a deletion that quietly does
+   * nothing is the exact failure the whole strike contract exists to end.
+   */
+  private async deleteInNarrationCopy(blockIds: readonly string[]): Promise<void> {
+    const refusal = this.narrationCopyDeleteRefusal();
+    if (refusal !== null) {
+      await this.showAlert({ title: 'Nothing was deleted', message: refusal, type: 'error' });
+      return;
+    }
+    if (this.narrationCopyDeleting()) return;
+    const dir = this.projectPath();
+    if (!dir) return;  // `narrationCopyDeleteRefusal` just answered this
+
+    const wanted = new Set(blockIds);
+    const chosen = this.blocks().filter(b => wanted.has(b.id));
+    const nameless = chosen.filter(b => b.bf_element === undefined);
+    if (nameless.length > 0) {
+      await this.showAlert({
+        title: 'Nothing was deleted',
+        message: `${nameless.length} of the ${chosen.length} thing(s) you deleted have no element `
+          + 'behind them in the TTS copy, so there is nothing to strike out of your book. Close and '
+          + 're-open this file; if it persists, generate the TTS copy again.',
+        type: 'error',
+      });
+      return;
+    }
+    // An element split across a page break is several blocks sharing one key.
+    const keys = [...new Set(chosen.map(b => b.bf_element!))];
+    if (keys.length === 0) return;
+
+    this.narrationCopyDeleting.set(true);
+    this.loading.set(true);
+    this.loadingText.set(keys.length === 1
+      ? 'Striking it out of your book...'
+      : `Striking ${keys.length} elements out of your book...`);
+    try {
+      const answer = await this.electronService.strikeInNarrationCopy(dir, keys);
+      if (!answer.success || !answer.result) {
+        // Main's own sentence. It names the document, the position, and what the
+        // two files each say there — never paraphrased into "that did not work".
+        await this.showAlert({
+          title: 'Nothing was deleted',
+          message: answer.error || 'The deletion was refused and no reason was given.',
+          type: 'error',
+        });
+        return;
+      }
+      console.log(`[picker] struck ${answer.result.struckInBook.length} element(s) out of the book `
+        + `from the TTS copy; the copy was cut again in ${answer.result.recutMs} ms`);
+      await this.refreshNarrationState();
+      // The file on disk is a different file now, so the window has to read it
+      // again — the element is GONE from it rather than struck through in it,
+      // which is the whole difference between this view and the working copy's.
+      await this.showArtifact(answer.result.epubPath);
+    } catch (err) {
+      await this.showAlert({
+        title: 'Nothing was deleted',
+        message: err instanceof Error ? err.message : String(err),
+        type: 'error',
+      });
+    } finally {
+      this.narrationCopyDeleting.set(false);
+      this.loading.set(false);
+    }
+  }
+
   /**
    * The bottom-right primary action is OFFERED — i.e. the artifact on screen is
    * the kind of thing a narration copy is cut from.
@@ -4242,8 +4353,17 @@ export class PdfPickerComponent implements OnInit {
     if (this.viewingWorkingEpub()) return null;
 
     const what = this.viewingNarrationCopy()
-      ? 'This is the narration copy — the book with what you struck out already removed. It is '
-        + 'rewritten from scratch every time you export it, so nothing edited here would survive.'
+      // Deleting IS offered here now (Owen, 2026-08-09: "maybe they forgot to
+      // remove a footnote and on their final review they want to cut it"), and
+      // it is the ONE gesture that is — everything else would be an edit to a
+      // file that is rewritten from scratch on the next export. So the sentence
+      // says what a delete here really does (it strikes the element out of your
+      // BOOK, which is why it survives) and where the undo lives, because the
+      // element is gone from this file and cannot be put back from it.
+      ? 'This is the TTS copy — your book with everything you struck out already removed. '
+        + 'Deleting here strikes the element out of your book too, so it stays gone every time '
+        + 'this copy is made again. Nothing else is edited here; to put something BACK, open the '
+        + 'working copy.'
       : this.viewingGeneratedEpub()
         ? 'This is the book read out of your PDF\'s pages, kept exactly as the reader made it so '
           + 'your working copy can be made from it again without reading them a second time. '
@@ -6881,6 +7001,16 @@ export class PdfPickerComponent implements OnInit {
   }
 
   deleteSelectedBlocks(): void {
+    // The TTS copy takes ONE gesture, and this is it. Asked before the curation
+    // lock because that lock is right about this file — it is not curated here —
+    // and deleting on it is not curation: it strikes the element out of the BOOK
+    // and cuts this file again from the record. See `deleteInNarrationCopy`.
+    if (this.canDeleteInNarrationCopy()) {
+      const onCopy = this.selectedBlockIds();
+      if (onCopy.length === 0) return;
+      void this.deleteInNarrationCopy(onCopy);
+      return;
+    }
     if (this.curationLocked()) return;  // the artifact on screen is not curated here
     const selected = this.selectedBlockIds();
     if (selected.length === 0) return;
@@ -7251,6 +7381,11 @@ export class PdfPickerComponent implements OnInit {
   }
 
   deleteBlock(blockId: string): void {
+    // The TTS copy's one gesture — see `deleteSelectedBlocks` above.
+    if (this.canDeleteInNarrationCopy()) {
+      void this.deleteInNarrationCopy([blockId]);
+      return;
+    }
     if (this.curationLocked()) return;  // the artifact on screen is not curated here
     if (this.deletedBlockIds().has(blockId)) return;
 
