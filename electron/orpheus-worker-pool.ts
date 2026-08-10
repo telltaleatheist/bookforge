@@ -705,10 +705,11 @@ function resolveLoadPlan(voice: string): LoadPlan {
   // Changing which WEIGHTS are served triggers a reload in the worker; registering
   // another voice over the same base does not (see loadedEngineKey).
   // resolveOrpheusModel THROWS when the \\wsl$ models dir is unreachable (WSL down).
-  // 'stream' is what makes a voice with BOTH artifacts installed resolve to its ADAPTER
-  // here while the batch workers take the merged copy: switching voices is this path's
-  // whole workload, and an adapter swap on a warm engine costs no 6.2 GB reload and no
-  // CUDA-graph recapture (see OrpheusServePurpose).
+  // 'stream' routes a voice with BOTH artifacts installed through the
+  // `orpheusStreamingArtifact` setting — 'merged' by default since 2026-08-10, when the
+  // ~10-20% per-token cost of the LoRA path was judged to outweigh the warm voice
+  // switch it bought. Set "adapter" in tool-paths.json to get warm switches back; the
+  // batch workers always take the merged copy (see OrpheusServePurpose).
   const model = resolveOrpheusModel(v, 'stream');
   // A null model means "not a resolvable custom model folder". That's correct for a
   // built-in voice (loads token-only) or any voice the pool advertises, but for an
