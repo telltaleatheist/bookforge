@@ -3336,7 +3336,9 @@ function setupIpcHandlers(): void {
             console.warn(`[projects:load] ${carried.message}`);
           } else if (carried.kind === 'refused') {
             staleLayoutRefusal = carried.message;
-            console.warn(`[projects:load] ${carried.message}`);
+            // The dialog gets the short sentence; the full reasoning is the
+            // log's (Owen, 2026-08-10: "warnings and errors should be short").
+            console.warn(`[projects:load] ${carried.message}${carried.detail ? `\n${carried.detail}` : ''}`);
           }
         } catch (err) {
           // The migration itself failed — mupdf ran out of memory, the book is
@@ -3345,10 +3347,8 @@ function setupIpcHandlers(): void {
           // on disk is untouched either way, and a book nobody can open is a
           // worse answer than a book whose old edits are not shown.
           staleLayoutRefusal =
-            `${path.basename(filePath)}'s page and block deletions were recorded against a `
-            + 'different layout of the book, and carrying them into this one failed: '
-            + `${(err as Error).message}\n\nThey are NOT applied — replaying them would strike out `
-            + 'paragraphs you never touched. They are still in the project, unchanged.';
+            `${path.basename(filePath)}'s saved deletions could not be carried into this build's `
+            + `layout: ${(err as Error).message}. They are not applied, and nothing was changed.`;
           console.warn(`[projects:load] ${staleLayoutRefusal}`);
         }
 

@@ -138,8 +138,16 @@ export type LegacyLayoutOutcome =
   | { kind: 'clean' }
   /** The deletions were carried over. `message` is what to tell the user. */
   | { kind: 'migrated'; message: string }
-  /** They could not be, and this says why. Nothing on disk was changed. */
-  | { kind: 'refused'; message: string };
+  /**
+   * They could not be, and this says why. Nothing on disk was changed.
+   *
+   * `message` is the USER's sentence and is held to Owen's rule (2026-08-10:
+   * "warnings and errors should be short. very short. like, 3 sentences"):
+   * what happened, what was not changed, what to do. `detail` is the full
+   * reasoning — the census of the records, the layout identities, why the
+   * carry is impossible — and goes to the LOG, never a dialog.
+   */
+  | { kind: 'refused'; message: string; detail?: string };
 
 /**
  * The book this project's records were made against, or null.
@@ -242,22 +250,35 @@ export async function migrateLegacyEpubEditorRecords(
   // A layout that is neither this build's nor the mupdf era's. Nothing here can
   // lay a book out the way an unknown paginator did, so there is nothing to
   // translate through and the refusal is the whole answer.
-  if (reading.status === 'foreign') return { kind: 'refused', message: reading.refusal! };
+  if (reading.status === 'foreign') {
+    return {
+      kind: 'refused',
+      message:
+        `${bookName}'s saved deletions were recorded against a page layout this build cannot `
+        + 'reproduce, so they are not shown. Nothing was changed — the records stay in the '
+        + 'project. Strike what you want left out again and save.',
+      detail: reading.refusal!,
+    };
+  }
 
   const bookAbsPath = await bookOf(projectDir);
   if (bookAbsPath === null) {
     return {
       kind: 'refused',
       message:
-        `${bookName} does not record a book EPUB, so there is no file this project states its `
-        + 'deletions were made against — and the layout they were recorded in cannot be reproduced '
-        + 'without one. They are left exactly as they are.\n\n'
-        + 'A project can hold an UNRECORDED `source/exported.epub` from before the working-copy '
-        + 'model, and that file is not adopted here for the same reason it is not adopted anywhere '
-        + 'else: nothing proves it is the book these records describe. Two EPUBs of one title both '
-        + 'have an `OEBPS/chapter-01.xhtml#12`, and it is a different paragraph in each — so '
-        + 'reading the deletions out of the wrong file would strike out the wrong text with every '
-        + 'appearance of having worked.\n\n' + reading.refusal!,
+        `${bookName}'s saved deletions were recorded against an older layout of a book this `
+        + 'project no longer records, so they cannot be shown. Nothing was changed — the records '
+        + 'stay in the project. Strike what you want left out again once the book is rebuilt.',
+      // Why an unrecorded `source/exported.epub` is not adopted as that book:
+      // nothing proves it is the file the records describe, and two EPUBs of
+      // one title both have an `OEBPS/chapter-01.xhtml#12` naming different
+      // paragraphs — striking through the wrong one would work-look while
+      // cutting the wrong text. That reasoning lives HERE and in the log, not
+      // in the dialog (Owen, 2026-08-10: "warnings should be short").
+      detail:
+        'An unrecorded `source/exported.epub` from before the working-copy model is not adopted: '
+        + 'nothing proves it is the book these records describe, and positional keys read out of '
+        + `the wrong file strike the wrong text. ${reading.refusal!}`,
     };
   }
 
@@ -326,9 +347,9 @@ async function carryDeletionsOver(
       kind: 'refused',
       message:
         `${bookName}'s ${oldPages.length} deleted page(s) and ${oldBlockIds.length} deleted `
-        + 'block(s) could not all be re-read against the layout they were recorded in, so none of '
-        + `them were carried over and nothing was changed.\n\n${unresolved}\n\n`
-        + 'Open the book in the picker and strike out what you want left out again.',
+        + 'block(s) could not all be re-read against the layout they were recorded in, so none '
+        + 'were carried over and nothing was changed. Strike what you want left out again.',
+      detail: unresolved,
     };
   }
 
@@ -343,10 +364,11 @@ async function carryDeletionsOver(
       kind: 'refused',
       message:
         `${bookName}: ${missing.length} of the ${strikes.elements.length} element(s) those `
-        + `deletions name are not in this build's layout of the book at all — the first is `
-        + `${missing[0]}. Both paginators read the same markup, so a disagreement about what is in `
-        + 'the book is not something to guess past. Nothing was changed; strike what you want left '
-        + 'out again in the picker.',
+        + 'deletions name are not in this build\'s layout of the book, so none were carried and '
+        + 'nothing was changed. Strike what you want left out again.',
+      detail:
+        `The first missing element is ${missing[0]}. Both paginators read the same markup, so a `
+        + 'disagreement about what is in the book is not something to guess past.',
     };
   }
 

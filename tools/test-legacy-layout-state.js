@@ -216,9 +216,14 @@ test('(a) a legacy project with NO book on disk is refused, not half-migrated', 
   const dir = project('legacy-no-book', legacyRecords);
   const outcome = await migrateLegacyEpubEditorRecords(dir);
   assert.strictEqual(outcome.kind, 'refused');
-  assert.ok(/does not record a book EPUB/.test(outcome.message), outcome.message);
-  // And it names the trap it is refusing to walk into, rather than only the rule.
-  assert.ok(/different paragraph in each/.test(outcome.message), outcome.message);
+  // The USER's sentence is short (Owen: "very short. like, 3 sentences") and
+  // states the three things: what happened, that nothing changed, what to do.
+  assert.ok(/no longer records/.test(outcome.message), outcome.message);
+  assert.ok(/Nothing was changed/.test(outcome.message), outcome.message);
+  assert.ok(outcome.message.split(/[.!?]\s/).length <= 4, `too long for a dialog: ${outcome.message}`);
+  // The trap it refuses to walk into is still named — in the DETAIL, which is
+  // the log's, not the dialog's.
+  assert.ok(/strike the wrong text/.test(outcome.detail), outcome.detail);
   // Nothing was changed.
   const m = readManifest(dir);
   assert.deepStrictEqual(m.source.deletedPages, [12, 13, 140, 141]);
@@ -233,7 +238,10 @@ test('(a) a FOREIGN stamp is refused outright — no layout can reproduce it', a
   });
   const outcome = await migrateLegacyEpubEditorRecords(dir);
   assert.strictEqual(outcome.kind, 'refused');
-  assert.ok(outcome.message.includes('pagedjs-9.9.9'), outcome.message);
+  // The layout identity moved to the detail with the rest of the reasoning;
+  // the dialog sentence stays short and states that nothing changed.
+  assert.ok(/Nothing was changed/.test(outcome.message), outcome.message);
+  assert.ok(outcome.detail.includes('pagedjs-9.9.9'), outcome.detail);
   assert.deepStrictEqual(readManifest(dir).source.deletedPages, [12, 13, 140, 141]);
 });
 

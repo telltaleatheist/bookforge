@@ -5430,15 +5430,13 @@ export class PdfPickerComponent implements OnInit {
     const refusal = project.stale_layout_refusal;
     if (refusal) {
       console.warn(`[loadProjectFromPath] layout refusal: ${refusal}`);
-      this.showAlert({
-        title: 'Saved Deletions Not Loaded',
-        message:
-          refusal
-          + '\n\nThe rest of the project — its metadata, its highlights, its audiobook settings — '
-          + 'opened normally. Strike out what you want left out again and save, and the new '
-          + 'records will be written against the layout you are looking at.',
-        type: 'warning',
-      });
+      // The BANNER, not a modal. This is a fact about old records being
+      // withheld, not a decision the user must make before they may look at
+      // their book — and half the library predates the layout cutover, so a
+      // modal here interrupted nearly every open (Owen, 2026-08-10: "warnings
+      // should be sparse. they should almost never appear"). The sentence is
+      // already short; the full reasoning is in main's log.
+      this.sessionNotice.set(refusal);
       return;
     }
 
