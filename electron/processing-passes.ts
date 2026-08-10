@@ -136,12 +136,14 @@ async function recordInLedger(
   config: PassJobConfig,
   label: string,
   pass: AppliedPass
-): Promise<void> {
+): Promise<{ ledgerEntryId?: string; note?: string }> {
   const { registerLedgerPass } = await import('./book-ledger.js');
   const recorded = await registerLedgerPass(config.projectDir, { kind: pass.kind, label, pass });
   if (recorded.refusal !== null) {
     console.warn(`[processing-pass] ${recorded.refusal}`);
+    return { note: recorded.refusal };
   }
+  return { ledgerEntryId: recorded.entry.id };
 }
 
 function absStage(config: PassJobConfig): string {
@@ -228,8 +230,13 @@ async function runSimplifyPass(
     diff: diff.rel,
   };
   await manifestService.appendAppliedPass(config.projectDir, applied);
-  await recordInLedger(config, 'Simplify', applied);
-  return { success: true, outputPath: bookAfter };
+  const ledger = await recordInLedger(config, 'Simplify', applied);
+  return {
+    success: true,
+    outputPath: bookAfter,
+    ...(ledger.ledgerEntryId ? { ledgerEntryId: ledger.ledgerEntryId } : {}),
+    ...(ledger.note ? { ledgerRefusal: ledger.note } : {}),
+  };
 }
 
 /**
@@ -288,8 +295,98 @@ async function runTranslatePass(
   // No diff to freeze — a translation shares no words with what it replaced, so
   // the entry's receipt is null and the row says so rather than offering a review
   // of a wall of red and green.
-  await recordInLedger(config, `Translate to ${params.targetLang}`, applied);
-  return { success: true, outputPath: bookAfter };
+  const ledger = await recordInLedger(config, `Translate to ${params.targetLang}`, applied);
+  return {
+    success: true,
+    outputPath: bookAfter,
+    ...(ledger.ledgerEntryId ? { ledgerEntryId: ledger.ledgerEntryId } : {}),
+    ...(ledger.note ? { ledgerRefusal: ledger.note } : {}),
+  };
+}
+
+/**
+ * Remove footnote REFERENCE NUMBERS from the book itself.
+ *
+ * ── The question this answers ───────────────────────────────────────────────
+ *
+ * Owen: "if the user opens the working file and footnote reference numbers were
+ * removed, will it show the change in the epub? will it show that the numbers
+ * are actually gone? i.e. does it actually edit the text? we need a way to edit
+ * the text directly." Until now the strip happened only on the write of the
+ * narration copy, so the numbers left the file the NARRATOR read and stayed in
+ * the file the USER read. This pass edits the book, and the numbers are gone
+ * from the page the moment it opens.
+ *
+ * It is the reference NUMBERS and nothing else. The footnote blocks themselves —
+ * the notes at the end of a chapter — are struck out by the user like any other
+ * text and are ordinary working changes; this pass never removes an element.
+ *
+ * ── Not an AI pass, and not the retired one ─────────────────────────────────
+ *
+ * The transform is `stripFootnoteMarkerSups`, the same digits-only rule the
+ * narration copy has always been cut by, applied to the same content documents.
+ * There is no model, no GPU and no network: it is a string replace over a zip
+ * and it finishes in seconds. The `footnotes` kind it superficially resembles
+ * was an AI pass that decided for itself what a footnote was, and it is retired.
+ *
+ * ── Nothing to do is a REFUSAL, not a vacuous entry ─────────────────────────
+ *
+ * A book with no markers left — because it never had any, or because this pass
+ * has already run over it — gets a sentence saying so and NOTHING is recorded.
+ * The alternative is a ledger row whose snapshot is byte-identical to the one
+ * before it and whose diff shows no change: a row the user can delete to undo
+ * nothing, sitting in the history of their book forever. The strip is idempotent
+ * by construction (shared/text/sup-markers.ts), so a second run genuinely has
+ * nothing to do, and saying that is the whole of the right answer.
+ */
+async function runFootnoteRefsPass(config: PassJobConfig): Promise<PassJobResult> {
+  const bookPath = await requireBookEpub(config.projectDir);
+  const stageDir = absStage(config);
+  await fs.promises.mkdir(stageDir, { recursive: true });
+
+  // The before-text, read now: the pass is about to overwrite the file it came
+  // from, and the diff is computed against this.
+  const before = await loadEpubForComparison(bookPath);
+
+  const { stripFootnoteReferencesFromBook } = await import('./epub-processor.js');
+  const produced = path.join(stageDir, 'footnote-refs.epub');
+  const strip = await stripFootnoteReferencesFromBook(bookPath, produced);
+
+  if (strip.removed === 0) {
+    // The staged book is a byte-for-byte re-zip of one that is already correct.
+    // It is removed rather than moved into place: rewriting the book with its
+    // own contents would move its timestamp and invalidate every analysis cache
+    // keyed on it, for a pass that changed nothing.
+    await fs.promises.rm(produced, { force: true });
+    return {
+      success: false,
+      error: 'No footnote reference markers remain in this book, so nothing was changed and nothing '
+        + 'was recorded. Either it never had digits-only superscript references, or this pass has '
+        + 'already been run over it — check the book\'s ledger.',
+    };
+  }
+
+  const after = await loadEpubForComparison(produced);
+  const diff = diffPaths(config);
+  await writePassDiff(diff.abs, pairChapters(before.chapters, after.chapters));
+
+  const bookAfter = await replaceBookEpub(config.projectDir, produced);
+  const applied: AppliedPass = {
+    kind: 'footnote-refs',
+    at: new Date().toISOString(),
+    params: { removed: strip.removed, files: strip.files.length },
+    diff: diff.rel,
+  };
+  await manifestService.appendAppliedPass(config.projectDir, applied);
+  const ledger = await recordInLedger(config, 'Remove footnote references', applied);
+  return {
+    success: true,
+    outputPath: bookAfter,
+    summary: `${strip.removed} footnote reference number(s) removed from ${strip.files.length} `
+      + 'document(s).',
+    ...(ledger.ledgerEntryId ? { ledgerEntryId: ledger.ledgerEntryId } : {}),
+    ...(ledger.note ? { ledgerRefusal: ledger.note } : {}),
+  };
 }
 
 /**
@@ -378,6 +475,11 @@ export async function runProcessingPass(
         return await runSimplifyPass(jobId, config, mainWindow);
       case 'translate':
         return await runTranslatePass(jobId, config, mainWindow);
+      // No jobId and no window: it reports no progress because it has none to
+      // report — the whole pass is a string replace over a zip and is done
+      // before a progress row could be drawn.
+      case 'footnote-refs':
+        return await runFootnoteRefsPass(config);
       default: {
         const unknown: never = config.kind;
         throw new Error(`There is no ${unknown} pass.`);

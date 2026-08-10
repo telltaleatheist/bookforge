@@ -50,11 +50,18 @@ export type {
 const JOB_TYPE_OF: Record<ProcessingPassKind, PassJobType> = {
   simplify: 'simplify',
   translate: 'translate-pass',
+  // Chainable like the others — "take the reference numbers out, then simplify"
+  // is an ordinary thing to want, and the pass costs seconds. Its usual door is
+  // the synchronous one (`book:remove-footnote-references`), which is a
+  // convenience rather than a second mechanism: both build a PassJobConfig and
+  // both end in `runProcessingPass`.
+  'footnote-refs': 'footnote-refs',
 };
 
 const LABEL_OF: Record<AppliedPassKind, string> = {
   simplify: 'Simplify',
   translate: 'Translate',
+  'footnote-refs': 'Remove footnote references',
   // The route to a book, and NOT a pass: it is a document stage
   // (electron/vlm-convert.ts) and a chain request naming it is refused by
   // `JOB_TYPE_OF` having no entry for it. Named here because provenance is a

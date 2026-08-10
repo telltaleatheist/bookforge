@@ -523,6 +523,7 @@ export class JobStepComponent {
       case 'generate-sentences': return 'Generate Sentences';
       case 'simplify': return 'Simplify';
       case 'translate-pass': return 'Translate';
+      case 'footnote-refs': return 'Remove footnote references';
       case 'vlm-convert': return 'Convert to EPUB';
     }
   }

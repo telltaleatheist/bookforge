@@ -1411,6 +1411,27 @@ export interface ElectronAPI {
       error?: string;
     }>;
     /**
+     * Take the footnote reference numbers out of this book's text, now.
+     *
+     * Runs to completion before it answers — the pass is a string replace over a
+     * zip, not model time — and records itself in the book's provenance and
+     * ledger through the same code every other pass uses. `summary` counts what
+     * went; `ledgerEntryId` is the row the user can delete to put the numbers
+     * back; `ledgerRefusal` is the sentence for the case where the pass ran but
+     * could not be made undoable on its own.
+     *
+     * A book with no markers left answers `success: false` with a plain
+     * sentence, and nothing is recorded. That is "nothing to do", not a fault.
+     */
+    removeFootnoteReferences: (projectDir: string) => Promise<{
+      success: boolean;
+      path?: string;
+      summary?: string;
+      ledgerEntryId?: string;
+      ledgerRefusal?: string;
+      error?: string;
+    }>;
+    /**
      * Delete the book cast from this project's pages, and the working copy that
      * could only have been minted from it. The heavy act: a re-cast is an hour
      * of GPU, where erasing changes is a file copy.
@@ -3276,6 +3297,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('book:erase-changes', projectDir, scope),
     deleteLedgerEntry: (projectDir: string, entryId: string) =>
       ipcRenderer.invoke('book:delete-ledger-entry', projectDir, entryId),
+    removeFootnoteReferences: (projectDir: string) =>
+      ipcRenderer.invoke('book:remove-footnote-references', projectDir),
     deleteGeneratedEpub: (projectDir: string) =>
       ipcRenderer.invoke('book:delete-generated-epub', projectDir),
     ensureNarrationEpub: (projectDir: string) =>

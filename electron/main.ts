@@ -7063,6 +7063,66 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * Remove footnote reference numbers from this book, now.
+   *
+   * ── Why this pass gets a door of its own ────────────────────────────────────
+   *
+   * Every other pass is hours of model time, so it belongs in the queue where
+   * the user can watch it and walk away. This one is a string replace over a zip
+   * and is finished before a progress row could be drawn — queueing it would put
+   * a row on screen that is already done, and make the user go and look at
+   * another tab to find out that their footnote numbers went.
+   *
+   * It is NOT a second mechanism. This handler builds the same `PassJobConfig`
+   * the chain planner builds and hands it to the same `runProcessingPass`, so
+   * the pass records itself in `appliedPasses` and in the book's ledger by
+   * exactly the code that records a simplify. What differs is only who waits for
+   * it. (`nextPassStageRelDir` was written for precisely this — "a run that is
+   * not planned as a chain" — and this is its first caller.)
+   *
+   * The editor window is destroyed first, for the reason every act that rewrites
+   * the book destroys it: the window holds the book's text in memory and would
+   * save it back over the pass.
+   *
+   * "Nothing to remove" comes back as `success: false` with a whole sentence,
+   * which is `runProcessingPass`'s own shape for a pass that did not happen. It
+   * is not an error the user did anything about — the caller should say it
+   * plainly rather than as a failure.
+   */
+  ipcMain.handle('book:remove-footnote-references', async (_event, rawProjectDir: string) => {
+    try {
+      const projectDir = normalizeFsPath(rawProjectDir);
+      destroyEditorWindowsFor(rawProjectDir, projectDir);
+
+      const stageRelDir = await manifestService.nextPassStageRelDir(projectDir, 'footnote-refs');
+      const { runProcessingPass } = await import('./processing-passes.js');
+      const result = await runProcessingPass(
+        `footnote-refs-${Date.now()}`,
+        { kind: 'footnote-refs', projectDir, stageRelDir },
+        mainWindow
+      );
+      if (!result.success) return { success: false, error: result.error };
+
+      // A rewritten book is a book whose chapter openings are owed their stored
+      // names again — the strip may have taken a marker out of an opening line.
+      // Idempotent, so running it here costs nothing when it changes nothing.
+      await nameOpeningsOfFreshCopy(projectDir);
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return {
+        success: true,
+        path: result.outputPath,
+        summary: result.summary,
+        ledgerEntryId: result.ledgerEntryId,
+        // Said out loud rather than left as a missing row: the pass ran, and the
+        // reason it cannot be taken back on its own is worth a sentence.
+        ledgerRefusal: result.ledgerRefusal,
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ── Processing passes ───────────────────────────────────────────────────
   // ONE run handler for all five pass types: the pass kind is in the config, and
   // every pass has the same contract (transform the project's book, leave a diff,

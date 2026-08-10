@@ -37,6 +37,7 @@ const TYPE_ICONS: Record<JobType, string> = {
   // Processing passes
   'simplify': '\u{1F4D6}',
   'translate-pass': '\u{1F310}',
+  'footnote-refs': '\u{1F4CE}',
   // Making the book: a vision model reading pictures of pages.
   'vlm-convert': '\u{1F5A5}',
 };
@@ -55,6 +56,7 @@ const TYPE_LABELS: Record<JobType, string> = {
   'generate-sentences': 'Generate Sentences',
   'simplify': 'Simplify',
   'translate-pass': 'Translate',
+  'footnote-refs': 'Remove footnote references',
   'vlm-convert': 'Convert to EPUB',
 };
 

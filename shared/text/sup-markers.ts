@@ -8,10 +8,27 @@
  * copy removes that the extractor would have KEPT is text the narrator was
  * supposed to read, gone.
  *
- * NEITHER OF THEM EDITS A BOOK. The narration copy is a second file; the
- * official book — the archive original, or what `foundry vlm-convert` wrote — is
- * never rewritten to take a marker out. That is why this is an option on the
- * WRITE of a derived file rather than a pass over the book.
+ * ── AND, since 2026-08-09, a PASS OVER THE BOOK ─────────────────────────────
+ *
+ * This used to say that nothing here edits a book: the narration copy was a
+ * second file, and the official book was never rewritten to take a marker out.
+ * Owen asked the question that ended that — "if the user opens the working file
+ * and footnote reference numbers were removed, will it show the change in the
+ * epub? will it show that the numbers are actually gone? i.e. does it actually
+ * edit the text? we need a way to edit the text directly" — so there is now a
+ * third caller, `stripFootnoteReferencesFromBook` (electron/epub-processor.ts),
+ * which rewrites the WORKING COPY in place and records itself in that book's
+ * ledger so it can be taken back.
+ *
+ * The ARCHIVE original and the book `foundry vlm-convert` cast are still never
+ * written to. The pass edits the copy, exactly as every other pass does.
+ *
+ * All THREE callers must agree, and they do by sharing this rule rather than
+ * restating it. Note that running the strip over already-stripped text is a
+ * no-op by construction — nothing matches, `removed` is 0 and the string comes
+ * back identical — which is what lets the narration writer keep its own strip
+ * unconditionally: a book that has been through the pass narrates the same
+ * either way, and a book that has not is still cut clean.
  *
  * ── THE RULE, AND WHAT IT COSTS ─────────────────────────────────────────────
  *

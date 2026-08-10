@@ -42,11 +42,15 @@ export type JobType = 'tts-conversion' | 'translation' | 'rvc-enhancement' | 're
   // ('document-get-text', 'document-blocks', 'document-reflow',
   // 'foundry-footnotes' and the 'foundry-*' scan chain). Those were PASSES that
   // reimplemented stages; this is the stage itself, queued.
-  | 'simplify' | 'translate-pass' | 'vlm-convert';
+  // 'footnote-refs' is the digits-only reference strip over the book. It is
+  // chainable like the other passes, though its usual door is the synchronous
+  // one — it finishes in seconds, so a queue row for it is normally a row that
+  // is already done.
+  | 'simplify' | 'translate-pass' | 'footnote-refs' | 'vlm-convert';
 
 /** The job types that are processing passes, for a runtime membership test. */
 export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
-  'simplify', 'translate-pass',
+  'simplify', 'translate-pass', 'footnote-refs',
 ]);
 
 /**
@@ -277,7 +281,7 @@ export interface QueueJob {
  */
 export type ProcessingPassJobConfig = PassJobConfig & {
   type: 'document-get-text' | 'document-blocks' | 'document-reflow'
-    | 'foundry-footnotes' | 'simplify' | 'translate-pass';
+    | 'foundry-footnotes' | 'simplify' | 'translate-pass' | 'footnote-refs';
 };
 
 // Job configuration union type
