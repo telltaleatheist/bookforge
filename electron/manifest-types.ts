@@ -687,11 +687,51 @@ export interface SetBlockCategoryEdit {
 }
 
 /**
+ * The ELEMENT-ID STAMP: every narration unit and every picture of the book given
+ * a stable `data-bf-uid` it keeps for the rest of the book's life.
+ *
+ * Unattended — it runs when the project opens, immediately before the naming
+ * pass — and IDEMPOTENT: a book whose every walked element already carries an id
+ * is not rewritten, and writes no entry here.
+ *
+ * STRUCTURE-PRESERVING, with one thing worth saying plainly. The stamp writes an
+ * attribute onto elements that already existed, and it also PERSISTS the
+ * synthesized `<div>` wrappers the enumeration walk has always created in memory
+ * around stray text runs (electron/epub-processor.ts, `collectExportUnits`). So
+ * a book's first stamp can add markup — but it adds no ELEMENT to the walk,
+ * because the walk already counted those wrappers every time it ran. Every
+ * text-unit index and every image ordinal is where it was, which is why the
+ * narration strike record is re-stamped onto the new bytes with its keys
+ * untouched, exactly as {@link NameChapterOpenersEdit} does.
+ *
+ * One entry per RUN, not per element: stamping a book is one act.
+ */
+export interface StampElementIdsEdit {
+  kind: 'stamp-element-ids';
+  at: string;
+  /** How many elements were given an id they did not have. */
+  stamped: number;
+  /** How many elements the book's walk produces in total. */
+  total: number;
+  /** The zip entries rewritten, in spine order. */
+  files: string[];
+  /** How many synthesized wrappers this run turned into real markup. */
+  wrappersPersisted: number;
+  /** The book's sha256 before the pass and after it — provenance only. */
+  fromSha256: string;
+  toSha256: string;
+}
+
+/**
  * One edit to a book's markup. A union on purpose: every edit gets its own
  * `kind` and its own before/after fields rather than a shared "details" bag
  * nothing can read.
  */
-export type BookEdit = MergeChapterOpeningEdit | NameChapterOpenersEdit | SetBlockCategoryEdit;
+export type BookEdit =
+  | MergeChapterOpeningEdit
+  | NameChapterOpenersEdit
+  | SetBlockCategoryEdit
+  | StampElementIdsEdit;
 
 /**
  * What has ever been done to a book — the things that can be done to one now,

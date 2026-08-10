@@ -1102,10 +1102,22 @@ async function nameOpeningsOfRemintedCopy(
  * Naming is IDEMPOTENT and derived from the chapter titles the project stores,
  * which is what makes it a normalization that can be re-applied after any
  * rebuild rather than a layer that has to be carried across one.
+ *
+ * The ELEMENT-ID STAMP runs first, for the reason it runs first at the open
+ * door: an element's identity has to exist before anything writes to the
+ * element, and naming an opening writes to one. It is idempotent too, so a copy
+ * that arrived already stamped costs a walk and no bytes.
  */
 async function nameOpeningsOfFreshCopy(projectDir: string): Promise<void> {
   try {
-    const { nameChapterOpenings } = await import('./narration-export.js');
+    const { nameChapterOpenings, stampElementIds } = await import('./narration-export.js');
+    const stamped = await stampElementIds(projectDir);
+    if (stamped.stamped > 0) {
+      console.log(
+        `[main] ${path.basename(projectDir)}: ${stamped.stamped} of ${stamped.total} element(s) of `
+        + 'the fresh working copy now carry a stable id.'
+      );
+    }
     const named = await nameChapterOpenings(projectDir);
     if (named.edited > 0) {
       console.log(
@@ -1115,8 +1127,9 @@ async function nameOpeningsOfFreshCopy(projectDir: string): Promise<void> {
     }
   } catch (err) {
     console.warn(
-      `[main] ${path.basename(projectDir)}'s working copy was made again, but its chapter openings `
-      + `could not be rewritten to say their stored names: ${(err as Error).message}`
+      `[main] ${path.basename(projectDir)}'s working copy was made again, but its elements could `
+      + `not be given their ids or its chapter openings could not be rewritten to say their stored `
+      + `names: ${(err as Error).message}`
     );
   }
 }
@@ -3350,6 +3363,23 @@ function setupIpcHandlers(): void {
             `${path.basename(filePath)}'s saved deletions could not be carried into this build's `
             + `layout: ${(err as Error).message}. They are not applied, and nothing was changed.`;
           console.warn(`[projects:load] ${staleLayoutRefusal}`);
+        }
+
+        // ── The elements, given their IDENTITIES, before anything writes ────
+        //
+        // First, because an element's id has to exist before anything edits the
+        // element, and the naming pass immediately below is the first thing that
+        // does. Idempotent: a book already stamped writes no byte and says
+        // nothing. NOT inside the try above, for the same reason the naming pass
+        // is not — a refusal fails the open with its own sentence rather than
+        // handing the window a book whose identity is half written.
+        const { stampElementIds } = await import('./narration-export.js');
+        const stamped = await stampElementIds(filePath);
+        if (stamped.stamped > 0) {
+          console.log(
+            `[projects:load] ${path.basename(filePath)}: ${stamped.stamped} of ${stamped.total} `
+            + 'element(s) now carry a stable id.'
+          );
         }
 
         // ── The chapter openings, NAMED, before anything reads the book ─────

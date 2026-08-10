@@ -10,7 +10,7 @@
  * at sentence boundaries.
  */
 
-import { ZipReader, StreamingZipWriter } from './epub-processor';
+import { ZipReader, StreamingZipWriter, parseXhtmlBody } from './epub-processor';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core algorithm
@@ -34,101 +34,190 @@ function endsWithTerminalPunctuation(text: string): boolean {
   return /[.?!]["'\u201d\u2019)\]]*$/.test(decoded);
 }
 
-function stripTags(html: string): string {
-  return html.replace(/<[^>]+>/g, '');
+// ─────────────────────────────────────────────────────────────────────────────
+// The merge, over a real parse
+//
+// ── The bug this was (found 2026-08-10, fixed here) ─────────────────────────
+//
+// This function used to collect `<h1-6>` and `<p>` out of the body WITH A REGEX
+// and then rebuild the body from ONLY what it had collected. Everything else in
+// the body — every `<div>`, `<blockquote>`, `<li>`, `<figure>`, and every `<img>`
+// that was not inside a paragraph — was SILENTLY DELETED, and a `<p>` nested
+// inside a container was torn out of it and promoted to a top-level paragraph.
+// The merged paragraphs it emitted were bare `<p>` with no attributes, so
+// `data-bf-cat`, `data-bf-user-cat`, `data-bf-page` and the reflow provenance
+// went too. It runs unconditionally over the AI-cleanup output
+// (electron/ai-bridge.ts), so every simplified book paid for both.
+//
+// It is now a DOM edit. Consecutive `<p>` siblings are merged into the first of
+// the run — which keeps its own attributes, per the same rule the cleanup
+// rebuild states — and every other node in the document is left exactly where it
+// is. Nothing is removed but the emptied `<p>` shells the merge consumed.
+//
+// ── The attribute rule, same as the rebuild's ───────────────────────────────
+//
+// A merged paragraph keeps the FIRST source's attributes. The paragraphs merged
+// INTO it cease to exist, so their identities go with them rather than surviving
+// onto an element that is not them.
+//
+// ── Idempotence ─────────────────────────────────────────────────────────────
+//
+// A document with no run to merge is returned as the SAME STRING, byte for byte.
+// The parse/serialize round trip is confined to documents that actually change,
+// because `mergeEpubParagraphs` rewrites the zip entry whenever the string
+// differs and a book whose every document was re-serialized for nothing is a
+// book whose analysis cache and narration stamp were voided for nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Text of a node as rendered, for the terminal-punctuation test. */
+function domText(node: any): string {
+  if (node.nodeType === 3 || node.nodeType === 4) return node.nodeValue || '';
+  if (node.nodeType !== 1) return '';
+  if (!node.childNodes) return '';
+  let text = '';
+  for (let i = 0; i < node.childNodes.length; i++) text += domText(node.childNodes[i]);
+  return text;
+}
+
+const isElement = (n: any): boolean => n && n.nodeType === 1;
+const tagOf = (n: any): string => (isElement(n) ? (n.tagName || '').toLowerCase() : '');
+const isParagraph = (n: any): boolean => tagOf(n) === 'p';
+/** A text node holding nothing but whitespace — layout, not content. */
+const isBlankText = (n: any): boolean =>
+  n && (n.nodeType === 3 || n.nodeType === 4) && (n.nodeValue || '').trim().length === 0;
+
+/** The last text node inside an element, in document order, or null. */
+function lastTextNode(node: any): any {
+  if (node.nodeType === 3 || node.nodeType === 4) return node;
+  if (!node.childNodes) return null;
+  for (let i = node.childNodes.length - 1; i >= 0; i--) {
+    const found = lastTextNode(node.childNodes[i]);
+    if (found) return found;
+  }
+  return null;
 }
 
 /**
- * Join lines with hyphenation handling.
- * "excep-" + "tional" → "exceptional"
+ * Append `next`'s children onto `first`, joining the two texts the way
+ * `joinMultipleLines` used to: a trailing hyphen before a lowercase word is a
+ * word broken across lines and the two halves are rejoined, otherwise a single
+ * space goes between. Inline markup travels with the nodes, verbatim.
  */
-function joinMultipleLines(lines: string[]): string {
-  if (lines.length === 0) return '';
-  if (lines.length === 1) return lines[0];
+function absorbParagraph(doc: any, first: any, next: any): void {
+  const tail = lastTextNode(first);
+  const nextText = domText(next).trim();
+  const dehyphenate =
+    tail !== null
+    && /-\s*$/.test(tail.data ?? tail.nodeValue ?? '')
+    && nextText.length > 0
+    && nextText[0] === nextText[0].toLowerCase()
+    && nextText[0] !== nextText[0].toUpperCase();
 
-  let result = lines[0];
-  for (let i = 1; i < lines.length; i++) {
-    const prevText = stripTags(result);
-    const nextText = stripTags(lines[i]);
-    if (prevText.endsWith('-') && nextText.length > 0 &&
-        nextText[0] === nextText[0].toLowerCase() && nextText[0] !== nextText[0].toUpperCase()) {
-      // Dehyphenate: strip trailing hyphen and join without space
-      result = result.replace(/-(\s*(<[^>]+>\s*)*)$/, '$1') + lines[i];
-    } else {
-      result += ' ' + lines[i];
+  if (dehyphenate) {
+    // `data` and not `nodeValue`: xmldom serializes a text node out of `data`,
+    // and assigning only `nodeValue` leaves the hyphen in the output.
+    const joined = (tail.data ?? tail.nodeValue ?? '').replace(/-\s*$/, '');
+    tail.data = joined;
+    tail.nodeValue = joined;
+  } else {
+    first.appendChild(doc.createTextNode(' '));
+  }
+
+  while (next.firstChild) first.appendChild(next.firstChild);
+  next.parentNode.removeChild(next);
+}
+
+/**
+ * Merge the runs of consecutive `<p>` siblings under one parent. Recurses, so a
+ * paragraph nested in a `<div>` or `<section>` merges with its own siblings and
+ * with nothing outside its container.
+ *
+ * Returns true when anything was merged.
+ */
+function mergeParagraphsUnder(doc: any, parent: any): boolean {
+  let merged = false;
+
+  // Recurse first: the child list is about to be edited, so take a snapshot.
+  const children: any[] = [];
+  for (let n = parent.firstChild; n; n = n.nextSibling) children.push(n);
+  for (const child of children) {
+    if (isElement(child) && !isParagraph(child)) {
+      if (mergeParagraphsUnder(doc, child)) merged = true;
     }
   }
-  return result;
-}
 
-/**
- * Merge fragmented <p> tags in XHTML content.
- * Any <p> whose text doesn't end with terminal punctuation is merged
- * with the next <p>.
- */
-export function mergeXhtmlParagraphs(xhtml: string): string {
-  const bodyMatch = xhtml.match(/(<body[^>]*>)([\s\S]*?)(<\/body>)/);
-  if (!bodyMatch) return xhtml;
+  // A run is a maximal stretch of `<p>` siblings, with whitespace between them
+  // ignored. Any other element ends the run — a heading, a picture, a quote and
+  // a list are all reasons two paragraphs are not one paragraph.
+  let run: any[] = [];
+  const flush = (): void => {
+    if (run.length < 2) { run = []; return; }
+    const first = run[0];
+    for (let i = 1; i < run.length; i++) absorbParagraph(doc, first, run[i]);
+    merged = true;
+    run = [];
+  };
 
-  const beforeBody = xhtml.substring(0, bodyMatch.index! + bodyMatch[1].length);
-  const bodyContent = bodyMatch[2];
-  const afterBody = xhtml.substring(bodyMatch.index! + bodyMatch[1].length + bodyMatch[2].length);
+  for (const child of children) {
+    if (isBlankText(child)) continue;              // layout whitespace: transparent
+    if (!isParagraph(child)) { flush(); continue; }
 
-  // Parse elements from body
-  const elementRegex = /<(h[1-6]|p)(\s[^>]*)?>[\s\S]*?<\/\1>/g;
-  const elements: { tag: string; attrs: string; inner: string }[] = [];
-  let m: RegExpExecArray | null;
+    const text = domText(child).trim();
+    // An empty `<p>` is a spacer, not a sentence. It is neither merged nor
+    // removed — deleting it would be the content loss this rewrite exists to
+    // end — and it does not break the run around it.
+    if (text.length === 0) continue;
 
-  while ((m = elementRegex.exec(bodyContent)) !== null) {
-    const tag = m[1];
-    const attrs = m[2] || '';
-    const openLen = `<${tag}${attrs}>`.length;
-    const closeLen = `</${tag}>`.length;
-    const inner = m[0].substring(openLen, m[0].length - closeLen);
-    elements.push({ tag, attrs, inner });
-  }
-
-  if (elements.length === 0) return xhtml;
-
-  // Check if any <p> tags need merging
-  const needsMerge = elements.some(el =>
-    el.tag === 'p' && stripTags(el.inner).trim() && !endsWithTerminalPunctuation(stripTags(el.inner))
-  );
-  if (!needsMerge) return xhtml;
-
-  // Rebuild with merged paragraphs
-  const output: string[] = [];
-  let pBuffer: string[] = [];
-
-  for (const el of elements) {
-    if (el.tag.startsWith('h')) {
-      // Flush paragraph buffer before heading
-      if (pBuffer.length > 0) {
-        output.push(`<p>${joinMultipleLines(pBuffer)}</p>`);
-        pBuffer = [];
-      }
-      output.push(`<${el.tag}${el.attrs}>${el.inner}</${el.tag}>`);
+    if (run.length === 0) {
+      // A paragraph that already ends in a full stop starts no run.
+      if (endsWithTerminalPunctuation(text)) continue;
+      run.push(child);
       continue;
     }
+    run.push(child);
+    if (endsWithTerminalPunctuation(text)) flush();
+  }
+  flush();
 
-    // <p> tag
-    const text = stripTags(el.inner).trim();
-    if (!text) continue;
+  return merged;
+}
 
-    pBuffer.push(el.inner.trim());
+/**
+ * Merge fragmented `<p>` tags in XHTML content. Any `<p>` whose text doesn't end
+ * with terminal punctuation is merged with the `<p>` that follows it.
+ *
+ * Returns the input string UNCHANGED when there is nothing to merge.
+ *
+ * `whatFor` names the document in the one message this can print.
+ */
+export function mergeXhtmlParagraphs(xhtml: string, whatFor = 'a document'): string {
+  if (!/<body[\s>]/i.test(xhtml)) return xhtml;
 
-    if (endsWithTerminalPunctuation(text)) {
-      output.push(`<p>${joinMultipleLines(pBuffer)}</p>`);
-      pBuffer = [];
-    }
+  let doc: any;
+  let body: any;
+  try {
+    ({ doc, body } = parseXhtmlBody(xhtml, `the paragraph merge of ${whatFor}`));
+  } catch (err) {
+    // A document that will not parse is a document this pass must not rewrite:
+    // the merge is a readability repair, and mangling markup nobody could read
+    // is worse than leaving the pauses in. It is SAID, by name, rather than
+    // swallowed — a book with a document in this state has a real problem, and
+    // this is the only place that notices.
+    console.warn(
+      `[PARAGRAPH-MERGER] ${whatFor} was left exactly as it is: its markup will not parse `
+      + `(${(err as Error).message}). Any run-on paragraphs in it stay run-on.`
+    );
+    return xhtml;
   }
 
-  // Flush remaining (last paragraph may not end with punctuation)
-  if (pBuffer.length > 0) {
-    output.push(`<p>${joinMultipleLines(pBuffer)}</p>`);
-  }
+  if (!mergeParagraphsUnder(doc, body)) return xhtml;
 
-  return beforeBody + '\n' + output.join('\n') + '\n' + afterBody;
+  const { XMLSerializer } = require('@xmldom/xmldom');
+  let serialized: string = new XMLSerializer().serializeToString(doc);
+  if (!serialized.startsWith('<?xml')) {
+    serialized = `<?xml version="1.0" encoding="utf-8"?>\n${serialized}`;
+  }
+  return serialized;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -271,7 +360,7 @@ export async function mergeEpubParagraphs(epubPath: string): Promise<number> {
       if (!lowerName.includes('nav') && !lowerName.includes('toc')) {
         const original = data.toString('utf-8');
         // 1) Merge fragmented <p> tags, then 2) punctuate run-on headings/datelines.
-        const fixed = addHeadingPunctuation(mergeXhtmlParagraphs(original));
+        const fixed = addHeadingPunctuation(mergeXhtmlParagraphs(original, name));
         if (fixed !== original) {
           entryData.set(name, Buffer.from(fixed, 'utf-8'));
           fixedCount++;

@@ -531,10 +531,20 @@ function replaceSkipMarkersForProse(cleanedParagraphs: string[], originalProseTe
 /** One cleanup chunk of prose text (contains no headings). */
 interface ProseChunk { text: string; }
 
-/** An ordered piece of a chapter: a preserved heading, or a run of prose. */
+/** The attributes of one source element, carried through the rebuild. */
+type ElementAttrs = Record<string, string>;
+
+/**
+ * An ordered piece of a chapter: a preserved heading, or a run of prose.
+ *
+ * A prose segment keeps the SOURCE ELEMENTS it was made of — text plus
+ * attributes, in document order — and not only their joined text, because the
+ * rebuild has to put the attributes back onto the paragraphs it emits. See
+ * `carryAttributesOntoParagraphs` for the attribution rule.
+ */
 type ChapterSegment =
-  | { kind: 'heading'; tag: string; text: string }
-  | { kind: 'prose'; text: string };
+  | { kind: 'heading'; tag: string; text: string; attrs: ElementAttrs }
+  | { kind: 'prose'; text: string; sources: Array<{ text: string; attrs: ElementAttrs }> };
 
 /** True for the tag names h1..h6. */
 function isHeadingTag(tag: string): boolean {
@@ -552,11 +562,15 @@ function isHeadingTag(tag: string): boolean {
 function segmentChapter(xhtml: string): ChapterSegment[] {
   const blocks = extractBlockTextsWithTags(xhtml);
   const segments: ChapterSegment[] = [];
-  let prose: string[] = [];
+  let prose: Array<{ text: string; attrs: ElementAttrs }> = [];
 
   const flushProse = () => {
     if (prose.length > 0) {
-      segments.push({ kind: 'prose', text: prose.join('\n\n') });
+      segments.push({
+        kind: 'prose',
+        text: prose.map((s) => s.text).join('\n\n'),
+        sources: prose,
+      });
       prose = [];
     }
   };
@@ -564,9 +578,11 @@ function segmentChapter(xhtml: string): ChapterSegment[] {
   for (const block of blocks) {
     if (isHeadingTag(block.tagName)) {
       flushProse();
-      segments.push({ kind: 'heading', tag: block.tagName, text: block.text });
+      segments.push({
+        kind: 'heading', tag: block.tagName, text: block.text, attrs: block.attrs,
+      });
     } else {
-      prose.push(block.text);
+      prose.push({ text: block.text, attrs: block.attrs });
     }
   }
   flushProse();
@@ -654,9 +670,132 @@ function normalizeHeadingForTts(text: string): string {
   return t;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Carrying an element's attributes across the rebuild
+//
+// ── The bug this exists for (Owen, 2026-08-10) ───────────────────────────────
+//
+// The rebuild below emits the chapter from scratch. Until this existed it emitted
+// `<p>` and `<h1>` with NO ATTRIBUTES AT ALL, so every simplified chapter came
+// out of the pass having lost `data-bf-cat` (what the model that read the page
+// said the block was), `data-bf-user-cat` (what a PERSON said it was — the
+// category door merged the same night), `data-bf-page`, and the reflow's
+// `data-bf-category`/`data-bf-group`/`data-bf-blocks` provenance. The element
+// identity `data-bf-uid` would have gone the same way.
+//
+// ── The rule ────────────────────────────────────────────────────────────────
+//
+// The AI is asked to clean prose, not to restructure it, so the common case is
+// one cleaned paragraph per source element and the rule there is simply "the
+// same attributes". The two ways it can still change the count each get a stated
+// answer:
+//
+//   • ONE source element  → the emitted paragraph keeps that element's
+//     attributes, identity and all.
+//   • SEVERAL sources MERGED into one paragraph → the paragraph keeps the FIRST
+//     source's attributes. The others' identities are GONE, and that is honest:
+//     those elements no longer exist, so their uids should not survive onto an
+//     element that is not them.
+//   • ONE source SPLIT into several paragraphs → the first fragment keeps the
+//     source's attributes; the rest get NONE. They are new elements, and phase 1
+//     leaves them unstamped — `stampElementIdsInBookFile` gives them identities
+//     the next time the project opens.
+//
+// ── How the source of a paragraph is decided ────────────────────────────────
+//
+// By its WORDS, not by its position, because a merge or a split shifts every
+// position after it and a positional rule would then hand element N+1's identity
+// to element N+2's text — a wrong identity, which is worse than a missing one.
+//
+// The segment's sources are laid end to end as one word stream, each word
+// remembering which element it came from. Each emitted paragraph is looked up in
+// that stream by its opening words, searching forward from where the previous
+// paragraph ended, and the element the match lands in is the element it came
+// from. First paragraph to land in an element takes its attributes; any later
+// one landing in the same element is a split fragment and takes none.
+//
+// A paragraph the model rewrote past recognition finds no match; it is then
+// attributed to wherever the cursor stands, which is the position it would have
+// had anyway. That is an attribution heuristic over text the model changed, not
+// a fallback standing in for a value that should have been known.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** How many opening words identify a paragraph in the source word stream. */
+const ATTR_CARRY_PROBE_WORDS = 5;
+
+/** A paragraph's words, lowercased and stripped of punctuation, for matching. */
+function attrCarryWords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, '')
+    .split(/\s+/)
+    .filter((w) => w.length > 0);
+}
+
+/**
+ * Decide which source element each emitted paragraph came from, and hand back
+ * the attributes it should carry — null where the paragraph is a new element.
+ *
+ * See the block comment above for the rule this implements.
+ */
+function carryAttributesOntoParagraphs(
+  paragraphs: readonly string[],
+  sources: ReadonlyArray<{ text: string; attrs: ElementAttrs }>,
+): Array<ElementAttrs | null> {
+  if (sources.length === 0) return paragraphs.map(() => null);
+
+  // The segment's sources as one word stream, each word owned by its element.
+  const srcWords: string[] = [];
+  const srcOwner: number[] = [];
+  sources.forEach((source, index) => {
+    for (const word of attrCarryWords(source.text)) {
+      srcWords.push(word);
+      srcOwner.push(index);
+    }
+  });
+  if (srcWords.length === 0) return paragraphs.map(() => null);
+
+  /** First position at or after `from` where `probe` runs consecutively. */
+  const findRun = (probe: readonly string[], from: number): number => {
+    if (probe.length === 0) return -1;
+    for (let at = from; at + probe.length <= srcWords.length; at++) {
+      let ok = true;
+      for (let k = 0; k < probe.length; k++) {
+        if (srcWords[at + k] !== probe[k]) { ok = false; break; }
+      }
+      if (ok) return at;
+    }
+    return -1;
+  };
+
+  const carried: Array<ElementAttrs | null> = [];
+  const taken = new Set<number>();
+  let cursor = 0;
+  for (const paragraph of paragraphs) {
+    const words = attrCarryWords(paragraph);
+    const probe = words.slice(0, Math.min(ATTR_CARRY_PROBE_WORDS, words.length));
+    const found = findRun(probe, cursor);
+    const at = Math.min(found >= 0 ? found : cursor, srcWords.length - 1);
+    const owner = srcOwner[at];
+    carried.push(taken.has(owner) ? null : sources[owner].attrs);
+    taken.add(owner);
+    cursor = Math.min(at + Math.max(words.length, 1), srcWords.length);
+  }
+  return carried;
+}
+
+/** `data-bf-uid="ab12cd34" data-bf-cat="body"` — or '' for an element with none. */
+function serializeAttrs(attrs: ElementAttrs | null): string {
+  if (attrs === null) return '';
+  return Object.entries(attrs)
+    .map(([name, value]) => ` ${name}="${escapeXmlLocal(value)}"`)
+    .join('');
+}
+
 /**
  * Rebuild a chapter's XHTML from the model's cleaned prose chunks, re-attaching
- * EVERY original heading verbatim (tag + level + text) in document order.
+ * EVERY original heading verbatim (tag + level + text + ATTRIBUTES) in document
+ * order.
  *
  * `cleanedChunkTexts` is the flat, in-order list of cleaned prose chunks for the
  * chapter — one entry per chunk that chunkChapterProse produced. The segment layout
@@ -674,7 +813,7 @@ function normalizeHeadingForTts(text: string): string {
  *  - A chapter with no <body> can't be reassembled — that is surfaced as an error,
  *    never silently passed through.
  */
-function rebuildChapterPreservingHeadings(originalXhtml: string, cleanedChunkTexts: string[], chunkSize: number = CHUNK_SIZE, preprocess?: (proseText: string) => string): string {
+export function rebuildChapterPreservingHeadings(originalXhtml: string, cleanedChunkTexts: string[], chunkSize: number = CHUNK_SIZE, preprocess?: (proseText: string) => string): string {
   const segments = segmentChapter(originalXhtml);
   const bodyParts: string[] = [];
   let idx = 0;
@@ -686,7 +825,10 @@ function rebuildChapterPreservingHeadings(originalXhtml: string, cleanedChunkTex
     if (seg.kind === 'heading') {
       const headingText = normalizeHeadingForTts(seg.text);
       if (headingText) {
-        bodyParts.push(`<${seg.tag}>${escapeXmlLocal(headingText)}</${seg.tag}>`);
+        // A heading is one source element rebuilt as one element: it keeps its
+        // own attributes exactly.
+        bodyParts.push(
+          `<${seg.tag}${serializeAttrs(seg.attrs)}>${escapeXmlLocal(headingText)}</${seg.tag}>`);
         pendingHeadingNorm = seg.text.replace(/[.!?:;\s]+$/g, '').toLowerCase().trim() || null;
       }
       continue;
@@ -732,9 +874,14 @@ function rebuildChapterPreservingHeadings(originalXhtml: string, cleanedChunkTex
     }
     pendingHeadingNorm = null;
 
-    for (const p of paragraphs) {
-      if (p.trim()) bodyParts.push(`<p>${escapeXmlLocal(p)}</p>`);
-    }
+    // Each emitted paragraph carries the attributes of the element its text came
+    // from — see `carryAttributesOntoParagraphs` for the rule and why it is
+    // decided by words rather than by position.
+    const kept = paragraphs.filter((p) => p.trim().length > 0);
+    const attrs = carryAttributesOntoParagraphs(kept, seg.sources);
+    kept.forEach((p, i) => {
+      bodyParts.push(`<p${serializeAttrs(attrs[i])}>${escapeXmlLocal(p)}</p>`);
+    });
   }
 
   // No-fallback guard: leftover cleaned chunks mean the recomputed layout and the
