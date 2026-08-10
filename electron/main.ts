@@ -1016,6 +1016,56 @@ function openEditorWindow(
   // Track the window
   editorWindows.set(projectPath, editorWindow);
 
+  // ── The close is held open for the editor's last write ────────────────────
+  //
+  // The editor autosaves on a one-second debounce, so an edit made just before
+  // the user reaches for the X has a pending write and nothing to make it: the
+  // renderer is torn down mid-debounce and the edit is gone. (This comment used
+  // to be a LIE told elsewhere — `destroyEditorWindowsFor` says the window
+  // "writes back on interval and on close" and uses `destroy()` specifically to
+  // skip the on-close save. There was no on-close save to skip.)
+  //
+  // So the first close is refused, the renderer is asked to flush on a channel
+  // minted for THIS window, and the window is destroyed when it answers — or
+  // when the deadline passes, because a renderer that is wedged must not leave a
+  // window that cannot be closed. `destroy()` at the end rather than `close()`:
+  // the flush has happened, and a second `close()` would just come back here.
+  const flushChannel = `editor:flush-complete:${editorWindow.webContents.id}`;
+  let flushAsked = false;
+  editorWindow.on('close', (event) => {
+    if (flushAsked) return;   // Asked once; a second X closes it outright.
+    // NEVER during a quit. `before-quit` has already prevented the default once
+    // to run its cleanup chain, and a window that prevents its own close after
+    // that cancels the whole quit — the user presses Quit and nothing happens.
+    // The renderer's `beforeunload` still hands its pending write to main on the
+    // way out; what is given up here is only the WAIT for it.
+    if (isQuitting) return;
+    flushAsked = true;
+    event.preventDefault();
+
+    const finish = () => {
+      ipcMain.removeListener(flushChannel, onFlushed);
+      clearTimeout(deadline);
+      if (!editorWindow.isDestroyed()) editorWindow.destroy();
+    };
+    const onFlushed = () => finish();
+    // Short, because the common reason for silence is a window closed before the
+    // editor finished mounting, and a window that will not shut is worse than a
+    // window that shuts fast. Cutting a slow save off is safe: the renderer hands
+    // the whole payload to main before it answers, and main finishes what it was
+    // asked to do whether or not the window that asked still exists.
+    const deadline = setTimeout(() => {
+      console.warn(
+        `[main] ${path.basename(projectPath)}'s editor did not answer the pre-close flush in 3s; `
+        + 'closing anyway.',
+      );
+      finish();
+    }, 3000);
+
+    ipcMain.once(flushChannel, onFlushed);
+    editorWindow.webContents.send('editor:flush-before-close', flushChannel);
+  });
+
   // Clean up when window closes
   editorWindow.on('closed', () => {
     editorWindows.delete(projectPath);

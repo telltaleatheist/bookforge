@@ -1568,39 +1568,41 @@ export class ElectronService {
   }
 
   /**
-   * Subscribe to editor window closed events
+   * Subscribe to editor window closed events. Returns the unsubscribe closure.
+   *
+   * There is no `offEditorWindowClosed` any more, and that is the fix rather
+   * than a tidy-up: it removed EVERY listener on the channel, so one component's
+   * teardown silently unsubscribed every other component in the window. Keep the
+   * returned closure and call it — the shape every other event here uses.
    */
-  onEditorWindowClosed(callback: (projectPath: string) => void): void {
-    if (this.isElectron) {
-      (window as any).electron.editor.onWindowClosed(callback);
-    }
+  onEditorWindowClosed(callback: (projectPath: string) => void): () => void {
+    if (!this.isElectron) return () => {};
+    return (window as any).electron.editor.onWindowClosed(callback);
   }
 
   /**
-   * Unsubscribe from editor window closed events
+   * Subscribe to project files changed events (fired when files are saved to a
+   * project). Returns the unsubscribe closure — see `onEditorWindowClosed`.
    */
-  offEditorWindowClosed(): void {
-    if (this.isElectron) {
-      (window as any).electron.editor.offWindowClosed();
-    }
+  onProjectFilesChanged(callback: (projectPath: string) => void): () => void {
+    if (!this.isElectron) return () => {};
+    return (window as any).electron.editor.onFilesChanged(callback);
   }
 
   /**
-   * Subscribe to project files changed events (fired when files are saved to a project)
+   * Main is holding this editor window's close open until the renderer says its
+   * pending writes are done. Returns the unsubscribe closure; the callback is
+   * handed the channel to answer on via `editorFlushComplete`.
    */
-  onProjectFilesChanged(callback: (projectPath: string) => void): void {
-    if (this.isElectron) {
-      (window as any).electron.editor.onFilesChanged(callback);
-    }
+  onEditorFlushBeforeClose(callback: (replyChannel: string) => void): () => void {
+    if (!this.isElectron) return () => {};
+    return (window as any).electron.editor.onFlushBeforeClose(callback);
   }
 
-  /**
-   * Unsubscribe from project files changed events
-   */
-  offProjectFilesChanged(): void {
-    if (this.isElectron) {
-      (window as any).electron.editor.offFilesChanged();
-    }
+  /** Tell main the window may now close. */
+  editorFlushComplete(replyChannel: string): void {
+    if (!this.isElectron) return;
+    (window as any).electron.editor.flushComplete(replyChannel);
   }
 
   // Library operations - copy files to library folder

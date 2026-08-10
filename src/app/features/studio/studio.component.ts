@@ -1924,8 +1924,10 @@ export class StudioComponent implements OnInit, OnDestroy {
     // another one behind, each holding a reference to its own dead component.
     document.addEventListener('click', this.documentClickListener);
 
-    // Listen for editor window close events to refresh the item
-    this.electronService.onEditorWindowClosed((projectPath: string) => {
+    // Listen for editor window close events to refresh the item.
+    // The returned closure unsubscribes THIS listener; the old channel-wide
+    // `off*` killed every other window's subscription too.
+    this.unwatchEditorClosed = this.electronService.onEditorWindowClosed((projectPath: string) => {
       const item = this.selectedItem();
       if (item?.projectDir === projectPath || item?.epubPath === projectPath) {
         this.refreshProjectFiles();
@@ -1933,7 +1935,7 @@ export class StudioComponent implements OnInit, OnDestroy {
     });
 
     // Listen for file save events from editor windows (updates file list in real time)
-    this.electronService.onProjectFilesChanged((projectPath: string) => {
+    this.unwatchFilesChanged = this.electronService.onProjectFilesChanged((projectPath: string) => {
       const item = this.selectedItem();
       if (item?.projectDir === projectPath || item?.id === projectPath) {
         this.refreshProjectFiles();
@@ -1944,10 +1946,16 @@ export class StudioComponent implements OnInit, OnDestroy {
   /** Any click anywhere dismisses the context menu. Named so it can be removed. */
   private readonly documentClickListener = (): void => this.hideContextMenu();
 
+  /** Unsubscribe closures for the two main-process channels this page reads. */
+  private unwatchEditorClosed: (() => void) | null = null;
+  private unwatchFilesChanged: (() => void) | null = null;
+
   ngOnDestroy(): void {
     document.removeEventListener('click', this.documentClickListener);
-    this.electronService.offEditorWindowClosed();
-    this.electronService.offProjectFilesChanged();
+    this.unwatchEditorClosed?.();
+    this.unwatchEditorClosed = null;
+    this.unwatchFilesChanged?.();
+    this.unwatchFilesChanged = null;
     if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer);
   }
 
