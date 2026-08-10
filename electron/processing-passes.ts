@@ -110,12 +110,52 @@ async function replaceBookEpub(projectDir: string, producedAbsPath: string): Pro
 export async function moveIntoPlace(fromAbsPath: string, toAbsPath: string): Promise<void> {
   await fs.promises.mkdir(path.dirname(toAbsPath), { recursive: true });
   try {
-    await fs.promises.rename(fromAbsPath, toAbsPath);
+    await renameOntoDestination(fromAbsPath, toAbsPath);
   } catch {
     const sibling = `${toAbsPath}.bookforge-tmp`;
     await fs.promises.copyFile(fromAbsPath, sibling);
-    await fs.promises.rename(sibling, toAbsPath);
+    try {
+      await renameOntoDestination(sibling, toAbsPath);
+    } catch (err) {
+      // The book was not replaced, so nothing beside it may claim it was
+      // half-way: a stranded sibling would be adopted by nothing and synced by
+      // everything.
+      await fs.promises.rm(sibling, { force: true });
+      throw err;
+    }
     await fs.promises.unlink(fromAbsPath);
+  }
+}
+
+/**
+ * The one rename that lands a file on its destination, with the Windows truth
+ * about it: renaming ONTO a file fails with EPERM while ANY process holds the
+ * destination open — and on a library that Syncthing replicates, Defender
+ * scans, and the indexer walks, "any process" is a coin toss measured in
+ * milliseconds. (Live hit 2026-08-10: a relabel of the freshly-converted
+ * Nuremberg refused on EPERM because the working copy was being hashed at that
+ * exact moment; the identical rename succeeded on the next click.)
+ *
+ * So a share-violation-shaped error is retried, briefly and boundedly, and then
+ * thrown as itself — the holder that matters (an editor with the book open, a
+ * worker mid-read) outlives two seconds, and THAT refusal should be seen, not
+ * papered over. Everything not shaped like a transient hold throws immediately:
+ * EXDEV still means "copy beside the destination instead", ENOENT still means
+ * the caller lied about the source.
+ */
+async function renameOntoDestination(fromAbsPath: string, toAbsPath: string): Promise<void> {
+  const HOLDS = new Set(['EPERM', 'EACCES', 'EBUSY']);
+  const DELAYS_MS = [50, 100, 200, 400, 600, 700];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fs.promises.rename(fromAbsPath, toAbsPath);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const transient = process.platform === 'win32' && code !== undefined && HOLDS.has(code);
+      if (!transient || attempt >= DELAYS_MS.length) throw err;
+      await new Promise((resolve) => setTimeout(resolve, DELAYS_MS[attempt]));
+    }
   }
 }
 
