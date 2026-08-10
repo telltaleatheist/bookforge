@@ -202,19 +202,47 @@ test('no LEDGER line opens or exports — clear is the only act it has', () => {
   }
 });
 
-test('the ARCHIVE line is the control centre: Open, Process, Erase, Delete', () => {
-  // Owen: "the archive document will be the control center." Open lands on the
-  // working copy (shared/document/artifact-open.ts) — the working document has
-  // no line of its own and is invisible, which is asserted right above by there
-  // being no 'working' kind at all.
-  const book = bookChain({ rows: pdfProject, families: [pdfChain()] })
-    .find((l) => l.kind === 'book');
-  assert.strictEqual(book.buttons.open, true);
-  assert.strictEqual(book.buttons.export, true);
-  assert.strictEqual(book.buttons.passes, true, 'Process opens the passes here');
-  assert.strictEqual(book.buttons.analysis, true);
-  assert.strictEqual(book.buttons.eraseEverything, true);
-  assert.strictEqual(book.buttons.delete, true);
+test('the PARENT line is the control centre: everything the chain can do', () => {
+  // Owen: "the archive document will be the control center", and 2026-08-10:
+  // "they control changes from the parent of the chain, which is the archive
+  // file." Open lands on the working copy (shared/document/artifact-open.ts) —
+  // the working document has no line of its own.
+  //
+  // Asserted on BOTH origins, because "the parent" is a different file in each:
+  // the cast book for a chain read out of a PDF, and the copy's own row for a
+  // chain hanging off an EPUB the user handed us, which has no other row. The
+  // affordances must not differ — a user with one kind of project and a user
+  // with the other are looking at the same control centre.
+  for (const [rows, families] of [
+    [pdfProject, [pdfChain()]],
+    [epubProject, [epubChain()]],
+  ]) {
+    const book = bookChain({ rows, families }).find((l) => l.kind === 'book');
+    assert.strictEqual(book.depth, 0, 'the control centre is a top-level line');
+    assert.strictEqual(book.buttons.open, true);
+    assert.strictEqual(book.buttons.export, true);
+    assert.strictEqual(book.buttons.passes, true, 'Process opens the passes here');
+    assert.strictEqual(book.buttons.analysis, true);
+    assert.strictEqual(book.buttons.ttsExport, true, 'and the narration copy is cut here');
+    assert.strictEqual(book.buttons.eraseEverything, true);
+    assert.strictEqual(book.buttons.delete, true);
+  }
+});
+
+test('every line of a chain is the parent row or indented under it', () => {
+  // The arrangement Owen asked for, said as one claim: exactly one top-level
+  // line per chain, and everything else at depth 1 beneath it. A chain line that
+  // drifted to depth 0 would read as a second document the project holds.
+  const lines = bookChain({
+    rows: [...pdfProject, row('narration', 'narration', 'epub', PDF_CHAIN)],
+    families: [pdfChain([entry('01-x', 'footnote-refs', 'Remove footnote references', true)])],
+  }).filter((l) => l.familyId === PDF_CHAIN);
+  const tops = lines.filter((l) => l.depth === 0);
+  assert.deepStrictEqual(kindsOf(tops), ['archive-pdf', 'book'],
+    'the PDF says which chain came out of it; the chain itself has ONE top line');
+  assert.deepStrictEqual(
+    kindsOf(lines.filter((l) => l.depth === 1)),
+    ['working-changes', 'ledger', 'narration']);
 });
 
 test('a ledger line still offers Review changes — a ledger says what it did', () => {
@@ -246,17 +274,116 @@ test('the TTS document keeps everything a real document has', () => {
 
 test('the working DOCUMENT has no line of its own — only its working CHANGES', () => {
   // "the working document shouldnt have a line item, it sohuld be invisible to
-  // the user." It never had one; this is the claim said out loud, against both
-  // origins, so a future arrangement cannot quietly give it one back.
+  // the user." Said out loud against both origins, so a future arrangement
+  // cannot quietly give it one back.
+  //
+  // Asserted on the ROW the line stands on, not on the kind. The kind is what
+  // this test used to check, and it is the wrong question: there has never been
+  // a 'working' chain kind, so the assertion held while the copy was being drawn
+  // top level as a 'loose' document with Open, Export and Delete on it. What
+  // makes the copy invisible is that no DOCUMENT line names its row.
   for (const [rows, families] of [
     [pdfProject, [pdfChain()]],
     [epubProject, [epubChain()]],
   ]) {
     const lines = bookChain({ rows, families });
     assert.ok(!lines.some((l) => l.kind === 'working'), 'no working-copy document line');
+    assert.ok(!lines.some((l) => l.kind === 'loose'),
+      'the working copy must never be swept up as a loose document');
     assert.deepStrictEqual(
       kindsOf(lines.filter((l) => l.depth === 1)), ['working-changes'],
       'the copy appears only as the record of what was done to it');
+  }
+});
+
+test('a FRESHLY CAST book draws no working-copy line — the 2026-08-10 defect', () => {
+  // Owen, the moment a conversion finished: "after i created the generated
+  // document it created a 'working file' line in versions. the working file
+  // should be invisible to the user."
+  //
+  // THIS is the state that produced it, and no other test reached it: a chain
+  // whose book has just been cast has NO ledger and NO working changes (the only
+  // records a fresh mint writes are the automatic chapter-opener naming, which
+  // `hasWorkingChanges` deliberately does not count). The parent row is drawn on
+  // the `generated` row, so nothing at all stood on the `exported` row — and the
+  // loose sweep, which draws every row no line claimed, drew the working copy as
+  // a top-level file.
+  const lines = bookChain({
+    rows: pdfProject,
+    families: [family(PDF_CHAIN, 'generated-epub', 'Deathstalker.generated.epub', [], PDF_ROW, false)],
+  });
+  assert.deepStrictEqual(kindsOf(lines), ['archive-pdf', 'book'],
+    'a book that has just been cast is the PDF and the book, and nothing else');
+  assert.ok(!lines.some((l) => l.rowId === 'exported'),
+    'no line may stand on the working copy row when the chain draws its parent elsewhere');
+});
+
+test('the working copy is absorbed even with a ledger but no working changes', () => {
+  // The other half of the same hole: the ledger lines stand on the exported row,
+  // so a chain with passes accidentally "claimed" the copy and the sweep left it
+  // alone. Absorption must not depend on that — it is a fact about the chain.
+  const lines = bookChain({
+    rows: pdfProject,
+    families: [family(
+      PDF_CHAIN, 'generated-epub', 'Deathstalker.generated.epub',
+      [entry('01-footnote-refs-aa', 'footnote-refs', 'Remove footnote references', true)],
+      PDF_ROW, false)],
+  });
+  assert.deepStrictEqual(kindsOf(lines), ['archive-pdf', 'book', 'ledger']);
+  assert.ok(!lines.some((l) => l.kind === 'loose'));
+});
+
+test('there is NO door onto the working copy as a file, on any line', () => {
+  // Owen, 2026-08-10: "they will see working changes as an indented line item
+  // with limited options, which they can delete if they want to start over.
+  // working file should not be visible. thats behind the scenes work."
+  //
+  // So on a PDF-origin chain — the one whose parent row is a different file from
+  // the copy — nothing that opens, exports or deletes may name the copy's row.
+  // Starting over is the working-changes line's delete and nothing else.
+  const lines = bookChain({ rows: pdfProject, families: [pdfChain()] });
+  for (const l of lines.filter((l) => l.rowId === 'exported')) {
+    assert.strictEqual(l.buttons.open, false, `${l.kind} must not open the working copy`);
+    assert.strictEqual(l.buttons.export, false, `${l.kind} must not export the working copy`);
+    assert.ok(l.kind === 'working-changes' || l.kind === 'ledger',
+      `only ledger lines may stand on the working copy row, not ${l.kind}`);
+  }
+  const changes = lines.find((l) => l.kind === 'working-changes');
+  assert.strictEqual(changes.buttons.delete, true, 'clearing the records IS starting over');
+});
+
+test('Export TTS copy is on the parent row, and stays there once the copy exists', () => {
+  // Owen, 2026-08-10: "lets also make it so they can generate a tts file from the
+  // versions window, with a button, instead of only doing it from inside the pdf
+  // picker." On the parent row of BOTH origins, and NOT only while the chain has
+  // no narration copy — cutting it again after striking more blocks is the
+  // ordinary act, and a button that vanished would leave the second cut no door.
+  for (const [rows, families] of [
+    [pdfProject, [pdfChain()]],
+    [epubProject, [epubChain()]],
+  ]) {
+    const book = bookChain({ rows, families }).find((l) => l.kind === 'book');
+    assert.strictEqual(book.buttons.ttsExport, true);
+  }
+  const withCopy = bookChain({
+    rows: [...pdfProject, row('narration', 'narration', 'epub', PDF_CHAIN)],
+    families: [pdfChain()],
+  });
+  assert.strictEqual(withCopy.find((l) => l.kind === 'book').buttons.ttsExport, true,
+    'the door to re-cut must survive the copy existing');
+  // It is NOT the narration row's Process, which means "narrate THIS file".
+  assert.strictEqual(withCopy.find((l) => l.kind === 'narration').buttons.ttsExport, false);
+});
+
+test('nothing but the parent row cuts a TTS copy', () => {
+  const lines = bookChain({
+    rows: [...pdfProject, row('narration', 'narration', 'epub', PDF_CHAIN),
+      row('cleaned', 'cleaned', 'epub', null)],
+    families: [pdfChain([entry('01-x', 'footnote-refs', 'Remove footnote references', true)])],
+  });
+  for (const l of lines.filter((l) => l.kind !== 'book')) {
+    assert.strictEqual(l.buttons.ttsExport, false,
+      `${l.kind} must not offer to cut a narration copy`);
   }
 });
 

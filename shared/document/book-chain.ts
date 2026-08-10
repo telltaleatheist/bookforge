@@ -49,14 +49,43 @@
  *
  * ── The one structural decision this module makes ───────────────────────────
  *
- * The working copy is NOT a line. Owen: the user's "epub" IS the top-level line,
- * and opening it lands on the working copy (shared/document/artifact-open.ts).
- * So a chain's `exported` row — which names its working copy — is ABSORBED: it
- * contributes the working-changes line, the ledger lines, and (for a chain
- * hanging off an EPUB the user handed us, which has no cast book) the top-level
- * EPUB line itself. Which of those it is doing is `bookRowType`, and it is the
- * difference between a chain whose book was cast from pages and one whose book
- * the user handed us.
+ * THE WORKING COPY IS NEVER A DOCUMENT ROW. Owen, 2026-08-10: "after i created
+ * the generated document it created a 'working file' line in versions. the
+ * working file should be invisible to the user. they control changes from the
+ * parent of the chain, which is the archive file. the archive is never touched,
+ * the working file is what's edited, but it shouldnt show for the user. its a
+ * chain of custody indicator."
+ *
+ * So a chain's `exported` row — the row main emits for its working copy — is
+ * ABSORBED. It is never drawn as a file of its own. What it contributes is:
+ *
+ *  - the working-changes line and the ledger lines, which are drawn UNDER the
+ *    chain's parent row and are records rather than files;
+ *  - for a chain hanging off an EPUB the user handed us, the parent row itself
+ *    — because such a project has no row for its archive EPUB at all (main's
+ *    `listProjectPdfs` lists PDFs, and an EPUB-native project holds none), so
+ *    the copy's row is the only row that book has. It is drawn there as THE
+ *    BOOK, named after the book, opening on the book — not as "a working file".
+ *
+ * Which of those it is doing is `bookRowType`.
+ *
+ * ── The absorption has to be UNCONDITIONAL, and once was not ────────────────
+ *
+ * This was already the intent and it had a hole, which is what Owen hit. The
+ * loose sweep at the bottom draws every row no line claimed — a deliberate rule,
+ * so a file on disk can never be work with no door — and it decided "claimed" by
+ * asking whether any line had been drawn ON that row. A chain hanging off a CAST
+ * book draws its parent row on the `generated` row, and reaches the `exported`
+ * row only through the working-changes line and the ledger lines. A book that
+ * has just been cast has NEITHER: no pass has run, and `hasWorkingChanges` is
+ * false because the only records a fresh mint writes are the automatic
+ * chapter-opener naming. So nothing named the working copy, the sweep found it
+ * unclaimed, and drew it top level with Open, Export and Delete on it — the
+ * "working file" line, appearing at exactly the moment a conversion finished.
+ *
+ * Absorption is therefore recorded as a FACT ABOUT THE CHAIN, decided when the
+ * chain is laid out, and not inferred afterwards from which lines happened to
+ * exist. A rule that is only true when other things are true is not the rule.
  *
  * ── There is no "the project's book" here any more ──────────────────────────
  *
@@ -114,17 +143,40 @@ export type ChainLineKind =
    */
   | 'working-pdf'
   /**
-   * THE EPUB — the one book line the user sees, top level, and the CONTROL
-   * CENTRE for its chain (Owen, 2026-08-10: "the archive document will be the
-   * control center"). Open lands on the working copy; Process opens the passes;
-   * Erase all changes and Delete live here. Nothing else on the chain opens.
+   * THE CHAIN'S PARENT ROW — the one book line the user sees, top level, and the
+   * CONTROL CENTRE for its chain (Owen, 2026-08-10: "the archive document will
+   * be the control center").
+   *
+   * It is the ARCHIVE-GRADE file the chain hangs off: the cast book for a chain
+   * read out of a PDF, and the copy's own row for a chain hanging off an EPUB
+   * the user handed us, which has no other row (see the header). Never the
+   * working copy AS a working copy — that file has no line, and its acts are
+   * performed from here.
+   *
+   * Everything the chain can do is on this row: Open (which lands on the working
+   * copy), Process (the passes), Generate analysis, Export TTS copy, Erase all
+   * changes and Delete. Nothing else on the chain opens.
    */
   | 'book'
   /**
-   * The standing set of working-change RECORDS, indented under the book.
+   * The standing set of working-change RECORDS, indented under the parent row.
    *
    * Virtual: it names no file of its own. Its delete is `book:erase-changes`
    * with scope 'working-changes'. A LEDGER line — clear only.
+   *
+   * ── THE ONLY HANDLE THE USER HAS ON THE WORKING COPY (Owen, 2026-08-10) ────
+   *
+   * "they will see working changes as an indented line item with limited
+   * options, which they can delete if they want to start over. working file
+   * should not be visible. thats behind the scenes work."
+   *
+   * So this line carries the whole of "start over": clearing it is how a user
+   * throws away their edits, and there is no door anywhere that offers to delete
+   * the working FILE. That is not a capability that moved — it is one the user
+   * never needed, because the file is custody bookkeeping and its records are
+   * the thing they were ever actually deleting. The copy is re-minted on the
+   * spot by the erase, which is why deleting it as a file could never have meant
+   * anything different.
    */
   | 'working-changes'
   /**
@@ -286,6 +338,31 @@ export interface ChainButtons {
    */
   readonly process: boolean;
   /**
+   * Export TTS copy — cut this chain's narration copy from its book.
+   *
+   * ── Moved here from the picker (Owen, 2026-08-10) ──────────────────────────
+   *
+   * "lets also make it so they can generate a tts file from the versions window,
+   * with a button, instead of only doing it from inside the pdf picker." And,
+   * completing the move: "we dont do tts configuration from there. we do it from
+   * the main window."
+   *
+   * On the PARENT ROW, and there ALWAYS — not only while the chain has no
+   * narration copy yet. Cutting the copy again is the ordinary act, not the
+   * exceptional one: every block struck out after the last cut is a change the
+   * narration copy does not have, and a button that disappeared once the file
+   * existed would leave the second cut with no door. That is the same mistake as
+   * a working copy with no line, in the other direction.
+   *
+   * It is NOT the narration row's Process, which means something else entirely —
+   * take THIS file to narration. One makes the file, the other reads it.
+   *
+   * Gated on the parent row being an EPUB, exactly as the passes are: a
+   * narration copy is cut from a book, and a chain whose parent line is somehow
+   * not one has nothing to cut.
+   */
+  readonly ttsExport: boolean;
+  /**
    * Erase all changes (scope 'everything').
    *
    * On the book line of BOTH origins, and always as a SPECIAL — never as the
@@ -347,6 +424,7 @@ const NO_BUTTONS: ChainButtons = {
   analysis: false,
   passes: false,
   process: false,
+  ttsExport: false,
   eraseEverything: false,
   review: 'none',
   open: false,
@@ -420,6 +498,18 @@ export function bookChain(input: BookChainInput): ChainLine[] {
   const { rows, families } = input;
   const lines: ChainLine[] = [];
 
+  /**
+   * The rows a chain has deliberately NOT drawn as files of their own.
+   *
+   * Every chain's working copy goes in here, whether or not any line ended up
+   * standing on it — that is the unconditional half of the absorption rule the
+   * header argues for, and the reason it is a set built as the chains are laid
+   * out rather than a question asked of the finished lines. The loose sweep
+   * skips these: they are not undrawn work, they are work the model has decided
+   * has no line.
+   */
+  const absorbed = new Set<string>();
+
   /** The chain cast out of a given archive PDF row, when one was. */
   const castFrom = (archiveRowId: string): ChainFamily | null =>
     families.find((f) => f.archiveRowId === archiveRowId) ?? null;
@@ -470,6 +560,13 @@ export function bookChain(input: BookChainInput): ChainLine[] {
     const narrationRow = rowOf(rows, 'narration', family.id);
     if (bookRow === null) continue;
 
+    // The working copy has no line of its own, and that is settled HERE — before
+    // anything is drawn and regardless of what ends up being drawn. When this
+    // chain's parent row IS the copy's row (a chain hanging off an EPUB the user
+    // handed us) it is still absorbed: what gets drawn on it is the BOOK, and
+    // the loose sweep must not consider the same row a second time as a file.
+    if (exportedRow !== null) absorbed.add(exportedRow.id);
+
     const stamp = { familyId: family.id, sourceName: family.sourceName };
 
     lines.push({
@@ -487,6 +584,9 @@ export function bookChain(input: BookChainInput): ChainLine[] {
         // and only when it is a book. A chain whose top-level line is somehow
         // not an EPUB has nothing for simplify or translate to rewrite.
         passes: bookRow.extension === 'epub',
+        // Cutting the narration copy, from the book it is cut FROM. Same gate as
+        // the passes and for the same reason — see ChainButtons.ttsExport.
+        ttsExport: bookRow.extension === 'epub',
         // Wherever there is a working copy there are changes to erase, and the
         // act lives HERE, as a special, whichever row this line is standing on.
         eraseEverything: exportedRow !== null,
@@ -585,6 +685,15 @@ export function bookChain(input: BookChainInput): ChainLine[] {
   // can say which book it is a copy of.
   const drawn = new Set(lines.map((l) => l.rowId));
   for (const row of rows) {
+    // A working copy is never swept up here. It is not a row that failed to be
+    // drawn — it is a row the model has decided has no line, and the sweep's
+    // "work with no door" argument does not apply to it: every door onto that
+    // file is on its chain's parent row, which IS drawn. Asked before the
+    // `drawn` check because the whole bug was that `drawn` cannot answer this —
+    // a freshly cast book has no working-changes line and no ledger, so nothing
+    // stood on the copy's row and the sweep drew it as a file called "Working
+    // copy" (Owen, 2026-08-10).
+    if (absorbed.has(row.id)) continue;
     if (CLAIMED.has(row.type) && drawn.has(row.id)) continue;
     if (row.type === 'archive' || row.type === 'working') continue;
     lines.push({
