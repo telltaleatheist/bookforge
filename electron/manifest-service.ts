@@ -71,6 +71,7 @@ import {
   adoptLegacyEditorKey,
   deleteEditorState,
   migrateEditorState,
+  peekEditorState,
   readEditorState,
   stripEditorKey,
   updateEditorState,
@@ -2639,6 +2640,10 @@ export async function workingChangesByFamily(
   // being measured include untyped sub-fields the typed round-trip would drop.
   const manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf-8'));
   const archiveOriginal = await readArchiveOriginal(projectDir);
+  // The editor state through the store's own precedence rule (sidecar, or the
+  // legacy manifest key while it is still there) — and through the PEEK, since
+  // a listing must not migrate the project as a side effect of drawing it.
+  const editorState = await peekEditorState(projectDir);
 
   const hasContent = (v: unknown): boolean => {
     if (v === null || v === undefined) return false;
@@ -2648,7 +2653,7 @@ export async function workingChangesByFamily(
   };
 
   const pickerRecords =
-    hasContent(manifest.editor)
+    hasContent(editorState)
     || PICKER_SOURCE_RECORD_KEYS.some((key) => hasContent(manifest.source?.[key]))
     || hasContent(manifest.chapters)
     || hasContent(manifest.chaptersSource);
