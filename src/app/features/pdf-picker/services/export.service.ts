@@ -510,7 +510,9 @@ export class ExportService {
     blocks: ExportableBlock[],
     deletedIds: Set<string>,
     deletedHighlights?: DeletedHighlight[],
-    categories?: Map<string, Category>
+    categories?: Map<string, Category>,
+    /** WHICH working chain the export registers against — the window's own. */
+    familyId?: string,
   ): Promise<ExportResult> {
     if (!this.electron) {
       return {
@@ -532,7 +534,8 @@ export class ExportService {
         epubSourcePath,
         savePath,
         edits,
-        deletedBlockExamples.length > 0 ? deletedBlockExamples : undefined
+        deletedBlockExamples.length > 0 ? deletedBlockExamples : undefined,
+        familyId,
       );
 
       if (!result.success) {

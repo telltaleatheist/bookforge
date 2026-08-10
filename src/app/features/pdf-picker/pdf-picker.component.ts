@@ -9383,6 +9383,11 @@ export class PdfPickerComponent implements OnInit {
       this.blocks(),
       this.deletedBlockIds(),
       this.getDeletedHighlights(),
+      undefined,
+      // The chain this window opened — a two-version project exports and
+      // registers against the version whose button was pressed, never "the"
+      // chain (MP-H4's renderer half).
+      this.workingChain()?.familyId,
     );
   }
 
