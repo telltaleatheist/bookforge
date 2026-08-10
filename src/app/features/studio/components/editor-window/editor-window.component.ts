@@ -32,7 +32,6 @@ import { EditorRouteService } from '../../services/editor-route.service';
           [overrideSourcePath]="sourcePath()"
           [librarySourcePath]="libraryMode() ? projectPath() : null"
           (finalized)="onFinalized($event)"
-          (handedOffToNarration)="onHandedOffToNarration()"
           (exitRequested)="onExitRequested()"
         />
       } @else if (error()) {
@@ -229,24 +228,17 @@ export class EditorWindowComponent implements OnInit {
     }
   }
 
-  /**
-   * The picker reached the top of its ladder: the book has been handed to
-   * narration and the main window has already been raised onto it.
-   *
-   * So this window closes, and closes NOW. There is no toast, because the user
-   * is looking at the main window by the time this fires; a success message on
-   * a window they have left is a message to nobody, and the 1.5s delay
-   * `onFinalized` uses to let them read it would just leave a stale picker
-   * floating over the book they were moved to.
-   *
-   * Nothing here checks whether the hand-off worked. The picker only emits this
-   * once main has accepted it (`app:show-narration`) and says so itself when it
-   * has not — closing on a refusal is exactly the failure that ordering exists
-   * to prevent.
-   */
-  onHandedOffToNarration(): void {
-    window.close();
-  }
+  // `onHandedOffToNarration` lived here — the picker used to emit
+  // `handedOffToNarration` once main had raised the main window onto the
+  // Process tab, and this closed the window onto it with no toast. Retired
+  // 2026-08-10 with the picker's `goToNarration`/`handedOffToNarration`
+  // themselves: Owen ruled TTS configuration and generation are the main
+  // window's job, not the picker's, so there is no hand-off left for this
+  // window to answer. The capability it used to close onto — cutting the TTS
+  // copy — moved to the versions window's own Export TTS copy button. The
+  // picker's terminal action is now DONE (`finishEditing()` in
+  // pdf-picker.component.ts), which closes through `exitRequested` below,
+  // exactly like every other exit from this window.
 
   /**
    * Handle exit request from PdfPicker
