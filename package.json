@@ -67,6 +67,7 @@
     "postinstall": "npm run download:mupdf || echo 'MuPDF download skipped (run npm run download:mupdf manually if needed)'",
     "migrate:sidecars": "node scripts/run-sidecar-migration.cjs",
     "test:version-family": "npx tsc -p tsconfig.electron.json && node tools/test-version-family.js",
+    "test:book-chain": "npx tsc -p tsconfig.electron.json && node tools/test-book-chain.js",
     "test:rail-tasks": "npx tsc -p tsconfig.electron.json && node tools/test-rail-tasks.js",
     "test:component-upgrades": "npx tsc -p tsconfig.electron.json && node tools/test-component-upgrades.js",
     "test:quire": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/test-quire.js",

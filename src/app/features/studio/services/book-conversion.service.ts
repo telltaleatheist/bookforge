@@ -47,6 +47,7 @@ import {
   resolveVlmEndpoint,
   resolveVlmRoute,
   vlmRouteLabel,
+  type VlmConvertDestination,
   type VlmConvertResult,
   type VlmEndpointConfig,
   type VlmRoute,
@@ -125,6 +126,15 @@ export interface ConversionRequest {
    * about a run that may never happen.
    */
   readings?: VlmReadingsChoice;
+  /**
+   * Whether this run REPLACES the project's book or lands beside it.
+   *
+   * Asked on the versions page, once, before the run is prepared — the same
+   * timing rule the readings question follows, and for the same reason: it
+   * travels ON the request, so a queued row and every retry of it land where the
+   * user said, and nothing downstream re-decides. Absent is 'replace'.
+   */
+  destination?: VlmConvertDestination;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -407,6 +417,10 @@ export class BookConversionService {
         // Recorded on the row, so its start and every retry read the same
         // answer. Absent only for an attaching row, which starts nothing.
         ...(readings ? { readings } : {}),
+        // Where this run lands, recorded for the same reason: a row that sits in
+        // the queue overnight must still replace, or still land beside, exactly
+        // what the user chose when they added it.
+        ...(request?.destination ? { destination: request.destination } : {}),
       },
     });
 
@@ -494,6 +508,11 @@ export class BookConversionService {
         // Absent only where nobody was asked, which main reads as "expecting
         // the bank" (shared/vlm/readings-bank.ts).
         ...(request.readings ? { readings: request.readings } : {}),
+        // Where the finished book lands, as the user answered it before the run
+        // was prepared. Absent means 'replace', which is what conversion has
+        // always done and what every request made before the question existed
+        // meant (shared/vlm/conversion.ts).
+        ...(request.destination ? { destination: request.destination } : {}),
       });
       if (!answer.success || !answer.result) {
         throw new Error(answer.error || 'The conversion failed and said nothing about why.');

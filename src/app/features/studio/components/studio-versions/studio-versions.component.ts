@@ -18,19 +18,40 @@ import type { BookResetSummary } from '@shared/processing/reset-book';
 import { samePath } from '@shared/document/same-path';
 import { describeWorkingCopyRemint } from '@shared/document/working-copy-remint';
 import {
+  describeLedgerDeletion,
+  ledgerAfterDeleting,
+  listLedgerLabels,
+  type LedgerDeletion,
+} from '@shared/document/book-ledger';
+import {
+  bookChain,
+  describeWorkingChangesErase,
+  type ChainLine,
+  type ChainLineKind,
+} from '@shared/document/book-chain';
+import {
   STAR_LABELS,
   STAR_MEANINGS,
   latestPassByKind,
   narrationRefusal,
   starForPassKind,
   starSlotsFor,
-  versionFamily,
-  type FamilyRowKind,
+  starsFor,
   type VersionFamilyInput,
   type VersionStar,
 } from '@shared/document/version-family';
 import { StudioConvertModalComponent } from '../studio-convert-modal/studio-convert-modal.component';
 import { BookConversionService, type ConversionSource } from '../../services/book-conversion.service';
+import type { VlmConvertDestination } from '@shared/vlm/conversion';
+import { SettingsService } from '../../../../core/services/settings.service';
+import {
+  PassOptionsModalComponent,
+  type PassAiChoice,
+  type PassOptionsKind,
+  type PassOptionsResult,
+} from '../../../pdf-picker/components/pass-options-modal/pass-options-modal.component';
+import type { ChainPassRequest, ProcessingPassKind } from '@shared/processing/pass-types';
+import { BOOK_PASS_OPTIONS, type BookPassOption } from '@shared/processing/book-passes';
 
 interface VersionRow {
   id: string; type: string; label: string; description: string;
@@ -54,10 +75,39 @@ interface VersionRow {
    * which book erasing changes goes back to, so the confirmation can be true.
    */
   generatedOrigin?: 'cast' | 'adopted';
+  /**
+   * The 'exported' row only: the book's LEDGER, oldest first.
+   *
+   * The passes the user committed to, each owning a snapshot of the book as it
+   * left it and (when the pass recorded one) the diff frozen at that instant.
+   * These are the indented lines under the book; the working-changes line beside
+   * them is VIRTUAL and is deliberately not in this list.
+   */
+  ledger?: LedgerRowEntry[];
   // Present only on the synthetic 'analysis' entry (its durable version pin):
   analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
   analysisFlagCount?: number;
   analysisIsCheckpoint?: boolean;
+}
+
+/**
+ * One ledger entry as `editor:get-versions` hands it over.
+ *
+ * `hasReceipt` and `receiptPath` are both here and are not the same question:
+ * the path is where the frozen diff WOULD be, and the boolean is whether main
+ * found it. A pass that recorded no diff (translate does not) and a pass whose
+ * diff went missing both come back with `hasReceipt: false`, and the Review
+ * button is drawn disabled saying so rather than left off the line.
+ */
+interface LedgerRowEntry {
+  id: string;
+  kind: string;
+  label: string;
+  createdAt: string;
+  hasReceipt: boolean;
+  /** The book exactly as this pass left it — the entry opens and exports it. */
+  snapshotPath: string;
+  receiptPath: string | null;
 }
 
 /** The TTS sentence cache for this project (per-sentence audio already rendered),
@@ -101,21 +151,35 @@ interface StarSlot {
   action: string | null;
 }
 
-/** One document row, arranged into the family and carrying its derived state. */
-interface DocumentFamilyRow {
-  v: VersionRow;
-  /** 0 for the archive parent (and for rows outside the family), 1 for a child. */
-  depth: 0 | 1;
+/**
+ * One LINE of the book chain, ready to render.
+ *
+ * The arrangement and the button matrix are `shared/document/book-chain.ts`; this
+ * is that answer joined back to the row it describes, so the template reads
+ * fields instead of deciding anything. `v` is null for the one line that names no
+ * file — the virtual working-changes line — and `entry` is set for the ledger
+ * lines only.
+ */
+interface ChainRowView {
+  line: ChainLine;
+  /** The `editor:get-versions` row this line acts on, or null. */
+  v: VersionRow | null;
+  /** The ledger entry this line IS, for a 'ledger' line. */
+  entry: LedgerRowEntry | null;
+  label: string;
+  /** The file extension shown beside the label. Empty for a virtual line. */
+  ext: string;
+  icon: string;
+  description: string;
   /**
-   * Which member of the family this row IS, or null for a row outside it (the
-   * legacy stage outputs, the old source/original).
+   * The star columns — on the BOOK line only, and only for passes the ledger
+   * does not carry.
    *
-   * Depth cannot answer that question — a row outside the family is depth 0 too
-   * — and Process needs it: the button means "take this BOOK to narration", and
-   * the book is the family. A Process on the cleaned/simplified/translated rows
-   * would appear to promise narration of THAT file, which is not what it does.
+   * A pass that is a ledger entry has its own indented line with its own Review
+   * changes button, and two ways in to one diff is how a panel comes to look
+   * like it recorded a pass twice. What is left on the stars is the history the
+   * ledger cannot hold: passes applied before the ledger existed.
    */
-  family: FamilyRowKind | null;
   slots: StarSlot[];
   staleness: string | null;
 }
@@ -189,7 +253,7 @@ const AUDIO_EXTS = new Set([
   standalone: true,
   imports: [
     CommonModule, FormsModule, DiffViewComponent, MetadataEditorComponent, DesktopSelectComponent,
-    StudioConvertModalComponent,
+    StudioConvertModalComponent, PassOptionsModalComponent,
   ],
   host: { '[class.comparing]': '!!comparing()' },
   template: `
@@ -300,18 +364,29 @@ const AUDIO_EXTS = new Set([
                     <div class="rdesc">{{ variantSubtitle(v) }}</div>
                     @if (variantFilename(v); as fn) { <div class="rfile" [title]="fn">{{ fn }}</div> }
                   </div>
+                  <!-- The same three columns as the book chain below, so an
+                       archive EPUB listed here lines up with the book's own
+                       lines. Open is empty for a format the editor cannot show. -->
                   <div class="ractions" (click)="$event.stopPropagation()">
-                    @if (!isPrimary(v)) {
-                      <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
-                    }
-                    @if (canAnalyzeVariant(v) && !variantIsAnalysisTarget(v)) {
-                      <button class="act" (click)="emitGenerateAnalysisVariant(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
-                    }
-                    @if (canOpenInEditor(v)) {
-                      <button class="act" (click)="openVariant(v)" title="Open this file in the editor">Open</button>
-                    }
-                    <button class="act" (click)="exportVariant(v)" title="Save a copy to your computer">Export</button>
-                    <button class="act danger" (click)="remove(v)" title="Delete this version">Delete</button>
+                    <div class="specials">
+                      @if (!isPrimary(v)) {
+                        <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
+                      }
+                      @if (canAnalyzeVariant(v) && !variantIsAnalysisTarget(v)) {
+                        <button class="act" (click)="emitGenerateAnalysisVariant(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
+                      }
+                    </div>
+                    <div class="slot">
+                      @if (canOpenInEditor(v)) {
+                        <button class="act" (click)="openVariant(v)" title="Open this file in the editor">Open</button>
+                      }
+                    </div>
+                    <div class="slot">
+                      <button class="act" (click)="exportVariant(v)" title="Save a copy to your computer">Export</button>
+                    </div>
+                    <div class="slot">
+                      <button class="act danger" (click)="remove(v)" title="Delete this version">Delete</button>
+                    </div>
                   </div>
                 </div>
 
@@ -351,9 +426,16 @@ const AUDIO_EXTS = new Set([
           }
         </div>
 
-        <!-- The document family: the archive original, and the working copy and
-             book EPUB indented under it. One family, not a flat list — and no
-             pass-shaped rows, because a pass is not a version. -->
+        <!-- The book chain: two files, and everything else indented under them.
+             Owen, 2026-08-09: "the user would only ever see two files on the main
+             page - the pdf and the epub… under the epub… smaller, indented lines
+             that say 'working changes' or something… in whichever order they were
+             originally executed. the tts file is also indented under its parent."
+
+             The working copy has no line of its own: the EPUB the user sees IS
+             their book, and opening it lands on the copy
+             (shared/document/artifact-open.ts). What the arrangement is, and
+             which line gets which buttons, is shared/document/book-chain.ts. -->
         <div class="section-head">
           <span>Documents</span>
         </div>
@@ -363,13 +445,13 @@ const AUDIO_EXTS = new Set([
         } @else if (documentRows().length === 0) {
           <div class="muted">No document versions yet.</div>
         } @else {
-          @for (row of documentRows(); track row.v.id) {
-            <div class="row" [class.child]="row.depth === 1"
-                 [class.clickable]="row.v.editable" (click)="onDocRowClick(row.v)">
-              <span class="ricon">{{ row.v.icon || '\u{1F4C4}' }}</span>
+          @for (row of documentRows(); track row.line.key) {
+            <div class="row" [class.child]="row.line.depth === 1"
+                 [class.clickable]="rowIsClickable(row)" (click)="onChainRowClick(row)">
+              <span class="ricon">{{ row.icon }}</span>
               <div class="rinfo">
-                <div class="rlabel">{{ row.v.label }} <span class="ext">.{{ row.v.extension }}</span></div>
-                <div class="rdesc">{{ rowDescription(row) }}</div>
+                <div class="rlabel">{{ row.label }}@if (row.ext) { <span class="ext">.{{ row.ext }}</span> }</div>
+                <div class="rdesc">{{ row.description }}</div>
                 @if (row.slots.length > 0) {
                   <!-- The stars are the record that a pass ran, so a star whose
                        pass left a diff IS the way in to what it changed. One that
@@ -416,77 +498,89 @@ const AUDIO_EXTS = new Set([
                   }
                 }
               </div>
+              <!-- Owen, 2026-08-09: "theyre supposed to be lined up with each
+                   other. from right to left, on every file - delete, export,
+                   open. then, to the left of that are special buttons, depending
+                   on whether the file is capable of running the commands."
+
+                   The three standing acts are in fixed columns, so a line that
+                   cannot perform one leaves its column EMPTY rather than closing
+                   the gap — which is the whole of what makes them line up. The
+                   specials share one flexible column to the left of them. -->
               <div class="ractions" (click)="$event.stopPropagation()">
-                @if (conversion() && rowStartedConversion(row)) {
-                  <button class="act" (click)="showConversion()"
-                          title="Watch the conversion, or stop it">Show progress</button>
-                } @else if (canConvert(row)) {
-                  <button class="act primary" [disabled]="!!conversion()"
-                          [title]="conversionBusyTitle() ?? convertTitle(row)"
-                          (click)="startConversion(row)">{{ convertLabel(row) }}</button>
-                }
-                @if (canMintWorkingCopy(row)) {
-                  <button class="act" [disabled]="makingWorkingCopy()" (click)="mintWorkingCopy(row)"
-                          title="Make your own copy of this PDF to mark up. The original is never written to.">
-                    {{ makingWorkingCopy() ? 'Making…' : 'Create working copy' }}
-                  </button>
-                }
-                @if (hasSkippedReport(row.v)) { <button class="act" (click)="skipped.emit()">Skipped</button> }
-                @if (hasDiffRecord(row.v)) {
-                  <button class="act" (click)="startCompare(row.v)" title="Review the changes made to produce this version">Review Changes</button>
-                }
-                @if (isEpub(row.v) && !docIsAnalysisTarget(row.v)) {
-                  <button class="act" (click)="emitGenerateAnalysisDoc(row.v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
-                }
-                @if (row.family) {
-                  <!-- Process: this book, narrated (docs/PIPELINE_V2_PLAN.md —
-                       "every document row has a Process button"). On the FAMILY
-                       rows only: it takes the book to narration, and a Process on
-                       a cleaned/simplified/translated row would look like a promise
-                       to narrate that file instead.
-
-                       Shown DISABLED with the reason rather than hidden, and the
-                       reason is the ladder's own sentence — the picker's Next
-                       refuses the same books with the same words. (The archive
-                       row's Open used to be the other button in this shape; it
-                       performs its act now, so this is the only one left.) -->
-                  <button class="act" [disabled]="narrationRefusalReason() !== null"
-                          [title]="narrationTitle()" (click)="process.emit()">Process</button>
-                }
-                @if (row.v.editable || row.v.type === 'narration'
-                     || row.v.type === 'generated' || row.v.type === 'archive') {
-                  <!-- Three of the rows this covers name a file nothing may
-                       write to, and all three still open, because a row you
-                       cannot get into is a row the user has to take on trust.
-
-                       The ARCHIVE and the GENERATED book LAND ON THE WORKING
-                       COPY (Owen, 2026-08-09: "if they open an archive epub, it
-                       just opens a new working copy seamlessly"). The archive's
-                       Open was disabled until then, explaining that opening a
-                       book puts you on your copy — a button that described the
-                       act instead of performing it. The row carries the copy as
-                       its open path, so where the click goes is stated here
-                       rather than left to the picker's redirect to catch.
-
-                       The NARRATION copy opens as itself, and that is the point
-                       of opening it: it is the file TTS reads, and previewing
-                       what will be spoken is the whole reason to look. It is not
-                       editable and never becomes so — it is re-cut from the book
-                       and the strikes at every export — so the picker shows it
-                       with the read-only banner and a way back. -->
-                  <button class="act" (click)="openDoc(row.v)" [title]="openTitle(row.v)">Open</button>
-                }
-                @if (exportable(row.v)) {
-                  <button class="act" (click)="exportDoc.emit(row.v.path)" [title]="exportTitle(row.v)">Export</button>
-                }
-                @if (deletable(row.v)) {
-                  <!-- The book row's danger button says "Erase all changes", not
-                       "Delete": deleting that file was never durable — the next
-                       open mints it again byte-identical — so the label names
-                       what the act really is (Owen, 2026-08-09). -->
-                  <button class="act danger" (click)="removeDoc(row.v)"
-                          [title]="deleteTitle(row.v)">{{ deleteLabel(row.v) }}</button>
-                }
+                <div class="specials">
+                  @if (conversion() && rowStartedConversion(row)) {
+                    <button class="act" (click)="showConversion()"
+                            title="Watch the conversion, or stop it">Show progress</button>
+                  } @else if (canConvert(row)) {
+                    <button class="act primary" [disabled]="!!conversion()"
+                            [title]="conversionBusyTitle() ?? convertTitle(row)"
+                            (click)="startConversion(row)">{{ convertLabel(row) }}</button>
+                  }
+                  @if (canMintWorkingCopy(row)) {
+                    <button class="act" [disabled]="makingWorkingCopy()" (click)="mintWorkingCopy(row)"
+                            title="Make your own copy of this PDF to mark up. The original is never written to.">
+                      {{ makingWorkingCopy() ? 'Making…' : 'Create working copy' }}
+                    </button>
+                  }
+                  @if (row.v && hasSkippedReport(row.v)) {
+                    <button class="act" (click)="skipped.emit()">Skipped</button>
+                  }
+                  @if (row.v && hasDiffRecord(row.v)) {
+                    <button class="act" (click)="startCompare(row.v)"
+                            title="Review the changes made to produce this version">Review Changes</button>
+                  }
+                  <!-- The frozen diff of a pass the user committed to. Owen asked
+                       for it by name; the receipts are what make it possible at
+                       all, because the pass's own stage directory is cleared by
+                       the next re-mint of the book. A line whose receipt is
+                       missing shows the button DISABLED with the reason — a
+                       silent gap there would read as a pass that changed nothing. -->
+                  @if (row.line.buttons.review !== 'none') {
+                    <button class="act" [disabled]="row.line.buttons.review !== 'ready'"
+                            [title]="reviewLineTitle(row)"
+                            (click)="reviewLedgerLine(row)">Review changes</button>
+                  }
+                  @if (row.line.buttons.analysis && row.v && !docIsAnalysisTarget(row.v)) {
+                    <button class="act" (click)="emitGenerateAnalysisDoc(row.v)"
+                            title="Analyze this book for rhetorical manipulation and problematic patterns">Generate analysis</button>
+                  }
+                  <!-- The act that came with the working copy's row when that row
+                       stopped being drawn. It clears the working changes AND the
+                       ledger, which is what it has always said. -->
+                  @if (row.line.buttons.eraseEverything) {
+                    <button class="act danger" (click)="eraseEverythingOnLine()"
+                            title="Clear every change AND every pass recorded on this book, and put a fresh copy in its place">Erase all changes</button>
+                  }
+                  <!-- Process on the BOOK opens the passes; Process on the
+                       narration copy takes THAT file to narration, carrying its
+                       path so the pipeline is told which document it has. -->
+                  @if (row.line.buttons.passes) {
+                    <button class="act" (click)="openPassesModal()"
+                            title="Have something done to this book — the passes run in the queue">Process</button>
+                  }
+                  @if (row.line.buttons.process) {
+                    <button class="act" [disabled]="narrationRefusalReason() !== null"
+                            [title]="narrationTitle()" (click)="processLine(row)">Process</button>
+                  }
+                </div>
+                <div class="slot">
+                  @if (row.line.buttons.open) {
+                    <button class="act" (click)="openLine(row)" [title]="openLineTitle(row)">Open</button>
+                  }
+                </div>
+                <div class="slot">
+                  @if (row.line.buttons.export) {
+                    <button class="act" (click)="exportLine(row)" [title]="exportLineTitle(row)">Export</button>
+                  }
+                </div>
+                <div class="slot">
+                  @if (row.line.buttons.delete) {
+                    <button class="act danger" [disabled]="deleteLineRefusal(row) !== null"
+                            (click)="deleteLine(row)"
+                            [title]="deleteLineTitle(row)">{{ deleteLineLabel(row) }}</button>
+                  }
+                </div>
               </div>
             </div>
           }
@@ -511,14 +605,22 @@ const AUDIO_EXTS = new Set([
                           title="Re-run the content analysis on the same version">Regenerate</button>
                 }
               </div>
-              @if (a.path) {
-                <button class="act" (click)="viewAnalysis.emit({ path: a.path })"
-                        title="Open the analyzed version with the flags highlighted">View</button>
-                <button class="act" (click)="exportDoc.emit(a.path)"
-                        title="Save a copy of the analyzed file">Export</button>
-              }
-              <button class="act danger" (click)="removeAnalysis()"
-                      title="Delete the content-analysis report">Delete</button>
+              <div class="slot">
+                @if (a.path) {
+                  <button class="act" (click)="viewAnalysis.emit({ path: a.path })"
+                          title="Open the analyzed version with the flags highlighted">View</button>
+                }
+              </div>
+              <div class="slot">
+                @if (a.path) {
+                  <button class="act" (click)="exportDoc.emit(a.path)"
+                          title="Save a copy of the analyzed file">Export</button>
+                }
+              </div>
+              <div class="slot">
+                <button class="act danger" (click)="removeAnalysis()"
+                        title="Delete the content-analysis report">Delete</button>
+              </div>
             </div>
           </div>
         }
@@ -549,7 +651,14 @@ const AUDIO_EXTS = new Set([
                 <button class="act" (click)="correctSentences.emit()"
                         title="Listen to the rendered sentences and regenerate any that sound wrong, then rebuild">🔧 Correct Sentences</button>
               </div>
-              <button class="act danger" (click)="deleteCache()" title="Delete all cached sentence audio for this book">Delete</button>
+              <!-- The cache is not a file you open or export — it is thousands
+                   of per-sentence clips. Its two columns stay empty so the
+                   Delete beside it still lines up with every other line. -->
+              <div class="slot"></div>
+              <div class="slot"></div>
+              <div class="slot">
+                <button class="act danger" (click)="deleteCache()" title="Delete all cached sentence audio for this book">Delete</button>
+              </div>
             </div>
           </div>
         }
@@ -572,25 +681,34 @@ const AUDIO_EXTS = new Set([
                 <div class="ractions" (click)="$event.stopPropagation()">
                   <div class="specials">
                     <button class="act" [class.active]="isProfessional(v)" (click)="setProfessional(v, !isProfessional(v))" [title]="isProfessional(v) ? 'Marked professionally read — click to unset' : 'Mark as professionally read'">{{ isProfessional(v) ? '★ Professional' : 'Mark professional' }}</button>
-                    @if (canGenerateSentences(v)) {
-                      <button class="act" (click)="openSentencePicker(v)"
-                              title="Transcribe this audiobook into synced on-screen text">Generate sentences</button>
-                    }
                     @if (canRegenerateSentences(v)) {
                       <button class="act" type="button" (click)="emitGenerateAudiobookAnalysis(v)"
                               title="Add analysis of this audiobook’s synced sentences to the queue">
                         Generate analysis
                       </button>
-                      <button class="act" (click)="openSentencePicker(v)"
-                              title="Re-transcribe this audiobook, replacing the current synced text">Regenerate sentences</button>
                     }
+                    <!-- Owen: "generate sentences on every audio file. its been an
+                         extremely important and useful tool." EVERY audio row
+                         carries it. While the transcript check is still running
+                         it is disabled with that as the reason rather than
+                         missing — the two buttons it used to be were both hidden
+                         in that window, so a row could show neither. -->
+                    <button class="act" [disabled]="!transcriptEligibilityKnown()"
+                            [title]="sentencesButtonTitle(v)"
+                            (click)="openSentencePicker(v)">{{ sentencesButtonLabel(v) }}</button>
                   </div>
-                  <button class="act primary" (click)="listenVariant(v)"
-                          title="Play this audiobook in the player window">Listen</button>
-                  <button class="act" (click)="exportAudioVariant(v)"
-                          title="Save a copy to your computer">Export</button>
-                  <button class="act danger" (click)="remove(v)"
-                          title="Delete the finished audiobook file (the rendered sentence cache is kept)">Delete</button>
+                  <div class="slot">
+                    <button class="act primary" (click)="listenVariant(v)"
+                            title="Play this audiobook in the player window">Listen</button>
+                  </div>
+                  <div class="slot">
+                    <button class="act" (click)="exportAudioVariant(v)"
+                            title="Save a copy to your computer">Export</button>
+                  </div>
+                  <div class="slot">
+                    <button class="act danger" (click)="remove(v)"
+                            title="Delete the finished audiobook file (the rendered sentence cache is kept)">Delete</button>
+                  </div>
                 </div>
               </div>
 
@@ -737,6 +855,52 @@ const AUDIO_EXTS = new Set([
     @if (convertModalOpen()) {
       <app-studio-convert-modal [projectDir]="projectDir()"
                                 (close)="convertModalOpen.set(false)" />
+    }
+
+    <!-- What can be done to this book. Owen, 2026-08-09: "the
+         translate/simplify/footnotes options are available from a modal that
+         appears if the user hits process on the archive files."
+
+         The list is DATA (shared/processing/book-passes.ts) — a pass added to
+         the pipeline appears here without this template changing. Every choice
+         is ADDED TO THE QUEUE: each of these is hours of model time over a whole
+         book, and a run that is not a queue row cannot be watched or cancelled. -->
+    @if (passesModalOpen()) {
+      <div class="gs-backdrop" (click)="closePassesModal()">
+        <div class="gs-modal" (click)="$event.stopPropagation()">
+          <h3 class="gs-title">What should be done to this book?</h3>
+          <p class="gs-note">
+            Each of these rewrites the book itself and is added to the queue, where it can be
+            watched and cancelled. Your own changes are kept — they are recorded against the book
+            rather than written into it — and every pass becomes a line under the book that you can
+            take back on its own.
+          </p>
+          <div class="gs-list">
+            @for (p of bookPasses; track p.kind) {
+              <button class="gs-choice" type="button" (click)="choosePass(p)">
+                <span class="gs-choice-name">{{ p.label }}</span>
+                <span class="gs-choice-note">{{ p.note }}</span>
+              </button>
+            }
+          </div>
+          @if (passError(); as e) { <div class="pass-err">{{ e }}</div> }
+          <div class="gs-actions">
+            <button class="act" (click)="closePassesModal()">Cancel</button>
+          </div>
+        </div>
+      </div>
+    }
+
+    <!-- The two passes that cannot start from a button alone: a simplify with no
+         mode, or a translate with no languages, is a run nobody specified. The
+         SAME dialog the picker uses, so one pass is configured one way. -->
+    @if (passOptionsKind(); as kind) {
+      <app-pass-options-modal
+        [kind]="kind"
+        [ai]="passAiChoice()"
+        (cancel)="passOptionsKind.set(null)"
+        (confirmed)="onPassOptionsConfirmed($event)"
+      />
     }
   `,
   styles: [`
@@ -953,17 +1117,34 @@ const AUDIO_EXTS = new Set([
       font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
       color: var(--text-secondary);
     }
-    /* Actions: a right-aligned cluster of the row's own buttons. margin-left:auto
-       pushes it to the row's right edge, so every row's buttons end at the same
-       right edge (they line up). Each row shows only the buttons it actually has —
-       no fixed-width columns and no invisible <span.slot> spacers, which used to
-       reserve ~480px in every row (making sparse rows float mid-panel and forcing
-       the whole cluster off the panel when it was narrower than that reserve).
-       flex-wrap lets the buttons drop to a second line WITHIN the row when the
-       panel is genuinely too narrow, instead of spilling off the edge. */
-    .ractions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; justify-content: flex-end; margin-left: auto; }
-    .ractions .specials { display: flex; gap: 6px; margin-right: 4px; }
-    .ractions .specials:empty { display: none; margin: 0; }
+    /* Actions: the three standing acts in FIXED COLUMNS, specials to their left.
+
+       Owen, 2026-08-09: "theyre supposed to be lined up with each other. from
+       right to left, on every file - delete, export, open. then, to the left of
+       that are special buttons, depending on whether the file is capable of
+       running the commands." So Open/Export/Delete each own a column of the same
+       width on every line, and a line that cannot perform one leaves its column
+       EMPTY — closing the gap is exactly what stops them lining up.
+
+       This is not the arrangement that was torn out in Aug 2026. That one
+       reserved a column for EVERY button the page could show (~480px in every
+       row, sparse rows floating mid-panel, the cluster pushed off a narrow
+       panel). Three columns of 78px is 234px, the specials share one flexible
+       column that is as wide as its contents and no wider, and the cluster still
+       wraps below the title on a narrow panel because .rinfo keeps its
+       flex-basis. */
+    .ractions {
+      display: grid; grid-template-columns: auto var(--act-col) var(--act-col) var(--act-col);
+      gap: 6px; align-items: center; margin-left: auto;
+      --act-col: 78px;
+    }
+    .ractions .specials {
+      display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin-right: 4px;
+    }
+    /* One standing act's column. Empty on a line that cannot perform it, which
+       is what holds the three in line down the page. */
+    .ractions .slot { display: flex; min-width: 0; }
+    .ractions .slot .act { width: 100%; padding-left: 4px; padding-right: 4px; }
     .act {
       box-sizing: border-box;
       display: inline-flex; align-items: center; justify-content: center;
@@ -1032,6 +1213,21 @@ const AUDIO_EXTS = new Set([
     .gs-note { margin-top: 12px; font-size: 0.75rem; color: var(--text-secondary); line-height: 1.45; }
     .gs-err { margin-top: 12px; font-size: 0.78rem; color: #ef4444; }
     .gs-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+    /* The book passes, one pressable card each. A whole row rather than a radio
+       and a confirm: there is nothing to configure at this step, so choosing IS
+       the act (and the two that do need configuring open their own dialog). */
+    .gs-list { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+    .gs-choice {
+      display: flex; flex-direction: column; gap: 3px; text-align: left;
+      font-family: inherit; cursor: pointer;
+      padding: 10px 12px; border-radius: 8px;
+      border: 1px solid var(--border-default, rgba(255,255,255,0.12));
+      background: var(--bg-base); color: var(--text-primary);
+    }
+    .gs-choice:hover { border-color: var(--accent-primary, #06b6d4); }
+    .gs-choice-name { font-size: 0.86rem; font-weight: 600; }
+    .gs-choice-note { font-size: 0.74rem; color: var(--text-secondary); line-height: 1.4; }
   `]
 })
 export class StudioVersionsComponent {
@@ -1054,14 +1250,20 @@ export class StudioVersionsComponent {
   readonly continueJob = output<void>();    // resume the partial render (routes to the Processing wizard)
   readonly assemble = output<void>();       // assemble the cached sentences (routes to the Processing wizard)
   /**
-   * Narrate this book — the per-row Process button (docs/PIPELINE_V2_PLAN.md).
+   * Narrate THIS FILE — the Process button, and it names its document.
    *
-   * Carries nothing, deliberately: it is the BOOK that gets narrated, and this
-   * component already shows exactly one book. The host answers it the same way
-   * it answers the picker's Next, which is the point — one destination, however
-   * you asked for it.
+   * It used to carry nothing, on the reasoning that a project has one book and
+   * the host could look it up. Owen ruled that out on 2026-08-09: "the tts
+   * pipeline knows exactly which file its working with because the user came to
+   * the tts page FROM the button on that document." A lookup on the far side is
+   * a second answer to "which file", and the two can disagree — the narration
+   * copy and the book are both real files on this page, and the button that
+   * names one must not hand over the other.
+   *
+   * So the path travels with the press, and the host binds it as the Process
+   * wizard's document rather than re-deriving one.
    */
-  readonly process = output<void>();
+  readonly process = output<{ path: string }>();
   readonly correctSentences = output<void>(); // regenerate individual bad sentences, then rebuild
   readonly changed = output<void>();        // after delete/edit -> tell Studio to refresh
   readonly compareActive = output<boolean>(); // Studio goes full-height while comparing
@@ -1253,51 +1455,81 @@ export class StudioVersionsComponent {
    * which is what keeps "the archive can never earn a star" true by
    * construction instead of by care.
    */
-  readonly documentRows = computed<DocumentFamilyRow[]>(() => {
-    const input = this.familyInput();
-    const family = new Map(versionFamily(input).map(r => [r.id, r]));
-    const reviews = this.reviewByStar();
-    // Derivation order: the archive PDF's pages are cast into the generated
-    // book, and the book the user edits is a byte copy of that.
-    const ladder = ['archive', 'generated', 'working', 'exported'];
-    const rank = (v: VersionRow): number => {
-      const at = ladder.indexOf(v.type);
-      // Everything outside the family (legacy stage outputs, the old source/
-      // original) keeps its own order, after the family.
-      return at === -1 ? ladder.length : at;
-    };
+  readonly documentRows = computed<ChainRowView[]>(() => {
+    const docs = this.documents();
+    const byId = new Map(docs.map(v => [v.id, v]));
+    const exported = docs.find(v => v.type === 'exported') ?? null;
+    const ledger = exported?.ledger ?? [];
+    const bookSlots = this.bookStarSlots();
 
-    return [...this.documents()]
-      .map((v, index) => ({ v, index }))
-      .sort((a, b) => (rank(a.v) - rank(b.v)) || (a.index - b.index))
-      .map(({ v }) => {
-        const member = family.get(v.id);
-        if (!member) return { v, depth: 0 as const, family: null, slots: [], staleness: null };
-        const lit = new Set<VersionStar>(member.stars);
+    return bookChain({
+      rows: docs.map(v => ({ id: v.id, type: v.type, extension: (v.extension || '').toLowerCase() })),
+      ledger,
+    }).map((line): ChainRowView => {
+      const v = line.rowId === null ? null : byId.get(line.rowId) ?? null;
+      const entry = line.ledgerId === null
+        ? null
+        : ledger.find(e => e.id === line.ledgerId) ?? null;
+      return {
+        line,
+        v,
+        entry,
+        label: this.lineLabel(line.kind, v, entry),
+        ext: this.lineExtension(line.kind, v, entry),
+        icon: this.lineIcon(line.kind, v),
+        description: this.lineDescription(line.kind, v, entry),
+        slots: line.kind === 'book' ? bookSlots : [],
+        staleness: null,
+      };
+    });
+  });
+
+  /**
+   * The star columns the BOOK line carries: the passes recorded against
+   * `outputs.epub` that the ledger does NOT hold an entry for.
+   *
+   * Read off the exported row's family membership rather than off the book
+   * line's own, because the passes are recorded on the working copy — and for a
+   * PDF-origin project the book line is the CAST, which nothing has ever written
+   * to and which therefore has no stars of its own by construction
+   * (`starsFor('generated')`, shared/document/version-family.ts).
+   *
+   * Kinds the ledger carries are dropped, and that is the whole point of the
+   * subtraction: those passes have their own indented line with their own Review
+   * changes, and a star offering the same diff would be the same record twice.
+   */
+  private readonly bookStarSlots = computed<StarSlot[]>(() => {
+    const input = this.familyInput();
+    if (input.epub === null) return [];
+    const exported = this.documents().find(v => v.type === 'exported') ?? null;
+    // Which stars the ledger already speaks for, asked through the one mapping
+    // from a pass kind to a star (@shared/document/version-family) so the two
+    // records agree about what a kind IS.
+    const inLedger = new Set<VersionStar>(
+      (exported?.ledger ?? [])
+        .map(e => starForPassKind(e.kind))
+        .filter((s): s is VersionStar => s !== null));
+    const lit = new Set<VersionStar>(starsFor('epub', input));
+    const reviews = this.reviewByStar();
+    return starSlotsFor('epub')
+      .filter(id => !inLedger.has(id))
+      .map(id => {
+        // A review only ever hangs off a LIT star: the diff is the record of a
+        // run, and an unlit star is the absence of one. A lit star with no diff
+        // (the pass ran, its job died before recording, or it predates diffs)
+        // keeps `review: null` and stays inert.
+        const review = lit.has(id) ? reviews.get(id) ?? null : null;
         return {
-          v,
-          depth: member.depth,
-          family: member.kind,
-          slots: starSlotsFor(member.kind).map(id => {
-            // A review only ever hangs off a LIT star: the diff is the record of
-            // a run, and an unlit star is the absence of one. A lit star with no
-            // diff (the pass ran, its job died before recording, or it predates
-            // diffs) keeps `review: null` and stays inert.
-            const review = lit.has(id) ? reviews.get(id) ?? null : null;
-            return {
-              id,
-              label: STAR_LABELS[id],
-              lit: lit.has(id),
-              tooltip: lit.has(id)
-                ? STAR_MEANINGS[id]
-                : `Not done: ${STAR_MEANINGS[id].charAt(0).toLowerCase()}${STAR_MEANINGS[id].slice(1)}`,
-              review,
-              action: review
-                ? `See what ${STAR_LABELS[id].toLowerCase()} changed in this file — ${review.when}`
-                : null,
-            };
-          }),
-          staleness: member.staleness,
+          id,
+          label: STAR_LABELS[id],
+          lit: lit.has(id),
+          tooltip: lit.has(id)
+            ? STAR_MEANINGS[id]
+            : `Not done: ${STAR_MEANINGS[id].charAt(0).toLowerCase()}${STAR_MEANINGS[id].slice(1)}`,
+          review,
+          action: review
+            ? `See what ${STAR_LABELS[id].toLowerCase()} changed in this file — ${review.when}`
+            : null,
         };
       });
   });
@@ -1355,7 +1587,7 @@ export class StudioVersionsComponent {
     this.documents().some(v => v.type === 'exported' || v.type === 'generated'));
 
   /** True when at least one star on this row can be pressed. Drives the hint. */
-  rowHasReviewableStar(row: DocumentFamilyRow): boolean {
+  rowHasReviewableStar(row: ChainRowView): boolean {
     return row.slots.some(s => !!s.review);
   }
 
@@ -1385,6 +1617,473 @@ export class StudioVersionsComponent {
     if (review.kind === 'footnotes') void this.loadPassReport(review.reportPath);
   }
 
+  // ── The three standing acts, one per line ──────────────────────────────────
+  //
+  // Owen, 2026-08-09: "from right to left, on every file - delete, export, open.
+  // then, to the left of that are special buttons, depending on whether the file
+  // is capable of running the commands."
+  //
+  // They are laid out in fixed columns (see `.ractions` in the styles), so a
+  // line that cannot perform one leaves the column EMPTY rather than closing the
+  // gap — which is the whole of what makes them line up down the page. WHICH
+  // lines get which is `shared/document/book-chain.ts`; what each act IS, per
+  // kind, is here.
+
+  /**
+   * Open this line.
+   *
+   * A ledger line opens its SNAPSHOT — the book exactly as that pass left it —
+   * which is the only file that state exists as. Everything else opens what its
+   * row already opens, redirect and all (`editorTargetFor`).
+   */
+  openLine(row: ChainRowView): void {
+    if (row.line.kind === 'ledger') {
+      const entry = row.entry;
+      if (!entry) {
+        console.error('[studio-versions] Open was pressed on a ledger line whose entry is not in '
+          + 'the versions answer. Only a line built from an entry is rendered.');
+        return;
+      }
+      this.edit.emit(entry.snapshotPath);
+      return;
+    }
+    if (row.v === null) return;
+    this.openDoc(row.v);
+  }
+
+  /** What Open does on this line, in words. */
+  openLineTitle(row: ChainRowView): string {
+    if (row.line.kind === 'ledger') {
+      return 'Open the book exactly as this pass left it. It is a snapshot — nothing writes to it, '
+        + 'and your own copy is the line above.';
+    }
+    return row.v === null ? '' : this.openTitle(row.v);
+  }
+
+  /** Save a copy of what this line names. */
+  exportLine(row: ChainRowView): void {
+    if (row.line.kind === 'ledger') {
+      const entry = row.entry;
+      if (!entry) {
+        console.error('[studio-versions] Export was pressed on a ledger line whose entry is not in '
+          + 'the versions answer. Only a line built from an entry is rendered.');
+        return;
+      }
+      this.exportDoc.emit(entry.snapshotPath);
+      return;
+    }
+    if (row.v === null) return;
+    this.exportDoc.emit(row.v.path);
+  }
+
+  exportLineTitle(row: ChainRowView): string {
+    if (row.line.kind === 'ledger') {
+      return 'Save a copy of the book as this pass left it to your computer';
+    }
+    return row.v === null ? '' : this.exportTitle(row.v);
+  }
+
+  /**
+   * What the danger button on this line is CALLED.
+   *
+   * Never "Delete" for an act that is not one. The working-changes line erases
+   * records; the book line of a project whose working copy IS the book erases
+   * changes — the file comes straight back, so calling it a delete was the
+   * inaccuracy Owen ruled on (2026-08-09: "the thing they 'delete' is actually
+   * the changes, not the working copy").
+   */
+  deleteLineLabel(row: ChainRowView): string {
+    if (row.line.kind === 'working-changes') return 'Erase changes';
+    if (row.line.kind === 'ledger') return 'Delete';
+    return row.v === null ? 'Delete' : this.deleteLabel(row.v);
+  }
+
+  /**
+   * Why this line's delete is locked, or null when it can be pressed.
+   *
+   * A reason rather than a missing button: the columns line up, so a line with
+   * no delete at all would leave a hole that reads as an oversight. The
+   * narration copy is the case this exists for — it is pointed at by a manifest
+   * record the generic remover does not clear, so deleting the file would leave
+   * narration reading a path with nothing behind it.
+   */
+  deleteLineRefusal(row: ChainRowView): string | null {
+    if (row.line.kind === 'working-changes' || row.line.kind === 'ledger') return null;
+    if (row.v === null) {
+      return 'This line names no file, so there is nothing here to delete.';
+    }
+    if (row.v.type === 'narration') {
+      return 'The narration copy is re-cut from your book and your strikes every time you export '
+        + 'it, and the project records where it is — so it is not deleted from here. Exporting the '
+        + 'TTS copy again replaces it.';
+    }
+    return this.deletable(row.v)
+      ? null
+      : `${row.v.label} is not deleted from this page — it is part of how this project is put `
+        + 'together, and removing it here would leave records pointing at a file that is gone.';
+  }
+
+  deleteLineTitle(row: ChainRowView): string {
+    const refusal = this.deleteLineRefusal(row);
+    if (refusal !== null) return refusal;
+    if (row.line.kind === 'working-changes') {
+      return 'Clear every change you have made to this book. The passes you committed to are kept '
+        + '— they are the lines below.';
+    }
+    if (row.line.kind === 'ledger') {
+      return 'Take this pass back out of the book. Everything run after it goes with it, and you '
+        + 'are told which before anything happens.';
+    }
+    return row.v === null ? '' : this.deleteTitle(row.v);
+  }
+
+  /** Perform this line's delete. Each kind routes to the code that owns it. */
+  async deleteLine(row: ChainRowView): Promise<void> {
+    if (this.deleteLineRefusal(row) !== null) return;
+    if (row.line.kind === 'working-changes') { await this.eraseWorkingChanges(); return; }
+    if (row.line.kind === 'ledger') { await this.deleteLedgerLine(row); return; }
+    if (row.v === null) return;
+    await this.removeDoc(row.v);
+  }
+
+  /**
+   * Erase the working changes, keeping the passes.
+   *
+   * The narrower of the two scopes `book:erase-changes` takes, and the one this
+   * line exists for: a user clearing their own edits has not asked to throw away
+   * an hour of model time. What is kept is named in the confirmation BEFORE the
+   * act, from this book's own ledger, so the sentence describes this book rather
+   * than the feature.
+   */
+  private async eraseWorkingChanges(): Promise<void> {
+    const dir = this.projectDir();
+    if (!dir) return;
+    const entries = this.documents().find(v => v.type === 'exported')?.ledger ?? [];
+
+    const { confirmed } = await this.electron.showConfirmDialog({
+      title: 'Erase your working changes',
+      message: 'Erase every change you have made to this book?',
+      detail: describeWorkingChangesErase(entries.map(e => e.label)),
+      confirmLabel: 'Erase changes', cancelLabel: 'Cancel', type: 'warning',
+    });
+    if (!confirmed) return;
+
+    const res = await this.electron.eraseBookChanges(dir, 'working-changes');
+    if (!res.success || !res.remint) {
+      await this.electron.showMessageDialog({
+        title: 'Nothing was erased',
+        message: res.error || 'The changes could not be erased, and nothing said why. Your working '
+          + 'copy is untouched.',
+        type: 'error',
+      });
+      await this.load();
+      return;
+    }
+    await this.electron.showMessageDialog({
+      title: 'Your changes were erased',
+      message: describeWorkingCopyRemint(res.remint),
+      type: 'info',
+    });
+    await this.load();
+    this.changed.emit();
+  }
+
+  /**
+   * Delete one ledger entry, and everything applied after it.
+   *
+   * The cascade is NAMED before the act, out of the shared rules
+   * (`ledgerAfterDeleting` / `listLedgerLabels`), because it is the part a user
+   * cannot infer: they press delete on one line and three changes come out of
+   * their book. Main computes the same cascade from the same rule and reports
+   * what it did in `describeLedgerDeletion`'s words — asked here, said there,
+   * one set of sentences.
+   */
+  private async deleteLedgerLine(row: ChainRowView): Promise<void> {
+    const dir = this.projectDir();
+    const entry = row.entry;
+    if (!dir || !entry) return;
+    const entries = this.documents().find(v => v.type === 'exported')?.ledger ?? [];
+
+    let plan: LedgerDeletion<LedgerRowEntry>;
+    try {
+      plan = ledgerAfterDeleting(entries, entry.id);
+    } catch (err) {
+      // The line describes a pass this book no longer records. Said, not
+      // swallowed: the list on screen is out of date and a reload is the fix.
+      await this.electron.showMessageDialog({
+        title: 'That change is not in this book any more',
+        message: (err as Error).message,
+        type: 'error',
+      });
+      await this.load();
+      return;
+    }
+    const after = plan.cascaded.slice(1);
+
+    const { confirmed } = await this.electron.showConfirmDialog({
+      title: `Delete ${entry.label}`,
+      message: `Take ${entry.label} back out of this book?`,
+      detail: [
+        after.length === 0
+          ? 'It is the last change recorded on this book, so nothing else is affected.'
+          : `Everything run after it goes with it — ${listLedgerLabels(after)}. Each of those was `
+            + 'applied to the text this one produced, and there is no book on disk with them '
+            + 'applied to anything else.',
+        '',
+        plan.kept.length === 0
+          ? 'Your book goes back to the archive-grade original it was copied from.'
+          : `Your book goes back to how ${listLedgerLabels(plan.kept)} left it.`,
+        '',
+        'Your working changes are untouched: they are recorded against the book rather than '
+        + 'written into it, and they apply to it again exactly as they did.',
+      ].join('\n'),
+      confirmLabel: after.length === 0 ? 'Delete it' : 'Delete them', cancelLabel: 'Cancel',
+      type: 'warning',
+    });
+    if (!confirmed) return;
+
+    const res = await this.electron.deleteBookLedgerEntry(dir, entry.id);
+    if (!res.success) {
+      await this.electron.showMessageDialog({
+        title: 'Nothing was deleted',
+        message: res.error || 'That change could not be taken back, and nothing said why. Your '
+          + 'book is untouched.',
+        type: 'error',
+      });
+      await this.load();
+      return;
+    }
+    await this.electron.showMessageDialog({
+      title: `${entry.label} removed`,
+      // Main's own paragraph when it gave one; the same sentence built from the
+      // same rule when it did not, so the receipt never goes missing.
+      message: res.message ?? describeLedgerDeletion(plan),
+      type: 'info',
+    });
+    await this.load();
+    this.changed.emit();
+  }
+
+  /**
+   * Erase EVERYTHING — the working changes and the ledger both.
+   *
+   * On the book line of a project whose `exported` row has been absorbed into it,
+   * because that is where the act went when the row stopped being drawn. It
+   * routes to the same handler the row's own danger button used, so what it says
+   * and what it does are unchanged.
+   */
+  async eraseEverythingOnLine(): Promise<void> {
+    const exported = this.documents().find(v => v.type === 'exported') ?? null;
+    if (!exported) {
+      console.error('[studio-versions] "Erase all changes" was pressed on the book line of a '
+        + 'project with no working copy. The button is rendered only where one exists.');
+      return;
+    }
+    await this.eraseBookChanges(exported);
+  }
+
+  /**
+   * Review what a ledger pass changed — its FROZEN diff.
+   *
+   * The same viewer the stars and the provenance badges use. Owen asked for it
+   * by name: "will it be possible to keep the review changes button on
+   * footnotes/working changes, so we can open the file and see what changed?" —
+   * and the receipts are what make the answer yes, because the pass's own stage
+   * directory is cleared by the next re-mint of the book.
+   */
+  reviewLedgerLine(row: ChainRowView): void {
+    const entry = row.entry;
+    if (!entry || entry.receiptPath === null) {
+      console.error('[studio-versions] "Review changes" was pressed on a ledger line with no frozen '
+        + 'diff. That line renders the button DISABLED with its reason.');
+      return;
+    }
+    const at = new Date(entry.createdAt);
+    this.passReport.set(null);
+    this.comparing.set({
+      mode: 'pass',
+      diffPath: entry.receiptPath,
+      // The pass's own review report, when it wrote one beside its diff. Frozen
+      // in the entry's directory with the receipt; absent for a pass that writes
+      // none, which shows no header rather than an error.
+      reportPath: entry.receiptPath.replace(/receipt\.json$/, 'report.json'),
+      title: `${entry.label} — what changed`,
+      when: isNaN(+at) ? 'date unknown' : at.toLocaleString(),
+    });
+    this.compareActive.emit(true);
+    if (entry.kind === 'footnotes') {
+      void this.loadPassReport(entry.receiptPath.replace(/receipt\.json$/, 'report.json'));
+    }
+  }
+
+  /** What Review changes says on hover: what it opens, or why it cannot. */
+  reviewLineTitle(row: ChainRowView): string {
+    if (row.line.buttons.review === 'no-receipt') {
+      return `${row.entry?.label ?? 'This pass'} rewrote the book, but no diff of what it changed `
+        + 'was recorded — either the pass writes none, or the file was not there when the change '
+        + 'was committed. There is nothing to show.';
+    }
+    return 'See exactly what this pass changed, as it was recorded the moment it ran';
+  }
+
+  /**
+   * Take THIS line's file to narration.
+   *
+   * Owen's law, 2026-08-09: "the tts pipeline knows exactly which file its
+   * working with because the user came to the tts page FROM the button on that
+   * document." So the path travels with the press. It is the narration copy's
+   * line that carries this button when the project has one — that is the file
+   * narration reads — and the book's line when it does not, which is the same
+   * file narration would have fallen back to.
+   */
+  processLine(row: ChainRowView): void {
+    const path = row.v?.path;
+    if (!path) {
+      console.error('[studio-versions] Process was pressed on a line with no file behind it. Only '
+        + 'a line naming a document carries that button.');
+      return;
+    }
+    this.process.emit({ path });
+  }
+
+  // ── The book passes, offered from the book and queued from here ────────────
+
+  private readonly settings = inject(SettingsService);
+
+  /** The passes this build offers, as data (shared/processing/book-passes.ts). */
+  readonly bookPasses: readonly BookPassOption[] = BOOK_PASS_OPTIONS;
+  readonly passesModalOpen = signal(false);
+  /** The options dialog is open for this pass, or null. */
+  readonly passOptionsKind = signal<PassOptionsKind | null>(null);
+  /** Why the last submission was refused. Main's own sentence, shown verbatim. */
+  readonly passError = signal<string | null>(null);
+
+  openPassesModal(): void {
+    this.passError.set(null);
+    this.passesModalOpen.set(true);
+  }
+
+  closePassesModal(): void {
+    this.passesModalOpen.set(false);
+    this.passError.set(null);
+  }
+
+  /**
+   * A pass was chosen. Either it needs its options, or it goes to the queue.
+   *
+   * Nothing runs inline. Owen, 2026-08-09: "whatever the user chooses to do
+   * (particularly translate/simplify/tts/assemble) will be added to the queue…
+   * follow the vlm epub generation pattern."
+   */
+  async choosePass(option: BookPassOption): Promise<void> {
+    if (option.needsOptions) {
+      // The two passes nobody can start from a button alone. The dialog is the
+      // picker's own, so a simplify is configured the same way wherever it is
+      // ordered from.
+      this.passesModalOpen.set(false);
+      this.passOptionsKind.set(option.kind as PassOptionsKind);
+      return;
+    }
+    // A pass that takes no choices. The KIND is carried as the planner spells
+    // it; a kind this build's planner does not know is refused BY NAME and that
+    // refusal is shown below, which is the honest outcome for an offer this
+    // build cannot keep (see shared/processing/book-passes.ts).
+    await this.queuePasses([{ kind: option.kind as ProcessingPassKind }]);
+  }
+
+  onPassOptionsConfirmed(result: PassOptionsResult): void {
+    this.passOptionsKind.set(null);
+    void this.queuePasses([
+      result.kind === 'simplify'
+        ? { kind: 'simplify', simplify: result.simplify }
+        : { kind: 'translate', translate: result.translate },
+    ]);
+  }
+
+  /**
+   * Who runs a text pass: the provider and model from Settings → Pipeline
+   * Defaults, plus whatever credentials the AI settings hold.
+   *
+   * Read here rather than in the dialog so the dialog stays presentational, and
+   * an empty model is passed through AS an empty model — the dialog refuses it
+   * by name, which is the only useful thing to do with "no model chosen".
+   */
+  readonly passAiChoice = computed<PassAiChoice>(() => {
+    const kind = this.passOptionsKind();
+    const defaults = this.settings.getPipelineDefaults();
+    const ai = this.settings.getAIConfig();
+    const provider = kind === 'translate' ? defaults.translateProvider : defaults.simplifyProvider;
+    const model = kind === 'translate' ? defaults.translateModel : defaults.simplifyModel;
+    return {
+      provider,
+      model,
+      ...(ai.ollama?.baseUrl ? { ollamaBaseUrl: ai.ollama.baseUrl } : {}),
+      ...(ai.claude?.apiKey ? { claudeApiKey: ai.claude.apiKey } : {}),
+      ...(ai.openai?.apiKey ? { openaiApiKey: ai.openai.apiKey } : {}),
+    };
+  });
+
+  /**
+   * Send passes to the queue through the ONE door — `processing:submit-chain`,
+   * which plans them against this project and refuses by name.
+   *
+   * The refusal is main's own sentence, shown verbatim: it names the missing
+   * model, the book that is not there, the kind it cannot plan. Never
+   * paraphrased into "that did not work".
+   */
+  private async queuePasses(passes: ChainPassRequest[]): Promise<void> {
+    const dir = this.projectDir();
+    if (!dir) {
+      this.passError.set('A pass rewrites this project\'s book, and no project is selected.');
+      return;
+    }
+    try {
+      const result = await this.queue.submitProcessingRun({ projectDir: dir, passes });
+      if (!result.success) {
+        this.passError.set(result.error || 'The run was refused and no reason was given.');
+        this.passesModalOpen.set(true);
+        return;
+      }
+    } catch (err) {
+      this.passError.set(err instanceof Error ? err.message : String(err));
+      this.passesModalOpen.set(true);
+      return;
+    }
+    this.closePassesModal();
+    await this.electron.showMessageDialog({
+      title: 'Added to the queue',
+      message: 'It runs when the queue reaches it. Watch it on the Queue tab. When it finishes it '
+        + 'becomes a line under this book that you can review and take back on its own.',
+      type: 'info',
+    });
+    await this.load();
+    this.changed.emit();
+  }
+
+  // ── Clicking a line ────────────────────────────────────────────────────────
+
+  /**
+   * Is this line's whole row a target for the click that opens it?
+   *
+   * Only where opening is the obvious thing the row means, which is the same
+   * test it always was: an editable document. The virtual lines and the archive
+   * files are not — their Open is a button, because what it does to them is not
+   * what a click on a file row usually means.
+   */
+  rowIsClickable(row: ChainRowView): boolean {
+    // The two virtual kinds carry the working copy as their row so their acts
+    // can reach it, and they must NOT inherit its click: a click on the ledger
+    // line would open the book rather than the snapshot the line is about, which
+    // is the one thing the line exists to distinguish.
+    if (row.line.kind === 'working-changes' || row.line.kind === 'ledger') return false;
+    return row.v !== null && row.v.editable;
+  }
+
+  onChainRowClick(row: ChainRowView): void {
+    if (!this.rowIsClickable(row) || row.v === null) return;
+    this.onDocRowClick(row.v);
+  }
+
   /** What a stage boundary is called on the working copy's line. */
   private readonly BOUNDARY_LABELS: Record<string, string> = {
     'get-text': 'Cast',
@@ -1400,8 +2099,63 @@ export class StudioVersionsComponent {
    * happened to this file" is exactly the question the missing row left the user
    * unable to answer.
    */
-  rowDescription(row: DocumentFamilyRow): string {
-    const v = row.v;
+  /**
+   * What each line is CALLED.
+   *
+   * The two virtual kinds get their names from this app rather than from a file,
+   * because they have none: the working-changes line is a standing set of
+   * records, and a ledger line is a pass. Everything else is named by main, and
+   * is not renamed here — the row's label is the book's own name, derived once
+   * (docs: "One place derives the name").
+   */
+  private lineLabel(kind: ChainLineKind, v: VersionRow | null, entry: LedgerRowEntry | null): string {
+    if (kind === 'working-changes') return 'Working changes';
+    if (kind === 'ledger') {
+      // Named by the pass that ran. A ledger line whose entry has gone missing
+      // is IPC shape drift, and it says so rather than showing a blank line.
+      return entry === null ? 'A recorded pass this build could not name' : entry.label;
+    }
+    return v === null ? 'A line with no file behind it' : v.label;
+  }
+
+  /** The extension shown beside the label. Empty for a line that names no file. */
+  private lineExtension(
+    kind: ChainLineKind, v: VersionRow | null, entry: LedgerRowEntry | null
+  ): string {
+    if (kind === 'working-changes') return '';
+    // The snapshot is an EPUB — the book exactly as the pass left it.
+    if (kind === 'ledger') return entry === null ? '' : 'epub';
+    return v?.extension ?? '';
+  }
+
+  /** The glyph. The two virtual kinds have their own, so the chain reads down. */
+  private lineIcon(kind: ChainLineKind, v: VersionRow | null): string {
+    if (kind === 'working-changes') return '✏️';
+    if (kind === 'ledger') return '🧾';
+    return v?.icon || '\u{1F4C4}';
+  }
+
+  /** One line's own sentence, per kind. */
+  private lineDescription(
+    kind: ChainLineKind, v: VersionRow | null, entry: LedgerRowEntry | null
+  ): string {
+    if (kind === 'working-changes') {
+      return 'Your deletions, corrections, chapter markers and narration strikes — recorded against '
+        + 'the book rather than written into it';
+    }
+    if (kind === 'ledger') {
+      if (entry === null) {
+        return 'This line describes a pass the versions list no longer carries — reload the page.';
+      }
+      const at = new Date(entry.createdAt);
+      const when = isNaN(+at) ? 'date unknown' : at.toLocaleString();
+      return `A pass you committed to, ${when} · the book was rewritten and a copy of it kept`;
+    }
+    return this.rowDescription(v);
+  }
+
+  private rowDescription(v: VersionRow | null): string {
+    if (v === null) return '';
     const parts: string[] = [v.description];
 
     if (v.type === 'working') {
@@ -1523,18 +2277,19 @@ export class StudioVersionsComponent {
 
   /** Does this project already have a working copy? Decides Create working copy. */
   private readonly hasWorkingCopy = computed(() =>
-    this.documentRows().some(r => r.family === 'working'));
+    this.documents().some(v => v.type === 'working'));
 
   /**
-   * Can this row's document be read into a book?
+   * Can this line's document be read into a book?
    *
-   * A PDF and nothing else. The archive row of an EPUB-born project is already a
-   * book — offering to convert it would promise a second one — and every other
-   * row on the page is downstream of a book that exists.
+   * Which LINES offer it is `book-chain`'s answer (the archive PDF and a legacy
+   * working PDF, and nothing else). What is asked here is the fact about the
+   * FILE: a PDF has pages to read, and nothing else does. Both have to hold —
+   * a project imported as an EPUB has an archive line whose file is already a
+   * book, and offering to convert it would promise a second one.
    */
-  canConvert(row: DocumentFamilyRow): boolean {
-    return (row.family === 'archive' || row.family === 'working')
-      && row.v.extension === 'pdf';
+  canConvert(row: ChainRowView): boolean {
+    return row.line.buttons.convert && (row.v?.extension ?? '').toLowerCase() === 'pdf';
   }
 
   /** Only the archive can mint one, and only when there is not one already. */
@@ -1554,18 +2309,29 @@ export class StudioVersionsComponent {
    * 385 projects and ZERO `.working.pdf` files, so nothing anyone owns is
    * stranded by this.
    */
-  canMintWorkingCopy(_row: DocumentFamilyRow): boolean {
+  canMintWorkingCopy(_row: ChainRowView): boolean {
     return false;
   }
 
-  convertLabel(row: DocumentFamilyRow): string {
-    return row.family === 'working' ? 'Create EPUB' : 'Convert to EPUB';
+  convertLabel(row: ChainRowView): string {
+    return row.line.kind === 'working-pdf' ? 'Create EPUB' : 'Convert to EPUB';
   }
 
-  convertTitle(row: DocumentFamilyRow): string {
-    return row.family === 'working'
+  convertTitle(row: ChainRowView): string {
+    return row.line.kind === 'working-pdf'
       ? 'Read this book into an EPUB, leaving out the pages you deleted in your working copy'
       : 'Read every page of the original into this project’s book EPUB';
+  }
+
+  /**
+   * Which document a conversion started from this line reads.
+   *
+   * The whole difference between the two buttons: the archive line reads every
+   * page, and a legacy working PDF's reads the book minus the pages the user
+   * deleted in it.
+   */
+  private conversionSourceOf(row: ChainRowView): ConversionSource {
+    return row.line.kind === 'working-pdf' ? 'working' : 'archive';
   }
 
   /**
@@ -1576,9 +2342,9 @@ export class StudioVersionsComponent {
    * showing it inside a progress modal would dress a configuration problem up as
    * a failed run.
    */
-  async startConversion(row: DocumentFamilyRow): Promise<void> {
+  async startConversion(row: ChainRowView): Promise<void> {
     const dir = this.projectDir();
-    if (!dir || !this.canConvert(row)) return;
+    if (!dir || !this.canConvert(row) || row.v === null) return;
 
     const refusal = await this.conversions.refusal();
     if (refusal !== null) {
@@ -1590,7 +2356,10 @@ export class StudioVersionsComponent {
       return;
     }
 
-    const from: ConversionSource = row.family === 'working' ? 'working' : 'archive';
+    const destination = await this.askConversionDestination();
+    if (destination === null) return;
+
+    const from: ConversionSource = this.conversionSourceOf(row);
     this.convertModalOpen.set(true);
     // PREPARED, not started. The window opens on a conversion that has not
     // spawned anything, so there is a moment in which to say "queue this
@@ -1606,6 +2375,10 @@ export class StudioVersionsComponent {
       // stop a project with two PDFs having to be asked which one this is.
       ...(row.v.variantId ? { variantId: row.v.variantId } : {}),
       ...(!row.v.variantId && row.v.primaryPath ? { sourcePath: row.v.primaryPath } : {}),
+      // Where the finished book lands, decided before anything is prepared so
+      // the answer travels with the run — Start and Add to queue both read it,
+      // and neither re-asks.
+      destination,
     });
     if (refused !== null) {
       this.convertModalOpen.set(false);
@@ -1616,6 +2389,50 @@ export class StudioVersionsComponent {
       });
     }
   }
+
+  /**
+   * Replace the book this project already has, or put the reading beside it?
+   *
+   * Owen, 2026-08-09: a Convert pressed on a project that already has an EPUB
+   * asks, and the second answer means the new reading "is added as a new archive
+   * file right next to the archive epub that already exists".
+   *
+   * NOT asked when there is no book yet: there is nothing to replace, nothing to
+   * put a copy beside, and a dialog with one real answer is a dialog that trains
+   * people to press the first button. Null is a cancel — the run is not prepared
+   * and nothing is opened.
+   */
+  private async askConversionDestination(): Promise<VlmConvertDestination | null> {
+    if (!this.hasBookAlready()) return 'replace';
+    const chosen = await this.dialog.choose({
+      title: 'This book already has an EPUB',
+      message: 'Reading the pages again produces another book. What should happen to the one this '
+        + 'project already has?',
+      detail:
+        'Replace it — the new reading becomes this project\'s book. Your working changes are '
+        + 'cleared with the book they were made against, and the passes recorded in its ledger go '
+        + 'with it: they were applied to the text this reading replaces.\n\n'
+        + 'Add a copy — the new reading is added as another archive file beside the one that is '
+        + 'already there, and nothing about the book you have been editing changes. It has no '
+        + 'working copy and no chain of its own yet; it can be opened, exported and deleted.',
+      type: 'question',
+      confirmLabel: 'Replace the book',
+      alternateLabel: 'Add a copy',
+    });
+    if (chosen === 'cancel') return null;
+    return chosen === 'confirm' ? 'replace' : 'new-copy';
+  }
+
+  /**
+   * Does this project already have a book? Decides whether Convert asks.
+   *
+   * Measured off the rows for the same reason everything else here is: a row
+   * exists because a file does. Either the cast book or the working copy counts
+   * — both are a book this project has, and replacing either is the act the
+   * question is about.
+   */
+  private readonly hasBookAlready = computed(() =>
+    this.documents().some(v => v.type === 'generated' || v.type === 'exported'));
 
   /** Re-open the window onto a conversion that is already running. */
   showConversion(): void { this.convertModalOpen.set(true); }
@@ -1629,9 +2446,11 @@ export class StudioVersionsComponent {
    * on the row that was pressed, and the other row's button is disabled with the
    * reason rather than showing a second copy of one run's progress.
    */
-  rowStartedConversion(row: DocumentFamilyRow): boolean {
+  rowStartedConversion(row: ChainRowView): boolean {
     const run = this.conversion();
-    return run !== null && run.from === row.family;
+    if (run === null) return false;
+    if (row.line.kind !== 'archive-pdf' && row.line.kind !== 'working-pdf') return false;
+    return run.from === this.conversionSourceOf(row);
   }
 
   /** Why Convert is locked right now, or null. Shown instead of the ordinary hint. */
@@ -1657,14 +2476,14 @@ export class StudioVersionsComponent {
    * `document:stage-finished`, and this page re-measures on the latter. Nothing
    * is synthesized here from the answer.
    */
-  async mintWorkingCopy(row: DocumentFamilyRow): Promise<void> {
+  async mintWorkingCopy(row: ChainRowView): Promise<void> {
     const dir = this.projectDir();
     if (!dir || this.makingWorkingCopy() || !this.canMintWorkingCopy(row)) return;
     this.makingWorkingCopy.set(true);
     try {
       await this.electron.documentCreateWorkingCopy({
         projectDir: dir,
-        ...(row.v.variantId ? { variantId: row.v.variantId } : {}),
+        ...(row.v?.variantId ? { variantId: row.v.variantId } : {}),
       });
       await this.load();
       this.changed.emit();
@@ -3286,6 +4105,31 @@ export class StudioVersionsComponent {
     return v.kind === 'audiobook'
       && this.transcriptEligibilityKnown()
       && !this.hasAuthoritativeTranscript(v);
+  }
+
+  /**
+   * What the sentences button on an audio row is CALLED.
+   *
+   * One button on every audio row, and it says which act it is: an audiobook
+   * with synced text already is RE-transcribed, and saying so is the difference
+   * between adding text and replacing it. It used to be two buttons behind two
+   * predicates, and the window in which the transcript check had not answered
+   * yet showed NEITHER — a row with no way to do the thing Owen calls "an
+   * extremely important and useful tool".
+   */
+  sentencesButtonLabel(v: ProjectVariant): string {
+    return this.hasAuthoritativeTranscript(v) ? 'Regenerate sentences' : 'Generate sentences';
+  }
+
+  sentencesButtonTitle(v: ProjectVariant): string {
+    if (!this.transcriptEligibilityKnown()) {
+      return 'BookForge is still checking whether this audiobook already has synced text. It would '
+        + 'not be said which act this is until that comes back, and re-transcribing a book that '
+        + 'already has text replaces it.';
+    }
+    return this.hasAuthoritativeTranscript(v)
+      ? 'Re-transcribe this audiobook, replacing the current synced text'
+      : 'Transcribe this audiobook into synced on-screen text';
   }
 
   /** An audiobook with an embedded or linked transcript can re-transcribe it. */

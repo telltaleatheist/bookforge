@@ -173,7 +173,40 @@ export interface VlmConvertRequest {
    * rule and the sentence the job log prints about it.
    */
   readings?: VlmReadingsChoice;
+  /**
+   * WHERE the book this run produces lands.
+   *
+   * Owen, 2026-08-09, on pressing Convert when the project already has an EPUB:
+   * the user is asked whether to replace it or to "create a new copy", and a new
+   * copy "is added as a new archive file right next to the archive epub that
+   * already exists".
+   *
+   * ABSENT means 'replace', and that is the historic act rather than a default
+   * chosen here: every request made before this field existed — an older build's
+   * queued job, the headless CLI — meant the one thing conversion did, which was
+   * to become the project's book. See `runVlmConversion`, which owns what each
+   * one does and what each one deliberately does NOT touch.
+   */
+  destination?: VlmConvertDestination;
 }
+
+/**
+ * The two things a finished conversion can BE.
+ *
+ * 'replace' is the pipeline: the cast lands on `outputs.generatedEpub`, a fresh
+ * working copy is minted from it and the conversion is written into that copy's
+ * provenance. It ends the previous book — the passes applied to the old bytes
+ * did not happen to these — and that is exactly why the other answer exists.
+ *
+ * 'new-copy' produces a SECOND archive-grade EPUB and nothing else: a variant
+ * beside the project's existing archive files. It touches no manifest output, no
+ * provenance and no ledger, so the book the user has been editing is not
+ * disturbed by having read the pages again. It gets no working chain of its own
+ * — chains-per-archive-file is a later architecture change, and pretending to
+ * have it here would mean minting a second `outputs.epub` there can only be one
+ * of.
+ */
+export type VlmConvertDestination = 'replace' | 'new-copy';
 
 export interface VlmConvertResult {
   /**
