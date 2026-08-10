@@ -3860,10 +3860,21 @@ function normalizeForAlignment(s: string): string {
 // that ships an inline <style> or <script>.
 const UNIT_TEXT_SKIP_TAGS = new Set(['script', 'style', 'template']);
 
+/** `getUnitTextContent`, for the modules outside this file that walk with it. */
+export function unitTextContent(node: any): string {
+  return getUnitTextContent(node);
+}
+
 /**
  * Text content of a unit AS RENDERED: like getTextContent, but skips
  * script/style/template subtrees and includes CDATA sections. This is the text
  * the alignment compares against picker blocks, which come from mupdf layout.
+ *
+ * EXPORTED as `unitTextContent` below, because it is also what a narration
+ * strike's fingerprint is taken from (shared/vlm/narration-deletions.ts) and
+ * that has to be the SAME text the walk sees — a second reading of an element,
+ * however similar, would compare two descriptions of the book rather than the
+ * book against its record.
  */
 function getUnitTextContent(node: any): string {
   if (node.nodeType === 3 || node.nodeType === 4) { // TEXT_NODE, CDATA_SECTION
@@ -5087,12 +5098,13 @@ function conversionStampOnOrAbove(el: any, whatFor: string): {
 export async function readEpubConversionUnits(epubSourcePath: string): Promise<NarrationUnit[]> {
   const whatFor = `conversion stamps in ${path.basename(epubSourcePath)}`;
   const { units, imageUnits } = await alignBlocksToEpub(epubSourcePath, []);
-  const read = (el: any, key: NarrationElementKey): NarrationUnit => {
+  const read = (el: any, key: NarrationElementKey, text: string): NarrationUnit => {
     const stamp = conversionStampOnOrAbove(el, whatFor);
     return {
       key,
       category: stamp?.statedCategory ?? null,
       sourcePage: stamp?.sourcePage ?? null,
+      text,
     };
   };
   // Text elements, then pictures. The PICTURES ARE IN HERE because this list is
@@ -5102,8 +5114,10 @@ export async function readEpubConversionUnits(epubSourcePath: string): Promise<N
   // Order between the two namespaces is not meaningful: nothing indexes into
   // this list, every reader looks a key up in it.
   return [
-    ...units.map((u) => read(u.el, u.key)),
-    ...imageUnits.map((u) => read(u.el, u.key)),
+    ...units.map((u) => read(u.el, u.key, getUnitTextContent(u.el))),
+    // A picture says nothing, and `''` is that answer rather than a missing one
+    // — image keys are not fingerprinted, exactly because there is no text.
+    ...imageUnits.map((u) => read(u.el, u.key, '')),
   ];
 }
 
@@ -6250,6 +6264,15 @@ export interface NarrationEpubWriteResult {
    * at when they open the copy to check.
    */
   removedDocuments: string[];
+  /**
+   * Strikes this cut applied on the user's authority alone: recorded before
+   * fingerprints existed, on a book whose sha does not certify them.
+   *
+   * Reported rather than counted quietly because it is the one class the cut
+   * cannot prove anything about, and the caller with a user in front of it is
+   * the one that should say so.
+   */
+  unverifiableStrikes: string[];
 }
 
 export interface NarrationEpubWriteOptions {
@@ -6280,6 +6303,17 @@ export interface NarrationEpubWriteOptions {
    * a struck key is skipped — its element is leaving the copy anyway.
    */
   textOverrides?: Readonly<Record<string, string>>;
+  /**
+   * What each strike remembers striking — the record's `fingerprints` — so this
+   * cut can prove per strike that it is removing what the user chose.
+   *
+   * ABSENT means "no check is owed", and there is exactly one situation in
+   * which that is true: the record is stamped with the sha of the book being
+   * cut, so every key in it was minted against these very bytes. The caller
+   * measures that (electron/narration-export.ts) because the caller is the one
+   * holding both the record and the file. See `planNarrationRemoval`.
+   */
+  verifyStrikes?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -6833,6 +6867,10 @@ export async function writeNarrationEpub(
           key,
           category: stamp?.statedCategory ?? null,
           sourcePage: stamp?.sourcePage ?? null,
+          // Read BEFORE any text override is applied below, which is what makes
+          // it the book's own text — a fingerprint of "Chapter 2: An
+          // Opportunity to Hope" would describe the cut, not the book.
+          text: getUnitTextContent(c.el),
         });
       }
       // The pictures, enumerated in the SAME order and after the SAME unit walk
@@ -6846,6 +6884,7 @@ export async function writeNarrationEpub(
           key,
           category: stamp?.statedCategory ?? null,
           sourcePage: stamp?.sourcePage ?? null,
+          text: '',
         });
       });
       perFile.set(entryName, { doc, body, units: collected });
@@ -6859,22 +6898,24 @@ export async function writeNarrationEpub(
   // `<zip entry>#doc` says the whole document goes. It is checked against the
   // SPINE — the one authority on which documents this book has — and a key
   // naming a document the book does not contain is refused by name, exactly as
-  // an element key that names no element is. The sha gate on the record should
-  // make that unreachable; a positional record and a file that moved under it
-  // cannot be reconciled by guessing whichever way the key is expressed.
+  // an element key that names no element is. Reachable, and left reachable: the
+  // record is no longer voided by a book that moved under it, so a `#doc` key
+  // for a document a pass removed arrives here and is named rather than
+  // reconciled by guessing.
   const split = splitNarrationDeletions(deletions);
   const struckDocuments = new Set(split.documents);
   const absent = split.documents.filter((file) => !perFile.has(file));
   if (absent.length > 0) {
     throw new Error(
       `${absent.length} of the document(s) struck out of this book are not in its spine any more — `
-      + `the first is ${narrationDocumentKey(absent[0])}. A book that has been rewritten since (a `
-      + 'simplify or translate pass) voids the record. Open the book in the editor, strike what you '
-      + 'want left out again, and export.'
+      + `the first is ${narrationDocumentKey(absent[0])}. A pass that removed a document leaves the `
+      + 'strike on it naming nothing. Your strikes are still on record and nothing has been '
+      + 'cleared: open the book in the editor, take back the ones that name documents this book no '
+      + 'longer has, and export again.'
     );
   }
 
-  const plan = planNarrationRemoval(units, split.elements);
+  const plan = planNarrationRemoval(units, split.elements, options?.verifyStrikes);
   const struck = new Set(plan.remove);
   // Everything inside a struck document counts as removed, because the document
   // it is in is not going to be in the copy. Counted through the set so an
@@ -7210,6 +7251,7 @@ export async function writeNarrationEpub(
     overriddenElements,
     rewrittenFiles,
     removedDocuments: emptied.sort(),
+    unverifiableStrikes: plan.unverifiable,
   };
 }
 

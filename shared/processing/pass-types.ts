@@ -169,4 +169,13 @@ export interface PassJobResult {
   ledgerEntryId?: string;
   /** Why no ledger entry was recorded, in full. Absent when one was. */
   ledgerRefusal?: string;
+  /**
+   * Why the narration strikes were not carried onto the book this pass wrote.
+   *
+   * Absent means there was nothing to carry, or the carry was proved and the
+   * record now names the new book. It NEVER means strikes were lost: nothing in
+   * this app deletes them (shared/vlm/narration-deletions.ts), and a record
+   * that was not carried is checked strike by strike the next time it is used.
+   */
+  narrationCarryNote?: string;
 }

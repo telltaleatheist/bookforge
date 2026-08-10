@@ -161,9 +161,10 @@ export function deriveMergeStatus(mergeCount: number): TaskStatus {
  * The narration copy: written, or not written yet.
  *
  * Deliberately not "up to date". The copy is cut from strikes recorded against
- * the book's sha256, and a book that has moved on VOIDS those strikes at export
- * (shared/vlm/narration-deletions.ts) — so the export refuses by name rather
- * than a control guessing at staleness it cannot measure from here.
+ * the book's sha256, and a book that has moved on makes every strike prove
+ * itself against the text it remembers striking
+ * (shared/vlm/narration-deletions.ts) — so the export either cuts or refuses BY
+ * NAME, which is an answer no control up here could guess at.
  *
  * No longer a rail task (2026-08-08): the export is the primary action at the
  * bottom-right of the viewer, and this is what it says under its own label. It

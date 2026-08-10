@@ -36,9 +36,13 @@ import * as path from 'path';
 import {
   EpubProcessor, ZipReader, ZipWriter,
   parseXhtmlBody, collectExportUnits, collectImageElements, normalizeZipEntryName,
+  unitTextContent,
   type MarkupUnit,
 } from './epub-processor';
-import { narrationElementKey, narrationImageElementKey } from '../shared/vlm/narration-deletions';
+import {
+  narrationElementKey, narrationFingerprint, narrationImageElementKey,
+  type NarrationDocumentShape, type NarrationElementKey,
+} from '../shared/vlm/narration-deletions';
 import { QUIRE_ID_ATTRIBUTE, QUIRE_ID_SEPARATOR } from '../packages/quire/src/types';
 
 /**
@@ -141,6 +145,54 @@ export async function enumerateNarrationElements(
     }
   } finally {
     processor.close();
+  }
+  return out;
+}
+
+/**
+ * The book's enumeration, reduced to what a strike key depends on.
+ *
+ * The projection a pass compares before and after itself
+ * (`narrationCarryRefusal`). Deliberately built from the SAME walk the keys are
+ * minted by, and deliberately without the DOM: the comparison is about which
+ * keys exist and what they were minted from, and holding two whole parsed books
+ * to answer that would cost hundreds of megabytes on a real one.
+ */
+export async function narrationDocumentShapes(
+  epubPath: string,
+  whatFor: string,
+): Promise<NarrationDocumentShape[]> {
+  const walked = await enumerateNarrationElements(epubPath, whatFor);
+  return walked.map(({ file, entries }) => ({
+    file,
+    keys: entries.map((entry) => entry.key),
+    tags: entries.map((entry) => entry.tag),
+  }));
+}
+
+/**
+ * What every TEXT element of the book says, as a strike would remember it.
+ *
+ * One entry per unit key that has any text at all. Pictures and documents are
+ * absent by construction — a picture says nothing and a zip entry name cannot
+ * shift — which is the same rule `NarrationDeletions.fingerprints` states.
+ *
+ * Used to fingerprint new strikes and to re-fingerprint carried ones after a
+ * pass. The map is for the WHOLE book because the caller does not know, until
+ * it is inside the manifest's lock, which keys the record holds.
+ */
+export async function narrationFingerprintsOfBook(
+  epubPath: string,
+  whatFor: string,
+): Promise<Record<NarrationElementKey, string>> {
+  const walked = await enumerateNarrationElements(epubPath, whatFor);
+  const out: Record<NarrationElementKey, string> = {};
+  for (const doc of walked) {
+    for (const entry of doc.entries) {
+      if (entry.kind !== 'text') continue;
+      const print = narrationFingerprint(unitTextContent(entry.el));
+      if (print !== null) out[entry.key] = print;
+    }
   }
   return out;
 }

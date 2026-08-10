@@ -64,6 +64,11 @@ const {
   narrationBlocksOnSourcePage,
   narrationEpubRelPath,
   narrationDeletionsStaleReason,
+  narrationFingerprint,
+  narrationFingerprintsFor,
+  verifyNarrationStrikes,
+  narrationCarryRefusal,
+  NARRATION_FINGERPRINT_CHARS,
   planNarrationRemoval,
   splitNarrationDeletions,
 } = require(path.join(DIST, 'shared', 'vlm', 'narration-deletions.js'));
@@ -759,25 +764,107 @@ function illustratedLayout() {
   });
 
   // ── staleness ─────────────────────────────────────────────────────────────
-  await check('a record stamped with another book is void, and says why', () => {
+  await check('a record stamped with another book says so — and says NOTHING about clearing', () => {
     const reason = narrationDeletionsStaleReason(
       { epubSha256: 'aaa', elements: [], updatedAt: 'x' }, 'bbb');
     assert.ok(/has changed since these deletions were made/.test(reason), reason);
+    // The whole point of the 2026-08-10 change: the sentence is a fact about
+    // the book, never an announcement that the user's work has been destroyed.
+    assert.ok(!/cleared/i.test(reason), `the stale sentence still threatens a clear: ${reason}`);
     assert.strictEqual(
       narrationDeletionsStaleReason({ epubSha256: 'aaa', elements: [], updatedAt: 'x' }, 'aaa'),
       null);
     assert.strictEqual(narrationDeletionsStaleReason(null, 'aaa'), null);
   });
 
+  await check('the stale sentence NAMES the strikes nothing can check', () => {
+    const noPrints = narrationDeletionsStaleReason(
+      { epubSha256: 'aaa', elements: ['a#0', 'a#1'], updatedAt: 'x' }, 'bbb');
+    assert.ok(/2 of them were recorded before/.test(noPrints), noPrints);
+    const halfPrinted = narrationDeletionsStaleReason(
+      { epubSha256: 'aaa', elements: ['a#0', 'a#1'], updatedAt: 'x',
+        fingerprints: { 'a#0': 'The first paragraph' } }, 'bbb');
+    assert.ok(/1 of them were recorded before/.test(halfPrinted), halfPrinted);
+    const allPrinted = narrationDeletionsStaleReason(
+      { epubSha256: 'aaa', elements: ['a#0'], updatedAt: 'x',
+        fingerprints: { 'a#0': 'The first paragraph' } }, 'bbb');
+    assert.ok(!/recorded before/.test(allPrinted), allPrinted);
+    // A picture has no text, so it is never counted as a strike that could
+    // have been fingerprinted and was not.
+    const pictures = narrationDeletionsStaleReason(
+      { epubSha256: 'aaa', elements: ['a#img0', 'a#doc'], updatedAt: 'x' }, 'bbb');
+    assert.ok(!/recorded before/.test(pictures), pictures);
+  });
+
   // ── the plan ──────────────────────────────────────────────────────────────
+  const unit = (key, category, text) => ({ key, category, sourcePage: 1, text });
+
   await check('a struck key that names no element stops the export by name', () => {
-    const units = [
-      { key: 'a#0', category: 'text', sourcePage: 1 },
-      { key: 'a#1', category: 'footnote', sourcePage: 1 },
-    ];
+    const units = [unit('a#0', 'text', 'One'), unit('a#1', 'footnote', 'Two')];
     assert.deepStrictEqual(planNarrationRemoval(units, ['a#1']),
-      { remove: ['a#1'], total: 2 });
+      { remove: ['a#1'], total: 2, unverifiable: [] });
     assert.throws(() => planNarrationRemoval(units, ['a#1', 'a#9']), /a#9/);
+    // The refusal must not claim anything was thrown away.
+    assert.throws(() => planNarrationRemoval(units, ['a#9']),
+      (err) => /nothing has been cleared/i.test(err.message));
+  });
+
+  // ── the per-strike check, which is what replaced the guillotine ───────────
+  await check('a strike whose element still says what it said is applied', () => {
+    const units = [unit('a#0', 'text', 'The first paragraph.'), unit('a#1', 'text', 'The second.')];
+    const plan = planNarrationRemoval(units, ['a#1'], { 'a#1': 'The second.' });
+    assert.deepStrictEqual(plan.remove, ['a#1']);
+    assert.deepStrictEqual(plan.unverifiable, []);
+  });
+
+  await check('a strike whose element MOVED refuses the cut and prints both texts', () => {
+    const units = [unit('a#0', 'text', 'The first paragraph.'), unit('a#1', 'text', 'The second.')];
+    assert.throws(
+      () => planNarrationRemoval(units, ['a#1'], { 'a#1': 'A paragraph that was here before.' }),
+      (err) => /a#1 was struck on "A paragraph that was here before."/.test(err.message)
+        && /now says "The second."/.test(err.message)
+        && /nothing was cleared/i.test(err.message));
+  });
+
+  await check('a strike with NO fingerprint is applied and reported, never dropped', () => {
+    const units = [unit('a#0', 'text', 'The first paragraph.'), unit('a#1', 'text', 'The second.')];
+    const plan = planNarrationRemoval(units, ['a#0', 'a#1'], { 'a#1': 'The second.' });
+    assert.deepStrictEqual(plan.remove, ['a#0', 'a#1'], 'an unfingerprinted strike still applies');
+    assert.deepStrictEqual(plan.unverifiable, ['a#0']);
+  });
+
+  await check('the sha fast path checks nothing at all', () => {
+    const units = [unit('a#0', 'text', 'Something else entirely now.')];
+    // Fingerprints exist and would NOT match — passing none is how the caller
+    // says the record's stamp already names this book.
+    const plan = planNarrationRemoval(units, ['a#0']);
+    assert.deepStrictEqual(plan.remove, ['a#0']);
+    assert.deepStrictEqual(plan.unverifiable, []);
+  });
+
+  await check('a picture is neither verified nor reported as unverifiable', () => {
+    const units = [unit('a#img0', null, '')];
+    const plan = planNarrationRemoval(units, ['a#img0'], {});
+    assert.deepStrictEqual(plan.remove, ['a#img0']);
+    assert.deepStrictEqual(plan.unverifiable, []);
+  });
+
+  await check('a fingerprint is whitespace-collapsed and 80 characters long', () => {
+    assert.strictEqual(narrationFingerprint('  The   first\n paragraph. '), 'The first paragraph.');
+    assert.strictEqual(narrationFingerprint('   '), null, 'an element with no text has no print');
+    assert.strictEqual(narrationFingerprint('x'.repeat(200)).length, NARRATION_FINGERPRINT_CHARS);
+    // Re-serializing a book through a DOM changes whitespace and must not
+    // change a fingerprint.
+    assert.strictEqual(
+      narrationFingerprint('One\ntwo'), narrationFingerprint('One  two'));
+  });
+
+  await check('fingerprints are kept only for the keys a record holds', () => {
+    const book = { 'a#0': 'One', 'a#1': 'Two', 'a#2': 'Three' };
+    assert.deepStrictEqual(
+      narrationFingerprintsFor(book, ['a#1', 'a#img0', 'a#doc', 'a#9']),
+      { 'a#1': 'Two' },
+      'pictures, documents and keys the book has no text for are left out entirely');
   });
 
   // ── end to end, over a real book ──────────────────────────────────────────
@@ -1210,7 +1297,7 @@ function illustratedLayout() {
       p.projectDir, sha, { strike: ['OEBPS/cover.xhtml#img0'], unstrike: [] });
     assert.deepStrictEqual(two.deletions.elements,
       ['OEBPS/chapter-01.xhtml#5', 'OEBPS/cover.xhtml#img0']);
-    assert.strictEqual(two.staleReason, null);
+    assert.strictEqual(two.staleWarning, null);
 
     // Idempotent: striking what is already struck changes nothing.
     const again = await manifestService.editNarrationDeletions(
@@ -1268,26 +1355,61 @@ function illustratedLayout() {
       ['OEBPS/chapter-01.xhtml#5', 'OEBPS/cover.xhtml#img0']);
   });
 
-  await check('an edit against a book that has moved on CLEARS and refuses', async () => {
+  await check('an edit against a book that has moved on MERGES and warns — it never clears', async () => {
     const p = makeProject('stale');
     fs.copyFileSync(await buildIllustratedEpub('rec2.epub', CHAPTER_WITH_PLATE), p.bookAbs);
     const { sha256File } = require(path.join(DIST, 'electron', 'sidecar-binding.js'));
     const { sha256: sha } = await sha256File(p.bookAbs);
 
     await manifestService.editNarrationDeletions(
-      p.projectDir, sha, { strike: ['OEBPS/chapter-01.xhtml#5'], unstrike: [] });
+      p.projectDir, sha,
+      { strike: ['OEBPS/chapter-01.xhtml#5'], unstrike: [],
+        fingerprints: { 'OEBPS/chapter-01.xhtml#5': 'A footnote at the end' } });
 
-    // A simplify or translate pass rewrites the book in place; every position
-    // after the first change moves. Merging into that record would be striking
-    // paragraphs at random.
+    // Until 2026-08-10 this DELETED the record and refused. It was the second
+    // of the two clears that lost Owen an evening of strikes: one more strike,
+    // made on a book whose bytes had moved, took every earlier one with it.
     const answer = await manifestService.editNarrationDeletions(
       p.projectDir, 'a-different-book-entirely',
-      { strike: ['OEBPS/chapter-01.xhtml#2'], unstrike: [] });
-    assert.strictEqual(answer.deletions, null);
-    assert.ok(/has changed since these deletions were made/.test(answer.staleReason),
-      answer.staleReason);
-    assert.strictEqual(await manifestService.readNarrationDeletions(p.projectDir), null,
-      'the void record was left on disk');
+      { strike: ['OEBPS/chapter-01.xhtml#2'], unstrike: [],
+        fingerprints: { 'OEBPS/chapter-01.xhtml#2': 'A second paragraph' } });
+    assert.deepStrictEqual(answer.deletions.elements,
+      ['OEBPS/chapter-01.xhtml#2', 'OEBPS/chapter-01.xhtml#5'],
+      'the earlier strike was thrown away');
+    assert.ok(/has changed since these deletions were made/.test(answer.staleWarning),
+      answer.staleWarning);
+
+    // The stamp does NOT advance: advancing it would say every key in the
+    // record was minted against the new bytes, which is false of the old one.
+    assert.strictEqual(answer.deletions.epubSha256, sha,
+      'a mismatched edit falsely certified the whole record');
+    // Both strikes remember what they struck, so both can prove themselves at
+    // use whatever the stamp says.
+    assert.deepStrictEqual(answer.deletions.fingerprints, {
+      'OEBPS/chapter-01.xhtml#2': 'A second paragraph',
+      'OEBPS/chapter-01.xhtml#5': 'A footnote at the end',
+    });
+
+    const onDisk = await manifestService.readNarrationDeletions(p.projectDir);
+    assert.deepStrictEqual(onDisk.elements,
+      ['OEBPS/chapter-01.xhtml#2', 'OEBPS/chapter-01.xhtml#5']);
+  });
+
+  await check('an unstrike takes the strike\'s fingerprint with it', async () => {
+    const p = makeProject('prints');
+    fs.copyFileSync(await buildIllustratedEpub('rec5.epub', CHAPTER_WITH_PLATE), p.bookAbs);
+    const { sha256File } = require(path.join(DIST, 'electron', 'sidecar-binding.js'));
+    const { sha256: sha } = await sha256File(p.bookAbs);
+
+    await manifestService.editNarrationDeletions(
+      p.projectDir, sha,
+      { strike: ['OEBPS/chapter-01.xhtml#5', 'OEBPS/cover.xhtml#img0'], unstrike: [],
+        fingerprints: { 'OEBPS/chapter-01.xhtml#5': 'A footnote' } });
+    const after = await manifestService.editNarrationDeletions(
+      p.projectDir, sha, { strike: [], unstrike: ['OEBPS/chapter-01.xhtml#5'] });
+    assert.deepStrictEqual(after.deletions.elements, ['OEBPS/cover.xhtml#img0']);
+    assert.strictEqual(after.deletions.fingerprints, undefined,
+      'a print for a key nothing strikes any more was kept');
   });
 
   await check('concurrent edits compose — none is lost to the read-modify-write', async () => {

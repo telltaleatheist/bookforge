@@ -4199,17 +4199,65 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
     this.narrationAnswer.set({ dir, state: answer.state });
-    // A record that no longer describes the book was CLEARED by main, and the
-    // user is told once — their strikes are gone and they need to know before
-    // they export a narration copy that has everything in it.
+    // ── The book moved under the record, and NOTHING was thrown away ────────
+    //
+    // This used to say "Your narration deletions were cleared", because main
+    // had just deleted them. It does not do that any more (Owen, 2026-08-10:
+    // "i dont think we need a guard so strict. or even a guard at all") — the
+    // record is the user's and only the user takes it back. So the warning
+    // says what is true: the book has changed, every strike is checked against
+    // the text it struck, and the ones that no longer match are named here
+    // rather than painted over paragraphs the user never chose.
     if (answer.state.staleReason) {
+      const mismatched = answer.state.mismatched;
+      const SHOWN = 4;
+      const listed = mismatched
+        .slice(0, SHOWN)
+        .map(m => `  • ${m.key}\n      struck on: "${m.struck}"\n      now says:  `
+          + `${m.nowSays.length === 0 ? '(nothing)' : `"${m.nowSays}"`}`)
+        .join('\n');
       this.showAlert({
-        title: 'Your narration deletions were cleared',
-        message: answer.state.staleReason,
+        title: mismatched.length > 0
+          ? `${mismatched.length} narration deletion(s) no longer match the book`
+          : 'This book has changed since your narration deletions were made',
+        message:
+          `${answer.state.staleReason}\n\nNothing has been cleared — every deletion you made is `
+          + 'still on record.'
+          + (mismatched.length > 0
+            ? `\n\nThese name an element that says something else now, so they are NOT shown as `
+              + `struck and will not be applied:\n${listed}`
+              + (mismatched.length > SHOWN
+                ? `\n  • …and ${mismatched.length - SHOWN} more`
+                : '')
+              + '\n\nStrike what you want left out where it is now, and take these back.'
+            : '\n\nEvery one of them still names what it struck.'),
         type: 'warning',
       });
     }
   }
+
+  /**
+   * The strikes this window will PAINT and act on: the record, minus the ones
+   * whose element no longer says what it said.
+   *
+   * A mismatched key names a paragraph the user never chose. Painting it would
+   * show them a strike they did not make and invite them to keep it; leaving it
+   * out shows the book as they will hear it, and the warning on open names
+   * every one that was left out. Main refuses the cut on the same keys — from
+   * the same evidence — so the two surfaces cannot disagree about which strikes
+   * are real.
+   *
+   * On the fast path (`mismatched` empty, which includes every book whose stamp
+   * names the record) this is the record itself.
+   */
+  private readonly narrationRecordElements = computed<readonly string[] | null>(() => {
+    const state = this.narrationState();
+    const recorded = state?.deletions;
+    if (recorded === undefined || recorded === null) return null;
+    if (!state || state.mismatched.length === 0) return recorded.elements;
+    const dropped = new Set(state.mismatched.map(m => m.key));
+    return recorded.elements.filter(key => !dropped.has(key));
+  });
 
   // The working PDF used to be here — `<Original>.working.pdf`, curated through
   // annotations, and the answer to "can this page be edited" for a PDF project.
@@ -10257,7 +10305,12 @@ export class PdfPickerComponent implements OnInit {
    */
   private narrationExportDivergence(): string | null {
     if (!this.canStrikeForNarration()) return null;
-    const record = this.narrationState()?.deletions;
+    // The record AS THIS WINDOW ACTS ON IT — mismatched strikes excluded, the
+    // same set `rebuildNarrationView` paints. Comparing the view against the
+    // whole record would report every mismatched strike as "recorded and not on
+    // screen", which is true and useless: they are off screen deliberately, and
+    // the warning on open already named them one by one.
+    const record = this.narrationRecordElements();
     const laid = this.narrationLaidOutBlocks();
     if (laid.length === 0) return null;
 
@@ -10274,7 +10327,7 @@ export class PdfPickerComponent implements OnInit {
     }
 
     const diff = narrationDeletionEdit(
-      this.expandDocDeletionKeys(record?.elements ?? [], laid),
+      this.expandDocDeletionKeys(record ?? [], laid),
       this.expandDocDeletionKeys(view.elements, laid));
     const onScreenOnly = diff.strike;
     const recordedOnly = this.pagesLoaded() >= this.totalPages() ? diff.unstrike : [];
@@ -10456,17 +10509,17 @@ export class PdfPickerComponent implements OnInit {
    * the document at the cut all the same.
    */
   private rebuildNarrationView(): void {
-    const recorded = this.narrationState()?.deletions;
+    const recorded = this.narrationRecordElements();
     const blocks = this.blocks();
     const struckIds = new Set(
-      recorded === undefined || recorded === null
+      recorded === null
         ? []
         : narrationDeletedBlockIds(
             blocks.map(b => ({
               id: b.id,
               ...(b.bf_element !== undefined ? { element: b.bf_element } : {}),
             })),
-            recorded.elements,
+            recorded,
           ),
     );
 

@@ -12,14 +12,26 @@
  * the input and writes somewhere else entirely. There is no code path here that
  * opens the book for writing.
  *
- * ── The staleness gate ──────────────────────────────────────────────────────
+ * ── What happens when the book moves under the record ───────────────────────
  *
  * A strike is a POSITION inside a specific file (shared/vlm/narration-deletions.ts),
- * and a pass that rewrites the book in place — simplify, translate — moves every
- * position after the first change. The record carries the book's sha256 so that
- * case is a refusal naming the book rather than a narration copy with the wrong
- * paragraphs missing. Same rule, same reason, as the editor's block deletions
- * being refused at foundry export when their `scanId` no longer matches.
+ * and a rewrite that inserts or removes an element moves every position after
+ * it. The record carries the book's sha256, and until 2026-08-10 a mismatch was
+ * a GUILLOTINE: three functions in this file deleted the record and said so.
+ * Owen killed that after it threw away an evening of strikes for a pass that had
+ * moved nothing at all.
+ *
+ * What stands in its place:
+ *
+ *   - The stamp still decides, but only HOW the strikes are checked. Matching,
+ *     every key was minted against these bytes and the cut proceeds. Not
+ *     matching, each strike is checked against the text it remembers striking,
+ *     and one that no longer matches REFUSES the cut by name and prints both
+ *     texts — a copy with the wrong paragraphs missing is still the thing this
+ *     module must never write.
+ *   - No path here deletes a strike. `readNarrationState` reports, the cut
+ *     refuses, the fold and the opening-naming pass decline to edit the book.
+ *     Only the user takes a strike back.
  */
 
 import * as fs from 'fs';
@@ -28,12 +40,12 @@ import * as path from 'path';
 
 import {
   writeNarrationEpub, epubCarriesConversionStamps, foldChapterOpeningInBookFile,
-  nameChapterOpeningsInBookFile,
+  nameChapterOpeningsInBookFile, readEpubConversionUnits,
   markupCategoriesForUnits, readEpubTocTargets, signNarrationElements,
   type MarkupUnit, type NamedChapterOpening, type UnnamedChapterOpening,
   type NarrationSignedUnit,
 } from './epub-processor';
-import { enumerateNarrationElements } from './quire-stamp';
+import { enumerateNarrationElements, narrationFingerprintsOfBook } from './quire-stamp';
 import { readChapterTitlesOfBook } from './book-chapters';
 import {
   parseNarrationElementKey, splitNarrationDeletions,
@@ -52,9 +64,12 @@ import * as manifestService from './manifest-service';
 import {
   describeUnstruckDeletions,
   narrationDeletionsStaleReason,
+  narrationFingerprintsFor,
+  verifyNarrationStrikes,
   type NarrationDeletions,
   type NarrationElementKey,
   type NarrationState,
+  type NarrationStrikeMismatch,
   type NarrationStrikes,
 } from '../shared/vlm/narration-deletions';
 
@@ -65,10 +80,25 @@ const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
 /**
  * Everything the picker needs to open a converted book, in one call.
  *
- * A STALE record is CLEARED here rather than returned, and the reason travels
- * with the answer. Leaving it would make every later write a merge with strikes
- * about a book nobody has; returning it unaltered would put the user's strikes
- * on screen over paragraphs they do not name.
+ * ── The record comes back WHOLE, always ─────────────────────────────────────
+ *
+ * This call used to CLEAR a record whose stamp did not name the book, and it is
+ * the clear Owen killed on 2026-08-10: opening the picker after a
+ * footnote-reference pass threw away an evening of strikes and told the user so
+ * in the past tense. Nothing here writes to the record now. The user's strikes
+ * are the user's.
+ *
+ * What replaces the clear is EVIDENCE. When the stamp does not name this book,
+ * the book is walked once and every strike is checked against the text it
+ * remembers striking (shared/vlm/narration-deletions.ts). The ones that no
+ * longer match travel back as `mismatched`, by name and with both texts, so the
+ * window can show them instead of painting them over paragraphs the user never
+ * chose. The ones recorded before fingerprints existed travel back as
+ * `unverifiable`, which is the honest answer about them and the only one.
+ *
+ * The walk costs a parse of the book, and it is paid ONLY on that path: a
+ * record stamped with the book in front of it needs no evidence, because it was
+ * made from these very bytes.
  *
  * `familyId` says which chain of the project this is about. Left out, a
  * project with one chain is understood; a project with several refuses rather
@@ -82,7 +112,8 @@ export async function readNarrationState(
   if (!book || !fs.existsSync(book.absPath)) {
     return {
       bookPath: null, bookRelPath: null, bookSha256: null, converted: false,
-      deletions: null, staleReason: null, narrationPath: null, narrationRelPath: null,
+      deletions: null, staleReason: null, mismatched: [], unverifiable: [],
+      narrationPath: null, narrationRelPath: null,
     };
   }
 
@@ -90,7 +121,15 @@ export async function readNarrationState(
   const converted = await epubCarriesConversionStamps(book.absPath);
   const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
   const staleReason = narrationDeletionsStaleReason(recorded, sha256);
-  if (staleReason !== null) await manifestService.clearNarrationDeletions(projectDir, familyId);
+
+  let mismatched: NarrationStrikeMismatch[] = [];
+  let unverifiable: NarrationElementKey[] = [];
+  if (staleReason !== null && recorded !== null) {
+    const units = await readEpubConversionUnits(book.absPath);
+    const checked = verifyNarrationStrikes(units, recorded.elements, recorded.fingerprints);
+    mismatched = checked.mismatched;
+    unverifiable = checked.unverifiable;
+  }
 
   const narration = await manifestService.readNarrationEpub(projectDir, familyId);
 
@@ -99,8 +138,10 @@ export async function readNarrationState(
     bookRelPath: book.relPath,
     bookSha256: sha256,
     converted,
-    deletions: staleReason === null ? recorded : null,
+    deletions: recorded,
     staleReason,
+    mismatched,
+    unverifiable,
     narrationPath: narration?.absPath ?? null,
     narrationRelPath: narration?.relPath ?? null,
   };
@@ -128,11 +169,11 @@ export async function readNarrationState(
  *
  * ── The staleness contract is the existing one ─────────────────────────────
  *
- * An edit against a record stamped with a DIFFERENT book is refused by name and
- * the record is cleared, exactly as `readNarrationState` and `exportNarrationEpub`
- * do — a positional record whose file moved under it cannot be merged into,
- * because the elements the edit names and the elements already on record are
- * positions in two different books.
+ * An edit against a record stamped with a DIFFERENT book MERGES — it used to
+ * clear the record and refuse, and that clear is gone (2026-08-10). What makes
+ * merging safe is that every key this gesture adds is fingerprinted from the
+ * book the gesture was made on, so it can prove itself at use whatever the
+ * record's stamp says. See `manifestService.editNarrationDeletions`.
  *
  * The sha is measured HERE for the same reason `saveNarrationDeletions` measures
  * it: the renderer's copy is as old as the last time it asked.
@@ -151,12 +192,52 @@ export async function editNarrationDeletions(
   // until something needs one, and the first strike is that moment.
   const book = await manifestService.ensureBookEpub(projectDir, familyId);
   const { sha256 } = await sha256File(book.absPath);
+  const fingerprints = edit.strike.length === 0
+    ? {}
+    : narrationFingerprintsFor(await bookFingerprints(book.absPath, sha256), edit.strike);
   // The read, the merge and the write are ONE locked transaction in
   // manifest-service — an accumulator read outside the lock loses whatever
   // landed between the read and the write.
-  const answer = await manifestService.editNarrationDeletions(projectDir, sha256, edit, familyId);
-  if (answer.staleReason !== null) throw new Error(answer.staleReason);
+  const answer = await manifestService.editNarrationDeletions(
+    projectDir, sha256, { ...edit, fingerprints }, familyId);
+  if (answer.staleWarning !== null) {
+    console.warn(
+      `[narration] ${path.basename(projectDir)}: ${answer.staleWarning} The strikes made now are `
+      + 'fingerprinted against the book on disk; nothing was cleared.');
+  }
   return answer.deletions;
+}
+
+/**
+ * Every text element of a book, fingerprinted — with the last book remembered.
+ *
+ * ── Why there is a cache at all ─────────────────────────────────────────────
+ *
+ * Because striking is a GESTURE. The picker sends one message per click, and
+ * fingerprinting the keys in it means knowing what those elements say, which
+ * means walking the book — a parse of every spine document, seconds on a real
+ * one. Doing that per click would make striking unusable.
+ *
+ * ONE entry, keyed by path AND sha256. The sha is what makes it safe rather
+ * than merely fast: any rewrite of the book — a pass, a chapter rename, a file
+ * synced in from another machine — changes it, and the walk is redone. A cache
+ * keyed on the path alone would hand a gesture the old book's text and
+ * fingerprint the new strike with a paragraph that is not there.
+ */
+let fingerprintCache: { path: string; sha256: string;
+  prints: Readonly<Record<NarrationElementKey, string>> } | null = null;
+
+async function bookFingerprints(
+  absPath: string,
+  sha256: string,
+): Promise<Readonly<Record<NarrationElementKey, string>>> {
+  if (fingerprintCache !== null
+    && fingerprintCache.path === absPath && fingerprintCache.sha256 === sha256) {
+    return fingerprintCache.prints;
+  }
+  const prints = await narrationFingerprintsOfBook(absPath, path.basename(absPath));
+  fingerprintCache = { path: absPath, sha256, prints };
+  return prints;
 }
 
 /**
@@ -190,10 +271,17 @@ export async function saveNarrationDeletions(
   // mint the same one book.
   const book = await manifestService.ensureBookEpub(projectDir, familyId);
   const { sha256 } = await sha256File(book.absPath);
+  const kept = [...new Set(elements)].sort();
+  // Fingerprinted like any other strike: this writer owns the whole answer, so
+  // the whole answer is made self-describing rather than half of it.
+  const fingerprints = kept.length === 0
+    ? {}
+    : narrationFingerprintsFor(await bookFingerprints(book.absPath, sha256), kept);
   const deletions: NarrationDeletions = {
     epubSha256: sha256,
-    elements: [...new Set(elements)].sort(),
+    elements: kept,
     updatedAt: new Date().toISOString(),
+    ...(Object.keys(fingerprints).length > 0 ? { fingerprints } : {}),
   };
   await manifestService.writeNarrationDeletions(projectDir, deletions, familyId);
   return deletions;
@@ -231,6 +319,18 @@ export interface NarrationExportResult {
    */
   fromStrikes: number;
   translated: number;
+  /**
+   * Strikes this cut applied that nothing could check: recorded before
+   * BookForge remembered what each strike struck, on a book whose sha256 does
+   * not certify them.
+   *
+   * Empty on the fast path and on every record made since Aug 2026. It is
+   * REPORTED rather than swallowed because it is the one class of strike this
+   * cut has no evidence about — the alternative to saying so is a silent
+   * "probably fine", which is what the old sha guillotine was built to avoid
+   * and then over-corrected into deleting the record instead.
+   */
+  unverifiableStrikes: string[];
   /**
    * Why some of the editor's deletions reached nothing, or null when they all
    * did.
@@ -433,10 +533,17 @@ export async function exportNarrationEpub(
   }
   const { sha256 } = await sha256File(book.absPath);
   const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
+  // ── The stamp decides HOW the strikes are checked, not WHETHER they live ──
+  //
+  // Matching, every key was minted against these bytes and nothing is owed.
+  // Not matching, each strike is checked against the text it remembers striking
+  // as the copy is planned (`planNarrationRemoval`), and a mismatch refuses the
+  // cut by name. Neither branch writes to the record: it used to be cleared
+  // here, and that clear is gone (2026-08-10).
   const stale = narrationDeletionsStaleReason(recorded, sha256);
+  const verifyStrikes = stale === null ? undefined : (recorded?.fingerprints ?? {});
   if (stale !== null) {
-    await manifestService.clearNarrationDeletions(projectDir, familyId);
-    throw new Error(stale);
+    console.warn(`[narration] ${path.basename(projectDir)}: ${stale} Checking each strike instead.`);
   }
 
   // The OTHER deletion record, folded in before anything is cut. Everything
@@ -468,6 +575,7 @@ export async function exportNarrationEpub(
     {
       ...(options?.stripSupMarkers === undefined ? {} : { stripSupMarkers: options.stripSupMarkers }),
       ...(Object.keys(chapterSpeech).length > 0 ? { textOverrides: chapterSpeech } : {}),
+      ...(verifyStrikes === undefined ? {} : { verifyStrikes }),
     });
   await moveIntoPlace(staged, target.absPath);
 
@@ -494,6 +602,7 @@ export async function exportNarrationEpub(
     removedDocuments: written.removedDocuments,
     fromStrikes: merged.fromStrikes,
     translated: merged.translated,
+    unverifiableStrikes: written.unverifiableStrikes,
     unresolved: merged.unresolved,
   };
 }
@@ -676,8 +785,18 @@ export async function strikeInNarrationCopy(
   const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
   const stale = narrationDeletionsStaleReason(recorded, sha256);
   if (stale !== null) {
-    await manifestService.clearNarrationDeletions(projectDir, familyId);
-    throw new Error(stale);
+    // A refusal, and NOT a clear. This gesture pairs the copy against the book
+    // element for element, which needs the record to describe the book it is
+    // being paired with; it does not need — and has no business — throwing the
+    // record away to say so. The copy's own `fromEpubSha256` gate above has
+    // already established that the copy matches the book, so the only way here
+    // is a record older than both.
+    throw new Error(
+      'This deletion was not recorded, because the strikes on file were made against a different '
+      + `version of your book. ${stale} Nothing has been cleared — open the book in the editor, `
+      + 'where every strike is shown and the ones that no longer match are named, and make the '
+      + 'deletion there.'
+    );
   }
   const onRecord = recorded?.elements ?? [];
   const split = splitNarrationDeletions(onRecord);
@@ -825,13 +944,22 @@ async function mergeEditorStateDeletions(
     return { elements: onRecord, fromStrikes: onRecord.length, translated: 0, unresolved: null };
   }
 
-  const elements = [...struck, ...added].sort();
-  await manifestService.writeNarrationDeletions(projectDir, {
-    epubSha256: bookSha256,
-    elements,
-    updatedAt: new Date().toISOString(),
-  }, familyId);
-  return { elements, fromStrikes: onRecord.length, translated: added.length, unresolved: null };
+  // Through the ordinary edit door, not a wholesale write. Two reasons, both
+  // learned the hard way: the door fingerprints what it strikes (a wholesale
+  // write here dropped every print the record already held), and it advances
+  // the stamp only when the stamp was already right — a translation of legacy
+  // page deletions is not evidence that the strikes made against some other
+  // version of this book describe this one.
+  const fingerprints = narrationFingerprintsFor(
+    await bookFingerprints(bookAbsPath, bookSha256), added);
+  const answer = await manifestService.editNarrationDeletions(
+    projectDir, bookSha256, { strike: added, unstrike: [], fingerprints }, familyId);
+  return {
+    elements: answer.deletions.elements,
+    fromStrikes: onRecord.length,
+    translated: added.length,
+    unresolved: null,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

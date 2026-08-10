@@ -23,6 +23,7 @@ const SUITES = [
   'test-pass-lifecycle',
   'test-narration-deletions',
   'test-book-block-category',
+  'test-narration-carry',
   'test-legacy-layout-state',
   'test-epub-provenance-lifecycle',
   'test-processing-chain',
