@@ -441,31 +441,36 @@ const AUDIO_EXTS = new Set([
                        a cleaned/simplified/translated row would look like a promise
                        to narrate that file instead.
 
-                       Shown DISABLED with the reason rather than hidden, exactly
-                       as the archive row's Open is, and the reason is the ladder's
-                       own sentence — the picker's Next refuses the same books with
-                       the same words. -->
+                       Shown DISABLED with the reason rather than hidden, and the
+                       reason is the ladder's own sentence — the picker's Next
+                       refuses the same books with the same words. (The archive
+                       row's Open used to be the other button in this shape; it
+                       performs its act now, so this is the only one left.) -->
                   <button class="act" [disabled]="narrationRefusalReason() !== null"
                           [title]="narrationTitle()" (click)="process.emit()">Process</button>
                 }
-                @if (row.v.editable || row.v.type === 'narration' || row.v.type === 'generated') {
-                  <!-- The narration copy is NOT editable and never becomes so —
-                       it is re-cut from the book and the strikes every time
-                       Export TTS copy runs, so anything typed into it would be
-                       gone at the next export. It is openable all the same
-                       (Owen, 2026-08-08: "the user should be able to look at the
-                       other files at least, if not edit them"), because it is
-                       the file TTS actually reads and previewing it is the only
-                       way to see what will be narrated. The picker shows it with
-                       the read-only banner and a way back to the working copy. -->
+                @if (row.v.editable || row.v.type === 'narration'
+                     || row.v.type === 'generated' || row.v.type === 'archive') {
+                  <!-- Three of the rows this covers name a file nothing may
+                       write to, and all three still open, because a row you
+                       cannot get into is a row the user has to take on trust.
+
+                       The ARCHIVE and the GENERATED book LAND ON THE WORKING
+                       COPY (Owen, 2026-08-09: "if they open an archive epub, it
+                       just opens a new working copy seamlessly"). The archive's
+                       Open was disabled until then, explaining that opening a
+                       book puts you on your copy — a button that described the
+                       act instead of performing it. The row carries the copy as
+                       its open path, so where the click goes is stated here
+                       rather than left to the picker's redirect to catch.
+
+                       The NARRATION copy opens as itself, and that is the point
+                       of opening it: it is the file TTS reads, and previewing
+                       what will be spoken is the whole reason to look. It is not
+                       editable and never becomes so — it is re-cut from the book
+                       and the strikes at every export — so the picker shows it
+                       with the read-only banner and a way back. -->
                   <button class="act" (click)="openDoc(row.v)" [title]="openTitle(row.v)">Open</button>
-                } @else if (row.v.type === 'archive') {
-                  <!-- Shown DISABLED rather than omitted. Opening this book lands
-                       on the working copy (RULED 2026-08-04 — you never start on a
-                       read-only book), so an Open here would be a second button
-                       doing exactly what the row below it does. The button that
-                       says why beats a gap the user has to interpret. -->
-                  <button class="act" disabled [title]="openTitle(row.v)">Open</button>
                 }
                 @if (exportable(row.v)) {
                   <button class="act" (click)="exportDoc.emit(row.v.path)" [title]="exportTitle(row.v)">Export</button>
@@ -1331,6 +1336,20 @@ export class StudioVersionsComponent {
   private readonly epubRowPresent = computed(() =>
     this.documents().some(v => v.type === 'exported'));
 
+  /**
+   * Is there a book behind this project's archive — a working copy, or the cast
+   * one could be minted from?
+   *
+   * The one fact the archive row's Open turns on, and it is the same fact
+   * `planArtifactOpen` turns on in the picker: with a book, opening the archive
+   * lands on the working copy; with none, it offers to read the pages, because
+   * reading them is the only way to get a book and it costs an hour of GPU.
+   * Measured off the rows for the same reason everything else here is — a row
+   * exists because a file does.
+   */
+  private readonly bookBehindArchive = computed(() =>
+    this.documents().some(v => v.type === 'exported' || v.type === 'generated'));
+
   /** True when at least one star on this row can be pressed. Drives the hint. */
   rowHasReviewableStar(row: DocumentFamilyRow): boolean {
     return row.slots.some(s => !!s.review);
@@ -1403,9 +1422,18 @@ export class StudioVersionsComponent {
    * The file the editor is pointed at for this row.
    *
    * `openPath` is set only where the row's own file is NOT what should open —
-   * the working copy, a hidden sidecar that standalone would carry no project,
-   * no binding and no annotations. Its absence is the ordinary case ("open this
-   * row's file"), which is why this is a branch rather than a default.
+   * the legacy working copy, a hidden sidecar that standalone would carry no
+   * project, no binding and no annotations, and the two ARCHIVE-GRADE rows,
+   * whose own files nothing may write to. Its absence is the ordinary case
+   * ("open this row's file"), which is why this is a branch rather than a
+   * default.
+   *
+   * For the archive and the cast, main names the working copy here as the
+   * STATEMENT of where the button goes. The picker redirects those opens itself
+   * (`shared/document/artifact-open.ts`) — that is the safety net, and it is the
+   * reason a row whose copy is not on disk can still be handed its own file: the
+   * picker mints the copy and reports it. This is the mechanism only in the
+   * sense of being the intent said out loud.
    */
   private editorTargetFor(v: VersionRow): string {
     return v.openPath ? v.openPath : v.path;
@@ -1413,19 +1441,33 @@ export class StudioVersionsComponent {
 
   openDoc(v: VersionRow): void { this.edit.emit(this.editorTargetFor(v)); }
 
+  /**
+   * What pressing Open will DO, per row.
+   *
+   * Written as where the user lands and why, rather than as a rule about what
+   * may not be edited. The archive row's tooltip used to explain that there was
+   * nothing separate to open here — a true sentence hung on a disabled button,
+   * which told the user about the model instead of about the click. Every row
+   * opens now, so every tooltip names a destination.
+   */
   openTitle(v: VersionRow): string {
     if (v.type === 'working') return 'Open this book in the picker, on your working copy';
     if (v.type === 'archive') {
-      return 'Opening this book lands on your working copy — the row below. You never start on a '
-        + 'read-only original, so there is nothing separate to open here.';
+      return this.bookBehindArchive()
+        ? 'Opens your working copy of this book, with your changes applied. The file on this row is '
+          + 'kept exactly as you imported it and nothing ever writes to it, so your copy is where '
+          + 'reading and editing happen.'
+        : 'Opens these pages and offers to read them into a book. Nothing ever writes to this file, '
+          + 'so a book is read out of it — and that book is what you then edit.';
     }
     if (v.type === 'narration') {
       return 'Look at what narration will actually read. It is re-cut from your working copy every '
         + 'time you export, so it opens read-only.';
     }
     if (v.type === 'generated') {
-      return 'Look at what the page reader actually produced — the only way to tell a bad reading '
-        + 'from a bad edit. Nothing writes to it, so it opens read-only.';
+      return 'Opens your working copy of this book, with your changes applied. The file on this row '
+        + 'is the reading itself, kept as the page reader made it so your copy can be made again '
+        + 'without reading the pages a second time — nothing writes to it.';
     }
     return 'Open this file in the editor';
   }

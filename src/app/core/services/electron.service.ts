@@ -466,6 +466,18 @@ export interface ProjectExportInfo {
     relPath: string; absPath: string; modifiedAt?: string;
     origin: 'cast' | 'adopted'; sha256: string;
   } | null;
+  /**
+   * The archive original ON DISK — the file the user handed us, in whatever
+   * format they handed it over in — or null when the project records none.
+   *
+   * It travels with the other two because the three together are one answer to
+   * one question: which of this project's files is the window looking at. That
+   * is what decides whether an open lands where it was pointed or on the working
+   * copy (`shared/document/artifact-open.ts`), and it must be main's answer —
+   * deriving an artifact's identity from its filename is how two surfaces come
+   * to disagree about one file.
+   */
+  archive: { relPath: string; absPath: string; format: string } | null;
   /** Absolute JPEG/PNG cover, or null for a book without one. */
   coverPath: string | null;
   /**
@@ -1379,6 +1391,12 @@ export class ElectronService {
       // which is every EPUB-native one and every unconverted PDF. Absent means
       // the same thing from a main that predates the field.
       generated: result.generated ?? null,
+      // Null for a project with no archive record, and null from a main that
+      // predates the field. Both mean the same thing to the one caller that
+      // reads it: there is no original here to recognise, so nothing is
+      // redirected away from — the read-only banner is what such a window gets,
+      // exactly as it did before.
+      archive: result.archive ?? null,
       coverPath: result.coverPath ?? null,
       // Main sends the list whenever there is a book; a project with none sends
       // nothing, which is "no book has any passes" rather than a value missing.

@@ -72,7 +72,11 @@ import {
   type ViewedArtifact,
 } from '@shared/document/rail-tasks';
 import { samePath } from '@shared/document/same-path';
-import { describeWorkingCopyRemint } from '@shared/document/working-copy-remint';
+import { planArtifactOpen, type ArtifactOpenPlan } from '@shared/document/artifact-open';
+import {
+  describeWorkingCopyRemint,
+  type WorkingCopyRemint,
+} from '@shared/document/working-copy-remint';
 import { narrationRefusal, type PassRecord } from '@shared/document/version-family';
 import {
   deriveNarrationStrikes,
@@ -99,6 +103,25 @@ import { parsePageRange } from './shared/page-range.util';
  * knowing what it does.
  */
 type ArtifactBannerAction = 'open-working' | 'generate-epub' | 'create-working';
+
+/**
+ * WHY a document is being opened — because one of the two answers can cost an
+ * hour of GPU to say yes to.
+ *
+ *  - **by-user** — somebody asked for this book. A PDF with no book behind it is
+ *    offered the conversion that would give it one, because that is the only way
+ *    it becomes editable and the user is right there.
+ *  - **restoring** — the window is putting back a document that was already
+ *    there: a tab from the last session, the re-open after a chapter rename, the
+ *    re-analysis after the viewer and the analyzer disagreed about the page
+ *    count. Nothing was asked for, so nothing is offered. Raising the conversion
+ *    modal over somebody who has just started the app — once per restored tab —
+ *    is the failure this distinction exists to prevent.
+ *
+ * The redirect to the working copy is NOT conditioned on this. Landing on the
+ * editable file is what opening a book means, whoever asked for it.
+ */
+type DocumentOpening = 'by-user' | 'restoring';
 
 /** What the viewer says about a file that is not the working copy. */
 interface ArtifactBanner {
@@ -3178,7 +3201,7 @@ export class PdfPickerComponent implements OnInit {
     );
     queueMicrotask(() => {
       this.closeDocument(docId!);
-      void this.openTarget(target);
+      void this.openTarget(target, 'restoring');
     });
   });
 
@@ -3464,7 +3487,7 @@ export class PdfPickerComponent implements OnInit {
     if (this.embedded() && this.projectDir()) {
       // Embedded mode - load whatever projectDir() points at (see openTarget)
       const filePath = this.projectDir();
-      setTimeout(() => void this.openTarget(filePath), 0);
+      setTimeout(() => void this.openTarget(filePath, 'by-user'), 0);
     } else if (!this.embedded()) {
       // Non-embedded mode - restore open tabs from localStorage
       // This must be in ngOnInit to ensure embedded() input is properly bound
@@ -3920,13 +3943,7 @@ export class PdfPickerComponent implements OnInit {
       // over, and main cleared every record made against the old one before
       // minting this. Nothing is being corrected — this is the receipt for what
       // the user asked for. See shared/document/working-copy-remint.ts.
-      if (info.remint !== null) {
-        this.showAlert({
-          title: 'The working copy was created again, and the book was started over',
-          message: describeWorkingCopyRemint(info.remint),
-          type: 'info',
-        });
-      }
+      if (info.remint !== null) this.announceRemint(info.remint);
     } catch (err) {
       // Main's own sentence, kept and shown on the EPUB tab. The last proved
       // path for THIS project is left alone — a round trip that failed is not
@@ -4160,6 +4177,31 @@ export class PdfPickerComponent implements OnInit {
    * read-only for different reasons a user is owed in different words: the
    * archive is what they handed us, and the generated book is what the reader
    * made of their pages. The banner says which.
+   *
+   * ── What this is FOR now, since a project open no longer lands here ─────────
+   *
+   * Owen, 2026-08-09: "instead of prompting the user to open the working copy,
+   * lets just open the working copy… if they open an archive epub, it just opens
+   * a new working copy seamlessly." So a project pointed at either archive-grade
+   * EPUB is redirected to its working copy before anything is displayed
+   * (`resolveProjectOpen`), and the two EPUB arms below — **open-working** and
+   * **create-working** — are no longer how a user normally gets to their book.
+   *
+   * They are kept, and the banner with them, because three things still reach it
+   * and each is real:
+   *
+   *  - **The archive PDF.** A project with a book browses its pages read-only
+   *    and crosses to the copy through this button; a project with none is
+   *    offered the conversion as it opens, and this banner is what remains on
+   *    screen if the user cancels.
+   *  - **The narration copy**, opened deliberately to preview what will be read
+   *    aloud. It is not redirected — previewing it is the whole point of opening
+   *    it — so it keeps the banner and the way back.
+   *  - **A read-only file that is on screen anyway**, because a redirect refused
+   *    or because the window bound to its project only after the file had been
+   *    opened as a loose one. The banner is the honest fallback for exactly
+   *    that: a redirect that did not happen must still leave the user told where
+   *    the editable file is, rather than silently curating nothing.
    */
   readonly artifactBanner = computed<ArtifactBanner | null>(() => {
     // A document that is still arriving has not said what it is: main's answers
@@ -9286,13 +9328,7 @@ export class PdfPickerComponent implements OnInit {
           // Said HERE and not after the refresh below: by then the file exists,
           // so the ask that follows has no re-mint to report. See
           // `refreshBookEpub` for the whole of why this is said at all.
-          if (answer.remint) {
-            this.showAlert({
-              title: 'The working copy was created again, and the book was started over',
-              message: describeWorkingCopyRemint(answer.remint),
-              type: 'info',
-            });
-          }
+          if (answer.remint) this.announceRemint(answer.remint);
           await this.refreshBookEpub();
           await this.showArtifact(answer.path);
           return;
@@ -9321,6 +9357,92 @@ export class PdfPickerComponent implements OnInit {
     } finally {
       this.artifactActionBusy.set(false);
     }
+  }
+
+  /**
+   * The file this project should ACTUALLY display, having been pointed at
+   * `asked` — and, when there is no book to point at, the job that would make
+   * one.
+   *
+   * ── Why an open is redirected at all ────────────────────────────────────────
+   *
+   * Owen, 2026-08-09: "instead of prompting the user to open the working copy,
+   * lets just open the working copy… theyll open the original version — the
+   * archive epub created by the vlm. but it will ACTUALLY open the working copy
+   * with the changes applied."
+   *
+   * Every door in pointed at an archive-grade file. `EditorRouteService` hands
+   * an EPUB project its `archive/<Book>.epub` so the export can align against
+   * the book's own markup, and the versions page's generated row hands over the
+   * cast book. Both are files nothing may write to, so both landed the user in
+   * front of a banner whose one offer was to go one click further to the file
+   * they had asked for in the first place.
+   *
+   * ── ONE choke point, and this is it ─────────────────────────────────────────
+   *
+   * Called from `loadProjectFromPath`, at the instant `pdfPathToLoad` is settled
+   * and before anything is done with it. That is the single place a PROJECT's
+   * displayed file is chosen — the route's default, the versions page's explicit
+   * `?source=`, a restored tab and `openTarget`'s project branch all arrive at
+   * it — so the redirect is stated once instead of at four call sites that can
+   * drift. A loose file has no project and never reaches here; it is edited
+   * standalone exactly as it was.
+   *
+   * ── Refusals are LOUD ───────────────────────────────────────────────────────
+   *
+   * A project that cannot be given a working copy throws, with main's own
+   * sentence naming what is missing. Showing the read-only file instead would be
+   * the precise failure this replaces: a window that promised the editable book
+   * and quietly delivered the one the user must not touch.
+   */
+  private async resolveProjectOpen(
+    projectDir: string,
+    asked: string,
+  ): Promise<{ display: string; plan: ArtifactOpenPlan }> {
+    // Main's answer about all three artifacts, in one round trip. This ask is
+    // also what MINTS a first working copy (`projects:export-info`), so by the
+    // time the plan is read the copy it may redirect to usually already exists.
+    const info = await this.electronService.projectsExportInfo(projectDir);
+    // The receipt, said here rather than waited for: this is the ask that
+    // discovered the file was gone, and main reports a re-mint on exactly the
+    // one that performed it. See `refreshBookEpub` for the whole of why.
+    if (info.remint !== null) this.announceRemint(info.remint);
+
+    const plan = planArtifactOpen({
+      asked,
+      archiveOriginal: info.archive ? info.archive.absPath : null,
+      generatedEpub: info.generated ? info.generated.absPath : null,
+      workingCopy: info.exported ? info.exported.absPath : null,
+    });
+
+    if (plan.kind !== 'working-copy') return { display: asked, plan };
+
+    // Ensure rather than trust: the copy may never have been made, and this call
+    // both mints it and names its chapter openings, which is what makes the
+    // redirected book read the way a book opened any other way reads.
+    const answer = await this.electronService.ensureWorkingEpub(projectDir);
+    if (!answer.success || !answer.path) {
+      throw new Error(answer.error
+        || 'This project has no working copy and could not be given one, and the file you opened '
+          + 'is archive-grade — nothing may write to it.');
+    }
+    if (answer.remint) this.announceRemint(answer.remint);
+    return { display: answer.path, plan };
+  }
+
+  /**
+   * The working copy was made again, and the user is owed the receipt.
+   *
+   * One wording, in one place, because a re-mint is reported from three asks now
+   * — the project's own opening, the banner's button and the redirect above —
+   * and three spellings of it would read as three different events.
+   */
+  private announceRemint(remint: WorkingCopyRemint): void {
+    this.showAlert({
+      title: 'The working copy was created again, and the book was started over',
+      message: describeWorkingCopyRemint(remint),
+      type: 'info',
+    });
   }
 
   /**
@@ -11274,9 +11396,13 @@ export class PdfPickerComponent implements OnInit {
    * directory (that is what turned a deleted `source/exported.epub` into "the
    * old PDF, repainted").
    */
-  private async openTarget(target: string, lightweight: boolean = false): Promise<void> {
+  private async openTarget(
+    target: string,
+    opening: DocumentOpening,
+    lightweight: boolean = false,
+  ): Promise<void> {
     if (await this.electronService.fsExists(`${target}/manifest.json`)) {
-      await this.loadProjectFromPath(target, lightweight);
+      await this.loadProjectFromPath(target, opening, lightweight);
       return;
     }
     if (!(await this.electronService.fsExists(target))) {
@@ -11291,7 +11417,11 @@ export class PdfPickerComponent implements OnInit {
     await this.loadPdf(target, lightweight);
   }
 
-  async loadProjectFromPath(filePath: string, lightweight: boolean = false): Promise<void> {
+  async loadProjectFromPath(
+    filePath: string,
+    opening: DocumentOpening,
+    lightweight: boolean = false,
+  ): Promise<void> {
     // Clear sourceFilePath when opening a project - finalize must use the project export flow
     this.sourceFilePath.set(null);
 
@@ -11451,6 +11581,28 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
+    // ── The archive-grade books redirect to the copy the user can edit ─────────
+    //
+    // THE choke point for a project open: everything above has decided which
+    // file this project was POINTED at, and this decides which one it shows.
+    // Reading pages into a book is the one act that cannot be done by copying,
+    // so it is offered rather than performed — and offered AFTER the load, so
+    // the pages are on screen behind the modal for a user who cancels.
+    let openPlan: ArtifactOpenPlan;
+    try {
+      const resolved = await this.resolveProjectOpen(actualProjectPath, pdfPathToLoad);
+      pdfPathToLoad = resolved.display;
+      openPlan = resolved.plan;
+    } catch (err) {
+      this.loading.set(false);
+      this.showAlert({
+        title: 'Could not open this book',
+        message: err instanceof Error ? err.message : String(err),
+        type: 'error',
+      });
+      return;
+    }
+
     // Judged by the manifest's export record, not by which resolution branch
     // produced it: the file it names is the editor's own output no matter who
     // handed it back, and treating it as the original applies the source
@@ -11479,13 +11631,31 @@ export class PdfPickerComponent implements OnInit {
       // Create new document for tabs
       const docId = this.generateDocumentId();
 
-      // Determine if we're loading the original source or a derived version (exported/cleaned)
+      // Is the file ON SCREEN the project's original source, rather than a
+      // derived version (exported/cleaned)? This is what the tab is TITLED from,
+      // so it is judged on the file actually displayed and on nothing else — a
+      // derived book wearing the original's name is what made a correct export
+      // read as "I am looking at the PDF again" (Aug 3 2026).
       const resolvedOriginalPath = project.library_path || project.source_path;
-      const isLoadingOriginal = !usingExportedEpub && (
+      const showingOriginal = !usingExportedEpub && (
         !overridePath ||  // No override in force = loading original
         pdfPathToLoad === resolvedOriginalPath ||  // Override matches original
         pdfPathToLoad === project.library_path  // Override is the library copy
       );
+
+      // Do the project's saved edits DESCRIBE the file on screen? The same
+      // question with one more true answer, and it is the redirect's: a swap to
+      // the working copy put up a file minted as the archive original's exact
+      // bytes (`mintWorkingCopyFrom` refuses to record one that is not), so
+      // every block id and page number recorded against the original addresses
+      // it precisely. Without this, the first seamless open of a book would take
+      // the user's own deletions off their screen — the redirect would have
+      // swapped in an identical file and been read as a different one.
+      //
+      // It is not a claim that the bytes are STILL identical: a pass rewrites
+      // the working copy in place, and the SHA comparison below is what proves
+      // that and drops the edits, exactly as it does for any other file.
+      const isLoadingOriginal = showingOriginal || openPlan.kind === 'working-copy';
 
       this.analyzedSourceSha256.set(quickResult.sourceSha256);
 
@@ -11541,7 +11711,7 @@ export class PdfPickerComponent implements OnInit {
         // book-named export, a cleaned EPUB) titled the open EPUB with the
         // PDF's filename — which is most of why a correct export still read as
         // "I am looking at the PDF again" (Aug 3 2026).
-        name: isLoadingOriginal ? (project.source_name || quickResult.pdf_name) : quickResult.pdf_name,
+        name: showingOriginal ? (project.source_name || quickResult.pdf_name) : quickResult.pdf_name,
         blocks: quickResult.blocks || [],
         categories: quickResult.categories || {},
         categoryProvenance: statedProvenance(quickResult.categoryProvenance),
@@ -11899,6 +12069,34 @@ export class PdfPickerComponent implements OnInit {
 
       // Load analysis results (fire-and-forget — highlights appear when ready)
       this.loadAnalysisResults(actualProjectPath);
+
+      // ── A PDF with no book behind it asks to have its pages read ────────────
+      //
+      // The same act the banner's Generate EPUB button performs, and reached
+      // through the same call, so there is one way to start a conversion rather
+      // than two that can drift. It is the MAIN window that shows the flow — it
+      // owns the queue, and this window is usually its own BrowserWindow with
+      // none — and the modal IS the confirmation: an hour of GPU is never a side
+      // effect of opening a file. Awaited so a refusal is said, and said as a
+      // warning rather than an error: the book did open, and the pages are on
+      // screen to browse read-only either way.
+      //
+      // Only for an open somebody ASKED for — see DocumentOpening. A restored
+      // tab that raised this would put a modal in front of a user who had just
+      // started the app, once per PDF they had left open.
+      if (openPlan.kind === 'offer-conversion' && opening === 'by-user') {
+        try {
+          await this.electronService.showBookConversion(actualProjectPath);
+        } catch (err) {
+          this.showAlert({
+            title: 'Could not offer to read these pages',
+            message: (err instanceof Error ? err.message : String(err))
+              + '\n\nThe PDF is open and can be browsed; run Convert to EPUB from the versions page '
+              + 'to make a book you can edit.',
+            type: 'warning',
+          });
+        }
+      }
 
     } catch (err) {
       console.error('Failed to load project source file:', err);
@@ -13796,7 +13994,7 @@ export class PdfPickerComponent implements OnInit {
         const page = block.page;
         queueMicrotask(async () => {
           this.closeDocument(docId!);
-          await this.openTarget(target);
+          await this.openTarget(target, 'restoring');
           this.scrollBackAfterReopen(page);
         });
       }
@@ -14174,7 +14372,7 @@ export class PdfPickerComponent implements OnInit {
       // Load each project
       for (const path of projectPaths) {
         try {
-          await this.loadProjectFromPath(path);
+          await this.loadProjectFromPath(path, 'restoring');
         } catch (err) {
           console.error('[restoreOpenTabs] Failed to load project:', path, err);
         }

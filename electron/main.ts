@@ -3557,13 +3557,27 @@ function setupIpcHandlers(): void {
       const generated = generatedRecord && fsSync.existsSync(generatedRecord.absPath)
         ? generatedRecord
         : null;
+      // The file the user handed us, so the picker can RECOGNISE it. Opening a
+      // project's archive original now lands on the working copy instead
+      // (shared/document/artifact-open.ts), and the window cannot decide which
+      // file that is by looking at its name — the manifest is where an
+      // artifact's identity is settled, and this is the seam that carries it.
+      // Same existence rule as the two above: a record naming a file that is not
+      // there describes an original that has been moved away, and nothing should
+      // be redirected on the strength of it.
+      const archiveRecord = await manifestService.readArchiveOriginal(projectDir);
+      const archive = archiveRecord && fsSync.existsSync(archiveRecord.absPath)
+        ? archiveRecord
+        : null;
       const coverPath = await manifestService.resolveProjectCover(projectDir);
       // What has been done to that book travels with where it is: the picker's
       // rail lights its pass entries from this, and asking twice — once for the
       // path, once for the provenance — is how two surfaces come to disagree
       // about the same book.
       const appliedPasses = await manifestService.readAppliedPasses(projectDir);
-      return { success: true, target, exported, generated, coverPath, appliedPasses, remint };
+      return {
+        success: true, target, exported, generated, archive, coverPath, appliedPasses, remint,
+      };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -10400,6 +10414,15 @@ function setupIpcHandlers(): void {
         // and no annotations — a window that looks like the book and answers no
         // gesture. The project's PDF primary opens the PROJECT, and the picker
         // lands on the furthest station it has (which is the working copy).
+        //
+        // Set on the ARCHIVE and GENERATED rows too, as of 2026-08-09, and for
+        // the law rather than the mechanism: opening either archive-grade file
+        // lands on the working copy (Owen: "if they open an archive epub, it
+        // just opens a new working copy seamlessly"). The picker redirects those
+        // opens on its own (shared/document/artifact-open.ts) — that is the
+        // SAFETY NET, and naming the copy here is the statement of intent, so a
+        // reader of this handler can see where the button goes without having to
+        // know the picker redirects at all.
         openPath?: string;
         // Present only on the 'archive' row: the manifest variant that IS this
         // file, so Delete can go through `variant:delete` — the one code path
@@ -10574,7 +10597,30 @@ function setupIpcHandlers(): void {
       const workingByPrimary = new Map(workingDocs.map((doc) => [doc.primaryRelPath, doc]));
       const familyPaths = new Set(projectPdfs.map((pdf) => pdf.absPath.toLowerCase()));
 
+      // The export is named after the book, so it is located by its manifest
+      // record — a scan of source/ cannot tell it from any other file there.
+      // Read HERE, before the family rows, because two of them are opened ON it:
+      // the archive and the cast are read-only, and pointing at their own file
+      // would be pointing the user at a book they cannot edit.
+      const exportRecord = await manifestService.readExportEpub(projectDir);
+      // Only a copy that is ON DISK may be named as a row's open target. A
+      // record whose file has gone is a re-mint waiting to happen, and the
+      // picker is where that happens and says so — sending it the archive
+      // instead lets its redirect do the ensure, with the receipt.
+      const workingCopyOpenPath = exportRecord && fsSync.existsSync(exportRecord.absPath)
+        ? exportRecord.absPath
+        : undefined;
+      // WHICH of this project's PDFs the working copy belongs to. A project can
+      // hold several — a second scan, a different edition — and exactly one of
+      // them is the archive original the copy was minted after
+      // (`workingEpubStem` names it from that entry). Pointing every PDF row at
+      // the one working copy would put a book behind a document it is not a
+      // copy of.
+      const archiveOriginal = await manifestService.readArchiveOriginal(projectDir);
+
       for (const pdf of projectPdfs) {
+        const isTheOriginal = archiveOriginal !== null
+          && archiveOriginal.relPath.toLowerCase() === pdf.relPath.toLowerCase();
         await addVersion(
           `archive:${pdf.relPath}`,
           'archive',
@@ -10582,16 +10628,24 @@ function setupIpcHandlers(): void {
           'The book exactly as you imported it. Nothing is ever written to it.',
           pdf.absPath,
           '📕',
-          // Not openable, deliberately, and this is the ONE row where that is a
-          // statement rather than a limitation: opening a book puts the user on
-          // its working copy (RULED 2026-08-04 — you never start on a read-only
-          // book), so an Open here would be a second button doing exactly what
-          // the working copy's does. The row still SAYS so — the versions page
-          // renders a disabled Open carrying that sentence rather than nothing
-          // at all. Export and Delete both act on this file directly.
+          // NOT editable, and that is a fact about the file rather than about
+          // the button: nothing may ever write to the archive original. It is
+          // OPENABLE all the same, as of 2026-08-09 — the row used to render a
+          // disabled Open explaining that opening a book lands on its working
+          // copy, which was true and was still a button that refused to do the
+          // thing it described. It now does it (Owen: "instead of prompting the
+          // user to open the working copy, lets just open the working copy"),
+          // landing on the working copy when this PDF is the one that copy was
+          // made after, and on the PDF itself otherwise — where the picker
+          // offers to read its pages. Export and Delete still act on this file
+          // directly.
           false,
           undefined,
-          { variantId: pdf.id, primaryPath: pdf.absPath }
+          {
+            variantId: pdf.id,
+            primaryPath: pdf.absPath,
+            openPath: isTheOriginal ? workingCopyOpenPath : undefined,
+          }
         );
 
         const doc = workingByPrimary.get(pdf.relPath);
@@ -10626,9 +10680,13 @@ function setupIpcHandlers(): void {
       // editing, which is why "reset my edits" used to cost an hour of GPU.
       //
       // NOT editable, for the same reason the archive is not: this is one of the
-      // two files in a project nothing may write to. It is openable, because
-      // looking at what the reader actually produced is the only way to tell a
-      // bad cast from a bad edit.
+      // two files in a project nothing may write to.
+      //
+      // Its Open lands on the working copy, exactly as the archive row's does.
+      // It used to open the cast itself read-only so a user could tell a bad
+      // reading from a bad edit; that comparison is still available — the row
+      // says which file it is, and Export saves it — but an Open that puts the
+      // user somewhere they cannot work is the prompt this release removed.
       const generatedRecord = await manifestService.readGeneratedEpub(projectDir);
       if (generatedRecord) {
         await addVersion(
@@ -10644,7 +10702,7 @@ function setupIpcHandlers(): void {
           '📗',
           false,
           undefined,
-          { generatedOrigin: generatedRecord.origin }
+          { generatedOrigin: generatedRecord.origin, openPath: workingCopyOpenPath }
         );
       }
 
@@ -10684,16 +10742,13 @@ function setupIpcHandlers(): void {
         if (epub) recordedEpubBuilds.set(epub.path.toLowerCase(), epub.writtenAt);
       }
 
-      // The export is named after the book, so it is located by its manifest
-      // record — a scan of source/ cannot tell it from any other file there.
-      //
-      // The ROW IS LABELLED WITH THAT NAME, not with a fixed "Exported EPUB":
-      // the fixed label kept the retired `exported.epub` alive in the user's
-      // head long after the file was renamed after the book, so a correct
+      // The ROW IS LABELLED WITH THE BOOK'S NAME, not with a fixed "Exported
+      // EPUB": the fixed label kept the retired `exported.epub` alive in the
+      // user's head long after the file was renamed after the book, so a correct
       // export still read as "the old exported.epub is back" (Aug 3 2026). The
       // id/type stay 'exported' — they are the contract the version consumers
-      // key off.
-      const exportRecord = await manifestService.readExportEpub(projectDir);
+      // key off. (`exportRecord` is read up with the family rows, which open on
+      // it.)
       if (exportRecord) {
         await addVersion(
           'exported',

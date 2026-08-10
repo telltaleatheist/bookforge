@@ -10,12 +10,21 @@ export type EditorRoute =
  * EditorRouteService — decides what the editor opens.
  *
  * Every project opens in the PdfPicker; the only decision left here is WHICH
- * FILE it points at. An EPUB project opens its archived ORIGINAL
- * (`archive/<Book>.epub`), not source/exported.epub or any other rebuilt copy:
- * edits are applied to the original's own markup at export time, so a
- * previously exported epub would be the wrong baseline — its markup has
- * already been rewritten once. `epubArchivePath` carries that file; it is null
- * for PDF projects and loose files, where the picker derives its own source.
+ * FILE it points at. An EPUB project points at its archived ORIGINAL
+ * (`archive/<Book>.epub`), never at a rebuilt copy: edits are applied to the
+ * original's own markup at export time, so a previously exported epub would be
+ * the wrong baseline — its markup has already been rewritten once.
+ * `epubArchivePath` carries that file; it is null for PDF projects and loose
+ * files, where the picker derives its own source.
+ *
+ * POINTS AT, and as of 2026-08-09 no longer LANDS ON. The archive original is a
+ * file nothing may write to, so the picker swaps in the working copy minted from
+ * it before anything is displayed (`shared/document/artifact-open.ts`) — Owen:
+ * "if they open an archive epub, it just opens a new working copy seamlessly."
+ * The baseline rule above survives that intact rather than being worked around
+ * by it: the copy is minted as the original's exact bytes, so it IS the
+ * original's markup, and it is the one file in the project a pass or a strike is
+ * allowed to rewrite.
  *
  * The standalone editor window (`EditorWindowComponent`) is the one host of
  * the editor. (A Studio-embedded `EditorTabComponent` used to be the second —
