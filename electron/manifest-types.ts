@@ -357,6 +357,11 @@ export interface BilingualAssemblyStage {
 export interface ManifestOutputs {
   audiobook?: AudiobookOutput;
   bilingualAudiobooks?: Record<string, AudiobookOutput>;
+  /**
+   * The book cast from a PDF's pages — archive-grade, and never the file the
+   * user edits. See GeneratedEpubOutput.
+   */
+  generatedEpub?: GeneratedEpubOutput;
   /** The project's converted book — see EpubOutput. */
   epub?: EpubOutput;
   /**
@@ -369,6 +374,50 @@ export interface ManifestOutputs {
    * `epub.narrationDeletions`; see shared/vlm/narration-deletions.ts.
    */
   ttsEpub?: NarrationEpubOutput;
+}
+
+/**
+ * The book a page reader cast from a PDF — `source/<archive basename>.generated.epub`.
+ *
+ * ── Why a PDF project has TWO EPUBs now ─────────────────────────────────────
+ *
+ * Owen, 2026-08-09: "same goes for an epub generated from a pdf. it should be
+ * treated as an archive file. a working copy of the generated epub is created."
+ *
+ * `foundry vlm-convert` used to write straight onto `outputs.epub`, which made
+ * the cast book and the editable book ONE file. That put an hour of GPU inside
+ * the thing a user throws away when they want to start their edits over: erasing
+ * changes meant re-reading every page. So the cast lands here instead, this file
+ * joins `archive/` in the class of things nothing may write to, and
+ * `outputs.epub` is a byte-identical working copy minted from it — the same
+ * derivation, digest check and reset an EPUB-native project's copy gets.
+ *
+ * Deliberately NOT an entry in `manifest.archive`. That list is the files the
+ * USER handed us, and `archiveOriginalEntry` / `workingEpubStem` key the whole
+ * naming convention off it; a generated book is derived, so it lives with the
+ * other derived artifacts and the archive keeps meaning what it says.
+ */
+export interface GeneratedEpubOutput {
+  /** Project-relative, forward slashes, e.g. `source/Killing America.generated.epub`. */
+  path: string;
+  /** When it was written (a cast) or adopted (a migration). */
+  modifiedAt: string;
+  /** Its sha256 when it was recorded — what a working copy is proved against. */
+  sha256: string;
+  /**
+   * Where these bytes came from, and it changes what "erase all changes" means.
+   *
+   *  - `cast` — foundry read the PDF's pages and wrote this. Erasing changes
+   *    puts the book back exactly as the reader cast it.
+   *  - `adopted` — the project was made before generated books were kept, so its
+   *    working copy WAS the cast and had already been edited when BookForge
+   *    started keeping one. These bytes are that copy at the moment of the
+   *    migration, which is the earliest state of the book still on this disk;
+   *    the pristine cast is not recoverable without re-reading the pages. Said
+   *    out loud rather than papered over, because a user erasing their changes
+   *    is entitled to know which book they land on.
+   */
+  origin: 'cast' | 'adopted';
 }
 
 /**

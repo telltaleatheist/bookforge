@@ -1095,6 +1095,27 @@ async function nameOpeningsOfRemintedCopy(
   }
 }
 
+/**
+ * Shut any editor window open on this project — hard, without its autosave.
+ *
+ * The staleness guard both acts that clear a project's records need. An editor
+ * window holds the edit state in signals and writes it back on interval and on
+ * close, so a reset performed under an open window is undone by that window a
+ * moment later. `destroy()` (NOT `close()`) is what skips the renderer's
+ * on-close save, which is the whole reason this is not just a `close`.
+ *
+ * Both spellings of the path are looked up because the map is keyed by whatever
+ * the opener passed: a manifest-derived path can be NFD (macOS-written) while
+ * the disk entry is NFC, and the two are different map keys for one window.
+ */
+function destroyEditorWindowsFor(...projectPaths: string[]): void {
+  for (const key of new Set(projectPaths)) {
+    const win = editorWindows.get(key);
+    if (win && !win.isDestroyed()) win.destroy();
+    editorWindows.delete(key);
+  }
+}
+
 function setupIpcHandlers(): void {
   // ClipForge: open its dedicated window (second app in this workspace).
   ipcMain.handle('clipforge:open-window', () => { openClipforgeWindow(); return { success: true }; });
@@ -3486,16 +3507,20 @@ function setupIpcHandlers(): void {
       //  1. A book named before the `<archive basename>.working.epub` convention
       //     is renamed onto it and the manifest repointed, so every project
       //     declares which archive file it is the copy of.
-      //  2. A project whose archive original is an EPUB and has no working copy
-      //     yet gets one — an instant byte copy of the archive. Its narration
-      //     strikes and its editor deletions come with it for free, because the
-      //     copy IS those bytes: the strikes are stamped with the sha256 the copy
-      //     also has, and the block ids are minted from the laid-out content.
+      //  2. A project that has an archive-grade book and no working copy yet
+      //     gets one — an instant byte copy. Its narration strikes and its
+      //     editor deletions come with it for free, because the copy IS those
+      //     bytes: the strikes are stamped with the sha256 the copy also has,
+      //     and the block ids are minted from the laid-out content.
       //
-      // A PDF project is NOT given one. Its working copy is what `vlm-convert`
-      // writes, that run costs an hour of GPU, and starting it as a side effect
-      // of opening a window is not something anybody asked for. The picker shows
-      // the archive with a banner offering to start it instead.
+      // BOTH origins get (2) now. An EPUB-native project is copied from the file
+      // the user handed us; a PDF-origin one from the book a page reader cast out
+      // of it, which is kept as its own archive-grade file
+      // (`ensureGeneratedEpub` gives that book to the projects that predate it).
+      // A PDF whose pages have NEVER been read still gets nothing, and that is
+      // the same rule as before: casting one costs an hour of GPU and is never a
+      // side effect of opening a window. The picker shows the archive with a
+      // banner offering to start it.
       //
       // A copy made AGAIN is not invisible, and it is not silent about what it
       // cost. `ensureBookEpub` CLEARS every record made against the copy that is
@@ -3507,9 +3532,15 @@ function setupIpcHandlers(): void {
       // re-derives it; there is nothing left to derive it from.
       let remint: WorkingCopyRemint | null = null;
       await manifestService.migrateWorkingEpubNaming(projectDir);
+      const adoption = await manifestService.ensureGeneratedEpub(projectDir);
+      if (adoption.missing !== null) console.warn(`[projects:export-info] ${adoption.missing}`);
       const recordedBefore = await manifestService.readExportEpub(projectDir);
       if (!recordedBefore || !fsSync.existsSync(recordedBefore.absPath)) {
-        if (await manifestService.archiveOriginalFormat(projectDir) === 'epub') {
+        // Asked as "is there something to copy", not as "did it work": a project
+        // with nothing archive-grade behind it is an ordinary state here (a PDF
+        // nobody has converted), and minting is simply not one of the things
+        // opening it does.
+        if (await manifestService.workingCopySource(projectDir) !== null) {
           remint = (await manifestService.ensureBookEpub(projectDir)).remint;
           await nameOpeningsOfRemintedCopy(projectDir, remint);
         }
@@ -3518,13 +3549,21 @@ function setupIpcHandlers(): void {
       const target = await manifestService.exportEpubTarget(projectDir);
       const record = await manifestService.readExportEpub(projectDir);
       const exported = record && fsSync.existsSync(record.absPath) ? record : null;
+      // The book cast from this project's pages, when it has one ON DISK. The
+      // picker needs it to tell that artifact apart from the archive original:
+      // both are read-only, and they are read-only for different reasons that a
+      // user is owed in different words.
+      const generatedRecord = await manifestService.readGeneratedEpub(projectDir);
+      const generated = generatedRecord && fsSync.existsSync(generatedRecord.absPath)
+        ? generatedRecord
+        : null;
       const coverPath = await manifestService.resolveProjectCover(projectDir);
       // What has been done to that book travels with where it is: the picker's
       // rail lights its pass entries from this, and asking twice — once for the
       // path, once for the provenance — is how two surfaces come to disagree
       // about the same book.
       const appliedPasses = await manifestService.readAppliedPasses(projectDir);
-      return { success: true, target, exported, coverPath, appliedPasses, remint };
+      return { success: true, target, exported, generated, coverPath, appliedPasses, remint };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7193,9 +7232,12 @@ function setupIpcHandlers(): void {
    * hand and a copy made automatically are the same act with the same name and
    * the same legacy edits carried into it.
    *
-   * It REFUSES a PDF project by name (`ensureBookEpub`'s own sentence): the
-   * working copy of a PDF is what vlm-convert writes, and there is no second,
-   * silent way to end up with something to narrate.
+   * It REFUSES by name (`ensureBookEpub`'s own sentence) a project with nothing
+   * archive-grade to copy — a PDF whose pages have never been read. Reading them
+   * is what makes that book, and this is not a second, silent way to end up with
+   * something to narrate. A PDF that HAS been read is minted from its generated
+   * book like any other project, which is what makes erasing a PDF book's changes
+   * cost a file copy rather than an hour of GPU.
    */
   ipcMain.handle('book:ensure-working-copy', async (_event, projectDir: string) => {
     try {
@@ -7207,6 +7249,143 @@ function setupIpcHandlers(): void {
       // A door that made the copy again in silence would be exactly the bug the
       // other door no longer has.
       return { success: true, path: book.absPath, relPath: book.relPath, remint: book.remint };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Erase every change made to this book, ON PURPOSE.
+   *
+   * ── Why this is a button and not a new mechanism ────────────────────────────
+   *
+   * Deleting `source/<archive basename>.working.epub` in Explorer already does
+   * this: the next thing that asks for the book finds the record naming a file
+   * that is not there, clears everything recorded against it and mints a fresh
+   * byte-identical copy (`ensureBookEpub`). Owen, 2026-08-09: "the thing they
+   * 'delete' is actually the changes, not the working copy… if that means
+   * deleting the working copy and copying over a new one, thats fine."
+   *
+   * So this handler does exactly that and nothing else — unlink, then the SAME
+   * `ensureBookEpub` + `nameOpeningsOfRemintedCopy` the automatic path runs. A
+   * second reset-and-mint written here is how the button and the file deletion
+   * would come to mean two different things, which is the failure the one shared
+   * reset (`resetEditorRecords`) was pulled out to prevent in the first place.
+   *
+   * ── Refused before anything is destroyed ────────────────────────────────────
+   *
+   * The source is resolved FIRST. A project with nothing archive-grade behind its
+   * working copy — a PDF whose pages have never been read, one whose archive EPUB
+   * has been moved away — would have its only book deleted and nothing to make
+   * another from, so it is refused by name with the file still on disk.
+   *
+   * The editor window goes the same way it goes for the rail's button, and for
+   * the same reason: its autosave would put the records straight back.
+   */
+  ipcMain.handle('book:erase-changes', async (_event, rawProjectDir: string) => {
+    try {
+      const projectDir = normalizeFsPath(rawProjectDir);
+      const source = await manifestService.requireWorkingCopySource(projectDir);
+      const existing = await manifestService.readExportEpub(projectDir);
+      if (existing === null) {
+        return {
+          success: false,
+          error: `${path.basename(projectDir)} has no working copy recorded, so there are no changes `
+            + 'to erase. Open the book once and it will be made.',
+        };
+      }
+
+      destroyEditorWindowsFor(rawProjectDir, projectDir);
+      if (fsSync.existsSync(existing.absPath)) {
+        await fs.unlink(existing.absPath);
+      }
+
+      const book = await manifestService.ensureBookEpub(projectDir);
+      if (book.remint === null) {
+        // Unreachable: the record was there a moment ago and its file is not, so
+        // `ensureBookEpub` re-minted. Said out loud rather than papered over —
+        // a null receipt here would mean the copy came back without the records
+        // being cleared, which is the exact bug this act exists to make
+        // impossible.
+        return {
+          success: false,
+          error: `${path.basename(projectDir)}'s working copy was replaced, but BookForge cannot `
+            + 'account for what was cleared with it. Check the console before editing this book.',
+        };
+      }
+      await nameOpeningsOfRemintedCopy(projectDir, book.remint);
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return {
+        success: true,
+        path: book.absPath,
+        relPath: book.relPath,
+        remint: book.remint,
+        // Which book the user has landed on, so the caller can name it. The two
+        // are different things to have gone back to, and only this side knows
+        // which this project has.
+        source: source.kind,
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Delete the book cast from this project's pages — the heavy act.
+   *
+   * Not the same act as erasing changes, and the whole point of separating the
+   * two: erasing changes costs a file copy, and this costs the hour of GPU that
+   * read the pages. The generated book is what every future working copy is
+   * minted from, so a working copy that outlived it would be a book the project
+   * could never make again — it goes too.
+   *
+   * ORDERING, and it is this codebase's ordering everywhere: records first, files
+   * last. A failure part-way leaves unrecorded strays (invisible to every
+   * consumer) rather than records vouching for files that are gone.
+   */
+  ipcMain.handle('book:delete-generated-epub', async (_event, rawProjectDir: string) => {
+    try {
+      const projectDir = normalizeFsPath(rawProjectDir);
+      const generated = await manifestService.readGeneratedEpub(projectDir);
+      if (generated === null) {
+        return {
+          success: false,
+          error: `${path.basename(projectDir)} has no generated book recorded, so there is nothing `
+            + 'to delete. The record is the only thing that says a project has one.',
+        };
+      }
+
+      destroyEditorWindowsFor(rawProjectDir, projectDir);
+
+      // The working copy first, through the one path that removes a book: its
+      // record, the passes applied to it, the stage directories those passes
+      // wrote, and the bindings that vouch for it. A project with no book
+      // recorded has none of that to drop, which is an ordinary state here.
+      const book = await manifestService.readExportEpub(projectDir);
+      let droppedPasses = 0;
+      if (book !== null) {
+        const forgotten = await manifestService.forgetEpubExport(projectDir);
+        droppedPasses = forgotten.droppedPasses;
+        if (fsSync.existsSync(forgotten.absPath)) await fs.unlink(forgotten.absPath);
+      }
+
+      const forgottenGenerated = await manifestService.forgetGeneratedEpub(projectDir);
+      let fileRemoved = false;
+      if (fsSync.existsSync(forgottenGenerated.absPath)) {
+        await fs.unlink(forgottenGenerated.absPath);
+        fileRemoved = true;
+      }
+
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return {
+        success: true,
+        removed: {
+          relPath: forgottenGenerated.relPath,
+          fileRemoved,
+          workingCopyRelPath: book === null ? null : book.relPath,
+          droppedPasses,
+        },
+      };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -10160,14 +10339,7 @@ function setupIpcHandlers(): void {
       // NFC — normalize so fs.* and the editorWindows lookup both resolve.
       const projectPath = normalizeFsPath(rawProjectPath);
 
-      // Staleness guard: an editor window open on this project holds the edit
-      // state in signals and auto-saves it on interval/close. destroy() (NOT
-      // close()) skips the renderer's on-close autosave so the reset sticks.
-      for (const key of new Set([rawProjectPath, projectPath])) {
-        const win = editorWindows.get(key);
-        if (win && !win.isDestroyed()) win.destroy();
-        editorWindows.delete(key);
-      }
+      destroyEditorWindowsFor(rawProjectPath, projectPath);
 
       const stat = fsSync.existsSync(projectPath) ? fsSync.statSync(projectPath) : null;
       if (!stat) {
@@ -10248,6 +10420,11 @@ function setupIpcHandlers(): void {
         // build: when REFLOW wrote this book. Deliberately not the file's mtime —
         // a footnote pass rewrites the book in place and moves that.
         builtAt?: string;
+        // Present only on the 'generated' row: whether these bytes are the page
+        // reader's own output ('cast') or the working copy adopted when the
+        // project was migrated ('adopted'). It changes what erasing changes goes
+        // BACK to, so every surface that offers that act has to be able to say it.
+        generatedOrigin?: 'cast' | 'adopted';
         // Present only on the synthetic 'analysis' entry:
         analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
         analysisFlagCount?: number;
@@ -10279,6 +10456,7 @@ function setupIpcHandlers(): void {
           primaryPath?: string;
           stageBoundaries?: Array<{ stage: string; finishedAt: string }>;
           builtAt?: string;
+          generatedOrigin?: 'cast' | 'adopted';
         }
       ) => {
         const resolvedFilePath = resolvePath(filePath);
@@ -10338,6 +10516,7 @@ function setupIpcHandlers(): void {
             ...(extra?.primaryPath ? { primaryPath: extra.primaryPath } : {}),
             ...(extra?.stageBoundaries ? { stageBoundaries: extra.stageBoundaries } : {}),
             ...(extra?.builtAt ? { builtAt: extra.builtAt } : {}),
+            ...(extra?.generatedOrigin ? { generatedOrigin: extra.generatedOrigin } : {}),
           });
         }
       };
@@ -10357,6 +10536,23 @@ function setupIpcHandlers(): void {
       }
 
       const projectDir = projectPath;
+
+      // ── A PDF project's generated book, given to the ones that predate it ────
+      //
+      // Run HERE as well as at open, because this page is where the two acts are
+      // offered: "Erase all changes" needs an archive-grade book to re-mint from,
+      // and a project cast before 2026-08-09 has its cast book AS its working
+      // copy. `ensureGeneratedEpub` is idempotent — a project that already has
+      // one costs a manifest read and a stat — and it never guesses: the states
+      // it cannot classify come back in `missing` and are said on the console
+      // rather than repaired.
+      //
+      // A write from a listing is deliberate and has precedent here
+      // (`migrateWorkingEpubNaming` runs from `ensureBookEpub` for the same
+      // reason): a one-time normalization happens the next time anything asks
+      // about the project, or it never happens at all.
+      const adoption = await manifestService.ensureGeneratedEpub(projectDir);
+      if (adoption.missing !== null) console.warn(`[editor:get-versions] ${adoption.missing}`);
 
       // ── The family: the archive original and the working copy it minted ─────
       //
@@ -10420,6 +10616,38 @@ function setupIpcHandlers(): void {
         );
       }
 
+      // ── The book cast from the pages, between the archive and the copy ──────
+      //
+      // A row of its own because it is an artifact of its own: archive-grade,
+      // never written to, and the thing every working copy of this book is
+      // minted from. It used to have no row because it did not exist as a
+      // separate file — `vlm-convert` wrote straight onto the working copy — so
+      // the only way to throw the cast away was to delete the book the user was
+      // editing, which is why "reset my edits" used to cost an hour of GPU.
+      //
+      // NOT editable, for the same reason the archive is not: this is one of the
+      // two files in a project nothing may write to. It is openable, because
+      // looking at what the reader actually produced is the only way to tell a
+      // bad cast from a bad edit.
+      const generatedRecord = await manifestService.readGeneratedEpub(projectDir);
+      if (generatedRecord) {
+        await addVersion(
+          'generated',
+          'generated',
+          path.basename(generatedRecord.absPath, path.extname(generatedRecord.absPath)),
+          generatedRecord.origin === 'cast'
+            ? 'The book read out of your PDF\'s pages. Nothing writes to it — your working copy is '
+              + 'made from it.'
+            : 'The book read out of your PDF\'s pages, kept from when BookForge started preserving '
+              + 'them — so it carries any edits made before that. Nothing writes to it now.',
+          generatedRecord.absPath,
+          '📗',
+          false,
+          undefined,
+          { generatedOrigin: generatedRecord.origin }
+        );
+      }
+
       // 1. Original source file
       //
       // Skipped when the file is already an ARCHIVE row above. `source/original.pdf`
@@ -10471,7 +10699,11 @@ function setupIpcHandlers(): void {
           'exported',
           'exported',
           path.basename(exportRecord.absPath, path.extname(exportRecord.absPath)),
-          'The EPUB with your edits applied',
+          // Named as what it IS rather than as an output, because the act on
+          // this row is now "Erase all changes": a row calling itself "the EPUB
+          // with your edits applied" beside a button that clears them is a row
+          // the user has to reconcile.
+          'Your copy of the book, and every change you have made to it',
           exportRecord.absPath,
           '✅',
           true,

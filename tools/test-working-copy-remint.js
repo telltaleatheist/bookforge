@@ -36,9 +36,10 @@ const failures = [];
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
 
-/** The shape of the book the failure happened to. */
+/** The shape of the book the failure happened to — a project imported AS an EPUB. */
 const killingAmerica = {
   relPath: 'source/Killing America.working.epub',
+  source: 'archive-epub',
   deletedBlockIds: 412,
   deletedPages: 7,
   narrationStrikes: 386,
@@ -84,6 +85,20 @@ test('it says the copy on screen is the unedited archive original', () => {
   assert.ok(/archive original, unedited/.test(said), `it does not say what the copy is: ${said}`);
 });
 
+test('a PDF-origin book is told it came back from the READING of its pages', () => {
+  // Its archive is a PDF, so there is no archive EPUB it could have been copied
+  // from. Saying "the archive original" to that user would name a file that does
+  // not exist and imply their PDF is what they are looking at.
+  const said = describeWorkingCopyRemint({ ...killingAmerica, source: 'generated-epub' });
+  assert.ok(/read out of this project's pages/.test(said), `it does not name the cast: ${said}`);
+  assert.ok(!/archive original/.test(said), `it still claims an archive EPUB: ${said}`);
+  assert.ok(/exactly as it was read, with none of your edits/.test(said),
+    `it does not say what the copy is: ${said}`);
+  // Everything the archive case says is still said.
+  assert.ok(/made again/.test(said), `no re-mint in: ${said}`);
+  assert.ok(said.includes('412 deleted block(s)'), `blocks missing from: ${said}`);
+});
+
 test('a book with no strikes says nothing about strikes', () => {
   const said = describeWorkingCopyRemint({ ...killingAmerica, narrationStrikes: 0 });
   assert.ok(!/element\(s\)/.test(said), `it mentions strikes anyway: ${said}`);
@@ -97,6 +112,7 @@ test('a re-mint that cleared nothing still says the file was made again', () => 
   // is there now.
   const said = describeWorkingCopyRemint({
     relPath: 'source/Quiet.working.epub',
+    source: 'archive-epub',
     deletedBlockIds: 0,
     deletedPages: 0,
     narrationStrikes: 0,

@@ -3828,6 +3828,15 @@ export class PdfPickerComponent implements OnInit {
     dir: string;
     path: string | null;
     /**
+     * The book cast from this project's PDF, when it has one on disk.
+     *
+     * Null for an EPUB-native project and for a PDF nobody has converted. It
+     * arrives on the same round trip as the working copy's path because the two
+     * facts are one answer about one project — and the banner has to tell those
+     * two read-only EPUBs apart to say why each is read-only.
+     */
+    generatedPath: string | null;
+    /**
      * `manifest.outputs.epub.appliedPasses` for that book, in execution order.
      *
      * It arrives with the path because it is the same round trip and the same
@@ -3898,6 +3907,7 @@ export class PdfPickerComponent implements OnInit {
       this.bookEpubAnswer.set({
         dir,
         path: info.exported ? info.exported.absPath : null,
+        generatedPath: info.generated ? info.generated.absPath : null,
         appliedPasses: info.appliedPasses,
       });
       // ── The working copy was made AGAIN, and the user is told ───────────────
@@ -4098,6 +4108,21 @@ export class PdfPickerComponent implements OnInit {
   });
 
   /**
+   * The book cast from this project's pages is on screen.
+   *
+   * Main's answer (`projects:export-info`), for the same reason as the two
+   * above: this window must never decide from a filename which artifact it is
+   * looking at, because the manifest is where those names are derived.
+   */
+  private readonly viewingGeneratedEpub = computed(() => {
+    const generated = this.bookEpubAnswer();
+    const dir = this.projectPath();
+    const path = generated && dir && generated.dir === dir ? generated.generatedPath : null;
+    if (path === null) return false;
+    return samePath(this.effectivePath(), path);
+  });
+
+  /**
    * What a read-only artifact says about itself, and the one thing it offers.
    *
    * ── Said, and never silent ──────────────────────────────────────────────────
@@ -4112,14 +4137,29 @@ export class PdfPickerComponent implements OnInit {
    *
    *  - **open-working** — the project has a working copy. Go there.
    *  - **generate-epub** — the archive is a PDF and nothing has read its pages.
-   *    The working copy of a PDF is what `foundry vlm-convert` writes, always,
-   *    even for a born-digital one: one path, no converter choice. It is an hour
-   *    of GPU, so it is a queued job the user starts, never a side effect.
-   *  - **create-working** — the archive is an EPUB and the instant byte copy has
-   *    not happened. It normally happens as the project opens
+   *    A PDF reaches a book through `foundry vlm-convert`, always, even for a
+   *    born-digital one: one path, no converter choice. It is an hour of GPU, so
+   *    it is a queued job the user starts, never a side effect.
+   *  - **create-working** — the project has an archive-grade book and the instant
+   *    byte copy has not happened. It normally happens as the project opens
    *    (`projects:export-info`), so reaching this means that failed or the window
    *    got here first; either way the button does exactly what the automatic
    *    path does.
+   *
+   * ── The generated book is read-only too, and for its own reason ─────────────
+   *
+   * This comment used to state as law that "the working copy of a PDF is what
+   * `foundry vlm-convert` writes". It is not, as of 2026-08-09: the cast lands
+   * on `<archive basename>.generated.epub`, which joins `archive/` in the class
+   * of files nothing may write to, and the working copy is a byte-identical copy
+   * minted from it exactly as an EPUB-native project's is minted from the file
+   * the user handed us (Owen: "an epub generated from a pdf… should be treated
+   * as an archive file. a working copy of the generated epub is created").
+   *
+   * So there are now two read-only EPUBs a project can show, and they are
+   * read-only for different reasons a user is owed in different words: the
+   * archive is what they handed us, and the generated book is what the reader
+   * made of their pages. The banner says which.
    */
   readonly artifactBanner = computed<ArtifactBanner | null>(() => {
     // A document that is still arriving has not said what it is: main's answers
@@ -4147,9 +4187,13 @@ export class PdfPickerComponent implements OnInit {
     const what = this.viewingNarrationCopy()
       ? 'This is the narration copy — the book with what you struck out already removed. It is '
         + 'rewritten from scratch every time you export it, so nothing edited here would survive.'
-      : this.viewingBook()
-        ? 'This is the archive original — the file you handed BookForge, which nothing may write to.'
-        : 'This is the archive PDF — the file you handed BookForge, which nothing may write to.';
+      : this.viewingGeneratedEpub()
+        ? 'This is the book read out of your PDF\'s pages, kept exactly as the reader made it so '
+          + 'your working copy can be made from it again without reading them a second time. '
+          + 'Nothing may write to it.'
+        : this.viewingBook()
+          ? 'This is the archive original — the file you handed BookForge, which nothing may write to.'
+          : 'This is the archive PDF — the file you handed BookForge, which nothing may write to.';
 
     if (this.bookEpubPath() !== null) {
       return { reason: `${what} Your edits live in the working copy.`, action: 'open-working' };

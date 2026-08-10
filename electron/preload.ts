@@ -30,6 +30,7 @@ import type {
   VlmEndpointCheck,
   VlmEndpointConfig,
 } from '../shared/vlm/conversion';
+import type { WorkingCopyRemint } from '../shared/document/working-copy-remint';
 import type { VlmReadingsBank } from '../shared/vlm/readings-bank';
 import type { NarrationDeletions, NarrationState } from '../shared/vlm/narration-deletions';
 import type { BookChapterRenameResult, BookChapterTitles } from '../shared/vlm/chapter-titles';
@@ -893,6 +894,15 @@ export interface ElectronAPI {
       success: boolean;
       target?: { relPath: string; absPath: string };
       exported?: { relPath: string; absPath: string; modifiedAt?: string } | null;
+      /**
+       * The book cast from this project's PDF, when it has one on disk. Null for
+       * an EPUB-native project, which never had pages read: its archive original
+       * IS the book its working copy is a copy of.
+       */
+      generated?: {
+        relPath: string; absPath: string; modifiedAt?: string;
+        origin: 'cast' | 'adopted'; sha256: string;
+      } | null;
       coverPath?: string | null;
       error?: string;
     }>;
@@ -1347,11 +1357,44 @@ export interface ElectronAPI {
       error?: string;
     }>;
     /**
-     * The project's working copy, made if it is not there yet. Refuses a PDF
-     * project by name — its working copy is what vlm-convert writes.
+     * The project's working copy, made if it is not there yet. Refuses by name a
+     * project with nothing archive-grade to copy — a PDF whose pages have never
+     * been read.
      */
     ensureWorkingEpub: (projectDir: string) =>
       Promise<{ success: boolean; path?: string; relPath?: string; error?: string }>;
+    /**
+     * Erase every change made to this book: the working copy is deleted and a
+     * byte-identical one takes its place, with nothing recorded against it.
+     *
+     * The same act as deleting `<archive basename>.working.epub` by hand — one
+     * code path, deliberately (`book:erase-changes`). `source` says which
+     * archive-grade book the fresh copy came from, because "your original" and
+     * "the book cast from your pages" are different things to have gone back to.
+     */
+    eraseChanges: (projectDir: string) => Promise<{
+      success: boolean;
+      path?: string;
+      relPath?: string;
+      remint?: WorkingCopyRemint;
+      source?: 'archive-epub' | 'generated-epub';
+      error?: string;
+    }>;
+    /**
+     * Delete the book cast from this project's pages, and the working copy that
+     * could only have been minted from it. The heavy act: a re-cast is an hour
+     * of GPU, where erasing changes is a file copy.
+     */
+    deleteGeneratedEpub: (projectDir: string) => Promise<{
+      success: boolean;
+      removed?: {
+        relPath: string;
+        fileRemoved: boolean;
+        workingCopyRelPath: string | null;
+        droppedPasses: number;
+      };
+      error?: string;
+    }>;
     /**
      * The file TTS reads — `<archive basename>.tts.epub` — cut from the working
      * copy if there is none or the one on record is stale. Refuses a project
@@ -3199,6 +3242,10 @@ const electronAPI: ElectronAPI = {
     readerStatus: () => ipcRenderer.invoke('vlm:reader-status'),
     ensureWorkingEpub: (projectDir: string) =>
       ipcRenderer.invoke('book:ensure-working-copy', projectDir),
+    eraseChanges: (projectDir: string) =>
+      ipcRenderer.invoke('book:erase-changes', projectDir),
+    deleteGeneratedEpub: (projectDir: string) =>
+      ipcRenderer.invoke('book:delete-generated-epub', projectDir),
     ensureNarrationEpub: (projectDir: string) =>
       ipcRenderer.invoke('narration:ensure-copy', projectDir),
     narrationState: (projectDir: string) =>
