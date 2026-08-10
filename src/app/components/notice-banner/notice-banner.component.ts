@@ -52,7 +52,10 @@ import { NoticeService } from '../../core/services/notice.service';
       padding: 12px 14px;
       border-radius: 10px;
       background: var(--bg-elevated, #1e1e1e);
-      border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+      /* A REAL border, accent-toned: the card has to read as a notification
+         against whatever is behind it, not as furniture (Owen, 2026-08-10:
+         "give them a border so theyre more obvious"). */
+      border: 1.5px solid var(--accent, #ff6b35);
       box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
       color: var(--text-primary, #f0f0f0);
       font-size: 13px;

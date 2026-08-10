@@ -38,19 +38,37 @@ export class NoticeService {
   private static readonly MAX_NOTICES = 4;
 
   /**
+   * How long a notice stays before dismissing itself. Owen, 2026-08-10 (on the
+   * conversion-finished toast): "have them dismiss after a few seconds." Long
+   * enough to read two sentences from across the room; a notice the user must
+   * act on belongs in a modal, not here, so nothing on this stack needs to
+   * outlive its reading.
+   */
+  private static readonly AUTO_DISMISS_MS = 8000;
+
+  /** The auto-dismiss timer per notice, cancelled on manual dismissal. */
+  private readonly timers = new Map<number, ReturnType<typeof setTimeout>>();
+
+  /**
    * Say one thing, once. Repeating an identical line already on the stack does
    * nothing — a job reporting itself twice should read as one event.
    */
   notify(text: string): void {
     const line = text.trim();
     if (!line) throw new Error('NoticeService.notify was given an empty notice');
+    let added: number | null = null;
     this.notices.update(list => {
       if (list.some(n => n.text === line)) return list;
-      const next = [...list, { id: ++this.seq, text: line }];
+      added = ++this.seq;
+      const next = [...list, { id: added, text: line }];
       return next.length > NoticeService.MAX_NOTICES
         ? next.slice(next.length - NoticeService.MAX_NOTICES)
         : next;
     });
+    if (added !== null) {
+      const id = added;
+      this.timers.set(id, setTimeout(() => this.dismiss(id), NoticeService.AUTO_DISMISS_MS));
+    }
   }
 
   /**
@@ -65,6 +83,11 @@ export class NoticeService {
   }
 
   dismiss(id: number): void {
+    const timer = this.timers.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.timers.delete(id);
+    }
     this.notices.update(list => list.filter(n => n.id !== id));
   }
 }
