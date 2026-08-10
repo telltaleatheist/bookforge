@@ -9,10 +9,15 @@
  * archive, byte-identical, in silence — and every deletion recorded in the
  * manifest still described those bytes, so they all applied to the "fresh" copy.
  *
- * What is asserted here is the SENTENCE, because the sentence is the fix. The
- * counting lives in manifest-service (it is the thing holding the manifest) and
- * the deciding lives in ensureBookEpub; what is pure — and what both main's
- * console line and the picker's alert read — is this.
+ * The belief was right and the code was wrong (Owen, 2026-08-09: "if i delete
+ * the working copy, all of its deletions and changes should go with it"). A
+ * re-mint now runs the same wholesale reset the "Erase all changes and start
+ * over" button runs, and THEN mints; the sentence is the receipt for it.
+ *
+ * What is asserted here is that sentence. The counting lives in manifest-service
+ * (it is the thing holding the manifest) and the clearing lives in
+ * ensureBookEpub; what is pure — and what both main's console line and the
+ * picker's notice read — is this.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -51,24 +56,32 @@ test('it says the file was made again from the archive', () => {
   assert.ok(/archive/.test(said), `the archive is not named in: ${said}`);
 });
 
-test('it corrects the belief that deleting the file starts the book over', () => {
+test('it CONFIRMS that deleting the file starts the book over', () => {
+  // The old sentence corrected this belief, because the old code kept the
+  // records. The code changed; if this sentence ever goes back to correcting
+  // the user it will be describing a re-mint that no longer happens.
   const said = describeWorkingCopyRemint(killingAmerica);
-  assert.ok(/does not start the book over/.test(said), `no correction in: ${said}`);
+  assert.ok(/is how a book is started over/.test(said), `no confirmation in: ${said}`);
+  assert.ok(!/does not start the book over/.test(said), `it still corrects the user: ${said}`);
 });
 
-test('the counts that still apply are stated, both of them', () => {
+test('the records are said to be CLEARED, not carried over', () => {
+  const said = describeWorkingCopyRemint(killingAmerica);
+  assert.ok(/cleared with it/.test(said), `it does not say they were cleared: ${said}`);
+  assert.ok(!/still apply/.test(said), `it still claims they apply: ${said}`);
+});
+
+test('every count is on the receipt, all three of them', () => {
   const said = describeWorkingCopyRemint(killingAmerica);
   assert.ok(said.includes('412 deleted block(s)'), `blocks missing from: ${said}`);
   assert.ok(said.includes('7 deleted page(s)'), `pages missing from: ${said}`);
-  assert.ok(/still apply/.test(said), `it does not say they apply: ${said}`);
+  assert.ok(said.includes('386 element(s) struck out for narration'),
+    `strike count missing from: ${said}`);
 });
 
-test('strikes are reported as GONE, because the re-mint drops them', () => {
-  // registerEpubExport replaces outputs.epub wholesale, and the strikes live
-  // inside it. Telling the user they carried over would be the opposite of true.
+test('it says the copy on screen is the unedited archive original', () => {
   const said = describeWorkingCopyRemint(killingAmerica);
-  assert.ok(said.includes('386 element(s)'), `strike count missing from: ${said}`);
-  assert.ok(/went with it/.test(said), `it does not say they are gone: ${said}`);
+  assert.ok(/archive original, unedited/.test(said), `it does not say what the copy is: ${said}`);
 });
 
 test('a book with no strikes says nothing about strikes', () => {
@@ -78,7 +91,7 @@ test('a book with no strikes says nothing about strikes', () => {
   assert.ok(said.includes('412 deleted block(s)'), `blocks missing from: ${said}`);
 });
 
-test('a re-mint that carried nothing still says the file was made again', () => {
+test('a re-mint that cleared nothing still says the file was made again', () => {
   // The zero case is real — a book deleted before anything was struck out of it —
   // and it is still news: the file the user was looking at is not the file that
   // is there now.
@@ -92,10 +105,13 @@ test('a re-mint that carried nothing still says the file was made again', () => 
   assert.ok(said.includes('0 deleted block(s)'), `it hides the zero: ${said}`);
 });
 
-test('it names the button that actually starts over, in the button\'s words', () => {
+test('the "start over" button is NOT named — there is nothing to get out of', () => {
+  // It was named while a re-mint kept the records and the user needed a way to
+  // undo one. Pointing at it now would tell a user who has already started the
+  // book over to go and start it over.
   const said = describeWorkingCopyRemint(killingAmerica);
-  assert.ok(said.includes('Erase all changes and start over'),
-    `the way out is not named in: ${said}`);
+  assert.ok(!said.includes('Erase all changes and start over'),
+    `it still sends the user to the button: ${said}`);
 });
 
 (async () => {

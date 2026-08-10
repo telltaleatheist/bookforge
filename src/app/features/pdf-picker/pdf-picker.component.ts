@@ -3904,16 +3904,17 @@ export class PdfPickerComponent implements OnInit {
       //
       // Main sets this on exactly the ask that re-minted the file, so showing it
       // whenever it arrives shows it once per re-mint — there is no flag to keep
-      // and nothing to remember between windows. It is a WARNING because the
-      // thing it corrects is a belief the user is acting on: they deleted the
-      // file to start the book over, the edits are records rather than bytes,
-      // and the records came with the new copy. See
-      // shared/document/working-copy-remint.ts.
+      // and nothing to remember between windows.
+      //
+      // INFORMATION, not a warning: deleting the working copy starts the book
+      // over, and main cleared every record made against the old one before
+      // minting this. Nothing is being corrected — this is the receipt for what
+      // the user asked for. See shared/document/working-copy-remint.ts.
       if (info.remint !== null) {
         this.showAlert({
-          title: 'The working copy was created again',
+          title: 'The working copy was created again, and the book was started over',
           message: describeWorkingCopyRemint(info.remint),
-          type: 'warning',
+          type: 'info',
         });
       }
     } catch (err) {
@@ -9243,9 +9244,9 @@ export class PdfPickerComponent implements OnInit {
           // `refreshBookEpub` for the whole of why this is said at all.
           if (answer.remint) {
             this.showAlert({
-              title: 'The working copy was created again',
+              title: 'The working copy was created again, and the book was started over',
               message: describeWorkingCopyRemint(answer.remint),
-              type: 'warning',
+              type: 'info',
             });
           }
           await this.refreshBookEpub();
