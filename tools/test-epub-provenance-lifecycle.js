@@ -53,6 +53,12 @@ function makeProject(over = {}) {
   const projectDir = path.join(library, 'projects', PROJECT_ID);
   fs.mkdirSync(path.join(projectDir, 'source'), { recursive: true });
   fs.writeFileSync(path.join(projectDir, BOOK_REL.split('/').join(path.sep)), 'BOOK BYTES');
+  // `registerEpubExport`/`forgetEpubExport` both resolve a family before doing
+  // anything, and a family is minted off an archive-grade original that has to
+  // be ON DISK — the manifest's `archive` entry below is what supplies it. Its
+  // bytes are never read by anything these tests drive.
+  fs.mkdirSync(path.join(projectDir, 'archive'), { recursive: true });
+  fs.writeFileSync(path.join(projectDir, 'archive', 'Test Book.epub'), 'ARCHIVE BYTES');
 
   const write = (rel, body) => {
     const abs = path.join(projectDir, rel.split('/').join(path.sep));
@@ -73,6 +79,7 @@ function makeProject(over = {}) {
     projectId: PROJECT_ID,
     type: 'book',
     metadata: { title: 'Test Book' },
+    archive: [{ path: 'archive/Test Book.epub', role: 'original', format: 'epub' }],
     outputs: {
       epub: {
         path: BOOK_REL,
@@ -102,13 +109,26 @@ const run = async (fn) => {
   try { await fn(p); } finally { p.cleanup(); }
 };
 
+/**
+ * The book record, where it lives now: under the family that owns it.
+ *
+ * `manifest.outputs.epub` was the one book a project could have; both
+ * `registerEpubExport` and `forgetEpubExport` write the family's `epub` instead,
+ * so a fixture reading the result after either has run reads it there.
+ */
+const bookRecordOf = (p) => {
+  const families = p.read().families ?? [];
+  assert.strictEqual(families.length, 1, `expected one working chain, found ${families.length}`);
+  return families[0].epub;
+};
+
 // ── The rebuild ─────────────────────────────────────────────────────────────
 
 test('a rebuild starts the provenance over — the stars clear', () => run(async (p) => {
   await manifestService.registerEpubExport(p.projectDir, p.abs(BOOK_REL));
-  const after = p.read();
-  assert.strictEqual(after.outputs.epub.path, BOOK_REL, 'the book is still recorded');
-  assert.ok(!after.outputs.epub.appliedPasses || after.outputs.epub.appliedPasses.length === 0,
+  const book = bookRecordOf(p);
+  assert.strictEqual(book.path, BOOK_REL, 'the book is still recorded');
+  assert.ok(!book.appliedPasses || book.appliedPasses.length === 0,
     'the passes applied to the OLD book did not happen to this one');
 }));
 
@@ -144,7 +164,7 @@ test('forgetting the book drops the record, the passes and their diffs', () => r
   assert.strictEqual(summary.relPath, BOOK_REL);
   assert.strictEqual(summary.droppedPasses, 3);
   assert.deepStrictEqual(summary.removedPaths, ['stages/04-footnotes', 'stages/05-simplify']);
-  assert.ok(!p.read().outputs.epub, 'the record still names a book that is being deleted');
+  assert.ok(!bookRecordOf(p), 'the record still names a book that is being deleted');
   assert.ok(!fs.existsSync(p.abs('stages/04-footnotes')));
   assert.ok(!fs.existsSync(p.abs('stages/05-simplify')));
 }));
@@ -179,7 +199,9 @@ test('forgetting a book that is not recorded refuses by name', () => run(async (
   await manifestService.forgetEpubExport(p.projectDir);
   await assert.rejects(
     () => manifestService.forgetEpubExport(p.projectDir),
-    /no outputs\.epub/,
+    // The book record lives under the family now, and the refusal names that:
+    // "records no book" rather than the old `outputs.epub`.
+    /records no book/,
     'a second delete must say there is no book, not silently succeed');
 }));
 

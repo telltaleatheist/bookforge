@@ -69,9 +69,16 @@ const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
  * with the answer. Leaving it would make every later write a merge with strikes
  * about a book nobody has; returning it unaltered would put the user's strikes
  * on screen over paragraphs they do not name.
+ *
+ * `familyId` says which chain of the project this is about. Left out, a
+ * project with one chain is understood; a project with several refuses rather
+ * than guessing which book the caller meant.
  */
-export async function readNarrationState(projectDir: string): Promise<NarrationState> {
-  const book = await manifestService.readExportEpub(projectDir);
+export async function readNarrationState(
+  projectDir: string,
+  familyId?: string,
+): Promise<NarrationState> {
+  const book = await manifestService.readExportEpub(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) {
     return {
       bookPath: null, bookRelPath: null, bookSha256: null, converted: false,
@@ -81,11 +88,11 @@ export async function readNarrationState(projectDir: string): Promise<NarrationS
 
   const { sha256 } = await sha256File(book.absPath);
   const converted = await epubCarriesConversionStamps(book.absPath);
-  const recorded = await manifestService.readNarrationDeletions(projectDir);
+  const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
   const staleReason = narrationDeletionsStaleReason(recorded, sha256);
-  if (staleReason !== null) await manifestService.clearNarrationDeletions(projectDir);
+  if (staleReason !== null) await manifestService.clearNarrationDeletions(projectDir, familyId);
 
-  const narration = await manifestService.readNarrationEpub(projectDir);
+  const narration = await manifestService.readNarrationEpub(projectDir, familyId);
 
   return {
     bookPath: book.absPath,
@@ -129,20 +136,25 @@ export async function readNarrationState(projectDir: string): Promise<NarrationS
  *
  * The sha is measured HERE for the same reason `saveNarrationDeletions` measures
  * it: the renderer's copy is as old as the last time it asked.
+ *
+ * `familyId` names the chain being struck. Omitted, a project with one chain
+ * needs no telling apart; a project with several must say which book the
+ * strikes belong to.
  */
 export async function editNarrationDeletions(
   projectDir: string,
-  edit: { strike: readonly NarrationElementKey[]; unstrike: readonly NarrationElementKey[] }
+  edit: { strike: readonly NarrationElementKey[]; unstrike: readonly NarrationElementKey[] },
+  familyId?: string,
 ): Promise<NarrationDeletions> {
   // `ensureBookEpub`, not `readExportEpub`, for the reason spelled out in
   // `saveNarrationDeletions` below: a project imported AS an EPUB has no book
   // until something needs one, and the first strike is that moment.
-  const book = await manifestService.ensureBookEpub(projectDir);
+  const book = await manifestService.ensureBookEpub(projectDir, familyId);
   const { sha256 } = await sha256File(book.absPath);
   // The read, the merge and the write are ONE locked transaction in
   // manifest-service — an accumulator read outside the lock loses whatever
   // landed between the read and the write.
-  const answer = await manifestService.editNarrationDeletions(projectDir, sha256, edit);
+  const answer = await manifestService.editNarrationDeletions(projectDir, sha256, edit, familyId);
   if (answer.staleReason !== null) throw new Error(answer.staleReason);
   return answer.deletions;
 }
@@ -160,10 +172,14 @@ export async function editNarrationDeletions(
  * strikes it merely does not know about. `editNarrationDeletions` above is the
  * gesture path. This remains for callers that legitimately own the whole answer
  * — the export's own merge of a legacy editor-state translation, and tests.
+ *
+ * `familyId` picks the chain, the ordinary case being none — a project with
+ * one chain has nothing to pick between.
  */
 export async function saveNarrationDeletions(
   projectDir: string,
-  elements: readonly NarrationElementKey[]
+  elements: readonly NarrationElementKey[],
+  familyId?: string,
 ): Promise<NarrationDeletions> {
   // `ensureBookEpub`, not `readExportEpub`: a project imported AS an EPUB has no
   // book until something needs one, and the first strike is exactly that moment.
@@ -172,14 +188,14 @@ export async function saveNarrationDeletions(
   // untouched, which is what it is for. The same call is what a Simplify or
   // Translate pass makes (processing-passes `requireBookEpub`), so both routes
   // mint the same one book.
-  const book = await manifestService.ensureBookEpub(projectDir);
+  const book = await manifestService.ensureBookEpub(projectDir, familyId);
   const { sha256 } = await sha256File(book.absPath);
   const deletions: NarrationDeletions = {
     epubSha256: sha256,
     elements: [...new Set(elements)].sort(),
     updatedAt: new Date().toISOString(),
   };
-  await manifestService.writeNarrationDeletions(projectDir, deletions);
+  await manifestService.writeNarrationDeletions(projectDir, deletions, familyId);
   return deletions;
 }
 
@@ -337,12 +353,17 @@ export interface NarrationEpubForTts {
  * happen to be lying about. That refusal is the whole of the model: there is one
  * editable file, and if it does not exist yet the thing to do is make it, not
  * pick a substitute.
+ *
+ * `familyId` says which of the project's chains to narrate. Absent is the
+ * ordinary case, meaning the project's only one; a project with several
+ * refuses rather than guessing.
  */
 export async function ensureNarrationEpub(
   projectDir: string,
-  options?: NarrationExportOptions
+  options?: NarrationExportOptions,
+  familyId?: string,
 ): Promise<NarrationEpubForTts> {
-  const book = await manifestService.readExportEpub(projectDir);
+  const book = await manifestService.readExportEpub(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) {
     throw new Error(
       `${path.basename(projectDir)} has no working copy, so there is nothing to narrate yet. Open `
@@ -352,7 +373,7 @@ export async function ensureNarrationEpub(
   }
 
   const { sha256 } = await sha256File(book.absPath);
-  const record = await manifestService.readNarrationEpubRecord(projectDir);
+  const record = await manifestService.readNarrationEpubRecord(projectDir, familyId);
   if (record) {
     const abs = path.join(projectDir, record.path.split('/').join(path.sep));
     if (fs.existsSync(abs) && record.fromEpubSha256 === sha256) {
@@ -374,7 +395,7 @@ export async function ensureNarrationEpub(
       : 'The book has changed since the narration copy was cut, so it was cut again from the '
         + 'working copy as it is now.';
 
-  const written = await exportNarrationEpub(projectDir, options);
+  const written = await exportNarrationEpub(projectDir, options, familyId);
   return {
     epubPath: written.epubPath,
     relPath: written.relPath,
@@ -394,12 +415,16 @@ export async function ensureNarrationEpub(
  * narration copy is "the book as it should be read aloud", and for some books
  * that is all of it. The TTS step then has a file to point at either way, and
  * the two records never disagree about whether one exists.
+ *
+ * `familyId` names the chain to cut from. Leave it out for a project with one
+ * chain — a project with several refuses instead of picking one for you.
  */
 export async function exportNarrationEpub(
   projectDir: string,
-  options?: NarrationExportOptions
+  options?: NarrationExportOptions,
+  familyId?: string,
 ): Promise<NarrationExportResult> {
-  const book = await manifestService.readExportEpub(projectDir);
+  const book = await manifestService.readExportEpub(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) {
     throw new Error(
       `${path.basename(projectDir)} has no book EPUB on disk, so there is nothing to cut a `
@@ -407,19 +432,19 @@ export async function exportNarrationEpub(
     );
   }
   const { sha256 } = await sha256File(book.absPath);
-  const recorded = await manifestService.readNarrationDeletions(projectDir);
+  const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
   const stale = narrationDeletionsStaleReason(recorded, sha256);
   if (stale !== null) {
-    await manifestService.clearNarrationDeletions(projectDir);
+    await manifestService.clearNarrationDeletions(projectDir, familyId);
     throw new Error(stale);
   }
 
   // The OTHER deletion record, folded in before anything is cut. Everything
   // about why there are two, and why this one has to be translated rather than
   // read, is in electron/narration-editor-state.ts.
-  const merged = await mergeEditorStateDeletions(projectDir, book.absPath, sha256, recorded);
+  const merged = await mergeEditorStateDeletions(projectDir, book.absPath, sha256, recorded, familyId);
 
-  const target = await manifestService.narrationEpubTarget(projectDir);
+  const target = await manifestService.narrationEpubTarget(projectDir, familyId);
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
   const staged = path.join(STAGING_DIR, `narration-${sha256.slice(0, 16)}.epub`);
 
@@ -457,7 +482,7 @@ export async function exportNarrationEpub(
     // quietly reverting to the default — see `strikeInNarrationCopy`.
     strippedSupMarkers: options?.stripSupMarkers !== false,
     removedDocuments: written.removedDocuments,
-  });
+  }, familyId);
 
   return {
     epubPath: target.absPath,
@@ -594,10 +619,14 @@ async function signBookElements(
  * the record does not say whether that cut removed the footnote numbers — the
  * one thing about the file no other record describes, and a re-cut that guessed
  * it would flip a choice the user made. All three name the act that fixes them.
+ *
+ * `familyId` says which chain's copy is being struck. Omitted, a project with
+ * one chain is meant; a project with several must be told.
  */
 export async function strikeInNarrationCopy(
   projectDir: string,
   copyKeys: readonly NarrationElementKey[],
+  familyId?: string,
 ): Promise<NarrationCopyStrikeResult> {
   if (copyKeys.length === 0) {
     throw new Error(
@@ -606,7 +635,7 @@ export async function strikeInNarrationCopy(
     );
   }
 
-  const book = await manifestService.readExportEpub(projectDir);
+  const book = await manifestService.readExportEpub(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) {
     throw new Error(
       `${path.basename(projectDir)} has no working copy on disk, so a deletion made on its TTS copy `
@@ -615,7 +644,7 @@ export async function strikeInNarrationCopy(
   }
   const { sha256 } = await sha256File(book.absPath);
 
-  const record = await manifestService.readNarrationEpubRecord(projectDir);
+  const record = await manifestService.readNarrationEpubRecord(projectDir, familyId);
   if (record === null) {
     throw new Error(
       'This project has no TTS copy on record, so there is nothing to have deleted from. Generate '
@@ -644,10 +673,10 @@ export async function strikeInNarrationCopy(
     );
   }
 
-  const recorded = await manifestService.readNarrationDeletions(projectDir);
+  const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
   const stale = narrationDeletionsStaleReason(recorded, sha256);
   if (stale !== null) {
-    await manifestService.clearNarrationDeletions(projectDir);
+    await manifestService.clearNarrationDeletions(projectDir, familyId);
     throw new Error(stale);
   }
   const onRecord = recorded?.elements ?? [];
@@ -669,12 +698,12 @@ export async function strikeInNarrationCopy(
   const translated = bookKeysForCopyKeys(pairing, copyKeys);
   if (!translated.ok) throw new Error(translated.reason);
 
-  await editNarrationDeletions(projectDir, { strike: translated.keys, unstrike: [] });
+  await editNarrationDeletions(projectDir, { strike: translated.keys, unstrike: [] }, familyId);
 
   const startedAt = Date.now();
   const written = await exportNarrationEpub(projectDir, {
     stripSupMarkers: record.strippedSupMarkers,
-  });
+  }, familyId);
   const recutMs = Date.now() - startedAt;
 
   return {
@@ -720,12 +749,17 @@ interface MergedNarrationDeletions {
  * A project whose record already names everything the editor deleted gets an
  * identical set, nothing is written, and the only cost is the book's block layer
  * — an analysis-cache hit, because the picker laid the same book out to show it.
+ *
+ * `familyId` is threaded straight from `exportNarrationEpub`'s caller — this
+ * helper does not resolve the chain itself, it writes back to the one already
+ * chosen.
  */
 async function mergeEditorStateDeletions(
   projectDir: string,
   bookAbsPath: string,
   bookSha256: string,
   recorded: NarrationDeletions | null,
+  familyId?: string,
 ): Promise<MergedNarrationDeletions> {
   const onRecord = recorded?.elements ?? [];
 
@@ -796,7 +830,7 @@ async function mergeEditorStateDeletions(
     epubSha256: bookSha256,
     elements,
     updatedAt: new Date().toISOString(),
-  });
+  }, familyId);
   return { elements, fromStrikes: onRecord.length, translated: added.length, unresolved: null };
 }
 
@@ -855,13 +889,18 @@ export interface ChapterOpeningMergeResult {
  * the manifest's own sentence — and that is the one case where the file has
  * already changed, which is why the sentence says what to do about it rather
  * than pretending nothing happened.
+ *
+ * `familyId` names which chain's book is being folded. Left out, a project
+ * with a single chain is meant; a project with several refuses rather than
+ * guessing which one.
  */
 export async function mergeChapterOpening(
   projectDir: string,
   openerKey: NarrationElementKey,
   foldedKeys: readonly NarrationElementKey[],
+  familyId?: string,
 ): Promise<ChapterOpeningMergeResult> {
-  const book = await manifestService.readExportEpub(projectDir);
+  const book = await manifestService.readExportEpub(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) {
     throw new Error(
       `${path.basename(projectDir)} has no working copy on disk, so there is no book to fold a `
@@ -874,7 +913,7 @@ export async function mergeChapterOpening(
   // the strike record was describing this book a moment ago, and it is what the
   // edit log records the fold as having started from.
   const { sha256: fromSha256 } = await sha256File(book.absPath);
-  const recorded = await manifestService.readNarrationDeletions(projectDir);
+  const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
   const stale = narrationDeletionsStaleReason(recorded, fromSha256);
   if (stale !== null) {
     // NOT cleared here, unlike `readNarrationState`: clearing is a write, and a
@@ -939,6 +978,7 @@ export async function mergeChapterOpening(
       toSha256,
     },
     folded.removedIndices,
+    familyId,
   );
 
   console.log(
@@ -1006,13 +1046,18 @@ export interface ChapterOpeningNamingSummary {
  * refusal is only reachable when there is something to name: a book already
  * normalized is a no-op no matter what the record says, which is what keeps a
  * void record from making a project unopenable.
+ *
+ * `familyId` picks the chain to normalize. Absent, a project with one chain
+ * is meant; a project with several refuses rather than guessing which book
+ * just opened.
  */
 export async function nameChapterOpenings(
   projectDir: string,
+  familyId?: string,
 ): Promise<ChapterOpeningNamingSummary> {
   const nothing: ChapterOpeningNamingSummary = { edited: 0, named: [], skipped: [] };
 
-  const book = await manifestService.readExportEpub(projectDir);
+  const book = await manifestService.readExportEpub(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) return nothing;
 
   // The book as it stands, measured BEFORE anything is written: it is what says
@@ -1036,7 +1081,7 @@ export async function nameChapterOpenings(
 
   // Read now, judged after the pass has said whether it has anything to do. A
   // book that is already named must open even when its strikes are void.
-  const recorded = await manifestService.readNarrationDeletions(projectDir);
+  const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
   const stale = narrationDeletionsStaleReason(recorded, fromSha256);
 
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
@@ -1073,7 +1118,7 @@ export async function nameChapterOpenings(
     })),
     fromSha256,
     toSha256,
-  });
+  }, familyId);
 
   const blocked = named.skipped.filter((s) => s.kind === 'holds-image');
   console.log(

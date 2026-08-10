@@ -450,6 +450,15 @@ interface ProjectSaveResult {
  * the renderer never builds the name.
  */
 export interface ProjectExportInfo {
+  /**
+   * WHICH working chain everything here is about.
+   *
+   * Main resolves it and hands it back, so a window that opened without saying
+   * which version it wanted still learns which one it got — and quotes it in
+   * every act it performs afterwards rather than asking again and being answered
+   * about a different one.
+   */
+  familyId: string;
   /** Where the NEXT export must be written — derived from the manifest's title. */
   target: { relPath: string; absPath: string };
   /** The existing export, or null when the project has never exported. */
@@ -1376,15 +1385,31 @@ export class ElectronService {
    * path. `exported` null means the project has never exported; `coverPath` null
    * means the book has no cover — both ordinary.
    */
-  async projectsExportInfo(projectDir: string): Promise<ProjectExportInfo> {
+  async projectsExportInfo(
+    projectDir: string,
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
+  ): Promise<ProjectExportInfo> {
     if (!this.isElectron) {
       throw new Error('Resolving a project export path needs the desktop app.');
     }
-    const result = await (window as any).electron.projects.exportInfo(projectDir);
+    const result = await (window as any).electron.projects.exportInfo(projectDir, familyId);
     if (!result.success || !result.target) {
       throw new Error(result.error || 'Could not resolve the project\'s export path.');
     }
+    if (typeof result.familyId !== 'string' || result.familyId.length === 0) {
+      throw new Error(
+        'The project opened without saying which working chain it opened. Reload the window — '
+        + 'this is an older build of main, and every act this window performs afterwards would be '
+        + 'about a version nothing named.'
+      );
+    }
     return {
+      familyId: result.familyId,
       target: result.target,
       exported: result.exported ?? null,
       // Main sends null for every project that has no generated book on disk,
@@ -2766,7 +2791,15 @@ export class ElectronService {
    * one made automatically are one act. Refuses by name a project with nothing
    * archive-grade to copy — a PDF whose pages have never been read.
    */
-  async ensureWorkingEpub(projectDir: string): Promise<{
+  async ensureWorkingEpub(
+    projectDir: string,
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
+  ): Promise<{
     success: boolean;
     path?: string;
     relPath?: string;
@@ -2779,7 +2812,7 @@ export class ElectronService {
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.ensureWorkingEpub(projectDir);
+      return (window as any).electron.vlm.ensureWorkingEpub(projectDir, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -2810,7 +2843,13 @@ export class ElectronService {
    */
   async eraseBookChanges(
     projectDir: string,
-    scope: 'everything' | 'working-changes'
+    scope: 'everything' | 'working-changes',
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
   ): Promise<{
     success: boolean;
     path?: string;
@@ -2825,7 +2864,7 @@ export class ElectronService {
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.eraseChanges(projectDir, scope);
+      return (window as any).electron.vlm.eraseChanges(projectDir, scope, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -2844,7 +2883,16 @@ export class ElectronService {
    * later snapshot was produced from the one before it, so there is no book on
    * disk with a middle entry removed and the later ones still applied.
    */
-  async deleteBookLedgerEntry(projectDir: string, entryId: string): Promise<{
+  async deleteBookLedgerEntry(
+    projectDir: string,
+    entryId: string,
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
+  ): Promise<{
     success: boolean;
     path?: string;
     relPath?: string;
@@ -2855,7 +2903,7 @@ export class ElectronService {
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.deleteLedgerEntry(projectDir, entryId);
+      return (window as any).electron.vlm.deleteLedgerEntry(projectDir, entryId, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -2902,7 +2950,15 @@ export class ElectronService {
    * re-cast reads every page again, where erasing changes is a file copy. The
    * working copy goes with it because nothing could mint another one.
    */
-  async deleteGeneratedEpub(projectDir: string): Promise<{
+  async deleteGeneratedEpub(
+    projectDir: string,
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
+  ): Promise<{
     success: boolean;
     removed?: {
       relPath: string;
@@ -2913,7 +2969,7 @@ export class ElectronService {
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.deleteGeneratedEpub(projectDir);
+      return (window as any).electron.vlm.deleteGeneratedEpub(projectDir, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -2923,13 +2979,21 @@ export class ElectronService {
    * in the project: Export TTS copy cuts it again from the book and the
    * strikes, which stay exactly as they are.
    */
-  async deleteTtsCopy(projectDir: string): Promise<{
+  async deleteTtsCopy(
+    projectDir: string,
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
+  ): Promise<{
     success: boolean;
     removed?: { relPath: string; fileRemoved: boolean };
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.deleteTtsCopy(projectDir);
+      return (window as any).electron.vlm.deleteTtsCopy(projectDir, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }

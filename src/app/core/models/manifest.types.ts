@@ -47,6 +47,13 @@ export interface ProjectManifest {
   // Archive
   archive?: ArchiveEntry[];
 
+  /**
+   * The project's WORKING CHAINS, one per archive-grade EPUB — see
+   * shared/document/book-families.ts and BookFamily below. Mirrors
+   * electron/manifest-types.ts, which is the writing side.
+   */
+  families?: BookFamily[];
+
   // Book variants — distinct editions/languages/formats of the SAME book in one
   // project. The primaryVariantId variant represents the project (its metadata
   // mirrors `metadata`). Separate from pipeline versions (original/exported/…).
@@ -372,6 +379,27 @@ export interface AnalysisStage {
 // Outputs
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * ONE WORKING CHAIN: an archive-grade EPUB and everything derived from it — the
+ * working copy, its ledger, its strikes, its narration copy.
+ *
+ * Mirrors `BookFamily` in electron/manifest-types.ts. The identity rules (which
+ * chain a question is about, what its files are named after) are pure and live
+ * in shared/document/book-families.ts, so main and this side cannot disagree
+ * about which book a row is standing on.
+ */
+export interface BookFamily {
+  id: string;
+  source: {
+    path: string;
+    kind: 'archive-epub' | 'generated-epub';
+    /** Null when the source was not on disk when the chain was minted. */
+    sha256: string | null;
+  };
+  epub?: EpubOutput;
+  ttsEpub?: NarrationEpubOutput;
+}
+
 export interface ManifestOutputs {
   // Single-language audiobook
   audiobook?: AudiobookOutput;
@@ -379,11 +407,12 @@ export interface ManifestOutputs {
   // Bilingual audiobooks keyed by "sourceLang-targetLang" (e.g., "en-de")
   bilingualAudiobooks?: Record<string, AudiobookOutput>;
 
-  // The project's converted book — see EpubOutput.
+  // LEGACY, and nothing in the renderer may read either. The book and its
+  // narration copy moved into the chain that owns them (`families[].epub`,
+  // `families[].ttsEpub`) when a project became able to hold more than one; a
+  // one-time migration in main moves them the first time anything asks about the
+  // project. They stay declared because a manifest read before that has them.
   epub?: EpubOutput;
-
-  // The narration copy: the book with what the user struck out removed. A SECOND
-  // file, never the book — see shared/vlm/narration-deletions.ts.
   ttsEpub?: NarrationEpubOutput;
 
   // Playback position bookmarks keyed by output identifier: "audiobook", "en-de", etc.

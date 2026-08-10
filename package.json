@@ -70,6 +70,7 @@
     "test:version-family": "npx tsc -p tsconfig.electron.json && node tools/test-version-family.js",
     "test:book-chain": "npx tsc -p tsconfig.electron.json && node tools/test-book-chain.js",
     "test:rail-tasks": "npx tsc -p tsconfig.electron.json && node tools/test-rail-tasks.js",
+    "test:family-lifecycle": "npx tsc -p tsconfig.electron.json && node tools/test-family-lifecycle.js",
     "test:component-upgrades": "npx tsc -p tsconfig.electron.json && node tools/test-component-upgrades.js",
     "test:quire": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/test-quire.js",
     "quire:paginate": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/quire-paginate.js",

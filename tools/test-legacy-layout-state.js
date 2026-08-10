@@ -52,6 +52,16 @@ manifestService.setLibraryBasePath(LIB);
 function project(id, manifest) {
   const dir = path.join(LIB, 'projects', id);
   fs.mkdirSync(path.join(dir, 'source'), { recursive: true });
+  // A family is minted off the archive-grade original ON DISK, not off the
+  // manifest's say-so, so a fixture that records one has to put the file there
+  // too — even a project this test is deliberately keeping bookless still needs
+  // its ARCHIVE original to exist, so `requireFamily` can mint the chain before
+  // the code under test gets to ask about the working copy.
+  for (const entry of manifest.archive ?? []) {
+    const abs = path.join(dir, ...entry.path.split('/'));
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    if (!fs.existsSync(abs)) fs.writeFileSync(abs, Buffer.from('PK archive placeholder'));
+  }
   fs.writeFileSync(
     path.join(dir, 'manifest.json'),
     JSON.stringify({ version: 2, projectId: id, projectType: 'book', ...manifest }, null, 2),
@@ -61,6 +71,18 @@ function project(id, manifest) {
 
 const readManifest = (dir) =>
   JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf-8'));
+
+/**
+ * The book record, where it lives now: under the family that owns it.
+ *
+ * `manifest.outputs.epub` was the one book a project could have; the record
+ * moved inside the family whose archive-grade source it hangs off.
+ */
+const bookRecordOf = (dir) => {
+  const families = readManifest(dir).families ?? [];
+  assert.strictEqual(families.length, 1, `expected one working chain, found ${families.length}`);
+  return families[0].epub;
+};
 
 /** The records a real legacy project carries — Apocalypse Delayed, from the census. */
 const legacyRecords = {
@@ -85,6 +107,10 @@ const legacyRecords = {
     sourceFileSha256: 'deadbeef',
   },
   pipeline: {},
+  // The stem an archive-grade original mints a family under is its own
+  // basename, so this has to be "Apocalypse Delayed" to agree with the working
+  // copy's recorded name below.
+  archive: [{ path: 'archive/Apocalypse Delayed.epub', role: 'original', format: 'epub' }],
   outputs: { epub: { path: 'source/Apocalypse Delayed.working.epub', modifiedAt: 'x' } },
 };
 
@@ -140,10 +166,10 @@ test('(a) the carry-over is ONE transaction: new records, new stamp, the rest re
     assert.deepStrictEqual(m.source.deletedBlockIds, ['aa11bb22cc33']);
     // And the stamp now says which layout that is.
     assert.deepStrictEqual(m.source[EDITOR_LAYOUT_MANIFEST_KEY], layout);
-    // The durable form of the same intent.
-    assert.deepStrictEqual(
-      m.outputs.epub.narrationDeletions.elements, ['OEBPS/ch1.xhtml#4']);
-    assert.strictEqual(m.outputs.epub.narrationDeletions.epubSha256, 'sha-of-the-book');
+    // The durable form of the same intent, under the family now.
+    const book = bookRecordOf(dir);
+    assert.deepStrictEqual(book.narrationDeletions.elements, ['OEBPS/ch1.xhtml#4']);
+    assert.strictEqual(book.narrationDeletions.epubSha256, 'sha-of-the-book');
 
     // Everything the old layout explained is gone.
     assert.strictEqual(m.source.pageOrder, undefined);

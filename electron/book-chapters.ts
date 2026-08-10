@@ -665,9 +665,16 @@ async function readListedDocument(
  * projects are in for most of their life, and it is the reason the picker asks
  * this for every project it opens. A project that HAS a book and cannot be read
  * throws, because that is a fault.
+ *
+ * `familyId` chooses which chain's book to read. Left out, a project with one
+ * chain needs no choosing; a project with several refuses rather than picking
+ * one for the caller.
  */
-export async function readBookChapterTitles(projectDir: string): Promise<BookChapterTitles | null> {
-  const book = await manifestService.readExportEpub(projectDir);
+export async function readBookChapterTitles(
+  projectDir: string,
+  familyId?: string,
+): Promise<BookChapterTitles | null> {
+  const book = await manifestService.readExportEpub(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) return null;
   return readChapterTitlesOfBook(book.absPath);
 }
@@ -853,11 +860,16 @@ export async function renameChapterInBookFile(
  * work it out from a page number. Every refusal names what was missing: a
  * project with no book, a document the table of contents does not list, an empty
  * title.
+ *
+ * `familyId` says which chain's book is being renamed. Absent is the ordinary
+ * case, a project with a single chain; a project with several refuses rather
+ * than guessing which table of contents to edit.
  */
 export async function renameBookChapter(
   projectDir: string,
   file: string,
   rawTitle: string,
+  familyId?: string,
 ): Promise<BookChapterRenameResult> {
   const title = rawTitle.trim();
   if (title.length === 0) {
@@ -868,7 +880,7 @@ export async function renameBookChapter(
     );
   }
 
-  const book = await manifestService.readExportEpub(projectDir);
+  const book = await manifestService.readExportEpub(projectDir, familyId);
   if (!book) {
     throw new Error(
       `${path.basename(projectDir)} has no book EPUB recorded (manifest outputs.epub), so there is `
@@ -887,8 +899,8 @@ export async function renameBookChapter(
   // The book as it stands, measured BEFORE the rewrite: it is what says whether
   // the records stamped with it were describing this book a moment ago.
   const { sha256: before } = await sha256File(book.absPath);
-  const recorded = await manifestService.readNarrationDeletions(projectDir);
-  const narration = await manifestService.readNarrationEpub(projectDir);
+  const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
+  const narration = await manifestService.readNarrationEpub(projectDir, familyId);
 
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
   const staged = path.join(STAGING_DIR, `retitle-${before.slice(0, 16)}.epub`);
@@ -897,7 +909,7 @@ export async function renameBookChapter(
 
   const { sha256: after } = await sha256File(book.absPath);
   const at = new Date().toISOString();
-  await manifestService.touchBookEpub(projectDir, at);
+  await manifestService.touchBookEpub(projectDir, at, familyId);
 
   // The strikes still name the same elements — see this file's header for the
   // proof — so they are re-stamped rather than left to read as stale. A record
@@ -909,12 +921,12 @@ export async function renameBookChapter(
       ...recorded,
       epubSha256: after,
       updatedAt: at,
-    });
+    }, familyId);
   }
 
   let narrationCopy: BookChapterRenameResult['narrationCopy'] = 'none';
   if (narration !== null && fs.existsSync(narration.absPath)) {
-    const manifest = await manifestService.readNarrationEpubRecord(projectDir);
+    const manifest = await manifestService.readNarrationEpubRecord(projectDir, familyId);
     if (manifest !== null && manifest.fromEpubSha256 === before) {
       // The copy carries byte-identical tables of contents and the same chapter
       // documents, so the same edits land in the same places. Its own parse is
@@ -960,7 +972,7 @@ export async function renameBookChapter(
           // new sha rather than declaring the copy stale over an edit it also
           // received.
           fromEpubSha256: after,
-        });
+        }, familyId);
         narrationCopy = 'updated';
       }
     } else {

@@ -348,17 +348,23 @@ async function main() {
     const projectId = 'The_Paired_Book_-_A_Author_-_1999';
     const projectDir = path.join(library, 'projects', projectId);
     fs.mkdirSync(path.join(projectDir, 'source'), { recursive: true });
+    fs.mkdirSync(path.join(projectDir, 'archive'), { recursive: true });
     const bookRel = 'source/The Paired Book.working.epub';
     const bookAbs = path.join(projectDir, 'source', 'The Paired Book.working.epub');
+    // A family hangs off an archive-grade original, and its stem — the archive
+    // file's own basename — is what the working copy's name has to agree with.
+    // The bytes here are never read by anything the tests below drive; only the
+    // file's presence and its basename ("The Paired Book", matching `bookRel`)
+    // matter to `ensureBookFamilies`.
+    const archiveRel = 'archive/The Paired Book.epub';
+    fs.writeFileSync(path.join(projectDir, archiveRel), Buffer.from('PK archive placeholder'));
     fs.writeFileSync(path.join(projectDir, 'manifest.json'), JSON.stringify({
       version: 2,
       projectId,
       type: 'book',
       metadata: { title: 'The Paired Book' },
-      // The working copy is named after the archive file it belongs to, and this
-      // project's stand-in for one is its recorded source filename — without it
-      // `ensureBookEpub` refuses, which is the pre-archive-layout path.
       source: { type: 'epub', path: bookRel, originalFilename: 'The Paired Book.epub' },
+      archive: [{ path: archiveRel, role: 'original', format: 'epub' }],
       outputs: { epub: { path: bookRel, modifiedAt: new Date().toISOString() } },
     }, null, 2));
     manifestService.setLibraryBasePath(library);

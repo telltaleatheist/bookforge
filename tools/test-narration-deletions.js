@@ -1172,14 +1172,22 @@ function illustratedLayout() {
     const projectId = 'Illustrated_-_A_Author_-_1999';
     const projectDir = path.join(library, 'projects', projectId);
     fs.mkdirSync(path.join(projectDir, 'source'), { recursive: true });
+    fs.mkdirSync(path.join(projectDir, 'archive'), { recursive: true });
     const bookRel = 'source/Illustrated.working.epub';
     const bookAbs = path.join(projectDir, 'source', 'Illustrated.working.epub');
+    // A family hangs off an archive-grade original, and its stem — the archive
+    // file's own basename — has to agree with the working copy's ("Illustrated",
+    // matching `bookRel`). Nothing below reads these bytes; only the file's
+    // presence and name matter to `ensureBookFamilies`.
+    const archiveRel = 'archive/Illustrated.epub';
+    fs.writeFileSync(path.join(projectDir, archiveRel), Buffer.from('PK archive placeholder'));
     fs.writeFileSync(path.join(projectDir, 'manifest.json'), JSON.stringify({
       version: 2,
       projectId,
       type: 'book',
       metadata: { title: 'Illustrated' },
       source: { type: 'epub', path: bookRel },
+      archive: [{ path: archiveRel, role: 'original', format: 'epub' }],
       outputs: { epub: { path: bookRel, modifiedAt: new Date().toISOString() } },
     }, null, 2));
     manifestService.setLibraryBasePath(library);

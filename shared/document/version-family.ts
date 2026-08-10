@@ -158,7 +158,7 @@ export interface VersionFamilyInput {
   } | null;
   /** The book, when it is on disk. */
   readonly epub: { readonly id: string } | null;
-  /** `manifest.outputs.epub.appliedPasses`, verbatim, in execution order. */
+  /** The chain's `epub.appliedPasses`, verbatim, in execution order. */
   readonly appliedPasses: readonly PassRecord[];
 }
 
