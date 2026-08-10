@@ -34,7 +34,9 @@ import {
   formatPageRate,
   type ConversionRateSample,
 } from '@shared/vlm/eta';
-import { VLM_CONVERT_STAGE, type VlmConvertDestination } from '@shared/vlm/conversion';
+import {
+  VLM_CONVERT_STAGE, conversionInFlightFor, type VlmConvertDestination,
+} from '@shared/vlm/conversion';
 import type { VlmReadingsChoice } from '@shared/vlm/readings-bank';
 import { samePath } from '@shared/document/same-path';
 
@@ -185,6 +187,28 @@ export function buildConversionConfig(
     ...(raw.variantId ? { variantId: raw.variantId } : {}),
     ...(raw.sourcePath ? { sourcePath: raw.sourcePath } : {}),
     ...(raw.skipDeletedPages ? { skipDeletedPages: true } : {}),
+    // ── THE FLAG THAT DECIDES WHETHER THIS ROW STARTS A SECOND CONVERSION ────
+    //
+    // Carried, and its absence here was the whole of the bug Owen reported on
+    // 2026-08-10: "if i send it to the queue, it needs to continue what it was
+    // doing in the queue instead of restarting. when i hit start in the queue it
+    // correctly noticed it was already running somewhere else."
+    //
+    // `sendToQueue` sets it correctly — it reads the live run's phase and stamps
+    // `attachToRunning: true` on a conversion already in flight. This function
+    // then rebuilt the config field by field on the way into the queue and
+    // listed every field EXCEPT this one, so the flag was dropped between the
+    // caller that set it and the row that needed it. The row landed looking
+    // exactly like a fresh conversion, called `convertPdfToEpub`, and met
+    // `beginStage`'s by-name refusal ("Convert to EPUB is already working on
+    // this book") — which is precisely the refusal only a NON-attaching row can
+    // provoke, and so is the proof of where the flag went.
+    //
+    // `reattachDocumentStages` never showed the fault because it writes the flag
+    // straight onto an existing row's config (`{ ...config, attachToRunning:
+    // true }`) and never passes through this builder. Attach worked on reload
+    // and only on reload; that asymmetry was the symptom.
+    ...(raw.attachToRunning ? { attachToRunning: true } : {}),
     // Carried through EXACTLY as given, including absent. A row rebuilt from
     // `queue.json` by a build that added this field must not acquire a choice
     // its user never made — absent is a state with a defined meaning
@@ -310,12 +334,16 @@ export async function runConversionJob(
   const onAbort = () => { void electron.cancelDocumentStage(config.projectDir); };
   ctx.signal.addEventListener('abort', onAbort, { once: true });
 
-  try {
-    if (config.attachToRunning) {
-      // The conversion is already happening. Wait for main to say it finished —
-      // the progress subscription above is already reporting it. Starting one
-      // here would be refused by name and would fail this row while the run it
-      // represents carried on unwatched.
+  /**
+   * Follow the conversion main is ALREADY running, to its finish. ONE
+   * implementation, reached from the two places a row can learn it is attaching.
+   *
+   * The conversion is already happening, so nothing is started here: the
+   * progress subscription above is already reporting it, and calling
+   * `convertPdfToEpub` would be refused by name and would fail this row while
+   * the run it represents carried on unwatched.
+   */
+  const followRunningConversion = async (): Promise<{ epubPath: string }> => {
       await new Promise<void>((resolve) => {
         const stop = electron.onDocumentStageFinished((event) => {
           if (!samePath(event.projectDir, config.projectDir)) return;
@@ -330,6 +358,16 @@ export async function runConversionJob(
         // row would wait for it forever. Asking once, AFTER subscribing, closes
         // that: either the stage is still there (and the subscription will hear
         // its finish) or it is gone (and there is nothing left to wait for).
+        //
+        // "Still there" INCLUDES a conversion that has been ordered and has not
+        // claimed its project yet. `runVlmConversion` waits on the GPU arbiter
+        // and then ~44 s of model load BEFORE `withProjectStage` claims the
+        // stage, and that window is exactly when someone watching a book fail to
+        // appear presses Send to queue. Against a registry that only knew about
+        // CLAIMED stages this question answered "nothing is running" and the row
+        // declared a ninety-minute conversion complete on the spot, seconds after
+        // it was enqueued. `markStageIntent` (electron/document-stage-registry.ts)
+        // is what makes the ordered-but-unclaimed run visible here.
         void electron.listActiveStages().then((stages) => {
           if (stages.some(s => samePath(s.projectDir, config.projectDir))) return;
           stop();
@@ -351,6 +389,48 @@ export async function runConversionJob(
       // The path is main's to report and this row never learned it; the book is
       // on the versions page either way. An invented path would be worse.
       return { epubPath: '' };
+  };
+
+  try {
+    if (config.attachToRunning) return await followRunningConversion();
+
+    // ── The belt, and it is ONLY a belt ──────────────────────────────────────
+    //
+    // The enqueue-time flag above is the real mechanism: a row that was created
+    // from a conversion already in flight is stamped `attachToRunning` by
+    // `sendToQueue`, and `buildConversionConfig` carries that stamp onto the
+    // row. This check exists because that stamp was silently dropped once
+    // already — the builder listed every field except that one — and the cost
+    // was not a wrong flag but a row that ordered a SECOND conversion of a book
+    // main was already ninety minutes into.
+    //
+    // So before starting anything, ask main whether this project already has a
+    // conversion. If it does, this row attaches instead of provoking
+    // `beginStage`'s by-name refusal — and says on the console that it got here
+    // the wrong way, because a belt that worked silently would let the next hole
+    // in the enqueue path go unnoticed for another release.
+    //
+    // It is not a substitute for the flag and cannot be: main is asked once,
+    // here, and a conversion ordered a moment after this question is not in the
+    // answer. The flag is what a row KNOWS about its own origin.
+    let alreadyRunning = false;
+    try {
+      alreadyRunning = conversionInFlightFor(config.projectDir, await electron.listActiveStages());
+    } catch (err) {
+      // Unanswerable. The row proceeds exactly as it would have, and main's own
+      // refusal is still there to catch a genuine double-start — inventing an
+      // answer here would decide a conversion on the strength of a failed
+      // question.
+      console.warn(
+        `[vlm-convert] Could not ask main which stages are running before starting `
+        + `${config.sourceLabel}; starting as this row was enqueued to. ${(err as Error).message}`);
+    }
+    if (alreadyRunning) {
+      console.warn(
+        `[vlm-convert] Row for ${config.sourceLabel} was enqueued WITHOUT attachToRunning, but main `
+        + `is already converting ${config.projectDir}. Attaching to that run instead of starting a `
+        + `second one. The enqueue-time flag was missed — that is the bug to fix, not this.`);
+      return await followRunningConversion();
     }
 
     const result = await electron.convertPdfToEpub({

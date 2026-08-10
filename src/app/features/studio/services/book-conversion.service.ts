@@ -45,6 +45,7 @@ import { DialogService } from '../../../creamsicle-desktop';
 import { QueueService } from '../../queue/services/queue.service';
 import {
   VLM_CONVERT_STAGE,
+  conversionInFlightFor,
   resolveVlmEndpoint,
   resolveVlmRoute,
   vlmRouteLabel,
@@ -374,8 +375,67 @@ export class BookConversionService {
    */
   async sendToQueue(projectDir: string): Promise<void> {
     const run = this.runFor(projectDir);
-    if (!run) return;
     const request = this.pending.get(projectDir);
+
+    /*
+     * ── IS A CONVERSION OF THIS BOOK IN FLIGHT? MAIN IS ASKED, NOT THIS WINDOW ─
+     *
+     * This used to be decided from `run.phase` alone, and a service signal can
+     * only ever answer for the window it lives in. Three states made that answer
+     * wrong, and every one of them ends the same way — a fresh row that orders a
+     * SECOND conversion of a book already being read, and is refused by name at
+     * `beginStage` when the user presses Start:
+     *
+     *  - the conversion was started from ANOTHER window. Services are per-window;
+     *    this one has no run record for it, and `if (!run) return` swallowed the
+     *    click in silence — a button that did nothing and said nothing.
+     *  - this window holds a PREPARED run ('ready') for a book another window is
+     *    already converting. The phase is local and honest and still the wrong
+     *    answer to "would this row start something".
+     *  - the run finished between the click and this line.
+     *
+     * Main owns the stage and knows all three. It is asked once, here, and its
+     * answer covers from the moment the conversion was ORDERED, through the
+     * model load, to the finish, because `markStageIntent` now covers the load
+     * window that the stage claim leaves uncovered
+     * (electron/document-stage-registry.ts).
+     *
+     * ── And this window's own run is still evidence, in UNION with main's ─────
+     *
+     * `start` sets the phase to 'running' and THEN sends `vlm:convert` over IPC,
+     * so for one round trip this window knows about a conversion main has not
+     * recorded yet. Replacing the phase check with main's answer would have
+     * traded a minute-long hole for a millisecond-long one — still a hole, and
+     * one that ends in the same second conversion. Neither source is complete
+     * alone: this window cannot see other windows, and main cannot see an order
+     * that has not arrived. Either saying "in flight" is enough, because the
+     * only cost of attaching is a row that follows a run, and the cost of NOT
+     * attaching is a second run on a book already holding the GPU.
+     */
+    let inFlight: boolean;
+    try {
+      inFlight = run?.phase === 'running'
+        || conversionInFlightFor(projectDir, await this.electron.documentActiveStages());
+    } catch (err) {
+      // Unanswerable, so nothing is enqueued. A row added without knowing this
+      // is a row that might start a second conversion of a book on the GPU right
+      // now, and guessing which way is exactly what the question exists to stop.
+      this.notices.notify(
+        `${run?.sourceLabel ?? projectDir} was NOT added to the queue: BookForge could not ask `
+        + `whether this book is already being converted (${(err as Error).message}). Try again.`);
+      return;
+    }
+
+    // Nothing to send. Either the click landed on a window with no run and no
+    // conversion to join, or the run ended while the click was in flight —
+    // and a silent return taught the user that this button sometimes does
+    // nothing, which is what Owen met on 2026-08-10.
+    if (!run && !inFlight) {
+      this.notices.notify(
+        `Nothing was added to the queue: this window has no prepared conversion for `
+        + `${projectDir}, and no conversion of it is running.`);
+      return;
+    }
 
     /*
      * The banked-readings question, asked at ADD-TO-QUEUE time and answered onto
@@ -389,7 +449,10 @@ export class BookConversionService {
      * already forty minutes into reading pages.
      */
     let readings: VlmReadingsChoice | undefined;
-    if (run.phase !== 'running') {
+    if (!inFlight) {
+      if (!run) throw new Error(
+        'sendToQueue reached its fresh-row branch with no prepared run, which the check above has '
+        + 'already refused. This is a programming error, not a state.');
       const bank = await this.askAboutBank({
         projectDir,
         from: run.from,
@@ -407,16 +470,27 @@ export class BookConversionService {
       readings = bank.choice;
     }
 
+    // The book's name for the row. This window's run says it best — it is the
+    // label off the button the user pressed. Attaching to a conversion started
+    // in another window there is no run to ask, and the project's own directory
+    // name is what every other cross-window entry point uses for the same
+    // reason (see `queueBookConversion` in app.ts).
+    const sourceLabel = run?.sourceLabel
+      ?? projectDir.split(/[\\/]/).filter(Boolean).pop()
+      ?? projectDir;
+
     await this.queue.addJob({
       type: 'vlm-convert',
       config: {
         type: 'vlm-convert',
         projectDir,
-        sourceLabel: run.sourceLabel,
+        sourceLabel,
         ...(request?.variantId ? { variantId: request.variantId } : {}),
         ...(request?.sourcePath ? { sourcePath: request.sourcePath } : {}),
-        ...(run.from === 'working' ? { skipDeletedPages: true } : {}),
-        ...(run.phase === 'running' ? { attachToRunning: true } : {}),
+        ...(run?.from === 'working' ? { skipDeletedPages: true } : {}),
+        // MAIN's answer, not this window's phase — see the comment above. A row
+        // that attaches starts nothing and cannot provoke the by-name refusal.
+        ...(inFlight ? { attachToRunning: true } : {}),
         // Recorded on the row, so its start and every retry read the same
         // answer. Absent only for an attaching row, which starts nothing.
         ...(readings ? { readings } : {}),

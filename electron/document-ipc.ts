@@ -48,7 +48,7 @@ import {
 import { createWorkingCopy } from './working-copy';
 import { readWorkingDocumentBlocks } from './working-document';
 import { applyWorkingDocumentEdits, type WorkingDocumentEdit } from './working-document-writer';
-import { abortStageFor, activeStages } from './document-stage-registry';
+import { abortStageFor, activeStages, unclaimedStageIntents } from './document-stage-registry';
 import { broadcastToAllWindows, withProjectStage } from './document-stage-run';
 import {
   documentBindingPath,
@@ -281,16 +281,44 @@ export function registerDocumentIpc(): void {
    *
    * The AbortController is not sent: it is a handle on a process in this
    * process, and the way a window stops a stage is `document:cancel-stage`.
+   *
+   * ── "Running" here means ORDERED, not CLAIMED (2026-08-10) ────────────────
+   *
+   * A conversion spends up to a minute waiting on the GPU arbiter and loading a
+   * model before it claims its project, and for that whole window this handler
+   * used to answer "nothing is running" about a book that plainly was being
+   * converted. Every caller asks this question to decide whether to START a
+   * second run or to FOLLOW the one in flight, and both of those decisions are
+   * wrong when the answer is a minute early: a queue row told the stage was gone
+   * declares a ninety-minute conversion finished on the spot.
+   *
+   * So the listing is the union of the claims and the orders that have not
+   * reached their claim (`unclaimedStageIntents`). `claimed` says which a row is,
+   * because they are not the same fact and a caller that needs the difference —
+   * anything about writing to the working document — must not have to infer it
+   * from a null progress line. An unclaimed order has no progress yet, and
+   * `lastProgress: null` is the honest reading of a model that is still loading,
+   * exactly as it is for a claim whose first page has not landed.
    */
   ipcMain.handle('document:active-stages', async () => {
     return {
       success: true,
-      stages: activeStages().map((s) => ({
-        projectDir: s.projectDir,
-        label: s.label,
-        startedAt: s.startedAt,
-        lastProgress: s.lastProgress,
-      })),
+      stages: [
+        ...activeStages().map((s) => ({
+          projectDir: s.projectDir,
+          label: s.label,
+          startedAt: s.startedAt,
+          lastProgress: s.lastProgress,
+          claimed: true,
+        })),
+        ...unclaimedStageIntents().map((s) => ({
+          projectDir: s.projectDir,
+          label: s.label,
+          startedAt: s.startedAt,
+          lastProgress: null,
+          claimed: false,
+        })),
+      ],
     };
   });
 

@@ -24,6 +24,7 @@
  * chain planner never sees it.
  */
 
+import { samePath } from '../document/same-path';
 import type { VlmReadingsChoice } from './readings-bank';
 
 /**
@@ -122,6 +123,59 @@ export function blockCategoryForVlm(stamped: string, whatFor: string): string {
  * every `document:stage-*` message. Said once so those three cannot differ.
  */
 export const VLM_CONVERT_STAGE = 'Convert to EPUB';
+
+/**
+ * A stage as `document:active-stages` reports it, reduced to what this question
+ * needs.
+ *
+ * `claimed` is deliberately part of the shape and deliberately NOT part of the
+ * answer below — see `conversionInFlightFor`.
+ */
+export interface ReportedStage {
+  readonly projectDir: string;
+  readonly claimed?: boolean;
+}
+
+/**
+ * Is a conversion of this book happening right now?
+ *
+ * ── The one question behind "attach, or start" (Owen, 2026-08-10) ───────────
+ *
+ * Two places have to answer it and they must never answer it differently:
+ *
+ *  - `BookConversionService.sendToQueue`, deciding whether the row it is about
+ *    to add FOLLOWS a run or ORDERS one. This is the decision that matters: a
+ *    row that gets it wrong sits waiting for a Start that then asks main for a
+ *    second conversion of a book already on the GPU, and is refused by name.
+ *  - `runConversionJob`, checking once more before it starts anything, as the
+ *    belt behind that decision.
+ *
+ * They asked it in two hand-written spellings, and this is the third bug in this
+ * area to come from two halves of one mechanism disagreeing. It is written once
+ * here, where a test can hold it.
+ *
+ * ── Why an UNCLAIMED stage counts ───────────────────────────────────────────
+ *
+ * `claimed: false` is a conversion that has been ordered and is still loading
+ * its model — up to a minute during which nothing holds the project's stage
+ * lock. It is not "not running": it is the exact window in which someone watches
+ * memory fill up, decides this will take a while, and presses Send to queue.
+ * Excluding it is what made that press produce a row that ordered a second
+ * conversion, so the answer here is about the BOOK ("is something already
+ * converting it") rather than about the lock.
+ *
+ * `samePath` rather than string equality because the project directory arrives
+ * from main, from a manifest and from a component input, and those three spell a
+ * Windows path with different cases and separators. The runs map this used to be
+ * read from is keyed by raw string and matched with `samePath` for the same
+ * reason.
+ */
+export function conversionInFlightFor(
+  projectDir: string,
+  stages: readonly ReportedStage[]
+): boolean {
+  return stages.some((s) => samePath(s.projectDir, projectDir));
+}
 
 export interface VlmConvertRequest {
   /** Absolute project directory. */
