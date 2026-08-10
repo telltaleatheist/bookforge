@@ -83,17 +83,23 @@ export interface RailGroup {
 }
 
 /**
- * The book's text passes: the two runs that rewrite `outputs.epub` in place.
+ * The book's text passes: the runs that rewrite `outputs.epub` in place.
  *
  * Declared apart from the table so `EpubPassTaskId` can be derived from THIS and
  * not from "everything on the book's rail" — the narration copy sits beside them
  * and is not a pass. It writes a second file and records no provenance, so a
  * type that swept it in would demand a pass kind for it.
+ *
+ * `footnote-refs` is first because it is the cheapest and the one you want to
+ * have done BEFORE an AI rewrite reads the book: a paragraph handed to a model
+ * with "the treaty was signed12" in it is a paragraph the model has to guess
+ * about. It is also the only one of the three that answers immediately — it
+ * takes seconds and does not queue.
  */
 const BOOK_PASS_GROUP = {
   id: 'passes',
   label: 'Text passes',
-  tasks: ['simplify', 'translate'],
+  tasks: ['footnote-refs', 'simplify', 'translate'],
 } as const;
 
 /**
@@ -141,6 +147,7 @@ export const RAIL_TASK_LABELS: Record<RailTaskId, string> = {
   select: 'Select',
   crop: 'Crop',
   merge: 'Merge blocks',
+  'footnote-refs': 'Remove footnote numbers',
   simplify: 'Simplify',
   translate: 'Translate',
 };
@@ -243,6 +250,7 @@ export interface RailTaskStatus {
  * status.
  */
 const PASS_KIND_OF: Record<EpubPassTaskId, string> = {
+  'footnote-refs': 'footnote-refs',
   simplify: 'simplify',
   translate: 'translate',
 };

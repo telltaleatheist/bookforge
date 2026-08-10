@@ -586,6 +586,13 @@ export type RetiredPassKind =
 export type AppliedPassKind =
   | 'simplify'
   | 'translate'
+  // The digits-only footnote-reference strip, applied to the BOOK rather than to
+  // the narration copy (shared/text/sup-markers.ts,
+  // `stripFootnoteReferencesFromBook`). Deterministic and seconds long, which is
+  // why it is offered a synchronous door as well as the queue — and distinct
+  // from the retired `footnotes` kind below, which was an AI pass that decided
+  // for itself what a footnote was.
+  | 'footnote-refs'
   // The route to a book: a document vision model read the pages and foundry
   // assembled them (`foundry vlm-convert`). A book's ORIGIN rather than a
   // transformation of one, so it is the first record in a converted book's

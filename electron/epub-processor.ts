@@ -6900,7 +6900,15 @@ export async function writeNarrationEpub(
       // as a string edit so every byte of markup nobody asked to touch comes
       // through unchanged. Content documents only: the OPF and the nav have no
       // prose in them, and `<sup>` there would not be a footnote reference.
-      if (stripSups && /\.(xhtml|html|htm)$/i.test(entry)) {
+      //
+      // KEPT unconditionally even though the book may already have been through
+      // the Remove footnote references pass (`stripFootnoteReferencesFromBook`).
+      // Stripping already-stripped text is a no-op by construction — the pattern
+      // matches nothing, `removed` is 0 and the guard below leaves the entry's
+      // bytes alone — so the two never fight, and a book that never ran the pass
+      // still narrates clean. Making this conditional on the pass having run
+      // would be a way for a book to reach a narrator with its markers in.
+      if (stripSups && isContentDocumentEntry(entry)) {
         const stripped = stripFootnoteMarkerSups(data.toString('utf8'));
         if (stripped.removed > 0) {
           removedSupMarkers += stripped.removed;
@@ -7011,6 +7019,93 @@ function serializeEditedDocument(doc: any): Buffer {
  * suspect. `mimetype` is stored, never deflated — the EPUB spec requires it,
  * and a compressed one makes the book unopenable in strict readers.
  */
+/**
+ * Is this zip entry a document that can hold PROSE?
+ *
+ * The one rule, two callers: `writeNarrationEpub` strips footnote markers out of
+ * these files as it writes the narration copy, and `stripFootnoteReferencesFromBook`
+ * strips them out of the same files in the book itself. The OPF and the NCX are
+ * excluded by extension rather than by name — they hold no prose, and a `<sup>`
+ * in either would not be a footnote reference — and if the two callers ever
+ * disagreed about which files count, a marker would leave one file and stay in
+ * the other, which is exactly the state a user would report as "the pass missed
+ * some".
+ */
+export function isContentDocumentEntry(entry: string): boolean {
+  return /\.(xhtml|html|htm)$/i.test(entry);
+}
+
+/** What the footnote-reference strip did to a book. */
+export interface FootnoteReferenceStrip {
+  /** How many `<sup>` markers left the book. */
+  removed: number;
+  /** The zip entries that changed, in zip order. */
+  files: string[];
+}
+
+/**
+ * Write a copy of `inputPath` with every footnote-reference superscript removed
+ * from its content documents.
+ *
+ * ── Why this exists as a pass over the BOOK ─────────────────────────────────
+ *
+ * The strip used to happen only on the write of the narration copy, and the
+ * header of shared/text/sup-markers.ts still says so of that path: the book was
+ * never rewritten to take a marker out. Owen asked the question that changes it —
+ * "if the user opens the working file and footnote reference numbers were
+ * removed, will it show the change in the epub? will it show that the numbers are
+ * actually gone? i.e. does it actually edit the text? we need a way to edit the
+ * text directly" — and the answer is this function. The numbers leave the text
+ * the user reads, not only the copy the narrator reads.
+ *
+ * ── The SAME rule, never a second implementation ────────────────────────────
+ *
+ * `stripFootnoteMarkerSups` is the discriminator, `isContentDocumentEntry` picks
+ * the files, and both are shared with the narration writer. A pass that decided
+ * for itself what a footnote marker is would drift from the copy the narrator
+ * gets, and the two disagreeing is unfixable from the outside: the user would see
+ * a number gone in the book and hear it read anyway, or the reverse.
+ *
+ * ── Text-only BY CONSTRUCTION ───────────────────────────────────────────────
+ *
+ * A `<sup>` is inline, inside a block the export walk enumerates; removing one
+ * takes characters out of that block and leaves every block where it was. That
+ * is what lets this be a LEDGER pass — the user's strikes and deletions name
+ * block positions, and they must still name the same blocks afterwards. It is
+ * not asserted here: `registerLedgerPass` measures it against the base and
+ * refuses the entry if a file's element count has moved.
+ *
+ * Nothing else in the zip is touched — the untouched entries are copied through
+ * as bytes, `mimetype` stored uncompressed, and the edit is a string replace so
+ * the publisher's markup around each marker comes through exactly as written.
+ */
+export async function stripFootnoteReferencesFromBook(
+  inputPath: string,
+  outputPath: string,
+): Promise<FootnoteReferenceStrip> {
+  const replacements = new Map<string, Buffer>();
+  const files: string[] = [];
+  let removed = 0;
+
+  const zipReader = new ZipReader(inputPath);
+  await zipReader.open();
+  try {
+    for (const entry of zipReader.getEntries()) {
+      if (!isContentDocumentEntry(entry)) continue;
+      const stripped = stripFootnoteMarkerSups((await zipReader.readEntry(entry)).toString('utf8'));
+      if (stripped.removed === 0) continue;
+      replacements.set(entry, Buffer.from(stripped.text, 'utf8'));
+      files.push(entry);
+      removed += stripped.removed;
+    }
+  } finally {
+    zipReader.close();
+  }
+
+  await writeBookWithReplacedEntries(inputPath, outputPath, replacements);
+  return { removed, files };
+}
+
 async function writeBookWithReplacedEntries(
   inputPath: string,
   outputPath: string,

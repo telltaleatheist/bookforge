@@ -10350,11 +10350,20 @@ export class PdfPickerComponent implements OnInit {
   /**
    * A rail entry that runs a pass over the book was pressed.
    *
-   * Both are AI runs over a whole book — hours — so both go to the queue, and
-   * their options dialog is where their settings are chosen.
+   * Simplify and Translate are AI runs over a whole book — hours — so both go to
+   * the queue, and their options dialog is where their settings are chosen.
+   *
+   * Removing footnote numbers is neither: it has no settings to choose (the rule
+   * is fixed, and it is the same rule the narration copy has always been cut by)
+   * and it takes seconds. So it runs HERE, and the user watches the numbers
+   * disappear from the page they are looking at — which is the entire point of
+   * the pass, and something a queue row in another tab cannot deliver.
    */
   private startEpubPass(kind: EpubPassTaskId): void {
     switch (kind) {
+      case 'footnote-refs':
+        void this.removeFootnoteReferences();
+        return;
       case 'simplify':
         this.passOptionsKind.set('simplify');
         return;
@@ -10365,6 +10374,76 @@ export class PdfPickerComponent implements OnInit {
         const unknown: never = kind;
         throw new Error(`There is no ${String(unknown)} pass on the rail.`);
       }
+    }
+  }
+
+  /**
+   * Take the footnote reference numbers out of the book, now, and reload it.
+   *
+   * Owen: "does it actually edit the text? we need a way to edit the text
+   * directly." So the answer on screen has to be the book without the numbers,
+   * not a message saying they went — the view is reloaded from the rewritten
+   * file before the user is told anything.
+   *
+   * "Nothing to remove" is reported as INFORMATION, not as an error. It is the
+   * honest answer for a book that never had digits-only references and for one
+   * this has already been run over, and both are ordinary things for a user to
+   * try; a red failure dialog would send them looking for a fault that is not
+   * there.
+   */
+  private async removeFootnoteReferences(): Promise<void> {
+    const projectDir = this.projectPath();
+    if (!projectDir) {
+      this.showAlert({
+        title: 'No project',
+        message: 'This pass rewrites the project\'s book, and this document does not belong to a '
+          + 'project.',
+        type: 'error',
+      });
+      return;
+    }
+
+    this.loading.set(true);
+    this.loadingText.set('Removing footnote numbers...');
+    try {
+      const result = await this.electronService.removeFootnoteReferences(projectDir);
+      if (!result.success) {
+        this.showAlert({
+          title: 'Nothing to remove',
+          message: result.error
+            || 'The footnote numbers could not be removed, and nothing said why. Your book is '
+            + 'untouched.',
+          type: 'info',
+        });
+        return;
+      }
+
+      // The bytes on disk changed under the open book, so everything this window
+      // derived from them is stale. Re-measured in the order the open path uses
+      // — what the book is, what is struck out of it, then the document itself —
+      // which is the same sequence the erase act runs for the same reason.
+      await this.refreshBookEpub();
+      await this.refreshNarrationState();
+      const book = this.bookEpubPath();
+      if (book) await this.showArtifact(book);
+
+      this.showAlert({
+        title: 'Footnote numbers removed',
+        message: (result.summary ?? 'The reference numbers are gone from the book\'s text.')
+          + (result.ledgerRefusal
+            ? `\n\n${result.ledgerRefusal}`
+            : '\n\nIt is a line under your book on the versions page — delete that line to put the '
+              + 'numbers back.'),
+        type: 'success',
+      });
+    } catch (err) {
+      this.showAlert({
+        title: 'Nothing was changed',
+        message: err instanceof Error ? err.message : String(err),
+        type: 'error',
+      });
+    } finally {
+      this.loading.set(false);
     }
   }
 

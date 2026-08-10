@@ -226,7 +226,10 @@ export function deriveTaskStatus(id: TaskId, ctx: TaskStatusContext): TaskStatus
     case 'merge':
       return deriveMergeStatus(ctx.mergeCount);
     // The book's own passes: what a pass says about itself is what the book
-    // RECORDS about it, so both read the one provenance list.
+    // RECORDS about it, so all three read the one provenance list. That is why
+    // `footnote-refs` needs no case of its own — it appears in `appliedPasses`
+    // exactly like the AI passes, and the tick beside it means the same thing.
+    case 'footnote-refs':
     case 'simplify':
     case 'translate':
       return derivePassStatus(id, ctx.appliedPasses);

@@ -155,6 +155,10 @@ const PASS_LABELS: Record<AppliedPassKind, string> = {
   footnotes: 'Footnote removal',
   simplify: 'Simplify',
   translate: 'Translate',
+  // The digits-only strip over the book's own text — NOT the retired AI pass
+  // above. Named differently on purpose: a user reading this book's history has
+  // to be able to tell which of the two ran.
+  'footnote-refs': 'Remove footnote references',
   // The other route to a book: a document vision model read the pages. A book's
   // ORIGIN like Build the book, not a transformation of one.
   'vlm-convert': 'Convert to EPUB',

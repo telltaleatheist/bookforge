@@ -110,8 +110,11 @@ test('the source rail carries no OCR entry', () => {
 });
 
 test('the book rail is the text passes, and nothing else', () => {
+  // 'footnote-refs' is first because it is the cheapest and the one you want
+  // done BEFORE a model reads the book — a paragraph handed to an AI with
+  // "signed12" in it is a paragraph it has to guess about.
   const ids = railTaskIdsFor('book');
-  assert.deepStrictEqual([...ids], ['simplify', 'translate']);
+  assert.deepStrictEqual([...ids], ['footnote-refs', 'simplify', 'translate']);
 });
 
 test('the narration copy is NOT a rail entry', () => {
@@ -128,9 +131,14 @@ test('the narration copy is NOT a rail entry', () => {
 });
 
 test('the AI footnote pass is gone from every rail', () => {
-  // Footnote references come out as the narration copy is written now, and no
-  // pass edits the book for them.
+  // The retired 'footnotes' kind was an AI pass that decided for itself what a
+  // footnote was, and nothing brings it back. What IS on the rail is
+  // 'footnote-refs' — the deterministic digits-only strip the narration copy has
+  // always been cut by, applied to the book itself since 2026-08-09 so the
+  // numbers leave the text the user reads. Two different acts, and the ids are
+  // deliberately not the same word.
   assert.ok(!ALL_RAIL_TASK_IDS.includes('footnotes'));
+  assert.ok(ALL_RAIL_TASK_IDS.includes('footnote-refs'));
 });
 
 test('no curation entry is ever offered over the book', () => {
@@ -150,7 +158,7 @@ test('no book entry is ever offered over the source', () => {
 test('the pass ids are the pass group, and NOT the whole book rail', () => {
   // Derived from the pass group alone, so a future non-pass entry on the book's
   // rail can never be asked for a pass status.
-  assert.deepStrictEqual([...EPUB_PASS_TASK_IDS], ['simplify', 'translate']);
+  assert.deepStrictEqual([...EPUB_PASS_TASK_IDS], ['footnote-refs', 'simplify', 'translate']);
 });
 
 test('every entry on every rail has a label', () => {
@@ -175,11 +183,12 @@ test('ALL_RAIL_TASK_IDS is every rail\'s entries, once each', () => {
 test('the digits run over the rows that are actually on screen', () => {
   // The book's first pass is 1 — not 3, which is where a global numbering would
   // have put it, advertising keys 1-2 that do nothing on that rail.
-  assert.strictEqual(railTaskForDigit('book', 1), 'simplify');
-  assert.strictEqual(railTaskForDigit('book', 2), 'translate');
-  assert.strictEqual(railTaskForDigit('book', 3), undefined,
-    'the book rail has two rows, so 3 reaches nothing');
-  assert.strictEqual(railShortcutsFor('book').simplify, '1');
+  assert.strictEqual(railTaskForDigit('book', 1), 'footnote-refs');
+  assert.strictEqual(railTaskForDigit('book', 2), 'simplify');
+  assert.strictEqual(railTaskForDigit('book', 3), 'translate');
+  assert.strictEqual(railTaskForDigit('book', 4), undefined,
+    'the book rail has three rows, so 4 reaches nothing');
+  assert.strictEqual(railShortcutsFor('book')['footnote-refs'], '1');
 });
 
 test('select keeps its letter and takes no digit', () => {

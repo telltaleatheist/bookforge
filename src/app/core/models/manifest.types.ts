@@ -447,6 +447,10 @@ export type RetiredPassKind =
 export type AppliedPassKind =
   | 'simplify'
   | 'translate'
+  // The digits-only footnote-reference strip, applied to the BOOK. Distinct
+  // from the retired 'footnotes' below, which was an AI pass that decided for
+  // itself what a footnote was.
+  | 'footnote-refs'
   // The route to a book: a document vision model read the pages
   // (`foundry vlm-convert`). A book's ORIGIN — never a transformation of one,
   // and never a queue job.

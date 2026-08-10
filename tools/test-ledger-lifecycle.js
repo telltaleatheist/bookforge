@@ -39,7 +39,8 @@ if (!fs.existsSync(path.join(DIST, 'electron', 'book-ledger.js'))) {
 }
 const manifestService = require(path.join(DIST, 'electron', 'manifest-service.js'));
 const { registerLedgerPass } = require(path.join(DIST, 'electron', 'book-ledger.js'));
-const { ZipWriter } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+const { ZipReader, ZipWriter } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+const { runProcessingPass } = require(path.join(DIST, 'electron', 'processing-passes.js'));
 const {
   ledgerAfterDeleting, describeLedgerDeletion, listLedgerLabels,
 } = require(path.join(DIST, 'shared', 'document', 'book-ledger.js'));
@@ -204,8 +205,12 @@ const projectsDir = path.join(ROOT, 'projects');
 
 /** A project imported AS an EPUB, with its archive original on disk. */
 async function makeProject(id) {
+  return makeProjectWith(id, [CHAPTER_ONE, CHAPTER_TWO]);
+}
+
+async function makeProjectWith(id, chapters) {
   const dir = path.join(projectsDir, id);
-  await writeEpub(path.join(dir, 'archive', 'The Ledger.epub'), [CHAPTER_ONE, CHAPTER_TWO]);
+  await writeEpub(path.join(dir, 'archive', 'The Ledger.epub'), chapters);
   fs.mkdirSync(path.join(dir, 'source'), { recursive: true });
   writeManifest(dir, {
     manifestVersion: 2,
@@ -511,6 +516,168 @@ test('a fold made since the pass refuses the deletion, rather than mis-placing s
     sha256((await manifestService.readExportEpub(dir)).absPath), bookDigest,
     'the refused deletion rewrote the book anyway');
   assert.strictEqual(ledgerOf(dir).length, 1, 'the refused deletion dropped the entry anyway');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The real footnote-reference pass, end to end
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Owen: "if the user opens the working file and footnote reference numbers were
+// removed, will it show the change in the epub? will it show that the numbers
+// are actually gone? i.e. does it actually edit the text?" These assert that it
+// does — against the bytes of the book, not against a report about them.
+
+/** Both forms publishers write a reference in, plus an ordinal that must SURVIVE. */
+const FOOTED_ONE = [
+  'The treaty was signed in Berlin.<sup class="calibre11">55</sup>',
+  'Himmler disagreed.<sup><a href="#fn-9" id="fn_9">9</a></sup>',
+];
+const FOOTED_TWO = [
+  'It would be invited to become the 28<sup>th</sup> state.',
+  'Nobody had been through the door.<sup>3,4</sup>',
+];
+
+/**
+ * Run the footnote pass exactly as `book:remove-footnote-references` runs it.
+ *
+ * The IPC handler is these two calls plus a window to destroy, a naming pass and
+ * a broadcast — deliberately, so the rail button and a queued chain reach one
+ * implementation. Driving the two here is driving the primitive; wrapping the
+ * IPC would need an Electron main process and would test the wrapper.
+ */
+async function runFootnotePass(dir) {
+  const stageRelDir = await manifestService.nextPassStageRelDir(dir, 'footnote-refs');
+  return runProcessingPass(
+    `footnote-refs-test-${Date.now()}`, { kind: 'footnote-refs', projectDir: dir, stageRelDir }, null);
+}
+
+/** Every content document of an EPUB, concatenated — what the reader will see. */
+async function bookMarkup(epubPath) {
+  const reader = new ZipReader(epubPath);
+  await reader.open();
+  try {
+    let out = '';
+    for (const entry of reader.getEntries()) {
+      if (!/\.(xhtml|html|htm)$/i.test(entry)) continue;
+      out += (await reader.readEntry(entry)).toString('utf8');
+    }
+    return out;
+  } finally {
+    reader.close();
+  }
+}
+
+test('the footnote pass takes the numbers OUT OF THE BOOK, and keeps the ordinal', async () => {
+  const dir = await makeProjectWith('footnote-run', [FOOTED_ONE, FOOTED_TWO]);
+  const book = await manifestService.readExportEpub(dir);
+  const before = await bookMarkup(book.absPath);
+  assert.ok(/<sup class="calibre11">55<\/sup>/.test(before), 'the fixture has no bare marker');
+  assert.ok(/<sup><a href="#fn-9"/.test(before), 'the fixture has no anchor-wrapped marker');
+
+  const result = await runFootnotePass(dir);
+
+  assert.strictEqual(result.success, true, `the pass failed: ${result.error}`);
+  const after = await bookMarkup((await manifestService.readExportEpub(dir)).absPath);
+  assert.ok(!/<sup class="calibre11">55<\/sup>/.test(after), 'the bare marker is still in the book');
+  assert.ok(!/<sup><a href="#fn-9"/.test(after), 'the anchor-wrapped marker is still in the book');
+  assert.ok(!/<sup>3,4<\/sup>/.test(after), 'the range marker is still in the book');
+  // The SAME rule the narration copy is cut by, which keeps ordinals — proof
+  // this is that rule and not a blunt "remove every sup".
+  assert.ok(/28<sup>th<\/sup> state/.test(after), 'the ordinal suffix was removed too');
+  // The prose either side of a removed marker is untouched, byte for byte.
+  assert.ok(/The treaty was signed in Berlin\.<\/p>/.test(after),
+    'the markup around the marker was rewritten');
+  assert.strictEqual(result.summary, '3 footnote reference number(s) removed from 2 document(s).');
+});
+
+test('the pass is TEXT-ONLY, so the structural guard passes and it gets a ledger row', async () => {
+  const dir = await makeProjectWith('footnote-ledger', [FOOTED_ONE, FOOTED_TWO]);
+
+  const result = await runFootnotePass(dir);
+
+  // Asserted rather than assumed: a `<sup>` is inline, so removing one takes
+  // characters out of a block and leaves every block where it was. If that ever
+  // stopped being true, `registerLedgerPass` would refuse the entry and this is
+  // where it would be seen.
+  assert.strictEqual(result.ledgerRefusal, undefined,
+    `the structural guard refused the entry: ${result.ledgerRefusal}`);
+  assert.ok(result.ledgerEntryId, 'the pass recorded no ledger entry');
+
+  const entries = ledgerOf(dir);
+  assert.strictEqual(entries.length, 1, 'the ledger did not get exactly one entry');
+  const entry = entries[0];
+  assert.strictEqual(entry.id, result.ledgerEntryId);
+  assert.strictEqual(entry.kind, 'footnote-refs');
+  assert.strictEqual(entry.label, 'Remove footnote references');
+  assert.ok(
+    fs.existsSync(path.join(dir, entry.snapshot.split('/').join(path.sep))),
+    'the entry has no snapshot on disk');
+  assert.ok(entry.receipt, 'the entry froze no diff');
+  assert.ok(
+    fs.existsSync(path.join(dir, entry.receipt.split('/').join(path.sep))),
+    'the frozen diff is not on disk');
+  // The snapshot IS the book the pass produced.
+  assert.strictEqual(
+    sha256(path.join(dir, entry.snapshot.split('/').join(path.sep))),
+    sha256((await manifestService.readExportEpub(dir)).absPath),
+    'the snapshot is not the book the pass wrote');
+  // And the provenance says it happened.
+  const passes = await manifestService.readAppliedPasses(dir);
+  assert.deepStrictEqual(passes.map((p) => p.kind), ['footnote-refs']);
+});
+
+test('a second run is REFUSED by name, and records nothing', async () => {
+  const dir = await makeProjectWith('footnote-twice', [FOOTED_ONE, FOOTED_TWO]);
+  const first = await runFootnotePass(dir);
+  assert.strictEqual(first.success, true, `the first run failed: ${first.error}`);
+  const bookAfterFirst = sha256((await manifestService.readExportEpub(dir)).absPath);
+
+  const second = await runFootnotePass(dir);
+
+  assert.strictEqual(second.success, false, 'a second run recorded a vacuous entry');
+  assert.ok(/No footnote reference markers remain/.test(second.error),
+    `the refusal does not say why: ${second.error}`);
+  assert.strictEqual(ledgerOf(dir).length, 1, 'the second run added a ledger entry');
+  assert.strictEqual((await manifestService.readAppliedPasses(dir)).length, 1,
+    'the second run added a provenance record');
+  // Nothing was written — not even the book's own bytes back over itself, which
+  // would move its timestamp and invalidate every cache keyed on it.
+  assert.strictEqual(
+    sha256((await manifestService.readExportEpub(dir)).absPath), bookAfterFirst,
+    'the refused run rewrote the book');
+});
+
+test('a book with no markers at all gets the same refusal, first time', async () => {
+  const dir = await makeProject('footnote-none');
+  const result = await runFootnotePass(dir);
+
+  assert.strictEqual(result.success, false, 'a book with nothing to strip recorded an entry');
+  assert.ok(/No footnote reference markers remain/.test(result.error),
+    `the refusal does not say why: ${result.error}`);
+  assert.deepStrictEqual(ledgerOf(dir), []);
+  assert.deepStrictEqual(await manifestService.readAppliedPasses(dir), []);
+});
+
+test('deleting the entry puts the numbers BACK, byte-identically', async () => {
+  const dir = await makeProjectWith('footnote-undo', [FOOTED_ONE, FOOTED_TWO]);
+  const archiveDigest = sha256(archiveOf(dir));
+  const result = await runFootnotePass(dir);
+  assert.strictEqual(result.success, true, `the pass failed: ${result.error}`);
+  // The user's evening, made against the stripped book and keyed to positions
+  // the strip did not move.
+  populateRecords(dir);
+
+  const deletion = await manifestService.deleteLedgerEntry(dir, result.ledgerEntryId);
+
+  assert.strictEqual(sha256(deletion.book.absPath), archiveDigest,
+    'the book did not come back byte-identical to the archive original');
+  const restored = await bookMarkup(deletion.book.absPath);
+  assert.ok(/<sup class="calibre11">55<\/sup>/.test(restored), 'the bare marker did not come back');
+  assert.ok(/<sup><a href="#fn-9"/.test(restored), 'the anchor-wrapped marker did not come back');
+  // The whole point of the ledger: the pass came out and the user's work stayed.
+  assertRecordsPresent(dir, 'footnote undo');
+  assert.deepStrictEqual(ledgerOf(dir), []);
+  assert.deepStrictEqual(await manifestService.readAppliedPasses(dir), []);
 });
 
 // ── A record whose file is gone is REPORTED, never quietly rebuilt ───────────
