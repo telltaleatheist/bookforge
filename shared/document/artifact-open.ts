@@ -52,17 +52,11 @@ export type ArtifactOpenPlan =
    * file after promising to open the editable one is the exact silence this
    * whole module exists to remove.
    */
-  | { readonly kind: 'working-copy' }
-  /**
-   * Show the archive PDF, and put the convert-to-EPUB flow in front of the user.
-   *
-   * A PDF whose pages have never been read has no book behind it and cannot be
-   * given one by copying anything — reading them is an hour of GPU. So the
-   * window offers the job rather than starting it, and the PDF is displayed
-   * underneath either way: a user who cancels is left browsing their pages
-   * read-only, which is the only other thing that could honestly happen.
-   */
-  | { readonly kind: 'offer-conversion' };
+  | { readonly kind: 'working-copy' };
+  // A third kind, `offer-conversion`, lived here until 2026-08-10: an unread
+  // PDF's open ALSO raised the convert-to-EPUB flow. Retired — asking for a
+  // file and being answered with a job read as "PDFs cannot be opened", and
+  // conversion has its own doors. An open is an open.
 
 /**
  * What a project HAS, as main answers for it. Every field is a path main
@@ -107,14 +101,14 @@ export function planArtifactOpen(request: ArtifactOpenRequest): ArtifactOpenPlan
     // The user handed us a book. It is copied, and the copy is what opens.
     if (viewedArtifactOf(asked) === 'book') return { kind: 'working-copy' };
 
-    // The user handed us pages. A book is READ out of them, and until one has
-    // been there is nothing to copy — so this is the one open that offers a job
-    // instead of a file. A project that already has either artifact is past
-    // that: its PDF opens as what it is, and the banner over it carries the way
-    // across to the copy.
-    return workingCopy === null && generatedEpub === null
-      ? { kind: 'offer-conversion' }
-      : { kind: 'as-asked' };
+    // The user handed us pages, and pages OPEN — with or without a book behind
+    // them. This used to answer `offer-conversion` for a project with no book
+    // yet, which raised the conversion modal over the open; asking for a file
+    // and being answered with a job reads as "PDFs cannot be opened" (Owen,
+    // 2026-08-10: "i would like to be able to scan through them"). Conversion
+    // keeps its own doors — the Process button and the picker's banner — and
+    // an open is an open.
+    return { kind: 'as-asked' };
   }
 
   return { kind: 'as-asked' };

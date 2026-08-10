@@ -12414,33 +12414,10 @@ export class PdfPickerComponent implements OnInit {
       // Load analysis results (fire-and-forget — highlights appear when ready)
       this.loadAnalysisResults(actualProjectPath);
 
-      // ── A PDF with no book behind it asks to have its pages read ────────────
-      //
-      // The same act the banner's Generate EPUB button performs, and reached
-      // through the same call, so there is one way to start a conversion rather
-      // than two that can drift. It is the MAIN window that shows the flow — it
-      // owns the queue, and this window is usually its own BrowserWindow with
-      // none — and the modal IS the confirmation: an hour of GPU is never a side
-      // effect of opening a file. Awaited so a refusal is said, and said as a
-      // warning rather than an error: the book did open, and the pages are on
-      // screen to browse read-only either way.
-      //
-      // Only for an open somebody ASKED for — see DocumentOpening. A restored
-      // tab that raised this would put a modal in front of a user who had just
-      // started the app, once per PDF they had left open.
-      if (openPlan.kind === 'offer-conversion' && opening === 'by-user') {
-        try {
-          await this.electronService.showBookConversion(actualProjectPath);
-        } catch (err) {
-          this.showAlert({
-            title: 'Could not offer to read these pages',
-            message: (err instanceof Error ? err.message : String(err))
-              + ' The PDF is open and can be browsed; run Convert to EPUB from the versions page '
-              + 'to make a book you can edit.',
-            type: 'warning',
-          });
-        }
-      }
+      // An unread PDF used to ALSO raise the convert-to-EPUB flow here
+      // (`offer-conversion`). Retired 2026-08-10: an open is an open — the
+      // pages are on screen to scan, and conversion keeps its own doors (the
+      // versions page's Process button and this window's Generate EPUB banner).
 
     } catch (err) {
       console.error('Failed to load project source file:', err);

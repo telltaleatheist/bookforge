@@ -85,10 +85,12 @@ test('an archive EPUB with NO copy yet still redirects — the caller mints one'
   assert.strictEqual(plan(neverOpened, neverOpened.archiveOriginal), 'working-copy');
 });
 
-test('a PDF whose pages have never been read is offered the conversion', () => {
-  // The one open that offers a job instead of a file: there is nothing to copy,
-  // and reading the pages is the only way to get a book.
-  assert.strictEqual(plan(pdfUnread, pdfUnread.archiveOriginal), 'offer-conversion');
+test('a PDF whose pages have never been read still OPENS — an open is an open', () => {
+  // This used to answer `offer-conversion`, raising the convert flow over the
+  // open. Owen, 2026-08-10: "i would like to be able to scan through them" —
+  // asking for a file and being answered with a job read as "PDFs cannot be
+  // opened". Conversion keeps its own doors.
+  assert.strictEqual(plan(pdfUnread, pdfUnread.archiveOriginal), 'as-asked');
 });
 
 test('a PDF that HAS a book opens as itself — read-only browsing, no modal', () => {
