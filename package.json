@@ -61,6 +61,7 @@
     "test:chapter-openings": "npx tsc -p tsconfig.electron.json && node tools/test-chapter-openings.js",
     "test:vlm-endpoint": "npx tsc -p tsconfig.electron.json && node tools/test-vlm-endpoint.js",
     "test:vlm-readings-bank": "npx tsc -p tsconfig.electron.json && node tools/test-vlm-readings-bank.js",
+    "test:vlm-convert-plan": "npx tsc -p tsconfig.electron.json && node tools/test-vlm-convert-plan.js",
     "test:audiobook-analysis-protocol": "node scripts/test-audiobook-analysis-protocol.cjs",
     "test:audiobook-analysis-recovery": "node scripts/test-audiobook-analysis-recovery.cjs",
     "download:mupdf": "node scripts/download-mupdf.js",

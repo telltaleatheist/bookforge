@@ -34,6 +34,7 @@ ORPHEUS_AUDIOBOOK = REPO_ROOT / "cli" / "orpheus-audiobook-render.js"  # full M4
 AI_CLEAN = REPO_ROOT / "cli" / "ai-clean.js"                    # AI cleanup / simplify (ai-bridge)
 GEN_SENTENCES = REPO_ROOT / "cli" / "generate-sentences.js"     # audio -> VTT (whisper / epub-align)
 RVC_CONVERT = REPO_ROOT / "cli" / "rvc-convert.js"              # whole-file RVC voice conversion
+GENERATE_EPUB = REPO_ROOT / "cli" / "generate-epub.js"          # PDF -> EPUB (foundry vlm-convert)
 
 
 def _require(cond, msg):
@@ -514,6 +515,59 @@ def cmd_generate_sentences(args):
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
 
 
+def cmd_generate_epub(args):
+    """Read a project's PDF into its book — the app's Convert to EPUB, headless.
+
+    Drives vlm-convert.runVlmConversion, which is the SAME function the app's
+    `vlm:convert` IPC handler calls. So this gets all of it: the route resolution
+    (a configured OpenAI-compatible server, MLX on Apple silicon, or this machine's
+    GPU through the WSL vLLM reader from Settings -> Add-ons), the banked-readings
+    decision and its foundry >= 0.9.0 gate, `foundry vlm-convert`, the staged EPUB
+    moved onto source/<archive basename>.generated.epub, the manifest records
+    (outputs.generatedEpub + a freshly minted working copy) and the vlm-convert
+    provenance entry. Nothing about a converted project says it was done from here.
+
+    WHICH MACHINE reads the pages: with no --vlm-endpoint this machine's own route
+    is used, exactly as an unset Settings -> AI -> Reading pages means in the app
+    (WSL on Windows, MLX on an Apple Silicon Mac). The endpoint setting lives in
+    the renderer's settings bundle, which no headless process can read, so it is
+    passed here the same way --ollama-url passes the AI provider's URL.
+    """
+    _require(bool(args.project), "--project <project dir> is required for --generate-epub")
+    _require(bool(shutil.which("node")), "node not found on PATH")
+    _require(GENERATE_EPUB.is_file(), f"missing adapter {GENERATE_EPUB}")
+    _require((REPO_ROOT / "dist" / "electron" / "vlm-convert.js").is_file(),
+             "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
+             "(dist/electron/vlm-convert.js missing)")
+    _require(Path(args.project).is_dir(), f"project directory not found: {args.project}")
+    _require(not (args.source_pdf and args.variant_id),
+             "--source-pdf and --variant-id both name the PDF to read; pass one")
+
+    project_dir = str(Path(args.project).resolve())
+    cmd = ["node", "--require", str(NODE_STUB), str(GENERATE_EPUB), "--project", project_dir]
+    if args.readings:
+        cmd += ["--readings", args.readings]
+    if args.destination:
+        cmd += ["--destination", args.destination]
+    if args.variant_id:
+        cmd += ["--variant-id", args.variant_id]
+    if args.source_pdf:
+        cmd += ["--source-pdf", str(Path(args.source_pdf).resolve())]
+    if args.skip_deleted_pages:
+        cmd += ["--skip-deleted-pages"]
+    if args.vlm_endpoint:
+        cmd += ["--vlm-endpoint", args.vlm_endpoint]
+    if args.vlm_endpoint_model:
+        cmd += ["--vlm-endpoint-model", args.vlm_endpoint_model]
+    if args.vlm_concurrency is not None:
+        cmd += ["--vlm-concurrency", str(args.vlm_concurrency)]
+    if args.dry_run:
+        cmd += ["--dry-run"]
+
+    print("[bookforge-tts] generate-epub ->", " ".join(cmd), flush=True)
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
+
+
 def cmd_rvc(args):
     """Clean/convert a WHOLE audio file through an RVC voice model — memory-safe.
 
@@ -560,6 +614,7 @@ COMMANDS = {
     "ai-cleanup": cmd_ai_cleanup,
     "ai-simplify": cmd_ai_simplify,
     "generate-sentences": cmd_generate_sentences,
+    "generate-epub": cmd_generate_epub,
     "rvc": cmd_rvc,
 }
 
@@ -587,7 +642,8 @@ def build_parser():
     p.add_argument("--text", help="literal text to render")
     p.add_argument("--out", help="output .wav path")
     p.add_argument("--project", help="BookForge project dir. --audiobook: output lands in "
-                   "<project>/output/audiobook.m4b (input EPUB resolved like the app's 'Latest')")
+                   "<project>/output/audiobook.m4b (input EPUB resolved like the app's 'Latest'). "
+                   "--generate-epub: the project whose PDF is read into its book")
     p.add_argument("--tier", choices=["auto", "extreme", "fast", "moderate", "light"],
                    help="GPU memory tier (default: auto — safe-sized to free VRAM)")
     p.add_argument("--sentence-gap", dest="sentence_gap", type=float,
@@ -656,6 +712,36 @@ def build_parser():
                    help="AI: override prose chunk size in chars (testing; default 8000)")
     p.add_argument("--ollama-url", dest="ollama_url",
                    help="AI: Ollama base URL (default http://localhost:11434; env OLLAMA_BASE_URL)")
+    # --- PDF -> EPUB conversion (--generate-epub) ---
+    p.add_argument("--readings", choices=["fresh", "reuse"],
+                   help="--generate-epub: what to do with the page answers already banked for "
+                        "this PDF. fresh = archive them and read the whole book again; reuse = "
+                        "answer out of the bank (resume an interrupted run, or rebuild a finished "
+                        "one). Omitted means reuse, which is what a job carrying no choice means "
+                        "in the app (shared/vlm/readings-bank.ts)")
+    p.add_argument("--destination", choices=["replace", "new-copy"],
+                   help="--generate-epub: where the book lands. replace (default) makes the "
+                        "reading this project's book and mints a fresh working copy from it; "
+                        "new-copy adds it as another archive file with a working chain of its "
+                        "own and leaves the existing book untouched")
+    p.add_argument("--variant-id", dest="variant_id",
+                   help="--generate-epub: which PDF version to read, for a project holding more "
+                        "than one (a project with two PDFs and no choice is refused, not guessed)")
+    p.add_argument("--source-pdf", dest="source_pdf",
+                   help="--generate-epub: the PDF to read, by path. Must be inside the project")
+    p.add_argument("--skip-deleted-pages", dest="skip_deleted_pages", action="store_true",
+                   help="--generate-epub: leave out the pages the WORKING COPY marks deleted "
+                        "(the app's 'Create EPUB' on the working-copy row). Refused by name when "
+                        "the project has no working copy")
+    p.add_argument("--vlm-endpoint", dest="vlm_endpoint",
+                   help="--generate-epub: OpenAI-compatible base URL that reads the pages, e.g. "
+                        "http://127.0.0.1:8000/v1. Omitted = this machine's own route (the WSL "
+                        "vLLM reader on Windows, MLX on an Apple Silicon Mac)")
+    p.add_argument("--vlm-endpoint-model", dest="vlm_endpoint_model",
+                   help="--generate-epub: model name to request from --vlm-endpoint "
+                        "(default: foundry's own registry entry for it)")
+    p.add_argument("--vlm-concurrency", dest="vlm_concurrency", type=int, default=None,
+                   help="--generate-epub: pages in flight at the endpoint (default: foundry's own)")
     # --- sentence generation (--generate-sentences) ---
     p.add_argument("--audio", help="generate-sentences: audio file (m4b/mp3/wav)")
     p.add_argument("--epub", help="generate-sentences: epub whose TEXT becomes the transcript "
