@@ -1101,9 +1101,15 @@ export async function readExportEpub(
   projectDir: string,
   familyId?: string
 ): Promise<ExportEpubLocation | null> {
-  const { family } = await requireFamily(projectDir, familyId);
-
-  const recorded = family.epub;
+  // Through the LISTING resolver: this is a READ whose null already means "the
+  // project has no book", and a project with no working chain yet is exactly
+  // that. Routing it through the act chokepoint made OPENING a bare-PDF project
+  // fail with the chain refusal (found live 2026-08-10, the cleared-library
+  // sweep made such projects common). A caller that names a familyId still gets
+  // the refusal for a chain that is not there; acts that need the book to exist
+  // resolve through requireFamilyEpub / requireFamilySource and keep refusing.
+  const resolved = await familyForListing(projectDir, familyId);
+  const recorded = resolved?.family.epub;
   if (!recorded?.path) return null;
   return { relPath: recorded.path, absPath: toAbs(projectDir, recorded.path), modifiedAt: recorded.modifiedAt };
 }
@@ -3792,8 +3798,10 @@ export async function readNarrationDeletions(
   projectDir: string,
   familyId?: string
 ): Promise<NarrationDeletions | null> {
-  const { family } = await requireFamily(projectDir, familyId);
-  return family.epub?.narrationDeletions ?? null;
+  // Listing resolver, same reasoning as readExportEpub: no chain ⇒ no book ⇒
+  // no deletions record — a real null, not a refusal.
+  const resolved = await familyForListing(projectDir, familyId);
+  return resolved?.family.epub?.narrationDeletions ?? null;
 }
 
 /**
@@ -4002,8 +4010,9 @@ export async function readNarrationEpub(
   projectDir: string,
   familyId?: string
 ): Promise<ExportEpubLocation | null> {
-  const { family } = await requireFamily(projectDir, familyId);
-  const recorded = family.ttsEpub;
+  // Listing resolver — see readExportEpub. No chain ⇒ no narration copy.
+  const resolved = await familyForListing(projectDir, familyId);
+  const recorded = resolved?.family.ttsEpub;
   if (!recorded?.path) return null;
   return {
     relPath: recorded.path,
@@ -4025,8 +4034,9 @@ export async function readNarrationEpubRecord(
   projectDir: string,
   familyId?: string
 ): Promise<NarrationEpubOutput | null> {
-  const { family } = await requireFamily(projectDir, familyId);
-  return family.ttsEpub ?? null;
+  // Listing resolver — see readExportEpub. No chain ⇒ no narration copy.
+  const resolved = await familyForListing(projectDir, familyId);
+  return resolved?.family.ttsEpub ?? null;
 }
 
 /**
