@@ -1043,6 +1043,9 @@ function enqueueBatchItem(item: BatchItem): void {
   scheduleBatchFlush();
 }
 
+/** How long a scheduled flush waits before it fires. See scheduleBatchFlush. */
+const FLUSH_GRACE_MS = 25;
+
 /** Defer the flush so all sentences the scheduler dispatches in one synchronous pump
  *  are collected into the same batch.
  *
@@ -1054,15 +1057,24 @@ function enqueueBatchItem(item: BatchItem): void {
  *  sentences into batchQueue, so a microtask flush fired one microtask EARLY, on a
  *  queue that was still one item short: every streaming batch went out at
  *  STREAM_BATCH_WIDTH-1. A macrotask runs after ALL pending microtasks — including
- *  every .then(pump) refill — so the flush sees the fully refilled queue. The ~1 ms
- *  it costs is nothing against multi-second renders. */
+ *  every .then(pump) refill — so the flush sees the fully refilled queue.
+ *
+ *  It waits FLUSH_GRACE_MS rather than 0 because on a WARM engine the sessions do not
+ *  all exist yet when the first one pumps: the extension sends the playing speak and
+ *  its read-ahead speaks as SEPARATE WebSocket messages a few ms apart, each landing in
+ *  its own macrotask. A 0 ms flush races them and ships the playing session's ramp
+ *  alone, and a ramp-fill row that misses the ramp flush then waits out the entire ~28s
+ *  batch it existed to ride — the gap it was meant to cover. 25 ms is long enough for
+ *  those messages to land in the same batch and, against 20-40 s renders, is noise.
+ *  (A COLD start needs none of this: every session pre-exists the model load, so they
+ *  are all queued long before the first flush can fire.) */
 function scheduleBatchFlush(): void {
   if (flushScheduled) return;
   flushScheduled = true;
   setTimeout(() => {
     flushScheduled = false;
     flushBatch();
-  }, 0);
+  }, FLUSH_GRACE_MS);
 }
 
 function failBatchQueue(error: string): void {
