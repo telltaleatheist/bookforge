@@ -3928,6 +3928,37 @@ export class PdfPickerComponent implements OnInit {
   });
 
   /**
+   * WHICH WORKING CHAIN this window is editing, stamped with the project it was
+   * resolved for.
+   *
+   * `manifest.families` lets one project hold more than one archive-grade
+   * book, and every backend call that ACTS on a book now takes the chain's id
+   * as a trailing argument — a project with two or more refuses by name rather
+   * than guess which one the user meant. `projectsExportInfo` is where this
+   * window first learns which chain it opened, so the answer is kept here with
+   * the same stamping discipline as `bookEpubAnswer` and `narrationAnswer`: a
+   * window that has since moved to a different project must never read a
+   * chain id left over from the last one as this one's.
+   */
+  private readonly workingChain = signal<{ dir: string; familyId: string } | null>(null);
+
+  /**
+   * The working chain id for THIS project, or `undefined` when it is not known
+   * yet — never a stamp left over from a different project.
+   *
+   * `undefined`, not null: every ACT call below passes this straight through
+   * as the trailing `familyId?` argument, and `undefined` is main's documented
+   * "the project's only chain" case — the correct, pre-existing behaviour for
+   * a project that has never had more than one. Inventing an id here to avoid
+   * `undefined` would be exactly the fallback this codebase forbids.
+   */
+  private readonly workingChainId = computed<string | undefined>(() => {
+    const chain = this.workingChain();
+    const dir = this.projectPath();
+    return chain && dir && chain.dir === dir ? chain.familyId : undefined;
+  });
+
+  /**
    * Ask main where this project's book is. Called when the project changes and
    * after anything that could have written one.
    */
@@ -3937,6 +3968,9 @@ export class PdfPickerComponent implements OnInit {
       // No project, no book of its own. Not a failure: a loose file has none.
       this.bookEpubAnswer.set(null);
       this.bookEpubErrorAnswer.set(null);
+      // Nor a chain to act on — a stale id here would carry another book's
+      // working chain into whatever this window opens next.
+      this.workingChain.set(null);
       return;
     }
     try {
@@ -3948,6 +3982,9 @@ export class PdfPickerComponent implements OnInit {
         generatedPath: info.generated ? info.generated.absPath : null,
         appliedPasses: info.appliedPasses,
       });
+      // This is where the window first learns which chain it opened; stamped
+      // the same way as the answer above, for the same reason.
+      this.workingChain.set({ dir, familyId: info.familyId });
       // ── The working copy was made AGAIN, and the user is told ───────────────
       //
       // Main sets this on exactly the ask that re-minted the file, so showing it
@@ -4090,7 +4127,7 @@ export class PdfPickerComponent implements OnInit {
       ? 'Striking it out of your book...'
       : `Striking ${keys.length} elements out of your book...`);
     try {
-      const answer = await this.electronService.strikeInNarrationCopy(dir, keys);
+      const answer = await this.electronService.strikeInNarrationCopy(dir, keys, this.workingChainId());
       if (!answer.success || !answer.result) {
         // Main's own sentence. It names the document, the position, and what the
         // two files each say there — never paraphrased into "that did not work".
@@ -4173,7 +4210,7 @@ export class PdfPickerComponent implements OnInit {
       this.narrationAnswer.set(null);
       return;
     }
-    const answer = await this.electronService.narrationState(dir);
+    const answer = await this.electronService.narrationState(dir, this.workingChainId());
     if (!answer.success || !answer.state) {
       // Not a failure worth a modal: a project with no book has no strikes, and
       // main's sentence is on the console for a damaged one. The stamp keeps a
@@ -4603,7 +4640,7 @@ export class PdfPickerComponent implements OnInit {
       this.bookChapterTitlesAnswer.set(null);
       return;
     }
-    const answer = await this.electronService.bookChapterTitles(dir);
+    const answer = await this.electronService.bookChapterTitles(dir, this.workingChainId());
     if (!answer.success) {
       // The book is there and could not be read. Not a modal: the Chapter tab
       // falls back to the printed headings, which is what it showed before this
@@ -9342,7 +9379,7 @@ export class PdfPickerComponent implements OnInit {
     this.loading.set(true);
     this.loadingText.set('Erasing every change...');
     try {
-      const result = await this.electronService.resetEditorState(projectDir);
+      const result = await this.electronService.resetEditorState(projectDir, this.workingChainId());
       if (!result.success) {
         throw new Error(result.error || 'The changes could not be erased.');
       }
@@ -9471,7 +9508,7 @@ export class PdfPickerComponent implements OnInit {
           return;
         }
         case 'create-working': {
-          const answer = await this.electronService.ensureWorkingEpub(projectDir);
+          const answer = await this.electronService.ensureWorkingEpub(projectDir, this.workingChainId());
           if (!answer.success || !answer.path) {
             throw new Error(answer.error || 'The working copy could not be made.');
           }
@@ -9557,6 +9594,10 @@ export class PdfPickerComponent implements OnInit {
     // discovered the file was gone, and main reports a re-mint on exactly the
     // one that performed it. See `refreshBookEpub` for the whole of why.
     if (info.remint !== null) this.announceRemint(info.remint);
+    // This is often the FIRST ask a freshly opened window makes, so it is also
+    // where `workingChain` gets its first stamp — the same discipline as
+    // `refreshBookEpub`, for the same project.
+    this.workingChain.set({ dir: projectDir, familyId: info.familyId });
 
     const plan = planArtifactOpen({
       asked,
@@ -9570,7 +9611,11 @@ export class PdfPickerComponent implements OnInit {
     // Ensure rather than trust: the copy may never have been made, and this call
     // both mints it and names its chapter openings, which is what makes the
     // redirected book read the way a book opened any other way reads.
-    const answer = await this.electronService.ensureWorkingEpub(projectDir);
+    //
+    // `info.familyId` directly, not the signal: this call can run before the
+    // stamp above has been read back through `projectPath`'s own effects, and
+    // the id this ask just received is already known to be right for it.
+    const answer = await this.electronService.ensureWorkingEpub(projectDir, info.familyId);
     if (!answer.success || !answer.path) {
       throw new Error(answer.error
         || 'This project has no working copy and could not be given one, and the file you opened '
@@ -9793,7 +9838,7 @@ export class PdfPickerComponent implements OnInit {
 
       const answer = await this.electronService.exportNarrationEpub(dir, {
         stripSupMarkers: choice.checkboxChecked,
-      });
+      }, this.workingChainId());
       if (!answer.success || !answer.result) {
         throw new Error(answer.error || 'The TTS copy could not be written.');
       }
@@ -10033,7 +10078,7 @@ export class PdfPickerComponent implements OnInit {
    */
   private sendNarrationEdit(dir: string, edit: NarrationDeletionEdit): void {
     const posted: Promise<void> = this.narrationEdits.then(async () => {
-      const answer = await this.electronService.editNarrationDeletions(dir, edit);
+      const answer = await this.electronService.editNarrationDeletions(dir, edit, this.workingChainId());
       if (!answer.success || !answer.deletions) {
         throw new Error(answer.error || 'The narration deletions could not be recorded.');
       }
@@ -14183,7 +14228,7 @@ export class PdfPickerComponent implements OnInit {
     }
 
     const answer = await this.electronService.renameBookChapter(
-      dir, parseNarrationElementKey(element).file, title);
+      dir, parseNarrationElementKey(element).file, title, this.workingChainId());
     if (!answer.success || !answer.result) {
       // Main's own sentence, verbatim: it names the file, the project or the
       // table of contents that was missing, and this is the only place it is

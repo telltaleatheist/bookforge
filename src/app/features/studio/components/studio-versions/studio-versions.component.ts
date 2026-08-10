@@ -26,6 +26,7 @@ import {
 import {
   bookChain,
   describeWorkingChangesErase,
+  type ChainFamily,
   type ChainLine,
   type ChainLineKind,
 } from '@shared/document/book-chain';
@@ -62,6 +63,16 @@ interface VersionRow {
   diffOriginalPath?: string; // the original it was computed against (resolved locally, if it exists)
   /** The file the editor is pointed at for this row, when it is not this row's own. */
   openPath?: string;
+  /**
+   * The 'generated', 'exported' and 'narration' rows: WHICH working chain this
+   * row belongs to.
+   *
+   * Owen, 2026-08-10: "having the epub listed under documents instead of
+   * versions breaks the chain of custody." Every act this page performs from a
+   * row hands this back to main, which is what makes "press the button on the
+   * version you mean" a mechanism rather than an instruction.
+   */
+  familyId?: string;
   /** The 'archive' row only: the manifest variant that IS this file. */
   variantId?: string;
   /** The 'archive' and 'working' rows: the archive original this family is bound to. */
@@ -427,20 +438,29 @@ const AUDIO_EXTS = new Set([
           }
         </div>
 
-        <!-- The book chain: two files, and everything else indented under them.
-             Owen, 2026-08-09: "the user would only ever see two files on the main
-             page - the pdf and the epub… under the epub… smaller, indented lines
-             that say 'working changes' or something… in whichever order they were
-             originally executed. the tts file is also indented under its parent."
+        <!-- The book chains: ONE BOOK LINE PER VERSION, each with its working
+             changes, its recorded passes and its narration copy indented under
+             it. Owen, 2026-08-09: "the user would only ever see two files on the
+             main page - the pdf and the epub… under the epub… smaller, indented
+             lines that say 'working changes' or something… in whichever order
+             they were originally executed. the tts file is also indented under
+             its parent."
+
+             ── Why there is no "Documents" heading over this any more ──────────
+
+             Owen, 2026-08-10: "having the epub listed under documents instead of
+             versions breaks the chain of custody." A heading is a claim about
+             what a list IS, and "Documents" claimed these were loose files a
+             project happens to hold — which is the opposite of what they are.
+             They are the project's VERSIONS: each book line is one archive-grade
+             book and everything derived from it, and it belongs under the
+             versions heading with the other editions rather than in a second
+             list that says nothing about where any of it came from.
 
              The working copy has no line of its own: the EPUB the user sees IS
              their book, and opening it lands on the copy
              (shared/document/artifact-open.ts). What the arrangement is, and
              which line gets which buttons, is shared/document/book-chain.ts. -->
-        <div class="section-head">
-          <span>Documents</span>
-        </div>
-
         @if (loading()) {
           <div class="muted">Loading versions…</div>
         } @else if (documentRows().length === 0) {
@@ -550,7 +570,7 @@ const AUDIO_EXTS = new Set([
                        stopped being drawn. It clears the working changes AND the
                        ledger, which is what it has always said. -->
                   @if (row.line.buttons.eraseEverything) {
-                    <button class="act danger" (click)="eraseEverythingOnLine()"
+                    <button class="act danger" (click)="eraseEverythingOnLine(row)"
                             title="Clear every change AND every pass recorded on this book, and put a fresh copy in its place">Erase all changes</button>
                   }
                   <!-- Process on the BOOK opens the passes; Process on the
@@ -561,8 +581,8 @@ const AUDIO_EXTS = new Set([
                             title="Have something done to this book — the passes run in the queue">Process</button>
                   }
                   @if (row.line.buttons.process) {
-                    <button class="act" [disabled]="narrationRefusalReason() !== null"
-                            [title]="narrationTitle()" (click)="processLine(row)">Process</button>
+                    <button class="act" [disabled]="narrationRefusalForLine(row) !== null"
+                            [title]="narrationTitleForLine(row)" (click)="processLine(row)">Process</button>
                   }
                 </div>
                 <div class="slot">
@@ -905,11 +925,12 @@ const AUDIO_EXTS = new Set([
     }
 
     <!-- Narration. Opened by the Process button on the narration copy's line,
-         and handed THAT line's file — the identity law, as an input rather than
-         a lookup. Everything it collects goes to the queue. -->
+         and handed THAT line's file AND THAT LINE'S CHAIN — the identity law, as
+         inputs rather than a lookup. Everything it collects goes to the queue. -->
     @if (narrationFile(); as file) {
       <app-narration-modal
-        [epubPath]="file"
+        [epubPath]="file.path"
+        [familyId]="file.familyId"
         [projectDir]="projectDir()"
         [title]="item()?.title || ''"
         [author]="item()?.author || ''"
@@ -1291,6 +1312,22 @@ export class StudioVersionsComponent {
   readonly generateAnalysis = output<StudioAnalysisTarget>(); // opens the analysis modal, locked to this source
 
   readonly versions = signal<VersionRow[]>([]);
+  /**
+   * The project's working chains, as `editor:get-versions` reports them — one
+   * book line each, in the manifest's own order.
+   *
+   * Kept beside the rows rather than derived from them: a chain whose working
+   * copy has been removed by hand emits no row at all, and a page that inferred
+   * the list from the rows would stop drawing a book the user can still erase
+   * and re-mint. Empty is real and ordinary — a PDF nobody has converted has no
+   * chain, because a chain hangs off an archive-grade EPUB and it has none yet.
+   */
+  readonly chains = signal<Array<{
+    id: string;
+    sourceKind: 'archive-epub' | 'generated-epub';
+    sourceName: string;
+    archiveRowId: string | null;
+  }>>([]);
   readonly loading = signal(false);
   readonly cache = signal<SentenceCacheInfo | null>(null);
   // The TTS voice that rendered this project's audio (from the durable session's
@@ -1400,21 +1437,27 @@ export class StudioVersionsComponent {
   // ── The document family ────────────────────────────────────────────────────
 
   /**
-   * What this book HAS, as the family derivation needs it — read off the rows
+   * What ONE CHAIN has, as the family derivation needs it — read off the rows
    * main measured, never off anything this component remembers.
    *
-   * The three members are found by TYPE rather than by position or by name: the
-   * types are `editor:get-versions`'s contract, and a row that is not there means
-   * the file is not there.
+   * The members are found by TYPE and by CHAIN rather than by position or by
+   * name: the types are `editor:get-versions`'s contract, the chain is what a
+   * row says it is on, and a row that is not there means the file is not there.
    */
-  private readonly familyInput = computed<VersionFamilyInput>(() => {
+  private familyInputFor(familyId: string | null): VersionFamilyInput {
     const docs = this.documents();
     const of = (type: string): VersionRow | null => docs.find(v => v.type === type) ?? null;
+    // The three members a CHAIN owns are found by the chain they declare they
+    // are on, never by "the first row of that type": a project with two versions
+    // has two of each, and picking the first would put one book's stars on the
+    // other's line. The PDFs are found by type because a PDF is on no chain.
+    const ofChain = (type: string): VersionRow | null =>
+      familyId === null ? null : docs.find(v => v.type === type && v.familyId === familyId) ?? null;
 
     const archiveRow = of('archive');
-    const generatedRow = of('generated');
+    const generatedRow = ofChain('generated');
     const workingRow = of('working');
-    const epubRow = of('exported');
+    const epubRow = ofChain('exported');
 
     // Every 'working' row main emits carries its boundaries (possibly an empty
     // list). One without them is IPC shape drift, not a working copy that has
@@ -1440,10 +1483,15 @@ export class StudioVersionsComponent {
           modifiedAt: workingRow.modifiedAt ?? null,
         }
         : null,
-      epub: epubRow ? { id: epubRow.id, builtAt: epubRow.builtAt ?? null } : null,
+      epub: epubRow ? { id: epubRow.id } : null,
+      // The project-level record, which is this chain's exactly when the project
+      // has one chain — `StudioService` reads it through `soleFamily` and claims
+      // none for a project with several (its own listing-shaped refusal). So a
+      // multi-chain project lights no stars rather than lighting one version's
+      // history on another version's line.
       appliedPasses: this.item()?.appliedPasses ?? [],
     };
-  });
+  }
 
   /**
    * Why this book cannot be narrated, or null when it can.
@@ -1455,16 +1503,19 @@ export class StudioVersionsComponent {
    * shared/document/version-family.ts), and there is no second notion of "this
    * project has a book" anywhere.
    */
-  readonly narrationRefusalReason = computed<string | null>(() =>
-    narrationRefusal({ bookEpubExists: this.familyInput().epub !== null }));
+  narrationRefusalForLine(row: ChainRowView): string | null {
+    return narrationRefusal({
+      bookEpubExists: this.familyInputFor(row.line.familyId).epub !== null,
+    });
+  }
 
   /** What Process says on hover: why it is locked, or what pressing it does. */
-  readonly narrationTitle = computed<string>(() => {
-    const refusal = this.narrationRefusalReason();
+  narrationTitleForLine(row: ChainRowView): string {
+    const refusal = this.narrationRefusalForLine(row);
     return refusal === null
       ? 'Narrate this book — opens the Process tab with narration ready to configure'
       : refusal;
-  });
+  }
 
   /**
    * The rows as the page shows them: the family first, in ladder order, then
@@ -1478,18 +1529,42 @@ export class StudioVersionsComponent {
   readonly documentRows = computed<ChainRowView[]>(() => {
     const docs = this.documents();
     const byId = new Map(docs.map(v => [v.id, v]));
-    const exported = docs.find(v => v.type === 'exported') ?? null;
-    const ledger = exported?.ledger ?? [];
     const bookSlots = this.bookStarSlots();
 
+    // Each chain's ledger travels on ITS OWN working copy's row — main puts it
+    // there, keyed by the chain — so a project with two versions never draws one
+    // book's passes under the other's book line. Kept in a map as well as handed
+    // to the arrangement, because the lines come back naming an ENTRY and the
+    // view row needs the entry itself.
+    const ledgers = new Map<string, LedgerRowEntry[]>(this.chains().map(chain => [
+      chain.id,
+      docs.find(v => v.type === 'exported' && v.familyId === chain.id)?.ledger ?? [],
+    ]));
+    const ledgerOf = (familyId: string | null): LedgerRowEntry[] =>
+      familyId === null ? [] : ledgers.get(familyId) ?? [];
+    const families: ChainFamily[] = this.chains().map(chain => ({
+      id: chain.id,
+      sourceKind: chain.sourceKind,
+      sourceName: chain.sourceName,
+      archiveRowId: chain.archiveRowId,
+      ledger: ledgerOf(chain.id),
+    }));
+
     return bookChain({
-      rows: docs.map(v => ({ id: v.id, type: v.type, extension: (v.extension || '').toLowerCase() })),
-      ledger,
+      rows: docs.map(v => ({
+        id: v.id,
+        type: v.type,
+        extension: (v.extension || '').toLowerCase(),
+        // Absent on every row that is on no chain — the archive PDFs and the
+        // legacy stage outputs — which is the same thing said as `null`.
+        familyId: v.familyId ?? null,
+      })),
+      families,
     }).map((line): ChainRowView => {
       const v = line.rowId === null ? null : byId.get(line.rowId) ?? null;
       const entry = line.ledgerId === null
         ? null
-        : ledger.find(e => e.id === line.ledgerId) ?? null;
+        : ledgerOf(line.familyId).find(e => e.id === line.ledgerId) ?? null;
       return {
         line,
         v,
@@ -1498,11 +1573,34 @@ export class StudioVersionsComponent {
         ext: this.lineExtension(line.kind, v, entry),
         icon: this.lineIcon(line.kind, v),
         description: this.lineDescription(line.kind, v, entry),
-        slots: line.kind === 'book' ? bookSlots : [],
+        // The stars are read off the working copy the passes were recorded
+        // against, so they belong to the chain this book line is on and to no
+        // other. A project with several draws each book's own.
+        slots: line.kind === 'book' && line.familyId !== null
+          ? bookSlots.get(line.familyId) ?? []
+          : [],
         staleness: null,
       };
     });
   });
+
+  /**
+   * The chain a LINE is about, for the acts that take one.
+   *
+   * Refuses rather than guessing: an act taken from a line that cannot say which
+   * version it is on would clear an evening of edits made to a different book,
+   * which is exactly what `requireFamily` refuses on the other side of the IPC
+   * boundary. Saying it here as well means the user gets a sentence naming the
+   * button they pressed rather than a refusal naming a project.
+   */
+  private familyOfLine(row: ChainRowView, act: string): string | null {
+    if (row.line.familyId !== null) return row.line.familyId;
+    console.error(
+      `[studio-versions] "${act}" was pressed on a ${row.line.kind} line that is on no working `
+      + 'chain. Every act on a chain line carries the version it was pressed on; a line without '
+      + 'one is a row this build of main did not stamp.');
+    return null;
+  }
 
   /**
    * The star columns the BOOK line carries: the passes recorded against
@@ -1518,40 +1616,45 @@ export class StudioVersionsComponent {
    * subtraction: those passes have their own indented line with their own Review
    * changes, and a star offering the same diff would be the same record twice.
    */
-  private readonly bookStarSlots = computed<StarSlot[]>(() => {
-    const input = this.familyInput();
-    if (input.epub === null) return [];
-    const exported = this.documents().find(v => v.type === 'exported') ?? null;
-    // Which stars the ledger already speaks for, asked through the one mapping
-    // from a pass kind to a star (@shared/document/version-family) so the two
-    // records agree about what a kind IS.
-    const inLedger = new Set<VersionStar>(
-      (exported?.ledger ?? [])
-        .map(e => starForPassKind(e.kind))
-        .filter((s): s is VersionStar => s !== null));
-    const lit = new Set<VersionStar>(starsFor('epub', input));
+  private readonly bookStarSlots = computed<Map<string, StarSlot[]>>(() => {
     const reviews = this.reviewByStar();
-    return starSlotsFor('epub')
-      .filter(id => !inLedger.has(id))
-      .map(id => {
-        // A review only ever hangs off a LIT star: the diff is the record of a
-        // run, and an unlit star is the absence of one. A lit star with no diff
-        // (the pass ran, its job died before recording, or it predates diffs)
-        // keeps `review: null` and stays inert.
-        const review = lit.has(id) ? reviews.get(id) ?? null : null;
-        return {
-          id,
-          label: STAR_LABELS[id],
-          lit: lit.has(id),
-          tooltip: lit.has(id)
-            ? STAR_MEANINGS[id]
-            : `Not done: ${STAR_MEANINGS[id].charAt(0).toLowerCase()}${STAR_MEANINGS[id].slice(1)}`,
-          review,
-          action: review
-            ? `See what ${STAR_LABELS[id].toLowerCase()} changed in this file — ${review.when}`
-            : null,
-        };
-      });
+    const byChain = new Map<string, StarSlot[]>();
+    for (const chain of this.chains()) {
+      const input = this.familyInputFor(chain.id);
+      if (input.epub === null) continue;
+      const exported = this.documents()
+        .find(v => v.type === 'exported' && v.familyId === chain.id) ?? null;
+      // Which stars THIS CHAIN'S ledger already speaks for, asked through the one
+      // mapping from a pass kind to a star (@shared/document/version-family) so
+      // the two records agree about what a kind IS.
+      const inLedger = new Set<VersionStar>(
+        (exported?.ledger ?? [])
+          .map(e => starForPassKind(e.kind))
+          .filter((s): s is VersionStar => s !== null));
+      const lit = new Set<VersionStar>(starsFor('epub', input));
+      byChain.set(chain.id, starSlotsFor('epub')
+        .filter(id => !inLedger.has(id))
+        .map(id => {
+          // A review only ever hangs off a LIT star: the diff is the record of a
+          // run, and an unlit star is the absence of one. A lit star with no diff
+          // (the pass ran, its job died before recording, or it predates diffs)
+          // keeps `review: null` and stays inert.
+          const review = lit.has(id) ? reviews.get(id) ?? null : null;
+          return {
+            id,
+            label: STAR_LABELS[id],
+            lit: lit.has(id),
+            tooltip: lit.has(id)
+              ? STAR_MEANINGS[id]
+              : `Not done: ${STAR_MEANINGS[id].charAt(0).toLowerCase()}${STAR_MEANINGS[id].slice(1)}`,
+            review,
+            action: review
+              ? `See what ${STAR_LABELS[id].toLowerCase()} changed in this file — ${review.when}`
+              : null,
+          };
+        }));
+    }
+    return byChain;
   });
 
   /**
@@ -1763,10 +1866,13 @@ export class StudioVersionsComponent {
   /** Perform this line's delete. Each kind routes to the code that owns it. */
   async deleteLine(row: ChainRowView): Promise<void> {
     if (this.deleteLineRefusal(row) !== null) return;
-    if (row.line.kind === 'working-changes') { await this.eraseWorkingChanges(); return; }
+    if (row.line.kind === 'working-changes') { await this.eraseWorkingChanges(row); return; }
     if (row.line.kind === 'ledger') { await this.deleteLedgerLine(row); return; }
     if (row.v === null) return;
-    await this.removeDoc(row.v);
+    // The chain the user pressed on, carried through to main. A loose line is on
+    // none, and `removeDoc` takes the generic file delete for it — which is what
+    // a line nothing can place is: bytes with a door and no chain of custody.
+    await this.removeDoc(row.v, row.line.familyId);
   }
 
   /**
@@ -1778,20 +1884,26 @@ export class StudioVersionsComponent {
    * act, from this book's own ledger, so the sentence describes this book rather
    * than the feature.
    */
-  private async eraseWorkingChanges(): Promise<void> {
+  private async eraseWorkingChanges(row: ChainRowView): Promise<void> {
     const dir = this.projectDir();
-    if (!dir) return;
-    const entries = this.documents().find(v => v.type === 'exported')?.ledger ?? [];
+    const familyId = this.familyOfLine(row, 'Erase changes');
+    if (!dir || familyId === null) return;
+    // THIS chain's ledger — the passes that stand when the user's own edits go.
+    // Read off the line rather than off "the exported row", which names two
+    // files in a project with two versions.
+    const entries = row.v?.ledger ?? [];
 
     const { confirmed } = await this.electron.showConfirmDialog({
       title: 'Erase your working changes',
-      message: 'Erase every change you have made to this book?',
+      message: row.line.sourceName === null
+        ? 'Erase every change you have made to this book?'
+        : `Erase every change you have made to your copy of ${row.line.sourceName}?`,
       detail: describeWorkingChangesErase(entries.map(e => e.label)),
       confirmLabel: 'Erase changes', cancelLabel: 'Cancel', type: 'warning',
     });
     if (!confirmed) return;
 
-    const res = await this.electron.eraseBookChanges(dir, 'working-changes');
+    const res = await this.electron.eraseBookChanges(dir, 'working-changes', familyId);
     if (!res.success || !res.remint) {
       await this.electron.showMessageDialog({
         title: 'Nothing was erased',
@@ -1824,8 +1936,12 @@ export class StudioVersionsComponent {
   private async deleteLedgerLine(row: ChainRowView): Promise<void> {
     const dir = this.projectDir();
     const entry = row.entry;
-    if (!dir || !entry) return;
-    const entries = this.documents().find(v => v.type === 'exported')?.ledger ?? [];
+    const familyId = this.familyOfLine(row, `Delete ${entry?.label ?? 'a pass'}`);
+    if (!dir || !entry || familyId === null) return;
+    // The cascade is computed from THIS chain's ledger — the one the line is on,
+    // carried on its own row — never from "the exported row", which in a project
+    // with two versions names two books.
+    const entries = row.v?.ledger ?? [];
 
     let plan: LedgerDeletion<LedgerRowEntry>;
     try {
@@ -1865,7 +1981,7 @@ export class StudioVersionsComponent {
     });
     if (!confirmed) return;
 
-    const res = await this.electron.deleteBookLedgerEntry(dir, entry.id);
+    const res = await this.electron.deleteBookLedgerEntry(dir, entry.id, familyId);
     if (!res.success) {
       await this.electron.showMessageDialog({
         title: 'Nothing was deleted',
@@ -1895,14 +2011,20 @@ export class StudioVersionsComponent {
    * routes to the same handler the row's own danger button used, so what it says
    * and what it does are unchanged.
    */
-  async eraseEverythingOnLine(): Promise<void> {
-    const exported = this.documents().find(v => v.type === 'exported') ?? null;
+  async eraseEverythingOnLine(row: ChainRowView): Promise<void> {
+    const familyId = this.familyOfLine(row, 'Erase all changes');
+    if (familyId === null) return;
+    // THIS chain's working copy, found by the chain the line is on. Not "the
+    // exported row": a project with two versions has two, and erasing the wrong
+    // one clears an evening of edits made to a different book.
+    const exported = this.documents()
+      .find(v => v.type === 'exported' && v.familyId === familyId) ?? null;
     if (!exported) {
-      console.error('[studio-versions] "Erase all changes" was pressed on the book line of a '
-        + 'project with no working copy. The button is rendered only where one exists.');
+      console.error('[studio-versions] "Erase all changes" was pressed on a book line whose chain '
+        + 'has no working copy on screen. The button is rendered only where one exists.');
       return;
     }
-    await this.eraseBookChanges(exported);
+    await this.eraseBookChanges(exported, familyId, row.line.sourceName);
   }
 
   /**
@@ -1961,27 +2083,36 @@ export class StudioVersionsComponent {
    */
   processLine(row: ChainRowView): void {
     const path = row.v?.path;
-    if (!path) {
-      console.error('[studio-versions] Process was pressed on a line with no file behind it. Only '
-        + 'a line naming a document carries that button.');
+    const familyId = this.familyOfLine(row, 'Process');
+    if (!path || familyId === null) {
+      if (!path) {
+        console.error('[studio-versions] Process was pressed on a line with no file behind it. Only '
+          + 'a line naming a document carries that button.');
+      }
       return;
     }
     // The dialog, not the page. Owen, 2026-08-09: "maybe we turn the tts/assembly
     // page into a modal that appears when the user hits process on the tts file."
     // The path goes into it as an input rather than into a lookup on the far
-    // side, which is the whole of the identity law.
-    this.narrationFile.set(path);
+    // side, which is the whole of the identity law — and the CHAIN goes with it,
+    // because "which file" and "which version's chain of records it belongs to"
+    // are two facts and the run needs both.
+    this.narrationFile.set({ path, familyId });
   }
 
   // ── Narration, configured here and queued from here ────────────────────────
 
   /**
-   * The file the narration dialog is open on, or null.
+   * The document the narration dialog is open on, or null.
    *
-   * The PATH rather than a boolean: it IS the dialog's subject, and holding it
-   * here means there is exactly one place the run's document can come from.
+   * The PATH AND ITS CHAIN rather than a boolean: together they ARE the dialog's
+   * subject, and holding them here means there is exactly one place the run's
+   * document can come from. Owen, 2026-08-10: "if the user wants to process a
+   * specific TTS document then they click the process button next to it. no
+   * ambiguity, no confusion" — the button that was pressed is the only thing
+   * that knows which version this is, so it says so and nothing looks it up.
    */
-  readonly narrationFile = signal<string | null>(null);
+  readonly narrationFile = signal<{ path: string; familyId: string } | null>(null);
 
   closeNarrationModal(): void {
     this.narrationFile.set(null);
@@ -2013,9 +2144,9 @@ export class StudioVersionsComponent {
    * carries the same path, so crossing over cannot change which file is read.
    */
   openProcessPage(): void {
-    const path = this.narrationFile();
+    const file = this.narrationFile();
     this.closeNarrationModal();
-    if (path) this.process.emit({ path });
+    if (file) this.process.emit({ path: file.path });
   }
 
   // ── The book passes, offered from the book and queued from here ────────────
@@ -2485,8 +2616,9 @@ export class StudioVersionsComponent {
         + 'cleared with the book they were made against, and the passes recorded in its ledger go '
         + 'with it: they were applied to the text this reading replaces.\n\n'
         + 'Add a copy — the new reading is added as another archive file beside the one that is '
-        + 'already there, and nothing about the book you have been editing changes. It has no '
-        + 'working copy and no chain of its own yet; it can be opened, exported and deleted.',
+        + 'already there, and nothing about the book you have been editing changes. It gets a '
+        + 'working chain of its own: its own working copy, its own recorded passes and its own '
+        + 'narration copy, so you can run adjustments on this reading separately.',
       type: 'question',
       confirmLabel: 'Replace the book',
       alternateLabel: 'Add a copy',
@@ -3353,6 +3485,10 @@ export class StudioVersionsComponent {
     // that belong to THIS book.
     if (this.loadedForProjectDir() !== dir) {
       this.versions.set([]);
+      // The chains belong to the project the rows did. Left behind, they would
+      // name another book's versions and every act taken from a line would carry
+      // the wrong chain id into main.
+      this.chains.set([]);
       this.variantList.set([]);
       this.primaryId.set(undefined);
       this.transcriptEligibleVariantIds.set(new Set());
@@ -3387,6 +3523,17 @@ export class StudioVersionsComponent {
       if (superseded()) return;
       if (res.success && res.versions) {
         this.versions.set(res.versions as VersionRow[]);
+        // Both halves come from one read and are set together. A build of main
+        // that predates chains sends none, and the page then draws no book line
+        // at all — which is loud, and right: every act below hands a chain id
+        // back, and there is nothing here that could invent one.
+        if (res.families === undefined) {
+          console.error(
+            '[studio-versions] editor:get-versions answered without the project\'s working chains. '
+            + 'This window and the main process disagree about the answer shape; reload the window. '
+            + 'No book line is drawn, because every act on one names the chain it is about.');
+        }
+        this.chains.set(res.families ?? []);
         this.versionsError.set(null);
       } else {
         // A FAILED read (e.g. a transient manifest lock on a synced drive) is NOT
@@ -3838,12 +3985,25 @@ export class StudioVersionsComponent {
    * same things — the strikes and the deletions are usually the largest numbers
    * in an evening's work, and a user is owed them before as well as after.
    */
-  private async eraseBookChanges(v: VersionRow): Promise<void> {
+  private async eraseBookChanges(
+    v: VersionRow,
+    familyId: string | null,
+    sourceName: string | null
+  ): Promise<void> {
     const dir = this.projectDir();
     if (!dir) return;
+    if (familyId === null) {
+      console.error('[studio-versions] "Erase all changes" reached the eraser without a working '
+        + 'chain. Every book line carries the chain it is on; this one did not.');
+      return;
+    }
     const withDiffs = this.passDiffs();
     const passes = this.item()?.appliedPasses ?? [];
-    const generated = this.documents().find(d => d.type === 'generated') ?? null;
+    // The cast this chain hangs off, if it hangs off one — matched by the chain,
+    // because a project may hold a cast book AND a second edition beside it and
+    // only one of them is what THIS book comes back from.
+    const generated = this.documents()
+      .find(d => d.type === 'generated' && d.familyId === familyId) ?? null;
     const name = v.path.split(/[\\/]/).pop();
 
     // Which book the fresh copy comes from, in the user's words. The generated
@@ -3851,7 +4011,7 @@ export class StudioVersionsComponent {
     // has one on disk — and its origin says whether those bytes are the reader's
     // own output or a working copy adopted when the project was migrated.
     const restoredFrom = generated === null
-      ? 'the original you imported'
+      ? sourceName === null ? 'the original you imported' : sourceName
       : generated.generatedOrigin === 'cast'
         ? 'the book read out of your PDF\'s pages'
         : 'the book read out of your PDF\'s pages, as it stood when BookForge started keeping it '
@@ -3895,7 +4055,7 @@ export class StudioVersionsComponent {
     // pass applied to the book. The narrower 'working-changes' scope — clear my
     // edits, keep the passes — belongs to the indented ledger rows the versions
     // page is being rebuilt around, and is not offered from here.
-    const res = await this.electron.eraseBookChanges(dir, 'everything');
+    const res = await this.electron.eraseBookChanges(dir, 'everything', familyId);
     if (!res.success || !res.remint) {
       await this.electron.showMessageDialog({
         title: 'Nothing was erased',
@@ -3935,10 +4095,16 @@ export class StudioVersionsComponent {
    * one or the other way round. The working copy goes with it, because a working
    * copy is a copy OF this book and nothing could mint another once it is gone.
    */
-  private async removeGeneratedEpub(v: VersionRow): Promise<void> {
+  private async removeGeneratedEpub(v: VersionRow, familyId: string | null): Promise<void> {
     const dir = this.projectDir();
     if (!dir) return;
-    const working = this.documents().find(d => d.type === 'exported') ?? null;
+    if (familyId === null) {
+      console.error('[studio-versions] Delete reached the cast-book remover without a working '
+        + 'chain. The cast IS a chain\'s book line, and it always carries the chain it is on.');
+      return;
+    }
+    const working = this.documents()
+      .find(d => d.type === 'exported' && d.familyId === familyId) ?? null;
     const detail = [
       `This deletes ${v.path.split(/[\\/]/).pop()} — every page of your PDF as the reader read it.`,
       '',
@@ -3965,7 +4131,7 @@ export class StudioVersionsComponent {
     });
     if (!confirmed) return;
 
-    const res = await this.electron.deleteGeneratedEpub(dir);
+    const res = await this.electron.deleteGeneratedEpub(dir, familyId);
     if (!res.success) {
       await this.electron.showMessageDialog({
         title: 'Delete failed',
@@ -3986,9 +4152,14 @@ export class StudioVersionsComponent {
    * the strikes are untouched, which is why the confirmation can promise the
    * copy back for the cost of one export.
    */
-  private async removeTtsCopy(v: VersionRow): Promise<void> {
+  private async removeTtsCopy(v: VersionRow, familyId: string | null): Promise<void> {
     const dir = this.projectDir();
     if (!dir) return;
+    if (familyId === null) {
+      console.error('[studio-versions] Delete reached the narration-copy remover without a working '
+        + 'chain. Every narration line is nested under the book it was cut from and says so.');
+      return;
+    }
     const name = v.path.split(/[\\/]/).pop();
     const { confirmed } = await this.electron.showConfirmDialog({
       title: 'Delete the TTS copy',
@@ -3999,7 +4170,7 @@ export class StudioVersionsComponent {
     });
     if (!confirmed) return;
 
-    const res = await this.electron.deleteTtsCopy(dir);
+    const res = await this.electron.deleteTtsCopy(dir, familyId);
     if (!res.success) {
       await this.electron.showMessageDialog({
         title: 'Delete failed',
@@ -4012,15 +4183,20 @@ export class StudioVersionsComponent {
     this.changed.emit();
   }
 
-  async removeDoc(v: VersionRow): Promise<void> {
-    // The family's rows are five different acts, each owned by the code that
-    // already knows how to undo that artifact. Only the rows below them — the
-    // legacy stage outputs — take the generic file delete.
+  async removeDoc(v: VersionRow, familyId: string | null): Promise<void> {
+    // The chain's rows are five different acts, each owned by the code that
+    // already knows how to undo that artifact, and each told WHICH chain it is
+    // acting on. Only the rows below them — the legacy stage outputs, which are
+    // on no chain — take the generic file delete.
     if (v.type === 'working') { await this.removeWorkingCopy(v); return; }
     if (v.type === 'archive') { await this.removeArchiveOriginal(v); return; }
-    if (v.type === 'generated') { await this.removeGeneratedEpub(v); return; }
-    if (v.type === 'exported') { await this.eraseBookChanges(v); return; }
-    if (v.type === 'narration') { await this.removeTtsCopy(v); return; }
+    if (v.type === 'generated') { await this.removeGeneratedEpub(v, familyId); return; }
+    if (v.type === 'exported') {
+      await this.eraseBookChanges(
+        v, familyId, this.chains().find(c => c.id === familyId)?.sourceName ?? null);
+      return;
+    }
+    if (v.type === 'narration') { await this.removeTtsCopy(v, familyId); return; }
 
     const { confirmed } = await this.electron.showConfirmDialog({
       title: 'Delete version',

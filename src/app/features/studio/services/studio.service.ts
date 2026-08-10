@@ -395,6 +395,13 @@ export class StudioService {
           // The record's file, only when it is really there. "Has this been
           // exported?" has no other answer — the file is named after the book.
           exportedEpubPath: exists('source-exported') ? paths['source-exported'] : null,
+          // The chain that export is on, carried onto the row so the acts
+          // offered from it can name the version they are about. Null for a
+          // project this listing could not place — see `soleFamily` above,
+          // which said so on the console when the paths were collected. Asked
+          // again here rather than carried, because the collecting loop and this
+          // mapping are two passes over the same manifests and the rule is pure.
+          familyId: soleFamily<BookFamily>(manifest.families ?? [])?.id ?? null,
           // Import provenance, straight from the manifest — what this project was made
           // FROM, not what stage is selected now. The cleanup wizard defaults OCR repair
           // off this.
@@ -580,7 +587,8 @@ export class StudioService {
         const exists = (key: string) => !!existsMap[paths[key]];
 
         // Same provenance rule as books — see loadBooks.
-        const appliedPasses = soleFamily<BookFamily>(manifest.families ?? [])?.epub?.appliedPasses ?? [];
+        const chain = soleFamily<BookFamily>(manifest.families ?? []);
+        const appliedPasses = chain?.epub?.appliedPasses ?? [];
         // `detection` counts: it is the pass that turns a run directory into a
         // book, so a project carrying it has a processed EPUB even when the OCR
         // repair was skipped (a born-digital PDF needs no repairing).
@@ -616,6 +624,9 @@ export class StudioService {
           wordCount: manifest.metadata?.wordCount,
           epubPath: articleEpubPath,
           exportedEpubPath: exists('source-exported') ? paths['source-exported'] : null,
+          // As in loadBooks: the chain the export is on, or null when this
+          // listing could not say which version the project means.
+          familyId: chain?.id ?? null,
           // Articles have no pristine imported document: they are fetched HTML, and
           // the HTML lives in htmlPath. Explicitly null rather than borrowing
           // epubPath, which would name a derived EPUB.
@@ -790,6 +801,9 @@ export class StudioService {
         epubPath: null,
         originalSourcePath: null,
         exportedEpubPath: null,
+        // A just-created project has no working chain either — one is minted the
+        // first time anything asks about its book.
+        familyId: null,
         htmlPath: `${createResult.projectPath}/source/article.html`,
         deletedSelectors: [],
         sourceLang: 'en',

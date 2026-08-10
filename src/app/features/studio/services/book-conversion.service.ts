@@ -556,6 +556,20 @@ export class BookConversionService {
   private async finished(result: VlmConvertResult): Promise<void> {
     const where = result.endpoint === null ? 'this machine' : result.endpoint;
     const notes: string[] = [];
+    // The second reading's own working chain — its own working copy, ledger,
+    // strikes and narration copy. Said VERBATIM when it could not be made:
+    // `addBookFamily` refuses two sources whose files would share a name and
+    // names both, and that sentence tells the user what to rename. Swallowing it
+    // would leave a version in the project that cannot be edited and no reason
+    // anywhere on screen.
+    if (result.newCopy) {
+      notes.push(result.newCopy.refusal === null
+        ? 'It has a chain of its own — its own working copy, its own recorded passes and its own '
+          + 'narration copy — so you can run adjustments on this reading without touching the book '
+          + 'you have been editing.'
+        : 'It was added to the project, but it could NOT be given a working chain of its own, so '
+          + `it cannot be edited yet:\n${result.newCopy.refusal}`);
+    }
     if (result.skippedPages.length > 0) {
       notes.push(
         `${result.skippedPages.length} page(s) you deleted in the working copy were left out: `

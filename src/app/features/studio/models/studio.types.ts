@@ -76,6 +76,21 @@ export interface StudioItem {
    */
   exportedEpubPath: string | null;
   /**
+   * WHICH WORKING CHAIN the export above belongs to — or null when this listing
+   * could not say.
+   *
+   * Null has two causes and both are real: a project with no chain yet (a PDF
+   * nobody has converted), and a project with SEVERAL, where a listing scanning
+   * ~385 manifests has no way to ask which version the user means
+   * (`soleFamily`, shared/document/book-families.ts). Neither is guessed at.
+   *
+   * It travels on the row because the acts offered FROM a row — Reset edits, in
+   * the context menu — have to name the chain they are about, and a row that
+   * cannot name one must refuse rather than clear an evening of curation on some
+   * other version of the book.
+   */
+  familyId: string | null;
+  /**
    * What the project was IMPORTED from — manifest.source.type, verbatim. This is
    * provenance, not the currently-selected file: a project imported from a scanned
    * PDF stays 'pdf' forever, even though every later stage works on the export.

@@ -547,6 +547,18 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
    * after the book, so no name in source/ identifies it. Refreshed by scanFiles.
    */
   private exportedEpubPath: string | null = null;
+  /**
+   * WHICH WORKING CHAIN that export belongs to — read from the same answer, at
+   * the same moment.
+   *
+   * Held rather than re-derived because this panel both LISTS and ACTS: it shows
+   * the project's files and it offers Reset edits, and those two must be about
+   * the same book. Null means the export could not be resolved at all, which for
+   * a project with several working chains is the honest answer (`projectsExportInfo`
+   * refuses to pick one) — and Reset then refuses in the same words rather than
+   * clearing an evening of curation on a version nobody named.
+   */
+  private exportedFamilyId: string | undefined = undefined;
 
   private readonly electronService = inject(ElectronService);
   private readonly manifestService = inject(ManifestService);
@@ -575,10 +587,15 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
     this.bestCleanupEpub = null;
 
     try {
-      this.exportedEpubPath = (await this.electronService.projectsExportInfo(dir)).exported?.absPath ?? null;
+      const info = await this.electronService.projectsExportInfo(dir);
+      this.exportedEpubPath = info.exported?.absPath ?? null;
+      this.exportedFamilyId = info.familyId;
     } catch (err) {
       console.warn('[ProjectFiles] Could not resolve the project export:', (err as Error).message);
       this.exportedEpubPath = null;
+      // Cleared with the path it came from: a chain id kept from the last scan
+      // would send Reset edits at whichever version was resolved last.
+      this.exportedFamilyId = undefined;
     }
 
     const sectionDefs = [
@@ -1035,7 +1052,7 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
     });
     if (!confirmed) return;
 
-    const result = await this.electronService.resetEditorState(projectDir);
+    const result = await this.electronService.resetEditorState(projectDir, this.exportedFamilyId);
     if (!result.success) {
       await this.electronService.showMessageDialog({
         title: 'Reset failed',

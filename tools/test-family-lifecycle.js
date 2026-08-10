@@ -52,6 +52,11 @@ if (!fs.existsSync(MODULE)) {
   process.exit(1);
 }
 const manifestService = require(MODULE);
+// The pure naming rules, from the same build. `nextReadingName` is what keeps
+// the stem-collision refusal below from being the ONLY answer a second reading
+// of one PDF can get.
+const { familyStem, nextReadingName } = require(
+  path.join(REPO, 'dist', 'shared', 'document', 'book-families.js'));
 
 const sha256 = (file) =>
   crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -507,6 +512,60 @@ test('a mint may not land on another chain\'s working copy', async () => {
       && /Second Book\.working\.epub/.test(err.message),
     'a mint landing on another chain\'s working copy must be refused, naming the file');
   assert.strictEqual(sha256(victim), victimDigest, 'the refused mint wrote to the file anyway');
+});
+
+// ── The naming rule that makes a second reading POSSIBLE ─────────────────────
+//
+// The refusal above is right and, on its own, would make "Add a copy" in Convert
+// to EPUB refuse every time: the name the conversion derives for a second
+// reading is the archive original's stem, which is the stem the first chain is
+// already named after. So the reading is numbered, and these two tests are the
+// pair — the collision is refused, and the numbered name is accepted.
+
+test('a second reading is NUMBERED, from 2, skipping the numbers already taken', () => {
+  assert.strictEqual(nextReadingName([], 'Deathstalker'), 'Deathstalker (reading 2)');
+  assert.strictEqual(
+    nextReadingName(['Deathstalker'], 'Deathstalker'), 'Deathstalker (reading 2)');
+  // Run twice: readings 2 and 3, never two readings 2.
+  assert.strictEqual(
+    nextReadingName(['Deathstalker', 'Deathstalker (reading 2)'], 'Deathstalker'),
+    'Deathstalker (reading 3)');
+  // Case is not a difference: two working copies whose names differ only in case
+  // are one file on Windows.
+  assert.strictEqual(
+    nextReadingName(['deathstalker (reading 2)'], 'Deathstalker'), 'Deathstalker (reading 3)');
+});
+
+test('the numbered name is ACCEPTED where the bare one is refused', async () => {
+  const dir = makeLegacyProject('second-reading');
+  await manifestService.ensureBookFamilies(dir);
+  const stem = familyStem(familiesOf(dir)[0].source);
+  assert.strictEqual(stem, 'Killing America');
+
+  // The name a conversion would derive: refused, because both chains would want
+  // `source/Killing America.working.epub`.
+  const bare = path.join(dir, 'archive', 'Killing America.epub2');
+  const collides = path.join(dir, 'archive', 'Killing America.epub');
+  assert.ok(fs.existsSync(collides), 'the fixture must already hold the colliding name');
+  assert.ok(!fs.existsSync(bare), 'no stray file');
+
+  // The name the rule gives instead: a chain of its own, with its own stem.
+  const named = `${nextReadingName([stem], stem)}.epub`;
+  const second = path.join(dir, 'archive', named);
+  writeBook(second, SECOND_BYTES);
+  const chain = await manifestService.addBookFamily(
+    dir, { absPath: second, kind: 'archive-epub' });
+  assert.strictEqual(familiesOf(dir).length, 2, 'the second reading got a chain of its own');
+  assert.strictEqual(familyStem(chain.source), 'Killing America (reading 2)');
+
+  // And its files are named after IT, so nothing it mints can land on the first
+  // chain's working copy — which is the whole reason the stem rule exists.
+  const book = await manifestService.ensureBookEpub(dir, chain.id);
+  assert.strictEqual(book.relPath, 'source/Killing America (reading 2).working.epub');
+  assert.strictEqual(
+    sha256(path.join(dir, 'source', 'Killing America.working.epub')),
+    sha256(path.join(dir, 'archive', 'Killing America.epub')),
+    'the first chain\'s working copy was written over by the second chain\'s mint');
 });
 
 (async () => {

@@ -2795,6 +2795,20 @@ export class LLWizardComponent implements OnInit {
    */
   readonly narrationEpubPath = signal<string | null>(null);
   /**
+   * WHICH WORKING CHAIN that file is on — learned from the same answer that
+   * named the file, at the same moment.
+   *
+   * A project may hold several versions of one book, each with its own narration
+   * copy, and a narration run has to name the chain it belongs to or everything
+   * it asks the manifest about gets a refusal. This page has no button on a row
+   * to learn it from — it is reached as a page rather than from a document — so
+   * it takes whichever chain `narration:ensure-copy` resolved, which for a
+   * project with several is a refusal rather than a guess. Null until that has
+   * answered, and a run queued without it is refused BY NAME
+   * (`requireRun`, src/app/features/queue/jobs/narration-run.ts).
+   */
+  readonly narrationFamilyId = signal<string | null>(null);
+  /**
    * Why there is nothing for this project to narrate, or null.
    *
    * `ensureNarrationEpub`'s own refusal, verbatim — it names the act that
@@ -3923,12 +3937,17 @@ export class LLWizardComponent implements OnInit {
     if (!answer.success || !answer.narration) {
       this.narrationEpubPath.set(null);
       this.narrationCutReason.set(null);
+      this.narrationFamilyId.set(null);
       this.narrationBlockedReason.set(
         answer.error ?? 'This project could not say which file to narrate.');
       return;
     }
     this.narrationEpubPath.set(answer.narration.epubPath);
     this.narrationCutReason.set(answer.narration.cutReason);
+    // The chain the file is on, said back by the same call. Absent means an
+    // older main answered; the run then refuses by name rather than being filed
+    // against whichever version the far side reaches first.
+    this.narrationFamilyId.set(answer.familyId ?? null);
     this.narrationBlockedReason.set(null);
   }
 
@@ -6159,9 +6178,18 @@ export class LLWizardComponent implements OnInit {
    * narration job runs.
    */
   private narrationRunBook(projectDir: string): NarrationRunBook {
+    const familyId = this.narrationFamilyId();
+    if (familyId === null) {
+      throw new Error(
+        'This page has not been told which version of the book it is narrating, so the run cannot '
+        + 'say which working chain it belongs to. Open the book and press Process on its narration '
+        + 'copy — that button carries the version with it.'
+      );
+    }
     return {
       epubPath: this.ttsInputPath(),
       projectDir,
+      familyId,
       title: this.title(),
       author: this.author(),
       year: this.year(),

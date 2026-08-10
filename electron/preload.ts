@@ -1327,7 +1327,7 @@ export interface ElectronAPI {
       Promise<{ success: boolean; plan?: ProcessingChainPlan; error?: string }>;
     runPass: (jobId: string, config: PassJobConfig) =>
       Promise<{ success: boolean; data?: PassJobResult; error?: string }>;
-    listPassDiffs: (projectDir: string) =>
+    listPassDiffs: (projectDir: string, familyId?: string) =>
       Promise<{ success: boolean; diffs?: PassDiffEntry[]; error?: string }>;
     /** Start a book over. `preview: true` reports what WOULD go, writing nothing. */
     resetBook: (request: { projectDir: string; preview?: boolean }) =>
@@ -1469,20 +1469,26 @@ export interface ElectronAPI {
      * copy if there is none or the one on record is stale. Refuses a project
      * with no working copy by name.
      */
-    ensureNarrationEpub: (projectDir: string) => Promise<{
+    ensureNarrationEpub: (projectDir: string, familyId?: string) => Promise<{
       success: boolean;
       narration?: {
         epubPath: string; relPath: string; removedElements: number; cutReason: string | null;
       };
+      /**
+       * WHICH working chain answered. A caller that asked without naming one
+       * learns which it got, so the run it queues next can name it rather than
+       * asking the project again and risking a different answer.
+       */
+      familyId?: string;
       error?: string;
     }>;
-    narrationState: (projectDir: string) =>
+    narrationState: (projectDir: string, familyId?: string) =>
       Promise<{ success: boolean; state?: NarrationState; error?: string }>;
-    saveNarrationDeletions: (projectDir: string, elements: string[]) =>
+    saveNarrationDeletions: (projectDir: string, elements: string[], familyId?: string) =>
       Promise<{ success: boolean; deletions?: NarrationDeletions; error?: string }>;
     /** One gesture's worth of change — a difference, never a snapshot. */
     editNarrationDeletions: (
-      projectDir: string, edit: { strike: string[]; unstrike: string[] }
+      projectDir: string, edit: { strike: string[]; unstrike: string[] }, familyId?: string
     ) => Promise<{ success: boolean; deletions?: NarrationDeletions; error?: string }>;
     /**
      * Delete elements by pointing at them IN THE TTS COPY.
@@ -1492,7 +1498,8 @@ export interface ElectronAPI {
      * disk matches. Refuses by name — with nothing written — when the copy and
      * the book have come apart.
      */
-    strikeInNarrationCopy: (projectDir: string, copyKeys: string[]) => Promise<{
+    strikeInNarrationCopy: (
+      projectDir: string, copyKeys: string[], familyId?: string) => Promise<{
       success: boolean;
       result?: {
         struckInBook: string[];
@@ -1508,7 +1515,7 @@ export interface ElectronAPI {
      * each element said before (`outputs.epub.bookEdits`).
      */
     mergeChapterOpening: (
-      projectDir: string, openerKey: string, foldedKeys: string[]
+      projectDir: string, openerKey: string, foldedKeys: string[], familyId?: string
     ) => Promise<{
       success: boolean;
       result?: {
@@ -1520,7 +1527,8 @@ export interface ElectronAPI {
     }>;
     exportNarration: (
       projectDir: string,
-      options?: { stripSupMarkers?: boolean }
+      options?: { stripSupMarkers?: boolean },
+      familyId?: string
     ) => Promise<{
       success: boolean;
       result?: {
@@ -1533,7 +1541,7 @@ export interface ElectronAPI {
      * What the book calls each of its chapters — `titles: null` for a project
      * that has no book yet, which is most of them for most of their life.
      */
-    chapterTitles: (projectDir: string) =>
+    chapterTitles: (projectDir: string, familyId?: string) =>
       Promise<{ success: boolean; titles?: BookChapterTitles | null; error?: string }>;
     /**
      * Rename one chapter IN the book: its nav entry, its document's `<title>`,
@@ -1546,7 +1554,7 @@ export interface ElectronAPI {
      * un-named). A window that sees it above zero is looking at a book whose
      * markup has changed under it and must re-open to lay it out again.
      */
-    renameChapter: (projectDir: string, file: string, title: string) =>
+    renameChapter: (projectDir: string, file: string, title: string, familyId?: string) =>
       Promise<{
         success: boolean;
         result?: BookChapterRenameResult;
@@ -2454,9 +2462,18 @@ export interface ElectronAPI {
         icon: string;
         diffRecordPath?: string;
         diffOriginalPath?: string;
+        /** The 'generated'/'exported'/'narration' rows: which working chain. */
+        familyId?: string;
         analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
         analysisFlagCount?: number;
         analysisIsCheckpoint?: boolean;
+      }>;
+      /** The project's working chains — one book line each, in manifest order. */
+      families?: Array<{
+        id: string;
+        sourceKind: 'archive-epub' | 'generated-epub';
+        sourceName: string;
+        archiveRowId: string | null;
       }>;
     }>;
     onWindowClosed: (callback: (projectPath: string) => void) => void;
@@ -2522,7 +2539,7 @@ export interface ElectronAPI {
       message?: string;
       error?: string;
     }>;
-    resetEditorState: (projectPath: string) => Promise<{
+    resetEditorState: (projectPath: string, familyId?: string) => Promise<{
       success: boolean;
       message?: string;
       error?: string;
@@ -3297,8 +3314,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('processing:submit-chain', request),
     runPass: (jobId: string, config: PassJobConfig) =>
       ipcRenderer.invoke('queue:run-pass', jobId, config),
-    listPassDiffs: (projectDir: string) =>
-      ipcRenderer.invoke('processing:list-pass-diffs', projectDir),
+    listPassDiffs: (projectDir: string, familyId?: string) =>
+      ipcRenderer.invoke('processing:list-pass-diffs', projectDir, familyId),
     resetBook: (request: { projectDir: string; preview?: boolean }) =>
       ipcRenderer.invoke('processing:reset-book', request),
     onEnqueueChain: (callback: (plan: ProcessingChainPlan) => void) => {
@@ -3341,12 +3358,16 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('book:delete-generated-epub', projectDir, familyId),
     deleteTtsCopy: (projectDir: string, familyId?: string) =>
       ipcRenderer.invoke('book:delete-tts-copy', projectDir, familyId),
-    ensureNarrationEpub: (projectDir: string) =>
-      ipcRenderer.invoke('narration:ensure-copy', projectDir),
-    narrationState: (projectDir: string) =>
-      ipcRenderer.invoke('narration:state', projectDir),
-    saveNarrationDeletions: (projectDir: string, elements: string[]) =>
-      ipcRenderer.invoke('narration:save-deletions', projectDir, elements),
+    // `familyId` on each of these is WHICH working chain the row the user acted
+    // from is on. Absent is the ordinary case and means the project's only one;
+    // a project with several refuses, naming them, rather than acting on a
+    // version the user is not looking at.
+    ensureNarrationEpub: (projectDir: string, familyId?: string) =>
+      ipcRenderer.invoke('narration:ensure-copy', projectDir, familyId),
+    narrationState: (projectDir: string, familyId?: string) =>
+      ipcRenderer.invoke('narration:state', projectDir, familyId),
+    saveNarrationDeletions: (projectDir: string, elements: string[], familyId?: string) =>
+      ipcRenderer.invoke('narration:save-deletions', projectDir, elements, familyId),
     /**
      * One gesture's worth of change, applied to the record in main.
      *
@@ -3354,27 +3375,30 @@ const electronAPI: ElectronAPI = {
      * deletion sets are a view of it (shared/vlm/narration-deletions.ts).
      */
     editNarrationDeletions: (
-      projectDir: string, edit: { strike: string[]; unstrike: string[] }) =>
-      ipcRenderer.invoke('narration:edit-deletions', projectDir, edit),
+      projectDir: string, edit: { strike: string[]; unstrike: string[] }, familyId?: string) =>
+      ipcRenderer.invoke('narration:edit-deletions', projectDir, edit, familyId),
     /**
      * One gesture made ON THE TTS COPY: the keys name elements of that file, and
      * main translates them into the book's before recording them.
      */
-    strikeInNarrationCopy: (projectDir: string, copyKeys: string[]) =>
-      ipcRenderer.invoke('narration:strike-in-copy', projectDir, copyKeys),
+    strikeInNarrationCopy: (projectDir: string, copyKeys: string[], familyId?: string) =>
+      ipcRenderer.invoke('narration:strike-in-copy', projectDir, copyKeys, familyId),
     /**
      * Fold a chapter's opening IN the book — the one gesture that edits the
      * working copy's own elements. See electron/narration-export.ts for what is
      * recorded about it and why the archive is never in the path.
      */
-    mergeChapterOpening: (projectDir: string, openerKey: string, foldedKeys: string[]) =>
-      ipcRenderer.invoke('book:merge-chapter-opening', projectDir, openerKey, foldedKeys),
-    exportNarration: (projectDir: string, options?: { stripSupMarkers?: boolean }) =>
-      ipcRenderer.invoke('narration:export', projectDir, options),
-    chapterTitles: (projectDir: string) =>
-      ipcRenderer.invoke('book:chapter-titles', projectDir),
-    renameChapter: (projectDir: string, file: string, title: string) =>
-      ipcRenderer.invoke('book:rename-chapter', projectDir, file, title),
+    mergeChapterOpening: (
+      projectDir: string, openerKey: string, foldedKeys: string[], familyId?: string) =>
+      ipcRenderer.invoke(
+        'book:merge-chapter-opening', projectDir, openerKey, foldedKeys, familyId),
+    exportNarration: (
+      projectDir: string, options?: { stripSupMarkers?: boolean }, familyId?: string) =>
+      ipcRenderer.invoke('narration:export', projectDir, options, familyId),
+    chapterTitles: (projectDir: string, familyId?: string) =>
+      ipcRenderer.invoke('book:chapter-titles', projectDir, familyId),
+    renameChapter: (projectDir: string, file: string, title: string, familyId?: string) =>
+      ipcRenderer.invoke('book:rename-chapter', projectDir, file, title, familyId),
   },
   play: {
     startSession: () =>
@@ -4397,8 +4421,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pipeline:delete-output', projectPath),
     deleteAll: (projectPath: string) =>
       ipcRenderer.invoke('pipeline:delete-all', projectPath),
-    resetEditorState: (projectPath: string) =>
-      ipcRenderer.invoke('pipeline:reset-editor-state', projectPath),
+    resetEditorState: (projectPath: string, familyId?: string) =>
+      ipcRenderer.invoke('pipeline:reset-editor-state', projectPath, familyId),
     exportEpub: (sourcePath: string, metadata: any, coverPath?: string) =>
       ipcRenderer.invoke('epub:export-book', sourcePath, metadata, coverPath),
   },

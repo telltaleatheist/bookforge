@@ -834,6 +834,22 @@ export interface CreateJobRequest {
   bfpPath?: string;
   // Bilingual project directory
   projectDir?: string;
+  /**
+   * WHICH WORKING CHAIN of the project this job's document belongs to.
+   *
+   * Owen, 2026-08-10: a project may hold several versions of one book, each with
+   * its own working copy, its own recorded passes and its own narration copy. The
+   * path says which FILE; this says which version's records it is one of, which
+   * is what anything asking the manifest about it has to name. Set by the button
+   * the user pressed — never derived on the far side, where "the project's book"
+   * names two files and picking one is how a run comes to be filed against the
+   * wrong edition.
+   *
+   * Optional because most job types are about a file and not about a chain (an
+   * M4B import, a bilingual assembly); absent means "this job is about no
+   * chain", never "look one up".
+   */
+  familyId?: string;
   // Job grouping for multi-step workflows
   parentJobId?: string;
   workflowId?: string;

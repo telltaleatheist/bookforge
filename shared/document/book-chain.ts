@@ -1,5 +1,6 @@
 /**
- * book-chain — two files on the page, and everything else indented under them.
+ * book-chain — ONE BOOK LINE PER WORKING CHAIN, and everything else indented
+ * under the chain that owns it.
  *
  * ── What Owen asked for (2026-08-09) ────────────────────────────────────────
  *
@@ -16,27 +17,54 @@
  * are special buttons, depending on whether the file is capable of running the
  * commands."
  *
+ * ── And what he ratified a day later (2026-08-10) ───────────────────────────
+ *
+ * "we'll change the architecture to make working chains per-archive-file… i do
+ * have different versions of books, and i want to be able to run adjustment
+ * chains on different versions. tts copies will be nested under their respective
+ * parent item, and if the user wants to process a specific TTS document then they
+ * click the process button next to it. no ambiguity, no confusion." And: "having
+ * the epub listed under documents instead of versions breaks the chain of
+ * custody."
+ *
+ * So the arrangement is no longer "the book and its chain". It is a chain PER
+ * FAMILY (shared/document/book-families.ts): each archive-grade EPUB a project
+ * holds gets its own book line, with its own working changes, its own ledger and
+ * its own narration copy indented under it, side by side with the others. A
+ * project with one family renders exactly what it rendered before — that is the
+ * whole compatibility story, and it is asserted in tools/test-book-chain.js.
+ *
  * ── Why this is a module and not a template ─────────────────────────────────
  *
- * The versions page is 3400 lines of inline template. The two things that
+ * The versions page is 4000 lines of inline template. The two things that
  * regress silently there are the ORDER of the lines and WHICH buttons each one
  * gets, and neither can be tested inside a component template. Both are decided
- * here, from the rows main measured plus the book's ledger, and the page renders
- * the answer.
+ * here, from the rows main measured plus each chain's ledger, and the page
+ * renders the answer.
  *
  * It is pure — no fs, no manifest, no Angular. The inputs are exactly what
- * `editor:get-versions` already emits (a row's `type`, `id` and extension) plus
- * the ledger entries it emits on the `exported` row.
+ * `editor:get-versions` already emits (a row's `type`, `id`, extension and the
+ * chain it belongs to) plus, per chain, the ledger entries emitted on its
+ * `exported` row.
  *
  * ── The one structural decision this module makes ───────────────────────────
  *
  * The working copy is NOT a line. Owen: the user's "epub" IS the top-level line,
  * and opening it lands on the working copy (shared/document/artifact-open.ts).
- * So the `exported` row — which names the working copy — is ABSORBED: it
- * contributes the working-changes line, the ledger lines, and (for an EPUB-native
- * project, which has no cast book) the top-level EPUB line itself. Which of
- * those it is doing is `bookRowType`, and it is the difference between a project
- * whose book was cast from pages and one whose book the user handed us.
+ * So a chain's `exported` row — which names its working copy — is ABSORBED: it
+ * contributes the working-changes line, the ledger lines, and (for a chain
+ * hanging off an EPUB the user handed us, which has no cast book) the top-level
+ * EPUB line itself. Which of those it is doing is `bookRowType`, and it is the
+ * difference between a chain whose book was cast from pages and one whose book
+ * the user handed us.
+ *
+ * ── There is no "the project's book" here any more ──────────────────────────
+ *
+ * Every line is stamped with the chain it belongs to, and the page hands that id
+ * back with every act it performs. That is the same rule `requireFamily` enforces
+ * on the other side of the IPC boundary, said in the layout: a project with two
+ * versions must act on the one whose button was pressed, and a line that cannot
+ * say which chain it is on is exactly the broken custody Owen named.
  */
 
 /** The kinds of line the page draws, in the order they can appear. */
@@ -78,6 +106,15 @@ export interface ChainRow {
   readonly type: string;
   /** Lower-cased, no dot. '' for a row whose file has none. */
   readonly extension: string;
+  /**
+   * WHICH working chain this row belongs to, or null for a row that is on none.
+   *
+   * Set by main on the three rows a chain owns — its cast book (`generated`), its
+   * working copy (`exported`) and its narration copy (`narration`). Null on the
+   * archive PDFs (a PDF has no chain of its own; it reaches a book only by being
+   * cast into one) and on the legacy stage outputs.
+   */
+  readonly familyId: string | null;
 }
 
 /** One ledger entry, as `editor:get-versions` emits it on the exported row. */
@@ -90,11 +127,57 @@ export interface ChainLedgerEntry {
   readonly hasReceipt: boolean;
 }
 
+/**
+ * One working chain, as much of it as the arrangement needs.
+ *
+ * The identity half is `FamilyIdentity` (shared/document/book-families.ts); this
+ * adds the two things the LAYOUT needs and nothing else: the ledger to draw, and
+ * the archive PDF row this chain's book was cast out of, so a PDF-origin chain
+ * can be drawn beside the PDF it came from rather than somewhere else on the
+ * page.
+ */
+export interface ChainFamily {
+  readonly id: string;
+  /**
+   * Which archive-grade book this chain hangs off — and therefore which row is
+   * its book line. `generated-epub` means the cast, which has a row of its own;
+   * `archive-epub` means a file the user handed us, which has none, so the
+   * working copy's row IS the line (see `bookRowType`).
+   */
+  readonly sourceKind: 'archive-epub' | 'generated-epub';
+  /**
+   * The source file's basename — the name this chain's custody is stated in.
+   *
+   * Owen, 2026-08-10: a book line that does not say which version it came from
+   * "breaks the chain of custody". With one chain, main's own row description
+   * already says it once; with several it is the only thing that tells two book
+   * lines apart, so it travels on every line of the chain rather than being
+   * looked up again by whoever is rendering.
+   */
+  readonly sourceName: string;
+  /** This chain's ledger, in execution order. Empty is the ordinary case. */
+  readonly ledger: readonly ChainLedgerEntry[];
+  /**
+   * The `archive` row whose pages this chain's book was read out of, or null.
+   *
+   * Only a `generated-epub` chain has one. It is what stamps the chain's id onto
+   * the PDF's line — the PDF has no chain, but it does have exactly one book that
+   * came out of it, and saying so in the data is what lets the page draw the two
+   * together instead of guessing from their order.
+   */
+  readonly archiveRowId: string | null;
+}
+
 export interface BookChainInput {
   /** Every document row main emitted, in main's own order. */
   readonly rows: readonly ChainRow[];
-  /** The chain's `epub.ledger`, in execution order. Empty is the ordinary case. */
-  readonly ledger: readonly ChainLedgerEntry[];
+  /**
+   * The project's working chains, in the order the manifest records them.
+   *
+   * Empty is real and ordinary: a PDF nobody has converted has no chain, because
+   * a chain hangs off an archive-grade EPUB and it has none yet.
+   */
+  readonly families: readonly ChainFamily[];
 }
 
 /**
@@ -176,6 +259,26 @@ export interface ChainLine {
   readonly rowId: string | null;
   /** The ledger entry this line is, for a 'ledger' line. Null otherwise. */
   readonly ledgerId: string | null;
+  /**
+   * WHICH working chain this line is on — the id every act performed from it
+   * hands back to main.
+   *
+   * Null only for a line that is on no chain: a PDF nobody has cast a book out
+   * of, a legacy working PDF, a stage output. Every other line has one, and that
+   * is what makes "press the button on the version you mean" a mechanism rather
+   * than an instruction — a project with two chains has two book lines, and the
+   * one the user pressed says which.
+   */
+  readonly familyId: string | null;
+  /**
+   * The archive-grade book this line's chain hangs off, by basename. Null
+   * exactly when `familyId` is.
+   *
+   * The chain of custody, carried on the line rather than looked up: the page
+   * uses it to name the book in every confirmation it writes, so a user erasing
+   * one version's changes is told which version by name.
+   */
+  readonly sourceName: string | null;
   readonly buttons: ChainButtons;
 }
 
@@ -191,50 +294,92 @@ const NO_BUTTONS: ChainButtons = {
   delete: false,
 };
 
-/** The row types the chain claims. Everything else falls through to 'loose'. */
+/** The row types a chain claims. Everything else falls through to 'loose'. */
 const CLAIMED = new Set(['archive', 'working', 'generated', 'exported', 'narration']);
 
 /**
- * WHICH row is the top-level EPUB line, by type — or null when the project has
- * no book at all.
+ * WHICH row is THIS CHAIN'S top-level EPUB line, by type — or null when that row
+ * is not there.
  *
- * The cast book when there is one: it is archive-grade, nothing writes to it,
- * and it is what every working copy of a PDF-origin project is minted from — so
- * it is "the epub" in the sense the user means. Otherwise the `exported` row,
- * which for an EPUB-native project IS the book the user handed us, one copy
- * along. There is no third answer: a project with neither has no book, and the
- * page says so rather than showing an empty line.
+ * The cast book for a chain that hangs off one: it is archive-grade, nothing
+ * writes to it, and it is what that chain's working copy is minted from — so it
+ * is "the epub" in the sense the user means. Otherwise the chain's `exported`
+ * row, which for a chain hanging off an EPUB the user handed us IS that book,
+ * one copy along. There is no third answer: a chain with neither row on screen
+ * has no book to draw, and the page says nothing rather than showing an empty
+ * line.
+ *
+ * It takes the FAMILY rather than deciding from the rows alone, and that is the
+ * change families forced: "is there a generated row?" is a question about the
+ * project, and a project may hold a cast book AND a second edition the user
+ * handed us. Only the chain knows which kind of book it is a chain of.
  */
-export function bookRowType(rows: readonly ChainRow[]): 'generated' | 'exported' | null {
-  if (rows.some((r) => r.type === 'generated')) return 'generated';
-  if (rows.some((r) => r.type === 'exported')) return 'exported';
-  return null;
+export function bookRowType(
+  rows: readonly ChainRow[],
+  family: ChainFamily
+): 'generated' | 'exported' | null {
+  // The cast, when this chain has one AND its file is still on screen. A chain
+  // whose cast the user removed by hand still has a book — their working copy,
+  // which is that book one copy along — and drawing it is not a fallback for a
+  // missing value but the definition of the line: the top-level EPUB is the
+  // furthest archive-grade thing this chain has, and the copy when it has none.
+  if (family.sourceKind === 'generated-epub' && rowOf(rows, 'generated', family.id) !== null) {
+    return 'generated';
+  }
+  return rowOf(rows, 'exported', family.id) === null ? null : 'exported';
+}
+
+/** This chain's row of a given type, matched by the chain it declares it is on. */
+function rowOf(
+  rows: readonly ChainRow[],
+  type: string,
+  familyId: string
+): ChainRow | null {
+  return rows.find((r) => r.type === type && r.familyId === familyId) ?? null;
 }
 
 /**
  * The page's lines, in the order they are drawn.
  *
- * Archive PDFs first, each with its legacy working PDF under it; then the book,
- * with its working changes, its ledger in execution order and its narration copy
- * indented under it; then everything the chain does not claim.
+ * Archive PDFs first, then any legacy working PDF; then one chain per family —
+ * its book line, with its working changes, its ledger in execution order and its
+ * narration copy indented under it; then everything no chain claims.
+ *
+ * ── Why the chains cast from a PDF are drawn first ──────────────────────────
+ *
+ * A chain whose book was read out of a PDF belongs beside that PDF: it is the
+ * only thing on the page the PDF's Convert produced, and the two read as one
+ * story. Chains hanging off an EPUB the user handed us have no top-level file of
+ * their own above them, so they follow. Within each group the manifest's own
+ * order stands — the order the user added the versions in.
+ *
+ * A project with ONE chain is unaffected by all of this: there is one group, one
+ * book line, and the arrangement is exactly what it was before families existed.
  */
 export function bookChain(input: BookChainInput): ChainLine[] {
-  const { rows, ledger } = input;
+  const { rows, families } = input;
   const lines: ChainLine[] = [];
 
-  const bookType = bookRowType(rows);
-  const bookRow = bookType === null ? null : rows.find((r) => r.type === bookType) ?? null;
-  const exportedRow = rows.find((r) => r.type === 'exported') ?? null;
-  const narrationRow = rows.find((r) => r.type === 'narration') ?? null;
+  /** The chain cast out of a given archive PDF row, when one was. */
+  const castFrom = (archiveRowId: string): ChainFamily | null =>
+    families.find((f) => f.archiveRowId === archiveRowId) ?? null;
 
-  // ── The archive PDFs, each with its working copy under it ──────────────────
+  // ── The archive PDFs, each with any legacy working PDF under it ────────────
+  //
+  // A PDF has no chain of its own — Owen: "PDFs have no working chain. only
+  // epubs. PDFs only exist to convert to epub" — but it does have at most one
+  // book that came out of it, and the line says which so the page can draw them
+  // together and an act taken from the PDF knows what it produced.
   for (const pdf of rows.filter((r) => r.type === 'archive')) {
+    const cast = castFrom(pdf.id);
     lines.push({
       key: pdf.id,
       kind: 'archive-pdf',
       depth: 0,
       rowId: pdf.id,
       ledgerId: null,
+      familyId: cast === null ? null : cast.id,
+      sourceName: cast === null ? null : cast.sourceName,
       buttons: { ...NO_BUTTONS, convert: true, open: true, export: true, delete: true },
     });
   }
@@ -245,24 +390,41 @@ export function bookChain(input: BookChainInput): ChainLine[] {
       depth: 1,
       rowId: working.id,
       ledgerId: null,
+      // The retired artifact: a copy of the PDF, not of a book, so it is on no
+      // chain and never was.
+      familyId: null,
+      sourceName: null,
       buttons: { ...NO_BUTTONS, convert: true, open: true, export: true, delete: true },
     });
   }
 
-  // ── The book, and its chain ───────────────────────────────────────────────
-  if (bookRow !== null) {
+  // ── One chain per family ──────────────────────────────────────────────────
+  const ordered = [
+    ...families.filter((f) => f.archiveRowId !== null),
+    ...families.filter((f) => f.archiveRowId === null),
+  ];
+  for (const family of ordered) {
+    const bookType = bookRowType(rows, family);
+    const bookRow = bookType === null ? null : rowOf(rows, bookType, family.id);
+    const exportedRow = rowOf(rows, 'exported', family.id);
+    const narrationRow = rowOf(rows, 'narration', family.id);
+    if (bookRow === null) continue;
+
+    const stamp = { familyId: family.id, sourceName: family.sourceName };
+
     lines.push({
       key: bookRow.id,
       kind: 'book',
       depth: 0,
       rowId: bookRow.id,
       ledgerId: null,
+      ...stamp,
       buttons: {
         ...NO_BUTTONS,
         // Owen: analysis on EPUBs, "not on PDFs. its easier that way."
         analysis: bookRow.extension === 'epub',
         // The passes are done TO the book, so they are offered from the book —
-        // and only when it is a book. A project whose top-level line is somehow
+        // and only when it is a book. A chain whose top-level line is somehow
         // not an EPUB has nothing for simplify or translate to rewrite.
         passes: bookRow.extension === 'epub',
         // Wherever there is a working copy there are changes to erase, and the
@@ -271,10 +433,10 @@ export function bookChain(input: BookChainInput): ChainLine[] {
         open: true,
         export: true,
         // Always (Owen, 2026-08-10: "it should always be available"). What it
-        // DOES differs by what the line is standing on: PDF-origin, this line
-        // is the generated book and Delete is the heavy act (the cast goes,
-        // the working copy with it); EPUB-native, it is the working copy and
-        // Delete routes to the same erase the special performs — the file
+        // DOES differs by what the line is standing on: cast from pages, this
+        // line is the generated book and Delete is the heavy act (the cast
+        // goes, the working copy with it); handed to us, it is the working copy
+        // and Delete routes to the same erase the special performs — the file
         // comes straight back, which its confirmation says. The special stays
         // beside it because it is the act's honest NAME; the column only ever
         // says Delete because 78px is what "Delete" fits.
@@ -291,6 +453,7 @@ export function bookChain(input: BookChainInput): ChainLine[] {
         depth: 1,
         rowId: exportedRow.id,
         ledgerId: null,
+        ...stamp,
         buttons: {
           ...NO_BUTTONS,
           // It names no file: the book line above is the file these changes are
@@ -301,14 +464,19 @@ export function bookChain(input: BookChainInput): ChainLine[] {
     }
 
     // The passes the user committed to, in the order they ran. The ledger is
-    // read off the exported row, so a project with no working copy has none.
-    for (const entry of ledger) {
+    // read off this chain's exported row, so a chain with no working copy on
+    // screen draws none.
+    if (exportedRow !== null) for (const entry of family.ledger) {
       lines.push({
-        key: `ledger:${entry.id}`,
+        // Keyed by the CHAIN as well as the entry: two chains mint their entry
+        // ids from the same RNG and nothing forbids a collision, and two lines
+        // with one key is two lines the list cannot tell apart.
+        key: `${family.id}:ledger:${entry.id}`,
         kind: 'ledger',
         depth: 1,
-        rowId: exportedRow === null ? null : exportedRow.id,
+        rowId: exportedRow.id,
         ledgerId: entry.id,
+        ...stamp,
         buttons: {
           ...NO_BUTTONS,
           review: entry.hasReceipt ? 'ready' : 'no-receipt',
@@ -327,20 +495,33 @@ export function bookChain(input: BookChainInput): ChainLine[] {
         depth: 1,
         rowId: narrationRow.id,
         ledgerId: null,
+        ...stamp,
         buttons: { ...NO_BUTTONS, process: true, open: true, export: true, delete: true },
       });
     }
   }
 
-  // ── Everything the chain does not claim, in main's own order ──────────────
+  // ── Everything no chain claimed, in main's own order ──────────────────────
+  //
+  // The legacy stage outputs and the pre-archive source — plus, deliberately, a
+  // `generated`/`exported`/`narration` row whose chain is not in `families` at
+  // all. That is IPC shape drift rather than a state, and the alternative is a
+  // file on disk with a row main measured and no line on the page: work with no
+  // door, which is the exact bug the versions rebuild started from. It gets its
+  // three standing acts and none of the chain's specials, because nothing here
+  // can say which book it is a copy of.
+  const drawn = new Set(lines.map((l) => l.rowId));
   for (const row of rows) {
-    if (CLAIMED.has(row.type)) continue;
+    if (CLAIMED.has(row.type) && drawn.has(row.id)) continue;
+    if (row.type === 'archive' || row.type === 'working') continue;
     lines.push({
       key: row.id,
       kind: 'loose',
       depth: 0,
       rowId: row.id,
       ledgerId: null,
+      familyId: null,
+      sourceName: null,
       buttons: { ...NO_BUTTONS, open: true, export: true, delete: true },
     });
   }

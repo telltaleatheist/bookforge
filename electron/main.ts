@@ -37,6 +37,10 @@ import { normalizeFsPath, toAsciiSlug } from './path-utils';
 import type { EpubPreservingEdits } from './epub-processor.js';
 import type { ExportProvenance, ResolvedProjectVariant } from './manifest-types';
 import type { WorkingCopyRemint } from '../shared/document/working-copy-remint';
+// The listing-shaped half of the family rules: one chain is an answer, anything
+// else is null, and it never throws. Everything that ACTS on a book goes through
+// `manifestService.requireFamily` instead and gets the refusal sentence.
+import { soleFamily } from '../shared/document/book-families';
 import { addVariant, importAudiobookProject, saveVariantMetadata, setPrimaryVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
@@ -7227,9 +7231,10 @@ function setupIpcHandlers(): void {
   });
 
   /** Which passes of this project left a diff, in execution order. */
-  ipcMain.handle('processing:list-pass-diffs', async (_event, projectDir: string) => {
+  ipcMain.handle('processing:list-pass-diffs', async (
+    _event, projectDir: string, familyId?: string) => {
     try {
-      return { success: true, diffs: await manifestService.listPassDiffs(projectDir) };
+      return { success: true, diffs: await manifestService.listPassDiffs(projectDir, familyId) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7658,22 +7663,31 @@ function setupIpcHandlers(): void {
    * narrate: there is one answer (`ensureNarrationEpub`), so the question was
    * only ever a way to narrate the wrong file.
    */
-  ipcMain.handle('narration:ensure-copy', async (_event, projectDir: string) => {
+  ipcMain.handle('narration:ensure-copy', async (
+    _event, projectDir: string, familyId?: string) => {
     try {
       const { ensureNarrationEpub } = await import('./narration-export.js');
-      const answer = await ensureNarrationEpub(projectDir);
+      const answer = await ensureNarrationEpub(projectDir, undefined, familyId);
       if (answer.cutReason !== null) broadcastToAllWindows('project:files-changed', projectDir);
-      return { success: true, narration: answer };
+      // WHICH chain answered, said back. A caller that asked without naming one
+      // learns which it got, and can carry it into the run it is about to queue
+      // — the narration jobs have to name a chain, and the alternative is asking
+      // the project again later and getting a different answer if a second
+      // version has appeared in between. Resolved through the SAME chokepoint,
+      // so the two answers cannot disagree.
+      const { family } = await manifestService.requireFamily(projectDir, familyId);
+      return { success: true, narration: answer, familyId: family.id };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
   /** The book, whether a VLM read it, and what has been struck out of it. */
-  ipcMain.handle('narration:state', async (_event, projectDir: string) => {
+  ipcMain.handle('narration:state', async (
+    _event, projectDir: string, familyId?: string) => {
     try {
       const { readNarrationState } = await import('./narration-export.js');
-      return { success: true, state: await readNarrationState(projectDir) };
+      return { success: true, state: await readNarrationState(projectDir, familyId) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7692,10 +7706,14 @@ function setupIpcHandlers(): void {
    * been reset wrote an empty book's worth of strikes over an evening's work.
    */
   ipcMain.handle('narration:edit-deletions', async (
-    _event, projectDir: string, edit: { strike: string[]; unstrike: string[] }) => {
+    _event, projectDir: string, edit: { strike: string[]; unstrike: string[] },
+    familyId?: string) => {
     try {
       const { editNarrationDeletions } = await import('./narration-export.js');
-      return { success: true, deletions: await editNarrationDeletions(projectDir, edit) };
+      return {
+        success: true,
+        deletions: await editNarrationDeletions(projectDir, edit, familyId),
+      };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7716,10 +7734,10 @@ function setupIpcHandlers(): void {
    * disk and the book have come apart.
    */
   ipcMain.handle('narration:strike-in-copy', async (
-    _event, projectDir: string, copyKeys: string[]) => {
+    _event, projectDir: string, copyKeys: string[], familyId?: string) => {
     try {
       const { strikeInNarrationCopy } = await import('./narration-export.js');
-      const result = await strikeInNarrationCopy(projectDir, copyKeys);
+      const result = await strikeInNarrationCopy(projectDir, copyKeys, familyId);
       broadcastToAllWindows('project:files-changed', projectDir);
       return { success: true, result };
     } catch (err) {
@@ -7740,10 +7758,11 @@ function setupIpcHandlers(): void {
    * original is never opened.
    */
   ipcMain.handle('book:merge-chapter-opening', async (
-    _event, projectDir: string, openerKey: string, foldedKeys: string[]) => {
+    _event, projectDir: string, openerKey: string, foldedKeys: string[],
+    familyId?: string) => {
     try {
       const { mergeChapterOpening } = await import('./narration-export.js');
-      const result = await mergeChapterOpening(projectDir, openerKey, foldedKeys);
+      const result = await mergeChapterOpening(projectDir, openerKey, foldedKeys, familyId);
       broadcastToAllWindows('project:files-changed', projectDir);
       return { success: true, result };
     } catch (err) {
@@ -7758,10 +7777,13 @@ function setupIpcHandlers(): void {
    * callers that own the entire answer rather than a gesture's worth of it.
    */
   ipcMain.handle('narration:save-deletions', async (
-    _event, projectDir: string, elements: string[]) => {
+    _event, projectDir: string, elements: string[], familyId?: string) => {
     try {
       const { saveNarrationDeletions } = await import('./narration-export.js');
-      return { success: true, deletions: await saveNarrationDeletions(projectDir, elements) };
+      return {
+        success: true,
+        deletions: await saveNarrationDeletions(projectDir, elements, familyId),
+      };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7776,11 +7798,11 @@ function setupIpcHandlers(): void {
    * whether the digits-only `<sup>` footnote references come out.
    */
   ipcMain.handle('narration:export', async (
-    _event, projectDir: string, options?: { stripSupMarkers?: boolean }
+    _event, projectDir: string, options?: { stripSupMarkers?: boolean }, familyId?: string
   ) => {
     try {
       const { exportNarrationEpub } = await import('./narration-export.js');
-      const result = await exportNarrationEpub(projectDir, options);
+      const result = await exportNarrationEpub(projectDir, options, familyId);
       broadcastToAllWindows('project:files-changed', projectDir);
       return { success: true, result };
     } catch (err) {
@@ -7797,10 +7819,11 @@ function setupIpcHandlers(): void {
    * openings are CALLED, the title an audiobook is built from. `titles: null`
    * means the project has no book yet, which is a state and not a failure.
    */
-  ipcMain.handle('book:chapter-titles', async (_event, projectDir: string) => {
+  ipcMain.handle('book:chapter-titles', async (
+    _event, projectDir: string, familyId?: string) => {
     try {
       const { readBookChapterTitles } = await import('./book-chapters.js');
-      return { success: true, titles: await readBookChapterTitles(projectDir) };
+      return { success: true, titles: await readBookChapterTitles(projectDir, familyId) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7830,15 +7853,15 @@ function setupIpcHandlers(): void {
    * rename, and why renaming only one of two lists is refused.
    */
   ipcMain.handle('book:rename-chapter', async (
-    _event, projectDir: string, file: string, title: string) => {
+    _event, projectDir: string, file: string, title: string, familyId?: string) => {
     try {
       const { renameBookChapter } = await import('./book-chapters.js');
-      const result = await renameBookChapter(projectDir, file, title);
+      const result = await renameBookChapter(projectDir, file, title, familyId);
 
       let openingsNamed = 0;
       try {
         const { nameChapterOpenings } = await import('./narration-export.js');
-        openingsNamed = (await nameChapterOpenings(projectDir)).edited;
+        openingsNamed = (await nameChapterOpenings(projectDir, familyId)).edited;
       } catch (err) {
         broadcastToAllWindows('project:files-changed', projectDir);
         return {
@@ -10403,7 +10426,30 @@ function setupIpcHandlers(): void {
     await addEpub('cleaned', path.join('stages', '01-cleanup', 'cleaned.epub'));
     // The book EPUB by its manifest record — it is named after the book, and an
     // unrecorded source/exported.epub is a stray this must not offer as one.
-    const exportRecord = await manifestService.readExportEpub(projectPath);
+    //
+    // ── A LISTING, so it uses `soleFamily` and never the resolver ────────────
+    //
+    // This is the same shape as StudioService's scan over the library: it is
+    // showing what there IS to listen to, and a project with two working chains
+    // must not make the whole list fail. `readExportEpub` goes through
+    // `requireFamily`, which THROWS for such a project — and this call was not
+    // even inside a try, so one project with two versions gave the listen window
+    // no sources at all, not even the M4Bs already scanned.
+    //
+    // So the chain is resolved here, without throwing: one chain is an answer,
+    // and anything else claims no book rather than picking one. The window then
+    // shows a project with its audiobooks and no EPUB — visibly incomplete,
+    // which is right; a guessed one would be invisibly the wrong version.
+    const chains = await manifestService.readBookFamilies(projectPath);
+    const soleChain = soleFamily(chains);
+    if (soleChain === null && chains.length > 1) {
+      console.warn(
+        `[listen:list-sources] ${path.basename(projectPath)} has ${chains.length} working chains; `
+        + 'no book is offered for it until this window can say which version it means.');
+    }
+    const exportRecord = soleChain === null
+      ? null
+      : await manifestService.readExportEpub(projectPath, soleChain.id);
     if (exportRecord) await addEpub('exported', exportRecord.relPath);
     await addEpub('original', path.join('source', 'original.epub'));
 
@@ -10619,7 +10665,8 @@ function setupIpcHandlers(): void {
   //
   // On unexpected input (missing/corrupt manifest, unknown path) this FAILS
   // LOUDLY via the returned error — it never writes a guessed structure.
-  ipcMain.handle('pipeline:reset-editor-state', async (_event, rawProjectPath: string) => {
+  ipcMain.handle('pipeline:reset-editor-state', async (
+    _event, rawProjectPath: string, familyId?: string) => {
     try {
       // Manifest-derived paths can be NFD (macOS-written) while the disk entry is
       // NFC — normalize so fs.* and the editorWindows lookup both resolve.
@@ -10637,7 +10684,11 @@ function setupIpcHandlers(): void {
         if (!fsSync.existsSync(path.join(projectPath, 'manifest.json'))) {
           return { success: false, error: `No manifest.json in ${projectPath}` };
         }
-        await manifestService.resetEditorRecords(projectPath);
+        // WHICH chain's records are being reset. `resetEditorRecords` gates the
+        // picker's own curation on `familyOwnsPickerRecords`, so naming the chain
+        // is what keeps a reset of one version from clearing an evening of
+        // curation done on another.
+        await manifestService.resetEditorRecords(projectPath, familyId);
         console.log(`[PIPELINE] Reset editor state (manifest) for ${projectPath}`);
         return { success: true, message: 'Editor state reset' };
       }
@@ -10696,8 +10747,8 @@ function setupIpcHandlers(): void {
         // reader of this handler can see where the button goes without having to
         // know the picker redirects at all.
         openPath?: string;
-        // Present on the 'exported' and 'narration' rows: WHICH WORKING CHAIN
-        // this row belongs to.
+        // Present on the 'generated', 'exported' and 'narration' rows: WHICH
+        // WORKING CHAIN this row belongs to.
         //
         // Owen, 2026-08-10: "having the epub listed under documents instead of
         // versions breaks the chain of custody" — and a row that cannot say
@@ -10705,6 +10756,11 @@ function setupIpcHandlers(): void {
         // row offers (erase, delete a pass, delete the TTS copy) takes this and
         // hands it back, so a project with two versions acts on the one the user
         // pressed rather than on whichever the code reached first.
+        //
+        // The 'generated' row carries it too, as of the per-family UI: a cast
+        // book IS the book line of the chain that hangs off it, and a book line
+        // that cannot name its chain is a Delete that would go to whichever
+        // chain the page reached first.
         familyId?: string;
         // Present only on the 'archive' row: the manifest variant that IS this
         // file, so Delete can go through `variant:delete` — the one code path
@@ -11033,6 +11089,17 @@ function setupIpcHandlers(): void {
       // says which file it is, and Export saves it — but an Open that puts the
       // user somewhere they cannot work is the prompt this release removed.
       const generatedRecord = await manifestService.readGeneratedEpub(projectDir);
+      // WHICH chain the cast book is the source of. A cast book is archive-grade,
+      // so exactly one chain hangs off it, found by the path the chain records —
+      // never by "the first generated-epub chain", which is the kind of guess
+      // families exist to remove. Null means the file is on disk and no chain
+      // claims it; the row is still drawn (it is a real artifact) and the page
+      // draws it loose, saying what it can rather than hiding it.
+      const castChain = generatedRecord === null
+        ? null
+        : families.find(
+          (f) => f.source.kind === 'generated-epub'
+            && f.source.path.toLowerCase() === generatedRecord.relPath.toLowerCase()) ?? null;
       if (generatedRecord) {
         await addVersion(
           'generated',
@@ -11054,7 +11121,11 @@ function setupIpcHandlers(): void {
           '📗',
           false,
           undefined,
-          { generatedOrigin: generatedRecord.origin, openPath: workingCopyOpenPath }
+          {
+            generatedOrigin: generatedRecord.origin,
+            openPath: workingCopyOpenPath,
+            ...(castChain ? { familyId: castChain.id } : {}),
+          }
         );
       }
 
@@ -11342,7 +11413,35 @@ function setupIpcHandlers(): void {
         }
       }
 
-      return { success: true, versions };
+      // ── The chains themselves, so the page can draw one per version ─────────
+      //
+      // The rows say which chain each file is on; this says which chains there
+      // ARE, and what each one is a chain OF. Both are needed and neither can be
+      // derived from the other: a chain whose working copy is missing has no row
+      // at all and would simply vanish from a page that inferred the list from
+      // the rows, and the arrangement would have no way to draw the book line of
+      // a chain the user can still erase and re-mint.
+      //
+      // `archiveRowId` is the PDF this chain's book was read out of, when it was
+      // one. A project holds exactly one archive original, and a cast book is
+      // the reading of THAT file — so the link is looked up rather than guessed,
+      // and is null when the original is not a PDF with a row of its own.
+      const archivePdfRowId = archiveOriginal !== null
+        && projectPdfs.some(
+          (pdf) => pdf.relPath.toLowerCase() === archiveOriginal.relPath.toLowerCase())
+        ? `archive:${archiveOriginal.relPath}`
+        : null;
+      const chains = families.map((chain) => ({
+        id: chain.id,
+        sourceKind: chain.source.kind,
+        // The basename the user would recognise this version by. The page states
+        // the chain of custody in it — with two book lines on screen it is the
+        // only thing that tells them apart.
+        sourceName: chain.source.path.split('/').pop() ?? chain.source.path,
+        archiveRowId: chain.source.kind === 'generated-epub' ? archivePdfRowId : null,
+      }));
+
+      return { success: true, versions, families: chains };
     } catch (err) {
       console.error('[EDITOR:GET-VERSIONS] Error:', err);
       return { success: false, error: (err as Error).message };

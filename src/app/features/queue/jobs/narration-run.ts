@@ -57,6 +57,20 @@ export interface NarrationRunBook {
   readonly epubPath: string;
   /** The project the session, the enhancement and the assembly belong to. */
   readonly projectDir: string;
+  /**
+   * WHICH WORKING CHAIN this document is on — carried for the same reason the
+   * path is, and checked for the same reason.
+   *
+   * Owen, 2026-08-10: "tts copies will be nested under their respective parent
+   * item, and if the user wants to process a specific TTS document then they
+   * click the process button next to it. no ambiguity, no confusion." A project
+   * may hold two versions of a book, each with its own narration copy; the two
+   * files have different names and the same project, so the path alone says
+   * which FILE but not which version's records the run belongs to. Anything the
+   * run asks the manifest about — the strikes it was cut from, the book behind
+   * it — has to name the chain or it gets a refusal.
+   */
+  readonly familyId: string;
   readonly title: string;
   readonly author: string;
   /** '' when the book states none — passed through as absent, never invented. */
@@ -122,6 +136,14 @@ function requireRun(book: NarrationRunBook, settings: NarrationRunSettings): voi
       + 'nowhere to put the rendered sentences or the finished audiobook.'
     );
   }
+  if (!book.familyId) {
+    throw new Error(
+      `Cannot queue narration for ${book.epubPath}: it does not say which working chain it is on. `
+      + 'The chain comes from the Process button on that document, exactly as the file does — a '
+      + 'run that could not name it would ask the project about "the book" and act on whichever '
+      + 'version the code reached first.'
+    );
+  }
   if (!settings.voice) {
     throw new Error(
       'No voice is selected, so this run would be rendered in whatever voice the queue happened to '
@@ -184,6 +206,9 @@ export function narrationTtsRequest(
   return {
     type: 'tts-conversion',
     epubPath: book.epubPath,
+    // The chain travels with the file, all the way to the row in the queue. It
+    // is the only thing that says which of a project's versions this render is.
+    familyId: book.familyId,
     ...(book.isArticle ? { projectDir: book.projectDir } : { bfpPath: book.projectDir }),
     metadata: {
       title: 'TTS',
@@ -222,6 +247,7 @@ export function narrationRvcRequest(
   return {
     type: 'rvc-enhancement',
     bfpPath: book.projectDir,
+    familyId: book.familyId,
     config: {
       type: 'rvc-enhancement',
       // Filled at run time by session discovery — see the doc comment above.
@@ -245,6 +271,7 @@ export function narrationReassemblyRequest(
   return {
     type: 'reassembly',
     bfpPath: book.projectDir,
+    familyId: book.familyId,
     config: {
       type: 'reassembly',
       // Filled at run time by session discovery, as above.

@@ -241,6 +241,20 @@ export interface VlmConvertResult {
    * is missing, and it is reported rather than absorbed.
    */
   unreadable: Array<{ page: number; reason: string }>;
+  /**
+   * The working chain the NEW COPY was given, or the sentence saying why it
+   * could not have one. Absent on a `replace` run, which changes no chain.
+   *
+   * Owen, 2026-08-10: "i do have different versions of books, and i want to be
+   * able to run adjustment chains on different versions." A second reading added
+   * beside the first IS a different version, so it gets a chain of its own —
+   * its own working copy, its own ledger, its own strikes, its own narration
+   * copy. `addBookFamily` refuses two sources whose files would be named the
+   * same, and that refusal is REPORTED rather than swallowed: the book is on
+   * disk and in the project either way, and a user told nothing would find a
+   * version they cannot edit and no reason for it.
+   */
+  newCopy?: { familyId: string; refusal: null } | { familyId: null; refusal: string };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
