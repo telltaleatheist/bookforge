@@ -7041,6 +7041,11 @@ export interface FootnoteReferenceStrip {
   removed: number;
   /** The zip entries that changed, in zip order. */
   files: string[];
+  /**
+   * How many elements the strip would have EMPTIED, kept audible with a
+   * `[break]` instead. See `keepEmptiedUnitsAudible`.
+   */
+  breaks: number;
 }
 
 /**
@@ -7066,14 +7071,17 @@ export interface FootnoteReferenceStrip {
  * gets, and the two disagreeing is unfixable from the outside: the user would see
  * a number gone in the book and hear it read anyway, or the reverse.
  *
- * ── Text-only BY CONSTRUCTION ───────────────────────────────────────────────
+ * ── Text-only BY CONSTRUCTION, enumeration-stable BY REPAIR ─────────────────
  *
  * A `<sup>` is inline, inside a block the export walk enumerates; removing one
  * takes characters out of that block and leaves every block where it was. That
  * is what lets this be a LEDGER pass — the user's strikes and deletions name
- * block positions, and they must still name the same blocks afterwards. It is
- * not asserted here: `registerLedgerPass` measures it against the base and
- * refuses the entry if a file's element count has moved.
+ * block positions, and they must still name the same blocks afterwards. The
+ * one way a text-only edit can still move the enumeration is an element whose
+ * ENTIRE text was the marker: textless, it falls out of the walk, and every
+ * position after it shifts. `keepEmptiedUnitsAudible` repairs exactly that
+ * case with a `[break]`, and `registerLedgerPass` still measures the result
+ * against the base and refuses the entry if a count moved anyway.
  *
  * Nothing else in the zip is touched — the untouched entries are copied through
  * as bytes, `mimetype` stored uncompressed, and the edit is a string replace so
@@ -7086,15 +7094,19 @@ export async function stripFootnoteReferencesFromBook(
   const replacements = new Map<string, Buffer>();
   const files: string[] = [];
   let removed = 0;
+  let breaks = 0;
 
   const zipReader = new ZipReader(inputPath);
   await zipReader.open();
   try {
     for (const entry of zipReader.getEntries()) {
       if (!isContentDocumentEntry(entry)) continue;
-      const stripped = stripFootnoteMarkerSups((await zipReader.readEntry(entry)).toString('utf8'));
+      const before = (await zipReader.readEntry(entry)).toString('utf8');
+      const stripped = stripFootnoteMarkerSups(before);
       if (stripped.removed === 0) continue;
-      replacements.set(entry, Buffer.from(stripped.text, 'utf8'));
+      const repaired = keepEmptiedUnitsAudible(before, stripped.text, entry);
+      replacements.set(entry, repaired ? repaired.data : Buffer.from(stripped.text, 'utf8'));
+      breaks += repaired ? repaired.breaks : 0;
       files.push(entry);
       removed += stripped.removed;
     }
@@ -7103,7 +7115,122 @@ export async function stripFootnoteReferencesFromBook(
   }
 
   await writeBookWithReplacedEntries(inputPath, outputPath, replacements);
-  return { removed, files };
+  return { removed, files, breaks };
+}
+
+/**
+ * Keep an element the strip just emptied in the book's enumeration, by giving
+ * it a `[break]` to say.
+ *
+ * ── The edge this repairs (Owen, 2026-08-09) ────────────────────────────────
+ *
+ * A paragraph whose ENTIRE text was one footnote marker — a bare `<p><sup>55</sup></p>`
+ * between two prose paragraphs — comes out of the strip with no text at all,
+ * and `collectExportUnits` does not enumerate a textless, imageless element.
+ * One element vanishing from a file's walk shifts the position key of every
+ * element after it, which is exactly what `registerLedgerPass`'s structural
+ * guard exists to refuse: the pass would apply, but its ledger entry — the
+ * thing that makes it deletable — would be refused.
+ *
+ * Owen picked the repair: "we could put [break] in instead of leaving it
+ * blank". `[break]` is SML the pipeline already speaks — e2a realizes it as a
+ * pause, the sentence tooling strips SML tokens on read — and a paragraph that
+ * held only a footnote marker WAS a beat of silence in the audiobook all
+ * along. So the element keeps one token of text, stays enumerated, and says
+ * nothing.
+ *
+ * ── Only elements the STRIP emptied ─────────────────────────────────────────
+ *
+ * An element that was already textless in the base was already outside the
+ * enumeration, and giving IT a `[break]` would ADD an element to the walk —
+ * the same key shift from the other direction. So each unit is judged against
+ * its counterpart in the before-document: text before, none after, no image
+ * (an element with an `<img>` stays enumerated regardless of text). The two
+ * walks pair 1:1 by document order because the strip removes only `<sup>`
+ * subtrees, and `sup` is not a unit tag.
+ *
+ * Innermost first: a `<div>` whose only text lived in an inner `<p>` reads as
+ * emptied too, but healing the `<p>` heals it — each candidate is re-read from
+ * the live DOM after earlier injections, so exactly one `[break]` lands, in
+ * the deepest element that needs it.
+ *
+ * Returns null when nothing needed repair — the caller then keeps the string
+ * strip's byte-exact edit. A repaired file round-trips through the DOM
+ * serializer instead (same trade `nameChapterOpeningsInBookFile` makes), which
+ * is confined to the files that would otherwise have broken the ledger entry.
+ */
+function keepEmptiedUnitsAudible(
+  beforeXhtml: string,
+  afterXhtml: string,
+  entry: string,
+): { data: Buffer; breaks: number } | null {
+  const whatFor = `the footnote-reference strip of ${entry}`;
+
+  // The REAL enumeration, on throwaway parses: `collectExportUnits`'s
+  // catch-all MUTATES its document (it wraps stray text runs in synthesized
+  // divs), so it may never run on a DOM that is about to be serialized into
+  // the book. Counting it here — instead of approximating "would this element
+  // be enumerated" — is what keeps this repair from firing on an emptied
+  // element that never counted (a <p> nested in a still-texted <blockquote>
+  // is covered by the quote, and a [break] in it would be a pause the book
+  // never had).
+  const unitCountOf = (xhtml: string): number => {
+    const { doc, body } = parseXhtmlBody(xhtml, whatFor);
+    return collectExportUnits(doc, body, whatFor).length;
+  };
+
+  const beforeCount = unitCountOf(beforeXhtml);
+  if (unitCountOf(afterXhtml) === beforeCount) return null;
+
+  const before = parseXhtmlBody(beforeXhtml, whatFor);
+  const after = parseXhtmlBody(afterXhtml, whatFor);
+  const unitTagsOf = (body: any): any[] => {
+    const units: any[] = [];
+    const walk = (node: any): void => {
+      if (node.nodeType !== 1) return;
+      if (EXPORT_UNIT_TAGS.has(node.tagName?.toLowerCase() || '')) units.push(node);
+      if (!node.childNodes) return;
+      for (let i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]);
+    };
+    walk(body);
+    return units;
+  };
+
+  // Paired 1:1 by document order: the strip removes only <sup> subtrees and
+  // `sup` is not a unit tag, so the two walks see the same elements. A length
+  // mismatch means this file's markup broke that assumption, and the pass must
+  // not guess which element is which.
+  const beforeUnits = unitTagsOf(before.body);
+  const afterUnits = unitTagsOf(after.body);
+  if (beforeUnits.length !== afterUnits.length) {
+    throw new Error(
+      `${whatFor} changed the document's structure: ${beforeUnits.length} unit element(s) before, `
+      + `${afterUnits.length} after. The strip removes only <sup> subtrees, so this file's markup `
+      + 'is doing something this pass does not understand. Nothing was written.'
+    );
+  }
+
+  let breaks = 0;
+  for (let i = afterUnits.length - 1; i >= 0; i--) {
+    if (normalizeForAlignment(getUnitTextContent(beforeUnits[i])).length === 0) continue;
+    if (normalizeForAlignment(getUnitTextContent(afterUnits[i])).length > 0) continue;
+    const el = afterUnits[i];
+    if (el.getElementsByTagName('img').length > 0) continue;
+    el.appendChild(after.doc.createTextNode('[break]'));
+    breaks++;
+  }
+
+  const repaired = serializeEditedDocument(after.doc);
+  const repairedCount = unitCountOf(repaired.toString('utf8'));
+  if (repairedCount !== beforeCount) {
+    throw new Error(
+      `${whatFor} could not keep the document's enumeration stable: ${beforeCount} unit element(s) `
+      + `before the strip, ${repairedCount} after repairing ${breaks} emptied element(s) with `
+      + '[break]. The ledger entry for this pass would mis-key every record after this point, so '
+      + 'nothing was written.'
+    );
+  }
+  return { data: repaired, breaks };
 }
 
 async function writeBookWithReplacedEntries(

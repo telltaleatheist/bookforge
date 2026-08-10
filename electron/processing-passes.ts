@@ -374,7 +374,7 @@ async function runFootnoteRefsPass(config: PassJobConfig): Promise<PassJobResult
   const applied: AppliedPass = {
     kind: 'footnote-refs',
     at: new Date().toISOString(),
-    params: { removed: strip.removed, files: strip.files.length },
+    params: { removed: strip.removed, files: strip.files.length, breaks: strip.breaks },
     diff: diff.rel,
   };
   await manifestService.appendAppliedPass(config.projectDir, applied);
@@ -383,7 +383,11 @@ async function runFootnoteRefsPass(config: PassJobConfig): Promise<PassJobResult
     success: true,
     outputPath: bookAfter,
     summary: `${strip.removed} footnote reference number(s) removed from ${strip.files.length} `
-      + 'document(s).',
+      + 'document(s).'
+      + (strip.breaks > 0
+        ? ` ${strip.breaks} paragraph(s) held nothing but a marker and now say [break] — a pause, `
+          + 'which is what they always were.'
+        : ''),
     ...(ledger.ledgerEntryId ? { ledgerEntryId: ledger.ledgerEntryId } : {}),
     ...(ledger.note ? { ledgerRefusal: ledger.note } : {}),
   };

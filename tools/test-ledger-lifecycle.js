@@ -680,6 +680,42 @@ test('deleting the entry puts the numbers BACK, byte-identically', async () => {
   assert.deepStrictEqual(await manifestService.readAppliedPasses(dir), []);
 });
 
+test('a paragraph that was ONLY a marker says [break] now, and the entry still registers', async () => {
+  // The edge Owen ruled on: "we could put [break] in instead of leaving it
+  // blank". A marker-only <p> comes out of the strip textless, falls out of
+  // the export walk, and would shift every position key after it — the
+  // structural guard would then refuse the pass its ledger row. The repair
+  // keeps the element enumerated with the one token the pipeline reads as a
+  // pause. A paragraph that was ALREADY empty in the base is the same edge
+  // mirrored — giving IT text would ADD an enumerated element — so it must
+  // come through untouched.
+  const dir = await makeProjectWith('footnote-break', [
+    ['Before the note.', '<sup>77</sup>', 'After the note.'],
+    ['A chapter with an already empty paragraph.', '', 'And its last line.'],
+  ]);
+  const archiveDigest = sha256(archiveOf(dir));
+
+  const result = await runFootnotePass(dir);
+  assert.strictEqual(result.success, true, `the pass failed: ${result.error}`);
+  assert.strictEqual(result.ledgerRefusal, undefined,
+    'the structural guard refused the entry — the [break] repair did not hold the enumeration');
+  assert.ok(result.ledgerEntryId, 'the pass registered no ledger entry');
+  assert.ok(/now say \[break\]/.test(result.summary),
+    `the summary does not account for the repaired paragraph: ${result.summary}`);
+
+  const after = await bookMarkup((await manifestService.readExportEpub(dir)).absPath);
+  assert.ok(!/<sup>77<\/sup>/.test(after), 'the marker is still in the book');
+  assert.ok(/<p[^>]*>\[break\]<\/p>/.test(after), 'the emptied paragraph does not say [break]');
+  assert.strictEqual((after.match(/\[break\]/g) || []).length, 1,
+    'exactly one paragraph was emptied, so exactly one [break] may exist');
+
+  // And the way back is intact: delete the entry, the marker returns, the
+  // [break] goes, byte-identical to the archive.
+  const deletion = await manifestService.deleteLedgerEntry(dir, result.ledgerEntryId);
+  assert.strictEqual(sha256(deletion.book.absPath), archiveDigest,
+    'the book did not come back byte-identical after the [break] repair');
+});
+
 // ── A record whose file is gone is REPORTED, never quietly rebuilt ───────────
 
 test('a ledger snapshot that is missing refuses by name', async () => {
