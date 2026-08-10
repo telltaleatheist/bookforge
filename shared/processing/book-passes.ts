@@ -64,12 +64,10 @@ export interface BookPassOption {
  */
 export const BOOK_PASS_OPTIONS: readonly BookPassOption[] = [
   {
-    // SEAM (2026-08-09): the 'footnote-refs' pass kind is main's, added in
-    // 745bdec2 and wired through the same `runProcessingPass`/queue machinery as
-    // the two below. It is listed here by kind so this modal renders it the
-    // moment the two are merged, with no UI change. Until then, submitting it
-    // comes back as the planner's own refusal naming the kind — loudly, which is
-    // the correct behaviour for an offer this build cannot keep.
+    // Added in 745bdec2, wired through the same `runProcessingPass`/queue
+    // machinery as the two below. Instant and deterministic — no model, no GPU —
+    // which is why it is first: the cheap mechanical edit you want done before a
+    // model ever reads the text.
     kind: 'footnote-refs',
     label: 'Remove footnote references',
     note: 'Takes the superscript reference markers out of the text, leaving the notes themselves '
