@@ -2716,47 +2716,12 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Native confirmation dialog
-  ipcMain.handle('dialog:confirm', async (_event, options: {
-    title: string;
-    message: string;
-    detail?: string;
-    confirmLabel?: string;
-    cancelLabel?: string;
-    type?: 'none' | 'info' | 'error' | 'question' | 'warning';
-  }) => {
-    if (!mainWindow) return { confirmed: false };
-
-    const result = await dialog.showMessageBox(mainWindow, {
-      type: options.type || 'question',
-      title: options.title,
-      message: options.message,
-      detail: options.detail,
-      buttons: [options.cancelLabel || 'Cancel', options.confirmLabel || 'OK'],
-      defaultId: 1,
-      cancelId: 0
-    });
-
-    return { confirmed: result.response === 1 };
-  });
-
-  // Native single-button message box — the app's replacement for window.alert().
-  ipcMain.handle('dialog:message', async (_event, options: {
-    title?: string;
-    message: string;
-    detail?: string;
-    type?: 'none' | 'info' | 'error' | 'question' | 'warning';
-  }) => {
-    if (!mainWindow) return;
-    await dialog.showMessageBox(mainWindow, {
-      type: options.type || 'info',
-      title: options.title || 'BookForge',
-      message: options.message,
-      detail: options.detail,
-      buttons: ['OK'],
-      defaultId: 0,
-    });
-  });
+  // The native `dialog:confirm` / `dialog:message` boxes are GONE (Aug 2026).
+  // Every confirm and every one-button message in the app renders the in-app
+  // DesktopDialogComponent through DialogService, so there is one look for the
+  // whole vocabulary; ElectronService.showConfirmDialog/showMessageDialog were
+  // routed there and these two handlers had no caller left. File-choosing
+  // dialogs above are untouched — those must be the OS's.
 
   // Path to the bundled default book (public-domain "The Mysterious Stranger"),
   // seeded into the library on first run. null if it isn't shipped (dev without

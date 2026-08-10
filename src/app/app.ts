@@ -9,6 +9,7 @@ import {
 import { NavRailComponent, NavRailItem } from './components/nav-rail/nav-rail.component';
 import { SetupDownloadDockComponent } from './components/setup-download-dock/setup-download-dock.component';
 import { UpdateBannerComponent } from './components/update-banner/update-banner.component';
+import { NoticeBannerComponent } from './components/notice-banner/notice-banner.component';
 import { ElectronService } from './core/services/electron.service';
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
@@ -27,7 +28,8 @@ import { DialogService } from './creamsicle-desktop/services/dialog.service';
     StatusBarComponent,
     NavRailComponent,
     SetupDownloadDockComponent,
-    UpdateBannerComponent
+    UpdateBannerComponent,
+    NoticeBannerComponent
   ],
   template: `
     <!-- First-run setup overlay: blocks ONLY on a setup ERROR (needs attention).
@@ -95,6 +97,12 @@ import { DialogService } from './creamsicle-desktop/services/dialog.service';
 
     <!-- App self-update toast: "update ready — restart to apply" (and download progress). -->
     <app-update-banner />
+
+    <!-- Dismissible stack of "this finished" / "this was partial" lines. The
+         non-blocking half of the dialog vocabulary: anything that is not a
+         destructive confirm, a refusal, or a stopping error says itself here
+         instead of interrupting. -->
+    <app-notice-banner />
 
     <!-- First-run engine setup: slim progress bar pinned to the bottom while the
          bundled runtime unpacks. The user is kept on the Setup page (redirect in

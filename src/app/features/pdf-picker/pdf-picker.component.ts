@@ -444,6 +444,26 @@ interface AlertModal {
   onCancel?: () => void;
 }
 
+/**
+ * One dismissible line in the viewer's notice stack — the non-blocking half of
+ * `AlertModal`. See `sessionNotices`.
+ */
+interface SessionNotice {
+  id: number;
+  text: string;
+}
+
+/**
+ * Why a PDF cannot be exported as a book, and where the one route to one is.
+ *
+ * One constant because two exports refuse for the identical reason — the plain
+ * EPUB export and the hand-off to the producer — and two wordings of one fact
+ * read as two different problems.
+ */
+const PDF_HAS_NO_BOOK_MESSAGE =
+  'A book is made from a PDF by reading its pages with a document vision model — '
+  + 'Convert to EPUB, on this project\'s versions page in Studio.';
+
 @Component({
   selector: 'app-pdf-picker',
   standalone: true,
@@ -672,17 +692,19 @@ interface AlertModal {
                   }
                 </div>
               }
-              <!-- A one-time note about something that succeeded — currently
-                   the carry-over of an old project's deletions into this
-                   build's page layout. Not a modal: nothing is wrong, and a
-                   book that opened correctly should not be interrupted. -->
-              @if (sessionNotice(); as notice) {
+              <!-- One-time notes about things that happened while this book was
+                   opening — a layout carry-over, a re-minted working copy,
+                   analysis warnings. Not modals: nothing is wrong, and a book
+                   that opened correctly should not be interrupted. Several can
+                   land in one open, so they stack and each is dismissed on its
+                   own. -->
+              @for (notice of sessionNotices(); track notice.id) {
                 <div class="review-banner session-notice">
                   <span class="review-banner-icon">📄</span>
-                  <span class="review-banner-text">{{ notice }}</span>
+                  <span class="review-banner-text">{{ notice.text }}</span>
                   <button
                     class="session-notice-dismiss"
-                    (click)="dismissSessionNotice()"
+                    (click)="dismissSessionNotice(notice.id)"
                   >Dismiss</button>
                 </div>
               }
@@ -924,6 +946,8 @@ interface AlertModal {
             @case ('merge') {
               <app-merge-panel
                 [mergeCount]="editorState.blockMerges().size"
+                [notice]="mergePanelNotice()"
+                [unavailable]="isCurrentDocumentEpub()"
                 (close)="activatePanel(null)"
                 (merge)="mergeAdjacentBlocks()"
               />
@@ -1232,6 +1256,12 @@ interface AlertModal {
               <p class="no-samples-hint">No samples yet. Draw boxes on the PDF.</p>
             }
           </div>
+          <!-- What the last attempt found, when it found nothing. In the panel
+               that produced it rather than in a box over the book: every one of
+               these is "nothing matched", which is an answer, not an alarm. -->
+          @if (sampleModeStatus(); as status) {
+            <p class="sample-status">{{ status }}</p>
+          }
           <div class="sample-toolbar-actions">
             <desktop-button variant="ghost" (click)="exitSampleMode()">Cancel</desktop-button>
             <desktop-button
@@ -2545,6 +2575,14 @@ interface AlertModal {
         padding: var(--ui-spacing-md);
         margin: 0;
       }
+    }
+
+    .sample-status {
+      font-size: var(--ui-font-sm);
+      color: var(--text-secondary);
+      margin: 0;
+      border-left: 2px solid var(--border-default);
+      padding-left: var(--ui-spacing-sm);
     }
 
     .sample-toolbar-actions {
@@ -3974,7 +4012,7 @@ export class PdfPickerComponent implements OnInit {
       // over, and main cleared every record made against the old one before
       // minting this. Nothing is being corrected — this is the receipt for what
       // the user asked for. See shared/document/working-copy-remint.ts.
-      if (info.remint !== null) this.announceRemint(info.remint);
+      if (info.remint !== null) this.announceRemint(dir, info.remint);
     } catch (err) {
       // Main's own sentence, kept and shown on the EPUB tab. The last proved
       // path for THIS project is left alone — a round trip that failed is not
@@ -5425,9 +5463,29 @@ export class PdfPickerComponent implements OnInit {
   /** Told to the user both when the edits are declined and when a save is refused. */
   private readonly PROJECT_STATE_NOT_APPLIED_MESSAGE =
     'This document is a different version of the project\'s source file, so the project\'s '
-    + 'saved edits — deleted pages, text corrections, chapters — were not loaded into it.\n\n'
-    + 'Saving from here would replace those edits with what this session shows instead, so '
-    + 'the project is left untouched. Open the project\'s own source file to change its edits.';
+    + 'saved edits — deleted pages, text corrections, chapters — were not loaded into it. '
+    + 'The project is left untouched. Open the project\'s own source file to change its edits.';
+
+  /** Projects already told, this session, that their edits were not loaded. */
+  private readonly editsNotAppliedAnnounced = new Set<string>();
+
+  /**
+   * The loaded document is not the file this project's edits were made against.
+   *
+   * A banner, not a modal, and once per project: nothing was destroyed and
+   * nothing is asked of the user — the book opened, it simply opened WITHOUT
+   * the project's edits on it. The refusal that matters is the one on the save
+   * path (`saveProjectToPath`), which stops an act the user just performed and
+   * keeps its modal.
+   *
+   * Both places that discover the mismatch — the load and the restore — route
+   * here, so a single open that reaches both says it once.
+   */
+  private noteProjectEditsNotApplied(projectFilePath: string): void {
+    if (this.editsNotAppliedAnnounced.has(projectFilePath)) return;
+    this.editsNotAppliedAnnounced.add(projectFilePath);
+    this.pushSessionNotice(this.PROJECT_STATE_NOT_APPLIED_MESSAGE);
+  }
 
   /**
    * A one-time, non-blocking note about this session — shown under the viewer,
@@ -5439,9 +5497,28 @@ export class PdfPickerComponent implements OnInit {
    * migration is. Interrupting a book that opened correctly trains people to
    * dismiss without reading, which is exactly how the refusals stop working.
    */
-  readonly sessionNotice = signal<string | null>(null);
+  readonly sessionNotices = signal<SessionNotice[]>([]);
 
-  dismissSessionNotice(): void { this.sessionNotice.set(null); }
+  /** Ids are per-window and monotonic; only `@for` tracking reads them. */
+  private sessionNoticeSeq = 0;
+
+  /**
+   * Add one line to the stack, unless the exact same line is already on it.
+   *
+   * De-duplicating on the text is what keeps a book that reaches its open
+   * handler twice — which happens, see `announceLayoutState` — from stacking
+   * the same sentence twice. Callers that must be said once per PROJECT rather
+   * than once per wording own that guard themselves.
+   */
+  private pushSessionNotice(text: string): void {
+    this.sessionNotices.update(list =>
+      list.some(n => n.text === text) ? list : [...list, { id: ++this.sessionNoticeSeq, text }]
+    );
+  }
+
+  dismissSessionNotice(id: number): void {
+    this.sessionNotices.update(list => list.filter(n => n.id !== id));
+  }
 
   /** Projects whose layout-guard verdict has already been said, this session. */
   private readonly layoutStateAnnounced = new Set<string>();
@@ -5491,7 +5568,7 @@ export class PdfPickerComponent implements OnInit {
     const notice = project.layout_migration_notice;
     if (notice) {
       console.log(`[loadProjectFromPath] layout migration: ${notice}`);
-      this.sessionNotice.set(notice);
+      this.pushSessionNotice(notice);
     }
   }
 
@@ -6229,10 +6306,21 @@ export class PdfPickerComponent implements OnInit {
     this.pdfLoaded.set(false);
   }
 
+  /** Documents whose analysis warnings have already been mentioned, this session. */
+  private readonly analysisWarningsAnnounced = new Set<string>();
+
   /**
    * Surface non-fatal analysis warnings (e.g. "image extraction failed") to the
    * user. The backend attaches these to analyze/analyzeText results and the
    * text-ready event; without this they'd only exist in the main-process log.
+   *
+   * A banner, not a modal: nothing was stopped, the book opened, and the detail
+   * is a list of block ids that means nothing on screen and everything in the
+   * log. The count is the whole message; the log has the rest.
+   *
+   * Said once per document because opening one reaches this from four places
+   * (quick analyze, text-ready, and the same pair again on the project path),
+   * and two of them can fire for a single open.
    */
   private surfaceAnalysisWarnings(warnings: string[] | undefined, analyzedPath: string): void {
     if (!warnings || warnings.length === 0) return;
@@ -6256,11 +6344,17 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    this.showAlert({
-      title: 'Document Analysis Warning',
-      message: warnings.join('\n\n'),
-      type: 'warning'
-    });
+    console.warn(
+      `[analysis] ${analyzedPath} came back with ${warnings.length} analysis warning(s): `
+      + warnings.join(' | '),
+    );
+
+    if (this.analysisWarningsAnnounced.has(analyzedPath)) return;
+    this.analysisWarningsAnnounced.add(analyzedPath);
+
+    this.pushSessionNotice(
+      `This book's analysis carries ${warnings.length} warning${warnings.length === 1 ? '' : 's'} — see the log.`
+    );
   }
 
   /**
@@ -7492,7 +7586,9 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
     if (this.editorState.textLoading()) {
-      this.showAlert({ title: 'Split Block', message: 'Text extraction is still in progress. Please wait for it to complete.', type: 'error' });
+      // The extraction spinner is already on screen saying this; a box that
+      // repeats it only adds a click. See `textLoading` in the toolbar.
+      console.log('[onSplitBlockRequest] text extraction is still in progress — nothing to split on yet.');
       return;
     }
 
@@ -7523,7 +7619,9 @@ export class PdfPickerComponent implements OnInit {
 
     const lines = this.groupSpansByLine(spans);
     if (lines.length <= 1) {
-      this.showAlert({ title: 'Split Block', message: 'Block has only one visual line — nothing to split.', type: 'error' });
+      // Nothing to split on, so nothing opens and the block is left as it is —
+      // which is exactly what a one-line block looks like on screen.
+      console.log(`[onSplitBlockRequest] block ${block.id} has only one visual line — nothing to split.`);
       return;
     }
 
@@ -7551,11 +7649,11 @@ export class PdfPickerComponent implements OnInit {
     }
 
     if (segments.length <= 1) {
-      this.showAlert({
-        title: 'Split Block',
-        message: 'This block has no line breaks or word boundaries to split on.',
-        type: 'error',
-      });
+      // A single word: there is no split point to offer, so the popover simply
+      // does not open. Logged rather than said — nothing went wrong.
+      console.log(
+        `[openTextSplitFallback] block ${block.id} has no line breaks or word boundaries to split on.`,
+      );
       return;
     }
 
@@ -7810,7 +7908,10 @@ export class PdfPickerComponent implements OnInit {
     }
 
     if (childBlocks.length <= 1) {
-      this.showAlert({ title: 'Split Block', message: 'Split produced only one block — nothing changed.', type: 'error' });
+      // The popover closes and the block is unchanged on the page, which says
+      // it. Logged so a split that quietly produced nothing can be told from
+      // one that never ran.
+      console.log(`[confirmSplit] block ${block.id}: split produced only one block — nothing changed.`);
       this.splitPopoverBlock.set(null);
       return;
     }
@@ -7859,7 +7960,8 @@ export class PdfPickerComponent implements OnInit {
     const segTexts = segments.map(s => s.join(joiner).trim()).filter(Boolean);
 
     if (segTexts.length <= 1) {
-      this.showAlert({ title: 'Split Block', message: 'Split produced only one block — nothing changed.', type: 'error' });
+      // Same non-result as the span path above, same treatment.
+      console.log(`[confirmTextSplit] block ${block.id}: split produced only one block — nothing changed.`);
       this.splitPopoverBlock.set(null);
       this.splitPopoverTextMode.set(false);
       return;
@@ -8116,6 +8218,24 @@ export class PdfPickerComponent implements OnInit {
     return 'split_' + Math.abs(hash).toString(36);
   }
 
+  /** What the last merge sweep found, when it found nothing. Cleared by a sweep that did. */
+  private readonly mergeSweepResult = signal<string | null>(null);
+
+  /**
+   * The one line the merge panel shows under its status — the refusal when this
+   * document cannot be merged at all, otherwise the last sweep's non-result.
+   *
+   * Both used to be modal boxes over the book. Neither is an error and neither
+   * asks anything of the user, so both belong in the panel they came from.
+   */
+  readonly mergePanelNotice = computed<string | null>(() => {
+    if (this.isCurrentDocumentEpub()) {
+      return 'This book\'s blocks are its own paragraphs, read straight from the markup — '
+        + 'there are no line fragments to merge back together.';
+    }
+    return this.mergeSweepResult();
+  });
+
   /**
    * Detect and merge consecutive same-category blocks on each page.
    * Consolidates fragmented body text into unified paragraph blocks.
@@ -8123,16 +8243,11 @@ export class PdfPickerComponent implements OnInit {
   async mergeAdjacentBlocks(): Promise<void> {
     // A quire-paginated EPUB's blocks ARE the book's own paragraphs — there are
     // no line fragments to consolidate, and a merged block would carry no
-    // element key for the live viewer to point at. Same refusal the other merge
-    // surfaces give an EPUB, said at the press.
+    // element key for the live viewer to point at. Said in the panel with the
+    // button turned off, so the refusal arrives BEFORE the press rather than as
+    // a box after it.
     if (this.isCurrentDocumentEpub()) {
-      await this.electronService.showConfirmDialog({
-        title: 'Merge is not available for EPUBs',
-        message: 'This book\'s blocks are its own paragraphs, read straight from the markup — '
-          + 'there are no line fragments to merge back together.',
-        confirmLabel: 'OK',
-        type: 'info',
-      });
+      console.log('[mergeAdjacentBlocks] refused: this document is an EPUB.');
       return;
     }
     const blocks = this.blocks();
@@ -8150,14 +8265,13 @@ export class PdfPickerComponent implements OnInit {
     const groups = detectMergeableGroups(blocks, deletedBlockIds, paragraphBreaks);
 
     if (groups.length === 0) {
-      await this.electronService.showConfirmDialog({
-        title: 'Nothing to merge',
-        message: 'No groups of single-line blocks were found to merge into paragraphs.',
-        confirmLabel: 'OK',
-        type: 'info',
-      });
+      // A non-result. It lands in the panel the user pressed in, next to the
+      // button, rather than as a box they have to dismiss to see the book.
+      console.log('[mergeAdjacentBlocks] no groups of single-line blocks were found to merge.');
+      this.mergeSweepResult.set('No groups of single-line blocks were found to merge into paragraphs.');
       return;
     }
+    this.mergeSweepResult.set(null);
 
     // Confirm before applying — let the user back out instead of merging.
     const blockCount = groups.reduce((sum, g) => sum + g.blockIds.length, 0);
@@ -8648,11 +8762,9 @@ export class PdfPickerComponent implements OnInit {
     );
 
     if (!result.success) {
-      this.showAlert({
-        title: 'Nothing to Export',
-        message: result.message,
-        type: 'warning'
-      });
+      // Nothing to write, so nothing was written and no file appeared — which
+      // is the whole of it. Logged rather than said.
+      console.log(`[exportText] nothing to export: ${result.message}`);
     }
   }
 
@@ -8915,11 +9027,9 @@ export class PdfPickerComponent implements OnInit {
         a.click();
         URL.revokeObjectURL(url);
 
-        this.showAlert({
-          title: 'Export Successful',
-          message: `Text-only EPUB exported successfully`,
-          type: 'success'
-        });
+        // No receipt: the file the user asked for has just landed in their
+        // downloads, which is the outcome, visible where they pointed.
+        console.log(`[exportEpub] text-only EPUB written: ${outputFilename}`);
       } else {
         this.showAlert({
           title: 'Export Failed',
@@ -8935,9 +9045,7 @@ export class PdfPickerComponent implements OnInit {
     // the conversion, and it is not here.
     this.showAlert({
       title: 'This document cannot be exported as an EPUB',
-      message: 'A book is made from a PDF by reading its pages with a document vision model, which is '
-          + 'Convert to EPUB on this project\'s versions page in Studio. There is no exporter here '
-          + 'that can turn a PDF into one.',
+      message: PDF_HAS_NO_BOOK_MESSAGE,
       type: 'warning',
     });
   }
@@ -8990,9 +9098,7 @@ export class PdfPickerComponent implements OnInit {
     // write. The producer takes an EPUB, so there is nothing to hand it.
     this.showAlert({
       title: 'This document has no book to produce from',
-      message: 'A book is made from a PDF by reading its pages with a document vision model, which is '
-          + 'Convert to EPUB on this project\'s versions page in Studio. There is no exporter here '
-          + 'that can turn a PDF into one.',
+      message: PDF_HAS_NO_BOOK_MESSAGE,
       type: 'warning',
     });
   }
@@ -9169,12 +9275,7 @@ export class PdfPickerComponent implements OnInit {
         // A PDF has no markup to preserve and no exporter here that can make one
         // out of it. Refused by name rather than writing something that is not
         // the book: the conversion is what makes a book from pages.
-        result = {
-          success: false,
-          message: 'A book is made from a PDF by reading its pages with a document vision model, which is '
-          + 'Convert to EPUB on this project\'s versions page in Studio. There is no exporter here '
-          + 'that can turn a PDF into one.',
-        };
+        result = { success: false, message: PDF_HAS_NO_BOOK_MESSAGE };
       }
 
       if (result.message === 'Canceled') {
@@ -9182,7 +9283,9 @@ export class PdfPickerComponent implements OnInit {
       } else if (!result.success) {
         this.showAlert({ title: 'Save Failed', message: result.message, type: 'error' });
       } else {
-        this.showAlert({ title: 'EPUB Saved', message: result.message, type: 'success' });
+        // No receipt: the user chose the destination themselves a moment ago,
+        // and the file is now sitting at it.
+        console.log(`[saveEpubAs] ${result.message}`);
       }
     } catch (err) {
       this.showAlert({ title: 'Save Failed', message: (err as Error).message, type: 'error' });
@@ -9225,11 +9328,12 @@ export class PdfPickerComponent implements OnInit {
       // A PDF has no markup to preserve, and nothing here makes a book out of
       // one. The conversion does, and it lives on the versions page.
       this.loading.set(false);
-      const refusal = 'A book is made from a PDF by reading its pages with a document vision model, which is '
-          + 'Convert to EPUB on this project\'s versions page in Studio. There is no exporter here '
-          + 'that can turn a PDF into one.';
-      this.finalized.emit({ success: false, error: refusal });
-      this.showAlert({ title: 'There is no book to save', message: refusal, type: 'warning' });
+      this.finalized.emit({ success: false, error: PDF_HAS_NO_BOOK_MESSAGE });
+      this.showAlert({
+        title: 'There is no book to save',
+        message: PDF_HAS_NO_BOOK_MESSAGE,
+        type: 'warning',
+      });
       return;
     }
 
@@ -9237,12 +9341,10 @@ export class PdfPickerComponent implements OnInit {
       const result = await this.runEpubPreservingExport(projectPath, null);
 
       if (result.success && result.epubPath) {
+        // No receipt: `finalized` moves the user on, and a success box on a
+        // window they are leaving is a message to nobody.
+        console.log(`[finalizeProject] ${result.message || `Exported to ${result.epubPath}`}`);
         this.finalized.emit({ success: true, epubPath: result.epubPath });
-        this.showAlert({
-          title: 'Saved',
-          message: result.message || `Exported to ${result.epubPath}`,
-          type: 'success',
-        });
       } else {
         // The exporter names the block that blocked the export — verbatim.
         this.finalized.emit({ success: false, error: result.message });
@@ -9412,11 +9514,11 @@ export class PdfPickerComponent implements OnInit {
       const book = this.bookEpubPath();
       const reopen = book !== null ? book : onScreen;
       if (reopen) await this.showArtifact(reopen);
-      this.showAlert({
-        title: 'Everything was erased',
-        message: 'This book is back to the way it arrived. The file itself was never rewritten.',
-        type: 'info',
-      });
+      // The receipt for a confirm the user already gave. A banner, because the
+      // book they are now looking at — reopened, unmarked — is the outcome, and
+      // a second box to dismiss after the confirm box is one box too many.
+      this.pushSessionNotice(
+        'This book is back to the way it arrived. The file itself was never rewritten.');
     } catch (err) {
       this.showAlert({
         title: 'Could not erase the changes',
@@ -9529,7 +9631,7 @@ export class PdfPickerComponent implements OnInit {
           // Said HERE and not after the refresh below: by then the file exists,
           // so the ask that follows has no re-mint to report. See
           // `refreshBookEpub` for the whole of why this is said at all.
-          if (answer.remint) this.announceRemint(answer.remint);
+          if (answer.remint) this.announceRemint(projectDir, answer.remint);
           await this.refreshBookEpub();
           await this.showArtifact(answer.path);
           return;
@@ -9607,7 +9709,7 @@ export class PdfPickerComponent implements OnInit {
     // The receipt, said here rather than waited for: this is the ask that
     // discovered the file was gone, and main reports a re-mint on exactly the
     // one that performed it. See `refreshBookEpub` for the whole of why.
-    if (info.remint !== null) this.announceRemint(info.remint);
+    if (info.remint !== null) this.announceRemint(projectDir, info.remint);
     // This is often the FIRST ask a freshly opened window makes, so it is also
     // where `workingChain` gets its first stamp — the same discipline as
     // `refreshBookEpub`, for the same project.
@@ -9635,23 +9737,32 @@ export class PdfPickerComponent implements OnInit {
         || 'This project has no working copy and could not be given one, and the file you opened '
           + 'is archive-grade — nothing may write to it.');
     }
-    if (answer.remint) this.announceRemint(answer.remint);
+    if (answer.remint) this.announceRemint(projectDir, answer.remint);
     return { display: answer.path, plan };
   }
+
+  /** Projects whose re-mint receipt has already been given, this session. */
+  private readonly remintAnnounced = new Set<string>();
 
   /**
    * The working copy was made again, and the user is owed the receipt.
    *
-   * One wording, in one place, because a re-mint is reported from three asks now
-   * — the project's own opening, the banner's button and the redirect above —
-   * and three spellings of it would read as three different events.
+   * One wording, in one place, because a re-mint is reported from four asks now
+   * — the project's own opening, the EPUB tab's refresh, the banner's button and
+   * the redirect above — and four spellings of it would read as four different
+   * events.
+   *
+   * A banner rather than a modal: the user asked for this by deleting the file,
+   * it worked, and the book is on screen behind the receipt. Nothing needs
+   * acknowledging. Said once per project because those four asks overlap — an
+   * open that redirects reaches two of them, and the same event reported twice
+   * reads as the file having been made twice.
    */
-  private announceRemint(remint: WorkingCopyRemint): void {
-    this.showAlert({
-      title: 'The working copy was created again, and the book was started over',
-      message: describeWorkingCopyRemint(remint),
-      type: 'info',
-    });
+  private announceRemint(projectDir: string, remint: WorkingCopyRemint): void {
+    console.log(`[remint] ${projectDir}: ${describeWorkingCopyRemint(remint)}`);
+    if (this.remintAnnounced.has(projectDir)) return;
+    this.remintAnnounced.add(projectDir);
+    this.pushSessionNotice(describeWorkingCopyRemint(remint));
   }
 
   /**
@@ -9896,16 +10007,23 @@ export class PdfPickerComponent implements OnInit {
           + 'chapter names, each on a single line.'
         : '';
 
-      this.showAlert({
-        title: 'TTS copy written',
-        message:
-          `${result.relPath} — ${result.removedElements} of ${result.totalElements} element(s) `
-          + `left out${provenance}, ${result.removedSupMarkers} footnote marker(s) stripped. The book `
-          + `itself is unchanged.${spoken}${pruned}`
-          + (unresolved.length > 0 ? `\n\n${unresolved.join('\n\n')}` : '')
-          + '\n\nThe Process tab\'s narration step will offer this file.',
-        type: unresolved.length > 0 ? 'warning' : 'info',
-      });
+      // The whole accounting — provenance, pruned documents, spoken openings,
+      // whatever the cut could not strike — goes to the log. It is a set of
+      // statistics about a file that now exists, and the user asked for the
+      // file, not the statistics.
+      console.log(
+        `[exportNarrationEpub] ${result.relPath} — ${result.removedElements} of `
+        + `${result.totalElements} element(s) left out${provenance}, `
+        + `${result.removedSupMarkers} footnote marker(s) stripped.${spoken}${pruned}`
+        + (unresolved.length > 0 ? ` ${unresolved.join(' ')}` : ''),
+      );
+
+      // Three sentences: what was made, what was not touched, where to use it.
+      this.pushSessionNotice(
+        `${result.relPath} was written — ${result.removedElements} of ${result.totalElements} `
+        + 'element(s) left out. The book itself is unchanged. The Process tab\'s narration step '
+        + 'will offer this file.',
+      );
     } catch (err) {
       this.showAlert({
         title: 'Could not write the TTS copy',
@@ -10137,9 +10255,14 @@ export class PdfPickerComponent implements OnInit {
    */
   private async undoUnrecordedGesture(edit: NarrationDeletionEdit, err: unknown): Promise<void> {
     const named = edit.strike.length > 0 ? edit.strike : edit.unstrike;
-    const SHOWN = 5;
-    const which = named.slice(0, SHOWN).map(k => `  • ${this.narrationElementLabel(k)}`).join('\n')
-      + (named.length > SHOWN ? `\n  • …and ${named.length - SHOWN} more` : '');
+    // WHICH elements failed goes to the log, not to the box. A bulleted list of
+    // page-and-opening labels is something to look up afterwards; the box has to
+    // say what happened and what to do, and a list in it buries both.
+    console.error(
+      '[picker] elements that could not be '
+      + `${edit.strike.length > 0 ? 'struck' : 'restored'}: `
+      + named.map(k => this.narrationElementLabel(k)).join(' | '),
+    );
 
     let repainted = true;
     try {
@@ -10155,13 +10278,11 @@ export class PdfPickerComponent implements OnInit {
         ? 'That deletion was not recorded, so it has been undone'
         : 'That deletion was not recorded',
       message:
-        `${named.length} element(s) could not be ${edit.strike.length > 0 ? 'struck' : 'restored'}:\n`
-        + `${which}\n\n${err instanceof Error ? err.message : String(err)}\n\n`
+        `${named.length} element(s) could not be ${edit.strike.length > 0 ? 'struck' : 'restored'} `
+        + `— see the log for which. ${err instanceof Error ? err.message : String(err)} `
         + (repainted
-          ? 'The page has been put back the way the record has it, so what you see is what will be '
-            + 'left out of the narration copy. Try the deletion again.'
-          : 'The narration copy is cut from the record, so what you just struck out would still be '
-            + 'read aloud, and this window could not put the page back. Re-open the book.'),
+          ? 'The page has been put back the way the record has it, so try the deletion again.'
+          : 'This window could not put the page back, so re-open the book.'),
       type: 'error',
     });
   }
@@ -10270,14 +10391,15 @@ export class PdfPickerComponent implements OnInit {
     // caused it, which would be a modal the user cannot get past.
     if (this.surfacedNarrationDivergence === sentence) return;
     this.surfacedNarrationDivergence = sentence;
-    this.showAlert({
-      title: 'What is on screen and what is recorded have come apart',
-      message:
-        `${sentence}\n\nThe narration copy is cut from the record, so the screen is the one that `
-        + 'is wrong. Re-open the book to put the record on screen. Export will refuse until they '
-        + 'agree.',
-      type: 'error',
-    });
+    // A banner rather than a modal: nothing the user just did was stopped, and
+    // the act this actually protects — the export — refuses on its own with its
+    // own box. Blocking here would put a dismiss-first wall in front of every
+    // gesture that follows the bug.
+    this.pushSessionNotice(
+      'What is on screen and what is recorded have come apart, and the narration copy is cut from '
+      + 'the record. Re-open the book to put the record back on screen; export will refuse until '
+      + 'they agree.',
+    );
   }
 
   /**
@@ -10379,9 +10501,8 @@ export class PdfPickerComponent implements OnInit {
     this.showAlert({
       title: 'The book is still loading',
       message:
-        `${what} acts on every page of the book, and only ${loaded} of ${total} are laid out so `
-        + 'far. Doing it now would silently leave out everything on the pages that have not '
-        + 'arrived. Wait for the page count to finish, then try again.',
+        `${what} acts on every page, and only ${loaded} of ${total} are laid out so far. Nothing `
+        + 'was changed. Wait for the page count to finish, then try again.',
       type: 'warning',
     });
     return true;
@@ -10560,8 +10681,9 @@ export class PdfPickerComponent implements OnInit {
 
       if (result.success) {
         this.editorState.markSaved();
+        // No receipt: the dirty marker clearing IS the receipt, on screen.
+        console.log(`[saveToSourceEpub] ${result.message}`);
         this.finalized.emit({ success: true, epubPath });
-        this.showAlert({ title: 'Saved', message: result.message, type: 'success' });
       } else {
         this.finalized.emit({
           success: false,
@@ -10778,24 +10900,20 @@ export class PdfPickerComponent implements OnInit {
     });
 
     if (matchingBlocks.length === 0) {
-      this.showAlert({
-        title: 'No References Found',
-        message: 'No footnote references found in the text.',
-        type: 'info'
-      });
+      // A non-result: the selection simply does not change, which is what the
+      // user sees. Logged so the sweep can be told apart from a sweep that
+      // never ran.
+      console.log('[selectFootnoteReferences] no footnote references found in the text.');
       return;
     }
 
-    // Select all matching blocks
+    // The selection IS the answer, and it is on screen. Nothing to say.
     const blockIds = matchingBlocks.map(b => b.id);
     this.setSelectionWithHistory(blockIds);
-
-    // Show summary
-    this.showAlert({
-      title: 'Footnote References Found',
-      message: `Found ${matchingBlocks.length} blocks containing footnote references.\n\nThey are now selected. Press Delete to remove them, or click elsewhere to deselect.\n\nNote: When you export, the footnote numbers within text will also be stripped automatically.`,
-      type: 'success'
-    });
+    console.log(
+      `[selectFootnoteReferences] selected ${matchingBlocks.length} block(s) containing footnote `
+      + 'references.',
+    );
   }
 
   private saveRecentFile(path: string, name: string): void {
@@ -11061,11 +11179,7 @@ export class PdfPickerComponent implements OnInit {
         this.tryLoadOutline();
       }
 
-      this.showAlert({
-        title: 'Project Edits Not Loaded',
-        message: this.PROJECT_STATE_NOT_APPLIED_MESSAGE,
-        type: 'warning',
-      });
+      this.noteProjectEditsNotApplied(projectFilePath);
       return;
     }
 
@@ -11550,9 +11664,8 @@ export class PdfPickerComponent implements OnInit {
           title: 'Deletions Not Saved',
           message:
             result.staleLayoutRefusal
-            + '\n\nEverything else about the project was saved. To record what you have struck '
-            + 'out in this session, the project has to be opened on the book those records can '
-            + 'be read against.',
+            + ' Everything else about the project was saved. Open the project on the book those '
+            + 'records belong to and strike out again.',
           type: 'warning',
         });
       }
@@ -11775,9 +11888,17 @@ export class PdfPickerComponent implements OnInit {
     if (!pdfPathToLoad) {
       this.loading.set(false);
       const exportedPath = project.exported_epub_path;
+      // The two paths that were tried go to the log — they are diagnostics, and
+      // neither is a thing the user can act on from a box.
+      console.error(
+        '[loadProjectFromPath] no source file found. original: '
+        + `${project.source_name || project.source_path || 'not set'}; exported: `
+        + `${exportedPath || 'not set'}`,
+      );
       this.showAlert({
         title: 'Source File Not Found',
-        message: `Could not find any source file for this project.\n\nOriginal: ${project.source_name || project.source_path || 'not set'}\nExported: ${exportedPath || 'not set'}\n\nThe file may need to be imported to your library on this machine.`,
+        message: 'None of this project\'s source files are on this machine, so it could not be '
+          + 'opened. Import the book to your library here, then open the project again.',
         type: 'error'
       });
       return;
@@ -11875,11 +11996,7 @@ export class PdfPickerComponent implements OnInit {
         // source's (that is what being a derived output means), so warning
         // about it would fire on every deliberate open of exported.*.
         if (!usingExportedEpub) {
-          this.showAlert({
-            title: 'Edits Not Applied',
-            message: this.PROJECT_STATE_NOT_APPLIED_MESSAGE,
-            type: 'warning'
-          });
+          this.noteProjectEditsNotApplied(filePath);
         }
       }
       const applySavedEdits = isLoadingOriginal && !sourceChanged;
@@ -12318,7 +12435,7 @@ export class PdfPickerComponent implements OnInit {
           this.showAlert({
             title: 'Could not offer to read these pages',
             message: (err instanceof Error ? err.message : String(err))
-              + '\n\nThe PDF is open and can be browsed; run Convert to EPUB from the versions page '
+              + ' The PDF is open and can be browsed; run Convert to EPUB from the versions page '
               + 'to make a book you can edit.',
             type: 'warning',
           });
@@ -12344,12 +12461,14 @@ export class PdfPickerComponent implements OnInit {
     this.sampleRects.set([]);
     this.sampleCategoryName.set('');
     this.sampleCategoryColor.set('#E91E63');
+    this.sampleModeStatus.set(null);
     this.sampleCurrentRect = null;
   }
 
   exitSampleMode(): void {
     this.sampleMode.set(false);
     this.sampleRects.set([]);
+    this.sampleModeStatus.set(null);
     this.sampleCurrentRect = null;
     this.sampleDrawingRect.set(null);
   }
@@ -12417,14 +12536,22 @@ export class PdfPickerComponent implements OnInit {
     this.sampleRects.update(rects => rects.filter((_, i) => i !== index));
   }
 
+  /**
+   * What the last "Create Category" attempt found, when it found nothing.
+   *
+   * Every non-result on this path — no text in the boxes, no pattern, no
+   * matches — used to be its own modal. They are answers to the question the
+   * button asks, so they are said next to the button and cleared by the next
+   * attempt.
+   */
+  readonly sampleModeStatus = signal<string | null>(null);
+
   async analyzeSamplesAndCreateCategory(): Promise<void> {
+    this.sampleModeStatus.set(null);
     const rects = this.sampleRects();
     if (rects.length === 0) {
-      this.showAlert({
-        title: 'No Samples',
-        message: 'Draw boxes around at least one example to create a category.',
-        type: 'warning'
-      });
+      // Unreachable through the button, which is disabled with no samples.
+      console.log('[analyzeSamples] no sample boxes were drawn.');
       return;
     }
 
@@ -12438,44 +12565,33 @@ export class PdfPickerComponent implements OnInit {
     }
 
     if (allSpans.length === 0) {
-      this.showAlert({
-        title: 'No Text Found',
-        message: 'No text was found within the selected areas. Try drawing larger boxes around the text.',
-        type: 'warning'
-      });
+      console.log('[analyzeSamples] no text was found within the selected areas.');
+      this.sampleModeStatus.set(
+        'No text was found in those boxes. Try drawing larger boxes around the text.');
       return;
     }
 
     // Analyze samples to find pattern
     const patternResult = await this.electronService.analyzeSamples(allSpans);
     if (!patternResult?.data) {
-      this.showAlert({
-        title: 'Analysis Failed',
-        message: 'Could not analyze the selected samples.',
-        type: 'error'
-      });
+      console.log('[analyzeSamples] the selected samples could not be analyzed.');
+      this.sampleModeStatus.set('Those samples have no pattern in common. Try a different set.');
       return;
     }
 
     // Find all matching spans - returns lightweight MatchRect objects grouped by page
     const matchesResult = await this.electronService.findMatchingSpans(patternResult.data);
     if (!matchesResult?.data) {
-      this.showAlert({
-        title: 'Match Failed',
-        message: 'Could not find matching patterns.',
-        type: 'error'
-      });
+      console.log('[analyzeSamples] matching patterns could not be found.');
+      this.sampleModeStatus.set('The book could not be searched for that pattern. Try again.');
       return;
     }
 
     const { matches, matchesByPage, total, pattern } = matchesResult.data;
 
     if (total === 0) {
-      this.showAlert({
-        title: 'No Matches',
-        message: 'No additional matches found for the selected pattern.',
-        type: 'info'
-      });
+      console.log('[analyzeSamples] no additional matches found for the selected pattern.');
+      this.sampleModeStatus.set('Nothing else in the book matches that pattern.');
       return;
     }
 
@@ -12520,12 +12636,12 @@ export class PdfPickerComponent implements OnInit {
     this.editorState.markChanged();
     this.exitSampleMode();
 
-
-    this.showAlert({
-      title: 'Category Created',
-      message: `Created "${categoryName}" with ${total} matched items across ${pageCount} pages.`,
-      type: 'success'
-    });
+    // No receipt: exiting sample mode puts the new category in the rail with its
+    // matches highlighted on the page, which is the whole answer, on screen.
+    console.log(
+      `[createCategoryFromSample] created "${categoryName}" with ${total} matched items across `
+      + `${pageCount} pages.`,
+    );
   }
 
   private generateCategoryId(name: string): string {
@@ -12825,11 +12941,9 @@ export class PdfPickerComponent implements OnInit {
     // Find spans matching the regex pattern (span-level, not block-level)
     const matchesResult = await this.electronService.findSpansByRegex(pattern, minSize, maxSize, minBaseline, maxBaseline);
     if (!matchesResult?.data || matchesResult.data.total === 0) {
-      this.showAlert({
-        title: 'No Matches',
-        message: 'No spans match the regex pattern with the specified font size filters.',
-        type: 'info'
-      });
+      // A non-result: no category is created and the builder stays open with the
+      // pattern in it, which is where the user changes it.
+      console.log('[createRegexCategory] no spans match the pattern with those font-size filters.');
       return;
     }
 
@@ -12847,11 +12961,12 @@ export class PdfPickerComponent implements OnInit {
     }
 
     if (validatedMatches.length === 0) {
-      this.showAlert({
-        title: 'No Valid Matches',
-        message: 'No matches found within visible text blocks. The matches may be inside embedded figures or tables.',
-        type: 'info'
-      });
+      // Same non-result, one step later: the pattern matched, but only inside
+      // embedded figures or tables whose coordinates are not in any block.
+      console.log(
+        `[createRegexCategory] ${matches.length} match(es) fell outside every visible text block `
+        + '— probably inside embedded figures or tables.',
+      );
       return;
     }
 
@@ -13234,11 +13349,9 @@ export class PdfPickerComponent implements OnInit {
         }
 
       } else {
-        this.showAlert({
-          title: 'No Chapters Found',
-          message: 'Could not automatically detect chapter headings. Try marking chapters manually by clicking on text blocks.',
-          type: 'info'
-        });
+        // A non-result: the chapter list is unchanged and still on screen, so
+        // there is nothing to interrupt the user about.
+        console.log('[autoDetectChapters] could not automatically detect any chapter headings.');
       }
     } catch (err) {
       console.error('Failed to detect chapters:', err);
@@ -13260,11 +13373,11 @@ export class PdfPickerComponent implements OnInit {
       .filter((id): id is string => !!id);
 
     if (blockIds.length < 2) {
-      this.showAlert({
-        title: 'Need More Examples',
-        message: 'Mark at least 2 chapter headings by clicking on text blocks, then try again.',
-        type: 'info'
-      });
+      // Nothing to learn from yet, and the chapter list on screen says how many
+      // examples there are.
+      console.log(
+        `[findSimilarChapters] needs at least 2 marked chapter headings; there are ${blockIds.length}.`,
+      );
       return;
     }
 
@@ -13287,18 +13400,11 @@ export class PdfPickerComponent implements OnInit {
           this.chaptersSource.set('mixed');
           this.editorState.markChanged();
         } else {
-          this.showAlert({
-            title: 'No New Chapters',
-            message: 'All similar blocks are already marked as chapters.',
-            type: 'info'
-          });
+          console.log('[findSimilarChapters] all similar blocks are already marked as chapters.');
         }
       } else {
-        this.showAlert({
-          title: 'No Similar Blocks Found',
-          message: 'Could not find blocks matching your example chapters. Try marking different examples.',
-          type: 'info'
-        });
+        console.log(
+          '[findSimilarChapters] found no blocks matching the example chapters.');
       }
     } catch (err) {
       console.error('Failed to find similar chapters:', err);
@@ -13424,11 +13530,9 @@ export class PdfPickerComponent implements OnInit {
     const deletedPages = this.deletedPages();
 
     if (chapters.length === 0) {
-      this.showAlert({
-        title: 'No Chapters',
-        message: 'Please define at least one chapter before finalizing.',
-        type: 'warning'
-      });
+      // The chapter list on screen is empty, which says this. Nothing is
+      // finalized and nothing changes.
+      console.log('[finalizeChapters] no chapters are defined — nothing to finalize.');
       return;
     }
 
@@ -13439,11 +13543,11 @@ export class PdfPickerComponent implements OnInit {
       const activeChapters = chapters.filter(c => !deletedPages.has(c.page));
 
       if (activeChapters.length === 0) {
-        this.showAlert({
-          title: 'No Valid Chapters',
-          message: 'All chapters are on deleted pages. Please add chapters on active pages.',
-          type: 'warning'
-        });
+        // Every marker sits on a page the user struck out; the strikes are on
+        // screen and so are the markers. Nothing is finalized.
+        console.log(
+          `[finalizeChapters] all ${chapters.length} chapter(s) are on deleted pages — nothing to finalize.`,
+        );
         return;
       }
 
@@ -13475,11 +13579,9 @@ export class PdfPickerComponent implements OnInit {
       // Save the project to persist chapters
       await this.saveProject();
 
-      this.showAlert({
-        title: 'Chapters Saved',
-        message,
-        type: 'success'
-      });
+      // No receipt: leaving chapters mode is the visible outcome, and the
+      // chapter list the user just finalized is the thing they were looking at.
+      console.log(`[finalizeChapters] ${message.replace(/\n/g, ' ')}`);
 
       // Exit chapters mode after finalizing
       this.exitChaptersMode();
@@ -13693,19 +13795,20 @@ export class PdfPickerComponent implements OnInit {
           this.editorState.markChanged();
         }
 
-        const mapped = result.chapters.length;
-        const unmappedCount = result.unmapped.length;
-        const msg = unmappedCount > 0
-          ? `Mapped ${mapped} chapter${mapped !== 1 ? 's' : ''}. ${unmappedCount} entr${unmappedCount !== 1 ? 'ies' : 'y'} could not be matched.`
-          : `Mapped ${mapped} chapter${mapped !== 1 ? 's' : ''}.`;
-
-        this.showAlert({ title: 'TOC Mapping Complete', message: msg, type: unmappedCount > 0 ? 'info' : 'success' });
+        // No receipt: leaving TOC mode drops the user back onto the chapter
+        // markers that were just added, which is the outcome. The unmapped
+        // count goes to the log — it is a statistic, not an instruction.
+        console.log(
+          `[mapTocEntries] mapped ${result.chapters.length} chapter(s); `
+          + `${result.unmapped.length} entr(y/ies) could not be matched: `
+          + `${result.unmapped.join(' | ')}`,
+        );
       } else {
-        this.showAlert({
-          title: 'No Chapters Matched',
-          message: 'Could not match any TOC entries to headings in the document. Try selecting different TOC blocks.',
-          type: 'info'
-        });
+        // Nothing matched, so nothing changed and the TOC picker is still
+        // showing the blocks the user chose. A non-result, logged.
+        console.log(
+          '[mapTocEntries] could not match any TOC entries to headings in the document.',
+        );
       }
 
       // Exit TOC mode
@@ -14165,9 +14268,9 @@ export class PdfPickerComponent implements OnInit {
     if (element === undefined) {
       this.showAlert({
         title: 'This heading could not be traced back to the book',
-        message: 'The chapter title lives in the book\'s table of contents, and this block was not '
-          + 'matched to the markup it was laid out from — so there is no chapter document to '
-          + 'rename. The warnings shown when this book opened name every block in that state.',
+        message: 'This block was not matched to the markup it was laid out from, so there is no '
+          + 'chapter document to rename. Nothing was written. The analysis warnings in the log '
+          + 'name every block in that state.',
         type: 'warning',
       });
       return;
@@ -14182,8 +14285,7 @@ export class PdfPickerComponent implements OnInit {
       this.showAlert({
         title: 'That chapter was not renamed',
         message: answer.error === undefined
-          ? 'The rename came back without a result and without a reason, which is a fault in '
-            + 'BookForge rather than anything about this book. Nothing was written.'
+          ? 'The rename came back with no result and no reason. Nothing was written.'
           : answer.error,
         type: 'error',
       });

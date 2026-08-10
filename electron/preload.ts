@@ -870,20 +870,9 @@ export interface ElectronAPI {
     saveWav: (bytesBase64: string, defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     /** Choose a location and copy this file's bytes there, unchanged. */
     saveFileCopy: (sourcePath: string, defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
-    confirm: (options: {
-      title: string;
-      message: string;
-      detail?: string;
-      confirmLabel?: string;
-      cancelLabel?: string;
-      type?: 'none' | 'info' | 'error' | 'question' | 'warning';
-    }) => Promise<{ confirmed: boolean }>;
-    message: (options: {
-      title?: string;
-      message: string;
-      detail?: string;
-      type?: 'none' | 'info' | 'error' | 'question' | 'warning';
-    }) => Promise<void>;
+    // File choosers only. Confirms and one-button messages are the in-app
+    // dialog component's job (DialogService), not the OS's — see the note
+    // where this bridge is built.
   };
   projects: {
     ensureFolder: () => Promise<{ success: boolean; path?: string; error?: string }>;
@@ -2772,22 +2761,9 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('dialog:save-wav', bytesBase64, defaultName),
     saveFileCopy: (sourcePath: string, defaultName?: string) =>
       ipcRenderer.invoke('dialog:save-file-copy', sourcePath, defaultName),
-    confirm: (options: {
-      title: string;
-      message: string;
-      detail?: string;
-      confirmLabel?: string;
-      cancelLabel?: string;
-      type?: 'none' | 'info' | 'error' | 'question' | 'warning';
-    }) =>
-      ipcRenderer.invoke('dialog:confirm', options),
-    message: (options: {
-      title?: string;
-      message: string;
-      detail?: string;
-      type?: 'none' | 'info' | 'error' | 'question' | 'warning';
-    }) =>
-      ipcRenderer.invoke('dialog:message', options),
+    // No `confirm` / `message` here: confirms and one-button messages render
+    // the in-app dialog component, never a native box. Their handlers went with
+    // this bridge (electron/main.ts).
   },
   projects: {
     ensureFolder: () =>

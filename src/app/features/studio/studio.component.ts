@@ -33,6 +33,7 @@ import { ElectronService } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
 import { SettingsService } from '../../core/services/settings.service';
 import { NarrationHandoffService } from '../../core/services/narration-handoff.service';
+import { NoticeService } from '../../core/services/notice.service';
 import { looseMatch } from '../../shared/search';
 import { samePath } from '@shared/document/same-path';
 
@@ -1462,6 +1463,8 @@ export class StudioComponent implements OnInit, OnDestroy {
   private readonly libraryService = inject(LibraryService);
   private readonly settingsService = inject(SettingsService);
   private readonly narrationHandoff = inject(NarrationHandoffService);
+  /** Where receipts and partial-condition reports go instead of a modal. */
+  private readonly notices = inject(NoticeService);
 
   @ViewChild(ContentEditorComponent) contentEditor?: ContentEditorComponent;
 
@@ -2749,15 +2752,14 @@ export class StudioComponent implements OnInit, OnDestroy {
           type: 'error',
         });
       } else if (result.warnings && result.warnings.length > 0) {
-        // Saved, but one or more output files kept stale metadata/covers —
-        // tell the user WHICH ones instead of pretending everything embedded.
+        // Saved, but one or more output files kept stale metadata/covers. A
+        // partial condition, not a failure and not an interruption: the count
+        // goes on the banner and WHICH files goes to the log.
         console.warn('[Studio] Metadata saved with warnings:', result.warnings);
-        void this.electronService.showMessageDialog({
-          title: 'Saved with warnings',
-          message: 'Metadata was saved, but some files could not be updated:',
-          detail: result.warnings.join('\n'),
-          type: 'warning',
-        });
+        this.notices.notify(
+          `Metadata was saved, but ${result.warnings.length} file(s) could not be updated — see `
+          + 'the log for which.',
+        );
       }
       this.loadAllTags();
     }).catch(err => {
@@ -2853,9 +2855,8 @@ export class StudioComponent implements OnInit, OnDestroy {
     // that then failed on a file the user had never seen.
     void this.electronService.showMessageDialog({
       title: 'Nothing to edit',
-      message: `“${item.title}” has no source document on disk — no exported EPUB, and no original `
-        + 'in its archive — so there is nothing for the editor to open. Add a version on the '
-        + 'Versions tab first.',
+      message: `“${item.title}” has no source document on disk, so there is nothing for the editor `
+        + 'to open. Add a version on the Versions tab first.',
       type: 'info',
     });
   }

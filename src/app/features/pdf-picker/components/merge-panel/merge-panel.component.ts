@@ -30,10 +30,21 @@ import { PanelShellComponent } from '../panel-shell/panel-shell.component';
         } @else {
           <p class="merge-status muted">No merges applied yet.</p>
         }
+        <!-- Why merging cannot run here, or what the last sweep found. Said in
+             the panel the user pressed in rather than in a box over the book:
+             the answer belongs next to the button that produced it. -->
+        @if (notice(); as line) {
+          <p class="merge-notice">{{ line }}</p>
+        }
       </div>
 
       <div footer>
-        <desktop-button variant="primary" size="sm" (click)="merge.emit()">
+        <desktop-button
+          variant="primary"
+          size="sm"
+          [disabled]="unavailable()"
+          (click)="merge.emit()"
+        >
           Merge adjacent blocks
         </desktop-button>
       </div>
@@ -64,10 +75,29 @@ import { PanelShellComponent } from '../panel-shell/panel-shell.component';
         color: var(--text-tertiary);
       }
     }
+
+    .merge-notice {
+      font-size: var(--ui-font-sm);
+      color: var(--text-secondary);
+      line-height: 1.5;
+      margin: 0;
+      padding: var(--ui-spacing-sm);
+      border-left: 2px solid var(--border-default);
+    }
   `],
 })
 export class MergePanelComponent {
   readonly mergeCount = input.required<number>();
+
+  /**
+   * One line about merging in THIS document — why it cannot run, or what the
+   * last sweep found. Replaces the two "nothing happened" boxes that used to
+   * interrupt the book instead.
+   */
+  readonly notice = input<string | null>(null);
+
+  /** True when this document cannot be merged at all, so the button is off. */
+  readonly unavailable = input<boolean>(false);
 
   readonly close = output<void>();
   readonly merge = output<void>();

@@ -588,22 +588,20 @@ export class VersionPickerDialogComponent implements OnInit, OnChanges {
         await this.loadVersions();
       } else {
         console.error('[VersionPicker] Failed to delete version:', result.error);
-        // Show error using the confirm dialog (as an error type)
-        await this.electronService.showConfirmDialog({
+        // One button, so the one-button vehicle. A confirm dialog with its
+        // cancel suppressed reads as a question that has no second answer.
+        await this.electronService.showMessageDialog({
           title: 'Delete Failed',
           message: result.error || 'Failed to delete the version file.',
           type: 'error',
-          confirmLabel: 'OK'
         });
       }
     } catch (err) {
       console.error('[VersionPicker] Error deleting version:', err);
-      // Show error using the confirm dialog
-      await this.electronService.showConfirmDialog({
+      await this.electronService.showMessageDialog({
         title: 'Delete Failed',
         message: (err as Error).message || 'An unexpected error occurred.',
         type: 'error',
-        confirmLabel: 'OK'
       });
     }
   }

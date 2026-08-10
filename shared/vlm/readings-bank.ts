@@ -150,15 +150,16 @@ export function describeReadingsBank(bank: VlmReadingsBank): string {
  * is exactly the surprise this dialog exists to stop being a surprise.
  */
 export function describeReadingsChoices(bank: VlmReadingsBank): string {
+  // ONE line per option. Two options is a choice; two paragraphs per option is
+  // an essay, and an essay in a dialog is a dialog people click through — which
+  // is the exact failure this text exists to prevent.
   return [
-    'Read all pages fresh — the vision model reads the whole book again. The banked answers are '
-    + 'moved into a timestamped folder beside them, never deleted.',
+    'Read all pages fresh — the whole book again; the banked answers are moved into a timestamped '
+    + 'folder beside them, never deleted.',
     bankIsFromCompletedRun(bank)
-      ? 'Use the banked readings — the book is rebuilt from the answers already on disk. No page '
-        + 'is read and no GPU is used.'
-      : 'Use the banked readings — the conversion picks up where it stopped and reads only the '
-        + 'pages that are missing.',
-  ].join('\n\n');
+      ? 'Use the banked readings — rebuilt from the answers on disk. No page is read and no GPU is used.'
+      : 'Use the banked readings — picks up where it stopped and reads only the missing pages.',
+  ].join('\n');
 }
 
 /**

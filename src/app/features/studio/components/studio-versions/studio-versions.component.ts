@@ -5,6 +5,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ElectronService, WhisperModelStatus } from '../../../../core/services/electron.service';
 import { ComponentService } from '../../../../core/services/component.service';
+import { NoticeService } from '../../../../core/services/notice.service';
 import { QueueService, type DirectPassRunResult } from '../../../queue/services/queue.service';
 import { VariantImportService } from '../../services/variant-import.service';
 import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-view.component';
@@ -1323,6 +1324,8 @@ export class StudioVersionsComponent {
   private readonly queue = inject(QueueService);
   private readonly imports = inject(VariantImportService);
   private readonly dialog = inject(DialogService);
+  /** Where receipts go now that they no longer stop the user. See NoticeService. */
+  private readonly notices = inject(NoticeService);
 
   readonly projectDir = input<string>('');
   readonly item = input<StudioItem | null>(null);
@@ -1963,11 +1966,10 @@ export class StudioVersionsComponent {
       await this.load();
       return;
     }
-    await this.electron.showMessageDialog({
-      title: 'Your changes were erased',
-      message: describeWorkingCopyRemint(res.remint),
-      type: 'info',
-    });
+    // The receipt for a confirm the user already gave. A banner: the reload
+    // below repaints the chain without their changes on it, which is the
+    // outcome, and a second box after the confirm box is one box too many.
+    this.notices.notify(describeWorkingCopyRemint(res.remint));
     await this.load();
     this.changed.emit();
   }
@@ -2011,20 +2013,17 @@ export class StudioVersionsComponent {
     const { confirmed } = await this.electron.showConfirmDialog({
       title: `Delete ${entry.label}`,
       message: `Take ${entry.label} back out of this book?`,
+      // Three sentences: what else goes, where the book lands, what is safe.
+      // The reasoning behind the cascade is in `ledgerAfterDeleting`.
       detail: [
         after.length === 0
           ? 'It is the last change recorded on this book, so nothing else is affected.'
-          : `Everything run after it goes with it — ${listLedgerLabels(after)}. Each of those was `
-            + 'applied to the text this one produced, and there is no book on disk with them '
-            + 'applied to anything else.',
-        '',
+          : `Everything run after it goes with it — ${listLedgerLabels(after)}.`,
         plan.kept.length === 0
           ? 'Your book goes back to the archive-grade original it was copied from.'
           : `Your book goes back to how ${listLedgerLabels(plan.kept)} left it.`,
-        '',
-        'Your working changes are untouched: they are recorded against the book rather than '
-        + 'written into it, and they apply to it again exactly as they did.',
-      ].join('\n'),
+        'Your working changes are untouched.',
+      ].join(' '),
       confirmLabel: after.length === 0 ? 'Delete it' : 'Delete them', cancelLabel: 'Cancel',
       type: 'warning',
     });
@@ -2041,13 +2040,10 @@ export class StudioVersionsComponent {
       await this.load();
       return;
     }
-    await this.electron.showMessageDialog({
-      title: `${entry.label} removed`,
-      // Main's own paragraph when it gave one; the same sentence built from the
-      // same rule when it did not, so the receipt never goes missing.
-      message: res.message ?? describeLedgerDeletion(plan),
-      type: 'info',
-    });
+    // Main's own paragraph when it gave one; the same sentence built from the
+    // same rule when it did not, so the receipt never goes missing. A banner:
+    // the row leaving the chain on reload is what the user pressed for.
+    this.notices.notify(res.message ?? describeLedgerDeletion(plan));
     await this.load();
     this.changed.emit();
   }
@@ -2176,11 +2172,7 @@ export class StudioVersionsComponent {
    */
   async onNarrationQueued(): Promise<void> {
     this.closeNarrationModal();
-    await this.electron.showMessageDialog({
-      title: 'Added to the queue',
-      message: 'It runs when the queue reaches it. Watch it on the Queue tab.',
-      type: 'info',
-    });
+    this.notices.notify('Added to the queue — it runs when the queue reaches it. Watch it on the Queue tab.');
     this.changed.emit();
   }
 
@@ -2362,13 +2354,12 @@ export class StudioVersionsComponent {
     }
 
     this.passesModalOpen.set(false);
-    await this.electron.showMessageDialog({
-      title: result.ran.length === 1 ? `${result.ran[0]} is done` : 'The passes are done',
-      message: `${result.ran.join(', ')} rewrote this book just now. Each one is a line under the `
-        + 'book that you can review and take back on its own. Your own changes are untouched — they '
-        + 'are recorded against the book rather than written into it.',
-      type: 'info',
-    });
+    // Long work that finished — a banner, not a modal. The reload below puts
+    // each pass on the page as its own line, which is the receipt.
+    this.notices.notify(
+      `${result.ran.join(', ')} rewrote this book just now. Each one is a line under the book that `
+      + 'you can review and take back on its own. Your own changes are untouched.',
+    );
     await this.load();
     this.changed.emit();
   }
@@ -2400,12 +2391,10 @@ export class StudioVersionsComponent {
       return;
     }
     this.closePassesModal();
-    await this.electron.showMessageDialog({
-      title: 'Added to the queue',
-      message: 'It runs when the queue reaches it. Watch it on the Queue tab. When it finishes it '
-        + 'becomes a line under this book that you can review and take back on its own.',
-      type: 'info',
-    });
+    this.notices.notify(
+      'Added to the queue — it runs when the queue reaches it. When it finishes it becomes a line '
+      + 'under this book that you can review and take back on its own.',
+    );
     await this.load();
     this.changed.emit();
   }
@@ -3251,18 +3240,19 @@ export class StudioVersionsComponent {
     if (!v.absPath) {
       await this.electron.showMessageDialog({
         title: `Could not ${action}`,
-        message: `BookForge has no resolved file path for the “${this.variantTitle(v)}” version, `
-          + 'so there is nothing to act on. This is a bug in how this book\'s versions were '
-          + 'loaded — reopen the book, and report it if it happens again.',
+        message: `BookForge has no file path for the “${this.variantTitle(v)}” version, so there `
+          + 'is nothing to act on. Nothing was changed. Reopen the book, and report this if it '
+          + 'happens again.',
         type: 'error',
       });
       return null;
     }
     if (!v.exists) {
+      console.error(`[variantFile] ${action}: file missing on disk: ${v.absPath}`);
       await this.electron.showMessageDialog({
         title: `Could not ${action}`,
-        message: `The file for the “${this.variantTitle(v)}” version is not on disk:\n\n${v.absPath}\n\n`
-          + 'It may have been moved, deleted, or not yet synced to this machine.',
+        message: `The file for the “${this.variantTitle(v)}” version is not on disk — see the log `
+          + 'for the path. It may have been moved, deleted, or not yet synced to this machine.',
         type: 'error',
       });
       return null;
@@ -3508,10 +3498,13 @@ export class StudioVersionsComponent {
     // notify Studio so the shelf/list picks up the new version.
     this.changed.emit();
     if (errors.length) {
-      await this.electron.showMessageDialog({
-        title: 'Some versions were not added',
-        message: errors.join('\n'), type: 'warning',
-      });
+      // The per-file reasons are a list, and a list is a log. The banner says
+      // how many so the user knows to go and look.
+      console.warn(`[variantAdd] ${errors.length} file(s) were not added: ${errors.join(' | ')}`);
+      this.notices.notify(
+        `${errors.length} of the files you chose were not added — see the log for which. `
+        + 'The rest are on this book\'s versions list.',
+      );
     }
     if (this.projectId() !== pid) return;
     // Both halves of the page: the variant list AND the Documents family —
@@ -3820,8 +3813,8 @@ export class StudioVersionsComponent {
       await this.electron.showMessageDialog({
         title: 'Not while this book is in the queue',
         message: `A ${first.type} job for this book is queued or running (${first.label})`
-          + `${blocking.length > 1 ? ` — and ${blocking.length - 1} more` : ''}. `
-          + 'Let it finish or remove it from the Queue, then start over.',
+          + `${blocking.length > 1 ? ` — and ${blocking.length - 1} more` : ''}. Nothing was `
+          + 'deleted. Let it finish or remove it from the Queue, then start over.',
         type: 'warning',
       });
       return;
@@ -3958,8 +3951,8 @@ export class StudioVersionsComponent {
       // shape drift, not a state — refuse rather than guess a path to delete.
       await this.electron.showMessageDialog({
         title: 'Could not delete the working copy',
-        message: 'BookForge cannot tell which original this working copy was cast from, so it '
-          + 'cannot name the document to remove. Reopen the book, and report this if it happens again.',
+        message: 'BookForge cannot tell which original this working copy was cast from, so nothing '
+          + 'was removed. Reopen the book, and report this if it happens again.',
         type: 'error',
       });
       return;
@@ -4030,8 +4023,7 @@ export class StudioVersionsComponent {
       await this.electron.showMessageDialog({
         title: 'Could not delete the original',
         message: 'BookForge has no manifest record for this file, so there is no version to '
-          + 'delete — only bytes it cannot vouch for. Reopen the book, and report this if it '
-          + 'happens again.',
+          + 'delete and nothing was removed. Reopen the book, and report this if it happens again.',
         type: 'error',
       });
       return;
@@ -4043,38 +4035,30 @@ export class StudioVersionsComponent {
     // the working copy can still be made from THAT — so "it cannot be rebuilt"
     // is only true when there is no generated book standing behind it.
     const generated = this.documents().find(d => d.type === 'generated') ?? null;
+    // Three sentences: what goes, what stays, and that it is final. The full
+    // inventory — every file on each side — is in the log, because a wall of
+    // bullets in a confirm box is a wall people press through.
+    console.warn(
+      `[removeArchiveOriginal] deleting ${v.path}. Goes with it: `
+      + `${working ? `${working.path} plus its cast text layer and block curation` : 'nothing else'}. `
+      + `Kept: ${generated ? generated.path : book ? book.path : 'no derived book'}, finished `
+      + 'audiobooks, the rendered sentence cache, the cover and all metadata.',
+    );
     const detail = [
-      `This deletes ${v.path}`,
-      '',
-      'It is the book exactly as you imported it, and everything else here was made from it. '
+      `This deletes ${v.path.split(/[\\/]/).pop()} — the book exactly as you imported it, and `
       + 'BookForge keeps no other copy.',
-      '',
-      ...(working
-        ? [
-          'GOES WITH IT — your working copy was cast from this file and is bound to it by hash:',
-          `  • ${working.path.split(/[\\/]/).pop()}`,
-          '  • the cast text layer, and your block labels, deletions, merges and chapter titles',
-          '',
-        ]
-        : []),
-      ...(generated
-        ? [
-          `KEPT: the book read out of its pages — ${generated.path.split(/[\\/]/).pop()} — and your `
-          + 'working copy of it, with everything applied. Those pages cannot be read again once the '
-          + 'PDF is gone, but your book and your edits are not affected.',
-          '',
-        ]
+      working
+        ? 'Your working copy of it goes too, with the cast text layer and your block labels, '
+          + 'deletions, merges and chapter titles.'
+        : 'Nothing else on this page is bound to it.',
+      generated
+        ? `The book read out of its pages — ${generated.path.split(/[\\/]/).pop()} — your `
+          + 'audiobooks, the cover and all metadata are kept, and this cannot be undone.'
         : book
-          ? [
-            `KEPT: the book you built from it — ${book.path.split(/[\\/]/).pop()} — with everything `
-            + 'applied to it. It cannot be rebuilt once the original is gone.',
-            '',
-          ]
-          : []),
-      'KEPT: your finished audiobooks, the rendered sentence cache, the cover and all metadata.',
-      '',
-      'This cannot be undone.',
-    ].join('\n');
+          ? `The book you built from it — ${book.path.split(/[\\/]/).pop()} — your audiobooks, the `
+            + 'cover and all metadata are kept, and this cannot be undone.'
+          : 'Your audiobooks, the cover and all metadata are kept, and this cannot be undone.',
+    ].join(' ');
 
     const { confirmed } = await this.electron.showConfirmDialog({
       title: 'Delete the original',
@@ -4090,9 +4074,8 @@ export class StudioVersionsComponent {
         await this.electron.showMessageDialog({
           title: 'Delete stopped — the original is still here',
           message: 'The working copy cast from this original could not be removed: '
-            + `${discarded.error || 'no reason given'}.\n\nNothing was deleted. The original is `
-            + 'untouched, because leaving a working copy bound to an original that is gone would '
-            + 'leave a document nothing can verify or reopen.',
+            + `${discarded.error || 'no reason given'}. Nothing was deleted, because a working copy `
+            + 'bound to an original that is gone is a document nothing can reopen.',
           type: 'error',
         });
         return;
@@ -4224,12 +4207,10 @@ export class StudioVersionsComponent {
       }
     }
     // The receipt — the same sentence main writes to its console and the picker
-    // shows when the copy is re-made by the other route.
-    await this.electron.showMessageDialog({
-      title: 'Every change erased',
-      message: describeWorkingCopyRemint(res.remint),
-      type: 'info',
-    });
+    // shows when the copy is re-made by the other route. A banner: this is the
+    // second half of a confirm the user has already given, and the reloaded
+    // page shows the result.
+    this.notices.notify(describeWorkingCopyRemint(res.remint));
     await this.load();
     this.changed.emit();
   }
@@ -4693,14 +4674,12 @@ export class StudioVersionsComponent {
     });
     const wasRegenerate = this.hasAuthoritativeTranscript(v);
     this.closeSentencePicker();
-    await this.electron.showMessageDialog({
-      title: 'Added to queue',
-      message: (wasRegenerate
+    this.notices.notify(
+      (wasRegenerate
         ? 'Re-transcription was added to the queue — it replaces the current synced text when it runs. '
         : 'Transcription was added to the queue. ')
-        + 'Open the Queue tab and press Start to run it.'
-        + (this.pickerNeedsDownload() ? ' The job downloads the speech-to-text model first, then transcribes.' : ''),
-      type: 'info',
-    });
+      + 'Open the Queue tab and press Start to run it.'
+      + (this.pickerNeedsDownload() ? ' The job downloads the speech-to-text model first.' : ''),
+    );
   }
 }

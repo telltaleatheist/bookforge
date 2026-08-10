@@ -8,6 +8,7 @@ import {
   EnvDiagnosticResult,
 } from './electron.service';
 import { RuntimeService } from './runtime.service';
+import { NoticeService } from './notice.service';
 
 /**
  * Renderer-side state for the optional component system (Settings → Add-ons).
@@ -24,6 +25,8 @@ import { RuntimeService } from './runtime.service';
 export class ComponentService {
   private readonly electron = inject(ElectronService);
   private readonly runtime = inject(RuntimeService);
+  /** Where "the installer is open, here is the next step" goes now. */
+  private readonly notices = inject(NoticeService);
 
   /** Catalog × installed × compatibility for every known component. */
   readonly components = signal<ComponentStatus[]>([]);
@@ -127,12 +130,14 @@ export class ComponentService {
       if (!result.ok) {
         this.error.set(result.error || `Could not download the ${id} installer`);
       } else {
+        // The OS installer is now on screen in front of them, which is the
+        // receipt. What is left to say is the follow-up step, and it says
+        // itself on a banner rather than behind the window they must use next.
         const note = this.installerNotes()[id];
-        await this.electron.showMessageDialog({
-          type: 'info',
-          title: 'Installer launched',
-          message: note || 'The installer was downloaded and opened. Complete it, then click Locate if it isn’t detected automatically.',
-        });
+        this.notices.notify(
+          note || 'The installer was downloaded and opened. Complete it, then click Locate if it '
+            + 'isn’t detected automatically.',
+        );
       }
     } catch (err) {
       this.error.set(this.toMessage(err, `Could not download the ${id} installer`));
