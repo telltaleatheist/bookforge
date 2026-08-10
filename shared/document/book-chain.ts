@@ -112,9 +112,11 @@ export type ReviewAffordance = 'ready' | 'no-receipt' | 'none';
  *
  * The three standing ones (`open`, `export`, `delete`) are on every line and are
  * laid out in fixed columns, so they line up down the page. `false` means the
- * column is EMPTY rather than absent — that is what keeps the alignment. A line
- * that has the act but cannot perform it right now (the narration copy's delete)
- * is `true` here and disabled by the page with its reason.
+ * column is EMPTY rather than absent — that is what keeps the alignment. Delete
+ * is live on EVERY chain line (Owen, 2026-08-10: "it should always be
+ * available"), each routed to the remover that owns that artifact's records —
+ * the page may still disable one with a reason when the ROW arrives in a state
+ * its remover cannot classify.
  */
 export interface ChainButtons {
   /** Convert to EPUB — the archive PDF and a legacy working PDF. */
@@ -268,12 +270,15 @@ export function bookChain(input: BookChainInput): ChainLine[] {
         eraseEverything: exportedRow !== null,
         open: true,
         export: true,
-        // PDF-origin: this line is the generated book, and its delete is the
-        // heavy act (the cast goes, the working copy with it). EPUB-native:
-        // this line IS the working copy, whose only honest delete is the erase
-        // special above — a second button doing the same act under the name
-        // "Delete" is how the column came to hold text it could not fit.
-        delete: bookType === 'generated',
+        // Always (Owen, 2026-08-10: "it should always be available"). What it
+        // DOES differs by what the line is standing on: PDF-origin, this line
+        // is the generated book and Delete is the heavy act (the cast goes,
+        // the working copy with it); EPUB-native, it is the working copy and
+        // Delete routes to the same erase the special performs — the file
+        // comes straight back, which its confirmation says. The special stays
+        // beside it because it is the act's honest NAME; the column only ever
+        // says Delete because 78px is what "Delete" fits.
+        delete: true,
       },
     });
 

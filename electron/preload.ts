@@ -1447,6 +1447,16 @@ export interface ElectronAPI {
       error?: string;
     }>;
     /**
+     * Delete the narration copy: its record first, then the file. The cheapest
+     * delete in the project — Export TTS copy cuts it again from the book and
+     * the strikes, which stay exactly as they are.
+     */
+    deleteTtsCopy: (projectDir: string) => Promise<{
+      success: boolean;
+      removed?: { relPath: string; fileRemoved: boolean };
+      error?: string;
+    }>;
+    /**
      * The file TTS reads — `<archive basename>.tts.epub` — cut from the working
      * copy if there is none or the one on record is stale. Refuses a project
      * with no working copy by name.
@@ -3318,6 +3328,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('book:remove-footnote-references', projectDir),
     deleteGeneratedEpub: (projectDir: string) =>
       ipcRenderer.invoke('book:delete-generated-epub', projectDir),
+    deleteTtsCopy: (projectDir: string) =>
+      ipcRenderer.invoke('book:delete-tts-copy', projectDir),
     ensureNarrationEpub: (projectDir: string) =>
       ipcRenderer.invoke('narration:ensure-copy', projectDir),
     narrationState: (projectDir: string) =>

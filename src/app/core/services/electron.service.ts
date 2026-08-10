@@ -2919,6 +2919,22 @@ export class ElectronService {
   }
 
   /**
+   * Delete the narration copy — its record, then the file. The cheapest delete
+   * in the project: Export TTS copy cuts it again from the book and the
+   * strikes, which stay exactly as they are.
+   */
+  async deleteTtsCopy(projectDir: string): Promise<{
+    success: boolean;
+    removed?: { relPath: string; fileRemoved: boolean };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.deleteTtsCopy(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
    * The file TTS reads — the project's `<archive basename>.tts.epub`.
    *
    * Cut from the working copy when there is none or the recorded one was cut

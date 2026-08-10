@@ -7588,6 +7588,32 @@ function setupIpcHandlers(): void {
   });
 
   /**
+   * Delete the narration copy — record first, file last.
+   *
+   * Owen, 2026-08-10: "if i want to delete the tts file i can." The versions
+   * page used to refuse this delete because a generic file remove would have
+   * left `outputs.ttsEpub` naming a path with nothing behind it; the honest
+   * answer was never a refusal, it was a remover that clears the record. The
+   * copy is the cheapest artifact in the project — Export TTS copy cuts it
+   * again from the book and the strikes, which this does not touch.
+   */
+  ipcMain.handle('book:delete-tts-copy', async (_event, rawProjectDir: string) => {
+    try {
+      const projectDir = normalizeFsPath(rawProjectDir);
+      const forgotten = await manifestService.forgetNarrationEpub(projectDir);
+      let fileRemoved = false;
+      if (fsSync.existsSync(forgotten.absPath)) {
+        await fs.unlink(forgotten.absPath);
+        fileRemoved = true;
+      }
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return { success: true, removed: { relPath: forgotten.relPath, fileRemoved } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
    * The file TTS reads, cut from the working copy if there is not a current one.
    *
    * The Process flow's first act. It replaced a control asking WHICH EPUB to

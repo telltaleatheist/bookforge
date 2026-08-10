@@ -3121,6 +3121,45 @@ export async function readNarrationEpubRecord(
   return manifest.outputs?.ttsEpub ?? null;
 }
 
+/**
+ * Forget the project's narration copy — the record only; unlinking the file is
+ * the caller's act, done after this returns.
+ *
+ * Records first, file last, the ordering every remover here uses: an
+ * unrecorded stray is invisible, while a record naming a file that is gone is
+ * what left the narration flow reading a path with nothing behind it — the
+ * exact state the versions page used to refuse this delete to avoid. The copy
+ * is the cheapest artifact in the project to lose: Export TTS copy cuts it
+ * again from the book and the strikes, both of which are untouched by this.
+ */
+export async function forgetNarrationEpub(projectDir: string): Promise<ExportEpubLocation> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  const recorded = manifest.outputs?.ttsEpub;
+  if (!recorded?.path) {
+    throw new Error(
+      `${path.basename(projectDir)} has no outputs.ttsEpub, so there is no narration copy to `
+      + 'delete. The record is the only thing that says a project has one.'
+    );
+  }
+  const answer: ExportEpubLocation = {
+    relPath: recorded.path,
+    absPath: toAbs(projectDir, recorded.path),
+    modifiedAt: recorded.modifiedAt,
+  };
+  const saved = await modifyManifest(projectId, (m) => {
+    if (m.outputs) delete m.outputs.ttsEpub;
+  });
+  if (!saved.success) {
+    throw new Error(
+      `Could not forget ${recorded.path} in ${path.basename(projectDir)}'s manifest: `
+      + `${saved.error}. Nothing was deleted.`
+    );
+  }
+  return answer;
+}
+
 /** Record a written narration copy as `outputs.ttsEpub`. */
 export async function registerNarrationEpub(
   projectDir: string,

@@ -164,11 +164,12 @@ test('Erase all changes is a SPECIAL on every book line, and never the delete', 
   const cast = bookChain({ rows: pdfProject, ledger: [] }).find((l) => l.kind === 'book');
   assert.strictEqual(cast.buttons.eraseEverything, true);
   assert.strictEqual(cast.buttons.delete, true);
-  // EPUB-native: the book line IS the working copy, whose only honest delete
-  // is the erase — so the delete column is EMPTY, not a second name for it.
+  // EPUB-native: the book line IS the working copy. Its Delete routes to the
+  // same erase the special performs — Owen ruled delete is ALWAYS available
+  // (2026-08-10), and the special stays because it is the act's honest name.
   const own = bookChain({ rows: epubProject, ledger: [] }).find((l) => l.kind === 'book');
   assert.strictEqual(own.buttons.eraseEverything, true);
-  assert.strictEqual(own.buttons.delete, false);
+  assert.strictEqual(own.buttons.delete, true);
 });
 
 test('a PDF nobody has converted is one line, with no book and no chain', () => {

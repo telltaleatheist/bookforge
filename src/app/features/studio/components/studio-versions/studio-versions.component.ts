@@ -1728,20 +1728,17 @@ export class StudioVersionsComponent {
    * Why this line's delete is locked, or null when it can be pressed.
    *
    * A reason rather than a missing button: the columns line up, so a line with
-   * no delete at all would leave a hole that reads as an oversight. The
-   * narration copy is the case this exists for — it is pointed at by a manifest
-   * record the generic remover does not clear, so deleting the file would leave
-   * narration reading a path with nothing behind it.
+   * no delete at all would leave a hole that reads as an oversight. Owen,
+   * 2026-08-10: "it should always be available" — so on the chain, every line's
+   * delete is live, each routed to the remover that owns its records. The
+   * narration copy USED to be refused here because a generic file remove would
+   * have stranded `outputs.ttsEpub`; the answer was `book:delete-tts-copy`
+   * (record first, file last), not a refusal.
    */
   deleteLineRefusal(row: ChainRowView): string | null {
     if (row.line.kind === 'working-changes' || row.line.kind === 'ledger') return null;
     if (row.v === null) {
       return 'This line names no file, so there is nothing here to delete.';
-    }
-    if (row.v.type === 'narration') {
-      return 'The narration copy is re-cut from your book and your strikes every time you export '
-        + 'it, and the project records where it is — so it is not deleted from here. Exporting the '
-        + 'TTS copy again replaces it.';
     }
     return this.deletable(row.v)
       ? null
@@ -3304,12 +3301,11 @@ export class StudioVersionsComponent {
       return !!v.variantId;
     }
     if (v.type === 'working') return !!v.primaryPath;
-    // 'narration' joins them: the narration copy is pointed at by a manifest
-    // record (`outputs.ttsEpub`) that the generic remover does not clear, so a
-    // delete here would leave narration reading a path with no file behind it.
-    // It is also the one row that costs nothing to lose — `Export TTS copy` cuts
-    // it again from the book and the strikes, both of which are still there.
-    return !['original', 'analysis', 'narration'].includes(v.type);
+    // 'narration' is deletable (Owen, 2026-08-10: "if i want to delete the tts
+    // file i can") through `book:delete-tts-copy`, which clears `outputs.ttsEpub`
+    // before touching the file — the record the generic remover would have
+    // stranded, and the whole reason this row used to be refused.
+    return !['original', 'analysis'].includes(v.type);
   }
 
 
@@ -3325,6 +3321,9 @@ export class StudioVersionsComponent {
       case 'exported':
         return 'Clear every change and put a fresh byte-identical copy in its place. The book it '
           + 'was copied from is untouched.';
+      case 'narration':
+        return 'Delete the TTS copy. It costs nothing to lose — Export TTS copy cuts it again '
+          + 'from your book and your strikes, which stay exactly as they are.';
       default:
         return 'Delete this version';
     }
@@ -3978,14 +3977,50 @@ export class StudioVersionsComponent {
     this.changed.emit();
   }
 
+  /**
+   * Delete the TTS copy — the cheapest delete in the project.
+   *
+   * Owen, 2026-08-10: "if i want to delete the tts file i can." Through
+   * `book:delete-tts-copy`, which clears `outputs.ttsEpub` before unlinking, so
+   * nothing is ever left reading a path with no file behind it. The book and
+   * the strikes are untouched, which is why the confirmation can promise the
+   * copy back for the cost of one export.
+   */
+  private async removeTtsCopy(v: VersionRow): Promise<void> {
+    const dir = this.projectDir();
+    if (!dir) return;
+    const name = v.path.split(/[\\/]/).pop();
+    const { confirmed } = await this.electron.showConfirmDialog({
+      title: 'Delete the TTS copy',
+      message: `Delete ${name}?`,
+      detail: 'Your book and your strikes are untouched — Export TTS copy cuts this file again '
+        + 'from both, exactly as it was.',
+      confirmLabel: 'Delete', cancelLabel: 'Cancel', type: 'warning',
+    });
+    if (!confirmed) return;
+
+    const res = await this.electron.deleteTtsCopy(dir);
+    if (!res.success) {
+      await this.electron.showMessageDialog({
+        title: 'Delete failed',
+        message: res.error || 'The TTS copy could not be deleted, and gave no reason. Nothing was removed.',
+        type: 'error',
+      });
+      return;
+    }
+    await this.load();
+    this.changed.emit();
+  }
+
   async removeDoc(v: VersionRow): Promise<void> {
-    // The family's rows are four different acts, each owned by the code that
+    // The family's rows are five different acts, each owned by the code that
     // already knows how to undo that artifact. Only the rows below them — the
     // legacy stage outputs — take the generic file delete.
     if (v.type === 'working') { await this.removeWorkingCopy(v); return; }
     if (v.type === 'archive') { await this.removeArchiveOriginal(v); return; }
     if (v.type === 'generated') { await this.removeGeneratedEpub(v); return; }
     if (v.type === 'exported') { await this.eraseBookChanges(v); return; }
+    if (v.type === 'narration') { await this.removeTtsCopy(v); return; }
 
     const { confirmed } = await this.electron.showConfirmDialog({
       title: 'Delete version',
