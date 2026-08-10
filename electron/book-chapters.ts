@@ -1008,5 +1008,10 @@ export async function renameBookChapter(
     bookSha256: after,
     narrationCopy,
     rewrittenTocs: renamed.rewrittenTocs,
+    // The chapter document is in the list because its `<head><title>` was
+    // refilled, even though a `<head>` has no pages. A caller that re-derives a
+    // stamped copy from these entries needs every entry whose BYTES moved, and
+    // the one that only re-lays-out spine documents can tell which is which.
+    rewrittenEntries: [...new Set([...renamed.rewrittenTocs, chapterFile])],
   };
 }

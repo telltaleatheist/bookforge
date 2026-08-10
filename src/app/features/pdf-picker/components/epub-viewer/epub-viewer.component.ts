@@ -1199,6 +1199,37 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     }
   }
 
+  /**
+   * Drop these spine documents' frames, so they are built again from the bytes
+   * the book now serves.
+   *
+   * A frame is a `<webview>` that loaded `quire://<session>/<entry>` once. When
+   * an edit changes what that address answers with — a chapter renamed, which
+   * rewrites the heading and hands the open book new bytes for that one document
+   * (`quire:relayout-entries`) — the URL is the same, the band arithmetic
+   * follows the new mount by itself, and the FRAME goes on showing the markup it
+   * loaded. Nothing else in this component would ever notice, so the caller that
+   * knows which documents changed says so here.
+   *
+   * Only the named ones. Re-mounting the whole book to show one changed chapter
+   * is the reload this whole path exists to stop being.
+   */
+  remountDocuments(indices: readonly number[]): void {
+    queueMicrotask(() => {
+      for (const index of indices) this.unmountBand(index);
+      // A flow band's height was MEASURED off the old markup, and a chapter that
+      // gained a line is taller. Dropping the measurement puts the band back on
+      // its reservation until the re-mounted frame reports the real one.
+      this.flowHeights.update((m) => {
+        const next = new Map(m);
+        for (const index of indices) next.delete(index);
+        return next;
+      });
+      this.queueReconcile();
+      this.reconcileVisibility();
+    });
+  }
+
   private unmountBand(index: number): void {
     const frame = this.mounted.get(index);
     if (!frame) return;

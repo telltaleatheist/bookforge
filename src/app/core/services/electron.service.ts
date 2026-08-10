@@ -29,6 +29,32 @@ import type {
   WorkingDocumentEdit,
 } from '@shared/document/pipeline-types';
 import type { PassDiffFile } from '../models/diff.types';
+import type { QuirePageMount } from '../../../../packages/quire/src/types';
+
+/**
+ * What comes back when a book already on screen is laid out again around the
+ * documents an edit rewrote — `electron/quire-viewer-bridge.ts`.
+ *
+ * `documents` is the whole new mount set, not just the relaid ones: a document
+ * that gained a page moves every page number after it, so every later mount's
+ * first page has changed even though its markup has not.
+ */
+export interface QuireRelayoutAnswer {
+  /** The digest the edited book is now cached under. */
+  fileHash: string;
+  /** Spine documents measured again. */
+  relaid: string[];
+  /** Rewritten entries with no pages — a nav document, an NCX — that were only re-stamped. */
+  restampedOnly: string[];
+  documents: QuirePageMount[];
+  pageCount: number;
+  /** One entry per page, all the same box — main's own description of a page. */
+  pageDimensions: Array<{ width: number; height: number; originX: number; originY: number }>;
+  /** Pages the book gained, or lost when negative. */
+  pageDelta: number;
+  relayoutMs: number;
+  totalMs: number;
+}
 
 // Lightweight match rectangle for custom category highlights
 interface MatchRect {
@@ -414,6 +440,14 @@ interface PdfAnalyzeTextResult {
     categories: Record<string, any>;
     spans?: any[];
     warnings?: string[];
+    /** Where the blocks' categories came from — the book's markup, or the classifier. */
+    categoryProvenance?: BlockCategoryProvenance;
+    /**
+     * The digest of the file that was analyzed. Present on the EPUB path, which
+     * computes it for its own cache key; a caller that needs it must say so
+     * rather than carry on without one.
+     */
+    sourceSha256?: string;
   };
   error?: string;
 }
@@ -882,6 +916,29 @@ export class ElectronService {
   async quireCloseBook(handle: string): Promise<{ success: boolean; error?: string }> {
     if (!this.isElectron) return { success: true };
     return (window as any).electron.quire.closeBook(handle);
+  }
+
+  /**
+   * Lay the documents an edit rewrote out again, in the book already open under
+   * `handle`.
+   *
+   * `entries` are zip entry names, and they come from the code that performed
+   * the edit — main tells the window which files it rewrote. Nothing here works
+   * them out from a count or a page number: relaying out the wrong document
+   * would leave the book paginated for markup it does not have.
+   *
+   * A refusal is a refusal of the whole gesture. There is no reopen behind it:
+   * the caller shows the sentence and leaves the book as it was.
+   */
+  async quireRelayoutEntries(
+    handle: string,
+    bookPath: string,
+    entries: string[],
+  ): Promise<{ success: boolean; data?: QuireRelayoutAnswer; error?: string }> {
+    if (!this.isElectron) {
+      return { success: false, error: 'A book can only be laid out again inside the desktop app.' };
+    }
+    return (window as any).electron.quire.relayoutEntries(handle, bookPath, entries);
   }
 
   onAnalyzeProgress(callback: (progress: { phase: string; message: string }) => void): () => void {
@@ -3351,6 +3408,12 @@ export class ElectronService {
     result?: BookChapterRenameResult;
     openingsNamed?: number;
     openingUnnamed?: string | null;
+    /**
+     * Every zip entry of the book the rename AND the naming pass between them
+     * rewrote — main's own list, never inferred here. What a window with this
+     * book paginated lays out again.
+     */
+    rewrittenEntries?: string[];
     error?: string;
   }> {
     if (this.isElectron) {

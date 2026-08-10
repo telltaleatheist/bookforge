@@ -91,5 +91,17 @@ export interface BookChapterRenameResult {
    * updated only one of them is the bug this field is evidence against.
    */
   rewrittenTocs: string[];
+  /**
+   * EVERY zip entry of the book whose bytes this rename changed — the tables of
+   * contents and the chapter document whose `<head><title>` was refilled.
+   *
+   * Stated rather than left to be worked out, because a window showing this book
+   * has it paginated and has to lay the changed documents out again
+   * (`quire:relayout-entries`). Deriving that list from `rewrittenTocs` plus a
+   * guess at which document was meant would be a guess about which chapter to
+   * re-paginate, and a book paginated for markup it does not have is worse than
+   * one that was never re-paginated at all.
+   */
+  rewrittenEntries: string[];
   narrationCopy: NarrationCopyOutcome;
 }

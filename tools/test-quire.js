@@ -1093,6 +1093,250 @@ async function testPagedDisplayPath() {
   }
 }
 
+// ── Incremental relayout ──────────────────────────────────────────────────
+/**
+ * The oracle: an incrementally relaid book must be INDISTINGUISHABLE from the
+ * same edited book opened from scratch.
+ *
+ * That equality is the whole claim `relayoutDocument` makes. Renaming a chapter
+ * rewrites one spine document, and the window lays that one out again instead of
+ * re-opening the book — which is only allowed if the result is the same book.
+ * Not "close enough" and not "the same page count": every page's blocks, every
+ * box, every split run, every document offset, every stamped id, in order.
+ *
+ * The edit is deliberately one that CHANGES THE PAGE COUNT — a chapter heading
+ * long enough to run past a page on its own — because the arithmetic being
+ * tested is the re-numbering of every document after the one that moved. An edit
+ * that fitted in the same pages would prove nothing about it.
+ */
+function relayoutSnapshot(doc) {
+  const report = doc.getReport();
+  const pageCount = doc.countPages();
+  const pages = [];
+  for (let p = 0; p < pageCount; p++) pages.push(doc.loadPage(p).getBlocks());
+  return {
+    pageCount,
+    pages,
+    documents: report.documents,
+    documentPageOffsets: report.documentPageOffsets,
+    stampedIds: report.stampedIds,
+    unplaced: report.unplaced,
+    overflows: report.overflows,
+  };
+}
+
+/** Deep equality that NAMES where two snapshots part company. */
+function assertSameSnapshot(actual, expected, what) {
+  const a = JSON.stringify(actual);
+  const b = JSON.stringify(expected);
+  if (a === b) return;
+  let at = 0;
+  while (at < a.length && at < b.length && a[at] === b[at]) at++;
+  throw new Error(
+    `${what}: the two page maps diverge at character ${at} of their serialization — `
+    + `incremental says …${a.slice(Math.max(0, at - 80), at + 80)}… and a fresh layout says `
+    + `…${b.slice(Math.max(0, at - 80), at + 80)}…`);
+}
+
+/** One zip entry of a book, as text. */
+async function entryText(epubPath, entry) {
+  const processor = new EpubProcessor();
+  try {
+    await processor.open(epubPath);
+    return await processor.readFile(entry);
+  } finally {
+    processor.close();
+  }
+}
+
+/** The four-chapter fixture, with chapter two written either way. */
+function relayoutFixtureDocuments(chapterTwoHeading) {
+  const body = (n, heading) => {
+    const paras = [];
+    for (let i = 0; i < n; i++) {
+      paras.push(`<p>Paragraph ${i} of this chapter, carrying enough words to set a line or two `
+        + 'of the page and give the fragmenter somewhere to break.</p>');
+    }
+    return `<h1>${heading}</h1>${paras.join('')}`;
+  };
+  return [
+    { name: 'a.xhtml', xhtml: page(body(12, 'Chapter One'), 'One') },
+    { name: 'b.xhtml', xhtml: page(body(40, chapterTwoHeading), 'Two') },
+    { name: 'c.xhtml', xhtml: page(body(18, 'Chapter Three'), 'Three') },
+    { name: 'd.xhtml', xhtml: page(body(9, 'Chapter Four'), 'Four') },
+  ];
+}
+
+/** A chapter name long enough that it fills more than a page by itself. */
+function overlongChapterName() {
+  const words = [];
+  for (let i = 0; i < 150; i++) words.push(`Renamed${i}`);
+  return words.join(' ');
+}
+
+async function testRelayoutMatchesAFreshLayout() {
+  const before = path.join(scratch, 'relayout-before.epub');
+  const after = path.join(scratch, 'relayout-after.epub');
+  const stampedBefore = path.join(scratch, 'relayout-before.stamped.epub');
+  const stampedAfter = path.join(scratch, 'relayout-after.stamped.epub');
+  await buildEpub(before, relayoutFixtureDocuments('Chapter Two'));
+  await buildEpub(after, relayoutFixtureDocuments(overlongChapterName()));
+  await stampEpubForQuire(before, stampedBefore, 'relayout-before');
+  await stampEpubForQuire(after, stampedAfter, 'relayout-after');
+
+  // The stamps of the UNCHANGED documents must be identical in the two books —
+  // the premise the whole incremental path rests on, and the reason a caller may
+  // re-stamp only what it rewrote. Asserted here rather than assumed.
+  for (const entry of ['OEBPS/a.xhtml', 'OEBPS/c.xhtml', 'OEBPS/d.xhtml']) {
+    assertEqual(await entryText(stampedAfter, entry), await entryText(stampedBefore, entry),
+      `${entry} was not rewritten, so its stamped bytes must be the same in both books`);
+  }
+
+  const edited = await entryText(stampedAfter, 'OEBPS/b.xhtml');
+
+  const doc = await Quire.openDocument(stampedBefore, { strategy: new PagedStrategy() });
+  let incremental;
+  let pagesBefore;
+  try {
+    await doc.layout({ width: 600, height: 900, fontSize: 18 });
+    pagesBefore = doc.countPages();
+    await doc.relayoutDocument('OEBPS/b.xhtml', edited);
+    incremental = relayoutSnapshot(doc);
+  } finally {
+    await doc.close();
+  }
+
+  const fresh = await Quire.openDocument(stampedAfter, { strategy: new PagedStrategy() });
+  let whole;
+  try {
+    await fresh.layout({ width: 600, height: 900, fontSize: 18 });
+    whole = relayoutSnapshot(fresh);
+  } finally {
+    await fresh.close();
+  }
+
+  assert(incremental.pageCount > pagesBefore,
+    `the fixture was meant to GAIN pages so the re-numbering of the documents after chapter two `
+    + `is under test; it went from ${pagesBefore} to ${incremental.pageCount}`);
+  assertEqual(incremental.pageCount, whole.pageCount,
+    'the relaid book and the freshly opened one disagree about how many pages the book has');
+  assertSameSnapshot(incremental, whole, 'a relaid book against a fresh open of the same bytes');
+}
+
+/**
+ * A relayout that trips the measurement's own verification refuses, and the
+ * document goes on answering exactly what it answered before the attempt.
+ *
+ * The doctored pattern is the CES letter's, reused: a scroll container taller
+ * than the page, laid out by a strategy with `MONOLITHIC_OVERFLOW_RULE` stripped,
+ * which makes Paged.js emit whole elements twice. It is the same check the full
+ * layout runs — nothing about the incremental path is exempt from it — and the
+ * point here is the state AFTERWARDS.
+ */
+async function testRelayoutRefusalLeavesTheBookAsItWas() {
+  const bookPath = path.join(scratch, 'relayout-refuse.epub');
+  const stamped = path.join(scratch, 'relayout-refuse.stamped.epub');
+  await buildEpub(bookPath, relayoutFixtureDocuments('Chapter Two'));
+  await stampEpubForQuire(bookPath, stamped, 'relayout-refuse');
+
+  // The poison, stamped under the entry name it will be relaid into, so the ids
+  // that come back are the ids that document's elements would really carry.
+  const css = '.tablewrap { margin: 1em 0; overflow-x: auto; }'
+    + 'table { border-collapse: collapse; margin: 0 auto; }'
+    + 'td, th { border: none; padding: 0.35em 1.1em; }'
+    + 'th { border-bottom: 1px solid currentColor; }'
+    + 'body { margin: 0 5%; line-height: 1.5; }'
+    + 'p { margin: 0 0 0.4em; text-indent: 1.4em; }';
+  const rows = [];
+  for (let i = 0; i < 20; i++) rows.push(`<tr><td>Placename ${i}</td><td>Bookname ${i}</td></tr>`);
+  const trailing = [];
+  for (let i = 0; i < 6; i++) {
+    trailing.push(`<p>Trailing paragraph ${i}. `
+      + 'Every one of these carries enough words that the running character count reaches the '
+      + 'fragmenter\'s own break threshold before the walker runs out of document. '.repeat(2)
+      + '</p>');
+  }
+  const poisonBody = '<div class="tablewrap"><table><thead><tr><th>MODERN<br/>GEOGRAPHIC PLACE</th>'
+    + `<th>BOOK OF<br/>MORMON NAME</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`
+    + trailing.join('');
+  const poisonPath = path.join(scratch, 'relayout-poison.epub');
+  const poisonStamped = path.join(scratch, 'relayout-poison.stamped.epub');
+  await buildEpub(poisonPath, [{
+    name: 'b.xhtml',
+    xhtml: '<?xml version="1.0" encoding="utf-8"?>\n'
+      + '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Two</title>'
+      + `<style>${css}</style></head><body>${poisonBody}</body></html>`,
+  }]);
+  await stampEpubForQuire(poisonPath, poisonStamped, 'relayout-poison');
+  const poison = await entryText(poisonStamped, 'OEBPS/b.xhtml');
+
+  const doc = await Quire.openDocument(stamped, { strategy: new NoOverflowRuleStrategy() });
+  try {
+    await doc.layout({ width: 600, height: 900, fontSize: 18 });
+    const was = relayoutSnapshot(doc);
+
+    let threw = null;
+    try {
+      await doc.relayoutDocument('OEBPS/b.xhtml', poison);
+    } catch (err) {
+      threw = err;
+    }
+    assert(threw !== null,
+      'quire accepted a relayout of markup that makes the fragmenter emit whole elements twice; '
+      + 'the incremental path is not running the verification the full one does');
+    assert(threw instanceof QuireError,
+      `expected a QuireError from a refused relayout, got ${threw && threw.name}`);
+    assert(/CONTENT_REPEATED/.test(threw.message),
+      `the refusal must name the repetition; it said: ${threw.message}`);
+
+    assertSameSnapshot(relayoutSnapshot(doc), was,
+      'a book after a REFUSED relayout, against the same book before it');
+
+    // And it is still a working document, not merely an unchanged one: the pages
+    // still load and a good relayout still lands.
+    assertEqual(doc.loadPage(0).getBlocks().length, was.pages[0].length,
+      'page 0 stopped answering after a refused relayout');
+  } finally {
+    await doc.close();
+  }
+}
+
+async function testRelayoutOfAnUnknownEntryIsRefused() {
+  const bookPath = path.join(scratch, 'relayout-unknown.epub');
+  const stamped = path.join(scratch, 'relayout-unknown.stamped.epub');
+  await buildEpub(bookPath, relayoutFixtureDocuments('Chapter Two'));
+  await stampEpubForQuire(bookPath, stamped, 'relayout-unknown');
+
+  const doc = await Quire.openDocument(stamped, { strategy: new PagedStrategy() });
+  try {
+    await doc.layout({ width: 600, height: 900, fontSize: 18 });
+    const was = relayoutSnapshot(doc);
+
+    for (const [entry, source, code] of [
+      ['OEBPS/nav.xhtml', page('<p>the navigation document has no pages</p>'), /NOT_A_SPINE_DOCUMENT/],
+      ['OEBPS/never-existed.xhtml', page('<p>nor does this</p>'), /NOT_A_SPINE_DOCUMENT/],
+      ['OEBPS/b.xhtml', '   ', /EMPTY_RELAYOUT_SOURCE/],
+    ]) {
+      let threw = null;
+      try {
+        await doc.relayoutDocument(entry, source);
+      } catch (err) {
+        threw = err;
+      }
+      assert(threw !== null, `quire accepted a relayout of ${entry}`);
+      assert(threw instanceof QuireError,
+        `expected a QuireError for ${entry}, got ${threw && threw.name}`);
+      assert(code.test(threw.message),
+        `the refusal for ${entry} should name what was wrong; it said: ${threw.message}`);
+    }
+
+    assertSameSnapshot(relayoutSnapshot(doc), was,
+      'a book after three refused relayouts, against the same book before them');
+  } finally {
+    await doc.close();
+  }
+}
+
 // ── run ───────────────────────────────────────────────────────────────────
 async function main() {
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'quire-test-'));
@@ -1128,6 +1372,13 @@ async function main() {
   await check('a box the book made scroll is fragmented, not emitted twice',
     testMonolithicOverflowIsFragmented);
   await check('the display path shows the asked-for page and adds no script', testPagedDisplayPath);
+  console.log('incremental relayout');
+  await check('a relaid document produces the same book as a fresh layout of the edited file',
+    testRelayoutMatchesAFreshLayout);
+  await check('a refused relayout leaves the book answering exactly as it did',
+    testRelayoutRefusalLeavesTheBookAsItWas);
+  await check('a relayout of a document the spine does not have is refused',
+    testRelayoutOfAnUnknownEntryIsRefused);
 
   console.log('');
   console.log(`${passed} passed, ${failures.length} failed`);

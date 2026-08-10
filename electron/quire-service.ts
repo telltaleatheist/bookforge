@@ -7,8 +7,39 @@
  * would fail before a line of it ran. Nothing imports it — it is `require`d, on
  * the main thread, at the moment it is needed.
  */
-import { Quire } from '../packages/quire/src';
+import { Quire, type QuireDocument } from '../packages/quire/src';
 import type { QuireAnalysisGeometry, QuirePageMap } from './quire-page-map';
+
+/**
+ * A laid-out document's whole page map, as plain data.
+ *
+ * Held apart from the open/measure/close above because the VIEWER holds its
+ * document open across an incremental relayout and has to write the same map
+ * the analysis path would have written — one description of the map, so a map
+ * saved after a relayout cannot differ in shape from one saved after a full
+ * pagination.
+ */
+export function pageMapOfDocument(
+  doc: QuireDocument,
+  geometry: QuireAnalysisGeometry,
+): QuirePageMap {
+  const report = doc.getReport();
+  const pageCount = doc.countPages();
+  const pages = [];
+  for (let p = 0; p < pageCount; p++) pages.push(doc.loadPage(p).getBlocks());
+  return {
+    strategyName: doc.strategyName,
+    geometry,
+    pageCount,
+    pages,
+    documents: report.documents,
+    documentPageOffsets: report.documentPageOffsets,
+    unplaced: report.unplaced,
+    overflows: report.overflows,
+    spineWarnings: report.spineWarnings,
+    layoutMs: report.layoutMs,
+  };
+}
 
 /**
  * Lay a STAMPED book out and hand back its whole page map as plain data.
@@ -24,24 +55,10 @@ export async function paginateInThisProcess(
 ): Promise<QuirePageMap> {
   const doc = await Quire.openDocument(stampedPath);
   try {
-    const report = await doc.layout({
+    await doc.layout({
       width: geometry.width, height: geometry.height, fontSize: geometry.fontSize,
     });
-    const pageCount = doc.countPages();
-    const pages = [];
-    for (let p = 0; p < pageCount; p++) pages.push(doc.loadPage(p).getBlocks());
-    return {
-      strategyName: doc.strategyName,
-      geometry,
-      pageCount,
-      pages,
-      documents: report.documents,
-      documentPageOffsets: report.documentPageOffsets,
-      unplaced: report.unplaced,
-      overflows: report.overflows,
-      spineWarnings: report.spineWarnings,
-      layoutMs: report.layoutMs,
-    };
+    return pageMapOfDocument(doc, geometry);
   } finally {
     await doc.close();
   }

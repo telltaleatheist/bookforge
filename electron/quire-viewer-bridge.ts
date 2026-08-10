@@ -25,11 +25,17 @@ import * as path from 'path';
 import { ipcMain } from 'electron';
 import { Quire, type QuireDocument } from '../packages/quire/src';
 import type { QuirePageMount } from '../packages/quire/src/types';
-import { enumerateNarrationElements } from './quire-stamp';
-import { blockId, stampedCopyForViewer } from './epub-quire-analysis';
-import { markupCategoriesForUnits, readEpubTocTargets, type MarkupUnit } from './epub-processor';
 import {
-  loadCachedPageMap, pageMapPath, quireCacheDir, type QuirePageMap,
+  enumerateNarrationElements, stampSpineDocuments, verifyStampedDocuments,
+} from './quire-stamp';
+import { blockId, bookFileHash, stampedCopyForViewer } from './epub-quire-analysis';
+import {
+  markupCategoriesForUnits, readEpubTocTargets, ZipReader, ZipWriter, type MarkupUnit,
+} from './epub-processor';
+import { moveIntoPlace } from './processing-passes';
+import {
+  loadCachedPageMap, pageMapPath, quireCacheDir, saveCachedPageMap, stampedEpubPath,
+  type QuirePageMap,
 } from './quire-page-map';
 import type { LaidOutBlock, LaidOutBook } from '../shared/document/laid-out-book';
 
@@ -70,7 +76,12 @@ export interface QuireViewerOpening {
 
 const DEFAULT_GEOMETRY: QuireViewerGeometry = { width: 600, height: 900, fontSize: 18 };
 
-const open = new Map<string, { doc: QuireDocument; stampedPath: string }>();
+const open = new Map<string, {
+  doc: QuireDocument;
+  stampedPath: string;
+  /** The box it was laid out into — the page map's cache key, so it is kept. */
+  geometry: QuireViewerGeometry;
+}>();
 
 /**
  * Open `epubPath` and describe it.
@@ -228,7 +239,7 @@ export async function openBookForViewer(
     };
 
     const handle = crypto.randomBytes(8).toString('hex');
-    open.set(handle, { doc, stampedPath });
+    open.set(handle, { doc, stampedPath, geometry });
     opening = {
       handle,
       book,
@@ -302,6 +313,248 @@ async function discardCachedMapsDisagreeingWith(
   }
 }
 
+// ── Relaying an edited book out again, without re-opening it ────────────────
+
+/** What the window is owed after an edit to a book it already has open. */
+export interface QuireRelayoutResult {
+  /** The digest the edited book is now cached under — its new analysis key. */
+  fileHash: string;
+  /** Spine documents that were measured again, in the order they were done. */
+  relaid: string[];
+  /**
+   * Rewritten entries that are NOT in the spine — a navigation document, an NCX
+   * — whose new bytes went into the stamped copy and which have no pages, so
+   * nothing was measured for them.
+   */
+  restampedOnly: string[];
+  /** One mount per spine document, re-derived from the relaid layout. */
+  documents: QuirePageMount[];
+  pageCount: number;
+  /**
+   * One entry per page, all the same box — quire lays every page into one.
+   * Stated here rather than rebuilt by the window, so the analysis path and this
+   * one describe a page the same way (`pageDimensionsOf` in
+   * `electron/epub-quire-analysis.ts`).
+   */
+  pageDimensions: Array<{ width: number; height: number; originX: number; originY: number }>;
+  /** Pages the book gained (or, negative, lost) across this relayout. */
+  pageDelta: number;
+  relayoutMs: number;
+  totalMs: number;
+}
+
+/**
+ * Lay the documents an edit rewrote out again, in the book that is already open.
+ *
+ * ── What this is for ──────────────────────────────────────────────────────
+ *
+ * Renaming a chapter rewrites the book (`electron/book-chapters.ts`): every
+ * table of contents it carries, the chapter document's `<head><title>`, and —
+ * through the naming pass — the heading the chapter opens with. Before this
+ * existed, the window's only way to agree with the file again was to close the
+ * document and open it, which re-stamped the whole book, paginated every spine
+ * document a second time and threw the reader back to page 1 for the sake of a
+ * dozen changed characters. Owen, 2026-08-10: "every time i change chapter name,
+ * it reloads the whole book."
+ *
+ * A rename touches ONE spine document's markup. `QuireDocument.relayoutDocument`
+ * measures exactly that one, with the same shell, the same layout CSS and the
+ * same verification a full layout runs, and re-numbers the book around it. This
+ * function is the disk half of that: it re-derives the stamped copy, keeps the
+ * page-map cache in step, and hands back what the window has to redraw.
+ *
+ * ── The three files that have to end up agreeing ──────────────────────────
+ *
+ *  1. THE BOOK — `bookPath`, the working copy, already rewritten by the caller.
+ *     This function does not write it and never edits it.
+ *  2. THE STAMPED COPY — keyed by the book's own bytes, so the rewrite gives it
+ *     a NEW name (`stampedEpubPath(newHash)`) and the old one is left exactly as
+ *     it is: it is still a truthful stamp of the book as it WAS, and the open
+ *     document is still reading its images and stylesheets out of it. The new
+ *     one is composed rather than re-stamped whole — the rewritten spine
+ *     documents are stamped again (`stampSpineDocuments`, the same walk and the
+ *     same keys, narrowed to those documents), every other spine document is
+ *     carried across from the old stamped copy, and everything else comes from
+ *     the book. That is sound because an element's key is
+ *     `<zip entry>#<index within that entry>`: what one document's elements are
+ *     called does not depend on any other document. Verified before it is used.
+ *  3. THE PAGE MAP — written under the new digest, so the next full open of this
+ *     book reads the map this relayout produced instead of paginating again.
+ *
+ * ── Partial failure is named, not hidden ──────────────────────────────────
+ *
+ * Each `relayoutDocument` is atomic in itself. When several entries are relaid
+ * and a later one refuses, the earlier ones have landed, and this says so in the
+ * refusal rather than pretending the book was untouched: the document on screen
+ * is coherent and usable, it simply is not the whole of the file any more, and
+ * re-opening the book is what ends that.
+ */
+export async function relayoutBookEntries(
+  handle: string,
+  bookPath: string,
+  entries: readonly string[],
+): Promise<QuireRelayoutResult> {
+  const startedAt = Date.now();
+  const held = open.get(handle);
+  if (!held) {
+    throw new Error(
+      `There is no book open under handle ${handle}, so there is nothing to lay out again. The `
+      + 'window and the main process disagree about which books are open.',
+    );
+  }
+  if (!fs.existsSync(bookPath)) {
+    throw new Error(`There is no book at ${bookPath}, so its new bytes cannot be read.`);
+  }
+  if (entries.length === 0) {
+    throw new Error(
+      `${path.basename(bookPath)} was reported as edited but no entry was named, so there is `
+      + 'nothing to lay out again. A caller that cannot say what it rewrote cannot ask for this.',
+    );
+  }
+
+  const { doc, stampedPath: oldStampedPath, geometry } = held;
+  const spine = new Set(doc.spine);
+  const relaidEntries = entries.filter((e) => spine.has(e));
+  const restampedOnly = entries.filter((e) => !spine.has(e));
+
+  // ── The new stamped copy ────────────────────────────────────────────────
+  const fileHash = await bookFileHash(bookPath);
+  const newStampedPath = stampedEpubPath(fileHash);
+  const restamped = relaidEntries.length === 0
+    ? { documents: new Map<string, Buffer>(), stamped: [] }
+    : await stampSpineDocuments(bookPath, relaidEntries, path.basename(bookPath));
+
+  if (fs.existsSync(newStampedPath)) {
+    // These bytes already have a stamped copy — the same book was opened at this
+    // digest before. It is keyed by the bytes, so it IS this one; writing it
+    // again would only risk a rename onto a file some other session holds.
+    console.log(`[quire-viewer] ${path.basename(bookPath)}: stamped copy for ${fileHash} reused`);
+  } else {
+    await composeStampedCopy(bookPath, oldStampedPath, spine, restamped.documents, newStampedPath);
+    if (restamped.stamped.length > 0) {
+      await verifyStampedDocuments(newStampedPath, restamped.stamped, path.basename(bookPath));
+    }
+  }
+
+  // ── The layout ──────────────────────────────────────────────────────────
+  const relayoutStartedAt = Date.now();
+  const pagesBefore = doc.countPages();
+  const relaid: string[] = [];
+  for (const entry of relaidEntries) {
+    const bytes = restamped.documents.get(entry);
+    if (bytes === undefined) {
+      throw new Error(
+        `${path.basename(bookPath)}: ${entry} is in the spine but the stamper produced no bytes `
+        + 'for it, so there is nothing to lay it out from.'
+        + partialSentence(relaid, bookPath),
+      );
+    }
+    try {
+      await doc.relayoutDocument(entry, bytes.toString('utf8'));
+    } catch (err) {
+      throw new Error(`${(err as Error).message}${partialSentence(relaid, bookPath)}`);
+    }
+    relaid.push(entry);
+  }
+  const relayoutMs = Date.now() - relayoutStartedAt;
+
+  // ── The page map, under the book's new name ─────────────────────────────
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const service = require('./quire-service') as typeof import('./quire-service');
+  await saveCachedPageMap(fileHash, service.pageMapOfDocument(doc, geometry));
+
+  held.stampedPath = newStampedPath;
+  const report = doc.getReport();
+  const pageCount = doc.countPages();
+  return {
+    fileHash,
+    relaid,
+    restampedOnly,
+    documents: report.documentPageOffsets.map((firstPage) => doc.getPageMount(firstPage)),
+    pageCount,
+    pageDimensions: Array.from({ length: pageCount }, () => ({
+      width: geometry.width, height: geometry.height, originX: 0, originY: 0,
+    })),
+    pageDelta: pageCount - pagesBefore,
+    relayoutMs,
+    totalMs: Date.now() - startedAt,
+  };
+}
+
+/** The half-done state, said out loud, for a refusal that arrives after one landed. */
+function partialSentence(relaid: readonly string[], bookPath: string): string {
+  if (relaid.length === 0) return '';
+  return (
+    ` ${relaid.length} document(s) of ${path.basename(bookPath)} — ${relaid.join(', ')} — were `
+    + 'already laid out again before this refusal, so the book on screen is part way between the '
+    + 'file it was opened from and the file on disk. Close and re-open it.'
+  );
+}
+
+/**
+ * Write the stamped copy of the edited book: freshly stamped bytes for the
+ * documents that changed, the previous stamped copy's bytes for every other
+ * spine document, and the book's own for everything else.
+ *
+ * Composed rather than re-stamped whole because re-stamping is a parse of every
+ * document in the book, which is the cost this whole path exists to avoid. The
+ * result is the same file: stamping is per-document (see
+ * `stampSpineDocuments`), and every document whose source did not change was
+ * stamped from those same source bytes when the old copy was written.
+ */
+async function composeStampedCopy(
+  bookPath: string,
+  oldStampedPath: string,
+  spine: ReadonlySet<string>,
+  freshlyStamped: ReadonlyMap<string, Buffer>,
+  outputPath: string,
+): Promise<void> {
+  if (!fs.existsSync(oldStampedPath)) {
+    throw new Error(
+      `The stamped copy this book was opened from (${oldStampedPath}) is gone, so the stamps of `
+      + 'the documents the edit did NOT touch cannot be carried across. Close and re-open the book '
+      + 'to stamp it again.',
+    );
+  }
+
+  const bookZip = new ZipReader(bookPath);
+  const stampedZip = new ZipReader(oldStampedPath);
+  const staged = `${outputPath}.staging-${crypto.randomBytes(6).toString('hex')}`;
+  try {
+    await bookZip.open();
+    await stampedZip.open();
+    const carried = new Set(stampedZip.getEntries());
+
+    const writer = new ZipWriter();
+    for (const name of bookZip.getEntries()) {
+      const fresh = freshlyStamped.get(name);
+      let data: Buffer;
+      if (fresh !== undefined) {
+        data = fresh;
+      } else if (spine.has(name)) {
+        if (!carried.has(name)) {
+          throw new Error(
+            `${path.basename(bookPath)}: ${name} is a spine document the edit did not touch, and `
+            + 'the stamped copy it was opened from does not contain it. The two files are not the '
+            + 'same book, so no stamped copy is written.',
+          );
+        }
+        data = await stampedZip.readEntry(name);
+      } else {
+        data = await bookZip.readEntry(name);
+      }
+      // `mimetype` is stored, never deflated — the EPUB spec requires it.
+      writer.addFile(name, data, name !== 'mimetype');
+    }
+    await fsPromises.mkdir(path.dirname(staged), { recursive: true });
+    await writer.write(staged);
+  } finally {
+    bookZip.close();
+    stampedZip.close();
+  }
+  await moveIntoPlace(staged, outputPath);
+}
+
 export async function closeBookForViewer(handle: string): Promise<void> {
   const entry = open.get(handle);
   if (!entry) return;
@@ -323,6 +576,23 @@ export function setupQuireViewerIpc(): void {
   ipcMain.handle('quire:open-book', async (_event, epubPath: string, geometry?: QuireViewerGeometry) => {
     try {
       return { success: true, data: await openBookForViewer(epubPath, geometry ?? DEFAULT_GEOMETRY) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * The book on screen caught up with the book on disk, without re-opening it.
+   *
+   * `entries` is what the edit REWROTE, named by the code that rewrote it —
+   * never inferred here from a count or a timestamp, because "which documents
+   * changed" is the whole input and a guess at it would relayout the wrong
+   * chapter.
+   */
+  ipcMain.handle('quire:relayout-entries', async (
+    _event, handle: string, bookPath: string, entries: string[]) => {
+    try {
+      return { success: true, data: await relayoutBookEntries(handle, bookPath, entries) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

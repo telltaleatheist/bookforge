@@ -97,6 +97,7 @@ export interface QuireStampResult {
 export async function enumerateNarrationElements(
   epubPath: string,
   whatFor: string,
+  only?: ReadonlySet<string>,
 ): Promise<Array<{ file: string; docs: { doc: any; body: any }; entries: NarrationWalkEntry[] }>> {
   const processor = new EpubProcessor();
   const out: Array<{ file: string; docs: { doc: any; body: any }; entries: NarrationWalkEntry[] }> = [];
@@ -108,6 +109,14 @@ export async function enumerateNarrationElements(
       // A spine document listed twice is ONE file — the narration writer's rule.
       if (seen.has(entryName)) continue;
       seen.add(entryName);
+      // `only` narrows the walk to some of the book's documents. Sound because
+      // an element's key is `<zip entry>#<index within that entry>`: the index
+      // restarts at every document and the picture ordinals with it, so what a
+      // document's elements are called is a function of that document alone and
+      // of nothing before or after it. Skipping documents therefore changes no
+      // key of the ones that are walked. Absent, the whole spine is walked, which
+      // is what every caller that mints identity for the WHOLE book must do.
+      if (only !== undefined && !only.has(entryName)) continue;
 
       const xhtml = await processor.readFile(entryName);
       const { doc, body } = parseXhtmlBody(xhtml, entryName);
@@ -210,9 +219,72 @@ export async function stampEpubForQuire(
   outputPath: string,
   whatFor = path.basename(epubPath),
 ): Promise<QuireStampResult> {
-  const { XMLSerializer } = require('@xmldom/xmldom');
-
   const walked = await enumerateNarrationElements(epubPath, whatFor);
+  const {
+    replacements, stamped, sharedElements, textUnitCount, imageElementCount,
+  } = stampWalkedDocuments(walked, whatFor);
+
+  const zipReader = new ZipReader(epubPath);
+  try {
+    await zipReader.open();
+    const zipWriter = new ZipWriter();
+    for (const entry of zipReader.getEntries()) {
+      const data = replacements.get(entry) ?? await zipReader.readEntry(entry);
+      // `mimetype` is stored, never deflated — the EPUB spec requires it.
+      zipWriter.addFile(entry, data, entry !== 'mimetype');
+    }
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await zipWriter.write(outputPath);
+  } finally {
+    zipReader.close();
+  }
+
+  // ── The promise, kept or the file destroyed ───────────────────────────
+  // Re-read what was written and confirm every key is on exactly one element of
+  // the copy. A stamp that did not survive serialization would show up in quire
+  // as an element with no page, which is the failure this package exists to make
+  // impossible, so it is caught here where it can still be named.
+  try {
+    await verifyStamps(outputPath, stamped, whatFor);
+  } catch (err) {
+    await fs.rm(outputPath, { force: true });
+    throw err;
+  }
+
+  return {
+    outputPath,
+    documents: walked.map((w) => w.file),
+    stamped,
+    textUnitCount,
+    imageElementCount,
+    sharedElements,
+  };
+}
+
+/** What one pass of the stamper produced, before it is written anywhere. */
+interface StampedDocuments {
+  /** Walked document → its XHTML with the keys on it, ready to replace the entry. */
+  replacements: Map<string, Buffer>;
+  stamped: StampedElement[];
+  sharedElements: Array<{ keys: string[]; file: string; tag: string }>;
+  textUnitCount: number;
+  imageElementCount: number;
+}
+
+/**
+ * Write each walked element's key onto the element, and serialize its document.
+ *
+ * The whole of the stamp, held apart from the zip it is written into, because
+ * two callers need it over different sets of documents: {@link stampEpubForQuire}
+ * over the book, and {@link stampSpineDocuments} over the handful an edit
+ * rewrote. One description of the stamp, so a re-stamped chapter cannot be
+ * stamped differently from the book it goes back into.
+ */
+function stampWalkedDocuments(
+  walked: Array<{ file: string; docs: { doc: any; body: any }; entries: NarrationWalkEntry[] }>,
+  whatFor: string,
+): StampedDocuments {
+  const { XMLSerializer } = require('@xmldom/xmldom');
 
   const stamped: StampedElement[] = [];
   const sharedElements: Array<{ keys: string[]; file: string; tag: string }> = [];
@@ -252,41 +324,60 @@ export async function stampEpubForQuire(
     replacements.set(file, Buffer.from(serialized, 'utf8'));
   }
 
-  const zipReader = new ZipReader(epubPath);
-  try {
-    await zipReader.open();
-    const zipWriter = new ZipWriter();
-    for (const entry of zipReader.getEntries()) {
-      const data = replacements.get(entry) ?? await zipReader.readEntry(entry);
-      // `mimetype` is stored, never deflated — the EPUB spec requires it.
-      zipWriter.addFile(entry, data, entry !== 'mimetype');
-    }
-    await fs.mkdir(path.dirname(outputPath), { recursive: true });
-    await zipWriter.write(outputPath);
-  } finally {
-    zipReader.close();
-  }
+  return { replacements, stamped, sharedElements, textUnitCount, imageElementCount };
+}
 
-  // ── The promise, kept or the file destroyed ───────────────────────────
-  // Re-read what was written and confirm every key is on exactly one element of
-  // the copy. A stamp that did not survive serialization would show up in quire
-  // as an element with no page, which is the failure this package exists to make
-  // impossible, so it is caught here where it can still be named.
-  try {
-    await verifyStamps(outputPath, stamped, whatFor);
-  } catch (err) {
-    await fs.rm(outputPath, { force: true });
-    throw err;
+/**
+ * The stamped bytes of NAMED spine documents of a book, and nothing else.
+ *
+ * For a caller that has rewritten a few of a book's documents and holds a
+ * stamped copy of the rest: it re-stamps just those, and the copy is rebuilt
+ * around them. This is not a cheaper stamp, it is the SAME stamp over fewer
+ * documents — `stampWalkedDocuments`, off the same walk, keyed by the same
+ * `<zip entry>#<index>`, whose index restarts at every document (see the `only`
+ * argument of {@link enumerateNarrationElements} for why that makes the
+ * narrowing sound rather than merely convenient).
+ *
+ * Refuses when the book's spine does not contain one of the named entries: a
+ * caller asking to re-stamp a document that is not in the reading order has
+ * mistaken which file it rewrote, and stamping nothing for it would leave the
+ * copy carrying the OLD bytes of a document the book has changed.
+ */
+export async function stampSpineDocuments(
+  epubPath: string,
+  entries: readonly string[],
+  whatFor = path.basename(epubPath),
+): Promise<{ documents: Map<string, Buffer>; stamped: StampedElement[] }> {
+  const wanted = new Set(entries);
+  const walked = await enumerateNarrationElements(epubPath, whatFor, wanted);
+  const missing = [...wanted].filter((e) => !walked.some((w) => w.file === e));
+  if (missing.length > 0) {
+    throw new Error(
+      `[quire-stamp] ${whatFor}: ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not `
+      + 'in this book\'s spine, so there is no document to stamp under that name. Nothing was '
+      + 'stamped.',
+    );
   }
+  const { replacements, stamped } = stampWalkedDocuments(walked, whatFor);
+  return { documents: replacements, stamped };
+}
 
-  return {
-    outputPath,
-    documents: walked.map((w) => w.file),
-    stamped,
-    textUnitCount,
-    imageElementCount,
-    sharedElements,
-  };
+/**
+ * Confirm a written copy carries every one of these keys, exactly once, in the
+ * documents they belong to.
+ *
+ * Exported for {@link stampSpineDocuments}'s caller, which writes a copy whose
+ * other documents were verified when THEY were stamped: passing only the
+ * re-stamped elements checks exactly the documents whose bytes are new, and the
+ * "no stamp any walk produced" half of the check stays exact because it is
+ * asked per file.
+ */
+export async function verifyStampedDocuments(
+  stampedEpubPath: string,
+  expected: StampedElement[],
+  whatFor: string,
+): Promise<void> {
+  return verifyStamps(stampedEpubPath, expected, whatFor);
 }
 
 /** Confirm the written copy really carries every key, exactly once. */

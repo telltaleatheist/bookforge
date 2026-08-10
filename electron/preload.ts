@@ -835,6 +835,12 @@ export interface ElectronAPI {
     openBook: (epubPath: string, geometry?: { width: number; height: number; fontSize: number })
       => Promise<{ success: boolean; data?: any; error?: string }>;
     closeBook: (handle: string) => Promise<{ success: boolean; error?: string }>;
+    /**
+     * Lay the documents an edit rewrote out again, in a book already open.
+     * `data` is a QuireRelayoutResult (electron/quire-viewer-bridge.ts).
+     */
+    relayoutEntries: (handle: string, bookPath: string, entries: string[])
+      => Promise<{ success: boolean; data?: any; error?: string }>;
   };
   fs: {
     browse: (dirPath: string) => Promise<{
@@ -2705,6 +2711,8 @@ const electronAPI: ElectronAPI = {
     openBook: (epubPath: string, geometry?: { width: number; height: number; fontSize: number }) =>
       ipcRenderer.invoke('quire:open-book', epubPath, geometry),
     closeBook: (handle: string) => ipcRenderer.invoke('quire:close-book', handle),
+    relayoutEntries: (handle: string, bookPath: string, entries: string[]) =>
+      ipcRenderer.invoke('quire:relayout-entries', handle, bookPath, entries),
   },
 
   fs: {
