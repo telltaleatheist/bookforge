@@ -1718,21 +1718,60 @@ export class BookshelfServer {
     return this.readerTokens.get(token) ?? null;
   }
 
+  /**
+   * One reader's profile, or null when this device has never seen that reader.
+   *
+   * ── "NOT THERE" and "CANNOT BE READ" are different answers ────────────────
+   *
+   * Both used to come back as null, and null means "not signed in" to every
+   * caller — so a profile file that was mid-Syncthing-write, or on a share that
+   * had dropped, signed the phone out and offered it the create-a-reader screen
+   * for an account that exists. A file that is THERE and will not parse is an
+   * error with a sentence; only its absence is an answer.
+   */
   private readProfile(id: string): ReaderProfile | null {
+    const p = path.join(this.readersDir(), `${id}.json`);
+    if (!fsSync.existsSync(p)) return null;
     try {
-      const p = path.join(this.readersDir(), `${id}.json`);
-      if (!fsSync.existsSync(p)) return null;
       return JSON.parse(fsSync.readFileSync(p, 'utf-8')) as ReaderProfile;
-    } catch { return null; }
+    } catch (err) {
+      throw new Error(
+        `Reader ${id}'s profile is on this machine and could not be read `
+        + `(${err instanceof Error ? err.message : String(err)}). Nobody is signed out — the store `
+        + 'is unreadable, and answering "no such reader" would be a guess.');
+    }
   }
 
+  /**
+   * Every reader this device knows about. An empty list means there are none;
+   * a store that cannot be read THROWS, for the reason `readProfile` states.
+   */
   private allProfiles(): ReaderProfile[] {
+    let names: string[];
     try {
-      return fsSync.readdirSync(this.readersDir())
-        .filter(f => f.endsWith('.json'))
-        .map(f => { try { return JSON.parse(fsSync.readFileSync(path.join(this.readersDir(), f), 'utf-8')) as ReaderProfile; } catch { return null; } })
-        .filter((r): r is ReaderProfile => !!r);
-    } catch { return []; }
+      names = fsSync.readdirSync(this.readersDir());
+    } catch (err) {
+      // The directory not existing yet IS "no readers" — it is made on first
+      // create. Anything else is a store that cannot be read.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw new Error(
+        `The reader store could not be read (${err instanceof Error ? err.message : String(err)}). `
+        + 'No reader list is shown rather than an empty one, which would read as "nobody has an '
+        + 'account here".');
+    }
+    return names
+      .filter(f => f.endsWith('.json'))
+      .map(f => {
+        const file = path.join(this.readersDir(), f);
+        try {
+          return JSON.parse(fsSync.readFileSync(file, 'utf-8')) as ReaderProfile;
+        } catch (err) {
+          throw new Error(
+            `${f} in the reader store could not be read `
+            + `(${err instanceof Error ? err.message : String(err)}). The reader it describes would `
+            + 'otherwise simply vanish from the sign-in list.');
+        }
+      });
   }
 
   /** Stable, cross-machine book identifier: library-relative path, forward slashes. */
@@ -1904,7 +1943,13 @@ export class BookshelfServer {
   // keyed by their library-relative path (the server's `bookPath` convention).
   // ───────────────────────────────────────────────────────────────────────────
 
-  /** Reader profiles for the desktop picker (sorted by name). */
+  /**
+   * Reader profiles for the desktop picker (sorted by name).
+   *
+   * Throws when the store is unreadable — see `allProfiles`. The IPC handler
+   * that calls this reports the sentence; an empty list here would read as
+   * "nobody has an account on this machine" and send the user to create one.
+   */
   listReaderProfiles(): Array<{ id: string; name: string; hasPin: boolean }> {
     if (!this.storeReady) return [];
     return this.allProfiles()
@@ -2068,10 +2113,18 @@ export class BookshelfServer {
 
   private async getReaders(_req: Request, res: Response): Promise<void> {
     if (!this.storeReady) { res.json({ readers: [] }); return; }
-    const readers = this.allProfiles()
-      .map(r => ({ id: r.id, name: r.name, hasPin: !!r.pinHash }))
-      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-    res.json({ readers });
+    try {
+      const readers = this.allProfiles()
+        .map(r => ({ id: r.id, name: r.name, hasPin: !!r.pinHash }))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+      res.json({ readers });
+    } catch (err) {
+      // 503, not `{ readers: [] }`: the client shows "cannot reach the reader
+      // store" and keeps whoever is signed in, instead of drawing an empty
+      // sign-in list that reads as every account having been deleted.
+      console.error('[BookshelfServer] getReaders failed:', err);
+      res.status(503).json({ error: err instanceof Error ? err.message : 'reader store unreadable' });
+    }
   }
 
   private async createReader(req: Request, res: Response): Promise<void> {
@@ -2123,7 +2176,16 @@ export class BookshelfServer {
 
   private async getMe(req: Request, res: Response): Promise<void> {
     const id = this.readerIdFromRequest(req);
-    const profile = id ? this.readProfile(id) : null;
+    let profile: ReaderProfile | null;
+    try {
+      profile = id ? this.readProfile(id) : null;
+    } catch (err) {
+      // A 401 here signs the client out. The profile exists and could not be
+      // read, so 503 is the honest answer and the session survives it.
+      console.error('[BookshelfServer] getMe failed:', err);
+      res.status(503).json({ error: err instanceof Error ? err.message : 'reader store unreadable' });
+      return;
+    }
     if (!profile) { res.status(401).json({ error: 'Not signed in' }); return; }
     res.json({ reader: { id: profile.id, name: profile.name, hasPin: !!profile.pinHash } });
   }
@@ -2200,7 +2262,14 @@ export class BookshelfServer {
   /** Merge every device's event log for this reader into daily + per-book totals. */
   private async getAnalytics(req: Request, res: Response): Promise<void> {
     const readerId = this.readerIdFromRequest(req);
-    const profile = readerId ? this.readProfile(readerId) : null;
+    let profile: ReaderProfile | null;
+    try {
+      profile = readerId ? this.readProfile(readerId) : null;
+    } catch (err) {
+      console.error('[BookshelfServer] analytics profile read failed:', err);
+      res.status(503).json({ error: err instanceof Error ? err.message : 'reader store unreadable' });
+      return;
+    }
     if (!profile) { res.status(401).json({ error: 'Not signed in' }); return; }
     try {
       const daily: Record<string, number> = {};

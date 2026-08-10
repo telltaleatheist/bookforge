@@ -42,6 +42,7 @@ import type { WorkingCopyRemint } from '../shared/document/working-copy-remint';
 // else is null, and it never throws. Everything that ACTS on a book goes through
 // `manifestService.requireFamily` instead and gets the refusal sentence.
 import { soleFamily } from '../shared/document/book-families';
+import { samePath } from '../shared/document/same-path';
 // The one rule that turns the chapter-opening naming pass's per-chapter outcome
 // into the sentence the picker owes the user after a rename.
 import { chapterOpeningRefusal } from '../shared/document/chapter-opening-report';
@@ -1134,6 +1135,36 @@ async function nameOpeningsOfFreshCopy(projectDir: string): Promise<void> {
  * the opener passed: a manifest-derived path can be NFD (macOS-written) while
  * the disk entry is NFC, and the two are different map keys for one window.
  */
+/**
+ * Are these two absolute paths the same file, once both are resolved?
+ *
+ * `shared/document/same-path.ts` compares what it is GIVEN and says so — it is
+ * for picking a view. The handlers below use the answer to authorize a write, so
+ * both sides go through `path.resolve` and NFC normalization first: a manifest
+ * path can be NFD (macOS-written) while the disk entry is NFC, and `..` in a
+ * caller's string must not decide where a book is saved.
+ */
+function sameResolvedPath(a: string, b: string): boolean {
+  return samePath(path.resolve(normalizeFsPath(a)), path.resolve(normalizeFsPath(b)));
+}
+
+/**
+ * A path that is inside the library folder, or the sentence saying it is not.
+ *
+ * The guard every neighbouring write handler carries, in one place: the raw
+ * `fs:*` doors below had none at all, so a renderer bug or a stale path could
+ * unlink a recorded book with nothing updating the record. Returns null when the
+ * path is allowed, so a caller reads `const refusal = insideLibraryRefusal(p);
+ * if (refusal) return { success: false, error: refusal };`.
+ */
+function insideLibraryRefusal(target: string, act: string): string | null {
+  const libraryRoot = path.normalize(getLibraryRoot());
+  const normalized = path.normalize(path.resolve(normalizeFsPath(target)));
+  if (normalized === libraryRoot || normalized.startsWith(libraryRoot + path.sep)) return null;
+  console.error(`[${act}] BLOCKED: ${normalized} is outside the library folder ${libraryRoot}`);
+  return `Cannot ${act} outside the library folder. Attempted path: ${target}`;
+}
+
 function destroyEditorWindowsFor(...projectPaths: string[]): void {
   for (const key of new Set(projectPaths)) {
     const win = editorWindows.get(key);
@@ -1433,10 +1464,20 @@ function setupIpcHandlers(): void {
   // Text-only EPUB export (uses pdftotext for PDFs, ebook-convert for EPUBs)
   ipcMain.handle('pdf:export-text-only-epub', async (_event, filePath: string, metadata?: { title?: string; author?: string }) => {
     try {
-      const { exec } = require('child_process');
+      const { execFile } = require('child_process');
       const { promisify } = require('util');
       const fsLocal = require('fs').promises;
-      const execAsync = promisify(exec);
+      // ── ARGV, never a command string ──────────────────────────────────────
+      //
+      // `exec` hands its string to a shell, and every argument here is a path
+      // out of the user's library — a book called `Whatever `rm -rf ~`.pdf`, or
+      // one carrying `$(...)`, ran as a command on macOS and Linux, and the
+      // library is Mac↔Windows synced so such a name arrives from the other
+      // machine. `execFile` passes the array to the process directly: there is
+      // no shell, so there is nothing for a filename to escape from. Same shape
+      // as chapter-recovery-bridge's `spawn(getFfmpegPath(), [...])`.
+      const run = promisify(execFile) as (
+        file: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
 
       // Create temp directory for intermediate files
       const tempDir = await fsLocal.mkdtemp(path.join(os.tmpdir(), 'bookforge-epub-'));
@@ -1458,7 +1499,7 @@ function setupIpcHandlers(): void {
         if (isEpub) {
           // For EPUB: use ebook-convert to extract text
           console.log('[Text-only EPUB] Extracting text from EPUB...');
-          await execAsync(`"${ebookConvertPath}" "${filePath}" "${tempTextFile}"`);
+          await run(ebookConvertPath, [filePath, tempTextFile]);
         } else {
           // For PDF: use pdftotext
           console.log('[Text-only EPUB] Extracting text from PDF...');
@@ -1466,7 +1507,7 @@ function setupIpcHandlers(): void {
           if (!pdftotextPath) {
             throw new Error('pdftotext not found. Please install poppler-utils (Linux/Mac) or poppler (Windows via scoop/chocolatey).');
           }
-          await execAsync(`"${pdftotextPath}" -layout "${filePath}" "${tempTextFile}"`);
+          await run(pdftotextPath, ['-layout', filePath, tempTextFile]);
         }
 
         // Check if text was extracted
@@ -1477,21 +1518,17 @@ function setupIpcHandlers(): void {
 
         // Step 2: Convert text to EPUB using ebook-convert
         console.log('[Text-only EPUB] Converting to EPUB...');
-        let convertCmd = `"${ebookConvertPath}" "${tempTextFile}" "${tempEpubFile}"`;
+        // No escaping, because there is no shell to escape for. The metadata
+        // used to be run through an ad-hoc shell-metacharacter escaper while the
+        // PATHS beside it were interpolated raw — the escaping was on the one
+        // argument that could not hurt anyone.
+        const convertArgs = [tempTextFile, tempEpubFile];
+        if (metadata?.title) convertArgs.push('--title', metadata.title);
+        if (metadata?.author) convertArgs.push('--authors', metadata.author);
+        convertArgs.push(
+          '--formatting-type=markdown', '--paragraph-type=auto', '--page-breaks-before=/');
 
-        // Add metadata if provided (escape shell metacharacters for safe interpolation)
-        const escapeShellMeta = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-        if (metadata?.title) {
-          convertCmd += ` --title "${escapeShellMeta(metadata.title)}"`;
-        }
-        if (metadata?.author) {
-          convertCmd += ` --authors "${escapeShellMeta(metadata.author)}"`;
-        }
-
-        // Add formatting options
-        convertCmd += ' --formatting-type=markdown --paragraph-type=auto --page-breaks-before="/"';
-
-        await execAsync(convertCmd);
+        await run(ebookConvertPath, convertArgs);
 
         // Step 3: Read the EPUB file and return as base64
         const epubBuffer = await fsLocal.readFile(tempEpubFile);
@@ -1799,8 +1836,21 @@ function setupIpcHandlers(): void {
     return results;
   });
 
+  // ── The raw file doors, guarded like every other write handler ────────────
+  //
+  // These three took an absolute path from the renderer and wrote, unlinked or
+  // recursively removed it with NO check at all, while every neighbouring write
+  // handler (epub:save-modified, epub:copy-file, editor:save-epub) carries the
+  // inside-the-library guard. That made them a live route to removing a recorded
+  // book — file gone, record untouched — from a renderer bug or a stale path.
+  //
+  // The guard is the floor, not a licence: a file inside the library that a
+  // manifest vouches for should be removed through the handler that also clears
+  // its record (`variant:delete`, `book:delete-tts-copy`, `pipeline:delete-*`).
   ipcMain.handle('fs:write-text', async (_event, filePath: string, content: string) => {
     const fs = await import('fs/promises');
+    const refusal = insideLibraryRefusal(filePath, 'fs:write-text');
+    if (refusal) return { success: false, error: refusal };
     try {
       await fs.writeFile(filePath, content, 'utf-8');
       return { success: true };
@@ -1811,6 +1861,8 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('fs:delete-file', async (_event, filePath: string) => {
     const fs = await import('fs/promises');
+    const refusal = insideLibraryRefusal(filePath, 'fs:delete-file');
+    if (refusal) return { success: false, error: refusal };
     try {
       await fs.unlink(filePath);
       return { success: true };
@@ -1821,6 +1873,17 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('fs:delete-directory', async (_event, dirPath: string) => {
     const fs = await import('fs/promises');
+    const refusal = insideLibraryRefusal(dirPath, 'fs:delete-directory');
+    if (refusal) return { success: false, error: refusal };
+    // The library ROOT itself is inside the library, and this call is recursive:
+    // one bad path would take the whole library. Named separately because the
+    // sentence a user needs there is not "outside the library folder".
+    if (sameResolvedPath(dirPath, getLibraryRoot())) {
+      return {
+        success: false,
+        error: 'Refusing to delete the library folder itself. Every book in it would go with it.',
+      };
+    }
     try {
       await fs.rm(dirPath, { recursive: true, force: true });
       return { success: true };
@@ -1962,10 +2025,31 @@ function setupIpcHandlers(): void {
       // Check if filePath is a manifest project directory
       const isDir = fsSync.existsSync(filePath) && fsSync.statSync(filePath).isDirectory();
       if (isDir) {
-        // Save editor state back to manifest.json
-        const manifestPath = path.join(filePath, 'manifest.json');
-        const manifestContent = await fs.readFile(manifestPath, 'utf-8');
-        const manifest = JSON.parse(manifestContent);
+        // ── THROUGH THE LOCK, and only the keys this handler owns ───────────
+        //
+        // This used to read manifest.json raw, mutate the object for a hundred
+        // and seventy lines, and write the WHOLE thing back — outside
+        // `modifyManifest`'s per-project lock. Everything that landed in between
+        // was silently destroyed: a chain minted by the versions page, a
+        // narration strike, a ledger entry, a finished conversion's
+        // `outputs.generatedEpub`. The picker autosaves on a timer, so the
+        // window in which that happens is open more or less constantly.
+        //
+        // So the manifest half is a `modifyManifest` transaction below that
+        // touches `source`, `chapters`, `chaptersSource` and `metadata` and
+        // nothing else, and the sidecar half is unchanged. `modifyManifest`
+        // resolves the file from the project id, so the project must be one this
+        // library owns — refused by name here rather than by writing a manifest
+        // somewhere else (the check `epub:export-preserving-markup` makes).
+        const projectId = path.basename(filePath);
+        if (!sameResolvedPath(manifestService.getProjectPath(projectId), filePath)) {
+          return {
+            success: false,
+            error: `Cannot save ${filePath}: it is not inside the configured library `
+              + `(expected ${manifestService.getProjectPath(projectId)}), so its manifest cannot be `
+              + 'located. Point the library setting at the folder that owns this project.',
+          };
+        }
 
         // ── A window that was never given the records may not speak for them ──
         //
@@ -1988,15 +2072,19 @@ function setupIpcHandlers(): void {
         // question counts editor records, and it is read from the store rather
         // than off `manifest` because the manifest no longer carries them.
         const storedEditor = await readEditorState(filePath) ?? {};
-        // ...and the pre-sidecar key is taken off the in-memory manifest so the
-        // write at the end of this handler cannot put it back. `readEditorState`
-        // has already moved whatever was on disk into the sidecar.
-        delete manifest.editor;
+
+        // A READ-ONLY copy, and the only thing it is for: the layout question
+        // below is a classification of what is already on file, not a value this
+        // handler writes. The copy that gets WRITTEN is the one `modifyManifest`
+        // re-reads inside the lock — and the pre-sidecar `editor` key is that
+        // transaction's to move (`adoptLegacyEditorKey`), not this one's to
+        // delete off an object nothing will save.
+        const onFile = await manifestService.readProjectManifest(filePath) as Record<string, any>;
 
         const layoutState = readEditorLayoutState(
           path.basename(filePath),
-          manifest.source?.type ?? '',
-          { source: manifest.source, editor: storedEditor, chapters: manifest.chapters },
+          onFile.source?.type ?? '',
+          { source: onFile.source, editor: storedEditor, chapters: onFile.chapters },
         );
         const layoutIsStale = layoutState.refusal !== null;
         if (layoutIsStale) {
@@ -2007,53 +2095,83 @@ function setupIpcHandlers(): void {
           );
         }
 
-        // Update manifest with editor state
-        if (!manifest.source) manifest.source = {};
-        if (!layoutIsStale) {
-          manifest.source.deletedBlockIds = mergedData.deleted_block_ids || [];
-          manifest.source.pageOrder = mergedData.page_order || [];
-          manifest.source.deletedPages = mergedData.deleted_pages || [];
-        }
-        // INERT (see manifest-types.ts): nothing resolves scan-line deletions
-        // any more — a deletion is `/FoundryDeleted` on the block's own
-        // annotation. Carried through untouched so manifests that have the
-        // field keep it until their projects go through the document pipeline.
-        manifest.source.deletedBlockLines = mergedData.deleted_block_lines || undefined;
-        // The one-title rule's "already ruled on" ledger, in the same
-        // scan-stamped line identity — it was dropped on the floor here until
-        // Aug 3 2026, so every reload re-deleted a part card the user had
-        // restored. `foundry_auto_discarded_ids` is NOT persisted alongside it:
-        // block ids are re-minted by every blocks run, and an id-keyed ledger
-        // silently rules on other blocks after one.
-        manifest.source.foundryAutoDiscardedLines =
-          mergedData.foundry_auto_discarded_lines || undefined;
-        manifest.source.deletedHighlightIds = mergedData.deleted_highlight_ids || [];
-        manifest.source.removeBackgrounds = mergedData.remove_backgrounds || false;
+        // ── The keys this handler OWNS, applied to the locked manifest ──────
+        //
+        // A mutator rather than a hundred and seventy lines of assignment onto an
+        // object read minutes ago: `modifyManifest` re-reads inside the lock and
+        // hands the callback THAT copy, so a chain minted, a strike recorded or a
+        // conversion finished in between survives instead of being written back
+        // out of existence by a picker autosave. Only `source`, `chapters` /
+        // `chaptersSource` and `metadata` are touched; the chains, the ledger, the
+        // outputs and the variants belong to other handlers and are not this
+        // window's to restate.
+        const applyEditorRecords = (m: Record<string, any>): void => {
+          if (!m.source) m.source = {};
+          if (!layoutIsStale) {
+            m.source.deletedBlockIds = mergedData.deleted_block_ids || [];
+            m.source.pageOrder = mergedData.page_order || [];
+            m.source.deletedPages = mergedData.deleted_pages || [];
+          }
+          // INERT (see manifest-types.ts): nothing resolves scan-line deletions
+          // any more — a deletion is `/FoundryDeleted` on the block's own
+          // annotation. Carried through untouched so manifests that have the
+          // field keep it until their projects go through the document pipeline.
+          m.source.deletedBlockLines = mergedData.deleted_block_lines || undefined;
+          // The one-title rule's "already ruled on" ledger, in the same
+          // scan-stamped line identity — it was dropped on the floor here until
+          // Aug 3 2026, so every reload re-deleted a part card the user had
+          // restored. `foundry_auto_discarded_ids` is NOT persisted alongside it:
+          // block ids are re-minted by every blocks run, and an id-keyed ledger
+          // silently rules on other blocks after one.
+          m.source.foundryAutoDiscardedLines =
+            mergedData.foundry_auto_discarded_lines || undefined;
+          m.source.deletedHighlightIds = mergedData.deleted_highlight_ids || [];
+          m.source.removeBackgrounds = mergedData.remove_backgrounds || false;
 
-        // ── Which LAYOUT these records are about ──────────────────────────
-        //
-        // `deletedPages` is a page number and `deletedBlockIds` are md5s of
-        // where blocks were drawn, so both mean nothing without the pagination
-        // that produced them — and in August 2026 that pagination changed for
-        // EPUBs (mupdf's reflow → quire's fragmentation of the book's own DOM,
-        // 218 pages → 183 on Killing America). Every save from now on SAYS
-        // which layout it was made in, so a later build never has to infer it.
-        //
-        // EPUBs only, and that is not a shortcut: a PDF's pages are the PDF's
-        // own and did not change, so stamping one would record an answer to a
-        // question that does not arise. `shared/document/editor-layout.ts`
-        // reads an absent stamp on an EPUB as the mupdf era, which is what it
-        // is — no manifest written before this line exists carries one.
-        //
-        // NOT written while the stored records are stale: the stamp would then
-        // say "these are current" about numbers this save deliberately left as
-        // they were.
-        if (manifest.source.type === 'epub' && !layoutIsStale) {
-          manifest.source[EDITOR_LAYOUT_MANIFEST_KEY] =
-            currentEpubEditorLayout(new Date().toISOString());
-        }
+          // ── Which LAYOUT these records are about ────────────────
+          //
+          // `deletedPages` is a page number and `deletedBlockIds` are md5s of
+          // where blocks were drawn, so both mean nothing without the pagination
+          // that produced them — and in August 2026 that pagination changed for
+          // EPUBs (mupdf's reflow → quire's fragmentation of the book's own DOM,
+          // 218 pages → 183 on Killing America). Every save from now on SAYS
+          // which layout it was made in, so a later build never has to infer it.
+          //
+          // EPUBs only, and that is not a shortcut: a PDF's pages are the PDF's
+          // own and did not change, so stamping one would record an answer to a
+          // question that does not arise. `shared/document/editor-layout.ts`
+          // reads an absent stamp on an EPUB as the mupdf era, which is what it
+          // is — no manifest written before this line exists carries one.
+          //
+          // NOT written while the stored records are stale: the stamp would then
+          // say "these are current" about numbers this save deliberately left as
+          // they were.
+          if (m.source.type === 'epub' && !layoutIsStale) {
+            m.source[EDITOR_LAYOUT_MANIFEST_KEY] =
+              currentEpubEditorLayout(new Date().toISOString());
+          }
 
-        // ── The editor state, into its own file ───────────────────────────
+          // Chapters. The picker's markers carry a `page` and mostly no `blockId`,
+          // so they are positions in the layout like everything above — and a
+          // window that was not given them cannot restate them.
+          if (!layoutIsStale) {
+            m.chapters = mergedData.chapters || [];
+            m.chaptersSource = mergedData.chapters_source || 'manual';
+          }
+
+          // Metadata from editor (title, author, etc.)
+          if (mergedData.metadata) {
+            if (!m.metadata) m.metadata = {};
+            const meta = mergedData.metadata as Record<string, unknown>;
+            if (meta.title !== undefined) m.metadata.title = meta.title;
+            if (meta.author !== undefined) m.metadata.author = meta.author;
+            if (meta.year !== undefined) m.metadata.year = meta.year;
+            if (meta.language !== undefined) m.metadata.language = meta.language;
+          }
+          // `modifiedAt` is `saveManifestImpl`'s, stamped inside the lock.
+        };
+
+        // ── The editor state, into its own file ───────────────────
         //
         // Same sixteen keys, same withholding rule, same wholesale container the
         // reset wipes — a DIFFERENT file. `editorState` starts as what was
@@ -2106,26 +2224,6 @@ function setupIpcHandlers(): void {
         // must clear it with the edits it vouches for.
         editorState.sourceFileSha256 = mergedData.source_file_sha256 || undefined;
 
-        // Chapters. The picker's markers carry a `page` and mostly no `blockId`,
-        // so they are positions in the layout like everything above — and a
-        // window that was not given them cannot restate them.
-        if (!layoutIsStale) {
-          manifest.chapters = mergedData.chapters || [];
-          manifest.chaptersSource = mergedData.chapters_source || 'manual';
-        }
-
-        // Metadata from editor (title, author, etc.)
-        if (mergedData.metadata) {
-          if (!manifest.metadata) manifest.metadata = {};
-          const meta = mergedData.metadata as Record<string, unknown>;
-          if (meta.title !== undefined) manifest.metadata.title = meta.title;
-          if (meta.author !== undefined) manifest.metadata.author = meta.author;
-          if (meta.year !== undefined) manifest.metadata.year = meta.year;
-          if (meta.language !== undefined) manifest.metadata.language = meta.language;
-        }
-
-        manifest.modifiedAt = new Date().toISOString();
-
         const catCount = Array.isArray(mergedData.category_corrections) ? mergedData.category_corrections.length : 0;
         const learnedCount = Array.isArray(mergedData.learned_categories) ? mergedData.learned_categories.length : 0;
         const paraCount = Array.isArray(mergedData.paragraph_breaks) ? mergedData.paragraph_breaks.length : 0;
@@ -2138,7 +2236,14 @@ function setupIpcHandlers(): void {
         // that says which pagination the editor records above were made in, so
         // it must never land ahead of the records it vouches for.
         await writeEditorState(filePath, editorState);
-        await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
+        const saved = await manifestService.modifyManifest(projectId, applyEditorRecords);
+        if (!saved.success) {
+          return {
+            success: false,
+            error: `${path.basename(filePath)}'s editor state was saved, but recording it in the `
+              + `project's manifest failed: ${saved.error}`,
+          };
+        }
         // The save SUCCEEDED — the metadata, the highlights and everything that
         // does not name a position went to disk. `staleLayoutRefusal` says what
         // did NOT, so a window can tell the user that the deletions they made in
@@ -2179,9 +2284,23 @@ function setupIpcHandlers(): void {
       // Check if projectDir is a manifest project directory
       const isDir = fsSync.existsSync(projectDir) && fsSync.statSync(projectDir).isDirectory();
       if (isDir) {
-        const manifestPath = path.join(projectDir, 'manifest.json');
-        const manifestContent = await fs.readFile(manifestPath, 'utf-8');
-        const manifest = JSON.parse(manifestContent);
+        // ── THROUGH THE LOCK, both writes ───────────────────────────────────
+        //
+        // This handler used to read manifest.json raw, hold the object across
+        // tens of seconds of EPUB and M4B rewriting, and write the WHOLE thing
+        // back — twice. Anything another window recorded in that window (a chain,
+        // a strike, a finished pass) was destroyed by the second write. Both
+        // writes are `modifyManifest` transactions now, each mutating only the
+        // keys it owns: the metadata, and the audiobook pointers a rename moved.
+        const projectId = path.basename(projectDir);
+        if (!sameResolvedPath(manifestService.getProjectPath(projectId), projectDir)) {
+          return {
+            success: false,
+            error: `Cannot update ${projectDir}: it is not inside the configured library `
+              + `(expected ${manifestService.getProjectPath(projectId)}), so its manifest cannot be `
+              + 'located. Point the library setting at the folder that owns this project.',
+          };
+        }
 
         // Validate an explicit slug change UP FRONT so a collision fails fast
         // without half-saving. The slug (project folder name) is an internal
@@ -2203,34 +2322,42 @@ function setupIpcHandlers(): void {
           }
         }
 
-        // Map the editor's metadata fields to manifest metadata fields
-        if (!manifest.metadata) manifest.metadata = {};
-        if (meta.title !== undefined) manifest.metadata.title = meta.title;
-        if (meta.author !== undefined) manifest.metadata.author = meta.author;
-        if (meta.year !== undefined) manifest.metadata.year = meta.year;
-        if (meta.language !== undefined) manifest.metadata.language = meta.language;
-        if (meta.narrator !== undefined) manifest.metadata.narrator = meta.narrator;
-        if (meta.series !== undefined) manifest.metadata.series = meta.series;
-        if (meta.description !== undefined) manifest.metadata.description = meta.description;
-        if (meta.contributors !== undefined) manifest.metadata.contributors = meta.contributors;
-        if (meta.tags !== undefined) manifest.metadata.tags = meta.tags;
-        if (meta.coverImagePath !== undefined) manifest.metadata.coverPath = meta.coverImagePath;
+        // Map the editor's metadata fields to manifest metadata fields.
+        const savedMetadata = await manifestService.modifyManifest(projectId, (m: any) => {
+          if (!m.metadata) m.metadata = {};
+          if (meta.title !== undefined) m.metadata.title = meta.title;
+          if (meta.author !== undefined) m.metadata.author = meta.author;
+          if (meta.year !== undefined) m.metadata.year = meta.year;
+          if (meta.language !== undefined) m.metadata.language = meta.language;
+          if (meta.narrator !== undefined) m.metadata.narrator = meta.narrator;
+          if (meta.series !== undefined) m.metadata.series = meta.series;
+          if (meta.description !== undefined) m.metadata.description = meta.description;
+          if (meta.contributors !== undefined) m.metadata.contributors = meta.contributors;
+          if (meta.tags !== undefined) m.metadata.tags = meta.tags;
+          if (meta.coverImagePath !== undefined) m.metadata.coverPath = meta.coverImagePath;
 
-        // Output filename: the renderer sends the effective name (live-generated or
-        // a manual override). Use it when provided; otherwise derive from metadata.
-        if (typeof meta.outputFilename === 'string' && meta.outputFilename.trim()) {
-          manifest.metadata.outputFilename = meta.outputFilename.trim();
-        } else {
-          manifest.metadata.outputFilename = manifestService.computeDescriptiveFilename({
-            title: manifest.metadata.title,
-            author: manifest.metadata.author,
-            authorFileAs: manifest.metadata.authorFileAs,
-            year: manifest.metadata.year,
-          }, '.m4b');
+          // Output filename: the renderer sends the effective name (live-generated or
+          // a manual override). Use it when provided; otherwise derive from metadata.
+          if (typeof meta.outputFilename === 'string' && meta.outputFilename.trim()) {
+            m.metadata.outputFilename = meta.outputFilename.trim();
+          } else {
+            m.metadata.outputFilename = manifestService.computeDescriptiveFilename({
+              title: m.metadata.title,
+              author: m.metadata.author,
+              authorFileAs: m.metadata.authorFileAs,
+              year: m.metadata.year,
+            }, '.m4b');
+          }
+        });
+        if (!savedMetadata.success) {
+          return { success: false, error: savedMetadata.error || 'Failed to update project metadata.' };
         }
 
-        manifest.modifiedAt = new Date().toISOString();
-        await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
+        // Read back what the transaction settled on. Everything below — which
+        // EPUBs to retag, which M4B is the primary, what the desired filename is —
+        // is a READ of the record that was just written, not a second copy of it
+        // held across the minutes of file rewriting that follow.
+        const manifest = await manifestService.readProjectManifest(projectDir) as any;
 
         // The export is named after the book — located by its manifest record,
         // never by a name in source/.
@@ -2434,17 +2561,27 @@ function setupIpcHandlers(): void {
         // pointer; leaving them on the old name orphans the audiobook. Re-persist
         // before any project-folder rename below moves the manifest file.
         if (renamedM4bPaths.length > 0) {
-          for (const { oldRel, newRel } of renamedM4bPaths) {
-            if (manifest.outputs?.audiobook?.path === oldRel) {
-              manifest.outputs.audiobook.path = newRel;
-            }
-            if (Array.isArray(manifest.variants)) {
-              for (const v of manifest.variants) {
-                if (v.path === oldRel) v.path = newRel;
+          const relinked = await manifestService.modifyManifest(projectId, (m: any) => {
+            for (const { oldRel, newRel } of renamedM4bPaths) {
+              if (m.outputs?.audiobook?.path === oldRel) {
+                m.outputs.audiobook.path = newRel;
+              }
+              if (Array.isArray(m.variants)) {
+                for (const v of m.variants) {
+                  if (v.path === oldRel) v.path = newRel;
+                }
               }
             }
+          });
+          if (!relinked.success) {
+            // The files ARE renamed and the manifest still names the old paths —
+            // said out loud rather than reported as a clean success, because the
+            // audiobook is unreachable until somebody knows.
+            warnings.push(
+              `The audiobook file(s) were renamed, but re-pointing the project at the new `
+              + `name(s) failed: ${relinked.error}. The audiobook will not be found until this is `
+              + 'fixed.');
           }
-          await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
         }
 
         // Rename the project folder ONLY when the user explicitly changed the slug
@@ -3271,8 +3408,24 @@ function setupIpcHandlers(): void {
         }
       }
 
+      // ── "COULD NOT LOOK" IS NOT "NOT FOUND" ────────────────────────────────
+      //
+      // The caller's next move on `found: false` is to MINT A PROJECT for this
+      // file. A listing that failed — an unmounted library drive, a permissions
+      // error — answered exactly the same way, so an offline drive produced a
+      // duplicate project for a book the library already had, and the two only
+      // met again when the drive came back. The two are distinguished, in the
+      // spirit of `fs:list-directory`'s no-catch doctrine.
       const result = await manifestService.listProjects();
-      if (!result.success || !result.projects) return { found: false };
+      if (!result.success) {
+        return {
+          found: false,
+          error: `The library could not be read, so BookForge cannot say whether this file already `
+            + `belongs to a project: ${result.error ?? 'no reason given'}. Nothing was imported.`,
+          searchFailed: true,
+        };
+      }
+      if (!result.projects) return { found: false };
 
       // Content hash is authoritative — match it across ALL projects first so a
       // weaker filename coincidence on some other project can't win.
@@ -3290,7 +3443,10 @@ function setupIpcHandlers(): void {
 
       return { found: false };
     } catch (err) {
-      return { found: false, error: (err as Error).message };
+      // Same distinction as the listing refusal above: this threw, so nothing
+      // here can say the file has no project — only that the question was not
+      // answered.
+      return { found: false, error: (err as Error).message, searchFailed: true };
     }
   });
 
@@ -3361,17 +3517,57 @@ function setupIpcHandlers(): void {
         // window is handed a single page — and the analysis, the viewer, the
         // aligner and the narration cut only ever see the normalized file.
         //
-        // NOT inside the try above: a refusal from this fails the open, with its
-        // own sentence. A half-normalized book, opened anyway, would be a window
-        // laying out one chapter's markup and another's, with nothing on screen
-        // saying which is which.
-        const { nameChapterOpenings } = await import('./narration-export.js');
-        const named = await nameChapterOpenings(filePath);
-        if (named.edited > 0) {
-          console.log(
-            `[projects:load] ${path.basename(filePath)}: ${named.edited} chapter opening(s) now `
-            + 'read the name the book stores for their chapter.'
-          );
+        // ── A NAMING PASS IS PER CHAIN, so it asks which ────────────────────
+        //
+        // `nameChapterOpenings` resolves through the act chokepoint, and a
+        // project with two working chains refuses to be asked without an id —
+        // correctly, because "the project's book" then names two files. But
+        // OPENING a project is not an act on one book: this call ran with no id
+        // and the refusal came out as "Failed to open project — … has 2 working
+        // chains…", so the multi-version feature made every project it created
+        // impossible to open (found 2026-08-10). A pass over a project is
+        // per-chain or it is skipped; it is never "the" chain. `soleFamily` is
+        // that rule, and it is the same shape `listen:list-sources` uses.
+        //
+        // ── AND A DECLINED NAMING DOES NOT FAIL THE OPEN ────────────────────
+        //
+        // The pass refuses to rewrite an opening while the narration strikes
+        // recorded against this book cannot be carried onto the edit — a void
+        // record, which a machine-to-machine sync or an interrupted rename can
+        // produce with no user action at all. Thrown from here that refusal shut
+        // the project for good, because the only door to clearing those strikes
+        // is opening it. So it joins `stale_layout_refusal` on the withheld-
+        // notice channel, under this handler's own rule (below): the file on
+        // disk is untouched either way — the pass writes a staged copy and moves
+        // it into place, so a refusal leaves the book exactly as it was — and a
+        // book nobody can open is a worse answer than a book whose openings
+        // still print the publisher's headings.
+        let chapterNamingNotice: string | null = null;
+        const chains = await manifestService.readBookFamilies(filePath);
+        const soleChain = soleFamily(chains);
+        if (soleChain === null && chains.length > 1) {
+          chapterNamingNotice =
+            `${path.basename(filePath)} has ${chains.length} working chains, so the pass that makes `
+            + 'each chapter opening print its stored name was not run — it would have to be told '
+            + 'which version to normalize. Run it from the version you mean.';
+          console.warn(`[projects:load] ${chapterNamingNotice}`);
+        } else {
+          try {
+            const { nameChapterOpenings } = await import('./narration-export.js');
+            const named = await nameChapterOpenings(
+              filePath, soleChain === null ? undefined : soleChain.id);
+            if (named.edited > 0) {
+              console.log(
+                `[projects:load] ${path.basename(filePath)}: ${named.edited} chapter opening(s) now `
+                + 'read the name the book stores for their chapter.'
+              );
+            }
+          } catch (err) {
+            chapterNamingNotice =
+              `${path.basename(filePath)}'s chapter openings were not rewritten to print their `
+              + `stored names: ${(err as Error).message}`;
+            console.warn(`[projects:load] ${chapterNamingNotice}`);
+          }
         }
 
         // Read manifest.json and convert it to the editor's project shape
@@ -3521,6 +3717,13 @@ function setupIpcHandlers(): void {
           stale_layout_refusal: staleLayoutRefusal ?? undefined,
           /** What a one-time carry-over of those records came to, when one ran. */
           layout_migration_notice: layoutMigrationNotice ?? undefined,
+          /**
+           * Why this book's chapter openings still print what they printed, when
+           * the normalization every open performs was declined or skipped. Same
+           * channel and same rule as `stale_layout_refusal`: nothing was changed,
+           * the project opened, and the sentence is owed to whoever can say it.
+           */
+          chapter_naming_notice: chapterNamingNotice ?? undefined,
           metadata: {
             title: meta.title || '',
             author: meta.author || '',
@@ -4045,6 +4248,14 @@ function setupIpcHandlers(): void {
     savePathOverride: string | null,  // absolute; null → the project's canonical export path
     edits: EpubPreservingEdits,
     deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
+    // WHICH working chain this export belongs to. The picker holds it — the row
+    // it opened from carries it and `projects:export-info` hands it back — and
+    // without it a project with two versions could not export at all: both
+    // `exportEpubTarget` and `registerEpubExport` resolve through the act
+    // chokepoint, which refuses to be asked "the project's book" when that names
+    // two files. Threaded exactly as book:erase-changes and narration:export
+    // already thread it. Absent stays the ordinary single-chain case.
+    familyId?: string,
   ) => {
     try {
       if (!projectDir && !savePathOverride) {
@@ -4053,12 +4264,6 @@ function setupIpcHandlers(): void {
           error: 'Cannot export: no project directory and no save path — there is nowhere to write the EPUB.',
         };
       }
-
-      const samePath = (a: string, b: string): boolean => {
-        const ra = path.resolve(normalizeFsPath(a));
-        const rb = path.resolve(normalizeFsPath(b));
-        return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
-      };
 
       // Everything project-mode needs is checked BEFORE the export runs, so a
       // project this handler cannot record into never gets a file written for it.
@@ -4086,7 +4291,7 @@ function setupIpcHandlers(): void {
 
         projectId = path.basename(projectDir);
         const expectedDir = manifestService.getProjectPath(projectId);
-        if (!samePath(expectedDir, projectDir)) {
+        if (!sameResolvedPath(expectedDir, projectDir)) {
           return {
             success: false,
             error: `Cannot export: ${projectDir} is not inside the configured library (expected ${expectedDir}), so its manifest cannot be located.`,
@@ -4096,12 +4301,13 @@ function setupIpcHandlers(): void {
 
       // Named after the book, and derived in ONE place (manifest-service) so the
       // renderer never builds it. A Save As names its own destination instead.
-      const epubPath = savePathOverride ?? (await manifestService.exportEpubTarget(projectDir!)).absPath;
+      const epubPath = savePathOverride
+        ?? (await manifestService.exportEpubTarget(projectDir!, familyId)).absPath;
 
       // The source is the alignment baseline: every block id in `edits` was
       // resolved against these exact bytes. Writing the export over it destroys
       // the only file the edit set means anything against.
-      if (samePath(epubPath, epubSourcePath)) {
+      if (sameResolvedPath(epubPath, epubSourcePath)) {
         return {
           success: false,
           error: `Cannot export onto the source EPUB itself (${epubPath}) — it is the file the edits were aligned against. Choose a different destination.`,
@@ -4153,10 +4359,12 @@ function setupIpcHandlers(): void {
         // by name. Only for the canonical destination: a savePathOverride writes
         // somewhere the caller chose, which is not the project's export.
         if (!savePathOverride) {
-          await manifestService.registerEpubExport(projectDir, epubPath);
+          await manifestService.registerEpubExport(projectDir, epubPath, undefined, familyId);
         }
 
-        mainWindow?.webContents.send('project:files-changed', projectDir);
+        // Every window: the picker, the editor and the listen windows all draw
+        // this project's files, and only one of them is the main window.
+        broadcastToAllWindows('project:files-changed', projectDir);
       }
 
       return {
@@ -5239,8 +5447,32 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * The book this job will read, proved to be on disk before anything starts.
+   *
+   * A narration run is hours of GPU. Started against a path that is not there —
+   * a narration copy deleted since the job was queued, an unmounted drive, a
+   * project moved on the other machine — it used to spawn its workers and die
+   * inside e2a with whatever that layer says about a missing file, which names
+   * the wrong thing and arrives after the queue has already reported "running".
+   */
+  const narrationInputRefusal = (config: any): string | null => {
+    const epubPath = config?.epubPath;
+    if (typeof epubPath !== 'string' || epubPath.length === 0) {
+      return 'This narration run was queued without a book to read. Start it from the version you '
+        + 'mean, so the run is told which document it has.';
+    }
+    if (!fsSync.existsSync(normalizeFsPath(epubPath))) {
+      return `The book this run was queued against is not there: ${epubPath}. Nothing was started. `
+        + 'Export the narration copy again, or check that the drive it lives on is mounted.';
+    }
+    return null;
+  };
+
   ipcMain.handle('parallel-tts:start-conversion', async (_event, jobId: string, config: any) => {
     try {
+      const refusal = narrationInputRefusal(config);
+      if (refusal) return { success: false, error: refusal };
       const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
       parallelTtsBridge.setMainWindow(mainWindow);
       // Initialize logger with current library path
@@ -5330,6 +5562,8 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('parallel-tts:resume-conversion', async (_event, jobId: string, config: any, resumeInfo: any) => {
     try {
+      const refusal = narrationInputRefusal(config);
+      if (refusal) return { success: false, error: refusal };
       const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
       parallelTtsBridge.setMainWindow(mainWindow);
       // Initialize logger with current library path
@@ -6016,27 +6250,28 @@ function setupIpcHandlers(): void {
     projectDir: string,
     epubData: ArrayBuffer,
     deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
-    savePath?: string
+    savePath?: string,
+    // WHICH working chain this export belongs to — threaded for the same reason
+    // `epub:export-preserving-markup` threads it: a project with two versions has
+    // two books, and both the target and the record refuse to be asked without
+    // saying which. Absent stays the ordinary single-chain case.
+    familyId?: string
   ) => {
     try {
       // Check if projectDir is a manifest project directory
       const isDir = fsSync.existsSync(projectDir) && fsSync.statSync(projectDir).isDirectory();
 
       if (isDir) {
-        // Manifest project directory - save exported EPUB to source/ and update manifest
-        const manifestPath = path.join(projectDir, 'manifest.json');
-        const manifestContent = await fs.readFile(manifestPath, 'utf-8');
-        const manifest = JSON.parse(manifestContent);
-
         // Save the exported EPUB — to savePath if provided, otherwise to the
         // project's canonical export path (named after the book; derived in
-        // manifest-service, never here).
+        // manifest-service, never here). Resolved BEFORE a byte is written, so a
+        // project this handler cannot record into never gets a file.
         let epubPath: string;
         if (savePath) {
           epubPath = savePath;
           await fs.mkdir(path.dirname(savePath), { recursive: true });
         } else {
-          epubPath = (await manifestService.exportEpubTarget(projectDir)).absPath;
+          epubPath = (await manifestService.exportEpubTarget(projectDir, familyId)).absPath;
           await fs.mkdir(path.dirname(epubPath), { recursive: true });
         }
         const epubBuffer = Buffer.from(epubData);
@@ -6055,19 +6290,27 @@ function setupIpcHandlers(): void {
           await fs.writeFile(examplesPath, JSON.stringify(deletedBlockExamples, null, 2));
         }
 
-        // Update manifest
-        manifest.modifiedAt = new Date().toISOString();
-        await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
-
         // The record that makes this file findable at all — nothing looks for it
         // by name. A savePath writes where the caller chose, which is not the
         // project's export.
+        //
+        // ── AND IT IS THE ONLY MANIFEST WRITE HERE ────────────────────────────
+        //
+        // There used to be a raw read at the top of this handler and a raw
+        // whole-object write here that set nothing but `modifiedAt` — with the
+        // EPUB write, the paragraph merge and a stat in between. A pure clobber:
+        // anything recorded during those seconds was thrown away by a write that
+        // wanted a timestamp. `registerEpubExport` takes the project's own lock
+        // and stamps `modifiedAt` on its way past, so it is both the record and
+        // the touch. A `savePath` export records nothing and touches nothing —
+        // it wrote to a place the caller named, which is not this project's book.
         if (!savePath) {
-          await manifestService.registerEpubExport(projectDir, epubPath);
+          await manifestService.registerEpubExport(projectDir, epubPath, undefined, familyId);
         }
 
-        // Notify main window that project files changed
-        mainWindow?.webContents.send('project:files-changed', projectDir);
+        // Every window, not just the main one: the picker, the editor and the
+        // listen windows all draw this project's files.
+        broadcastToAllWindows('project:files-changed', projectDir);
 
         return {
           success: true,
@@ -6365,8 +6608,15 @@ function setupIpcHandlers(): void {
       } else {
         const tmpOut = path.join(os.tmpdir(), 'bookforge-covers', `${crypto.randomUUID()}.jpg`);
         if (await ebookLibrary.extractCover(fileAbs, tmpOut)) {
-          dataUrl = await readAsDataUrl(tmpOut);
-          try { await fs.unlink(tmpOut); } catch { /* temp cleanup */ }
+          // `finally`, not a trailing unlink: a read that throws (a truncated
+          // extraction, a permissions error) used to leave the temp cover behind
+          // for good — one per failed attempt, in the OS temp directory, named
+          // after a uuid nothing will ever look up again.
+          try {
+            dataUrl = await readAsDataUrl(tmpOut);
+          } finally {
+            try { await fs.unlink(tmpOut); } catch { /* temp cleanup */ }
+          }
         }
       }
       if (!dataUrl) return { success: true, coverPath: undefined }; // file genuinely has no cover
@@ -6381,6 +6631,7 @@ function setupIpcHandlers(): void {
         if (mf.primaryVariantId === variantId && !mf.metadata.coverPath) mf.metadata.coverPath = coverPath;
       });
       if (!saved?.success) return { success: false, error: saved?.error || 'Failed to persist cover' };
+      broadcastToAllWindows('project:files-changed', manifestService.getProjectPath(projectId));
       return { success: true, coverPath, data: dataUrl };
     } catch (err) { console.error('[variant:ensure-cover]', err); return { success: false, error: (err as Error).message }; }
   });
@@ -6393,11 +6644,29 @@ function setupIpcHandlers(): void {
       // destroy a file another version/output still needs. This is the invariant
       // that makes "delete one version, lose another's file" impossible.
       let stillReferenced = false;
+      // The chains this delete also removes — a chain sourced on the file being
+      // deleted is a chain whose source cannot exist. Files those chains still
+      // recorded come off disk after the write is confirmed, never before.
+      let removedChains: import('./manifest-service').RemovedGeneratedChain[] = [];
+      const projectDirForDelete = manifestService.getProjectPath(projectId);
       const saved = await manifestService.modifyManifest(projectId, (mf) => {
         const cur = manifestService.getVariants(mf);
         removed = cur.variants.find((v) => v.id === variantId) || null;
-        mf.variants = cur.variants.filter((v) => v.id !== variantId);
-        if (mf.primaryVariantId === variantId) mf.primaryVariantId = mf.variants[0]?.id;
+        // ── The SYNTHESIZED rows must not be persisted ──────────────────────
+        //
+        // `getVariants` folds the archive entries into `arch:` rows that exist
+        // only in its answer, and writing the whole folded list back turned every
+        // one of them into a real record — so a later archive entry could never
+        // become a row again, and the ghosts outlived their files. Only rows that
+        // were already ON the manifest are written back; the deleted one is
+        // filtered out of both.
+        const recorded = new Set((mf.variants ?? []).map((v) => v.id));
+        // Every version that survives, synthesized ones included: the decisions
+        // below (which is primary now, is the file still referenced) are about
+        // what the project HAS, and an archive mirror is one of those.
+        const survivors = cur.variants.filter((v) => v.id !== variantId);
+        mf.variants = survivors.filter((v) => recorded.has(v.id));
+        if (mf.primaryVariantId === variantId) mf.primaryVariantId = survivors[0]?.id;
         if (removed && mf.outputs?.audiobook?.path === removed.path) {
           const next = mf.variants.find((v) => v.kind === 'audiobook' && !v.id.startsWith('bilingual:'));
           if (next) mf.outputs.audiobook = { ...mf.outputs.audiobook, path: next.path, vttPath: next.vttPath };
@@ -6421,11 +6690,30 @@ function setupIpcHandlers(): void {
           const norm = (p?: string): string => (p || '').replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
           const target = norm(rmPath);
           const refs: Array<string | undefined> = [
-            ...mf.variants.map((v) => v.path),
+            ...survivors.map((v) => v.path),
             mf.outputs?.audiobook?.path,
             ...Object.values(mf.outputs?.bilingualAudiobooks || {}).map((o) => (o as { path?: string })?.path),
           ];
           stillReferenced = !!target && refs.some((p) => norm(p) === target);
+
+          // ── The CHAIN of custody goes with the file it hangs off ──────────
+          //
+          // Deleting the archive EPUB the user handed us used to filter
+          // `mf.variants` and stop there: `mf.archive` kept naming the file, so
+          // the project manufactured recorded-but-absent state about its own
+          // original, and every chain sourced on it refused forever
+          // ("Restore it from your backup…") — killing Erase changes and any
+          // future re-mint, on a confirmation that promised the book EPUB was
+          // being kept. `book:delete-generated-epub` learned this for the cast
+          // (`removeGeneratedBookFamilies`); this sibling never did.
+          //
+          // Only when the file is actually going. A version whose file another
+          // record still points at is not being removed from the project, so
+          // nothing sourced on it has lost its source.
+          if (!stillReferenced) {
+            removedChains = manifestService.dropArchiveSourcedChains(
+              mf, projectDirForDelete, rmPath);
+          }
         }
       });
       // CRITICAL ORDERING: only unlink the file AFTER the manifest write is
@@ -6440,7 +6728,18 @@ function setupIpcHandlers(): void {
       if (rm && !stillReferenced) {
         try { await fs.unlink(normalizeFsPath(path.join(manifestService.getProjectPath(projectId), rm.path))); } catch { /* already gone */ }
       }
-      return { success: true };
+      // The working copies and narration copies of the chains that went with it.
+      // Their records died in the transaction above; the files are this side of
+      // the write, per the same ordering.
+      for (const chain of removedChains) {
+        for (const strayPath of [chain.epubAbsPath, chain.ttsAbsPath]) {
+          if (strayPath !== null && fsSync.existsSync(strayPath)) {
+            try { await fs.unlink(strayPath); } catch { /* already gone */ }
+          }
+        }
+      }
+      broadcastToAllWindows('project:files-changed', projectDirForDelete);
+      return { success: true, removedChains: removedChains.map((c) => c.sourceName) };
     } catch (err) { console.error('[variant:delete]', err); return { success: false, error: (err as Error).message }; }
   });
 
@@ -6485,6 +6784,7 @@ function setupIpcHandlers(): void {
         if (!rel) continue;
         try { await fs.unlink(normalizeFsPath(path.join(projectDir, rel))); } catch { /* already gone */ }
       }
+      broadcastToAllWindows('project:files-changed', projectDir);
       return { success: true };
     } catch (err) { console.error('[audiobook:delete-output]', err); return { success: false, error: (err as Error).message }; }
   });
@@ -6514,6 +6814,7 @@ function setupIpcHandlers(): void {
       // saved before applied: same reasoning as variant:set-primary above.
       if (!saved?.success) return { success: false, error: saved?.error || 'Failed to update project — metadata not copied.' };
       if (!applied) return { success: false, error: `Source or target version not found (from=${fromId}, to=${toId})` };
+      broadcastToAllWindows('project:files-changed', manifestService.getProjectPath(projectId));
       return { success: true };
     } catch (err) { return { success: false, error: (err as Error).message }; }
   });
@@ -7113,7 +7414,7 @@ function setupIpcHandlers(): void {
         });
 
         if (projectRoot) {
-          mainWindow.webContents.send('project:files-changed', projectRoot);
+          broadcastToAllWindows('project:files-changed', projectRoot);
         }
       }
 
@@ -7148,7 +7449,7 @@ function setupIpcHandlers(): void {
         outputPath: result.outputPath,
         error: result.error,
       });
-      if (result.success) mainWindow?.webContents.send('project:files-changed', config.projectDir);
+      if (result.success) broadcastToAllWindows('project:files-changed', config.projectDir);
       return { success: result.success, data: result };
     } catch (err) {
       const error = (err as Error).message;
@@ -7211,7 +7512,7 @@ function setupIpcHandlers(): void {
     try {
       const { resetBookProcessing } = await import('./processing-reset.js');
       const summary = await resetBookProcessing(request.projectDir, { preview: request.preview });
-      if (!summary.preview) mainWindow?.webContents.send('project:files-changed', summary.projectDir);
+      if (!summary.preview) broadcastToAllWindows('project:files-changed', summary.projectDir);
       return { success: true, summary };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -7463,6 +7764,13 @@ function setupIpcHandlers(): void {
         // a null receipt here would mean the copy came back without the records
         // being cleared, which is the exact bug this act exists to make
         // impossible.
+        //
+        // The BROADCAST goes first all the same: by this point the ledger has
+        // been cleared and the copy re-minted, so every window drawing this
+        // project is showing a book that no longer exists. Returning the refusal
+        // without it left them all stale — and the state this refusal describes
+        // is exactly the one where a stale window is most dangerous.
+        broadcastToAllWindows('project:files-changed', projectDir);
         return {
           success: false,
           error: `${path.basename(projectDir)}'s working copy was replaced, but BookForge cannot `
@@ -7586,10 +7894,21 @@ function setupIpcHandlers(): void {
       // recorded has none of that to drop, which is an ordinary state here.
       const book = await manifestService.readExportEpub(projectDir, familyId);
       let droppedPasses = 0;
+      // The narration copy `forgetEpubExport` also drops the record of. It has
+      // to come back FROM that call: the transaction deletes `ttsEpub` with the
+      // book it was cut from, so anything asking the manifest afterwards — as
+      // `removeGeneratedBookFamilies` below does — reads null and leaves a whole
+      // book on disk that nothing records, invisible and silently overwritten by
+      // the next export.
+      let narrationStray: string | null = null;
       if (book !== null) {
         const forgotten = await manifestService.forgetEpubExport(projectDir, familyId);
         droppedPasses = forgotten.droppedPasses;
+        narrationStray = forgotten.ttsAbsPath;
         if (fsSync.existsSync(forgotten.absPath)) await fs.unlink(forgotten.absPath);
+        if (narrationStray !== null && fsSync.existsSync(narrationStray)) {
+          await fs.unlink(narrationStray);
+        }
       }
 
       // The chains that hang off the cast go with it, BEFORE the cast's own
@@ -7620,6 +7939,7 @@ function setupIpcHandlers(): void {
           relPath: forgottenGenerated.relPath,
           fileRemoved,
           workingCopyRelPath: book === null ? null : book.relPath,
+          narrationCopyRemoved: narrationStray !== null,
           droppedPasses,
           removedChains: removedChains.map((chain) => chain.sourceName),
         },
@@ -7713,10 +8033,13 @@ function setupIpcHandlers(): void {
     familyId?: string) => {
     try {
       const { editNarrationDeletions } = await import('./narration-export.js');
-      return {
-        success: true,
-        deletions: await editNarrationDeletions(projectDir, edit, familyId),
-      };
+      const deletions = await editNarrationDeletions(projectDir, edit, familyId);
+      // A strike can MINT a working copy on its way past (the record lives on
+      // the chain's book, and a chain with no copy yet gets one), and it always
+      // changes what the narration cut will contain — so every window that draws
+      // this project is told, not just the one that struck.
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return { success: true, deletions };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7783,10 +8106,9 @@ function setupIpcHandlers(): void {
     _event, projectDir: string, elements: string[], familyId?: string) => {
     try {
       const { saveNarrationDeletions } = await import('./narration-export.js');
-      return {
-        success: true,
-        deletions: await saveNarrationDeletions(projectDir, elements, familyId),
-      };
+      const deletions = await saveNarrationDeletions(projectDir, elements, familyId);
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return { success: true, deletions };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -8016,7 +8338,7 @@ function setupIpcHandlers(): void {
       }
       const { deleteAnalysis } = await import('./book-analysis.js');
       await deleteAnalysis(path.join(projectDir, 'stages', '04-analysis'));
-      if (mainWindow) mainWindow.webContents.send('project:files-changed', projectDir);
+      broadcastToAllWindows('project:files-changed', projectDir);
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -8812,7 +9134,20 @@ function setupIpcHandlers(): void {
   ) => {
     try {
       const { applyChaptersToM4b } = await import('./chapter-recovery-bridge.js');
-      return await applyChaptersToM4b(m4bPath, chapters);
+      const result = await applyChaptersToM4b(m4bPath, chapters);
+      // The M4B on disk was rewritten. Every window drawing the project it lives
+      // in — the shelf, the versions page, an open player — is showing a file
+      // whose chapters are one act old. The project is derived from the path,
+      // because this handler is given a FILE and not a project.
+      if (result?.success) {
+        const projectsDir = path.normalize(path.join(getLibraryRoot(), 'projects'));
+        const normalized = path.normalize(path.resolve(normalizeFsPath(m4bPath)));
+        if (normalized.startsWith(projectsDir + path.sep)) {
+          const slug = path.relative(projectsDir, normalized).split(path.sep)[0];
+          broadcastToAllWindows('project:files-changed', path.join(projectsDir, slug));
+        }
+      }
+      return result;
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -9900,10 +10235,13 @@ function setupIpcHandlers(): void {
     return manifestService.getManifest(projectId);
   });
 
-  // Save (update) a manifest
-  ipcMain.handle('manifest:save', async (_event, manifest: any) => {
-    return manifestService.saveManifest(manifest);
-  });
+  // `manifest:save` is GONE (2026-08-10). It took a WHOLE manifest object from a
+  // renderer that had fetched it at some earlier point and wrote it over the file
+  // — the same wholesale clobber `project:save-to-path` was just converted away
+  // from, with none of that handler's withholding rules — and nothing called it:
+  // `manifest.service.saveProject` and `electronService.manifestSave` were both
+  // unreferenced. Every real writer goes through `manifest:update` (a field
+  // patch) or a handler that owns the keys it touches.
 
   // Update specific fields in a manifest
   ipcMain.handle('manifest:update', async (_event, update: any) => {
@@ -10057,6 +10395,7 @@ function setupIpcHandlers(): void {
       await reconcileCleanupStageManifest(projectPath);
 
       console.log('[PIPELINE] Deleted cleanup stage:', deletedFiles);
+      broadcastToAllWindows('project:files-changed', projectPath);
       return { success: true, deletedFiles, message: `Deleted ${deletedFiles.length} files from cleanup stage` };
     } catch (err) {
       console.error('[PIPELINE] Failed to delete cleanup stage:', err);
@@ -10101,6 +10440,7 @@ function setupIpcHandlers(): void {
       await reconcileCleanupStageManifest(projectPath);
 
       console.log('[PIPELINE] Deleted simplify stage:', deletedFiles);
+      broadcastToAllWindows('project:files-changed', projectPath);
       return { success: true, deletedFiles, message: `Deleted ${deletedFiles.length} files from simplify stage` };
     } catch (err) {
       console.error('[PIPELINE] Failed to delete simplify stage:', err);
@@ -10181,6 +10521,7 @@ function setupIpcHandlers(): void {
         }
         await reconcileTranslationStageManifest(projectPath);
         console.log('[PIPELINE] Deleted translation stage (all):', deletedItems);
+        broadcastToAllWindows('project:files-changed', projectPath);
         return { success: true, deletedItems, message: `Deleted ${deletedItems.length} items from translation stage` };
       }
 
@@ -10252,6 +10593,7 @@ function setupIpcHandlers(): void {
 
       await reconcileTranslationStageManifest(projectPath);
       console.log(`[PIPELINE] Deleted translation output ${base}:`, deletedItems);
+      broadcastToAllWindows('project:files-changed', projectPath);
       return { success: true, deletedItems, message: `Deleted ${deletedItems.length} files for ${base}` };
     } catch (err) {
       console.error('[PIPELINE] Failed to delete translation stage:', err);
@@ -10299,6 +10641,7 @@ function setupIpcHandlers(): void {
       }
 
       console.log('[PIPELINE] Deleted TTS sessions:', deletedSessions);
+      broadcastToAllWindows('project:files-changed', projectPath);
       return {
         success: true,
         deletedSessions,
@@ -10312,6 +10655,49 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * Forget every record that names a file in `output/`, in ONE transaction.
+   *
+   * The record half of emptying that folder. `audiobook:delete-output` does this
+   * for one key at a time and states the rule in as many words ("CRITICAL
+   * ORDERING… never delete a file while the manifest still lists it"); the two
+   * handlers below deleted the whole folder first and left `outputs.audiobook`,
+   * the bilingual pointers and every audiobook variant naming files that were
+   * gone — the exact inversion their own sibling forbids.
+   *
+   * Only `output/` is cleared. A professionally-read upload lives in `archive/`
+   * and is not this act's to forget.
+   */
+  const forgetOutputFolderRecords = async (projectPath: string): Promise<void> => {
+    const projectId = path.basename(projectPath);
+    if (!manifestService.projectExists(projectId)) return;
+    const inOutput = (p?: string): boolean =>
+      (p || '').replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().startsWith('output/');
+    const saved = await manifestService.modifyManifest(projectId, (m) => {
+      if (m.outputs) {
+        if (inOutput(m.outputs.audiobook?.path)) delete m.outputs.audiobook;
+        for (const [pair, out] of Object.entries(m.outputs.bilingualAudiobooks || {})) {
+          if (inOutput((out as { path?: string })?.path)) {
+            delete m.outputs.bilingualAudiobooks![pair];
+          }
+        }
+      }
+      if (Array.isArray(m.variants)) {
+        m.variants = m.variants.filter((v) => !inOutput(v.path));
+        if (m.primaryVariantId && !m.variants.some((v) => v.id === m.primaryVariantId)) {
+          m.primaryVariantId = m.variants[0]?.id;
+        }
+      }
+    });
+    if (!saved.success) {
+      throw new Error(
+        `Nothing was deleted: ${path.basename(projectPath)}'s records of its output files could not `
+        + `be cleared (${saved.error}), and removing the files first would leave the project naming `
+        + 'an audiobook that is gone.'
+      );
+    }
+  };
+
   // Delete output files (audiobook.m4b, audiobook.vtt, bilingual outputs)
   ipcMain.handle('pipeline:delete-output', async (_event, projectPath: string) => {
     try {
@@ -10320,6 +10706,11 @@ function setupIpcHandlers(): void {
       if (!fsSync.existsSync(outputDir)) {
         return { success: true, message: 'No output directory found' };
       }
+
+      // RECORDS FIRST, FILES LAST — and it throws rather than proceeding, so a
+      // failed write leaves the audiobook where it is instead of deleting it out
+      // from under a manifest that still points at it.
+      await forgetOutputFolderRecords(projectPath);
 
       const files = await fs.readdir(outputDir);
       const deletedFiles: string[] = [];
@@ -10338,6 +10729,7 @@ function setupIpcHandlers(): void {
       }
 
       console.log('[PIPELINE] Deleted output files:', deletedFiles);
+      broadcastToAllWindows('project:files-changed', projectPath);
       return { success: true, deletedFiles, message: `Deleted ${deletedFiles.length} output files` };
     } catch (err) {
       console.error('[PIPELINE] Failed to delete output:', err);
@@ -10374,6 +10766,11 @@ function setupIpcHandlers(): void {
           } catch {
             // Directory not empty, that's fine
           }
+          // The reconcile `pipeline:delete-cleanup` runs and this one skipped:
+          // `manifest.pipeline.cleanup` names the stage output that has just
+          // gone, and `listProjects().hasCleanup` reads it — so a project that
+          // deleted everything went on advertising a cleanup stage forever.
+          await reconcileCleanupStageManifest(projectPath);
           results.cleanup = { success: true, message: `Deleted ${deletedFiles.length} files from cleanup stage` };
         } else {
           results.cleanup = { success: true, message: 'No cleanup stage found' };
@@ -10400,6 +10797,7 @@ function setupIpcHandlers(): void {
             }
           }
           await fs.rmdir(translateDir);
+          await reconcileTranslationStageManifest(projectPath);
           results.translation = { success: true, message: `Deleted ${deletedItems.length} items from translation stage` };
         } else {
           results.translation = { success: true, message: 'No translation stage found' };
@@ -10449,6 +10847,7 @@ function setupIpcHandlers(): void {
 
       const allSuccess = results.cleanup.success && results.translation.success && results.tts.success;
       console.log('[PIPELINE] Deleted all pipeline stages:', results);
+      broadcastToAllWindows('project:files-changed', projectPath);
 
       return {
         success: allSuccess,
@@ -10805,9 +11204,13 @@ function setupIpcHandlers(): void {
         // WHICH chain's records are being reset. `resetEditorRecords` gates the
         // picker's own curation on `familyOwnsPickerRecords`, so naming the chain
         // is what keeps a reset of one version from clearing an evening of
-        // curation done on another.
+        // curation done on another — and a project with NO chain (a bare PDF,
+        // the state this button is most often pressed in) clears the picker's
+        // records it plainly owns rather than refusing over a book it has not
+        // got yet.
         await manifestService.resetEditorRecords(projectPath, familyId);
         console.log(`[PIPELINE] Reset editor state (manifest) for ${projectPath}`);
+        broadcastToAllWindows('project:files-changed', projectPath);
         return { success: true, message: 'Editor state reset' };
       }
 
@@ -11302,7 +11705,28 @@ function setupIpcHandlers(): void {
       // row takes its chain's id (`exported:fam-…`), because two rows sharing an
       // id are two rows nothing can tell apart.
       for (const chain of families) {
-        const chainExport = await manifestService.readExportEpub(projectDir, chain.id);
+        // ── A CHAIN THAT VANISHED MID-LISTING COSTS ITS ROWS, NOT THE PAGE ───
+        //
+        // `families` was read once, up top; every call below names `chain.id`,
+        // and a chain deleted between the two — an erase in another window, a
+        // version delete — makes the resolver refuse BY NAME, which threw out of
+        // this loop and painted the whole versions page red. The same rule the
+        // `hasWorkingChanges` line already follows a few lines down: a listing
+        // draws what it can prove and the change that raced it will broadcast
+        // its own refresh.
+        let chainExport: manifestService.ExportEpubLocation | null;
+        let bookLedger: Awaited<ReturnType<typeof manifestService.readBookLedger>>;
+        let narrationRecord: Awaited<ReturnType<typeof manifestService.readNarrationEpub>>;
+        try {
+          chainExport = await manifestService.readExportEpub(projectDir, chain.id);
+          bookLedger = await manifestService.readBookLedger(projectDir, chain.id);
+          narrationRecord = await manifestService.readNarrationEpub(projectDir, chain.id);
+        } catch (err) {
+          console.warn(
+            `[editor:get-versions] ${path.basename(projectDir)}: chain ${chain.id} could not be `
+            + `read and has no rows on this listing: ${(err as Error).message}`);
+          continue;
+        }
         const sole = families.length === 1;
         if (chainExport) {
         // The book's ledger, read from the manifest rather than by scanning
@@ -11310,8 +11734,8 @@ function setupIpcHandlers(): void {
         // history, exactly as a book that nothing records is not this project's
         // book. The UI pass that renders these rows owns the layout; this side
         // owes it the entries, in the order they ran, and whether each has a
-        // frozen diff worth offering a review button for.
-        const bookLedger = await manifestService.readBookLedger(projectDir, chain.id);
+        // frozen diff worth offering a review button for. (Read above, with the
+        // rest of this chain's records, so one vanished chain skips one chain.)
         await addVersion(
           sole ? 'exported' : `exported:${chain.id}`,
           'exported',
@@ -11384,7 +11808,6 @@ function setupIpcHandlers(): void {
         // NOT editable: it is a derived cut, remade from the book and the
         // strikes every time `Export TTS copy` runs, so an edit made here would
         // be thrown away by the next export without saying so.
-        const narrationRecord = await manifestService.readNarrationEpub(projectDir, chain.id);
         if (narrationRecord) {
           await addVersion(
             sole ? 'narration' : `narration:${chain.id}`,
@@ -11587,28 +12010,80 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Save EPUB data directly to a file path
-  // SAFETY: Only allows writes to files inside the library folder
+  /**
+   * Save EPUB bytes to a path inside the library.
+   *
+   * ── What it may NOT land on, and why the library check was not enough ──────
+   *
+   * Inside-the-library was the only guard this had, and `archive/Book.epub` and
+   * `source/<stem>.generated.epub` are both inside the library: the two files
+   * four other places refuse to touch by name (memory:
+   * pipeline-source-model-archive-as-source) were writable through this door.
+   * They are refused HERE, BY RECORD — `readArchiveOriginal` and
+   * `readGeneratedEpub` say which files they are — rather than by matching a
+   * folder name, because the manifest is where an artifact's identity is settled
+   * and a name match would be a second, weaker derivation of it.
+   *
+   * ── And a working copy that is written must be RE-RECORDED ──────────────
+   *
+   * Landing on a chain's working copy used to change the bytes and say nothing:
+   * `family.epub.modifiedAt` went on describing the old file and, worse, the
+   * narration strike record went on carrying the PREVIOUS book's digest — a void
+   * record, which is exactly what makes the naming pass refuse and what
+   * `nameChapterOpenings` then has to be told to withhold over.
+   * `registerEpubExport` is the one path that records a written book, so the
+   * save goes through it.
+   */
   ipcMain.handle('editor:save-epub', async (_event, epubPath: string, epubData: ArrayBuffer) => {
     try {
       if (!epubPath) {
         return { success: false, error: 'No EPUB path provided' };
       }
 
-      // SAFETY CHECK: Only allow writes inside the library folder
-      const libraryRoot = getLibraryRoot();
-      const normalizedEpubPath = path.normalize(epubPath);
-      const normalizedLibraryRoot = path.normalize(libraryRoot);
+      const outsideLibrary = insideLibraryRefusal(epubPath, 'EDITOR:SAVE-EPUB');
+      if (outsideLibrary) return { success: false, error: outsideLibrary };
 
-      if (!normalizedEpubPath.startsWith(normalizedLibraryRoot + path.sep) &&
-          normalizedEpubPath !== normalizedLibraryRoot) {
-        console.error(`[EDITOR:SAVE-EPUB] BLOCKED: Attempted write outside library folder`);
-        console.error(`[EDITOR:SAVE-EPUB]   epubPath: ${epubPath}`);
-        console.error(`[EDITOR:SAVE-EPUB]   libraryRoot: ${libraryRoot}`);
-        return {
-          success: false,
-          error: `Cannot write to files outside the library folder. Attempted path: ${epubPath}`
-        };
+      const libraryRoot = getLibraryRoot();
+      const normalizedEpubPath = path.normalize(path.resolve(normalizeFsPath(epubPath)));
+
+      // Which project this path is in, when it is in one. Everything below — the
+      // archive-grade refusals and the record — is about a project's files; a
+      // path elsewhere in the library is written exactly as it always was.
+      const projectsDir = path.normalize(path.join(libraryRoot, 'projects'));
+      let projectDir: string | null = null;
+      if (normalizedEpubPath.startsWith(projectsDir + path.sep)) {
+        const projectSlug = path.relative(projectsDir, normalizedEpubPath).split(path.sep)[0];
+        const candidate = path.join(projectsDir, projectSlug);
+        if (fsSync.existsSync(path.join(candidate, 'manifest.json'))) projectDir = candidate;
+      }
+
+      let familyOfTarget: string | null = null;
+      if (projectDir !== null) {
+        const archiveOriginal = await manifestService.readArchiveOriginal(projectDir);
+        if (archiveOriginal !== null && sameResolvedPath(archiveOriginal.absPath, epubPath)) {
+          return {
+            success: false,
+            error: `${path.basename(epubPath)} is this project's archive original — the book exactly `
+              + 'as you imported it, which nothing may ever write to. Save to the working copy.',
+          };
+        }
+        const generated = await manifestService.readGeneratedEpub(projectDir);
+        if (generated !== null && sameResolvedPath(generated.absPath, epubPath)) {
+          return {
+            success: false,
+            error: `${path.basename(epubPath)} is the book read out of this project's pages, and every `
+              + 'working copy is minted from it, so nothing may write to it. Save to the working copy.',
+          };
+        }
+        // WHICH chain's working copy this is, when it is one. Resolved BEFORE
+        // the write, so a refusal costs nothing.
+        for (const chain of await manifestService.readBookFamilies(projectDir)) {
+          const recorded = chain.epub?.path;
+          if (recorded && sameResolvedPath(path.join(projectDir, recorded), epubPath)) {
+            familyOfTarget = chain.id;
+            break;
+          }
+        }
       }
 
       // Ensure the directory exists
@@ -11624,14 +12099,19 @@ function setupIpcHandlers(): void {
 
       console.log(`[EDITOR:SAVE-EPUB] Saved EPUB to ${epubPath} (${buffer.length} bytes)`);
 
-      // Notify main window that project files changed
-      // Derive project dir from the epub path (look for projects/{slug}/ pattern)
-      const projectsDir = path.join(libraryRoot, 'projects');
-      if (normalizedEpubPath.startsWith(path.normalize(projectsDir) + path.sep)) {
-        const relPath = path.relative(projectsDir, normalizedEpubPath);
-        const projectSlug = relPath.split(path.sep)[0];
-        const projectDir = path.join(projectsDir, projectSlug);
-        mainWindow?.webContents.send('project:files-changed', projectDir);
+      // The record follows the bytes. `registerEpubExport` re-stamps
+      // `family.epub`, drops the narration copy that was cut from the book just
+      // replaced, and supersedes the passes the new bytes no longer carry — all
+      // of which this handler used to leave describing a file that was gone.
+      if (projectDir !== null && familyOfTarget !== null) {
+        await manifestService.registerEpubExport(
+          projectDir, epubPath, undefined, familyOfTarget);
+      }
+
+      // Every window: the picker, the editor and the listen windows all draw
+      // this project's files, and only one of them is the main window.
+      if (projectDir !== null) {
+        broadcastToAllWindows('project:files-changed', projectDir);
       }
 
       return { success: true };

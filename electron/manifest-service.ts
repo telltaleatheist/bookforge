@@ -38,6 +38,7 @@ import type {
   BookEdit,
   MergeChapterOpeningEdit,
   NameChapterOpenersEdit,
+  RenameChapterEdit,
   SetBlockCategoryEdit,
   SourceType,
 } from './manifest-types.js';
@@ -118,6 +119,20 @@ function acquireLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
   // Keep the chain alive but swallow errors so a failed write doesn't block future writes
   manifestLocks.set(projectId, next.then(() => {}, () => {}));
   return next;
+}
+
+/**
+ * The lock key for a project held as a DIRECTORY rather than as an id.
+ *
+ * `modifyManifest` is keyed by projectId, and for every project in the library
+ * that id IS the folder name (`getProjectPath` joins it onto the projects root,
+ * and `requireLibraryProjectId` refuses a manifest that says otherwise). So a
+ * writer that only has the directory takes the same lock by naming the folder —
+ * which is the point: a raw read-modify-write that took a DIFFERENT lock would
+ * be no lock at all against the handlers that use `modifyManifest`.
+ */
+function manifestLockKey(projectDir: string): string {
+  return path.basename(path.resolve(projectDir));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1342,6 +1357,71 @@ export async function removeGeneratedBookFamilies(
   return removed;
 }
 
+/**
+ * Remove every working chain sourced on ONE archive file, and the archive entry
+ * that recorded it — the other half of deleting an archive version.
+ *
+ * ── Why the sibling above was not enough ────────────────────────────────────
+ *
+ * `removeGeneratedBookFamilies` learned this for the cast; `variant:delete` on an
+ * `arch:` variant never did. Deleting the archive EPUB the user handed us filtered
+ * `manifest.variants` and left `manifest.archive` naming the file it had just
+ * removed — so the project manufactured recorded-but-absent state about its own
+ * original — while every chain sourced on that file went on claiming a source
+ * nothing can produce again. `requireFamilySource` then refuses those chains
+ * forever ("Restore it from your backup…"), which kills Erase changes and any
+ * future re-mint, on a confirmation that promised the book EPUB was being kept.
+ *
+ * So the chain records, the archive entry and the variant row die in ONE
+ * transaction, and the freed files come off disk after the write is confirmed:
+ * records first, files last, exactly as `variant:delete`'s own comment demands.
+ *
+ * `relPath` is the variant's project-relative path — the same string the archive
+ * entry and the family source are written in — compared case- and separator-
+ * insensitively, because a manifest synced from a Mac may carry either.
+ *
+ * ── A MUTATOR, so it lands in the caller's own transaction ──────────────────
+ *
+ * It takes the manifest `variant:delete` is already holding inside its
+ * `modifyManifest` callback rather than opening a second one. Two transactions
+ * would be two chances to half-apply — the variant row gone and the chains still
+ * standing — and the per-project lock is not reentrant, so there is no nesting to
+ * be had either. Pure, in-place, and therefore testable without a project.
+ */
+export function dropArchiveSourcedChains(
+  m: ProjectManifest,
+  projectDir: string,
+  relPath: string
+): RemovedGeneratedChain[] {
+  const norm = (p: string): string => p.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
+  const target = norm(relPath);
+  if (target.length === 0) return [];
+
+  const removed: RemovedGeneratedChain[] = [];
+  const kept: BookFamily[] = [];
+  for (const family of m.families ?? []) {
+    if (norm(family.source.path) !== target) {
+      kept.push(family);
+      continue;
+    }
+    removed.push({
+      id: family.id,
+      sourceName: path.basename(family.source.path),
+      epubAbsPath: family.epub?.path ? toAbs(projectDir, family.epub.path) : null,
+      ttsAbsPath: family.ttsEpub?.path ? toAbs(projectDir, family.ttsEpub.path) : null,
+    });
+  }
+  m.families = kept;
+  // The archive entry goes in the SAME transaction. Left standing it is the
+  // project asserting it still holds a file it has just deleted, and
+  // `getVariants` folds that assertion back into a synthesized `arch:` row — the
+  // ghost the delete was asked to remove.
+  if (Array.isArray(m.archive)) {
+    m.archive = m.archive.filter((entry) => norm(entry.path || '') !== target);
+  }
+  return removed;
+}
+
 /** What a naming migration did, so a caller can say it once on the console. */
 export interface WorkingEpubRenameSummary {
   /** The book's path before and after, project-relative. Null when nothing moved. */
@@ -1806,6 +1886,37 @@ async function classifyRecordedFamilySource(
   }
 
   if (format === null) {
+    // ── "No archive original" is a claim about the DISK, and it must not be ──
+    //
+    // `archiveOriginalFormat` finds the pre-archive layout's original BY
+    // EXISTENCE — `source/original.epub` is the one artifact nothing ever
+    // recorded — so a legacy project whose original the user moved away answers
+    // `null` and lands here, and the sentence below tells them nothing was ever
+    // imported. It was: the project has a WORKING COPY, with their whole edit
+    // history in it, and refusing a chain over the missing file makes that copy
+    // invisible to every reader (`readExportEpub`, the versions page, narration)
+    // while blaming the user for a state they did not cause.
+    //
+    // So a project that RECORDS an archive-grade book gets its chain from the
+    // record — which is the rule this function's own header states, and the
+    // reason it exists apart from `classifyWorkingCopySource`. The cast is asked
+    // about first, because `ensureGeneratedEpub` runs before this and a PDF
+    // project whose archive entry was never written would otherwise be handed an
+    // `archive-epub` chain on a file it does not have and never had.
+    //
+    // The digest comes out null (there is nothing to measure), which
+    // `ensureBookFamilies` already records as "not measured", and existence is
+    // asked later by `requireFamilySource` at the moment a copy is to be made.
+    const generatedRecord = manifest.outputs?.generatedEpub;
+    if (generatedRecord?.path) {
+      return { source: { relPath: generatedRecord.path, kind: 'generated-epub' }, refusal: null };
+    }
+    if (manifest.outputs?.epub?.path) {
+      return {
+        source: { relPath: 'source/original.epub', kind: 'archive-epub' },
+        refusal: null,
+      };
+    }
     return {
       source: null,
       refusal: 'It has no archive original — nothing was imported into it that a book could be '
@@ -2576,72 +2687,108 @@ const PICKER_SOURCE_RECORD_KEYS = [
  * clears RECORDS. `ensureBookEpub` replaces the file in its own act, after this
  * one; the button leaves the file exactly where it is.
  *
- * ── Raw read, raw atomic write ──────────────────────────────────────────────
+ * ── A BARE PDF is reset too, and it is the state this exists for ───────────
+ *
+ * The records above — `source.deletedBlockIds`, `deletedPages`, `chapters`, the
+ * sidecar — belong to the PDF the picker curated, not to any chain: a project
+ * whose pages nobody has read yet has all of them and no book at all. Routing
+ * the resolution through `requireFamily` made the button refuse exactly that
+ * project ("…has no working chain yet…"), which is the one project whose curation
+ * a reset is most likely to be about. So the chain is resolved through
+ * `familyForListing`, and null — no chain, none mintable, none named — clears
+ * the picker's records and skips the family half, which has nothing in it.
+ *
+ * A caller that NAMES a chain still gets `requireFamily`'s refusal for a chain
+ * that is not there, and a project with several still refuses without one:
+ * `familyForListing` is null only for "there is no chain to be about".
+ *
+ * ── Raw read, raw atomic write, under the project's own lock ────────────────
  *
  * Deliberately not `modifyManifest`: that locates the file from the projectId
  * and so refuses a directory the library does not own, and it round-trips
  * through the typed shape, which would normalize paths and drop the very
  * untyped sub-fields this is here to delete. A malformed manifest throws out of
  * the JSON.parse and is never overwritten with a guessed structure.
+ *
+ * But the read and the write are the same read-modify-write every other writer
+ * performs, so it takes the SAME per-project lock they take — there are awaits
+ * between the two (the sidecar delete), and an unlocked window there is where a
+ * minted chain, a strike or a finished conversion's record would be silently
+ * written back out of existence. The resolution above happens OUTSIDE the lock
+ * because `requireFamily`/`familyForListing` may mint a chain through
+ * `modifyManifest`, which takes the same lock and would deadlock on itself.
  */
 export async function resetEditorRecords(projectDir: string, familyId?: string): Promise<void> {
   const manifestPath = path.join(projectDir, MANIFEST_FILENAME);
   if (!fs.existsSync(manifestPath)) {
     throw new Error(`Cannot reset ${projectDir}: it has no ${MANIFEST_FILENAME}.`);
   }
-  // WHICH chain is being reset is settled before the raw read below, through the
-  // one chokepoint, so a project with several refuses here rather than clearing
-  // the picker's curation on behalf of a book nobody named.
-  const { family } = await requireFamily(projectDir, familyId);
+  // WHICH chain is being reset is settled before the locked read below, through
+  // the listing resolver: a project with several still refuses rather than
+  // clearing the picker's curation on behalf of a book nobody named, and a
+  // project with NONE clears the picker's records it plainly owns.
+  const resolved = await familyForListing(projectDir, familyId);
+  const family = resolved?.family ?? null;
   const archiveOriginal = await readArchiveOriginal(projectDir);
 
-  const manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf-8'));
+  // With no chain there is nothing for the picker's records to belong to but the
+  // project, so they are its own — the same reading `familyOwnsPickerRecords`
+  // gives every chain that descends from the archive original.
+  const clearsPickerRecords = family === null
+    || familyOwnsPickerRecords(family, archiveOriginal?.relPath ?? null);
 
-  // ── The picker's records go only with the chain they describe ──────────────
-  //
-  // `familyOwnsPickerRecords` is the rule and shared/document/book-families.ts
-  // is where it is argued: the editor state, the deletion keys under `source`
-  // and the chapter markers are the curation of the document the ARCHIVE
-  // ORIGINAL is, so a second version added beside it must not have them cleared
-  // when its own changes are erased — that curation is not about its book.
-  if (familyOwnsPickerRecords(family, archiveOriginal?.relPath ?? null)) {
-    // Editor state is a sidecar file (electron/editor-state-store.ts) and the
-    // manifest key is its pre-sidecar location, so BOTH go — the delete below is
-    // the migration for a project that has not been swept yet.
+  await acquireLock(manifestLockKey(projectDir), async () => {
+    const manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf-8'));
+
+    // ── The picker's records go only with the chain they describe ────────────
     //
-    // The sidecar goes FIRST, before the manifest transaction. A crash in
-    // between then leaves the legacy key in place, which re-migrates on the next
-    // contact and puts the state back — so the whole reset reads as not having
-    // happened, and pressing the button again does it. The other order would
-    // leave an orphan sidecar that is authoritative and stale: a reset that
-    // cleared the deletions and the chapters but silently kept the undo stack.
-    await deleteEditorState(projectDir);
-    delete manifest.editor;
-    if (manifest.source && typeof manifest.source === 'object') {
-      for (const key of PICKER_SOURCE_RECORD_KEYS) {
-        delete manifest.source[key];
+    // `familyOwnsPickerRecords` is the rule and shared/document/book-families.ts
+    // is where it is argued: the editor state, the deletion keys under `source`
+    // and the chapter markers are the curation of the document the ARCHIVE
+    // ORIGINAL is, so a second version added beside it must not have them cleared
+    // when its own changes are erased — that curation is not about its book.
+    if (clearsPickerRecords) {
+      // Editor state is a sidecar file (electron/editor-state-store.ts) and the
+      // manifest key is its pre-sidecar location, so BOTH go — the delete below is
+      // the migration for a project that has not been swept yet.
+      //
+      // The sidecar goes FIRST, before the manifest transaction. A crash in
+      // between then leaves the legacy key in place, which re-migrates on the next
+      // contact and puts the state back — so the whole reset reads as not having
+      // happened, and pressing the button again does it. The other order would
+      // leave an orphan sidecar that is authoritative and stale: a reset that
+      // cleared the deletions and the chapters but silently kept the undo stack.
+      await deleteEditorState(projectDir);
+      delete manifest.editor;
+      if (manifest.source && typeof manifest.source === 'object') {
+        for (const key of PICKER_SOURCE_RECORD_KEYS) {
+          delete manifest.source[key];
+        }
+      }
+      delete manifest.chapters;
+      delete manifest.chaptersSource;
+    }
+
+    // The book's OWN records, always: they are positional inside this family's
+    // working copy and describe nothing else. A project with no chain has no
+    // such record to clear, which is a state and not a failure.
+    if (family !== null) {
+      const target = (manifest.families ?? []).find(
+        (f: { id?: string }) => f.id === family.id);
+      if (target?.epub) {
+        delete target.epub.narrationDeletions;
+        delete target.epub.bookEdits;
       }
     }
-    delete manifest.chapters;
-    delete manifest.chaptersSource;
-  }
 
-  // The book's OWN records, always: they are positional inside this family's
-  // working copy and describe nothing else.
-  const target = (manifest.families ?? []).find(
-    (f: { id?: string }) => f.id === family.id);
-  if (target?.epub) {
-    delete target.epub.narrationDeletions;
-    delete target.epub.bookEdits;
-  }
-
-  manifest.modifiedAt = new Date().toISOString();
-  await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
+    manifest.modifiedAt = new Date().toISOString();
+    await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
+  });
 
   // Scratch written BY the picker, about the document it curated — so it goes
   // with that curation, on the same condition, and a non-owning chain leaves it
   // exactly where it is.
-  if (familyOwnsPickerRecords(family, archiveOriginal?.relPath ?? null)) {
+  if (clearsPickerRecords) {
     const sourceDir = path.join(projectDir, 'source');
     for (const file of [
       'load-trace.log',
@@ -3098,6 +3245,20 @@ export interface EpubForgetSummary {
   droppedPasses: number;
   /** What came off disk with them, project-relative. */
   removedPaths: string[];
+  /**
+   * The NARRATION COPY this transaction also dropped the record of, or null when
+   * the chain had none.
+   *
+   * `target.ttsEpub` is deleted below with the book it was cut from, so after
+   * this returns nothing in the manifest names that file any more — and a caller
+   * that reads the record AFTERWARDS to find it (as `book:delete-generated-epub`
+   * did through `removeGeneratedBookFamilies`) always reads null and leaves a
+   * whole book on disk that nothing records. So the path travels back with the
+   * receipt, measured before the write, and the FILE is the caller's act after
+   * it: records first, files last, exactly as `relPath` above.
+   */
+  ttsRelPath: string | null;
+  ttsAbsPath: string | null;
 }
 
 /**
@@ -3134,6 +3295,8 @@ export async function forgetEpubExport(
     );
   }
   const relPath = record.path;
+  // Measured BEFORE the transaction that deletes it — see `ttsRelPath`.
+  const ttsRelPath = family.ttsEpub?.path ?? null;
   const lifecycle = passesAfterEpubEvent('epub-deleted', record.appliedPasses ?? []);
 
   const saved = await modifyManifest(projectId, (m) => {
@@ -3162,6 +3325,8 @@ export async function forgetEpubExport(
     absPath: toAbs(projectDir, relPath),
     droppedPasses: lifecycle.dropped.length,
     removedPaths,
+    ttsRelPath,
+    ttsAbsPath: ttsRelPath === null ? null : toAbs(projectDir, ttsRelPath),
   };
 }
 
@@ -3237,13 +3402,19 @@ export async function appendAppliedPass(
 /**
  * The book's ledger, oldest first. An empty list is a real answer: this book has
  * had nothing run over it, or nothing that could be recorded as undoable.
+ *
+ * Through the LISTING resolver, like every other pure read here: "what has been
+ * done to this book" has a truthful answer for a project with no chain — nothing
+ * — and routing it through the act chokepoint made the versions page paint a
+ * bare PDF as a broken record. A caller naming a chain still gets
+ * `requireFamily`'s refusal when that chain is not there.
  */
 export async function readBookLedger(
   projectDir: string,
   familyId?: string
 ): Promise<LedgerEntry[]> {
-  const { family } = await requireFamily(projectDir, familyId);
-  return family.epub?.ledger ?? [];
+  const resolved = await familyForListing(projectDir, familyId);
+  return resolved?.family.epub?.ledger ?? [];
 }
 
 /** Where an entry's directory is on this disk. */
@@ -3673,6 +3844,74 @@ export async function recordBlockCategoryChange(
       + `manifest failed: ${saved.error}`
     );
   }
+}
+
+/**
+ * Record a chapter RENAME: touch the book, re-stamp the strikes, log the edit —
+ * one transaction, for the same reason the fold's and the relabel's are one.
+ *
+ * ── What it replaces, and why the two writes had to become one ──────────────
+ *
+ * `renameBookChapter` used to write the book, then `touchBookEpub`, then
+ * `writeNarrationDeletions` — three acts with no transaction between them. An
+ * interrupt after the second left the book renamed and the strike record still
+ * stamped with the book's PREVIOUS bytes, which is a VOID record: it names
+ * positions in a file nobody has. That is precisely the state that made a
+ * project permanently unopenable, because `nameChapterOpenings` refuses to
+ * rewrite an opening while the strikes cannot be carried, and opening the book
+ * was the only door to clearing them.
+ *
+ * TEXT-FREE inside the chapter (only the navigation title moves), so the strikes
+ * are RE-STAMPED and not migrated — the claim `RenameChapterEdit` states.
+ *
+ * The stamp is CHECKED rather than overwritten, as everywhere else here: a
+ * record already describing some OTHER book is left exactly as it is and said
+ * out loud, because re-stamping it would forge agreement with a book it was
+ * never made against. `alreadyVoid` is that answer — not an error, because the
+ * rename itself succeeded and the record was void before it ran.
+ */
+export async function recordChapterRename(
+  projectDir: string,
+  edit: RenameChapterEdit,
+  familyId?: string,
+): Promise<{ alreadyVoid: boolean }> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  let alreadyVoid = false;
+  const saved = await modifyManifest(projectId, (m) => {
+    alreadyVoid = false;
+    const epub = familyIn(m, family.id).epub;
+    if (!epub) {
+      throw new Error(
+        `Cannot record the chapter rename in ${projectDir}: its ${family.id} chain records no book, `
+        + 'so there is no chapter to have been renamed.'
+      );
+    }
+
+    const recorded = epub.narrationDeletions;
+    if (recorded !== undefined) {
+      if (recorded.epubSha256 === edit.fromSha256) {
+        epub.narrationDeletions = {
+          ...recorded,
+          epubSha256: edit.toSha256,
+          updatedAt: edit.at,
+        };
+      } else {
+        alreadyVoid = true;
+      }
+    }
+
+    epub.modifiedAt = edit.at;
+    (epub.bookEdits ??= []).push(edit);
+  });
+  if (!saved.success) {
+    throw new Error(
+      `${edit.file} was renamed in the book, but recording that in ${projectDir}'s manifest `
+      + `failed: ${saved.error}`
+    );
+  }
+  return { alreadyVoid };
 }
 
 /**

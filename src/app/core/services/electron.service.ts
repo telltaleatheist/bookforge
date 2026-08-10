@@ -1649,7 +1649,9 @@ export class ElectronService {
     projectDir: string,
     epubData: ArrayBuffer,
     deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
-    savePath?: string
+    savePath?: string,
+    /** WHICH working chain this export belongs to; see exportEpubPreservingMarkup. */
+    familyId?: string
   ): Promise<{
     success: boolean;
     audiobookFolder?: string;
@@ -1657,7 +1659,7 @@ export class ElectronService {
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.audiobook.exportFromProject(projectDir, epubData, deletedBlockExamples, savePath);
+      return (window as any).electron.audiobook.exportFromProject(projectDir, epubData, deletedBlockExamples, savePath, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -3532,6 +3534,13 @@ export class ElectronService {
    * `projectDir` null means a loose-file Save As; `savePathOverride` null means
    * the project's canonical export path, which main derives from the book's
    * title. At least one of the two is required.
+   *
+   * `familyId` names WHICH working chain the export belongs to. A project with
+   * one chain does not need it and never has; a project with SEVERAL cannot be
+   * exported without it, because "the project's book" then names two files and
+   * main refuses to pick (shared/document/book-families.ts). The caller holds it
+   * — the versions row it opened from carries it, and `projects:export-info`
+   * hands it back.
    */
   async exportEpubPreservingMarkup(
     projectDir: string | null,
@@ -3539,6 +3548,7 @@ export class ElectronService {
     savePathOverride: string | null,
     edits: EpubPreservingEdits,
     deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
+    familyId?: string,
   ): Promise<{
     success: boolean;
     epubPath?: string;
@@ -3550,7 +3560,7 @@ export class ElectronService {
   }> {
     if (this.isElectron) {
       return (window as any).electron.epub.exportPreservingMarkup(
-        projectDir, epubSourcePath, savePathOverride, edits, deletedBlockExamples,
+        projectDir, epubSourcePath, savePathOverride, edits, deletedBlockExamples, familyId,
       );
     }
     return { success: false, error: 'Not running in Electron' };
@@ -4762,20 +4772,6 @@ export class ElectronService {
   }> {
     if (this.isElectron && (window as any).electron.manifest) {
       return (window as any).electron.manifest.get(projectId);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Save (update) a project manifest
-   */
-  async manifestSave(manifest: any): Promise<{
-    success: boolean;
-    manifestPath?: string;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.manifest) {
-      return (window as any).electron.manifest.save(manifest);
     }
     return { success: false, error: 'Not running in Electron' };
   }

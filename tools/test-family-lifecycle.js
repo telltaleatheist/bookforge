@@ -568,6 +568,275 @@ test('the numbered name is ACCEPTED where the bare one is refused', async () => 
     'the first chain\'s working copy was written over by the second chain\'s mint');
 });
 
+// ── 7. The fragility fixes (2026-08-10 main-process wave) ───────────────────
+
+test('MP-H1: deleting an archive file drops the chains sourced on it, and its archive entry',
+  async () => {
+    const dir = makeLegacyProject('h1-archive-delete');
+    await manifestService.ensureBookFamilies(dir);
+    const chain = chainOff(dir, 'Killing America.epub');
+    assert.ok(chain.epub, 'the fixture chain must carry a working copy record');
+
+    // Exactly what `variant:delete` does inside its own transaction.
+    const manifest = readManifest(dir);
+    const removed = manifestService.dropArchiveSourcedChains(
+      manifest, dir, 'archive/Killing America.epub');
+    writeManifest(dir, manifest);
+
+    assert.strictEqual(removed.length, 1, 'the chain sourced on the deleted file survived');
+    assert.strictEqual(removed[0].id, chain.id);
+    assert.strictEqual(removed[0].sourceName, 'Killing America.epub');
+    assert.strictEqual(
+      removed[0].epubAbsPath,
+      path.join(dir, 'source', 'Killing America.working.epub'),
+      'the working copy the dead chain still vouched for was not named back');
+    assert.strictEqual(
+      removed[0].ttsAbsPath, path.join(dir, 'source', 'Killing America.tts.epub'));
+    assert.strictEqual(familiesOf(dir).length, 0, 'the chain record was left standing');
+    assert.deepStrictEqual(
+      readManifest(dir).archive, [],
+      'the archive entry kept naming the file that was just deleted');
+  });
+
+test('MP-H1: a chain sourced on some OTHER file is not touched', async () => {
+  const dir = makeLegacyProject('h1-other-chain');
+  await manifestService.ensureBookFamilies(dir);
+  const second = await addSecondEdition(dir, 'Killing America (reading 2).epub', SECOND_BYTES);
+  assert.strictEqual(familiesOf(dir).length, 2);
+
+  const manifest = readManifest(dir);
+  const removed = manifestService.dropArchiveSourcedChains(
+    manifest, dir, 'archive/Killing America.epub');
+  writeManifest(dir, manifest);
+
+  assert.strictEqual(removed.length, 1, 'both chains went for one file');
+  assert.strictEqual(familiesOf(dir).length, 1);
+  assert.strictEqual(familiesOf(dir)[0].id, second.id, 'the wrong chain survived');
+  // Only the deleted file's archive entry goes. (`addBookFamily` writes no
+  // archive entry of its own, so the reading-2 file never had one — the point
+  // here is that the pruning is BY PATH and takes exactly one.)
+  assert.deepStrictEqual(
+    readManifest(dir).archive.map((a) => a.path), [],
+    'the archive entry pruning did not take exactly the deleted file\'s');
+});
+
+test('MP-H1: separator and case spellings of one path name one file', async () => {
+  const dir = makeLegacyProject('h1-path-spelling');
+  await manifestService.ensureBookFamilies(dir);
+  const manifest = readManifest(dir);
+  const removed = manifestService.dropArchiveSourcedChains(
+    manifest, dir, 'ARCHIVE\\Killing America.epub');
+  assert.strictEqual(removed.length, 1,
+    'a manifest synced from the other machine spells its paths differently and must still match');
+});
+
+test('MP-H2: forgetting a book names the narration copy it also stopped recording',
+  async () => {
+    const dir = makeLegacyProject('h2-tts-orphan');
+    await manifestService.ensureBookFamilies(dir);
+    const chain = chainOff(dir, 'Killing America.epub');
+    assert.ok(chain.ttsEpub, 'the fixture chain must carry a narration copy record');
+
+    const forgotten = await manifestService.forgetEpubExport(dir, chain.id);
+
+    assert.strictEqual(forgotten.relPath, 'source/Killing America.working.epub');
+    assert.strictEqual(
+      forgotten.ttsRelPath, 'source/Killing America.tts.epub',
+      'the narration copy the transaction dropped the record of was not named back, so a caller '
+      + 'reading the manifest afterwards leaves a whole book on disk unrecorded');
+    assert.strictEqual(
+      forgotten.ttsAbsPath, path.join(dir, 'source', 'Killing America.tts.epub'));
+    // And the record really is gone by then — which is why it had to travel back.
+    assert.strictEqual(chainOff(dir, 'Killing America.epub').ttsEpub, undefined);
+  });
+
+test('MP-H2: a chain with no narration copy says so rather than inventing a path', async () => {
+  const dir = makeLegacyProject('h2-no-tts');
+  await manifestService.ensureBookFamilies(dir);
+  const manifest = readManifest(dir);
+  delete manifest.families[0].ttsEpub;
+  writeManifest(dir, manifest);
+
+  const forgotten = await manifestService.forgetEpubExport(dir, manifest.families[0].id);
+  assert.strictEqual(forgotten.ttsRelPath, null);
+  assert.strictEqual(forgotten.ttsAbsPath, null);
+});
+
+test('MP-H3: a bare PDF project resets its picker records instead of refusing', async () => {
+  // A project whose pages nobody has read: no archive-grade book, so no chain
+  // can be minted — and every one of the records below belongs to the PDF.
+  const dir = path.join(projectsDir, 'h3-bare-pdf');
+  writeBook(path.join(dir, 'archive', 'Deathstalker.pdf'), Buffer.from('%PDF-1.7 pages'));
+  writeManifest(dir, {
+    manifestVersion: 2,
+    projectId: 'h3-bare-pdf',
+    createdAt: '2026-08-01T00:00:00.000Z',
+    modifiedAt: '2026-08-01T00:00:00.000Z',
+    metadata: { title: 'Deathstalker' },
+    source: {
+      type: 'pdf',
+      originalFilename: 'Deathstalker.pdf',
+      deletedBlockIds: ['a', 'b'],
+      deletedPages: [4, 5],
+      pageOrder: [1, 2, 3],
+    },
+    chapters: [{ title: 'One', page: 1 }],
+    chaptersSource: 'manual',
+    archive: [{ path: 'archive/Deathstalker.pdf', role: 'original', format: 'pdf' }],
+  });
+
+  assert.strictEqual(familiesOf(dir).length, 0, 'the fixture must have no chain');
+  await manifestService.resetEditorRecords(dir);
+
+  const after = readManifest(dir);
+  assert.strictEqual(after.source.deletedBlockIds, undefined, 'the block deletions survived');
+  assert.strictEqual(after.source.deletedPages, undefined, 'the page deletions survived');
+  assert.strictEqual(after.source.pageOrder, undefined, 'the page order survived');
+  assert.strictEqual(after.chapters, undefined, 'the chapter markers survived');
+  assert.strictEqual(after.chaptersSource, undefined);
+  // The project's IDENTITY is not a picker record and must not go with them.
+  assert.strictEqual(after.source.type, 'pdf');
+  assert.strictEqual(after.source.originalFilename, 'Deathstalker.pdf');
+});
+
+test('MP-H3: a project with several chains still refuses a reset that names none', async () => {
+  const dir = makeLegacyProject('h3-two-chains');
+  await manifestService.ensureBookFamilies(dir);
+  await addSecondEdition(dir, 'Killing America (reading 2).epub', SECOND_BYTES);
+
+  await assert.rejects(
+    () => manifestService.resetEditorRecords(dir),
+    /2 working chains/,
+    'a reset that could clear either book\'s records must name which');
+});
+
+test('MP-H6: a legacy project whose original was MOVED keeps its working copy visible',
+  async () => {
+    const dir = makeLegacyProject('h6-moved-original');
+    // The pre-archive layout: the original sat at source/original.epub and was
+    // never recorded. Here the user has moved it away — and the archive entry
+    // that would otherwise answer goes with it, which is what makes the format
+    // read as null.
+    const manifest = readManifest(dir);
+    delete manifest.archive;
+    writeManifest(dir, manifest);
+    fs.rmSync(path.join(dir, 'archive', 'Killing America.epub'));
+
+    const adoption = await manifestService.ensureBookFamilies(dir);
+
+    assert.strictEqual(
+      adoption.refusal, null,
+      'the project has a working copy with an evening of edits in it and was refused a chain');
+    assert.ok(adoption.minted, 'no chain was minted');
+    assert.strictEqual(adoption.minted.source.path, 'source/original.epub');
+    assert.strictEqual(adoption.minted.source.kind, 'archive-epub');
+    assert.strictEqual(
+      adoption.minted.source.sha256, null,
+      'a digest was invented for a file that is not there to be measured');
+    // The point of the whole fix: the working copy is readable again.
+    const book = await manifestService.readExportEpub(dir);
+    assert.ok(book, 'the working copy is still invisible to every reader');
+    assert.strictEqual(book.relPath, 'source/Killing America.working.epub');
+  });
+
+test('MP-H6: a project with nothing archive-grade AND no book still gets no chain', async () => {
+  const dir = path.join(projectsDir, 'h6-nothing');
+  writeBook(path.join(dir, 'archive', 'Read Aloud.m4b'), Buffer.from('an audiobook, not a book'));
+  writeManifest(dir, {
+    manifestVersion: 2,
+    projectId: 'h6-nothing',
+    createdAt: '2026-08-01T00:00:00.000Z',
+    modifiedAt: '2026-08-01T00:00:00.000Z',
+    metadata: { title: 'Read Aloud' },
+    source: { type: 'epub' },
+    archive: [{ path: 'archive/Read Aloud.m4b', role: 'original', format: 'm4b' }],
+  });
+
+  const adoption = await manifestService.ensureBookFamilies(dir);
+  assert.strictEqual(adoption.minted, null, 'a chain was invented for an imported audiobook');
+  assert.match(adoption.refusal, /no archive original/);
+});
+
+test('MP-M1: the ledger of a project with no chain is empty, not a refusal', async () => {
+  const dir = path.join(projectsDir, 'm1-bare-pdf-ledger');
+  writeBook(path.join(dir, 'archive', 'Deathstalker.pdf'), Buffer.from('%PDF-1.7 pages'));
+  writeManifest(dir, {
+    manifestVersion: 2,
+    projectId: 'm1-bare-pdf-ledger',
+    createdAt: '2026-08-01T00:00:00.000Z',
+    modifiedAt: '2026-08-01T00:00:00.000Z',
+    metadata: { title: 'Deathstalker' },
+    source: { type: 'pdf', originalFilename: 'Deathstalker.pdf' },
+    archive: [{ path: 'archive/Deathstalker.pdf', role: 'original', format: 'pdf' }],
+  });
+
+  assert.deepStrictEqual(await manifestService.readBookLedger(dir), []);
+});
+
+test('MP-M1: a ledger asked for BY NAME still refuses a chain that is not there', async () => {
+  const dir = makeLegacyProject('m1-named-chain');
+  await manifestService.ensureBookFamilies(dir);
+  await assert.rejects(
+    () => manifestService.readBookLedger(dir, 'fam-deadbeef'),
+    /no working chain called fam-deadbeef/);
+});
+
+test('MP-M2: a chapter rename touches, re-stamps and logs in ONE transaction', async () => {
+  const dir = makeLegacyProject('m2-rename-record');
+  await manifestService.ensureBookFamilies(dir);
+  const chain = chainOff(dir, 'Killing America.epub');
+  const before = chain.epub.narrationDeletions.epubSha256;
+
+  const result = await manifestService.recordChapterRename(dir, {
+    kind: 'rename-chapter',
+    at: '2026-08-10T12:00:00.000Z',
+    file: 'OEBPS/ch1.xhtml',
+    titleBefore: 'CHAPTER ONE',
+    titleAfter: 'The Beginning',
+    fromSha256: before,
+    toSha256: 'newsha',
+  }, chain.id);
+
+  assert.strictEqual(result.alreadyVoid, false);
+  const after = chainOff(dir, 'Killing America.epub');
+  assert.strictEqual(after.epub.modifiedAt, '2026-08-10T12:00:00.000Z', 'the book was not touched');
+  assert.strictEqual(
+    after.epub.narrationDeletions.epubSha256, 'newsha',
+    'the strikes still name the old bytes, which is the void record that shuts a project');
+  assert.deepStrictEqual(
+    after.epub.narrationDeletions.elements, ['OEBPS/ch1.xhtml#3', 'OEBPS/ch1.xhtml#4'],
+    'a rename moves no element and must not move a strike key');
+  const logged = after.epub.bookEdits.filter((e) => e.kind === 'rename-chapter');
+  assert.strictEqual(logged.length, 1, 'the rename left no record of what the chapter was called');
+  assert.strictEqual(logged[0].titleBefore, 'CHAPTER ONE');
+});
+
+test('MP-M2: an ALREADY void strike record is reported, not forged', async () => {
+  const dir = makeLegacyProject('m2-rename-void');
+  await manifestService.ensureBookFamilies(dir);
+  const chain = chainOff(dir, 'Killing America.epub');
+
+  const result = await manifestService.recordChapterRename(dir, {
+    kind: 'rename-chapter',
+    at: '2026-08-10T12:00:00.000Z',
+    file: 'OEBPS/ch1.xhtml',
+    titleBefore: 'CHAPTER ONE',
+    titleAfter: 'The Beginning',
+    fromSha256: 'a book nobody has',
+    toSha256: 'newsha',
+  }, chain.id);
+
+  assert.strictEqual(result.alreadyVoid, true, 'the mismatch was not reported');
+  const after = chainOff(dir, 'Killing America.epub');
+  assert.strictEqual(
+    after.epub.narrationDeletions.epubSha256,
+    chain.epub.narrationDeletions.epubSha256,
+    'a record about some other book was re-stamped onto this one — forged agreement');
+  assert.strictEqual(
+    after.epub.bookEdits.filter((e) => e.kind === 'rename-chapter').length, 1,
+    'the rename happened and must be logged whatever the strikes say');
+});
+
 (async () => {
   for (const { name, fn } of tests) {
     try {

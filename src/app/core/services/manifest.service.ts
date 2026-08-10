@@ -106,28 +106,6 @@ export class ManifestService {
   }
 
   /**
-   * Save (replace) a project manifest
-   */
-  async saveProject(manifest: ProjectManifest): Promise<ManifestSaveResult> {
-    if (!this.electronService.isRunningInElectron) {
-      return { success: false, error: 'Not running in Electron' };
-    }
-
-    try {
-      const result = await (window as any).electron.manifest.save(manifest);
-      if (result.success) {
-        // Update local cache
-        this._projects.update(projects =>
-          projects.map(p => p.projectId === manifest.projectId ? manifest : p)
-        );
-      }
-      return result;
-    } catch (e) {
-      return { success: false, error: (e as Error).message };
-    }
-  }
-
-  /**
    * Update specific fields in a manifest
    */
   async updateProject(update: ManifestUpdate): Promise<ManifestSaveResult> {

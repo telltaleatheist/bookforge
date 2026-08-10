@@ -687,11 +687,46 @@ export interface SetBlockCategoryEdit {
 }
 
 /**
+ * A RENAME: one chapter of the book is called something else now, in the book's
+ * own table(s) of contents.
+ *
+ * The picker's Chapter tab, for a book. It rewrites the entry's title in every
+ * table of contents that lists the document — the nav and the NCX both, because
+ * a rename that reached only one leaves two lists disagreeing about a chapter's
+ * name (electron/book-chapters.ts).
+ *
+ * TEXT-FREE inside the chapter and STRUCTURE-FREE: only the navigation
+ * document's title text changes, so every text-unit index and image ordinal is
+ * where it was and the narration strike record is re-stamped onto the new bytes
+ * with its keys untouched — the same claim {@link NameChapterOpenersEdit} makes.
+ *
+ * One entry per RENAMED CHAPTER, because that is the act: a person pointed at
+ * one chapter and said what it is called.
+ */
+export interface RenameChapterEdit {
+  kind: 'rename-chapter';
+  at: string;
+  /** The chapter document's zip entry name — the identity a strike is keyed by. */
+  file: string;
+  /** What the book's first table of contents called it. */
+  titleBefore: string;
+  /** What every table of contents calls it now. */
+  titleAfter: string;
+  /** The book's sha256 before the rename and after it. */
+  fromSha256: string;
+  toSha256: string;
+}
+
+/**
  * One edit to a book's markup. A union on purpose: every edit gets its own
  * `kind` and its own before/after fields rather than a shared "details" bag
  * nothing can read.
  */
-export type BookEdit = MergeChapterOpeningEdit | NameChapterOpenersEdit | SetBlockCategoryEdit;
+export type BookEdit =
+  | MergeChapterOpeningEdit
+  | NameChapterOpenersEdit
+  | SetBlockCategoryEdit
+  | RenameChapterEdit;
 
 /**
  * What has ever been done to a book — the things that can be done to one now,

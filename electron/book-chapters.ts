@@ -899,7 +899,6 @@ export async function renameBookChapter(
   // The book as it stands, measured BEFORE the rewrite: it is what says whether
   // the records stamped with it were describing this book a moment ago.
   const { sha256: before } = await sha256File(book.absPath);
-  const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
   const narration = await manifestService.readNarrationEpub(projectDir, familyId);
 
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
@@ -909,19 +908,33 @@ export async function renameBookChapter(
 
   const { sha256: after } = await sha256File(book.absPath);
   const at = new Date().toISOString();
-  await manifestService.touchBookEpub(projectDir, at, familyId);
 
-  // The strikes still name the same elements — see this file's header for the
-  // proof — so they are re-stamped rather than left to read as stale. A record
-  // that was ALREADY about some other version of the book is left exactly as it
-  // is: it is void, and re-stamping it here would forge agreement with a book it
-  // was never made against.
-  if (recorded !== null && recorded.epubSha256 === before) {
-    await manifestService.writeNarrationDeletions(projectDir, {
-      ...recorded,
-      epubSha256: after,
-      updatedAt: at,
-    }, familyId);
+  // ── ONE transaction: the touch, the re-stamp and the edit-log entry ────────
+  //
+  // These used to be two separate manifest writes with an await between them,
+  // and an interrupt in that gap left the book renamed while the strike record
+  // still carried the PREVIOUS book's digest — a void record, which is the state
+  // that makes `nameChapterOpenings` refuse and, before MP-C2 was demoted, made
+  // the project unopenable. The strikes still name the same elements (see this
+  // file's header for the proof), so they are re-stamped rather than migrated; a
+  // record that was ALREADY about some other version is left exactly as it is,
+  // because re-stamping it would forge agreement with a book it was never made
+  // against.
+  const renameRecord = await manifestService.recordChapterRename(projectDir, {
+    kind: 'rename-chapter',
+    at,
+    file: chapterFile,
+    titleBefore: renamed.previousTitle,
+    titleAfter: title,
+    fromSha256: before,
+    toSha256: after,
+  }, familyId);
+  if (renameRecord.alreadyVoid) {
+    console.warn(
+      `[book-chapters] ${path.basename(projectDir)}: ${chapterFile} was renamed, but the narration `
+      + 'strikes recorded against this book were already stamped with a different one, so they were '
+      + 'left as they are.'
+    );
   }
 
   let narrationCopy: BookChapterRenameResult['narrationCopy'] = 'none';
@@ -963,6 +976,14 @@ export async function renameBookChapter(
         const stagedCopy = path.join(STAGING_DIR, `retitle-tts-${before.slice(0, 16)}.epub`);
         await rewriteChapterTitle(
           narration.absPath, stagedCopy, copyHits, chapterFile, title);
+        // FILE first, then the record — deliberately the other way round from
+        // the book above, and the difference is what an interrupt costs. Here
+        // the record only says which book the copy was cut FROM: written first,
+        // an interrupt would leave it claiming the copy already carries a title
+        // the copy does not have, and narration would read a stale name as
+        // current. Written second, the interrupt leaves the copy correct and the
+        // record reading `already-stale`, which Export TTS copy fixes by cutting
+        // it again. Nothing is lost either way; only one of them can lie.
         await moveIntoPlace(stagedCopy, narration.absPath);
         await manifestService.registerNarrationEpub(projectDir, {
           ...manifest,
