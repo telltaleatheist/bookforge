@@ -5561,7 +5561,7 @@ export class PdfPickerComponent implements OnInit {
       // modal here interrupted nearly every open (Owen, 2026-08-10: "warnings
       // should be sparse. they should almost never appear"). The sentence is
       // already short; the full reasoning is in main's log.
-      this.sessionNotice.set(refusal);
+      this.pushSessionNotice(refusal);
       return;
     }
 
