@@ -826,6 +826,54 @@ export async function archiveOriginalFormat(projectDir: string): Promise<string 
   return fs.existsSync(path.join(projectDir, 'source', 'original.epub')) ? 'epub' : null;
 }
 
+/** Where the archive original is, and which format the user handed it over in. */
+export interface ArchiveOriginalLocation {
+  /** Project-relative, forward slashes — as the manifest records it. */
+  relPath: string;
+  absPath: string;
+  /** Lowercased, verbatim from the record: `pdf`, `epub`, or something else. */
+  format: string;
+}
+
+/**
+ * WHERE the archive original is, for the surfaces that have to recognise it.
+ *
+ * `archiveOriginalFormat` answers what KIND of project this is; this answers
+ * which file, because a window deciding whether the book on screen is the
+ * untouchable original cannot do it by name. The manifest is where an artifact's
+ * identity is settled (`exportEpubRelPath`, `generatedEpubRelPath`), and a
+ * renderer matching `archive/` or an extension would be a second derivation of
+ * it — which is exactly how one file comes to be read as two different artifacts
+ * by two different panels.
+ *
+ * Existence on disk is deliberately NOT checked here, matching `readExportEpub`
+ * and `readGeneratedEpub`: the record is the answer, and a record whose file has
+ * gone is a state the caller has to be able to see rather than have collapsed
+ * into "there is none".
+ */
+export async function readArchiveOriginal(
+  projectDir: string
+): Promise<ArchiveOriginalLocation | null> {
+  const manifest = await readManifestAt(projectDir);
+  const entry = archiveOriginalEntry(manifest);
+  if (entry?.path) {
+    return {
+      relPath: entry.path,
+      absPath: toAbs(projectDir, entry.path),
+      format: (entry.format || '').toLowerCase(),
+    };
+  }
+  // The pre-archive layout, which `archiveOriginalFormat` already treats as the
+  // same fact in an older place: an EPUB project's original sat at
+  // `source/original.epub` with no archive entry written for it.
+  const legacyRel = 'source/original.epub';
+  const legacyAbs = toAbs(projectDir, legacyRel);
+  if (fs.existsSync(legacyAbs)) {
+    return { relPath: legacyRel, absPath: legacyAbs, format: 'epub' };
+  }
+  return null;
+}
+
 /**
  * The working copy's filename stem: THE ARCHIVE FILE'S OWN BASENAME.
  *
