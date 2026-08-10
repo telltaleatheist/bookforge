@@ -307,6 +307,16 @@ export class NarrationModalComponent {
    * dialog has: the button that opens it is on a line that names a document.
    */
   readonly epubPath = input.required<string>();
+  /**
+   * WHICH WORKING CHAIN that file is on — the other half of its identity.
+   *
+   * `required` for the same reason the path is. Owen, 2026-08-10: "if the user
+   * wants to process a specific TTS document then they click the process button
+   * next to it. no ambiguity, no confusion." The button knows which version it
+   * is on; nothing on this side could work it out, and a run that guessed would
+   * be filed against the wrong edition of the book.
+   */
+  readonly familyId = input.required<string>();
   readonly projectDir = input.required<string>();
   readonly title = input<string>('');
   readonly author = input<string>('');
@@ -463,6 +473,7 @@ export class NarrationModalComponent {
       const book: NarrationRunBook = {
         epubPath: this.epubPath(),
         projectDir: this.projectDir(),
+        familyId: this.familyId(),
         title: this.title(),
         author: this.author(),
         year: this.year(),
@@ -513,6 +524,7 @@ export class NarrationModalComponent {
       const master = await this.queue.addJob({
         type: 'audiobook',
         epubPath: book.epubPath,
+        familyId: book.familyId,
         ...(book.isArticle ? { projectDir: book.projectDir } : {}),
         metadata: { title: book.title, author: book.author },
         config: { type: 'audiobook' },

@@ -257,15 +257,30 @@ export class EpubResolverService {
   /**
    * The project's own export EPUB, or null when it has never exported.
    *
-   * Main answers from `manifest.outputs.epub` — the file is named after the
+   * Main answers from the project's working chain — the file is named after the
    * book, so nothing here can find it by listing source/.
+   *
+   * ── A project with SEVERAL chains answers null, LOUDLY ──────────────────────
+   *
+   * This resolver is a ladder: each rung names a file, and the first that exists
+   * wins. `projectsExportInfo` refuses a project with two working chains rather
+   * than picking one, and that refusal must NOT be absorbed into "this project
+   * has no export" — the next rung down is `source/original.epub`, so a swallowed
+   * refusal would quietly narrate a different book from the one the user has been
+   * editing. Null is still the answer (the ladder has to keep climbing), but the
+   * reason is said at error level, because "I could not tell which version" is
+   * not the same fact as "there is no export" and only one of them is benign.
    */
   private async resolveProjectExport(projectDir: string): Promise<string | null> {
     try {
       const info = await this.electronService.projectsExportInfo(projectDir);
       return info.exported?.absPath ?? null;
     } catch (err) {
-      console.warn(`[EPUB-RESOLVER] Could not resolve ${projectDir}'s export:`, (err as Error).message);
+      console.error(
+        `[EPUB-RESOLVER] ${projectDir} did not answer with a book, so this resolver is falling `
+        + 'through to the files it can find by name. If the project has more than one working '
+        + 'chain, ask through the version whose button was pressed instead: '
+        + (err as Error).message);
       return null;
     }
   }

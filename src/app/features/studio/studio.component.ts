@@ -2586,7 +2586,12 @@ export class StudioComponent implements OnInit, OnDestroy {
     if (!confirmed) return;
 
     try {
-      const result = await this.electronService.resetEditorState(projectDir);
+      // WHICH working chain's records are cleared. The row carries it; null
+      // means this listing could not place the project's book — a project with
+      // two versions, where main refuses in its own words rather than clearing
+      // the curation of whichever the code reached first.
+      const result = await this.electronService.resetEditorState(
+        projectDir, item.familyId ?? undefined);
 
       if (result.success) {
         // Opt-in export deletion via the same deleteFile mechanism.

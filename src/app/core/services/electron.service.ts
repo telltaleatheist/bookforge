@@ -1498,6 +1498,12 @@ export class ElectronService {
       icon: string;
       /** The file the editor opens for this row, when it is not the row's own. */
       openPath?: string;
+      /**
+       * The 'generated', 'exported' and 'narration' rows: WHICH working chain
+       * this row is on. Every act taken from the row hands it back, so a project
+       * with two versions acts on the one whose button was pressed.
+       */
+      familyId?: string;
       /** The 'working' row only: the binding's recorded stage boundaries. */
       stageBoundaries?: Array<{ stage: string; finishedAt: string }>;
       /** The 'exported' row only: when Reflow wrote this book, if it was recorded. */
@@ -1505,6 +1511,22 @@ export class ElectronService {
       analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
       analysisFlagCount?: number;
       analysisIsCheckpoint?: boolean;
+    }>;
+    /**
+     * The project's working chains — one book line each, in manifest order.
+     *
+     * Not derivable from the rows and not the other way round: a chain whose
+     * working copy has been removed has no row at all, and a page that inferred
+     * the list from the rows would simply stop drawing a book the user can still
+     * erase and re-mint.
+     */
+    families?: Array<{
+      id: string;
+      sourceKind: 'archive-epub' | 'generated-epub';
+      /** The source file's basename — this chain's custody, said in one word. */
+      sourceName: string;
+      /** The archive PDF this chain's book was read out of, or null. */
+      archiveRowId: string | null;
     }>;
   }> {
     if (this.isElectron) {
@@ -2625,13 +2647,21 @@ export class ElectronService {
    * directories are working space, and scanning them would list a pass whose run
    * failed halfway alongside one that finished.
    */
-  async listPassDiffs(projectDir: string): Promise<{
+  async listPassDiffs(
+    projectDir: string,
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
+  ): Promise<{
     success: boolean;
     diffs?: PassDiffEntry[];
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.processing.listPassDiffs(projectDir);
+      return (window as any).electron.processing.listPassDiffs(projectDir, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -3006,15 +3036,29 @@ export class ElectronService {
    * asking the user which EPUB to narrate: the artifact chain has one answer at
    * that link, so a chooser could only ever pick the wrong file.
    */
-  async ensureNarrationEpub(projectDir: string): Promise<{
+  async ensureNarrationEpub(
+    projectDir: string,
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
+  ): Promise<{
     success: boolean;
     narration?: {
       epubPath: string; relPath: string; removedElements: number; cutReason: string | null;
     };
+    /**
+     * WHICH working chain answered. A caller that asked without naming one
+     * learns which it got, so the run it queues next can name it rather than
+     * asking the project again and risking a different answer.
+     */
+    familyId?: string;
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.ensureNarrationEpub(projectDir);
+      return (window as any).electron.vlm.ensureNarrationEpub(projectDir, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -3040,11 +3084,19 @@ export class ElectronService {
   }
 
   /** The book, whether a VLM read it, and what has been struck out of it. */
-  async narrationState(projectDir: string): Promise<{
+  async narrationState(
+    projectDir: string,
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
+  ): Promise<{
     success: boolean; state?: NarrationState; error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.narrationState(projectDir);
+      return (window as any).electron.vlm.narrationState(projectDir, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -3056,11 +3108,20 @@ export class ElectronService {
    * claiming to know the entire answer, and one that only knows its own view of
    * it will erase strikes it never heard of.
    */
-  async saveNarrationDeletions(projectDir: string, elements: string[]): Promise<{
+  async saveNarrationDeletions(
+    projectDir: string,
+    elements: string[],
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
+  ): Promise<{
     success: boolean; deletions?: NarrationDeletions; error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.saveNarrationDeletions(projectDir, elements);
+      return (window as any).electron.vlm.saveNarrationDeletions(projectDir, elements, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -3075,10 +3136,16 @@ export class ElectronService {
    */
   async editNarrationDeletions(
     projectDir: string,
-    edit: { strike: string[]; unstrike: string[] }
+    edit: { strike: string[]; unstrike: string[] },
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
   ): Promise<{ success: boolean; deletions?: NarrationDeletions; error?: string }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.editNarrationDeletions(projectDir, edit);
+      return (window as any).electron.vlm.editNarrationDeletions(projectDir, edit, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -3096,7 +3163,16 @@ export class ElectronService {
    * only thing allowed to write it, and a second partial editing path would be a
    * second answer to what is in it. `recutMs` is how long that took.
    */
-  async strikeInNarrationCopy(projectDir: string, copyKeys: string[]): Promise<{
+  async strikeInNarrationCopy(
+    projectDir: string,
+    copyKeys: string[],
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
+  ): Promise<{
     success: boolean;
     result?: {
       struckInBook: string[];
@@ -3106,7 +3182,7 @@ export class ElectronService {
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.strikeInNarrationCopy(projectDir, copyKeys);
+      return (window as any).electron.vlm.strikeInNarrationCopy(projectDir, copyKeys, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -3131,6 +3207,12 @@ export class ElectronService {
     projectDir: string,
     openerKey: string,
     foldedKeys: string[],
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
   ): Promise<{
     success: boolean;
     result?: {
@@ -3141,7 +3223,8 @@ export class ElectronService {
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.mergeChapterOpening(projectDir, openerKey, foldedKeys);
+      return (window as any).electron.vlm.mergeChapterOpening(
+        projectDir, openerKey, foldedKeys, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -3154,7 +3237,13 @@ export class ElectronService {
    */
   async exportNarrationEpub(
     projectDir: string,
-    options?: { stripSupMarkers?: boolean }
+    options?: { stripSupMarkers?: boolean },
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
   ): Promise<{
     success: boolean;
     result?: {
@@ -3177,7 +3266,7 @@ export class ElectronService {
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.exportNarration(projectDir, options);
+      return (window as any).electron.vlm.exportNarration(projectDir, options, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -3189,11 +3278,19 @@ export class ElectronService {
    * converted yet, which is most projects for most of their life — and is an
    * answer rather than a failure.
    */
-  async bookChapterTitles(projectDir: string): Promise<{
+  async bookChapterTitles(
+    projectDir: string,
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
+  ): Promise<{
     success: boolean; titles?: BookChapterTitles | null; error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.chapterTitles(projectDir);
+      return (window as any).electron.vlm.chapterTitles(projectDir, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -3212,11 +3309,21 @@ export class ElectronService {
    * OPENINGS the book had rewritten as part of it — the print follows the
    * name — and above zero means the markup on screen is out of date.
    */
-  async renameBookChapter(projectDir: string, file: string, title: string): Promise<{
+  async renameBookChapter(
+    projectDir: string,
+    file: string,
+    title: string,
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
+  ): Promise<{
     success: boolean; result?: BookChapterRenameResult; openingsNamed?: number; error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.renameChapter(projectDir, file, title);
+      return (window as any).electron.vlm.renameChapter(projectDir, file, title, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -3509,14 +3616,22 @@ export class ElectronService {
    *  (deletions, corrections, splits/merges, chapter markers, crops, category
    *  learning, undo/redo). The archive/source file itself is untouched. Any open
    *  editor window for the project is torn down so it can't re-save stale state. */
-  async resetEditorState(projectPath: string): Promise<{
+  async resetEditorState(
+    projectPath: string,
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
+  ): Promise<{
     success: boolean;
     message?: string;
     layout?: string;
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.pipeline.resetEditorState(projectPath);
+      return (window as any).electron.pipeline.resetEditorState(projectPath, familyId);
     }
     return { success: false, error: 'Not running in Electron' };
   }

@@ -123,6 +123,42 @@ export function familyStem(source: FamilySource): string {
 }
 
 /**
+ * What to call a SECOND reading of the same pages, so it can have a chain.
+ *
+ * ── Why the obvious name is the wrong one ───────────────────────────────────
+ *
+ * Every file in a chain is named after its source's basename (`familyStem`
+ * above): `<stem>.working.epub` beside `<stem>.tts.epub` is a sidecar
+ * declaration of which archive-grade book they are copies of. So a second
+ * reading called `Deathstalker.epub`, added beside a cast called
+ * `Deathstalker.generated.epub`, has the SAME stem as the chain already there —
+ * two chains, one working copy, and the second mint would destroy the first.
+ * `addBookFamily` refuses that by name, correctly.
+ *
+ * But that name was never the user's: it is derived from the PDF, so refusing a
+ * version because of a name the code chose would be refusing the feature. The
+ * reading is NUMBERED instead, and the number is the smallest one no existing
+ * chain is already named after — stable (running it twice gives readings 2 and
+ * 3, not two readings 2) and independent of what happens to be in `archive/`,
+ * because the STEM is what collides and two files may share a stem with
+ * different extensions.
+ *
+ * From 2: the reading already in the project is the first, whether or not the
+ * user thinks of it that way.
+ */
+export function nextReadingName(takenStems: readonly string[], stem: string): string {
+  const taken = new Set(takenStems.map((s) => s.toLowerCase()));
+  for (let n = 2; n < 1000; n++) {
+    const candidate = `${stem} (reading ${n})`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+  throw new Error(
+    `There are already 998 readings of "${stem}" here. Nothing will name a 999th — delete some of `
+    + 'the ones you have and read the pages again.'
+  );
+}
+
+/**
  * WHICH family a question is about — the whole of the ambiguity rule.
  *
  * ── One family is an ANSWER, not a fallback ─────────────────────────────────

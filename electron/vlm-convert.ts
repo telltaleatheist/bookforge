@@ -77,7 +77,7 @@ import { withProjectStage } from './document-stage-run';
 import { moveIntoPlace } from './processing-passes';
 import { sha256File } from './sidecar-binding';
 import * as manifestService from './manifest-service';
-import { resolveFamily } from '../shared/document/book-families';
+import { familyStem, nextReadingName, resolveFamily } from '../shared/document/book-families';
 import {
   FOUNDRY_VERSION_FOR_READINGS_FLAGS,
   describeReadingsDecision,
@@ -428,6 +428,22 @@ function inferredPagesFrom(stderr: string): number {
 }
 
 /**
+ * What to call a SECOND reading of the same pages — the naming rule, applied to
+ * the chains this project already has.
+ *
+ * The rule itself is pure and lives with the other naming rules
+ * (`nextReadingName`, shared/document/book-families.ts), where it can be tested
+ * without a project. This is the half that reads the disk: the CHAINS rather
+ * than the directory, because a chain's stem is what collides, and two files may
+ * share a stem with different extensions while only one of those facts can
+ * destroy a working copy.
+ */
+async function unusedReadingName(projectDir: string, stem: string): Promise<string> {
+  const families = await manifestService.readBookFamilies(projectDir);
+  return `${nextReadingName(families.map((f) => familyStem(f.source)), stem)}.epub`;
+}
+
+/**
  * Convert a project's PDF into its book, and record it.
  *
  * The five acts, in this order, and the order is the design:
@@ -714,14 +730,27 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
    * variants, so writing to `manifest.archive[]` would leave most projects with a
    * file and no row).
    *
-   * It gets no working chain. That is a decision, not an omission: a project has
-   * one `outputs.epub`, and a chain per archive file is a later change.
+   * It DOES get a working chain of its own, as of 2026-08-10. Owen: "i do have
+   * different versions of books, and i want to be able to run adjustment chains
+   * on different versions." A second reading beside the first is exactly such a
+   * version, and a chain per archive file is what makes that sayable — so the
+   * file is registered as a variant AND given a chain, and the two acts are
+   * reported separately because the second can refuse while the first stands.
    */
   if (request.destination === 'new-copy') {
     // Named before it is registered. `addVariant` reads the FILENAME for the
     // version's title, and the staging name is a sha — a version called
     // "vlm-convert-3f2a9c11" is a row nobody can identify a month later.
-    const readableName = `${path.basename(generatedTarget.absPath, '.generated.epub')}.epub`;
+    //
+    // And named DISTINCTLY from every chain the project already has. Every file
+    // in a chain is called `source/<the source's basename>.…`, so a second
+    // reading called `<book>.epub` beside a cast called `<book>.generated.epub`
+    // would want the same working copy as the first — which `addBookFamily`
+    // refuses, correctly and uselessly, because the name was never the user's
+    // choice to begin with. The reading number is what makes them different
+    // books to the naming rule as well as to the reader.
+    const readableName = await unusedReadingName(
+      project.projectDir, path.basename(generatedTarget.absPath, '.generated.epub'));
     const readable = path.join(path.dirname(stagedEpub), readableName);
     await moveIntoPlace(stagedEpub, readable);
     const { addVariant } = await import('./library-actions.js');
@@ -738,6 +767,36 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
       );
     }
     const absPath = path.join(project.projectDir, added.variant.path.split('/').join(path.sep));
+
+    // ── And a chain of its own ────────────────────────────────────────────────
+    //
+    // The whole point of the second copy: a version the user can run their own
+    // adjustments on, with its own working copy, its own ledger, its own strikes
+    // and its own narration copy. `addBookFamily` is the one act that makes one,
+    // and the one place the naming rule is enforced.
+    //
+    // Its refusal is CARRIED BACK, not thrown: the reading succeeded and the
+    // file is in the project, so failing the whole conversion would tell the
+    // user their hour of GPU produced nothing when it produced a book. The
+    // sentence names which two files collide and what to rename, and the caller
+    // shows it verbatim.
+    let newCopy: VlmConvertResult['newCopy'];
+    try {
+      const chain = await manifestService.addBookFamily(
+        project.projectDir, { absPath, kind: 'archive-epub' });
+      newCopy = { familyId: chain.id, refusal: null };
+      console.log(
+        `[vlm-convert] ${path.basename(project.projectDir)}: the new reading ${added.variant.path} `
+        + `has its own working chain, ${chain.id}.`
+      );
+    } catch (err) {
+      newCopy = { familyId: null, refusal: (err as Error).message };
+      console.warn(
+        `[vlm-convert] ${path.basename(project.projectDir)}: ${added.variant.path} was added, but `
+        + `it could not be given a working chain: ${(err as Error).message}`
+      );
+    }
+
     console.log(
       `[vlm-convert] ${path.basename(project.projectDir)}: read the pages into a NEW archive file, `
       + `${added.variant.path}. The project's book, its working copy and its ledger are untouched.`
@@ -750,6 +809,7 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
       totalPages: totalPagesFrom(result.stderr) ?? 0,
       unreadable: unreadableEarly,
       skippedPages,
+      newCopy,
     };
   }
 
