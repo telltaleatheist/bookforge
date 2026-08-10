@@ -59,11 +59,9 @@ import {
   PanelId,
   TaskStatus,
   deriveAllTaskStatuses,
-  deriveNarrationCopyStatus,
   isBlockFullyOutside,
 } from './tasks/task.model';
 import {
-  NARRATION_EXPORT_LABEL,
   railGroupsForArtifact,
   railShortcutsFor,
   railTaskForDigit,
@@ -77,7 +75,6 @@ import {
   describeWorkingCopyRemint,
   type WorkingCopyRemint,
 } from '@shared/document/working-copy-remint';
-import { narrationRefusal } from '@shared/document/version-family';
 import {
   deriveNarrationStrikes,
   describeUnstruckDeletions,
@@ -848,32 +845,25 @@ const PDF_HAS_NO_BOOK_MESSAGE =
               }
             </div>
 
-            <!-- The last step of the flow, in the bottom-right where a
-                 next/continue action goes. A real row rather than a floating
-                 overlay, so it can never sit on top of the page timeline it
-                 shares the bottom of the window with.
-
-                 Shown for every book and DISABLED with its own sentence when it
-                 cannot run, for the same reason the rail says why a row is off:
-                 a control that vanishes teaches nothing about how to reach
-                 it. -->
-            @if (showNarrationExport()) {
-              <div
-                class="narration-export-bar"
-                [title]="narrationExportRefusal() ?? 'Write the book minus what you have struck out'"
-              >
-                <span class="narration-export-status">
-                  {{ narrationExportLabel }} — {{ narrationCopyStatus().detail }}
-                </span>
-                <desktop-button
-                  variant="primary"
-                  size="lg"
-                  iconRight="→"
-                  [disabled]="narrationExportRefusal() !== null"
-                  (click)="exportTtsCopy()"
-                >{{ narrationExportLabel }}</desktop-button>
-              </div>
-            }
+            <!-- The window's one terminal action, bottom-right — always on
+                 screen while a document is open, book or scan alike. A real
+                 row rather than a floating overlay, so it can never sit on
+                 top of the page timeline it shares the bottom of the window
+                 with. This used to be conditional on a book being on screen
+                 (the narration-export bar, showNarrationExport() —
+                 exportTtsCopy(), retired 2026-08-10, see the doc comment on
+                 finishEditing()); DONE asks nothing about the document, so
+                 it is unconditional. No disabled state either: the button
+                 itself never refuses, it only occasionally asks a question
+                 first (finishEditing()'s unsaved-background-tabs prompt). -->
+            <div class="done-bar">
+              <desktop-button
+                variant="primary"
+                size="lg"
+                class="done-button"
+                (click)="finishEditing()"
+              >Done</desktop-button>
+            </div>
 
             <!-- Page Timeline (bottom of viewer). Not for an EPUB: its raster
                  thumbnails are gone with the raster path, and its navigation
@@ -1829,27 +1819,39 @@ const PDF_HAS_NO_BOOK_MESSAGE =
       min-height: 0;
     }
 
-    /* The narration copy: the one primary action of the book's flow, bottom-right.
+    /* DONE: the window's one terminal action, bottom-right, always on screen.
        A flex row of the viewer/timeline column rather than an absolutely
        positioned overlay — it shares the bottom of the window with the page
-       timeline, and a float would cover the thumbnails at the end of the book. */
-    .narration-export-bar {
+       timeline, and a float would cover the thumbnails at the end of the
+       book. Used to be .narration-export-bar (retired 2026-08-10 with
+       exportTtsCopy() — see finishEditing()'s doc comment); same slot,
+       same reasoning for why it is a row and not an overlay. */
+    .done-bar {
       display: flex;
       align-items: center;
       justify-content: flex-end;
-      gap: var(--ui-spacing-md);
       flex-shrink: 0;
-      padding: var(--ui-spacing-sm) var(--ui-spacing-lg);
+      padding: var(--ui-spacing-md) var(--ui-spacing-lg);
       background: var(--bg-elevated);
       border-top: 1px solid var(--border-subtle);
     }
 
-    .narration-export-status {
-      font-size: var(--ui-font-sm);
-      color: var(--text-tertiary);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+    /* Genuinely BIG (Owen's own word, 2026-08-10) and obviously terminal —
+       bigger than desktop-button's own largest size (lg, 40px tall) on
+       purpose, since this is the one button in the window meant to read as
+       "you are finished". ::ng-deep reaches past the component's view
+       encapsulation to its internal .btn, the same idiom
+       epub-viewer.component.ts and analysis-panel.component.ts already
+       use for the same reason: desktop-button has no Input for a size
+       past lg, and adding one for this single caller would be a knob
+       nobody else turns. */
+    .done-button ::ng-deep .btn {
+      height: 56px;
+      padding: 0 $spacing-8;
+      font-size: $font-size-xl;
+      font-weight: 700;
+      border-radius: $radius-lg;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.12);
     }
 
     .empty-workspace {
@@ -2755,20 +2757,13 @@ export class PdfPickerComponent implements OnInit {
   /** Emitted when Finalize is clicked in embedded mode */
   readonly finalized = output<{ success: boolean; epubPath?: string; error?: string }>();
 
-  /**
-   * The book has been handed to narration and the main window has ACCEPTED it —
-   * this window's work here is over.
-   *
-   * Deliberately not `finalized`. That event means "the book has been written",
-   * and the host answers it with a success toast and a delayed close; both are
-   * wrong for a hand-off, where the user is already looking at another window.
-   * They were the same event until Phase C, which is why Next used to toast
-   * "Project finalized successfully!" over a navigation that never happened.
-   *
-   * Emitted only after `app:show-narration` has succeeded, so a host that closes
-   * on it is closing onto somewhere the user has actually been taken.
-   */
-  readonly handedOffToNarration = output<{ projectDir: string; epubPath: string }>();
+  // `handedOffToNarration` lived here — "the book has been handed to narration
+  // and the main window has ACCEPTED it, this window's work here is over".
+  // Retired 2026-08-10 with `goToNarration()` itself: Owen ruled TTS
+  // configuration and generation are the main window's job, not the picker's,
+  // so there is no hand-off left to announce. `exitRequested` below — already
+  // wired to the same host listeners — is now the picker's one way to say "I
+  // am done", fired by the new DONE button (`finishEditing()`).
 
   /**
    * Tracks the source file being edited (EPUB/PDF path, not the project directory).
@@ -4179,9 +4174,6 @@ export class PdfPickerComponent implements OnInit {
   readonly narrationCopyPath = computed<string | null>(() =>
     this.narrationState()?.narrationPath ?? null);
 
-  /** What the export button is called. One name, stated once. */
-  readonly narrationExportLabel = NARRATION_EXPORT_LABEL;
-
   // ── Deleting ON the TTS copy ───────────────────────────────────────────────
   //
   // Owen, 2026-08-09: "maybe they forgot to remove a footnote and on their final
@@ -4293,36 +4285,16 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  /**
-   * The bottom-right primary action is OFFERED — i.e. the artifact on screen is
-   * the kind of thing a narration copy is cut from.
-   *
-   * Presence is a fact about the FILE (an EPUB is a book), exactly as the rail's
-   * contents are. Whether it can be PRESSED is the separate question below, and
-   * conflating them is what put the passes somewhere they could not live: a
-   * control that vanishes teaches nothing about how to reach it, so the button
-   * is shown for every book and says why when it is off.
-   */
-  readonly showNarrationExport = computed(() => this.viewingBook());
-
-  /**
-   * Why the narration copy cannot be written from here, or null.
-   *
-   * ONE reason: it needs a project to write into. It does NOT need a recorded
-   * book, and that is the whole of the EPUB-native case — main mints the book
-   * copy as it saves the first strike (`ensureBookEpub`), so a project whose
-   * only EPUB is its original still has something to cut a copy from.
-   */
-  readonly narrationExportRefusal = computed<string | null>(() => this.noProjectReason());
-
-  /**
-   * What the button says under its label: written, or not written yet.
-   *
-   * The same derivation the rail used when it carried this entry — moving a
-   * control is not a reason for it to start answering differently.
-   */
-  readonly narrationCopyStatus = computed<TaskStatus>(() =>
-    deriveNarrationCopyStatus(this.narrationCopyPath() !== null));
+  // The bottom-right primary action used to be "Export TTS copy"
+  // (`showNarrationExport`/`narrationExportRefusal`/`narrationCopyStatus`,
+  // driving an `exportTtsCopy()` method that has since been retired entirely).
+  // Owen, 2026-08-10: TTS configuration and generation do not belong in the
+  // picker window at all — the picker curates a book, it does not produce
+  // audio from one. The act moved to the versions window's own Export TTS
+  // copy button (`studio-versions.component.ts`'s `exportTtsCopyForLine`);
+  // this window's bottom-right slot is now the DONE button (`finishEditing()`,
+  // near the template's `.done-bar`), which answers a different question —
+  // "I am finished curating" — and needs none of this derivation.
 
   /**
    * The book on screen can be struck through for narration.
@@ -5776,23 +5748,15 @@ export class PdfPickerComponent implements OnInit {
 
     // Items only shown when PDF is open
     if (pdfIsOpen) {
-      // Next → Narration is a plain toolbar button now, not the last rung of a
-      // station bar. It is offered while the BOOK is on screen — narration takes
-      // an EPUB — and disabled with its own sentence otherwise, because a
-      // control that vanishes teaches nothing about how to reach it.
-      const narrationRefusalText = this.narrationRefusalReason();
       const searchRefusalText = this.searchRefusal();
+      // "Next → Narration" used to live here — a plain toolbar button next to
+      // Export, offered while the book was on screen. Owen, 2026-08-10: TTS
+      // configuration and generation are the main window's job, not the
+      // picker's, so there is nothing left for this window to hand off. The
+      // window's one remaining terminal action is the DONE button in the
+      // `.done-bar` below the viewer (`finishEditing()`), not a toolbar item.
       const actionItems: ToolbarItem[] = [
         { id: 'export', type: 'button', icon: '📤', label: 'Export', tooltip: 'Export document (Cmd+E)' },
-        {
-          id: 'narrate',
-          type: 'button',
-          icon: '🎧',
-          label: 'Next: Narration',
-          tooltip: narrationRefusalText
-            ?? 'Hand this book to narration — opens the Process tab in the main window',
-          disabled: narrationRefusalText !== null,
-        },
       ];
 
       return [
@@ -5877,10 +5841,13 @@ export class PdfPickerComponent implements OnInit {
     const lightweight = this.lightweightMode();
 
     // The narration copy is not on this map any more: it left the rail on
-    // 2026-08-08 for the bottom-right primary action, and its own refusal is
-    // `narrationExportRefusal` below. The book's text passes left it entirely
-    // on 2026-08-10 — they are offered from the versions page's modal
-    // (shared/processing/book-passes.ts), so the rail has no entry to refuse.
+    // 2026-08-08 for the bottom-right primary action, and left the picker
+    // window entirely on 2026-08-10 — TTS generation is the main window's
+    // job now (versions window's Export TTS copy button), so there is no
+    // refusal for this rail to carry at all. The book's text passes left it
+    // entirely on 2026-08-10 too — they are offered from the versions page's
+    // modal (shared/processing/book-passes.ts), so the rail has no entry to
+    // refuse there either.
 
     for (const id of TASK_ORDER) {
       if (id === 'select') continue;
@@ -6063,9 +6030,6 @@ export class PdfPickerComponent implements OnInit {
         break;
       case 'export':
         this.showExportSettings.set(true);
-        break;
-      case 'narrate':
-        void this.goToNarration();
         break;
       case 'search':
         this.toggleSearch();
@@ -9838,9 +9802,8 @@ export class PdfPickerComponent implements OnInit {
         }
         case 'generate-epub': {
           // Reading a PDF's pages is an hour of GPU and belongs in the queue, so
-          // this hands the job to the MAIN window — the one that owns the queue —
-          // exactly as `goToNarration` hands the finished book to the Process
-          // tab. This window is often its own BrowserWindow with no queue and no
+          // this hands the job to the MAIN window — the one that owns the queue.
+          // This window is often its own BrowserWindow with no queue and no
           // nav rail of its own; enqueueing here would put the job in a second
           // queue nobody is watching.
           await this.electronService.showBookConversion(projectDir);
@@ -10019,61 +9982,55 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  /**
-   * Why this window cannot hand its book to narration, or null.
-   *
-   * Read by the Next button and by its tooltip, so a lock is explained with one
-   * sentence rather than two that can drift. Narration takes a BOOK, so this is
-   * offered only while one is on screen — from a PDF there is nothing to hand.
-   */
-  readonly narrationRefusalReason = computed<string | null>(() => {
-    if (!this.viewingBook()) {
-      return 'Narration reads the book. Open this project\'s EPUB to hand it on.';
-    }
-    const noProject = this.noProjectReason();
-    if (noProject) return noProject;
-    return narrationRefusal({ bookEpubExists: this.bookEpubPath() !== null });
-  });
+  // `narrationRefusalReason` and `goToNarration` lived here — the "Next:
+  // Narration" toolbar button's refusal, and the hand-off that asked main to
+  // raise the main window onto the Process tab. Owen, 2026-08-10, verbatim:
+  // "lets remove the 'on to narration' buttons from the picker window. we
+  // dont do tts configuration from there. we do it from the main window."
+  // There is nothing left in this window to hand off — narration curation
+  // (striking blocks, reviewing the TTS copy) stays; configuring or
+  // generating audio from the result does not. `finishEditing` below is what
+  // took both the toolbar button's and the old export bar's spot: one DONE
+  // action that says "I am finished curating" and closes the window.
 
   /**
-   * Hand the finished book on: put the user in front of narration, then close.
+   * DONE: this window's one terminal action. Always offered, bottom-right,
+   * whenever a document is open — book or scan alike, in the same
+   * `.done-bar` slot the narration-export bar used to occupy alone for books.
    *
-   * Three acts, and the ORDER is the design:
+   * Owen, 2026-08-10, verbatim: "the user doesnt have to save anything since
+   * theres an undo/redo stack, but closing the window with the X is
+   * unnatural." So the button itself asks NOTHING — no confirm gates the
+   * click, because every curation edit here is already an incremental
+   * manifest write, not a draft waiting on a save button.
    *
-   *  1. Ask MAIN to raise the main window and open narration for this project
-   *     (`app:show-narration`). The picker is often its own BrowserWindow and
-   *     has no reach into the main window's router.
-   *  2. A refusal is SAID, and the window stays open. Closing on a failed
-   *     hand-off would leave the user with no picker, no narration and no
-   *     explanation of where their book went.
-   *  3. Only then is the host told this window's work is done — and it is told
-   *     with its OWN event. `finalized` means "the book has been written", which
-   *     the host answers with a success toast and a delayed close; a hand-off
-   *     has already moved the user to another window, so a toast here is
-   *     addressed to nobody and the delay is a window lingering over a book the
-   *     user has left.
+   * Three acts, in the order Owen specified:
+   *
+   *  1. Flush this document's own scheduled write NOW rather than leaving it
+   *     for the close hook to discover reactively. `flushScheduledProjectWrites`
+   *     is the exact function `onEditorFlushBeforeClose` (registered in
+   *     `ngOnInit`) awaits when main's pre-close handshake asks this window to
+   *     flush before it will let the native X — or `window.close()` — through.
+   *     Doing it here FIRST means that handshake finds nothing scheduled and
+   *     answers within one tick, instead of the close riding main's 3-second
+   *     safety deadline for a flush that had not even started yet
+   *     (`electron/main.ts`'s `openEditorWindow` close handler).
+   *  2. The one real hazard DONE can cause: a BACKGROUND tab's unsaved edits,
+   *     which live only in that tab's own suspended editor state and are
+   *     dropped the moment this window closes — `performAutoSave` serializes
+   *     the ACTIVE editor's live signals, never a tab sitting behind it. Asked
+   *     with the same wording `goToNarration` used to ask it with; it is the
+   *     identical hazard, a window closing out from under a tab nobody saved.
+   *  3. Close through the NORMAL door: `exitRequested`, the same event
+   *     `closeCurrentTabOrHideWindow` emits for Cmd+W in embedded mode. Both
+   *     hosts already answer it correctly — `editor-window.component.ts`'s
+   *     standalone BrowserWindow calls `window.close()`, and
+   *     `editor-tab.component.ts`'s Studio tab navigates away — so DONE needs
+   *     no door of its own.
    */
-  async goToNarration(): Promise<void> {
-    if (this.narrationRefusalReason() !== null) return;
-    const epubPath = this.bookEpubPath();
-    const projectDir = this.projectPath();
-    if (epubPath === null || !projectDir) {
-      // Unreachable through the button, which is disabled with the sentence that
-      // says so. Said out loud rather than returned in silence if some other
-      // caller gets here.
-      this.showAlert({
-        title: 'Narration could not be opened',
-        message: 'This window is not on a project with a book, so there is nothing to narrate.',
-        type: 'error',
-      });
-      return;
-    }
+  async finishEditing(): Promise<void> {
+    await this.flushScheduledProjectWrites();
 
-    // A background tab's edits can only be saved from that tab — `saveProject`
-    // serializes the LIVE editor, which is this book. The hand-off closes the
-    // window, so those edits are about to be dropped, and being asked is the
-    // only thing that can stop it. A decision the user is making right now, so
-    // it is a question rather than a banner nobody will see.
     const unsaved = this.openDocuments()
       .filter(d => d.hasUnsavedChanges && d.id !== this.activeDocumentId());
     if (unsaved.length > 0) {
@@ -10081,38 +10038,15 @@ export class PdfPickerComponent implements OnInit {
         title: 'Other tabs have unsaved changes',
         message:
           `${unsaved.map(d => d.name).join(', ')} still hold unsaved changes, and they can only be `
-          + 'saved from their own tab. Handing the book to narration closes this window and drops '
-          + 'them.',
-        confirmLabel: 'Hand off anyway',
+          + 'saved from their own tab. Closing this window drops them.',
+        confirmLabel: 'Close anyway',
         cancelLabel: 'Cancel',
         type: 'warning',
       });
       if (!ok) return;
     }
 
-    try {
-      await this.electronService.showNarration(projectDir);
-    } catch (err) {
-      // Main's own sentence — it knows which half was missing.
-      this.showAlert({
-        title: 'Could not open narration',
-        message: err instanceof Error ? err.message : String(err),
-        type: 'error',
-      });
-      return;
-    }
-
-    // The window holds no unsaved book state: every curation edit is already an
-    // incremental update in the working document, and the strikes on a book are
-    // saved before this. What it CAN hold is a scheduled manifest write —
-    // chapters, metadata, the deletion keys — and clearing the dirty flag with
-    // one armed is how that write stopped being made at all: the flag is what
-    // the auto-save effect fires on, and the window is closed by the host a
-    // moment later. So the pending write is made first, and only then is the
-    // hand-off accepted.
-    await this.flushScheduledProjectWrites();
-    this.editorState.hasUnsavedChanges.set(false);
-    this.handedOffToNarration.emit({ projectDir, epubPath });
+    this.exitRequested.emit();
   }
 
   /**
@@ -10146,139 +10080,17 @@ export class PdfPickerComponent implements OnInit {
   }
 
   // ─── The narration copy ───────────────────────────────────────────────────
-
-  /**
-   * Write the TTS copy: the book minus what is struck out of it.
-   *
-   * ONE option is asked, because it is the one thing the copy does that the
-   * strikes do not describe: a `<sup>55</sup>` left in the markup is read aloud
-   * as "fifty-five", and that is not something the user can see struck through
-   * on the page. It DEFAULTS ON — every audiobook wants it — and it is offered
-   * rather than assumed because a book of numbered chapter epigraphs is a real
-   * book and the strip cannot tell one from a footnote reference.
-   *
-   * The strikes are SAVED first, synchronously, and the export then reads them
-   * off the manifest rather than being handed a list — so the file that lands is
-   * always explained by a record, and there is no way to produce one that is not.
-   *
-   * Public because the bottom-right primary action calls it directly. It is no
-   * longer reachable through the rail (2026-08-08), so the rail's disabled-task
-   * gate no longer stands in front of it — the refusal it has to honour is its
-   * own, and it is asked for here.
-   */
-  async exportTtsCopy(): Promise<void> {
-    if (this.narrationExportRefusal() !== null) return;
-    const dir = this.projectPath();
-    if (!dir) return;
-
-    const choice = await this.dialogService.confirmWithCheckbox({
-      title: NARRATION_EXPORT_LABEL,
-      message:
-        'The narration copy is the book minus what you have struck out. The book itself is never '
-        + 'rewritten — this writes a second file beside it.',
-      checkboxLabel: 'Remove footnote reference numbers',
-      checkboxChecked: true,
-      confirmLabel: 'Export',
-      cancelLabel: 'Cancel',
-      type: 'question',
-    });
-    if (!choice.confirmed) return;
-
-    this.loading.set(true);
-    this.loadingText.set('Writing the TTS copy...');
-    try {
-      // Whatever this window has posted and not yet heard back about. There is
-      // nothing to SAVE here any more — the record already is the state, and the
-      // export reads it — but a gesture still in flight must land before the
-      // cut, or the file would be one gesture behind the screen.
-      await this.narrationEdits;
-
-      // ── The screen and the record must agree before a file is cut ─────────
-      //
-      // The cut is made from the RECORD. The user's belief about what is in it
-      // comes from the SCREEN. Any difference between the two is a file that is
-      // not what the person who asked for it thinks it is, so it is a refusal
-      // here rather than a reconciliation: reconciling would mean this window
-      // deciding which of the two is right, and it is exactly the window whose
-      // view was wrong when this was measured.
-      const divergence = this.narrationExportDivergence();
-      if (divergence !== null) {
-        throw new Error(divergence);
-      }
-
-      const answer = await this.electronService.exportNarrationEpub(dir, {
-        stripSupMarkers: choice.checkboxChecked,
-      }, this.workingChainId());
-      if (!answer.success || !answer.result) {
-        throw new Error(answer.error || 'The TTS copy could not be written.');
-      }
-      const { result } = answer;
-      await this.refreshNarrationState();
-
-      // The two records, counted apart. `translated` is what the editor's own
-      // page and block deletions added that the strike record did not already
-      // name — it is zero for a book curated since the picker recorded both,
-      // and it is the whole story for one curated before.
-      const provenance = result.translated > 0
-        ? ` (${result.fromStrikes} already struck, ${result.translated} translated from pages and `
-          + 'blocks deleted in the editor)'
-        : '';
-      // Main's own report of what the cut could not strike, alone. The picker's
-      // derivation (`narrationUnstruckReport`) computes the SAME facts from the
-      // same deletion sets over the same book — showing both here repeated every
-      // sentence twice ("5 deleted page(s) had nothing…" appeared once from
-      // each), and the export's report is the authoritative one because it
-      // describes the cut that actually ran, not the editor's preview of it.
-      const unresolved = [result.unresolved]
-        .filter((s): s is string => s !== null && s.length > 0);
-
-      // A document the strikes emptied is taken out of the copy rather than left
-      // in it as a blank page. Said, and said with NAMES, because this is the
-      // sentence that answers the question the user opens the copy to ask: they
-      // deleted 64 pages, and if two documents' worth of them are simply not in
-      // the book any more they need to be told that rather than left to wonder
-      // whether the pages went missing or the deletion went wrong.
-      const pruned = result.removedDocuments.length === 0
-        ? ''
-        : ` ${result.removedDocuments.length} document(s) your deletions emptied were removed `
-          + `from the copy rather than left as blank pages: `
-          + `${result.removedDocuments.map(d => d.split('/').pop()).join(', ')}.`;
-
-      // The chapter-name rule, reported when it did anything: an opener that
-      // prints "2" is in the copy as "Chapter 2: An Opportunity to Hope", and
-      // the user checking the copy should know that was deliberate.
-      const spoken = result.overriddenChapterOpenings > 0
-        ? ` ${result.overriddenChapterOpenings} chapter opening(s) are written as their stored `
-          + 'chapter names, each on a single line.'
-        : '';
-
-      // The whole accounting — provenance, pruned documents, spoken openings,
-      // whatever the cut could not strike — goes to the log. It is a set of
-      // statistics about a file that now exists, and the user asked for the
-      // file, not the statistics.
-      console.log(
-        `[exportNarrationEpub] ${result.relPath} — ${result.removedElements} of `
-        + `${result.totalElements} element(s) left out${provenance}, `
-        + `${result.removedSupMarkers} footnote marker(s) stripped.${spoken}${pruned}`
-        + (unresolved.length > 0 ? ` ${unresolved.join(' ')}` : ''),
-      );
-
-      // Three sentences: what was made, what was not touched, where to use it.
-      this.pushSessionNotice(
-        `${result.relPath} was written — ${result.removedElements} of ${result.totalElements} `
-        + 'element(s) left out. The book itself is unchanged. The Process tab\'s narration step '
-        + 'will offer this file.',
-      );
-    } catch (err) {
-      this.showAlert({
-        title: 'Could not write the TTS copy',
-        message: err instanceof Error ? err.message : String(err),
-        type: 'error',
-      });
-    } finally {
-      this.loading.set(false);
-    }
-  }
+  //
+  // `exportTtsCopy()` lived here — writing the TTS copy (the book minus what
+  // is struck out of it) from the picker's own bottom-right primary action.
+  // Owen, 2026-08-10, verbatim: "we dont do tts configuration from there. we
+  // do it from the main window." The act moved to the versions window's own
+  // Export TTS copy button, which calls `electronService.exportNarrationEpub`
+  // directly against ITS OWN state rather than the picker's live view —
+  // it has no on-screen book to read strikes off, so it cannot reuse this
+  // method verbatim. Everything this method read to build its report
+  // (`narrationEdits`, `workingChainId()`, `refreshNarrationState()`) stays —
+  // those back the narration STRIKE editing this window keeps.
 
   /**
    * The book on screen as a VIEWER-AGNOSTIC book — the boundary the strike
@@ -10637,13 +10449,19 @@ export class PdfPickerComponent implements OnInit {
     if (this.surfacedNarrationDivergence === sentence) return;
     this.surfacedNarrationDivergence = sentence;
     // A banner rather than a modal: nothing the user just did was stopped, and
-    // the act this actually protects — the export — refuses on its own with its
-    // own box. Blocking here would put a dismiss-first wall in front of every
-    // gesture that follows the bug.
+    // this is a bug tripwire — the strike machinery's own view and the record
+    // it wrote have come apart, which should never happen. Blocking here would
+    // put a dismiss-first wall in front of every gesture that follows the bug.
+    // (This used to also promise "export will refuse until they agree" — true
+    // while `exportTtsCopy` lived in this window and re-checked the same two
+    // sides; the export itself moved to the versions window on 2026-08-10 and
+    // has no on-screen view to compare against, so that half of the promise is
+    // gone. The record-vs-record checks main makes on export — `narration:export`,
+    // `strikeInNarrationCopy` — are unaffected; this banner is about THIS
+    // window's live view specifically.)
     this.pushSessionNotice(
-      'What is on screen and what is recorded have come apart, and the narration copy is cut from '
-      + 'the record. Re-open the book to put the record back on screen; export will refuse until '
-      + 'they agree.',
+      'What is on screen and what is recorded have come apart. Re-open the book to put the record '
+      + 'back on screen.',
     );
   }
 
@@ -10655,73 +10473,16 @@ export class PdfPickerComponent implements OnInit {
    */
   private surfacedNarrationDivergence: string | null = null;
 
-  /**
-   * Why this window must NOT export a narration copy right now, or null.
-   *
-   * Three questions, asked of the live view against the record main last gave
-   * this window, at the one moment it decides what a file contains:
-   *
-   *  1. Is anything struck through on screen that the record does not have?
-   *     That is a deletion that would not happen.
-   *  2. Is anything in the record that is not struck through on screen? That is
-   *     a deletion the user cannot see and did not ask for. Only asked once the
-   *     book is fully laid out, for the reason in `assertNarrationViewMatchesRecord`.
-   *  3. Did anything the user deleted reach no markup at all? Then the copy
-   *     cannot leave it out, and main will refuse too — but this window can say
-   *     it with the page and the words on it, which main cannot.
-   */
-  private narrationExportDivergence(): string | null {
-    if (!this.canStrikeForNarration()) return null;
-    // The record AS THIS WINDOW ACTS ON IT — mismatched strikes excluded, the
-    // same set `rebuildNarrationView` paints. Comparing the view against the
-    // whole record would report every mismatched strike as "recorded and not on
-    // screen", which is true and useless: they are off screen deliberately, and
-    // the warning on open already named them one by one.
-    const record = this.narrationRecordElements();
-    const laid = this.narrationLaidOutBlocks();
-    if (laid.length === 0) return null;
-
-    const view = deriveNarrationStrikes(laid, this.narrationStruckBlockIds(), this.deletedPages());
-
-    const unstruck = describeUnstruckDeletions(view);
-    if (unstruck !== null) {
-      return (
-        'The narration copy was not written, because some of what you deleted could not be matched '
-        + `to the book's markup.\n\n${unstruck}\n\nStrike the whole page or the whole document `
-        + 'those blocks are in — a document is removed by name, so everything in it goes whether or '
-        + 'not each piece could be identified — or restore them, and export again.'
-      );
-    }
-
-    const diff = narrationDeletionEdit(
-      this.expandDocDeletionKeys(record ?? [], laid),
-      this.expandDocDeletionKeys(view.elements, laid));
-    const onScreenOnly = diff.strike;
-    const recordedOnly = this.pagesLoaded() >= this.totalPages() ? diff.unstrike : [];
-    if (onScreenOnly.length === 0 && recordedOnly.length === 0) return null;
-
-    const SHOWN = 5;
-    const list = (keys: readonly string[]): string =>
-      keys.slice(0, SHOWN).map(k => `  • ${this.narrationElementLabel(k)}`).join('\n')
-      + (keys.length > SHOWN ? `\n  • …and ${keys.length - SHOWN} more` : '');
-
-    const parts: string[] = [];
-    if (onScreenOnly.length > 0) {
-      parts.push(
-        `${onScreenOnly.length} element(s) are struck through on this page and are NOT in the `
-        + `record the copy is cut from, so they would be read aloud:\n${list(onScreenOnly)}`);
-    }
-    if (recordedOnly.length > 0) {
-      parts.push(
-        `${recordedOnly.length} element(s) are in the record and are NOT struck through on this `
-        + `page, so they would be left out without your having asked:\n${list(recordedOnly)}`);
-    }
-    return (
-      'The narration copy was not written, because what is on screen and what is recorded do not '
-      + `agree.\n\n${parts.join('\n\n')}\n\nNothing was written. Re-open the book — the record is `
-      + 'what it will be cut from, and re-opening puts exactly that on screen.'
-    );
-  }
+  // `narrationExportDivergence()` lived here — three questions asked of the
+  // live view against the record, at the moment `exportTtsCopy` decided what
+  // a file would contain, refusing the export outright if screen and record
+  // disagreed. Retired with `exportTtsCopy` itself (2026-08-10): the versions
+  // window that now owns the export has no on-screen view of this project's
+  // book to compare against, so there is no divergence for it to ask about —
+  // it cuts straight from the record, the same thing every export always cut
+  // from. `assertNarrationViewMatchesRecord` above is a DIFFERENT check (a
+  // standing tripwire on this window's own strike editing, not an export
+  // gate) and is unaffected — see its own comment.
 
   /**
    * A gesture that means "everywhere in this book" is REFUSED while the book is

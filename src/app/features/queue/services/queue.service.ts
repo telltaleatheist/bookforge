@@ -1864,9 +1864,49 @@ export class QueueService {
       return [...jobs, job];
     });
 
-    // Don't auto-start - user must manually start the queue
+    // Don't auto-start - user must manually start the queue.
+    //
+    // ── Except a row that ATTACHES, which is not waiting for a turn ──────────
+    //
+    // The Start button governs work the queue would BEGIN: a GPU is about to be
+    // taken, and the user says when. An attaching row begins nothing. The
+    // conversion it names is already running — already holding the card, already
+    // reading pages — and the row is only where its progress is watched. Leaving
+    // it pending does not defer a cost; it hides a run that is happening anyway.
+    //
+    // Owen, 2026-08-10: "it went to the queue but it wasnt started, even though
+    // memory pressure went up. i hit start." Pressing Start on such a row is the
+    // user being made to authorise something that needed no authorisation, and —
+    // before the flag was carried onto the row at all — was how a SECOND
+    // conversion got ordered.
+    const built = job.config as Partial<VlmConvertJobConfig> | undefined;
+    if (job.type === 'vlm-convert' && built?.attachToRunning === true) {
+      this.followAttachedRows(`row ${job.id} was added attaching to the conversion of `
+        + `${built.sourceLabel} already in flight`);
+    }
 
     return job;
+  }
+
+  /**
+   * Make sure the queue is processing, because a row is now waiting to FOLLOW a
+   * run that is already happening.
+   *
+   * The one implementation of the "revive" half of attaching, shared by the two
+   * ways a row comes to be attached: enqueued from a conversion in flight
+   * (`sendToQueue` → `addJob`), and re-attached on load to a stage main reports
+   * as still running (`reattachDocumentStages`). Both need exactly this and
+   * nothing more — a runner has to claim the row for it to re-subscribe to
+   * `document:stage-progress`, and `processNext` is what claims pending rows.
+   *
+   * Written once because the two paths disagreeing is precisely the class of bug
+   * this pair has already produced: attach worked on reload and not on enqueue
+   * for a whole release, because only one of them did the whole job.
+   */
+  private followAttachedRows(because: string): void {
+    console.log(`[QUEUE] Processing so an attached row can follow its run: ${because}.`);
+    this._isRunning.set(true);
+    void this.processNext();
   }
 
   /**
@@ -4996,10 +5036,11 @@ export class QueueService {
     }
 
     // A conversion is in flight and a row is now waiting to follow it, so the
-    // queue has to be running for its runner to claim it.
+    // queue has to be running for its runner to claim it. Same treatment an
+    // enqueued attaching row gets, from the same place — see `followAttachedRows`.
     if (stages.length > 0) {
-      this._isRunning.set(true);
-      void this.processNext();
+      this.followAttachedRows(`${stages.length} document stage(s) were still running when the app `
+        + 'reloaded');
     }
   }
 

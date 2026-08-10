@@ -581,6 +581,25 @@ const AUDIO_EXTS = new Set([
                     <button class="act" (click)="openPassesModal()"
                             title="Have something done to this book — the passes run in the queue">Process</button>
                   }
+                  <!-- Cutting the narration copy, from the versions window. Owen,
+                       2026-08-10: "lets also make it so they can generate a tts
+                       file from the versions window, with a button, instead of
+                       only doing it from inside the pdf picker" — and, closing
+                       the move, "we dont do tts configuration from there. we do
+                       it from the main window."
+
+                       Same main door the picker used (narration:export), so
+                       the strikes recorded for THIS chain are honoured by
+                       construction rather than by two implementations agreeing.
+                       It reports through the banner, never a modal: nothing is
+                       being asked, and the book is not touched. -->
+                  @if (row.line.buttons.ttsExport) {
+                    <button class="act" [disabled]="cuttingNarration() !== null"
+                            [title]="ttsExportTitle(row)"
+                            (click)="exportTtsCopyForLine(row)">
+                      {{ cuttingNarration() === row.line.familyId ? 'Cutting…' : 'Export TTS copy' }}
+                    </button>
+                  }
                   @if (row.line.buttons.process) {
                     <button class="act" [disabled]="narrationRefusalForLine(row) !== null"
                             [title]="narrationTitleForLine(row)" (click)="processLine(row)">Process</button>
@@ -2143,6 +2162,93 @@ export class StudioVersionsComponent {
     // because "which file" and "which version's chain of records it belongs to"
     // are two facts and the run needs both.
     this.narrationFile.set({ path, familyId });
+  }
+
+  // ── Cutting the narration copy ─────────────────────────────────────────────
+
+  /**
+   * The chain whose narration copy is being cut right now, or null.
+   *
+   * The CHAIN rather than a boolean, so a project holding two versions disables
+   * only the button that was pressed and says "Cutting…" on that one. A shared
+   * boolean would grey out the other version's button for work that has nothing
+   * to do with it — the same ambiguity the per-chain buttons exist to remove.
+   */
+  readonly cuttingNarration = signal<string | null>(null);
+
+  /** What Export TTS copy promises, named on the chain it would cut. */
+  ttsExportTitle(row: ChainRowView): string {
+    if (this.cuttingNarration() !== null) return 'A narration copy is being cut right now.';
+    return 'Cut the copy narration reads from this book — everything you struck out is left out of '
+      + 'it. The book itself is never rewritten.';
+  }
+
+  /**
+   * Cut this chain's narration copy from its book.
+   *
+   * ── One act, two doors, one implementation (Owen, 2026-08-10) ──────────────
+   *
+   * "lets also make it so they can generate a tts file from the versions window,
+   * with a button, instead of only doing it from inside the pdf picker." The
+   * picker's own button is gone with the rest of its TTS hand-off — TTS is the
+   * main window's now — and this reaches the SAME main handler it used
+   * (`narration:export`, electron/narration-export.ts). That is what makes "it
+   * respects the strikes recorded for this chain" a fact rather than a promise:
+   * there is no second implementation to drift from the first.
+   *
+   * The chain travels with the press, from the line the user pressed, exactly as
+   * Process does. A project with several versions has several of these buttons
+   * and each cuts its own book; nothing here looks up "the project's book".
+   *
+   * Reported by BANNER. Nothing is asked and nothing is destroyed — the copy is
+   * a second file beside the book, and the book is not rewritten — so a modal
+   * would be a popup for a background fact, which the popup policy forbids. A
+   * FAILURE is a different matter and gets main's own sentence, because a user
+   * who pressed a button and got nothing is owed the reason.
+   */
+  async exportTtsCopyForLine(row: ChainRowView): Promise<void> {
+    const dir = this.projectDir();
+    const familyId = this.familyOfLine(row, 'Export TTS copy');
+    if (!dir || familyId === null) {
+      if (!dir) {
+        console.error('[studio-versions] Export TTS copy was pressed with no project open.');
+      }
+      return;
+    }
+    if (this.cuttingNarration() !== null) return;
+
+    this.cuttingNarration.set(familyId);
+    try {
+      // `stripSupMarkers: false` explicitly, never absent. Footnote reference
+      // numbers are taken out by the footnote PASS now, run from this same
+      // window, so the cut takes the book as it stands — and the record it
+      // writes has to SAY that was the choice. An absent option would be
+      // recorded as unanswered, which is the state a later re-cut refuses by
+      // name (`strikeInNarrationCopy`).
+      const answer = await this.electron.exportNarrationEpub(dir, { stripSupMarkers: false }, familyId);
+      if (!answer.success || !answer.result) {
+        throw new Error(answer.error
+          || 'The narration copy was not cut and main gave no reason.');
+      }
+      const { relPath, removedElements, totalElements, removedDocuments } = answer.result;
+      this.notices.notify(
+        `${relPath} is cut — ${removedElements} of ${totalElements} block(s) left out`
+        + (removedDocuments.length > 0
+          ? `, and ${removedDocuments.length} chapter(s) emptied entirely (`
+            + `${removedDocuments.join(', ')})`
+          : '')
+        + '. The book itself is unchanged. Press Process on the narration line to narrate it.');
+      await this.load();
+      this.changed.emit();
+    } catch (err) {
+      await this.electron.showMessageDialog({
+        title: 'The narration copy was not cut',
+        message: (err as Error).message,
+        type: 'error',
+      });
+    } finally {
+      this.cuttingNarration.set(null);
+    }
   }
 
   // ── Narration, configured here and queued from here ────────────────────────

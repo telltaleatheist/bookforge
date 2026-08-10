@@ -32,6 +32,7 @@ const SUITES = [
   'test-processing-chain',
   'test-job-timing',
   'test-vlm-convert-plan',
+  'test-vlm-convert-attach',
   'test-picker-session-state',
 ];
 

@@ -73,6 +73,7 @@ import { getDefaultE2aPath } from './e2a-paths';
 import { resolveDocumentProject } from './document-project';
 import { primaryAbsPath, workingAbsPath, type DocumentProject } from './document-stages';
 import { readWorkingDocumentState } from './working-document';
+import { markStageIntent } from './document-stage-registry';
 import { withProjectStage } from './document-stage-run';
 import { moveIntoPlace } from './processing-passes';
 import { sha256File } from './sidecar-binding';
@@ -647,6 +648,32 @@ export async function planVlmConversion(request: VlmConvertRequest): Promise<Vlm
  * branch below, which says what it deliberately leaves alone and why.
  */
 export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmConvertResult> {
+  // ── This book has a conversion from HERE, not from the claim ──────────────
+  //
+  // Said before anything is planned, resolved or loaded, and released only when
+  // the whole run has unwound. Between this line and `withProjectStage` below
+  // sits the plan, `ensureFoundryPath`, the GPU arbiter and ~44 s of model load
+  // — a minute in which the stage registry used to report this project as idle
+  // while the user watched memory fill up.
+  //
+  // Owen, 2026-08-10, pressing Send to queue during exactly that window: "it went
+  // to the queue but it wasnt started, even though memory pressure went up." The
+  // row he made had to be able to find the run it was made from, and until this
+  // existed there was nothing in main to find.
+  //
+  // It is an INTENT, not a claim — `beginStage` still refuses only what it always
+  // refused, so nothing about concurrent stages changes. Registered on
+  // `request.projectDir` rather than on the resolved `project.projectDir`
+  // because that is the spelling the window asking about this run holds, and the
+  // resolution that would produce the other one has not happened yet.
+  const releaseIntent = markStageIntent(request.projectDir, VLM_CONVERT_STAGE);
+  try {
+    return await convert();
+  } finally {
+    releaseIntent();
+  }
+
+  async function convert(): Promise<VlmConvertResult> {
   // Every decision this run makes before it spawns anything, made once, in the
   // order the comments in `planVlmConversion` argue for. Nothing below re-derives
   // any of it — which is what lets `--dry-run` report a plan that IS this run's.
@@ -970,6 +997,7 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     unreadable,
     skippedPages,
   };
+  }
   }
 }
 

@@ -2291,11 +2291,24 @@ export class ElectronService {
    * What a window asks main after a reload: the stage kept running (main owns
    * it) but every `document:stage-progress` broadcast sent meanwhile is gone, so
    * a row that only listens sits frozen until the next page turns.
+   *
+   * It is also the one question that can say whether a book is ALREADY being
+   * converted, which is what decides whether "Send to queue" makes a row that
+   * follows a run or a row that starts one — see `BookConversionService`.
+   *
+   * A listed stage may be ORDERED rather than CLAIMED (`claimed: false`): a
+   * conversion waits on the GPU arbiter and a model load before it takes its
+   * project's stage lock, and for that minute it is unmistakably running without
+   * holding anything. Callers deciding "would starting a second run be refused"
+   * want CLAIMED; callers deciding "is something already happening to this book"
+   * — which is nearly all of them — want either.
    */
   async documentActiveStages(): Promise<Array<{
     projectDir: string;
     label: string;
     startedAt: number;
+    /** False while the run is still being set up and has not claimed the project. */
+    claimed: boolean;
     lastProgress: {
       stage: string; message: string; done: number; total: number;
       render?: { done: number; total: number }; at: number;

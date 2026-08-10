@@ -64,7 +64,116 @@ export interface StageProgressLine {
   at: number;
 }
 
+/**
+ * A stage that has been ORDERED and has not claimed its project yet.
+ *
+ * ── Why there is a second, weaker state (Owen, 2026-08-10) ──────────────────
+ *
+ * A conversion does not claim its project the moment it is asked for.
+ * `runVlmConversion` waits on the GPU arbiter — possibly behind a TTS job — and
+ * then on roughly 44 seconds of vLLM model load BEFORE `withProjectStage` calls
+ * `beginStage`, and that ordering is deliberate: holding a project's stage lock
+ * through a wait for a run that has not begun would refuse every other stage on
+ * that book for a minute at a time.
+ *
+ * The cost of that ordering was a blind spot. For the whole of the load window
+ * this registry said the project had nothing running, while a conversion was
+ * plainly burning memory and about to claim it. Two things asked exactly the
+ * wrong question in exactly that window:
+ *
+ *  - a queue row sent to attach to the running conversion asked "is the stage
+ *    still there?", was told no, and reported a ninety-minute conversion
+ *    COMPLETE seconds after being enqueued;
+ *  - a window that reloaded during the load was told the run had died and failed
+ *    its own row saying so.
+ *
+ * So an intent is recorded from the moment the run is ordered. It is deliberately
+ * NOT a claim: `beginStage` ignores it entirely, so two stages behave exactly as
+ * they did before and the lock still opens only where it always did. What it
+ * changes is what the process can HONESTLY ANSWER about a book — "something is
+ * working on this" is true from the order, not from the claim.
+ *
+ * It carries no AbortController, and that is a statement rather than an omission:
+ * there is nothing to abort yet. Cancelling reaches a run through the claim, as
+ * it always has, and a run cancelled during its load is stopped by the abort the
+ * claim installs a moment later.
+ *
+ * ── What deliberately does NOT consult it, and what that leaves open ─────────
+ *
+ * `beginStage`, `stageRunningFor` and `abortAllStages` all read `active` only.
+ * The first two are about the LOCK — may a second writer start, and who is
+ * refusing it — and an intent holds nothing, so answering from it would refuse
+ * stages this process has always allowed. The third has nothing to abort.
+ *
+ * That leaves one thing open, named here rather than quietly: RESET during the
+ * load window. `stageRunningFor` is how a reset refuses while a stage is in
+ * flight, and the hazard it guards — foundry's staged temp landing after the
+ * reset and restoring the document the user asked to be gone — is just as real
+ * for a run that is still loading its model as for one that has claimed. Closing
+ * it means teaching that refusal about intents, which changes when Reset says no
+ * and is a decision about Reset rather than about this registry. It is not
+ * closed here.
+ */
+export interface StageIntent {
+  projectDir: string;
+  /** The stage's user-facing name — the same one the claim will carry. */
+  label: string;
+  /** When the run was ORDERED, which is what an attaching row's clock means. */
+  startedAt: number;
+}
+
 const active = new Map<string, ActiveStage>();
+
+/**
+ * Several, per project, because two conversions of one book CAN both be in
+ * their load window at once — the second is refused when it reaches the claim,
+ * not before. A map holding one would lose the first the moment the second
+ * arrived and hand the project to nobody when the second was refused.
+ */
+const intents = new Map<string, StageIntent[]>();
+
+/**
+ * Say that a stage has been ordered for this project, and hand back the release.
+ *
+ * The caller must run the release in a `finally` that covers the CLAIM as well:
+ * the intent stands from the order right through the run, so nothing ever sees a
+ * gap between "ordered" ending and "claimed" beginning.
+ */
+export function markStageIntent(projectDir: string, label: string): () => void {
+  const intent: StageIntent = { projectDir, label, startedAt: Date.now() };
+  const held = intents.get(projectDir);
+  if (held) held.push(intent);
+  else intents.set(projectDir, [intent]);
+  return () => {
+    const list = intents.get(projectDir);
+    if (!list) return;
+    // Removed BY IDENTITY, never by index or by project: two orders on one book
+    // are two entries, and releasing "the first one" would drop an intent whose
+    // run is still loading.
+    const at = list.indexOf(intent);
+    if (at >= 0) list.splice(at, 1);
+    if (list.length === 0) intents.delete(projectDir);
+  };
+}
+
+/**
+ * Every stage ORDERED and not yet claimed, for the projects where nothing holds
+ * the claim.
+ *
+ * A project whose claim is held is reported by `activeStages` and is not
+ * repeated here — one project, one answer, so a caller matching on project
+ * directory cannot find two entries describing one run.
+ */
+export function unclaimedStageIntents(): StageIntent[] {
+  const out: StageIntent[] = [];
+  for (const [projectDir, list] of intents) {
+    if (active.has(projectDir)) continue;
+    // The OLDEST — the order that is furthest along and the one whose clock the
+    // user has been watching.
+    if (list.length > 0) out.push(list[0]);
+  }
+  return out;
+}
 
 /**
  * Claim a project for a stage, or refuse because something else holds it.
