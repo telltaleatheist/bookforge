@@ -7232,6 +7232,19 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
+    // With the BOOK the category is a fact about the book, so it goes INTO the
+    // book — the same rule the working document follows one line above, said for
+    // the other artifact. It used to go into `categoryCorrections` instead,
+    // which made it a fact about this window: the book kept saying what it
+    // always said, and the naming pass, the Chapter tab's own derivation, the
+    // narration cut and every exporter went on reading the book (Owen,
+    // 2026-08-10: "it apparently didnt actually change it to chapter, just
+    // visually?"). See electron/book-categories.ts.
+    if (this.viewingWorkingEpub()) {
+      void this.setBookBlockCategories(event.blockIds, event.categoryId);
+      return;
+    }
+
     if (event.blockIds.length === 1) {
       this.editorState.setCategoryCorrection(event.blockIds[0], event.categoryId);
     } else {
@@ -14188,6 +14201,139 @@ export class PdfPickerComponent implements OnInit {
           + 'again before making the audiobook, or it will announce the old chapter title.',
         type: 'warning',
       });
+    }
+  }
+
+  /**
+   * Say, in the book itself, what these blocks ARE.
+   *
+   * The category palette's write for a book, and the counterpart of
+   * `documentBlocks.relabel` for a working PDF: one artifact, one authority,
+   * and the window's job is only to make the view agree with it afterwards.
+   *
+   * The blocks are addressed by their SOURCE ELEMENT (`bf_element`,
+   * `<zip entry>#<index>`) — the same identity a chapter rename and a narration
+   * strike use. SEVERAL BLOCKS MAY SHARE ONE, and that is the truth rather than
+   * a collision: the paginator splits one authored paragraph across a page turn,
+   * so all its fragments came from the one element and the one relabel is what
+   * they all get. The keys are therefore deduplicated, and every block that
+   * shares a key is repainted when its element is written.
+   *
+   * The book is the store, so nothing is saved on this side — there is no
+   * correction to write and nothing to reconcile on the next open, which is what
+   * makes the relabel survive closing the window.
+   */
+  private async setBookBlockCategories(blockIds: string[], categoryId: string): Promise<void> {
+    const dir = this.projectPath();
+    if (!dir) {
+      this.showAlert({
+        title: 'This book is not in a project',
+        message: 'A block\'s category is written into the project\'s book EPUB, and this document '
+          + 'does not belong to a project. Import it from Studio first.',
+        type: 'warning',
+      });
+      return;
+    }
+
+    // Element key → the blocks laid out from it, so one write repaints them all.
+    const byElement = new Map<string, string[]>();
+    const untraceable: string[] = [];
+    for (const id of blockIds) {
+      const block = this.blocks().find(b => b.id === id);
+      if (block === undefined) continue;  // gone from the screen since the click
+      const element = block.bf_element;
+      if (element === undefined) { untraceable.push(id); continue; }
+      const sharing = byElement.get(element);
+      if (sharing === undefined) byElement.set(element, [id]); else sharing.push(id);
+    }
+
+    if (untraceable.length > 0) {
+      this.showAlert({
+        title: untraceable.length === 1
+          ? 'That block could not be traced back to the book'
+          : `${untraceable.length} blocks could not be traced back to the book`,
+        message: 'A category is written into the book\'s own markup, and these blocks were not '
+          + 'matched to the elements they were laid out from — so there is nothing to write it '
+          + 'onto. The warnings shown when this book opened name every block in that state.',
+        type: 'warning',
+      });
+      if (byElement.size === 0) return;
+    }
+
+    const repaint: string[] = [];
+    let openingsNamed = 0;
+    let openingUnnamed: string | null = null;
+    let refusal: string | null = null;
+
+    for (const [element, sharing] of byElement) {
+      const answer = await this.electronService.setBookBlockCategory(
+        dir, element, categoryId, this.workingChainId());
+      if (!answer.success || !answer.result) {
+        // Main's own sentence, verbatim: it names the element, the category or
+        // the project that was missing. The first one stops the run — the rest
+        // would fail the same way, and a stack of identical alerts helps nobody.
+        refusal = answer.error === undefined
+          ? 'The relabel came back without a result and without a reason, which is a fault in '
+            + 'BookForge rather than anything about this book. Nothing was written.'
+          : answer.error;
+        break;
+      }
+      repaint.push(...sharing);
+      openingsNamed += answer.openingsNamed ?? 0;
+      if (openingUnnamed === null && typeof answer.openingUnnamed === 'string') {
+        openingUnnamed = answer.openingUnnamed;
+      }
+    }
+
+    // The view follows the file, for everything that landed — including when a
+    // later element was refused, because the earlier writes are in the book.
+    this.editorState.setBookCategories(repaint, categoryId);
+
+    if (repaint.length > 0) {
+      // Re-read the book: it has new bytes, so the narration record main
+      // re-stamped and the chapter titles the tab shows are both asked again.
+      await this.refreshBookEpub();
+    }
+
+    if (refusal !== null) {
+      this.showAlert({ title: 'That block was not relabelled', message: refusal, type: 'error' });
+    }
+
+    // ── The promotion whose page did not follow ────────────────────────────
+    //
+    // A chapter's opening prints its chapter's stored name, and promoting a
+    // block to `chapter` makes it that opening — so main runs the same naming
+    // pass a project's open runs. When it declines this one chapter it says
+    // exactly why, and that sentence is owed here, where the relabel was asked
+    // for (shared/document/chapter-opening-report.ts).
+    //
+    // Said BEFORE the re-open below, which closes the document and would
+    // otherwise take the reason with it.
+    if (openingUnnamed !== null) {
+      this.showAlert({
+        title: 'The page still prints what it printed',
+        message: 'This block is now a chapter opening in the book, and the heading on the page was '
+          + `not rewritten to say the chapter's name. ${openingUnnamed}`,
+        type: 'warning',
+      });
+    }
+
+    // The naming pass rewrote a heading, so the markup this window laid out no
+    // longer exists and only a real re-open ends with the two agreeing — the
+    // same move a rename makes, and then back to the page the user was on.
+    if (openingsNamed > 0) {
+      const docId = this.activeDocumentId();
+      const doc = docId === null ? undefined : this.openDocuments().find(d => d.id === docId);
+      const first = this.blocks().find(b => b.id === repaint[0]);
+      if (doc !== undefined && first !== undefined) {
+        const target = doc.projectPath ?? doc.libraryPath;
+        const page = first.page;
+        queueMicrotask(async () => {
+          this.closeDocument(docId!);
+          await this.openTarget(target, 'restoring');
+          this.scrollBackAfterReopen(page);
+        });
+      }
     }
   }
 

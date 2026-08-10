@@ -1579,6 +1579,48 @@ export class PdfEditorStateService {
     this.updateCategoryStats();
   }
 
+  /**
+   * Paint what the BOOK now says these blocks are.
+   *
+   * NOT a correction, and deliberately not one. `categoryCorrections` is a
+   * record this window keeps ABOUT a working document — it is what saves as
+   * labels.json for the OCR corpus — and for a book it was the wrong home
+   * entirely: the book itself is where a category lives now, written into the
+   * markup by `book:set-block-category`, so the correction map would be a second
+   * record of a fact the file already states (Owen, 2026-08-10: "it apparently
+   * didnt actually change it to chapter, just visually?").
+   *
+   * So this writes no correction, pushes no history and marks nothing changed.
+   * The edit has already landed in the book and is recorded there
+   * (`outputs.epub.bookEdits`); all that is left is for the view to agree with
+   * the file, which is the same shape `DocumentBlocksService.relabel` uses for a
+   * working PDF — apply locally, and let the authority correct the view if the
+   * write is refused.
+   */
+  setBookCategories(blockIds: readonly string[], categoryId: string): void {
+    const targets = new Set(blockIds);
+    if (targets.size === 0) return;
+    this.blocks.update(blocks =>
+      blocks.map(b => targets.has(b.id) ? { ...b, category_id: categoryId } : b)
+    );
+
+    // Any correction this window still holds about these blocks is now a SECOND
+    // record of a fact the book states, and the two could only disagree — a
+    // correction saved by an older build would repaint the block over the book's
+    // own answer on the next open. So it is dropped as the book takes over.
+    const stale = [...targets].filter(id => this.categoryCorrections().has(id));
+    if (stale.length > 0) {
+      this.categoryCorrections.update(map => {
+        const next = new Map(map);
+        for (const id of stale) next.delete(id);
+        return next;
+      });
+      this.markChanged();
+    }
+
+    this.updateCategoryStats();
+  }
+
   clearCategoryCorrection(blockId: string): void {
     if (!this.categoryCorrections().has(blockId)) return;
     const before = [...this.categoryCorrections().entries()] as [string, string][];

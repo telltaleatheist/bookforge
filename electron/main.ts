@@ -7895,6 +7895,92 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * Say what one element of the book IS — the picker's category palette, for a
+   * book.
+   *
+   * The second gesture that edits the working copy's own markup, and it exists
+   * because the first version of it did not. A relabel used to be recorded on
+   * the picker's side only, so the book still said what it always said and every
+   * derivation that reads the book — the naming pass most of all — kept
+   * answering out of the original markup (Owen, 2026-08-10: "it apparently didnt
+   * actually change it to chapter, just visually?"). It is allowed to edit the
+   * book for the same reason the fold is: the manifest records what the element
+   * was and what it is now (`outputs.epub.bookEdits`), and the archive original
+   * is never opened. See electron/book-categories.ts.
+   *
+   * ORDER matters and is why this is not two handlers, exactly as with
+   * `book:rename-chapter`. The relabel re-stamps the narration strike record
+   * onto its own new bytes; the naming pass may then change those bytes again
+   * and re-stamp again. Run the other way round — or concurrently — one would
+   * read a stamp the other had already moved and refuse.
+   *
+   * THE NAMING PASS RUNS AFTER, and that is the point of a promotion. Naming a
+   * chapter's opening is a normalization the project's open already performs
+   * over every chapter (`nameChapterOpenings`); promoting a block to `chapter`
+   * makes a new element the opening of its document, so the same rule has to run
+   * again over the book that changed — with no relabel-specific logic at all.
+   * Its refusal is caught rather than reported as a relabel failure, because by
+   * then the relabel has landed and saying otherwise would be a lie about the
+   * file on disk.
+   *
+   * `openingUnnamed` is said ONLY for a promotion to `chapter`, and only when
+   * the page did not follow. For a demotion, "this document marks no chapter
+   * opening" is precisely what the user just asked for, and saying it back to
+   * them would be noise.
+   */
+  ipcMain.handle('book:set-block-category', async (
+    _event, projectDir: string, elementKey: string, categoryId: string,
+    familyId?: string) => {
+    try {
+      const { setBookBlockCategory } = await import('./book-categories.js');
+      const result = await setBookBlockCategory(projectDir, elementKey, categoryId, familyId);
+
+      if (!result.written) {
+        // The book already said it. No bytes moved, so there is nothing for the
+        // naming pass to find that it would not have found before, and nothing
+        // for any window to re-read.
+        return { success: true, result, openingsNamed: 0, openingUnnamed: null };
+      }
+
+      let openingsNamed = 0;
+      let openingUnnamed: string | null = null;
+      try {
+        const { nameChapterOpenings } = await import('./narration-export.js');
+        const summary = await nameChapterOpenings(projectDir, familyId);
+        openingsNamed = summary.edited;
+        if (categoryId === 'chapter') {
+          // A document the table of contents does not name has no stored name to
+          // print, and the pass therefore never reaches it — which
+          // `chapterOpeningRefusal` would report as a pass that fell short. It
+          // did not; the book simply does not call this document a chapter, and
+          // that is the sentence the user is owed.
+          const { readBookChapterTitles } = await import('./book-chapters.js');
+          const titles = await readBookChapterTitles(projectDir, familyId);
+          const row = titles?.chapters.find((c) => c.file === result.file);
+          openingUnnamed = row === undefined || row.navTitle.trim().length === 0
+            ? `${result.file} is not listed under a name in this book's table of contents, so `
+              + 'there is no stored name for its opening to print. Rename the chapter to give it '
+              + 'one.'
+            : chapterOpeningRefusal(summary, result.file);
+        }
+      } catch (err) {
+        broadcastToAllWindows('project:files-changed', projectDir);
+        return {
+          success: false,
+          error:
+            `That block is now a ${categoryId} in the book, but the pass that writes each `
+            + `chapter's name into its opening could not run afterwards: ${(err as Error).message}`,
+        };
+      }
+
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return { success: true, result, openingsNamed, openingUnnamed };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ── Foundry CLI ─────────────────────────────────────────────────────────
   // The standalone binary this app's page-layout model, OCR-repair contract and
   // footnote-marker remover were extracted into (github.com/telltaleatheist/

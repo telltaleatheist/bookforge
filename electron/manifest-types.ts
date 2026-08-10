@@ -647,11 +647,51 @@ export interface NameChapterOpenersEdit {
 }
 
 /**
+ * A RELABEL: one element of the book now states a different category, because a
+ * person looking at the page said so.
+ *
+ * The picker's category palette, for a book. It writes `data-bf-user-cat` onto
+ * the one element (electron/epub-processor.ts, `USER_CATEGORY_ATTR`), which is
+ * what makes the correction visible to every derivation that reads the book —
+ * the naming pass above all, which re-runs unattended at every project open and
+ * would otherwise keep answering out of the book's original markup.
+ *
+ * TEXT-FREE and STRUCTURE-FREE: no element is added, removed or moved and no
+ * word changes, so the narration strike record is re-stamped onto the new bytes
+ * with its keys untouched — the same claim {@link NameChapterOpenersEdit} makes.
+ *
+ * One entry per RELABELLED ELEMENT, because that is the act: a person pointed at
+ * one block and said what it is.
+ */
+export interface SetBlockCategoryEdit {
+  kind: 'set-block-category';
+  at: string;
+  /** The zip entry the element lives in. */
+  file: string;
+  /** `<zip entry>#<index>` — the position, unchanged by this edit. */
+  elementKey: string;
+  /** The element's tag, so the record names something a person can find again. */
+  tag: string;
+  /**
+   * What the book said it was, or null when the book stated nothing about it and
+   * the category on screen was the analyzer's classifier's.
+   */
+  categoryBefore: string | null;
+  /** What the book says it is now — a member of the one palette. */
+  categoryAfter: string;
+  /** Its text, whitespace collapsed and cut short. */
+  excerpt: string;
+  /** The book's sha256 before the edit and after it. */
+  fromSha256: string;
+  toSha256: string;
+}
+
+/**
  * One edit to a book's markup. A union on purpose: every edit gets its own
  * `kind` and its own before/after fields rather than a shared "details" bag
  * nothing can read.
  */
-export type BookEdit = MergeChapterOpeningEdit | NameChapterOpenersEdit;
+export type BookEdit = MergeChapterOpeningEdit | NameChapterOpenersEdit | SetBlockCategoryEdit;
 
 /**
  * What has ever been done to a book — the things that can be done to one now,
