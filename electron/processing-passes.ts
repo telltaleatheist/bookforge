@@ -39,6 +39,7 @@ import type { BrowserWindow } from 'electron';
 import * as manifestService from './manifest-service';
 import { writePassDiff, type PassDiffUnit } from './diff-cache';
 import { loadEpubForComparison } from './epub-processor';
+import { narrationCarryRefusal, type NarrationDeletionsCarry } from '../shared/vlm/narration-deletions';
 import type { AppliedPass } from './manifest-types';
 import type {
   PassJobConfig,
@@ -146,6 +147,120 @@ async function recordInLedger(
   return { ledgerEntryId: recorded.entry.id };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Carrying the narration strikes across a pass
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The verdict on the strike record, made BEFORE the book is replaced — because
+ * afterwards the book the strikes were made against does not exist any more.
+ *
+ * ── What is proved ──────────────────────────────────────────────────────────
+ *
+ * That the book the pass wrote enumerates exactly what the book it read did:
+ * same documents, same keys, same tags, element for element
+ * (`narrationCarryRefusal`). It is the SAME invariant `registerLedgerPass`
+ * checks, measured between the two ends of this pass rather than against the
+ * archive-grade base — so a pass that earns a ledger row and one that carries
+ * its strikes are, by construction, the same passes.
+ *
+ * ── What a refusal costs, which is why it is safe to be exact ───────────────
+ *
+ * Nothing is destroyed by a refusal. The record stays exactly as it is, its
+ * stamp stays pointing at the book it was made against, and every strike in it
+ * is checked against the text it remembers striking the next time it is used.
+ * So this can afford to be strict: the price of "could not prove it" is a
+ * per-strike check at use, not an evening of the user's work.
+ *
+ * ── What it costs to ask ────────────────────────────────────────────────────
+ *
+ * Two walks of the book — a parse of every spine document on each side — and
+ * only when there is a record to carry. A project with no strikes pays nothing.
+ * A simplify that took an hour pays a second; the footnote-reference pass,
+ * which is the fast one, roughly doubles its own runtime and is still seconds.
+ */
+export async function verifyNarrationCarry(
+  projectDir: string,
+  beforeAbsPath: string,
+  afterAbsPath: string,
+  familyId?: string,
+): Promise<{ outcome: 'none' } | { outcome: 'refused'; reason: string }
+  | { outcome: 'provable'; fromSha256: string }> {
+  const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
+  if (recorded === null) return { outcome: 'none' };
+
+  const fromSha256 = await manifestService.sha256OfFile(beforeAbsPath);
+  if (recorded.epubSha256 !== fromSha256) {
+    return {
+      outcome: 'refused',
+      reason: 'the strikes on file were already stamped with a different book than the one this '
+        + 'pass read, so there was nothing to carry them from.',
+    };
+  }
+
+  const { narrationDocumentShapes } = await import('./quire-stamp.js');
+  const [before, after] = await Promise.all([
+    narrationDocumentShapes(beforeAbsPath, `${path.basename(projectDir)} before the pass`),
+    narrationDocumentShapes(afterAbsPath, `${path.basename(projectDir)} after the pass`),
+  ]);
+  const refusal = narrationCarryRefusal(recorded.elements, before, after);
+  if (refusal !== null) return { outcome: 'refused', reason: refusal };
+  return { outcome: 'provable', fromSha256 };
+}
+
+/**
+ * Seal the verdict against the book that is now on disk.
+ *
+ * The proof was made about the file the pass PRODUCED; the stamp has to name
+ * the file the project CALLS its book. `replaceBookEpub` renames one onto the
+ * other, so the two are the same bytes — and this measures that rather than
+ * asserting it, because the stamp is the thing every later reader trusts. The
+ * fingerprints come off the same file, so the carried strikes describe the book
+ * they are about to name.
+ */
+async function sealNarrationCarry(
+  verdict: Awaited<ReturnType<typeof verifyNarrationCarry>>,
+  bookAbsPath: string,
+  producedSha256: string,
+): Promise<NarrationDeletionsCarry> {
+  if (verdict.outcome !== 'provable') return verdict;
+  const toSha256 = await manifestService.sha256OfFile(bookAbsPath);
+  if (toSha256 !== producedSha256) {
+    return {
+      outcome: 'refused',
+      reason: `the book on disk (${toSha256.slice(0, 12)}) is not the file this pass verified `
+        + `(${producedSha256.slice(0, 12)}), so the proof describes bytes nobody has.`,
+    };
+  }
+  const { narrationFingerprintsOfBook } = await import('./quire-stamp.js');
+  return {
+    outcome: 'carried',
+    fromSha256: verdict.fromSha256,
+    toSha256,
+    fingerprints: await narrationFingerprintsOfBook(bookAbsPath, path.basename(bookAbsPath)),
+  };
+}
+
+/**
+ * The whole carry, from the two files to the value the transaction takes.
+ *
+ * One helper so the three passes cannot drift into three orderings of it: the
+ * proof happens while both books exist, the seal happens once the new one is in
+ * place, and the value goes into the same manifest write as the pass record.
+ */
+async function carryNarrationAcrossPass(
+  config: PassJobConfig,
+  beforeAbsPath: string,
+  producedAbsPath: string,
+): Promise<{ carry: NarrationDeletionsCarry; bookAfter: string }> {
+  const verdict = await verifyNarrationCarry(config.projectDir, beforeAbsPath, producedAbsPath);
+  const producedSha256 = verdict.outcome === 'provable'
+    ? await manifestService.sha256OfFile(producedAbsPath)
+    : '';
+  const bookAfter = await replaceBookEpub(config.projectDir, producedAbsPath);
+  return { carry: await sealNarrationCarry(verdict, bookAfter, producedSha256), bookAfter };
+}
+
 function absStage(config: PassJobConfig): string {
   return path.join(config.projectDir, config.stageRelDir.split('/').join(path.sep));
 }
@@ -222,20 +337,26 @@ async function runSimplifyPass(
   const diff = diffPaths(config);
   await writePassDiff(diff.abs, pairChapters(before.chapters, after.chapters));
 
-  const bookAfter = await replaceBookEpub(config.projectDir, produced);
+  // Simplify REWRITES every paragraph and leaves the element list alone —
+  // `cleanupEpub` replaces the text inside each chapter's elements. That is a
+  // claim about a model's output, not a guarantee, which is exactly why it is
+  // proved per run rather than trusted: a simplify that restructured the book
+  // fails this check and fails `registerLedgerPass`'s for the same reason.
+  const { carry, bookAfter } = await carryNarrationAcrossPass(config, bookPath, produced);
   const applied: AppliedPass = {
     kind: 'simplify',
     at: new Date().toISOString(),
     params: { mode: params.mode, provider: params.aiProvider, model: params.aiModel },
     diff: diff.rel,
   };
-  await manifestService.appendAppliedPass(config.projectDir, applied);
+  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry);
   const ledger = await recordInLedger(config, 'Simplify', applied);
   return {
     success: true,
     outputPath: bookAfter,
     ...(ledger.ledgerEntryId ? { ledgerEntryId: ledger.ledgerEntryId } : {}),
     ...(ledger.note ? { ledgerRefusal: ledger.note } : {}),
+    ...(recorded.narrationNote ? { narrationCarryNote: recorded.narrationNote } : {}),
   };
 }
 
@@ -280,7 +401,13 @@ async function runTranslatePass(
     return { success: false, error: result.error || 'Translation produced no EPUB and gave no reason.' };
   }
 
-  const bookAfter = await replaceBookEpub(config.projectDir, result.outputPath);
+  // Translation replaces the WORDS of every element and keeps the elements: the
+  // mono translator walks the book chapter by chapter and writes each one back
+  // in place. The strikes are positions, and a position survives having its
+  // sentence rendered in another language — so they carry, when the walk agrees
+  // that nothing moved.
+  const { carry, bookAfter } = await carryNarrationAcrossPass(
+    config, bookPath, result.outputPath);
   const applied: AppliedPass = {
     kind: 'translate',
     at: new Date().toISOString(),
@@ -291,7 +418,7 @@ async function runTranslatePass(
       model: params.aiModel,
     },
   };
-  await manifestService.appendAppliedPass(config.projectDir, applied);
+  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry);
   // No diff to freeze — a translation shares no words with what it replaced, so
   // the entry's receipt is null and the row says so rather than offering a review
   // of a wall of red and green.
@@ -301,6 +428,7 @@ async function runTranslatePass(
     outputPath: bookAfter,
     ...(ledger.ledgerEntryId ? { ledgerEntryId: ledger.ledgerEntryId } : {}),
     ...(ledger.note ? { ledgerRefusal: ledger.note } : {}),
+    ...(recorded.narrationNote ? { narrationCarryNote: recorded.narrationNote } : {}),
   };
 }
 
@@ -377,14 +505,29 @@ async function runFootnoteRefsPass(config: PassJobConfig): Promise<PassJobResult
   const diff = diffPaths(config);
   await writePassDiff(diff.abs, pairChapters(before.chapters, after.chapters));
 
-  const bookAfter = await replaceBookEpub(config.projectDir, produced);
+  // ── The strikes, carried ──────────────────────────────────────────────────
+  //
+  // This pass CANNOT move an element: a `<sup>` is inline, inside a block the
+  // export walk enumerates, so removing one takes characters out of a block and
+  // leaves every block where it was — and the one way a text-only edit could
+  // still move the walk, an element whose entire text WAS the marker, is
+  // repaired by `keepEmptiedUnitsAudible` giving it a `[break]`. That is the
+  // per-pass knowledge this file is allowed to have, and it is ASSERTED rather
+  // than trusted: the walk is compared anyway, so a future change to the strip
+  // that broke the claim would refuse the carry instead of shifting the user's
+  // strikes by one paragraph.
+  //
+  // It is also the pass that made this necessary. Owen struck an evening of
+  // narration deletions, ran this, reopened the book, and was told they had
+  // been cleared (2026-08-10).
+  const { carry, bookAfter } = await carryNarrationAcrossPass(config, bookPath, produced);
   const applied: AppliedPass = {
     kind: 'footnote-refs',
     at: new Date().toISOString(),
     params: { removed: strip.removed, files: strip.files.length, breaks: strip.breaks },
     diff: diff.rel,
   };
-  await manifestService.appendAppliedPass(config.projectDir, applied);
+  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry);
   const ledger = await recordInLedger(config, 'Remove footnote references', applied);
   return {
     success: true,
@@ -397,6 +540,7 @@ async function runFootnoteRefsPass(config: PassJobConfig): Promise<PassJobResult
         : ''),
     ...(ledger.ledgerEntryId ? { ledgerEntryId: ledger.ledgerEntryId } : {}),
     ...(ledger.note ? { ledgerRefusal: ledger.note } : {}),
+    ...(recorded.narrationNote ? { narrationCarryNote: recorded.narrationNote } : {}),
   };
 }
 

@@ -29,12 +29,39 @@
  * the same traversal the narration writer walks. One traversal, two readers, and
  * an index that means the same thing to both.
  *
- * It is stamped with the book's sha256 all the same. A pass that rewrites the
- * book in place (simplify, translate) leaves deletions describing elements that
- * are no longer there, and the honest reading of that is a REFUSAL naming the
- * book — the `scanId` precedent from `manifest.source.deletedBlockLines`, for
- * the same reason: a positional record and a file that moved under it cannot be
- * reconciled by guessing.
+ * It is stamped with the book's sha256 all the same, and every strike also
+ * carries a FINGERPRINT of the text it struck. See below.
+ *
+ * ── Nothing but the user deletes the user's strikes ─────────────────────────
+ *
+ * Until 2026-08-10 the sha stamp was a guillotine: a book whose bytes had
+ * changed VOIDED the whole record, and the reader that noticed deleted it and
+ * said so. Owen killed it — "i dont think we need a guard so strict. or even a
+ * guard at all" — after it threw away an evening of strikes because a
+ * footnote-reference pass had rewritten the book, and it would have done the
+ * same to a manifest and a book that Syncthing carried across two machines a
+ * few seconds apart.
+ *
+ * The failure that guard existed to prevent is real and stays prevented: a
+ * positional key whose element MOVED cuts the wrong paragraph out of the
+ * audiobook, and nobody finds out until they hear it. What changed is where the
+ * question is asked and what the answer is allowed to do.
+ *
+ *   - The question is asked AT USE — when the copy is cut, and when the picker
+ *     paints the strikes — and it is asked PER STRIKE, not about the record as
+ *     a whole. That is what `fingerprints` is for: each key remembers the
+ *     opening of the text it struck, so a key can prove for itself that it
+ *     still names what it named.
+ *   - The answer may refuse, and may name what it refused, and may leave a
+ *     strike unapplied. It may never delete one. The record is the user's
+ *     work; only the user takes it back.
+ *
+ * The sha stamp survives as PROVENANCE and as a fast path: a record stamped
+ * with the book in front of it was made against these very bytes, so every key
+ * in it is certified without reading a word. A record stamped with anything
+ * else is checked strike by strike, and the strikes made before fingerprints
+ * existed are the one case that can only be warned about — an absent
+ * fingerprint means "this was never fingerprinted", never "it matches".
  */
 
 /**
@@ -111,14 +138,114 @@ export type ParsedNarrationElementKey =
 
 export interface NarrationDeletions {
   /**
-   * sha256 of the book EPUB these deletions were made against. A book whose
-   * bytes have changed since VOIDS them — see this file's header.
+   * sha256 of the book EPUB these deletions were made against.
+   *
+   * PROVENANCE, and a fast path — no longer a guillotine. When it matches the
+   * book on disk, every key in the record was minted against those exact bytes
+   * and needs no further checking. When it does not, the record is still the
+   * user's record; each strike is checked against its own fingerprint instead.
    */
   epubSha256: string;
   /** The struck elements, sorted, without duplicates. */
   elements: NarrationElementKey[];
   /** ISO timestamp of the last edit. */
   updatedAt: string;
+  /**
+   * Element key → the opening of the text that element said WHEN IT WAS STRUCK.
+   *
+   * ── Why the text and not a hash ─────────────────────────────────────────
+   *
+   * Because the whole value of the check is the sentence it lets us say. A hash
+   * proves a mismatch and can describe nothing about it; 80 characters of the
+   * paragraph lets the refusal read "you struck 'The first paragraph of the
+   * book…' and that position now says 'A second paragraph on the following
+   * page…'", which is the difference between a user who can act and a user who
+   * is told a number. The cost is bounded and small — 80 bytes a strike, so a
+   * book struck 700 times carries about 56 kB — and the manifest already holds
+   * the keys themselves.
+   *
+   * ── What is in it, and what is deliberately not ─────────────────────────
+   *
+   * TEXT UNITS only. A `#img<N>` key names a picture, which has no text; a
+   * `#doc` key names a zip entry, whose identity is certain and cannot shift.
+   * Neither has anything to fingerprint, and inventing an empty string for them
+   * would be a fingerprint that matches everything.
+   *
+   * OPTIONAL, and an absent key inside it is a real state: strikes recorded
+   * before this field existed were never fingerprinted. They are reported as
+   * UNVERIFIABLE when the book has moved under them — never quietly treated as
+   * verified, and never dropped for it.
+   */
+  fingerprints?: Record<NarrationElementKey, string>;
+}
+
+/**
+ * How much of an element's text a strike remembers.
+ *
+ * Long enough that two different paragraphs of a real book practically never
+ * open the same way, short enough to print in a refusal and to carry a
+ * thousand of.
+ */
+export const NARRATION_FINGERPRINT_CHARS = 80;
+
+/**
+ * The fingerprint of an element's text, or null when it has none to give.
+ *
+ * Whitespace-collapsed before it is cut, so re-serializing the book through a
+ * DOM (which several passes and every chapter rename do) cannot change it, and
+ * so the stored string is one printable line. Null — not `''` — for an element
+ * with no text: an empty fingerprint would compare equal to every other empty
+ * one, which is a match nobody proved.
+ */
+export function narrationFingerprint(text: string): string | null {
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  if (collapsed.length === 0) return null;
+  return collapsed.slice(0, NARRATION_FINGERPRINT_CHARS);
+}
+
+/**
+ * The fingerprints of just these keys, for a record about to be written.
+ *
+ * An absent print is a real state and is NOT invented: an element with no text
+ * has nothing to remember, a picture says nothing, and a key naming no element
+ * has nothing to read. All three come out of the map entirely, which is how
+ * "never fingerprinted" is spelled.
+ */
+export function narrationFingerprintsFor(
+  book: Readonly<Record<NarrationElementKey, string>>,
+  keys: readonly NarrationElementKey[],
+): Record<NarrationElementKey, string> {
+  const out: Record<NarrationElementKey, string> = {};
+  for (const key of keys) {
+    if (parseNarrationElementKey(key).kind !== 'unit') continue;
+    const print = book[key];
+    if (print !== undefined) out[key] = print;
+  }
+  return out;
+}
+
+/** A strike whose element does not say what the strike remembers striking. */
+export interface NarrationStrikeMismatch {
+  key: NarrationElementKey;
+  /** The text this strike was made against, as far as it was remembered. */
+  struck: string;
+  /** What that position says in the book as it is now, cut the same way. */
+  nowSays: string;
+}
+
+/** What checking a record's strikes against the book in front of it found. */
+export interface NarrationStrikeVerification {
+  /** Strikes whose element still says what it said. */
+  verified: NarrationElementKey[];
+  /** Strikes whose element says something else now. NOT applied by any caller. */
+  mismatched: NarrationStrikeMismatch[];
+  /**
+   * Strikes that carry no fingerprint, on a book that cannot certify them by
+   * sha. They are applied — they are the user's strikes and there is no
+   * evidence against them — and said out loud, which is all the evidence there
+   * is either way.
+   */
+  unverifiable: NarrationElementKey[];
 }
 
 /** The narration copy, as the manifest records it. */
@@ -775,6 +902,19 @@ export interface NarrationUnit {
   category: string | null;
   /** `data-bf-page`, or null for the same reason. */
   sourcePage: number | null;
+  /**
+   * What the element says, verbatim, before any normalization but the walk's
+   * own (`getUnitTextContent` skips what a reader does not see).
+   *
+   * Carried on the unit rather than looked up later because the ONE traversal
+   * that mints the keys is the only place the element and its key are both in
+   * hand, and a fingerprint checked against text read by a second walk would be
+   * checking two descriptions of the book against each other.
+   *
+   * `''` for a picture — a picture says nothing — which is exactly why image
+   * keys are not fingerprinted.
+   */
+  text: string;
 }
 
 export interface NarrationRemovalPlan {
@@ -782,6 +922,11 @@ export interface NarrationRemovalPlan {
   remove: NarrationElementKey[];
   /** How many elements the book has. */
   total: number;
+  /**
+   * Strikes applied on their own authority because nothing could check them:
+   * recorded before fingerprints existed, on a book the sha cannot certify.
+   */
+  unverifiable: NarrationElementKey[];
 }
 
 /**
@@ -817,9 +962,77 @@ export function splitNarrationDeletions(
   return { documents: [...documents].sort(), elements };
 }
 
+/**
+ * Check each strike against the text it remembers striking.
+ *
+ * PURE and NON-THROWING, because two callers need the same answer for opposite
+ * purposes: the cut refuses on a mismatch, and the picker reports one so the
+ * user can look at it. A single function that threw would force the reporting
+ * caller to catch its own diagnosis.
+ *
+ * Keys that name no element of `units` are not this function's business —
+ * `planNarrationRemoval` refuses those by name, and a key that resolves to
+ * nothing has no text to compare. Image and document keys are skipped for the
+ * reason `fingerprints` explains: they have nothing to fingerprint, so they are
+ * neither verified nor reported as unverifiable.
+ */
+export function verifyNarrationStrikes(
+  units: readonly NarrationUnit[],
+  deletions: readonly NarrationElementKey[],
+  fingerprints: Readonly<Record<NarrationElementKey, string>> | undefined,
+): NarrationStrikeVerification {
+  const textByKey = new Map(units.map((u) => [u.key, u.text]));
+  const verified: NarrationElementKey[] = [];
+  const mismatched: NarrationStrikeMismatch[] = [];
+  const unverifiable: NarrationElementKey[] = [];
+
+  for (const key of deletions) {
+    if (parseNarrationElementKey(key).kind !== 'unit') continue;
+    const text = textByKey.get(key);
+    if (text === undefined) continue;
+    const struck = fingerprints?.[key];
+    if (struck === undefined) { unverifiable.push(key); continue; }
+    const now = narrationFingerprint(text);
+    if (now === struck) { verified.push(key); continue; }
+    mismatched.push({ key, struck, nowSays: now ?? '' });
+  }
+
+  return { verified, mismatched, unverifiable };
+}
+
+/**
+ * What the mismatches come to, in one sentence — or null when there are none.
+ *
+ * The same shape as `describeUnstruckDeletions`: a few named in full, the rest
+ * counted, because past a handful the list is the noise.
+ */
+export function describeNarrationStrikeMismatches(
+  mismatched: readonly NarrationStrikeMismatch[]
+): string | null {
+  if (mismatched.length === 0) return null;
+  const SHOWN = 3;
+  const listed = mismatched
+    .slice(0, SHOWN)
+    .map((m) => `${m.key} was struck on "${m.struck}" and now says `
+      + `${m.nowSays.length === 0 ? '(nothing)' : `"${m.nowSays}"`}`)
+    .join('; ');
+  const rest = mismatched.length - SHOWN;
+  return `${mismatched.length} strike(s) name an element that no longer says what it said when it `
+    + `was struck: ${listed}${rest > 0 ? `; and ${rest} more` : ''}.`;
+}
+
+/**
+ * @param fingerprints  What each strike remembers striking, or `undefined` to
+ *   say the strikes need no checking — which is true of exactly one situation:
+ *   the record is stamped with the sha of the book being cut, so every key in
+ *   it was minted against these bytes. Passing the map when the shas AGREE
+ *   would be harmless but wasteful; passing `undefined` when they do not would
+ *   be the old guillotine's blindness with none of its bite.
+ */
 export function planNarrationRemoval(
   units: readonly NarrationUnit[],
-  deletions: readonly NarrationElementKey[]
+  deletions: readonly NarrationElementKey[],
+  fingerprints?: Readonly<Record<NarrationElementKey, string>>
 ): NarrationRemovalPlan {
   const documents = deletions.filter((key) => parseNarrationElementKey(key).kind === 'doc');
   if (documents.length > 0) {
@@ -835,14 +1048,38 @@ export function planNarrationRemoval(
     throw new Error(
       `${missing.length} of the ${deletions.length} element(s) struck out of this book are not in it `
       + `any more — the first is ${missing[0]}. The narration copy is cut from the book by position, `
-      + 'so a book that has been rewritten since (a simplify or translate pass) voids them. Open the '
-      + 'book in the editor, strike what you want left out again, and export.'
+      + 'so an element that is gone leaves its strike naming nothing. Your strikes are still on '
+      + 'record and nothing has been cleared: open the book in the editor, take back the strikes '
+      + 'that no longer name anything, and export again.'
     );
   }
+
+  // ── The per-strike check, and why a mismatch STOPS the cut ────────────────
+  //
+  // A key whose element moved names a DIFFERENT paragraph, and applying it
+  // would take that paragraph out of the audiobook — silently, in a file the
+  // user only hears weeks later. That is the failure this whole record was
+  // designed around, so it is refused, and the refusal names the strikes and
+  // prints both texts. Cutting "only the verified ones" was the alternative and
+  // it is worse: it leaves the paragraphs the user DID strike in the narration,
+  // which is the same silent wrong answer from the other side.
+  const verification = fingerprints === undefined
+    ? { verified: [], mismatched: [], unverifiable: [] } as NarrationStrikeVerification
+    : verifyNarrationStrikes(units, deletions, fingerprints);
+  if (verification.mismatched.length > 0) {
+    throw new Error(
+      `${describeNarrationStrikeMismatches(verification.mismatched)} The book has been rewritten `
+      + 'since those strikes were made, so cutting on them would remove paragraphs you never '
+      + 'struck. Nothing was written and nothing was cleared — open the book in the editor, where '
+      + 'these strikes are shown, and put them where you want them.'
+    );
+  }
+
   const struck = new Set(deletions);
   return {
     remove: units.filter((u) => struck.has(u.key)).map((u) => u.key),
     total: units.length,
+    unverifiable: verification.unverifiable,
   };
 }
 
@@ -867,25 +1104,60 @@ export interface NarrationState {
    * book states what its elements ARE.
    */
   converted: boolean;
-  /** The strikes, or null when there are none (or they were void and cleared). */
+  /**
+   * The strikes, verbatim, or null when there are none.
+   *
+   * NEVER null because the record went stale. Nothing on this path clears a
+   * strike record any more — see this file's header — so what the user struck
+   * is what comes back, and what could not be verified travels beside it.
+   */
   deletions: NarrationDeletions | null;
   /**
-   * Why the strikes that WERE recorded no longer describe this book, or null.
-   * Set exactly when a stale record was found and cleared, so the window can say
-   * it once instead of silently showing an unstruck book.
+   * Why the record's stamp does not name this book, or null when it does.
+   *
+   * A WARNING, not an obituary. It says the positions may have moved and that
+   * each strike is checked on its own before it is applied; it never says
+   * anything was cleared, because nothing was.
    */
   staleReason: string | null;
+  /**
+   * Strikes whose element no longer says what it said when it was struck.
+   *
+   * Empty on the fast path (the stamp names this book), and empty on a book
+   * whose strikes all still check out. A window shows these BY NAME and must
+   * not paint them as struck: the position names a paragraph the user never
+   * chose, and painting it would invite them to confirm a strike they did not
+   * make.
+   */
+  mismatched: NarrationStrikeMismatch[];
+  /**
+   * Strikes recorded before fingerprints existed, on a book the stamp cannot
+   * certify. They are shown and applied as the user's strikes; there is simply
+   * no evidence about them either way, and saying so is the whole answer.
+   */
+  unverifiable: NarrationElementKey[];
   /** Where the narration copy is, when one has been exported. */
   narrationPath: string | null;
   narrationRelPath: string | null;
 }
 
 /**
- * Why these deletions do not describe this book, or null when they do.
+ * Why the record's stamp does not name this book, or null when it does.
  *
- * Separate from `planNarrationRemoval` because it answers a question the UI asks
- * BEFORE anything is exported — the picker needs to know on open whether to show
- * the user's strikes or tell them the record is void.
+ * ── One neutral sentence, and why it says nothing about consequences ────────
+ *
+ * Five callers ask this and they do five different things about it: the picker
+ * warns, the cut checks strike by strike, the fold and the opening-naming pass
+ * refuse to edit a book they cannot carry the record across. The sentence they
+ * share is therefore the FACT — the record was made against other bytes, and
+ * the positions in it may have moved — and each caller adds what it is about to
+ * do. The old wording did the opposite: it announced "they have been cleared"
+ * on behalf of one caller, so every other caller said it too, and the one that
+ * meant it deleted an evening's work (Owen, 2026-08-10).
+ *
+ * It is deliberately NOT a verdict on any individual strike. That question is
+ * answered per key, against the fingerprints, by `verifyNarrationStrikes` —
+ * against the book, not against a hash of it.
  */
 export function narrationDeletionsStaleReason(
   deletions: NarrationDeletions | null | undefined,
@@ -893,9 +1165,131 @@ export function narrationDeletionsStaleReason(
 ): string | null {
   if (!deletions) return null;
   if (deletions.epubSha256 === bookSha256) return null;
+  const withoutFingerprints = deletions.elements.filter(
+    (key) => parseNarrationElementKey(key).kind === 'unit'
+      && deletions.fingerprints?.[key] === undefined).length;
   return (
-    'This book has changed since these deletions were made, so they name elements that may no longer '
-    + 'be where they were. They have been cleared — strike what you want left out of the narration '
-    + 'again, then export.'
+    'This book has changed since these deletions were made, so the positions they name may have '
+    + 'moved.'
+    + (withoutFingerprints > 0
+      ? ` ${withoutFingerprints} of them were recorded before BookForge remembered what each strike `
+        + 'struck, so there is nothing to check them against — they are applied as you made them.'
+      : '')
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Carrying a record across a PASS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One spine document, reduced to the only thing a strike key depends on: which
+ * keys its walk mints, and what each of them was minted from.
+ *
+ * The walk is `enumerateNarrationElements` (electron/quire-stamp.ts) — the same
+ * one that mints the keys in the first place — so this is a projection of the
+ * book's own enumeration and never a second description of it.
+ */
+export interface NarrationDocumentShape {
+  file: string;
+  /** Every key this document mints, in walk order: text units, then pictures. */
+  keys: NarrationElementKey[];
+  /** The tag each of those keys was minted from, lower-case, same order. */
+  tags: string[];
+}
+
+/**
+ * What a pass concluded about the strike record it found, handed to the one
+ * transaction that records the pass.
+ *
+ * A DISCRIMINATED UNION with no default, because "the pass forgot to say" and
+ * "the pass proved the record still holds" must not be the same value. Every
+ * caller of `appendAppliedPass` states one of the three out loud.
+ */
+export type NarrationDeletionsCarry =
+  /** This book has no strike record. There was nothing to carry. */
+  | { outcome: 'none' }
+  /**
+   * PROVEN: the book the pass wrote enumerates exactly what the book it read
+   * did, so every key still names the element it named. `fromSha256` is the
+   * book the proof was made against — checked again inside the transaction, so
+   * a record edited while the pass ran cannot be re-stamped on the strength of
+   * a proof about a different record.
+   */
+  | {
+    outcome: 'carried';
+    fromSha256: string;
+    toSha256: string;
+    /** The AFTER book's fingerprints, so the carried strikes describe it. */
+    fingerprints: Readonly<Record<NarrationElementKey, string>>;
+  }
+  /** The proof failed. The record is LEFT ALONE, and this says what was found. */
+  | { outcome: 'refused'; reason: string };
+
+/**
+ * Why the strikes recorded against `before` cannot be said to describe `after`,
+ * or null when they can.
+ *
+ * ── What is compared, and why it is the whole BEFORE book ───────────────────
+ *
+ * Every document the book had must still be there, minting the same keys from
+ * the same tags. Not "the documents the record happens to name": the record can
+ * grow while the pass runs — a second picker window is one gesture away — and a
+ * proof scoped to the keys we read would be a proof about a record that no
+ * longer exists. Documents the pass ADDED are not compared, because no key
+ * minted against the old book can name one.
+ *
+ * Tags are compared as well as keys because a key is a POSITION and a position
+ * whose element changed shape is a position that may not be the same element.
+ * The walk already carries the tag, so it costs nothing to be exact.
+ *
+ * Then the record's own keys are resolved against the new book. Under the
+ * comparison above that can only fail for a key that named nothing to begin
+ * with — a record already damaged — which is a thing worth catching rather than
+ * carrying forward.
+ */
+export function narrationCarryRefusal(
+  deletions: readonly NarrationElementKey[],
+  before: readonly NarrationDocumentShape[],
+  after: readonly NarrationDocumentShape[],
+): string | null {
+  const afterByFile = new Map(after.map((doc) => [doc.file, doc]));
+
+  for (const doc of before) {
+    const now = afterByFile.get(doc.file);
+    if (now === undefined) {
+      return `${doc.file} is not a document of the book any more, so every strike inside it names `
+        + 'nothing.';
+    }
+    if (now.keys.length !== doc.keys.length) {
+      return `${doc.file} held ${doc.keys.length} element(s) before the pass and holds `
+        + `${now.keys.length} after it, so the strikes after the change name different elements.`;
+    }
+    for (let i = 0; i < doc.keys.length; i++) {
+      if (now.keys[i] !== doc.keys[i]) {
+        return `${doc.file}'s element at position ${i} was ${doc.keys[i]} before the pass and is `
+          + `${now.keys[i]} after it.`;
+      }
+      if (now.tags[i] !== doc.tags[i]) {
+        return `${doc.keys[i]} was a <${doc.tags[i]}> before the pass and is a <${now.tags[i]}> `
+          + 'after it, so that position no longer names the same element.';
+      }
+    }
+  }
+
+  const { documents, elements } = splitNarrationDeletions(deletions);
+  for (const file of documents) {
+    if (!afterByFile.has(file)) {
+      return `${narrationDocumentKey(file)} strikes a whole document, and the book the pass wrote `
+        + 'does not have it.';
+    }
+  }
+  const present = new Set<NarrationElementKey>();
+  for (const doc of after) for (const key of doc.keys) present.add(key);
+  const missing = elements.filter((key) => !present.has(key));
+  if (missing.length > 0) {
+    return `${missing.length} of the ${deletions.length} strike(s) name no element of the book the `
+      + `pass wrote — the first is ${missing[0]}.`;
+  }
+  return null;
 }

@@ -81,7 +81,9 @@ import {
   migrateNarrationDeletionsForFold,
   narrationDeletionsStaleReason,
   narrationEpubRelPath,
+  narrationFingerprintsFor,
   type NarrationDeletions,
+  type NarrationDeletionsCarry,
   type NarrationEpubOutput,
 } from '../shared/vlm/narration-deletions';
 
@@ -3192,8 +3194,42 @@ export async function nextPassStageRelDir(
   return passStageRelDir(passes.length + 1, kind);
 }
 
+/** What recording a pass did about the strike record it found. */
+export interface AppliedPassRecord {
+  /** True when the strikes were re-stamped onto the book the pass wrote. */
+  narrationCarried: boolean;
+  /** Why they were not, in full, or null. Null also when there were none. */
+  narrationNote: string | null;
+}
+
 /**
- * Record a completed pass against the project's book EPUB.
+ * Record a completed pass against the project's book EPUB — and, in the SAME
+ * transaction, carry the narration strikes onto the book it wrote.
+ *
+ * ── Why the two are one write ───────────────────────────────────────────────
+ *
+ * Because they are one fact, exactly as `recordChapterOpeningFold` is: the pass
+ * rewrote the book, and the strike record's `epubSha256` is what says which
+ * book its positions are in. Two writes would leave a moment in which the
+ * manifest says a pass ran against a book the strikes disown — readable by
+ * another window, or synced, and no longer distinguishable from a book somebody
+ * edited by hand.
+ *
+ * ── What `narration` is allowed to do, and what it may never do ────────────
+ *
+ * It may re-stamp. It may leave the record exactly as it found it. It may NOT
+ * delete a strike. Since 2026-08-10 nothing in this app deletes the user's
+ * strikes but the user (shared/vlm/narration-deletions.ts): a record whose
+ * stamp no longer names the book is checked strike by strike at use, against
+ * the text each strike remembers, and a pass that cannot prove its carry simply
+ * leaves that check to happen.
+ *
+ * The carry is re-checked HERE against `fromSha256`, inside the lock. The proof
+ * the caller made is a proof about the record it read; a record edited while the
+ * pass ran is a different record, and re-stamping it on that proof would be
+ * forging agreement. The fingerprints are refreshed from the book the pass
+ * WROTE, so a record carried across a pass that changed text (footnote
+ * references leaving a paragraph) keeps describing the book it now names.
  *
  * Refuses a project with no `outputs.epub`: a pass record describes what was done
  * to a specific file, and there is no such file to describe. That is a caller bug
@@ -3202,10 +3238,14 @@ export async function nextPassStageRelDir(
 export async function appendAppliedPass(
   projectDir: string,
   pass: AppliedPass,
+  narration: NarrationDeletionsCarry,
   familyId?: string
-): Promise<void> {
+): Promise<AppliedPassRecord> {
   const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  let narrationCarried = false;
+  let narrationNote: string | null = null;
 
   const saved = await modifyManifest(projectId, (m) => {
     const epub = familyIn(m, family.id).epub;
@@ -3217,10 +3257,46 @@ export async function appendAppliedPass(
     }
     epub.appliedPasses = [...(epub.appliedPasses ?? []), pass];
     epub.modifiedAt = pass.at;
+
+    const recorded = epub.narrationDeletions;
+    if (recorded === undefined) return;
+
+    if (narration.outcome === 'none') {
+      narrationNote =
+        `Narration strikes were recorded on ${path.basename(projectDir)}'s book while the `
+        + `${pass.kind} pass was running, so the pass never checked them against the book it wrote. `
+        + 'They are kept as they are, and each is checked against the text it struck when the '
+        + 'narration copy is cut.';
+      return;
+    }
+    if (narration.outcome === 'refused') {
+      narrationNote =
+        `The narration strikes were not carried onto the book the ${pass.kind} pass wrote: `
+        + `${narration.reason} They are kept exactly as they are — nothing has been cleared — and `
+        + 'each one is checked against the text it struck before it is applied.';
+      return;
+    }
+    if (recorded.epubSha256 !== narration.fromSha256) {
+      narrationNote =
+        `${path.basename(projectDir)}'s narration strikes were edited while the ${pass.kind} pass `
+        + 'was running, so the record on disk is not the one the pass proved its carry against. '
+        + 'They are kept as they are and checked strike by strike when the copy is cut.';
+      return;
+    }
+
+    epub.narrationDeletions = {
+      ...recorded,
+      epubSha256: narration.toSha256,
+      updatedAt: pass.at,
+      fingerprints: narrationFingerprintsFor(narration.fingerprints, recorded.elements),
+    };
+    narrationCarried = true;
   });
   if (!saved.success) {
     throw new Error(`The ${pass.kind} pass finished, but recording it in the manifest failed: ${saved.error}`);
   }
+  if (narrationNote !== null) console.warn(`[manifest-service] ${narrationNote}`);
+  return { narrationCarried, narrationNote };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3900,23 +3976,44 @@ export async function writeNarrationDeletions(
  * it). So the whole read-modify-write happens under `modifyManifest`, which is
  * the same lock `saveManifest` takes.
  *
- * `bookSha256` is measured by the caller from the file on disk and checked HERE,
- * against the stamp the record carries. A mismatch means the book was rewritten
- * under a positional record: the record is cleared and the reason is returned
- * rather than thrown, because clearing it IS the write this call makes.
+ * `bookSha256` is measured by the caller from the file on disk and compared HERE
+ * against the stamp the record carries.
+ *
+ * ── A mismatch MERGES, and does not re-stamp ────────────────────────────────
+ *
+ * Until 2026-08-10 a mismatch DELETED the record and returned the reason. It
+ * does not any more, and this is one of the two places that mattered: a user
+ * striking a paragraph in a picker whose book had moved under it lost every
+ * strike they had made, as the side effect of making one more.
+ *
+ * So the edit merges. The new keys carry `fingerprints` taken from the book the
+ * user is looking at, so they can prove themselves later whatever the stamp
+ * says. The old keys are left alone with whatever they had.
+ *
+ * And the stamp is NOT advanced to `bookSha256`. Advancing it would say "every
+ * key in this record was minted against these bytes", which is the fast path's
+ * exact promise, and it is false for the keys that were already there —
+ * including any that predate fingerprints and can therefore never be checked.
+ * A stamp left stale costs a per-strike check at use, which is cheap and true;
+ * a stamp advanced falsely costs the user a paragraph in an audiobook they hear
+ * about six weeks later.
  */
 export async function editNarrationDeletions(
   projectDir: string,
   bookSha256: string,
-  edit: { strike: readonly string[]; unstrike: readonly string[] },
+  edit: {
+    strike: readonly string[];
+    unstrike: readonly string[];
+    /** What the struck elements say in the book the gesture was made on. */
+    fingerprints?: Readonly<Record<string, string>>;
+  },
   familyId?: string,
-): Promise<{ deletions: NarrationDeletions; staleReason: null }
-  | { deletions: null; staleReason: string }> {
+): Promise<{ deletions: NarrationDeletions; staleWarning: string | null }> {
   const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
   let written: NarrationDeletions | null = null;
-  let staleReason: string | null = null;
+  let staleWarning: string | null = null;
 
   const saved = await modifyManifest(projectId, (m) => {
     const epub = familyIn(m, family.id).epub;
@@ -3927,34 +4024,41 @@ export async function editNarrationDeletions(
       );
     }
     const recorded = epub.narrationDeletions ?? null;
-    staleReason = narrationDeletionsStaleReason(recorded, bookSha256);
-    if (staleReason !== null) {
-      delete epub.narrationDeletions;
-      return;
-    }
+    staleWarning = narrationDeletionsStaleReason(recorded, bookSha256);
+
     const elements = new Set(recorded?.elements ?? []);
     for (const key of edit.unstrike) elements.delete(key);
     // AFTER the unstrikes: one gesture can do both (a page toggle over a mixed
     // selection), and an element named by both halves of it is struck.
     for (const key of edit.strike) elements.add(key);
+    const kept = [...elements].sort();
+
+    // The prints the record already holds, minus the keys that just left, plus
+    // the ones this gesture measured. Prints for unstruck keys are dropped
+    // because they describe nothing on record; a key struck again later is
+    // fingerprinted again from the book as it is then.
+    const fingerprints = narrationFingerprintsFor(
+      { ...(recorded?.fingerprints ?? {}), ...(edit.fingerprints ?? {}) }, kept);
+
     written = {
-      epubSha256: bookSha256,
-      elements: [...elements].sort(),
+      // The stamp only advances when it was already right. See above.
+      epubSha256: staleWarning === null ? bookSha256 : recorded!.epubSha256,
+      elements: kept,
       updatedAt: new Date().toISOString(),
+      ...(Object.keys(fingerprints).length > 0 ? { fingerprints } : {}),
     };
     epub.narrationDeletions = written;
   });
   if (!saved.success) {
     throw new Error(`Recording the narration deletions for ${projectDir} failed: ${saved.error}`);
   }
-  if (staleReason !== null) return { deletions: null, staleReason };
   if (written === null) {
     throw new Error(
       `Editing the narration deletions for ${projectDir} wrote nothing and gave no reason — this `
       + 'is a bug.'
     );
   }
-  return { deletions: written, staleReason: null };
+  return { deletions: written, staleWarning };
 }
 
 /** Forget the strikes — the book stays exactly as it is. */

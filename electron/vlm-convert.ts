@@ -929,7 +929,13 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
       // made in the working copy or a fault, and only the record can say which.
       skippedPages,
     },
-  });
+  },
+  // Nothing to carry, and the word for that is `none`. A conversion is not a
+  // pass over a book: `mintWorkingCopyFrom` two lines up has just put a NEW
+  // book in the chain, and `registerEpubExport` inside it ended the old book's
+  // strike record with the book it described. There is no record here to
+  // re-stamp and none to leave alone.
+  { outcome: 'none' });
 
   return {
     endpoint: endpoint === null ? null : endpoint.url,

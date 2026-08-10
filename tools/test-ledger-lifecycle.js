@@ -169,7 +169,11 @@ async function runPass(dir, { kind, label, chapters }) {
     JSON.stringify({ version: 1, pass: kind, chapters: [] }, null, 2));
 
   const applied = { kind, at: new Date().toISOString(), params: {}, diff: diffRel };
-  await manifestService.appendAppliedPass(dir, applied);
+  // `{ outcome: 'none' }` and not a carry: this helper is about the LEDGER, and
+  // it writes the book with `fs.renameSync` rather than through the pass code
+  // that proves a carry. Carrying the strikes across a real pass is
+  // tools/test-narration-carry.js.
+  await manifestService.appendAppliedPass(dir, applied, { outcome: 'none' });
   return registerLedgerPass(dir, { kind, label, pass: applied });
 }
 
