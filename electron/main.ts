@@ -42,6 +42,9 @@ import type { WorkingCopyRemint } from '../shared/document/working-copy-remint';
 // else is null, and it never throws. Everything that ACTS on a book goes through
 // `manifestService.requireFamily` instead and gets the refusal sentence.
 import { soleFamily } from '../shared/document/book-families';
+// The one rule that turns the chapter-opening naming pass's per-chapter outcome
+// into the sentence the picker owes the user after a rename.
+import { chapterOpeningRefusal } from '../shared/document/chapter-opening-report';
 import { addVariant, importAudiobookProject, saveVariantMetadata, setPrimaryVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
@@ -7839,6 +7842,12 @@ function setupIpcHandlers(): void {
    * rather than reported as a rename failure, because by then the rename has
    * landed and saying otherwise would be a lie about the file on disk.
    *
+   * The pass can DECLINE one chapter — its document marks no opening, or the
+   * opening holds a picture — and then the contents say the new name while the
+   * page still prints the old heading. That is reported per chapter, in the
+   * pass's own words (`openingUnnamed`), because a count of openings rewritten
+   * across the whole book cannot answer it and the window used to say nothing.
+   *
    * See electron/book-chapters.ts for why the narration records move with the
    * rename, and why renaming only one of two lists is refused.
    */
@@ -7849,9 +7858,15 @@ function setupIpcHandlers(): void {
       const result = await renameBookChapter(projectDir, file, title, familyId);
 
       let openingsNamed = 0;
+      // Null once the pass has run and this chapter's own opening reads its new
+      // name. The picker says this sentence and nothing else about it — see
+      // shared/document/chapter-opening-report.ts for why silence was the bug.
+      let openingUnnamed: string | null = null;
       try {
         const { nameChapterOpenings } = await import('./narration-export.js');
-        openingsNamed = (await nameChapterOpenings(projectDir, familyId)).edited;
+        const summary = await nameChapterOpenings(projectDir, familyId);
+        openingsNamed = summary.edited;
+        openingUnnamed = chapterOpeningRefusal(summary, file);
       } catch (err) {
         broadcastToAllWindows('project:files-changed', projectDir);
         return {
@@ -7864,7 +7879,7 @@ function setupIpcHandlers(): void {
       }
 
       broadcastToAllWindows('project:files-changed', projectDir);
-      return { success: true, result, openingsNamed };
+      return { success: true, result, openingsNamed, openingUnnamed };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

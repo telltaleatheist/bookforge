@@ -746,10 +746,20 @@ export class PdfEditorStateService {
     deletableIds.forEach(id => deleted.add(id));
     this.deletedBlockIds.set(deleted);
 
-    // Clear selection of deleted blocks
-    this.selectedBlockIds.set(
-      this.selectedBlockIds().filter(id => !deletableIds.includes(id))
-    );
+    // The selection is KEPT, and that is what makes Delete the toggle the picker
+    // has always said it is: press it again on the same selection and
+    // `deleteSelectedBlocks` sees every id already struck and restores them.
+    //
+    // Dropping the struck ids here (which this did until Aug 2026) left NOTHING
+    // selected the instant a strike landed, so the second press had no selection
+    // to judge and did nothing at all — and a chapter row, which the Chapter tab
+    // derives from the live blocks, was gone from the list too, so there was
+    // nowhere to click to get it back either. Owen, 2026-08-10: "i even clicked
+    // it and hit delete again but it didnt do anything."
+    //
+    // Keeping it is also the honest picture: those blocks ARE what the gesture
+    // was about, the page paints them struck AND selected, and the next gesture
+    // acts on the same thing the last one did.
 
     // Push to undo stack
     this.pushHistory({

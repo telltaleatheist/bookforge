@@ -3578,10 +3578,12 @@ export class PdfPickerComponent implements OnInit {
 
     // Delete/Backspace to delete selected blocks, pages, or custom category highlights
     if (event.key === 'Delete' || event.key === 'Backspace') {
-      // Don't capture if focused on an input element
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
-        return;
-      }
+      // Never while text is being typed — the ONE question this window asks
+      // about that (`isTextInputTarget`), the same one Ctrl+Z, Ctrl+E and every
+      // single-key shortcut below ask. It used to be spelled out here without
+      // the contenteditable arm, so a Backspace inside a rich-text field struck
+      // the selection instead of erasing a character.
+      if (this.isTextInputTarget(event.target)) return;
 
       // Check for selected pages first (works in select, edit, and organize modes)
       if (this.selectedPageNumbers().size > 0) {
@@ -7016,9 +7018,14 @@ export class PdfPickerComponent implements OnInit {
         if (block) affectedPages.add(block.page);
       }
 
+      // The selection SURVIVES both arms below, in the same way and for the same
+      // reason it survives a strike (`EditorStateService.deleteBlocks`): Delete
+      // is a toggle, and a toggle acts on what is selected. Clearing it here
+      // made the gesture one-way — strike, restore, and then a third press with
+      // nothing selected that did nothing — and left the user with no handle on
+      // the blocks they had just brought back.
       if (pageCarried.size === 0) {
         this.landBlockDeletions(this.editorState.restoreBlocks(selected), false);
-        this.editorState.clearSelection();
       } else {
         // Restoring a page-carried strike opens its page and re-strikes the
         // page's UNSELECTED blocks individually — the page stops being fully
@@ -7039,7 +7046,6 @@ export class PdfPickerComponent implements OnInit {
         this.editorState.restorePages(pagesToOpen);
         const ownStruck = selected.filter(id => deleted.has(id));
         if (ownStruck.length > 0) this.editorState.restoreBlocks(ownStruck);
-        this.editorState.clearSelection();
 
         this.postNarrationEdit(
           beforeBlocks, beforePages, this.narrationStruckBlockIds(), this.deletedPages());
@@ -13980,6 +13986,28 @@ export class PdfPickerComponent implements OnInit {
     // title" and "prove it landed". It also re-reads the narration state, whose
     // record main re-stamped onto the book's new bytes.
     await this.refreshBookEpub();
+
+    // ── The one outcome that used to be silent ────────────────────────────
+    //
+    // Owen, 2026-08-10: "when i finally did manage to change the chapter title,
+    // it didnt change the text of the chapter block. i expected it to." He is
+    // right to expect it — the opening is DERIVED from the name — and main
+    // rewrites it on every rename. But the naming pass can decline this one
+    // chapter and say exactly why (its document marks no chapter opening; the
+    // opening holds a picture), and until now the window was told only a
+    // book-wide COUNT, which cannot answer "did MINE change" at all. So the
+    // pass's own sentence is said here, where the rename was asked for.
+    //
+    // Said BEFORE the re-open below, because that closes and re-opens the
+    // document and the reason would otherwise be lost with the window's turn.
+    if (typeof answer.openingUnnamed === 'string') {
+      this.showAlert({
+        title: 'The page still prints the old heading',
+        message: `This chapter is now called "${title}" in the book's table of contents, and the `
+          + `heading on the page was not rewritten to match. ${answer.openingUnnamed}`,
+        type: 'warning',
+      });
+    }
 
     // ── The opening followed the name, so the PAGE has to be laid out again ──
     //

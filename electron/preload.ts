@@ -1532,12 +1532,20 @@ export interface ElectronAPI {
      * this rename (normally one; more if some earlier open had left any
      * un-named). A window that sees it above zero is looking at a book whose
      * markup has changed under it and must re-open to lay it out again.
+     *
+     * `openingUnnamed` is about THIS chapter and answers a different question:
+     * null when its opening now reads the new name, and otherwise the sentence
+     * saying why the page still prints the old heading
+     * (shared/document/chapter-opening-report.ts). The count cannot stand in for
+     * it — a rename that named three other chapters and declined this one
+     * reports three.
      */
     renameChapter: (projectDir: string, file: string, title: string, familyId?: string) =>
       Promise<{
         success: boolean;
         result?: BookChapterRenameResult;
         openingsNamed?: number;
+        openingUnnamed?: string | null;
         error?: string;
       }>;
   };
