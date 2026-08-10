@@ -46,8 +46,13 @@ import type {
  *
  * v2: pages gained an inner margin (`PAGE_MARGIN` in quire's Paged strategy),
  * so less content fits a page and every v1 page number means a different page.
+ * v3: the Paged strategy holds the book's own elements to `overflow: visible`
+ * inside a page box (`MONOLITHIC_OVERFLOW_RULE`), so a box the book made scroll
+ * is now fragmented instead of being pushed off the page whole. Any book with
+ * one breaks in different places than it did under v2 — and the v2 maps for
+ * those books are maps of a layout with blank pages in it.
  */
-export const QUIRE_ANALYSIS_VERSION = 2;
+export const QUIRE_ANALYSIS_VERSION = 3;
 
 export interface QuireAnalysisGeometry {
   width: number;

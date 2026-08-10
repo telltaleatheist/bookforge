@@ -54,6 +54,7 @@ const { app } = require('electron');
 const DIST = path.join(__dirname, '..', 'dist');
 const {
   Quire, resolveQuireRequest, MultiColumnStrategy, PagedStrategy, PAGEDJS_VERSION, QuireError,
+  MONOLITHIC_OVERFLOW_RULE,
 } = require(path.join(DIST, 'packages/quire/src/index.js'));
 const { stampEpubForQuire } = require(path.join(DIST, 'electron/quire-stamp.js'));
 const {
@@ -876,6 +877,155 @@ async function testPagedRefusals() {
 }
 
 /**
+ * A box the book made SCROLL, taller than the page — the CES letter's failure.
+ *
+ * Reported live 2026-08-10: the CES letter would not open at all, on
+ * `SPLIT_DISAGREEMENT` for a `<p>` said to occupy two pages with no split
+ * marker on either. Measured, it was not a mis-recorded split. Foundry's own
+ * converter stylesheet wraps every table in `.tablewrap { overflow-x: auto }`,
+ * which makes the wrapper a scroll container, which CSS Fragmentation calls
+ * MONOLITHIC — never broken across fragmentainers. Paged.js fragments by laying
+ * the page content out one column wide, so a monolithic box taller than that
+ * column (859px of table in an 804px content box) cannot go anywhere: Chromium
+ * pushed it clean out of the visible column, Paged.js took its "stop removal if
+ * we are in a loop" branch, warned `Unable to layout item`, LEFT the overflow in
+ * the page and restarted the next page at the following sibling. Page 11 of that
+ * chapter was blank, and every element of page 12 was also still sitting in page
+ * 11's clipped overflow — nine of them, whole, twice.
+ *
+ * The geometry here is that geometry: the converter's stylesheet verbatim, a
+ * twenty-row table with a two-line header, and two paragraphs before it so the
+ * wrapper lands at the top of a page that is not the last. Both halves are
+ * asserted, and they need each other:
+ *
+ *  - WITHOUT the rule (a strategy that strips exactly it from the layout CSS,
+ *    which is why the rule is exported as its own constant), quire must still
+ *    refuse — and refuse as `CONTENT_REPEATED`, naming repetition rather than a
+ *    disagreement about a split, because that is what actually happened;
+ *  - WITH it, the book paginates, the table breaks across the two pages like a
+ *    table, and nothing is parked a whole column off the page.
+ */
+class NoOverflowRuleStrategy extends PagedStrategy {
+  layoutCss(g) {
+    const css = super.layoutCss(g);
+    if (!css.includes(MONOLITHIC_OVERFLOW_RULE)) {
+      throw new Error('the fixture could not find MONOLITHIC_OVERFLOW_RULE in the layout CSS to '
+        + 'strip; the rule and this test have drifted apart');
+    }
+    return css.replace(MONOLITHIC_OVERFLOW_RULE, '');
+  }
+}
+
+async function testMonolithicOverflowIsFragmented() {
+  // Foundry's converter stylesheet, as it ships in a vlm-converted EPUB.
+  const css = '.tablewrap { margin: 1em 0; overflow-x: auto; }'
+    + 'table { border-collapse: collapse; margin: 0 auto; }'
+    + 'td, th { border: none; padding: 0.35em 1.1em; }'
+    + 'th { border-bottom: 1px solid currentColor; }'
+    + 'body { margin: 0 5%; line-height: 1.5; }'
+    + 'p { margin: 0 0 0.4em; text-indent: 1.4em; }'
+    + 'p.centered { text-indent: 0; text-align: center; }'
+    + 'h2 { line-height: 1.2; margin: 1.4em 0 0.8em; }';
+
+  const rows = [];
+  for (let i = 0; i < 20; i++) {
+    rows.push(`<tr><td>Placename ${i}</td><td>Bookname ${i}</td></tr>`);
+  }
+  // The trailing text is long ON PURPOSE. Paged.js only re-checks for a break
+  // every MAX_CHARS_PER_BREAK (1500) characters, and it is that re-check — not
+  // the end-of-document one — whose "unable to layout" branch keeps the overflow
+  // and restarts the next page at the following sibling. With a short tail the
+  // fragmenter reaches the end of the document first, takes the other branch,
+  // and merely leaves a blank page: the same root fault without the repetition.
+  const trailing = [
+    '<p class="centered">Source paragraph immediately after the table, which is the element the '
+    + 'live failure named, and which runs on for long enough to give the fragmenter real work.</p>',
+  ];
+  for (let i = 0; i < 6; i++) {
+    trailing.push(`<p>Trailing paragraph ${i}. `
+      + 'Every one of these carries enough words that the running character count reaches the '
+      + 'fragmenter\'s own break threshold before the walker runs out of document. '.repeat(2)
+      + '</p>');
+  }
+  trailing.push('<h2>A HEADING AFTER THE TABLE</h2>');
+  // The wrapper opens the document, which is what puts it at the top of a page
+  // with the page's break token already pointing at it — the state the CES
+  // letter's chapter reached at its page 11.
+  const body = '<div class="tablewrap"><table><thead><tr><th>MODERN<br/>GEOGRAPHIC PLACE</th>'
+    + `<th>BOOK OF<br/>MORMON NAME</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`
+    + trailing.join('');
+  const xhtml = '<?xml version="1.0" encoding="utf-8"?>\n'
+    + '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>t</title>'
+    + `<style>${css}</style></head><body>${body}</body></html>`;
+
+  const epubPath = path.join(scratch, 'monolithic.epub');
+  const stamped = path.join(scratch, 'monolithic.stamped.epub');
+  await buildEpub(epubPath, [{ name: 'a.xhtml', xhtml }]);
+  await stampEpubForQuire(epubPath, stamped, 'monolithic');
+
+  // ── Without the rule: the failure, and the refusal that names it ────────
+  const unfixed = await Quire.openDocument(stamped, { strategy: new NoOverflowRuleStrategy() });
+  let threw = null;
+  try {
+    await unfixed.layout({ width: 600, height: 900, fontSize: 18 });
+  } catch (err) {
+    threw = err;
+  } finally {
+    await unfixed.close();
+  }
+  assert(threw !== null,
+    'the fixture no longer reproduces the CES letter\'s failure without the overflow rule, so it '
+    + 'is no longer proving that the rule is what fixes it');
+  assert(/CONTENT_REPEATED/.test(threw.message),
+    'a scroll container taller than the page makes Paged.js emit whole elements twice, and quire '
+    + `must say so rather than call it a split disagreement; it said: ${threw.message}`);
+
+  // ── With it: a table that breaks like a table ───────────────────────────
+  const doc = await Quire.openDocument(stamped, { strategy: new PagedStrategy() });
+  try {
+    const report = await doc.layout({ width: 600, height: 900, fontSize: 18 });
+    assertEqual(report.unplaced.length, 0, 'a stamped element of the fixture got no page');
+    assert(doc.countPages() >= 2,
+      `the fixture was meant to run past one page; it made ${doc.countPages()}`);
+
+    const idPages = new Map();
+    for (let p = 0; p < doc.countPages(); p++) {
+      for (const block of doc.loadPage(p).getBlocks()) {
+        if (!idPages.has(block.id)) idPages.set(block.id, []);
+        if (!idPages.get(block.id).includes(p)) idPages.get(block.id).push(p);
+      }
+    }
+    // The table is the thing that was unfragmentable, so the proof that it is
+    // fragmentable now is that it is on two pages — as a SPLIT, which is a claim
+    // quire will only make after checking Paged.js's markers agree with it.
+    const tablePages = idPages.get('OEBPS/a.xhtml#0');
+    assert(tablePages && tablePages.length === 2,
+      'the table is taller than a page and must now break across two, rather than be pushed off '
+      + `the page whole; quire puts it on ${tablePages ? tablePages.join(',') : 'no page'}`);
+
+    // And nothing that FOLLOWS the table may sit off the page at all. That is
+    // the shape of the failure: with the wrapper unfragmentable, every element
+    // after it was parked in the next column, 1600px away, while the page the
+    // reader sees stayed blank.
+    //
+    // The table itself is allowed one, and only it. Chromium splits the row that
+    // straddles the column boundary rather than moving it whole, so a sliver of
+    // that row stays behind where Paged.js has already moved the row on — which
+    // makes the table's union box reach into the next column. That is a
+    // fragmenter artifact of tables, not of this rule; it is CLIPPED, it is
+    // reported in `report.overflows` where a caller can see it, and the row's
+    // words are on the next page in full.
+    const parked = report.overflows.filter((o) => o.id !== 'OEBPS/a.xhtml#0');
+    assertEqual(parked.length, 0,
+      'nothing after the table may reach outside its page box; '
+      + parked.map((o) => `${o.id} by ${o.overshoot}px on ${o.axis}`).join(', ')
+      + ' does, which is where Paged.js parks overflow it could not extract');
+  } finally {
+    await doc.close();
+  }
+}
+
+/**
  * The DISPLAY path — the half of the package that is the product — through the
  * fragmenter, and the sandbox still intact on the other side.
  *
@@ -975,6 +1125,8 @@ async function main() {
   await check('two layouts of the same book produce the same map', testPagedDeterminism);
   await check('the analysis host is not rAF-throttled', testAnalysisHostIsNotThrottled);
   await check('a doctored page box and a doctored split record are both refused', testPagedRefusals);
+  await check('a box the book made scroll is fragmented, not emitted twice',
+    testMonolithicOverflowIsFragmented);
   await check('the display path shows the asked-for page and adds no script', testPagedDisplayPath);
 
   console.log('');

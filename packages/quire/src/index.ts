@@ -53,7 +53,7 @@ export { QUIRE_REQUIRED_WEB_PREFERENCES, assertSandboxed } from './host/host';
 export type { QuireHost } from './host/host';
 export { OffscreenWindowHost, QUIRE_ISOLATED_WORLD_ID } from './host/offscreen-host';
 export { AttachedWebContentsHost } from './host/attached-host';
-export { PagedStrategy, PAGEDJS_VERSION } from './paginate/paged';
+export { PagedStrategy, PAGEDJS_VERSION, MONOLITHIC_OVERFLOW_RULE } from './paginate/paged';
 export type { PagedConfig } from './paginate/paged';
 /** The adversarial test fixture, NOT a runtime fallback. See its module doc. */
 export { MultiColumnStrategy } from './paginate/multi-column';
