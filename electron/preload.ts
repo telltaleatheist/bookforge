@@ -1364,20 +1364,50 @@ export interface ElectronAPI {
     ensureWorkingEpub: (projectDir: string) =>
       Promise<{ success: boolean; path?: string; relPath?: string; error?: string }>;
     /**
-     * Erase every change made to this book: the working copy is deleted and a
-     * byte-identical one takes its place, with nothing recorded against it.
+     * Erase changes made to this book, at one of two scopes: the working copy is
+     * deleted and a fresh one takes its place.
      *
      * The same act as deleting `<archive basename>.working.epub` by hand — one
      * code path, deliberately (`book:erase-changes`). `source` says which
      * archive-grade book the fresh copy came from, because "your original" and
      * "the book cast from your pages" are different things to have gone back to.
+     *
+     * `'working-changes'` clears the user's records and KEEPS the passes recorded
+     * in the book's ledger, so the copy comes back from the last snapshot;
+     * `'everything'` throws the ledger away first, so the copy comes back
+     * byte-identical to the archive-grade book. `droppedLedger` and `keptLedger`
+     * name which passes went and which stood. The scope is required — an older
+     * build's call without one is refused rather than guessed.
      */
-    eraseChanges: (projectDir: string) => Promise<{
+    eraseChanges: (
+      projectDir: string,
+      scope: 'everything' | 'working-changes'
+    ) => Promise<{
       success: boolean;
       path?: string;
       relPath?: string;
       remint?: WorkingCopyRemint;
       source?: 'archive-epub' | 'generated-epub';
+      droppedLedger?: string[];
+      keptLedger?: string[];
+      error?: string;
+    }>;
+    /**
+     * Delete one entry from this book's ledger, and everything applied after it.
+     *
+     * The user's working changes are kept — they are records against the book
+     * rather than bytes in it, and a ledger pass may not move the elements they
+     * name. `deleted` lists every entry that went, oldest first: the one that was
+     * asked for is the first, and anything after it is the CASCADE, which the
+     * confirmation has to be able to name before the act runs.
+     */
+    deleteLedgerEntry: (projectDir: string, entryId: string) => Promise<{
+      success: boolean;
+      path?: string;
+      relPath?: string;
+      message?: string;
+      deleted?: Array<{ id: string; kind: string; label: string; createdAt: string }>;
+      kept?: Array<{ id: string; kind: string; label: string; createdAt: string }>;
       error?: string;
     }>;
     /**
@@ -3242,8 +3272,10 @@ const electronAPI: ElectronAPI = {
     readerStatus: () => ipcRenderer.invoke('vlm:reader-status'),
     ensureWorkingEpub: (projectDir: string) =>
       ipcRenderer.invoke('book:ensure-working-copy', projectDir),
-    eraseChanges: (projectDir: string) =>
-      ipcRenderer.invoke('book:erase-changes', projectDir),
+    eraseChanges: (projectDir: string, scope: 'everything' | 'working-changes') =>
+      ipcRenderer.invoke('book:erase-changes', projectDir, scope),
+    deleteLedgerEntry: (projectDir: string, entryId: string) =>
+      ipcRenderer.invoke('book:delete-ledger-entry', projectDir, entryId),
     deleteGeneratedEpub: (projectDir: string) =>
       ipcRenderer.invoke('book:delete-generated-epub', projectDir),
     ensureNarrationEpub: (projectDir: string) =>

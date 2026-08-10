@@ -3004,7 +3004,12 @@ export class StudioVersionsComponent {
     });
     if (!confirmed) return;
 
-    const res = await this.electron.eraseBookChanges(dir);
+    // 'everything', because that is what this button has always said and what
+    // its confirmation above lists: the working changes AND the record of every
+    // pass applied to the book. The narrower 'working-changes' scope — clear my
+    // edits, keep the passes — belongs to the indented ledger rows the versions
+    // page is being rebuilt around, and is not offered from here.
+    const res = await this.electron.eraseBookChanges(dir, 'everything');
     if (!res.success || !res.remint) {
       await this.electron.showMessageDialog({
         title: 'Nothing was erased',

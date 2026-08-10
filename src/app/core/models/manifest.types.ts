@@ -406,6 +406,22 @@ export interface EpubOutput {
   // place, so this list is the only record of what was done to it — and what
   // Studio reads instead of scanning for the stage copies it replaced.
   appliedPasses?: AppliedPass[];
+  // The LEDGER: the passes the user committed to, oldest first, each keeping a
+  // snapshot of the book as it left it so it can be taken back on its own
+  // (`book:delete-ledger-entry`). A superset of an `appliedPasses` entry — a
+  // pass that ran before the ledger existed, or one that changed the book's
+  // element structure, is in that list and not this one, because it happened and
+  // cannot be undone in isolation. See electron/manifest-types.ts for the full
+  // record; the renderer only ever reads these fields.
+  ledger?: Array<{
+    id: string;
+    kind: AppliedPassKind;
+    label: string;
+    createdAt: string;
+    // Project-relative path to the diff frozen when the pass ran, or null when
+    // the pass recorded none (translate deliberately does not).
+    receipt: string | null;
+  }>;
   // What the user has struck out of this book FOR NARRATION — never applied to
   // the file itself. Inside this record so a rebuild drops it with the
   // provenance it belongs to.

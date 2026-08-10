@@ -43,6 +43,10 @@ const killingAmerica = {
   deletedBlockIds: 412,
   deletedPages: 7,
   narrationStrikes: 386,
+  // Nothing has been RUN over this book — no simplify, no translate — so the
+  // fresh copy is the archive-grade original exactly. That is the case the
+  // original failure happened in, and it is still the common one.
+  kept: [],
 };
 
 test('it names the file, so the user knows which one came back', () => {
@@ -116,9 +120,25 @@ test('a re-mint that cleared nothing still says the file was made again', () => 
     deletedBlockIds: 0,
     deletedPages: 0,
     narrationStrikes: 0,
+    kept: [],
   });
   assert.ok(/made again/.test(said), `no re-mint in: ${said}`);
   assert.ok(said.includes('0 deleted block(s)'), `it hides the zero: ${said}`);
+});
+
+test('a book with recorded passes is NOT told it got the original back', () => {
+  // The fresh copy of a book that has been simplified is derived from the
+  // snapshot that pass left, because that is the only file with it applied.
+  // Saying "the archive original, unedited" there would describe a file the
+  // project did not make.
+  const said = describeWorkingCopyRemint({ ...killingAmerica, kept: ['Simplify'] });
+  assert.ok(!/archive original, unedited/.test(said), `it claims the original is back: ${said}`);
+  assert.ok(/with Simplify applied/.test(said), `it does not name what stood: ${said}`);
+  assert.ok(/ledger/.test(said), `it does not say where that record lives: ${said}`);
+  // The counts are still owed, exactly as in the ordinary case.
+  assert.ok(said.includes('412 deleted block(s)'), `blocks missing from: ${said}`);
+  assert.ok(said.includes('386 element(s) struck out for narration'),
+    `strike count missing from: ${said}`);
 });
 
 test('the "start over" button is NOT named — there is nothing to get out of', () => {

@@ -1078,12 +1078,30 @@ async function nameOpeningsOfRemintedCopy(
   remint: WorkingCopyRemint | null,
 ): Promise<void> {
   if (remint === null) return;
+  await nameOpeningsOfFreshCopy(projectDir);
+}
+
+/**
+ * The naming pass over a working copy that has JUST been derived, whatever
+ * derived it.
+ *
+ * Split out from the re-mint case when the ledger arrived, because deleting a
+ * ledger entry also puts a fresh copy of the book on disk and its openings are
+ * owed the same treatment — and the alternative was to hand
+ * `nameOpeningsOfRemintedCopy` a `WorkingCopyRemint` with invented zeroes, which
+ * is a record claiming an event that did not happen just to reach a call.
+ *
+ * Naming is IDEMPOTENT and derived from the chapter titles the project stores,
+ * which is what makes it a normalization that can be re-applied after any
+ * rebuild rather than a layer that has to be carried across one.
+ */
+async function nameOpeningsOfFreshCopy(projectDir: string): Promise<void> {
   try {
     const { nameChapterOpenings } = await import('./narration-export.js');
     const named = await nameChapterOpenings(projectDir);
     if (named.edited > 0) {
       console.log(
-        `[main] ${path.basename(projectDir)}: ${named.edited} chapter opening(s) of the re-minted `
+        `[main] ${path.basename(projectDir)}: ${named.edited} chapter opening(s) of the fresh `
         + 'working copy now read the name the book stores for their chapter.'
       );
     }
@@ -7269,7 +7287,7 @@ function setupIpcHandlers(): void {
   });
 
   /**
-   * Erase every change made to this book, ON PURPOSE.
+   * Erase changes made to this book, ON PURPOSE, at one of two SCOPES.
    *
    * ── Why this is a button and not a new mechanism ────────────────────────────
    *
@@ -7286,6 +7304,27 @@ function setupIpcHandlers(): void {
    * would come to mean two different things, which is the failure the one shared
    * reset (`resetEditorRecords`) was pulled out to prevent in the first place.
    *
+   * ── The two scopes, and why the second one is ONE extra line ───────────────
+   *
+   * A book can carry two kinds of change (shared/document/book-ledger.ts): the
+   * user's WORKING CHANGES, which are records, and the LEDGER — passes that
+   * rewrote the book's bytes and each kept a snapshot. Owen's truth table: "if
+   * they delete working changes but keep footnotes, the working copy will have no
+   * changes except footnotes removed. if they delete footnotes AND working
+   * changes, itll be byte identical to the archive copy."
+   *
+   *  - `working-changes` — the records go, the passes stand. `ensureBookEpub`
+   *    already derives the fresh copy from the last ledger snapshot, so this is
+   *    literally the unchanged code path.
+   *  - `everything` — the ledger is thrown away FIRST (`clearBookLedger`:
+   *    entries, then snapshots and frozen diffs), and the very same code path
+   *    then finds an empty ledger and derives from the archive-grade base. One
+   *    mint, one reset, one naming pass, in both scopes.
+   *
+   * The scope is REQUIRED. A renderer that does not send one is an older build
+   * asking for an act whose meaning has changed, and guessing "everything" for it
+   * would delete a user's passes on a button that no longer says it will.
+   *
    * ── Refused before anything is destroyed ────────────────────────────────────
    *
    * The source is resolved FIRST. A project with nothing archive-grade behind its
@@ -7296,8 +7335,21 @@ function setupIpcHandlers(): void {
    * The editor window goes the same way it goes for the rail's button, and for
    * the same reason: its autosave would put the records straight back.
    */
-  ipcMain.handle('book:erase-changes', async (_event, rawProjectDir: string) => {
+  ipcMain.handle('book:erase-changes', async (
+    _event,
+    rawProjectDir: string,
+    scope: 'everything' | 'working-changes'
+  ) => {
     try {
+      if (scope !== 'everything' && scope !== 'working-changes') {
+        return {
+          success: false,
+          error: 'Erase was asked for without saying how much: a book\'s working changes and the '
+            + `passes recorded in its ledger are erased separately, and "${String(scope)}" is `
+            + 'neither "everything" nor "working-changes". Reload the window — this is an older '
+            + 'build\'s call.',
+        };
+      }
       const projectDir = normalizeFsPath(rawProjectDir);
       const source = await manifestService.requireWorkingCopySource(projectDir);
       const existing = await manifestService.readExportEpub(projectDir);
@@ -7310,6 +7362,14 @@ function setupIpcHandlers(): void {
       }
 
       destroyEditorWindowsFor(rawProjectDir, projectDir);
+
+      // Records first, files last, and the ledger before the book: with the
+      // entries gone the mint below derives from the archive-grade base, which
+      // is what makes "everything" mean byte-identical to the original.
+      const ledger = scope === 'everything'
+        ? await manifestService.clearBookLedger(projectDir)
+        : { dropped: [], kept: await manifestService.readBookLedger(projectDir), removedPaths: [] };
+
       if (fsSync.existsSync(existing.absPath)) {
         await fs.unlink(existing.absPath);
       }
@@ -7338,6 +7398,68 @@ function setupIpcHandlers(): void {
         // are different things to have gone back to, and only this side knows
         // which this project has.
         source: source.kind,
+        // What the scope cost and what it left, by label. The receipt already
+        // says it in a sentence; these are for a caller that wants to list rows.
+        droppedLedger: ledger.dropped.map((entry) => entry.label),
+        keptLedger: ledger.kept.map((entry) => entry.label),
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Delete ONE entry from this book's ledger — and everything applied after it.
+   *
+   * The row under the book that says "Simplify" is this. Deleting it re-derives
+   * the working copy from the snapshot before it (or from the archive-grade base
+   * when it is the first), and the user's WORKING CHANGES are deliberately left
+   * alone: they are records keyed to element positions that a ledger pass may not
+   * move, so they describe the re-derived book exactly as they described the old
+   * one. Owen: "if they delete footnotes, itll only have working changes present.
+   * like chapter renaming, deletions, etc."
+   *
+   * The CASCADE is named in the answer, entry by entry, because it is the part a
+   * user cannot infer from the row they pressed: each snapshot was produced from
+   * the one before it, so there is no book on this disk with a middle entry
+   * removed and the later ones still applied. Owen licensed exactly that — "if it
+   * isnt [possible], we can remove both, like a cascade of changes" — and the
+   * confirmation is owed the list.
+   *
+   * The whole decision is `ledgerAfterDeleting`, pure and tested without a
+   * project, so the confirmation the UI shows and the deletion that happens
+   * cannot disagree about what is going.
+   */
+  ipcMain.handle('book:delete-ledger-entry', async (
+    _event,
+    rawProjectDir: string,
+    entryId: string
+  ) => {
+    try {
+      const projectDir = normalizeFsPath(rawProjectDir);
+      // The same staleness guard the erase acts take: an open editor window would
+      // autosave its in-memory state over a manifest that has just been rewritten.
+      destroyEditorWindowsFor(rawProjectDir, projectDir);
+
+      const deletion = await manifestService.deleteLedgerEntry(projectDir, entryId);
+      // A fresh copy of the book is a fresh set of chapter openings, exactly as
+      // after any other mint — idempotent, and derived from the chapter titles
+      // this project stores rather than from anything the deletion knew.
+      await nameOpeningsOfFreshCopy(projectDir);
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return {
+        success: true,
+        path: deletion.book.absPath,
+        relPath: deletion.book.relPath,
+        message: deletion.message,
+        // Every entry that went, oldest first — the named one is the first of
+        // them and the rest are the cascade.
+        deleted: deletion.dropped.map((entry) => ({
+          id: entry.id, kind: entry.kind, label: entry.label, createdAt: entry.createdAt,
+        })),
+        kept: deletion.kept.map((entry) => ({
+          id: entry.id, kind: entry.kind, label: entry.label, createdAt: entry.createdAt,
+        })),
       };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -10448,6 +10570,20 @@ function setupIpcHandlers(): void {
         // project was migrated ('adopted'). It changes what erasing changes goes
         // BACK to, so every surface that offers that act has to be able to say it.
         generatedOrigin?: 'cast' | 'adopted';
+        // Present only on the 'exported' row — the book's LEDGER, oldest first:
+        // the passes that rewrote it and each kept a snapshot, so each can be
+        // taken back on its own (`book:delete-ledger-entry`). These are the
+        // indented rows under the book that Owen described; the "working
+        // changes" line beside them is VIRTUAL and is not in this list, because
+        // it is a standing set of records rather than a committed pass. Absent
+        // (rather than empty) for a book nothing has been run over.
+        ledger?: Array<{
+          id: string;
+          kind: string;
+          label: string;
+          createdAt: string;
+          hasReceipt: boolean;
+        }>;
         // Present only on the synthetic 'analysis' entry:
         analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
         analysisFlagCount?: number;
@@ -10480,6 +10616,14 @@ function setupIpcHandlers(): void {
           stageBoundaries?: Array<{ stage: string; finishedAt: string }>;
           builtAt?: string;
           generatedOrigin?: 'cast' | 'adopted';
+          ledger?: Array<{
+            id: string;
+            kind: string;
+            label: string;
+            createdAt: string;
+            /** Whether this entry froze a diff worth offering for review. */
+            hasReceipt: boolean;
+          }>;
         }
       ) => {
         const resolvedFilePath = resolvePath(filePath);
@@ -10540,6 +10684,10 @@ function setupIpcHandlers(): void {
             ...(extra?.stageBoundaries ? { stageBoundaries: extra.stageBoundaries } : {}),
             ...(extra?.builtAt ? { builtAt: extra.builtAt } : {}),
             ...(extra?.generatedOrigin ? { generatedOrigin: extra.generatedOrigin } : {}),
+            // Only when there is one. An empty array would render as a book with
+            // "no passes" where the truth is a book nobody has run anything over,
+            // and the versions page distinguishes the two.
+            ...(extra?.ledger && extra.ledger.length > 0 ? { ledger: extra.ledger } : {}),
           });
         }
       };
@@ -10750,6 +10898,13 @@ function setupIpcHandlers(): void {
       // key off. (`exportRecord` is read up with the family rows, which open on
       // it.)
       if (exportRecord) {
+        // The book's ledger, read from the manifest rather than by scanning
+        // `source/ledger/`: a directory that nothing records is not this book's
+        // history, exactly as a book that nothing records is not this project's
+        // book. The UI pass that renders these rows owns the layout; this side
+        // owes it the entries, in the order they ran, and whether each has a
+        // frozen diff worth offering a review button for.
+        const bookLedger = await manifestService.readBookLedger(projectDir);
         await addVersion(
           'exported',
           'exported',
@@ -10763,7 +10918,16 @@ function setupIpcHandlers(): void {
           '✅',
           true,
           undefined,
-          { builtAt: recordedEpubBuilds.get(exportRecord.relPath.toLowerCase()) }
+          {
+            builtAt: recordedEpubBuilds.get(exportRecord.relPath.toLowerCase()),
+            ledger: bookLedger.map((entry) => ({
+              id: entry.id,
+              kind: entry.kind,
+              label: entry.label,
+              createdAt: entry.createdAt,
+              hasReceipt: entry.receipt !== null,
+            })),
+          }
         );
       }
 
