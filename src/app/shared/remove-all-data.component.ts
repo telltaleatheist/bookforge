@@ -75,7 +75,7 @@ export class RemoveAllDataComponent {
   readonly removing = signal(false);
   readonly status = signal<{ ok: boolean; message: string } | null>(null);
 
-  /** Native confirm dialog → wipe → native result dialog. Library/books kept. */
+  /** Confirm → wipe → inline status on this page. Library/books kept. */
   async remove(): Promise<void> {
     const { confirmed } = await this.electron.showConfirmDialog({
       type: 'warning',
@@ -99,13 +99,14 @@ export class RemoveAllDataComponent {
       const finishStep = this.isMac
         ? 'To finish, quit BookForge and drag it from your Applications folder to the Trash.'
         : 'To finish, quit BookForge and run the uninstaller (Windows Settings → Apps → BookForge).';
-      await this.electron.showMessageDialog({
-        type: 'info',
-        title: 'BookForge data removed',
-        message: `All BookForge data has been removed${freed}.`,
-        detail: `${finishStep}\n\nYour library and books were left untouched.`,
+      // The inline status line below IS the receipt, and it is on the page the
+      // user pressed the button on. A modal saying the same thing was a second
+      // dismissal after the confirm they already gave.
+      this.status.set({
+        ok: true,
+        message: `All BookForge data removed${freed}. Your library and books were left untouched. `
+          + finishStep,
       });
-      this.status.set({ ok: true, message: 'All BookForge data removed. Quit and remove the app to finish.' });
     } catch (e) {
       this.status.set({ ok: false, message: `Failed to remove data: ${(e as Error).message}` });
     } finally {

@@ -40,6 +40,7 @@ import { DestroyRef, Injectable, computed, inject, signal } from '@angular/core'
 
 import { ElectronService } from '../../../core/services/electron.service';
 import { SettingsService } from '../../../core/services/settings.service';
+import { NoticeService } from '../../../core/services/notice.service';
 import { DialogService } from '../../../creamsicle-desktop';
 import { QueueService } from '../../queue/services/queue.service';
 import {
@@ -142,6 +143,8 @@ export class BookConversionService {
   private readonly electron = inject(ElectronService);
   private readonly settings = inject(SettingsService);
   private readonly dialog = inject(DialogService);
+  /** Where a finished conversion says so — see NoticeService. */
+  private readonly notices = inject(NoticeService);
   private readonly queue = inject(QueueService);
 
   constructor() {
@@ -441,8 +444,8 @@ export class BookConversionService {
       await this.dialog.alert({
         title: 'Already converting',
         message: `${existing.sourceLabel} is being converted right now.`,
-        detail: 'A project converts one document at a time — two conversions would be two writers '
-          + 'on one book. Wait for this one to finish, or stop it first.',
+        detail: 'A project converts one document at a time. Wait for this one to finish, or stop '
+          + 'it first.',
         type: 'warning',
       });
       return;
@@ -587,15 +590,20 @@ export class BookConversionService {
         + 'banked answers are a finished piece of work rather than a run to resume.'
       );
     }
-    await this.dialog.alert({
-      title: 'The book is built',
-      message: `${result.relPath} — ${result.totalPages} page(s) read by ${where}.`,
-      detail: [
-        ...notes,
-        'Open it at the EPUB station to strike out anything you do not want narrated.',
-      ].join('\n\n'),
-      type: result.unreadable.length > 0 ? 'warning' : 'info',
-    });
+    // An hour of GPU that finished while the user was elsewhere. A banner, not
+    // a modal: nothing is asked of them, and a book that took an hour to build
+    // should not be announced by blocking whatever they moved on to.
+    console.log(
+      `[conversion] ${result.relPath} — ${result.totalPages} page(s) read by ${where}. `
+      + notes.join(' '),
+    );
+    this.notices.notify(
+      `${result.relPath} is built — ${result.totalPages} page(s) read by ${where}`
+      + (result.unreadable.length > 0
+        ? `, and ${result.unreadable.length} could not be read (see the log).`
+        : '.')
+      + ' Open it at the EPUB station to strike out anything you do not want narrated.',
+    );
   }
 
   private async failed(sourceLabel: string, message: string): Promise<void> {

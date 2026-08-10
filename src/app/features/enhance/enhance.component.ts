@@ -26,6 +26,7 @@ import {
 /** The three pipeline steps, in canonical order (also the chip ids). */
 type ChipId = 'separate' | 'denoise' | 'enhance';
 import { ComponentService } from '../../core/services/component.service';
+import { NoticeService } from '../../core/services/notice.service';
 
 /** One file in the rail, with its live pipeline state. */
 interface EnhanceFileRow {
@@ -698,6 +699,8 @@ interface EnhanceFileRow {
 export class EnhanceComponent implements OnInit, OnDestroy {
   private readonly electron = inject(ElectronService);
   private readonly dialog = inject(DialogService);
+  /** Where a finished export says so, without stopping the user. */
+  private readonly notices = inject(NoticeService);
   private readonly zone = inject(NgZone);
   readonly addons = inject(ComponentService);
 
@@ -1440,7 +1443,9 @@ export class EnhanceComponent implements OnInit, OnDestroy {
         background: this.backgroundPct() / 100,
       });
       if (res.success) {
-        await this.dialog.alert({ title: 'Export complete', message: `Saved to:\n${res.outputPath}` });
+        // A banner: the render can take minutes, the user chose the destination
+        // themselves, and the file is now at it.
+        this.notices.notify(`The enhanced mix was saved to ${res.outputPath}.`);
       } else {
         await this.dialog.alert({ title: 'Export failed', message: res.error || 'Unknown error' });
       }

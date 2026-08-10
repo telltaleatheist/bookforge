@@ -5826,24 +5826,7 @@ export class LLWizardComponent implements OnInit {
     } catch (err) {
       console.error('[LLWizard] Failed to add to queue:', err);
       const reason = err instanceof Error ? err.message : String(err);
-      if (queuedJobTitles.length > 0) {
-        // Part of the workflow IS in the queue. Lock the Add button so a
-        // retry can't re-submit the whole set and double-queue these jobs.
-        this.addedToQueue.set(true);
-        void this.dialog.alert({
-          title: 'Queue Partially Added',
-          type: 'error',
-          message: `Adding jobs failed after ${queuedJobTitles.length} job${queuedJobTitles.length === 1 ? ' was' : 's were'} already queued: ${queuedJobTitles.join(', ')}. The remaining jobs were NOT queued.`,
-          detail: `${reason}\n\nTo avoid duplicates this wizard will not re-add. Remove the queued job${queuedJobTitles.length === 1 ? '' : 's'} from the queue, then reopen the wizard to retry.`,
-        });
-      } else {
-        void this.dialog.alert({
-          title: 'Failed to Add to Queue',
-          type: 'error',
-          message: 'No jobs were added to the queue.',
-          detail: reason,
-        });
-      }
+      this.reportQueueFailure(queuedJobTitles, reason);
     } finally {
       this.addingToQueue.set(false);
     }
@@ -5852,6 +5835,42 @@ export class LLWizardComponent implements OnInit {
 
   private generateWorkflowId(): string {
     return `ll-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+  }
+
+  /**
+   * Adding the workflow to the queue stopped part-way, or never started.
+   *
+   * One wording, in one place: the bilingual and mono submissions both fail the
+   * same two ways, and two copies of the sentence drifted apart the moment
+   * either was edited. It stays a MODAL — the user pressed Add and it did not
+   * happen, which is exactly what a modal is for — but says it in three
+   * sentences, with the reason and the job names in the log.
+   */
+  private reportQueueFailure(queuedJobTitles: string[], reason: string): void {
+    if (queuedJobTitles.length > 0) {
+      // Part of the workflow IS in the queue. Lock the Add button so a retry
+      // can't re-submit the whole set and double-queue these jobs.
+      this.addedToQueue.set(true);
+      console.error(
+        `[LLWizard] queue add failed after ${queuedJobTitles.length} job(s) were queued `
+        + `(${queuedJobTitles.join(', ')}): ${reason}`,
+      );
+      void this.dialog.alert({
+        title: 'Queue Partially Added',
+        type: 'error',
+        message: `${queuedJobTitles.length} job${queuedJobTitles.length === 1 ? ' was' : 's were'} `
+          + 'queued before this failed; the rest were not. '
+          + `${reason} Remove the queued job${queuedJobTitles.length === 1 ? '' : 's'} from the `
+          + 'queue, then reopen this wizard to retry.',
+      });
+      return;
+    }
+    console.error(`[LLWizard] queue add failed with nothing queued: ${reason}`);
+    void this.dialog.alert({
+      title: 'Failed to Add to Queue',
+      type: 'error',
+      message: `No jobs were added to the queue. ${reason}`,
+    });
   }
 
   /**
@@ -5916,24 +5935,7 @@ export class LLWizardComponent implements OnInit {
     } catch (err) {
       console.error('[PipelineWizard] Failed to add mono jobs to queue:', err);
       const reason = err instanceof Error ? err.message : String(err);
-      if (queuedJobTitles.length > 0) {
-        // Part of the workflow IS in the queue. Lock the Add button so a
-        // retry can't re-submit the whole set and double-queue these jobs.
-        this.addedToQueue.set(true);
-        void this.dialog.alert({
-          title: 'Queue Partially Added',
-          type: 'error',
-          message: `Adding jobs failed after ${queuedJobTitles.length} job${queuedJobTitles.length === 1 ? ' was' : 's were'} already queued: ${queuedJobTitles.join(', ')}. The remaining jobs were NOT queued.`,
-          detail: `${reason}\n\nTo avoid duplicates this wizard will not re-add. Remove the queued job${queuedJobTitles.length === 1 ? '' : 's'} from the queue, then reopen the wizard to retry.`,
-        });
-      } else {
-        void this.dialog.alert({
-          title: 'Failed to Add to Queue',
-          type: 'error',
-          message: 'No jobs were added to the queue.',
-          detail: reason,
-        });
-      }
+      this.reportQueueFailure(queuedJobTitles, reason);
     } finally {
       this.addingToQueue.set(false);
     }
