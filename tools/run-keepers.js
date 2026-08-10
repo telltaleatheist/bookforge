@@ -25,6 +25,7 @@ const SUITES = [
   'test-legacy-layout-state',
   'test-epub-provenance-lifecycle',
   'test-processing-chain',
+  'test-job-timing',
 ];
 
 let failed = 0;

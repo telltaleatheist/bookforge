@@ -12,6 +12,9 @@ interface DragState {
   dragOverIndex: number;
 }
 
+/** One shared empty array — a new [] per call would re-render every row every tick. */
+const EMPTY_STEPS: QueueJob[] = [];
+
 @Component({
   selector: 'app-job-list',
   standalone: true,
@@ -79,6 +82,18 @@ interface DragState {
                 &#128266; {{ job.status === 'processing' && job.progressMessage
                   ? job.progressMessage
                   : 'Transcribe audio to synced sentences' }}{{ getSentencesModel(job) ? ' · ' + getSentencesModel(job) : '' }}
+              </div>
+            }
+            <!-- Every task the run is made of, from the moment it is queued. A
+                 narration run is TTS then assembly; the assembly used to be
+                 invisible until it started, so the row claimed to be one job. -->
+            @if (stepsOf(job).length > 0) {
+              <div class="job-steps">
+                @for (step of stepsOf(job); track step.id) {
+                  <span class="step-chip" [class]="step.status" [title]="stepChipTitle(step)">
+                    {{ getJobTypeLabel(step.type) }}
+                  </span>
+                }
               </div>
             }
             @if (job.status === 'processing' && job.progress !== undefined) {
@@ -244,9 +259,11 @@ interface DragState {
         background: color-mix(in srgb, var(--accent) 10%, var(--bg-elevated));
       }
 
+      /* Border only — a running row sits on the same surface as every other row.
+         The tint it used to carry competed with .selected, which is the one state
+         that has a right to change the background. */
       &.processing {
         border-color: var(--accent);
-        background: color-mix(in srgb, var(--accent) 5%, var(--bg-elevated));
       }
 
       &.complete {
@@ -412,6 +429,43 @@ interface DragState {
       }
     }
 
+    .job-steps {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+      margin-top: 0.375rem;
+    }
+
+    .step-chip {
+      font-size: 0.625rem;
+      padding: 0.0625rem 0.3125rem;
+      border-radius: 3px;
+      border: 1px solid var(--border-default);
+      background: var(--bg-sunken);
+      color: var(--text-secondary);
+      white-space: nowrap;
+
+      &.processing {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
+      &.complete {
+        border-color: color-mix(in srgb, var(--success) 45%, transparent);
+        color: var(--success);
+      }
+
+      &.error {
+        border-color: var(--error);
+        color: var(--error);
+      }
+
+      &.stopped {
+        border-color: var(--warning);
+        color: var(--warning);
+      }
+    }
+
     .progress-bar {
       height: 4px;
       background: var(--bg-sunken);
@@ -526,6 +580,14 @@ export class JobListComponent {
   // Inputs
   readonly jobs = input<QueueJob[]>([]);
   readonly selectedJobId = input<string | null>(null);
+  /**
+   * The tasks each listed run is made of, keyed by the run's row id.
+   *
+   * The list only ever shows top-level rows, so a run's steps have to be handed to
+   * it — a row cannot look up its own children. Runs with no steps (a standalone
+   * job) are simply absent from the map, and show no chips.
+   */
+  readonly stepsByJob = input<ReadonlyMap<string, QueueJob[]>>(new Map());
 
   // Outputs
   readonly remove = output<string>();
@@ -577,6 +639,23 @@ export class JobListComponent {
 
   onDragEnd(): void {
     this.dragState.set(null);
+  }
+
+  /** The tasks of one run, or none when the row is a job in its own right. */
+  stepsOf(job: QueueJob): QueueJob[] {
+    const steps = this.stepsByJob().get(job.id);
+    return steps === undefined ? EMPTY_STEPS : steps;
+  }
+
+  /** What a step chip says on hover: its state, spelled out. */
+  stepChipTitle(step: QueueJob): string {
+    switch (step.status) {
+      case 'pending': return `${this.getJobTypeLabel(step.type)} — queued, waiting for the step before it`;
+      case 'processing': return `${this.getJobTypeLabel(step.type)} — running now`;
+      case 'complete': return `${this.getJobTypeLabel(step.type)} — done`;
+      case 'error': return `${this.getJobTypeLabel(step.type)} — failed`;
+      case 'stopped': return `${this.getJobTypeLabel(step.type)} — stopped`;
+    }
   }
 
   getJobTypeLabel(type: JobType): string {

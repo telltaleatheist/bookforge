@@ -14,6 +14,7 @@
  */
 
 import { Injectable, OnDestroy, signal } from '@angular/core';
+import { runElapsedSeconds, taskElapsedSeconds } from '@shared/queue/job-timing';
 import { JobStageProgress, QueueJob, RATE_WINDOW_MIN_SECONDS } from '../models/queue.types';
 
 /** The stage fields the ETA math needs — accepts any stage list the UI renders. */
@@ -359,16 +360,26 @@ export class JobEtaService implements OnDestroy {
       : text;
   }
 
-  /** Seconds since a job started, ticking. Zero when it hasn't started. */
+  /** Seconds THIS ONE task has been working, ticking. Zero before it starts. */
   elapsedSeconds(job: QueueJob): number {
     this.tick();
-    if (!job.startedAt) return 0;
-    const end = job.completedAt ? new Date(job.completedAt).getTime() : Date.now();
-    return Math.max(0, Math.floor((end - new Date(job.startedAt).getTime()) / 1000));
+    return taskElapsedSeconds(job, Date.now());
   }
 
   elapsedDisplay(job: QueueJob): string {
     return formatDuration(this.elapsedSeconds(job));
+  }
+
+  /**
+   * Total time a RUN has been working — every task in it, added up.
+   *
+   * The row a run is headed by executes nothing itself, so its elapsed is read from
+   * its steps rather than from its own timestamps. A standalone job is a run of one,
+   * which is why this takes the step list and not a master row.
+   */
+  runElapsedDisplay(steps: readonly QueueJob[]): string {
+    this.tick();
+    return formatDuration(runElapsedSeconds(steps, Date.now()));
   }
 }
 

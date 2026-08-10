@@ -94,7 +94,7 @@ const TYPE_LABELS: Record<JobType, string> = {
 
           <div class="header-actions">
             @if (currentJob.status === 'processing') {
-              <desktop-button variant="ghost" size="xs" (click)="cancel.emit(currentJob.id)">Cancel</desktop-button>
+              <desktop-button variant="ghost" size="xs" (click)="cancel.emit(cancelTargetId())">Cancel</desktop-button>
             }
             @if (currentJob.status === 'pending') {
               <desktop-button variant="primary" size="xs" (click)="runNow.emit(currentJob.id)">&#9654; Run Now</desktop-button>
@@ -129,7 +129,7 @@ const TYPE_LABELS: Record<JobType, string> = {
 
           <div class="stats">
             <div class="stat">
-              <span class="stat-label">Elapsed</span>
+              <span class="stat-label">Total elapsed</span>
               <span class="stat-value">{{ elapsed() }}</span>
             </div>
             <div class="stat">
@@ -164,7 +164,7 @@ const TYPE_LABELS: Record<JobType, string> = {
 
           <aside class="details-column">
             <app-job-details
-              [job]="currentJob"
+              [job]="detailsJob()"
               (showInFolder)="showInFolder.emit($event)"
             />
           </aside>
@@ -423,7 +423,14 @@ export class JobPanelComponent {
     return TYPE_LABELS[job.type];
   });
 
-  readonly isAnalyzing = computed(() => this.job().cleanupPhase === 'analyzing');
+  /**
+   * Pass-1 planning has no measurable fraction, so the overall bar must not draw one.
+   * Read from the STEPS: the row above them is a container and never plans anything,
+   * so asking it would quietly lose the state the moment a run gained a master row.
+   */
+  readonly isAnalyzing = computed(() =>
+    this.steps().some(s => s.status === 'processing' && s.cleanupPhase === 'analyzing')
+  );
 
   readonly overallPct = computed(() => {
     const job = this.job();
@@ -437,7 +444,45 @@ export class JobPanelComponent {
 
   readonly completedSteps = computed(() => this.steps().filter(s => s.status === 'complete').length);
 
-  readonly elapsed = computed(() => this.eta.elapsedDisplay(this.job()));
+  /**
+   * The step the details column describes: the one running, or the first otherwise.
+   *
+   * A run's own row carries no configuration — it is a container — so pointing the
+   * column at it left an empty Configuration heading beside the steps. What is
+   * actually being asked there ("which voice is this being read in") is a property
+   * of the task doing the work.
+   */
+  readonly detailsJob = computed<QueueJob>(() => {
+    const steps = this.steps();
+    if (steps.length === 0) {
+      throw new Error('The job panel was given a run with no steps. A run is at least one step — a '
+        + 'standalone job is a run of one — so an empty list means the caller resolved the wrong row.');
+    }
+    const running = steps.find(s => s.status === 'processing');
+    return running === undefined ? steps[0] : running;
+  });
+
+  /**
+   * The step Cancel acts on.
+   *
+   * Stopping a run means stopping the task that is actually on the GPU: the run's own
+   * row executes nothing and the backend has never been told its id. Between two
+   * steps there is no such task, and the run's id is then the only thing to name.
+   */
+  readonly cancelTargetId = computed(() => {
+    const running = this.steps().find(s => s.status === 'processing');
+    return running === undefined ? this.job().id : running.id;
+  });
+
+  /**
+   * Time this WHOLE run has taken — every step added up, not the step running now.
+   *
+   * Read from the steps rather than from the row above them, because that row is a
+   * container that never runs. Twenty minutes of narration followed by five of
+   * assembly reads 25m here and 5m on the assembly step, which is the split Owen
+   * asked for: the master field is the job, the step field is the task.
+   */
+  readonly elapsed = computed(() => this.eta.runElapsedDisplay(this.steps()));
 
   readonly etaLabel = computed(() => this.eta.etaDisplay(this.job(), stagesFor(this.job())));
 
