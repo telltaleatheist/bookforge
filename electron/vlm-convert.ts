@@ -86,6 +86,7 @@ import {
   readingsChoiceOfJob,
   vlmReadingsArgs,
   type VlmReadingsBank,
+  type VlmReadingsChoice,
 } from '../shared/vlm/readings-bank';
 import {
   VLM_CONVERT_STAGE,
@@ -95,10 +96,12 @@ import {
   vlmEndpointModelsUrl,
   resolveVlmRoute,
   vlmSkipPagesArgs,
+  type VlmConvertDestination,
   type VlmConvertRequest,
   type VlmConvertResult,
   type VlmEndpointCheck,
   type VlmEndpointConfig,
+  type VlmRoute,
 } from '../shared/vlm/conversion';
 
 const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
@@ -444,48 +447,52 @@ async function unusedReadingName(projectDir: string, stem: string): Promise<stri
 }
 
 /**
- * Convert a project's PDF into its book, and record it.
+ * Everything a conversion has DECIDED before anything is spawned.
  *
- * The five acts, in this order, and the order is the design:
+ * Split out of `runVlmConversion` on 2026-08-10 so the headless CLI can say what
+ * a run WOULD do (`--generate-epub --dry-run`) without a GPU, and say it in the
+ * run's own words. It is the plan, not a second opinion: `runVlmConversion`
+ * begins by calling this and uses nothing else, so a `--dry-run` that names a
+ * source, a target, a route or a readings decision is naming the one the run
+ * would use. A separate derivation would be a report that can be right about a
+ * run that no longer happens that way.
  *
- *  1. foundry writes the EPUB into `/tmp/bookforge-staging/`. Nothing lands in
- *     the synced library until the run has finished and exited zero — a
- *     half-written EPUB inside the library is a half-written EPUB propagating to
- *     every other machine.
- *  2. It is moved onto `generatedEpubTarget`'s path, atomically at the
- *     destination. WHERE it goes and what it is CALLED are `manifest-service`'s
- *     answers, not this module's: the book's name is derived in one place
- *     (docs: "One place derives the name").
- *
- *     This is the GENERATED BOOK, and it is archive-grade — nothing writes to it
- *     ever again. It used to land straight on `outputs.epub`, which made the
- *     cast and the editable book one file and put this hour of GPU inside the
- *     thing a user throws away to start their edits over (Owen, 2026-08-09: "an
- *     epub generated from a pdf… should be treated as an archive file").
- *  3. `registerGeneratedEpub` records it with its digest.
- *  4. `mintWorkingCopyFrom` makes the byte-identical working copy the user edits
- *     and records THAT as `outputs.epub` — which also ends the old book's
- *     provenance and drops the narration copy cut from it, because this is a
- *     rebuild and the passes applied to the previous bytes did not happen to
- *     these. It is the same mint an EPUB-native project's copy gets, so there is
- *     one answer to "where did this working copy come from" whatever the project
- *     started as.
- *  5. `appendAppliedPass` writes the conversion into the fresh provenance, so
- *     the versions page can say where this book came from. It goes AFTER the
- *     mint for the same reason the foundry passes' records do: registering an
- *     export starts provenance over, and a record written before it would be
- *     erased by it.
- *
- * What is NOT done here is a reset. The user's deleted pages are a fact about
- * the PDF and were just OBEYED by this run (`--skip-pages`); clearing them
- * because the book was rebuilt would silently un-skip them on the next cast.
- *
- * Acts 2-5 are what makes a cast into THIS PROJECT'S BOOK, and a request that
- * asked for a NEW COPY (`destination: 'new-copy'`) does none of them — it
- * registers the reading as another archive-grade variant and stops. See the
- * branch below, which says what it deliberately leaves alone and why.
+ * Everything here is READ-ONLY of the project — a plan writes nothing — with the
+ * two exceptions the ordering comments in `runVlmConversion` already argued for:
+ * `ensureFoundryPath` may download the binary, and the `--fresh-readings` version
+ * gate runs `foundry --version`. Both are checks that must happen before a stage
+ * is claimed, and both are exactly as cheap in a plan as in a run.
  */
-export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmConvertResult> {
+export interface VlmConversionPlan {
+  project: DocumentProject;
+  /** The PDF whose pages would be read. On disk — the plan proved it. */
+  pdfPath: string;
+  /** Its digest, which is what keys the readings bank. */
+  sha256: string;
+  /** Which machine would read the pages. Never 'refused' — that throws here. */
+  route: VlmRoute;
+  /** The CONFIGURED endpoint, or null when nothing was configured. */
+  configured: VlmEndpointConfig | null;
+  /** Where the book lands. Absent on the request means 'replace'. */
+  destination: VlmConvertDestination;
+  /** `source/<archive basename>.generated.epub`, as manifest-service derives it. */
+  generatedTarget: manifestService.ExportEpubLocation;
+  /** `dc:language` for the book, declared by the project. */
+  language: string;
+  readingsPath: string;
+  bank: VlmReadingsBank;
+  readingsChoice: VlmReadingsChoice;
+  /** `--fresh-readings` / `--reuse-readings`, or nothing when there is no bank. */
+  readingsFlags: string[];
+  /** The one sentence the job log gets about the bank, before a page is read. */
+  readingsDecision: string;
+  /** `--skip-pages 4,5`, or nothing. Exactly what goes on the command line. */
+  skipPages: string[];
+  /** The same pages back as numbers, one-based, for the record and the result. */
+  skippedPages: number[];
+}
+
+export async function planVlmConversion(request: VlmConvertRequest): Promise<VlmConversionPlan> {
   // FIRST, before a project is resolved or 38 MB of foundry is fetched: whether
   // there is a machine that can read these pages at all. `resolveVlmEndpoint`
   // throws on a half-configured endpoint, and with no endpoint at all a machine
@@ -574,6 +581,80 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     }
   }
 
+  return {
+    project,
+    pdfPath,
+    sha256,
+    route,
+    configured,
+    // Absent means 'replace' — the historic act, stated here once so nothing
+    // downstream has to remember what an absent field meant
+    // (shared/vlm/conversion.ts).
+    destination: request.destination ?? 'replace',
+    generatedTarget,
+    language,
+    readingsPath,
+    bank,
+    readingsChoice,
+    readingsFlags,
+    readingsDecision: describeReadingsDecision(
+      readingsChoice, bank, request.readings === undefined),
+    skipPages,
+    skippedPages,
+  };
+}
+
+/**
+ * Convert a project's PDF into its book, and record it.
+ *
+ * The five acts, in this order, and the order is the design:
+ *
+ *  1. foundry writes the EPUB into `/tmp/bookforge-staging/`. Nothing lands in
+ *     the synced library until the run has finished and exited zero — a
+ *     half-written EPUB inside the library is a half-written EPUB propagating to
+ *     every other machine.
+ *  2. It is moved onto `generatedEpubTarget`'s path, atomically at the
+ *     destination. WHERE it goes and what it is CALLED are `manifest-service`'s
+ *     answers, not this module's: the book's name is derived in one place
+ *     (docs: "One place derives the name").
+ *
+ *     This is the GENERATED BOOK, and it is archive-grade — nothing writes to it
+ *     ever again. It used to land straight on `outputs.epub`, which made the
+ *     cast and the editable book one file and put this hour of GPU inside the
+ *     thing a user throws away to start their edits over (Owen, 2026-08-09: "an
+ *     epub generated from a pdf… should be treated as an archive file").
+ *  3. `registerGeneratedEpub` records it with its digest.
+ *  4. `mintWorkingCopyFrom` makes the byte-identical working copy the user edits
+ *     and records THAT as `outputs.epub` — which also ends the old book's
+ *     provenance and drops the narration copy cut from it, because this is a
+ *     rebuild and the passes applied to the previous bytes did not happen to
+ *     these. It is the same mint an EPUB-native project's copy gets, so there is
+ *     one answer to "where did this working copy come from" whatever the project
+ *     started as.
+ *  5. `appendAppliedPass` writes the conversion into the fresh provenance, so
+ *     the versions page can say where this book came from. It goes AFTER the
+ *     mint for the same reason the foundry passes' records do: registering an
+ *     export starts provenance over, and a record written before it would be
+ *     erased by it.
+ *
+ * What is NOT done here is a reset. The user's deleted pages are a fact about
+ * the PDF and were just OBEYED by this run (`--skip-pages`); clearing them
+ * because the book was rebuilt would silently un-skip them on the next cast.
+ *
+ * Acts 2-5 are what makes a cast into THIS PROJECT'S BOOK, and a request that
+ * asked for a NEW COPY (`destination: 'new-copy'`) does none of them — it
+ * registers the reading as another archive-grade variant and stops. See the
+ * branch below, which says what it deliberately leaves alone and why.
+ */
+export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmConvertResult> {
+  // Every decision this run makes before it spawns anything, made once, in the
+  // order the comments in `planVlmConversion` argue for. Nothing below re-derives
+  // any of it — which is what lets `--dry-run` report a plan that IS this run's.
+  const {
+    project, pdfPath, sha256, route, configured, destination, generatedTarget, language,
+    readingsPath, readingsFlags, readingsDecision, skipPages, skippedPages,
+  } = await planVlmConversion(request);
+
   await fs.promises.mkdir(path.dirname(readingsPath), { recursive: true });
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
   const stagedEpub = path.join(STAGING_DIR, `vlm-convert-${sha256.slice(0, 16)}.epub`);
@@ -622,7 +703,7 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     // this bug was invisible for exactly that reason.
     opts.onProgress({
       stage: 'vlm-convert',
-      message: describeReadingsDecision(readingsChoice, bank, request.readings === undefined),
+      message: readingsDecision,
       done: 0,
       total: 0,
     });
@@ -737,7 +818,7 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
    * file is registered as a variant AND given a chain, and the two acts are
    * reported separately because the second can refuse while the first stands.
    */
-  if (request.destination === 'new-copy') {
+  if (destination === 'new-copy') {
     // Named before it is registered. `addVariant` reads the FILENAME for the
     // version's title, and the staging name is a sha — a version called
     // "vlm-convert-3f2a9c11" is a row nobody can identify a month later.

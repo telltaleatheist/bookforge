@@ -18,6 +18,13 @@ electron/*.ts change:
 npx tsc -p tsconfig.electron.json
 ```
 
+`tsc` compiles the code but copies no ASSETS. The component system loads
+`dist/electron/data/*.json` at import time, so any command that touches a component —
+`--generate-epub` (the foundry CLI), `--rvc`, `--generate-sentences` — fails on a
+tsc-only build with *"Failed to load built-in RVC voice assets"*. Run
+`npm run build:electron` once (it copies `electron/data`, `electron/prompts` and the
+python scripts), or copy `electron/data` into `dist/electron/` by hand.
+
 ## Two render paths
 
 | `--mode`      | Path | What it exercises |
@@ -260,6 +267,69 @@ python cli/bookforge-tts.py --generate-sentences --audio part2.mp3 --epub book.e
   EVERY positive gap and fills each with whisper cues (maximal ad-hunting; expect noise —
   sub-second slack between cues registers too, though slivers <0.5 s have no transcript
   segments to fill with).
+
+## PDF → EPUB conversion (`--generate-epub`)
+
+Read a project's PDF into its book — the app's **Convert to EPUB**, headless. Drives
+`vlm-convert.runVlmConversion`, which is the SAME function `ipcMain.handle('vlm:convert')`
+calls, so one call gets all of it: the route resolution (a configured OpenAI-compatible
+server, MLX on Apple silicon, or this machine's GPU through the WSL vLLM reader from
+Settings → Add-ons), the banked-readings decision with its **foundry ≥ 0.9.0 gate**,
+`foundry vlm-convert` itself, the staged EPUB moved onto
+`source/<archive basename>.generated.epub`, `registerGeneratedEpub`, the freshly minted
+working copy recorded as `outputs.epub`, and the `vlm-convert` provenance entry. Nothing
+about a converted project says it was done from here.
+
+```bash
+# Convert one PDF-only project, reading every page afresh:
+python cli/bookforge-tts.py --generate-epub \
+    --project "E:/Shared/BookForge/projects/Some_Book" --readings fresh
+
+# What WOULD happen — source PDF, target EPUB, which GPU, the readings decision,
+# the installed foundry — and then nothing:
+python cli/bookforge-tts.py --generate-epub --project "E:/…/Some_Book" --readings fresh --dry-run
+
+# Read the pages on somebody else's server instead of this machine's route:
+python cli/bookforge-tts.py --generate-epub --project "E:/…/Some_Book" \
+    --vlm-endpoint http://192.168.68.83:8000/v1 --vlm-endpoint-model rednote-hilab/dots.ocr
+
+# Add the reading BESIDE the book this project already has, leaving it untouched:
+python cli/bookforge-tts.py --generate-epub --project "E:/…/Some_Book" --destination new-copy
+```
+
+- `--project <dir>` — **required**; the project whose PDF is read. It must sit at
+  `{library}/projects/{projectId}`, which is what lets `manifest-service` resolve this
+  project's records; anywhere else is refused by name rather than converted into the
+  wrong project's files.
+- `--readings {fresh,reuse}` — what to do with the page answers already banked for this
+  PDF (`~/Documents/BookForge/foundry-runs/vlm-<sha>/readings.jsonl`, keyed by the PDF's
+  digest). `fresh` archives them beside themselves and reads the whole book again;
+  `reuse` answers out of the bank — resuming an interrupted run, or **rebuilding a
+  finished one with no GPU at all**. Omitted means `reuse`, which is what a job carrying
+  no choice means in the app. **A batch re-run wants `--readings fresh`.**
+- `--destination {replace,new-copy}` — default `replace`: the reading becomes this
+  project's book and a fresh working copy is minted from it (which ends the previous
+  book's provenance). `new-copy` registers it as another archive-grade variant with a
+  working chain of its own and touches no existing output.
+- `--variant-id <id>` / `--source-pdf <file.pdf>` — which PDF, for a project holding more
+  than one. A project with two PDFs and no choice is a **question**, not a guess.
+- `--skip-deleted-pages` — read the archive PDF but leave out the pages the **working
+  copy** marks deleted (the app's *Create EPUB* on the working-copy row). Refused by name
+  when there is no working copy.
+- `--vlm-endpoint <url>` / `--vlm-endpoint-model <name>` / `--vlm-concurrency <n>` — the
+  Settings → AI → Reading pages values. That setting lives in the renderer's own settings
+  bundle, which no headless process can read, so it is passed here the same way
+  `--ollama-url` passes the AI provider's URL. **Omitted = this machine's own route**,
+  which is exactly what an unset setting means in the app.
+- `--dry-run` — run `planVlmConversion` (the same call the run itself makes first, and
+  uses exclusively) and print the plan: project, source PDF and its digest, which machine
+  reads the pages, the language, where the book lands, the readings bank and the sentence
+  the job log would get about it, the skipped pages, and the installed foundry. Nothing is
+  spawned and no GPU is taken.
+- Progress is foundry's own lines, verbatim: the conversion is a document **stage**, so the
+  adapter puts a printing pseudo-window in the shim's window list and the stage's
+  broadcasts land there. Ctrl-C stops the stage the way the app's Stop button does — every
+  page already read is banked and kept.
 
 ## RVC voice conversion (`--rvc`)
 

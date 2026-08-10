@@ -26,6 +26,7 @@ const SUITES = [
   'test-epub-provenance-lifecycle',
   'test-processing-chain',
   'test-job-timing',
+  'test-vlm-convert-plan',
 ];
 
 let failed = 0;
