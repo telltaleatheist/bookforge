@@ -3,7 +3,6 @@ import { BehaviorSubject } from 'rxjs';
 import { ElectronService } from '../../../core/services/electron.service';
 import { SettingsService } from '../../../core/services/settings.service';
 import {
-  PassDiffFile,
   DiffSession,
   DiffChapter,
   DiffChapterMeta,
@@ -15,6 +14,7 @@ import {
 } from '../../../core/models/diff.types';
 import { computeWordDiffAsync, countChanges, summarizeChanges, DiffOptions } from '../../../core/utils/diff-algorithm';
 import type { PassDiffEntry } from '@shared/processing/pass-types';
+import { readPassDiff, hydratePassDiff, passDiffLabel, type PassDiffUnit } from '@shared/document/pass-diff';
 
 export interface DiffLoadingProgress {
   phase: 'loading-metadata' | 'loading-chapter' | 'computing-diff' | 'complete';
@@ -45,12 +45,22 @@ export class DiffService {
   private errorSubject = new BehaviorSubject<string | null>(null);
   private loadingProgressSubject = new BehaviorSubject<DiffLoadingProgress | null>(null);
   private chapterLoadingSubject = new BehaviorSubject<boolean>(false);
+  /**
+   * Set when a pass receipt was read PERFECTLY WELL and recorded no edits — the
+   * pre-fix footnote vintage, whose diff was computed through an extractor that
+   * stripped the markers the pass removed, is a book diffed against itself.
+   *
+   * Deliberately not `error`: nothing failed, and the user is owed the difference
+   * between "this pass changed nothing" and "this receipt cannot be read".
+   */
+  private passNoticeSubject = new BehaviorSubject<string | null>(null);
 
   session$ = this.sessionSubject.asObservable();
   loading$ = this.loadingSubject.asObservable();
   error$ = this.errorSubject.asObservable();
   loadingProgress$ = this.loadingProgressSubject.asObservable();
   chapterLoading$ = this.chapterLoadingSubject.asObservable();
+  passNotice$ = this.passNoticeSubject.asObservable();
 
   // Track which chapters are cached in memory (LRU order)
   private cachedChapterIds: string[] = [];
@@ -62,12 +72,16 @@ export class DiffService {
   private emissionsBlocked = false;  // When true, no session updates are emitted
 
   /**
-   * The two texts of each chapter of the PASS diff currently open, keyed by
-   * chapter id. A pass diff is self-contained (the book it described has since
-   * been overwritten), so its chapters never go to the EPUB-reading IPC — see
-   * loadPassDiff.
+   * Each unit of the PASS receipt currently open, keyed by unit id — both texts
+   * AND the edit list the pass recorded.
+   *
+   * A pass receipt is self-contained (the book it described has since been
+   * overwritten), so its units never go to the EPUB-reading IPC, and they never
+   * go to the diff WORKER either: the edits are already in the file, and
+   * re-deriving them was the whole of the perpetual spinner. See
+   * shared/document/pass-diff.ts.
    */
-  private passChapterTexts = new Map<string, { original: string; cleaned: string }>();
+  private passUnits = new Map<string, PassDiffUnit>();
 
   // Background "count fill" state — invalidated when a new comparison loads so a
   // stale fill from a previous book can't overwrite the current session's counts.
@@ -202,6 +216,11 @@ export class DiffService {
     this.loadingSubject.next(true);
     this.errorSubject.next(null);
     this.cachedChapterIds = [];
+    // A file-pair comparison is not a receipt. Drop the last receipt's units and
+    // its notice, or a unit id that happens to match a chapter id would make
+    // loadChapter serve the previous pass's frozen text for this book's chapter.
+    this.passNoticeSubject.next(null);
+    this.passUnits.clear();
 
     // Try loading from pre-computed diff cache first (created during AI cleanup)
     console.log('[DiffService] Trying pre-computed diff cache...');
@@ -475,11 +494,12 @@ export class DiffService {
       return null;
     }
 
-    // A pass diff carries its own text — no EPUB is read, and none could be:
-    // the file this diff describes was overwritten by the next pass.
-    const passTexts = this.passChapterTexts.get(chapterId);
-    if (passTexts) {
-      return this.loadChapterFromPassDiff(chapterId, meta, passTexts);
+    // A pass receipt carries its own text AND its own edits — no EPUB is read,
+    // and none could be: the file this receipt describes was overwritten by the
+    // next pass.
+    const passUnit = this.passUnits.get(chapterId);
+    if (passUnit) {
+      return this.loadChapterFromPassDiff(chapterId, meta, passUnit);
     }
 
     // Try pre-computed cache hydration first (from .diff.json created during AI cleanup)
@@ -622,13 +642,23 @@ export class DiffService {
   }
 
   /**
-   * Open one pass's diff.
+   * Open one pass's RECEIPT.
    *
-   * Everything comes out of the file: both texts, per chapter. There is no
-   * "original path" and no "cleaned path" to compare, because both are the same
-   * path — the book — and it has moved on since. The word diff is computed by the
-   * same worker every other comparison uses rather than by a second hydration
-   * implementation living here.
+   * Everything comes out of the file: both texts AND the edit list, per unit.
+   * There is no "original path" and no "cleaned path" to compare, because both
+   * are the same path — the book — and it has moved on since.
+   *
+   * Nothing is diffed here. The receipt already holds the edits the pass made,
+   * so they are expanded (linear) rather than re-derived: the previous version
+   * handed both whole-book texts to the LCS worker, whose table is
+   * O(before x after), and on Owen's own 56 KB receipt that is 76.8 million
+   * cells — 25 s and 628 MB measured, and hours or an OOM'd worker for a real
+   * book. That was the perpetual spinner. See shared/document/pass-diff.ts.
+   *
+   * THREE ways out, all of them clearing `loading`:
+   *   - real edits    -> a session the viewer renders;
+   *   - no edits      -> `passNotice`, an honest display, not an error;
+   *   - bad receipt   -> `error`, naming the file and what is wrong with it.
    */
   async loadPassDiff(diffPath: string): Promise<boolean> {
     this.emissionsBlocked = false;
@@ -636,75 +666,107 @@ export class DiffService {
     this.countFillGeneration++;
     this.loadingSubject.next(true);
     this.errorSubject.next(null);
+    this.passNoticeSubject.next(null);
     this.cachedChapterIds = [];
-    this.passChapterTexts.clear();
+    this.passUnits.clear();
 
-    const result = await this.electronService.loadPassDiffFile(diffPath);
-    if (!result.success || !result.data) {
-      this.errorSubject.next(result.error || `Could not read ${diffPath}`);
-      this.loadingSubject.next(false);
-      return false;
-    }
-    const file: PassDiffFile = result.data;
+    // `finally` rather than a clear on each branch: a throw anywhere below (a
+    // preload that does not expose the channel, a renderer bug in the mapping)
+    // used to leave the spinner up forever, which is the shape of the bug being
+    // fixed. Every exit lowers it.
+    try {
+      const result = await this.electronService.loadPassDiffFile(diffPath);
+      if (!result.success || !result.data) {
+        // No `||` fallback onto a generic sentence: if main refused without a
+        // reason, that absence is itself the thing to report.
+        this.sessionSubject.next(null);
+        this.errorSubject.next(result.error
+          ?? `${passDiffLabel(diffPath)} could not be read, and no reason was given.`);
+        return false;
+      }
 
-    const chaptersMeta: DiffChapterMeta[] = file.chapters.map(ch => {
-      this.passChapterTexts.set(ch.id, {
-        original: ch.originalText ?? '',
-        cleaned: ch.text ?? '',
+      const readout = readPassDiff(result.data, diffPath);
+
+      if (readout.kind === 'unreadable') {
+        this.sessionSubject.next(null);
+        this.errorSubject.next(readout.reason);
+        return false;
+      }
+
+      if (readout.kind === 'empty') {
+        // A valid receipt that recorded nothing. There is no session to show, so
+        // the viewer shows the sentence instead — never a spinner, never an error.
+        this.sessionSubject.next(null);
+        this.passNoticeSubject.next(readout.reason);
+        return true;
+      }
+
+      const chaptersMeta: DiffChapterMeta[] = readout.units.map(unit => {
+        this.passUnits.set(unit.id, unit);
+        return {
+          id: unit.id,
+          title: unit.title,
+          hasOriginal: true,
+          hasCleaned: true,
+          changeCount: unit.changeCount,
+          isLoaded: false,
+          originalCharCount: unit.originalText.length,
+          cleanedCharCount: unit.cleanedText.length,
+        };
       });
-      return {
-        id: ch.id,
-        title: ch.title,
-        hasOriginal: true,
-        hasCleaned: true,
-        changeCount: ch.changeCount,
-        isLoaded: false,
-        originalCharCount: ch.originalCharCount,
-        cleanedCharCount: ch.cleanedCharCount,
+
+      const session: DiffSession = {
+        // Both sides ARE the book; the receipt is the only identity this session
+        // has, so it stands in for the pair the per-chapter disk cache keys on.
+        originalPath: diffPath,
+        cleanedPath: diffPath,
+        chapters: [],
+        chaptersMeta,
+        currentChapterId: chaptersMeta[0].id
       };
-    });
+      this.sessionSubject.next(session);
 
-    const session: DiffSession = {
-      // Both sides ARE the book; the diff file is the only identity this session
-      // has, so it stands in for the pair the per-chapter disk cache keys on.
-      originalPath: diffPath,
-      cleanedPath: diffPath,
-      chapters: [],
-      chaptersMeta,
-      currentChapterId: chaptersMeta.length > 0 ? chaptersMeta[0].id : ''
-    };
-    this.sessionSubject.next(session);
-    this.loadingSubject.next(false);
-    this.loadingProgressSubject.next(null);
-
-    if (chaptersMeta.length > 0) {
       await this.loadChapter(chaptersMeta[0].id);
+      return true;
+    } finally {
+      // The whole invariant in three lines: once this call has returned, NOTHING
+      // in the viewer is still spinning, whichever way it went.
+      this.loadingSubject.next(false);
+      this.chapterLoadingSubject.next(false);
+      this.loadingProgressSubject.next(null);
     }
-    return true;
   }
 
-  /** One chapter of an open pass diff: both texts are already in memory. */
-  private async loadChapterFromPassDiff(
+  /**
+   * One unit of an open pass receipt.
+   *
+   * Synchronous work only: the edits were recorded when the pass ran, so they are
+   * expanded over the recorded after-text. No worker, no LCS, no size limit that
+   * could silently truncate a record.
+   */
+  private loadChapterFromPassDiff(
     chapterId: string,
     meta: DiffChapterMeta,
-    texts: { original: string; cleaned: string }
-  ): Promise<DiffChapter | null> {
+    unit: PassDiffUnit
+  ): DiffChapter | null {
     this.chapterLoadingSubject.next(true);
     try {
-      const diffWords = await this.computeDiff(texts.original, texts.cleaned);
+      const diffWords: DiffWord[] = hydratePassDiff(unit.changes, unit.cleanedText);
       meta.isLoaded = true;
       meta.isOversized = false;
-      meta.changeCount = countChanges(diffWords);
+      meta.changeCount = unit.changeCount;
 
       const chapter: DiffChapter = {
         id: chapterId,
         title: meta.title,
-        originalText: texts.original,
-        cleanedText: texts.cleaned,
+        originalText: unit.originalText,
+        cleanedText: unit.cleanedText,
         diffWords,
-        changeCount: meta.changeCount,
-        loadedChars: texts.cleaned.length,
-        totalChars: texts.cleaned.length
+        changeCount: unit.changeCount,
+        // A receipt is whole: there is no second half to stream in, so the
+        // "showing N of M" banner must not appear.
+        loadedChars: unit.cleanedText.length,
+        totalChars: unit.cleanedText.length
       };
 
       const currentSession = this.sessionSubject.getValue();
@@ -1365,6 +1427,18 @@ export class DiffService {
 
     const chapter = session.chapters.find(c => c.id === session.currentChapterId);
     if (!chapter) return;
+
+    // A pass receipt is a record, and a setting cannot change what a pass did.
+    // Refusing is also what keeps the spinner down: this method would hand the
+    // WHOLE unit — the whole book — to the O(n x m) LCS worker, which is the
+    // computation the receipt exists to make unnecessary. The viewer disables
+    // the whitespace toggle in pass mode; this says the same thing where it
+    // cannot be routed around.
+    if (this.passUnits.has(chapter.id)) {
+      console.warn('[DiffService] the whitespace setting cannot be applied to a pass receipt: '
+        + 'its edits were recorded when the pass ran and are shown exactly as recorded.');
+      return;
+    }
 
     this.chapterLoadingSubject.next(true);
 

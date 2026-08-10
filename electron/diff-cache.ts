@@ -12,6 +12,7 @@
 import { promises as fsPromises } from 'fs';
 import path from 'path';
 import { diffWords } from 'diff';
+import { hydratePassDiff } from '../shared/document/pass-diff.js';
 
 /**
  * Write the diff cache JSON atomically: stage on the same volume, then rename
@@ -579,50 +580,18 @@ export interface DiffWord {
  * Hydrate compact changes back into a full DiffWord[] array for rendering.
  * This reconstructs the word-level diff from the compact representation.
  *
+ * The body lives in shared/document/pass-diff.ts, because the RENDERER hydrates
+ * a pass receipt with it too (Review changes reads the receipt's own edit list
+ * rather than re-diffing its text — see that file's header for why). Two copies
+ * could render the same edit list two different ways; this name is kept because
+ * the cleanup-cache callers have always used it.
+ *
  * @param changes Compact change array from cache
  * @param cleanedText The full cleaned text for this chapter
  * @returns Full DiffWord[] array for rendering
  */
 export function hydrateDiff(changes: DiffChange[], cleanedText: string): DiffWord[] {
-  if (changes.length === 0) {
-    // No changes - return the cleaned text as unchanged
-    return cleanedText ? [{ text: cleanedText, type: 'unchanged' }] : [];
-  }
-
-  const result: DiffWord[] = [];
-  let lastPos = 0;
-
-  // Sort changes by position
-  const sortedChanges = [...changes].sort((a, b) => a.pos - b.pos);
-
-  for (const change of sortedChanges) {
-    // Add unchanged text before this change
-    if (change.pos > lastPos) {
-      const unchangedText = cleanedText.slice(lastPos, change.pos);
-      if (unchangedText) {
-        result.push({ text: unchangedText, type: 'unchanged' });
-      }
-    }
-
-    // Add removed text (if any)
-    if (change.rem) {
-      result.push({ text: change.rem, type: 'removed', fn: change.fn });
-    }
-
-    // Add added text (if any)
-    if (change.add) {
-      result.push({ text: change.add, type: 'added', fn: change.fn });
-    }
-
-    lastPos = change.pos + change.len;
-  }
-
-  // Add remaining unchanged text
-  if (lastPos < cleanedText.length) {
-    result.push({ text: cleanedText.slice(lastPos), type: 'unchanged' });
-  }
-
-  return result;
+  return hydratePassDiff(changes, cleanedText);
 }
 
 /**

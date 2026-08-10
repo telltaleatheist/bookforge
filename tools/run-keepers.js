@@ -21,6 +21,7 @@ const SUITES = [
   'test-narration-pairing',
   'test-rail-tasks',
   'test-pass-lifecycle',
+  'test-pass-diff',
   'test-narration-deletions',
   'test-book-block-category',
   'test-narration-carry',
