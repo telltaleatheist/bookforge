@@ -12048,6 +12048,37 @@ app.on('window-all-closed', () => {
 // Track if we've already run cleanup to avoid duplicate work
 let cleanupDone = false;
 
+/**
+ * A cleanup step that cannot hold the quit hostage.
+ *
+ * before-quit prevents the default and quits again only after every step below
+ * resolves. Each step is try/caught, but a HANG is not an exception: one await
+ * that never settles (a keep-alive socket holding a server's close, a child
+ * ignoring SIGTERM, a stuck WSL copy) and app.quit() is never reached — the
+ * window is gone, the user believes the app is closed, and the main process
+ * plus every Electron child lives on invisibly. That is exactly the stray-
+ * process pile observed on 2026-08-10 (five electron.exe with no window).
+ *
+ * So every step gets a DEADLINE and a NAME. On timeout the step is abandoned
+ * LOUDLY — the log says which step hung, because whatever it left behind is
+ * the explanation for any stray process — and the shutdown moves on. The
+ * budgets are generous: the point is never to cut a healthy step short, only
+ * to make "this step never finishes" mean a named log line instead of a
+ * zombie.
+ */
+function quitStepWithDeadline(label: string, ms: number, run: () => Promise<void>): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      console.error(
+        `[MAIN] QUIT WATCHDOG: '${label}' did not finish within ${ms / 1000}s — abandoning it `
+        + 'and continuing shutdown. If stray processes survive this quit, this step is why.');
+      resolve();
+    }, ms);
+  });
+  return Promise.race([run(), deadline]).finally(() => clearTimeout(timer));
+}
+
 app.on('before-quit', async (event) => {
   isQuitting = true;
   if (cleanupDone) return;
@@ -12063,13 +12094,29 @@ app.on('before-quit', async (event) => {
 
   console.log('[MAIN] Running cleanup before quit...');
 
+  // The absolute backstop behind the per-step deadlines: if the whole chain has
+  // not reached app.quit() in this long, something outside a deadline is stuck
+  // (or a step's own machinery hung after its race resolved). app.exit takes
+  // every Electron process with it — a logged hard exit over an invisible
+  // zombie, every time. Generous on purpose: the TTS/WSL block alone is allowed
+  // 60s of cooperative shutdown before its own deadline trips.
+  const quitBackstop = setTimeout(() => {
+    console.error(
+      '[MAIN] QUIT WATCHDOG: shutdown did not complete within 120s of before-quit — forcing '
+      + 'app.exit(1). The step logs above name what was reached; anything after the last one '
+      + 'is what hung.');
+    app.exit(1);
+  }, 120_000);
+
   // Every open quire document owns an offscreen BrowserWindow and a session
   // partition. Neither outlives the app, so both are closed by name.
-  try {
-    await closeAllBooksForViewer();
-  } catch (err) {
-    console.warn('[MAIN] closing quire documents failed:', (err as Error).message);
-  }
+  await quitStepWithDeadline('close quire documents', 15_000, async () => {
+    try {
+      await closeAllBooksForViewer();
+    } catch (err) {
+      console.warn('[MAIN] closing quire documents failed:', (err as Error).message);
+    }
+  });
 
   // Stop whatever document stage is mid-flight. Each one owns a foundry process
   // which owns a llama-server holding several GB on the GPU; closing the window
@@ -12084,77 +12131,97 @@ app.on('before-quit', async (event) => {
     console.warn('[MAIN] Could not stop the document stages:', err);
   }
 
-  // Kill any active TTS workers
-  try {
-    const { killAllWorkers, forceKillAllE2aProcesses, flushActiveSessionsToCache, gracefulWslShutdown } = await import('./parallel-tts-bridge.js');
-    // Kill the worker PROCESSES but KEEP the session map — the flush below reads it to
-    // promote the sentences rendered so far. (killAllWorkers used to clear the map here,
-    // so the flush found nothing and quitting mid-job lost the checkpoint.)
-    // AWAITED: per-session cooperative SIGTERM → verified wait → VM terminate for a
-    // survivor (never SIGKILL — the WSL wedge trigger).
-    await killAllWorkers(false);
-    // Also run aggressive cleanup to catch any orphans
-    forceKillAllE2aProcesses();
-    // Global sweep for anything the session-scoped teardowns missed. Quitting without
-    // this strands vLLM mid-CUDA-work inside the guest — the very thing that
-    // kernel-wedges the WSL VM until a reboot. An 'unresponsive' outcome is logged
-    // loudly; the quit still proceeds (holding the app open can't fix a wedged VM).
-    const wslOutcome = await gracefulWslShutdown();
-    if (wslOutcome === 'unresponsive') {
-      console.error('[MAIN] WSL did not respond during shutdown — VM may be wedged; next launch may need a reboot to use Orpheus.');
+  // Kill any active TTS workers. The longest budget of the chain: cooperative
+  // SIGTERM with verified waits and a WSL flush are allowed a full minute before
+  // being abandoned — this is the block whose abandonment can strand a guest
+  // process, so it is the last to be cut short and the loudest when it is.
+  await quitStepWithDeadline('kill and flush TTS workers (incl. WSL)', 60_000, async () => {
+    try {
+      const { killAllWorkers, forceKillAllE2aProcesses, flushActiveSessionsToCache, gracefulWslShutdown } = await import('./parallel-tts-bridge.js');
+      // Kill the worker PROCESSES but KEEP the session map — the flush below reads it to
+      // promote the sentences rendered so far. (killAllWorkers used to clear the map here,
+      // so the flush found nothing and quitting mid-job lost the checkpoint.)
+      // AWAITED: per-session cooperative SIGTERM → verified wait → VM terminate for a
+      // survivor (never SIGKILL — the WSL wedge trigger).
+      await killAllWorkers(false);
+      // Also run aggressive cleanup to catch any orphans
+      forceKillAllE2aProcesses();
+      // Global sweep for anything the session-scoped teardowns missed. Quitting without
+      // this strands vLLM mid-CUDA-work inside the guest — the very thing that
+      // kernel-wedges the WSL VM until a reboot. An 'unresponsive' outcome is logged
+      // loudly; the quit still proceeds (holding the app open can't fix a wedged VM).
+      const wslOutcome = await gracefulWslShutdown();
+      if (wslOutcome === 'unresponsive') {
+        console.error('[MAIN] WSL did not respond during shutdown — VM may be wedged; next launch may need a reboot to use Orpheus.');
+      }
+      // Now that the workers are dead (files stable) and the sessions are still present,
+      // preserve any in-progress render to the durable project cache so quitting mid-job
+      // doesn't lose the sentences rendered so far (bounded so a slow WSL copy can't hang).
+      await flushActiveSessionsToCache();
+    } catch (err) {
+      console.error('[MAIN] Failed to kill/flush TTS workers:', err);
     }
-    // Now that the workers are dead (files stable) and the sessions are still present,
-    // preserve any in-progress render to the durable project cache so quitting mid-job
-    // doesn't lose the sentences rendered so far (bounded so a slow WSL copy can't hang).
-    await flushActiveSessionsToCache();
-  } catch (err) {
-    console.error('[MAIN] Failed to kill/flush TTS workers:', err);
-  }
+  });
 
   // Kill the streaming worker pools (XTTS and Orpheus) so no Python — or the WSL
   // vLLM process behind Orpheus — outlives the app.
-  try {
-    const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-    if (xttsWorkerPool.isSessionActive()) {
-      await xttsWorkerPool.endSession();
+  await quitStepWithDeadline('end streaming TTS sessions', 20_000, async () => {
+    try {
+      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      if (xttsWorkerPool.isSessionActive()) {
+        await xttsWorkerPool.endSession();
+      }
+      const { orpheusWorkerPool } = await import('./orpheus-worker-pool.js');
+      if (orpheusWorkerPool.isSessionActive()) {
+        await orpheusWorkerPool.endSession();
+      }
+    } catch (err) {
+      console.error('[MAIN] Failed to end stream TTS session:', err);
     }
-    const { orpheusWorkerPool } = await import('./orpheus-worker-pool.js');
-    if (orpheusWorkerPool.isSessionActive()) {
-      await orpheusWorkerPool.endSession();
-    }
-  } catch (err) {
-    console.error('[MAIN] Failed to end stream TTS session:', err);
-  }
+  });
 
-  // Stop bookshelf server if running
-  if (bookshelfServer.isRunning()) {
-    await bookshelfServer.stop();
-  }
-
-  // Stop TTS API server if running
-  try {
-    const { ttsApiServer } = await import('./tts-api-server.js');
-    if (ttsApiServer.isRunning()) {
-      await ttsApiServer.stop();
+  // Stop bookshelf server if running. An http server's close waits for every
+  // open connection — a phone paused mid-audiobook holds a keep-alive socket,
+  // and that is a quit held open by a listener nobody can see.
+  await quitStepWithDeadline('stop bookshelf server', 10_000, async () => {
+    if (bookshelfServer.isRunning()) {
+      await bookshelfServer.stop();
     }
-  } catch (err) {
-    console.error('[MAIN] Failed to stop TTS API server:', err);
-  }
+  });
+
+  // Stop TTS API server if running — same keep-alive hazard as the bookshelf.
+  await quitStepWithDeadline('stop TTS API server', 10_000, async () => {
+    try {
+      const { ttsApiServer } = await import('./tts-api-server.js');
+      if (ttsApiServer.isRunning()) {
+        await ttsApiServer.stop();
+      }
+    } catch (err) {
+      console.error('[MAIN] Failed to stop TTS API server:', err);
+    }
+  });
 
   // Terminate PDF worker thread
-  try {
-    await pdfWorkerProxy.terminate();
-  } catch (err) {
-    console.error('[MAIN] Failed to terminate PDF worker:', err);
-  }
+  await quitStepWithDeadline('terminate PDF worker', 10_000, async () => {
+    try {
+      await pdfWorkerProxy.terminate();
+    } catch (err) {
+      console.error('[MAIN] Failed to terminate PDF worker:', err);
+    }
+  });
 
   // Dispose all plugins
-  const registry = getPluginRegistry();
-  await registry.disposeAll();
+  await quitStepWithDeadline('dispose plugins', 10_000, async () => {
+    const registry = getPluginRegistry();
+    await registry.disposeAll();
+  });
 
   // Close loggers
-  await closeLoggers();
+  await quitStepWithDeadline('close loggers', 5_000, async () => {
+    await closeLoggers();
+  });
 
+  clearTimeout(quitBackstop);
   console.log('[MAIN] Cleanup complete, quitting...');
   app.quit();
 });
