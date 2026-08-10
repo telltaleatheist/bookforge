@@ -31,6 +31,7 @@ import type {
   NarrationFlags,
   AppliedPass,
   AppliedPassKind,
+  GeneratedEpubOutput,
   MergeChapterOpeningEdit,
   NameChapterOpenersEdit,
   SourceType,
@@ -783,6 +784,16 @@ function sanitizeExportStem(raw: string): string {
 export const WORKING_EPUB_SUFFIX = '.working.epub';
 
 /**
+ * The suffix that marks the book a page reader cast out of a PDF.
+ *
+ * It sits beside `.working.epub` and `.tts.epub` in `source/`, and the four
+ * names read as one family: the file you handed us (`archive/<name>.pdf`), the
+ * book cast from its pages (`<name>.generated.epub`), the file you edit
+ * (`<name>.working.epub`), the file narration reads (`<name>.tts.epub`).
+ */
+export const GENERATED_EPUB_SUFFIX = '.generated.epub';
+
+/**
  * The project's archive original — the file the user handed us, whatever format
  * it is in.
  *
@@ -961,6 +972,139 @@ export async function readExportEpub(projectDir: string): Promise<ExportEpubLoca
   return { relPath: recorded.path, absPath: toAbs(projectDir, recorded.path), modifiedAt: recorded.modifiedAt };
 }
 
+/**
+ * Where a cast book is written: `source/<archive basename>.generated.epub`.
+ *
+ * Same stem as the working copy and derived through the same
+ * `requireLegalComponent` check, because it is a declaration of the same thing —
+ * which archive file this book came out of.
+ */
+export function generatedEpubRelPath(manifest: ProjectManifest): string {
+  const component = requireLegalComponent(
+    `${workingEpubStem(manifest)}${GENERATED_EPUB_SUFFIX}`, manifest);
+  return `source/${component}`;
+}
+
+/** Where the NEXT cast must write its book — derived from the manifest, always. */
+export async function generatedEpubTarget(projectDir: string): Promise<ExportEpubLocation> {
+  const manifest = await readManifestAt(projectDir);
+  const relPath = generatedEpubRelPath(manifest);
+  return { relPath, absPath: toAbs(projectDir, relPath) };
+}
+
+/** Where the generated book is, and what kind of bytes they are. */
+export interface GeneratedEpubLocation extends ExportEpubLocation {
+  origin: GeneratedEpubOutput['origin'];
+  sha256: string;
+}
+
+/**
+ * The project's generated book, or null when it has none.
+ *
+ * THE RECORD IS THE ONLY ANSWER, exactly as it is for `outputs.epub`: a
+ * `.generated.epub` in `source/` that nothing records is a stray, not this
+ * project's generated original. Existence on disk is a SEPARATE question, asked
+ * by the callers that need the file rather than the record — a record whose file
+ * has gone is a state somebody has to be told about, and collapsing it into
+ * "there is none" is how it would be silently replaced instead.
+ */
+export async function readGeneratedEpub(projectDir: string): Promise<GeneratedEpubLocation | null> {
+  const manifest = await readManifestAt(projectDir);
+  const recorded = manifest.outputs?.generatedEpub;
+  if (!recorded?.path) return null;
+  return {
+    relPath: recorded.path,
+    absPath: toAbs(projectDir, recorded.path),
+    modifiedAt: recorded.modifiedAt,
+    origin: recorded.origin,
+    sha256: recorded.sha256,
+  };
+}
+
+/**
+ * Record a written generated book as `outputs.generatedEpub`.
+ *
+ * The sha256 is measured HERE, off the file that was just written, rather than
+ * accepted from the caller: it is what every working copy minted from this book
+ * is proved against, and a digest somebody handed us is a claim about bytes
+ * rather than a measurement of them.
+ *
+ * Unlike `registerEpubExport` this ends nothing. The generated book has no
+ * provenance of its own — it IS the provenance, the one act that produced it is
+ * recorded against the working copy minted from it — and it supersedes nothing,
+ * because nothing has ever been applied to it.
+ */
+export async function registerGeneratedEpub(
+  projectDir: string,
+  epubAbsPath: string,
+  origin: GeneratedEpubOutput['origin']
+): Promise<GeneratedEpubLocation> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  const rel = path.relative(projectDir, epubAbsPath);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(
+      `Cannot record ${epubAbsPath} as ${projectDir}'s generated book: it lies outside the project `
+      + 'directory.'
+    );
+  }
+  const relPath = rel.split(path.sep).join('/');
+  const sha256 = await sha256Of(epubAbsPath);
+  const modifiedAt = new Date().toISOString();
+
+  const saved = await modifyManifest(projectId, (m) => {
+    if (!m.outputs) m.outputs = {};
+    m.outputs.generatedEpub = { path: relPath, modifiedAt, sha256, origin };
+  });
+  if (!saved.success) {
+    throw new Error(
+      `The generated book is at ${relPath}, but recording it in ${projectDir}'s manifest failed: `
+      + `${saved.error}. Nothing may mint a working copy from a book the project does not record.`
+    );
+  }
+  return { relPath, absPath: epubAbsPath, modifiedAt, sha256, origin };
+}
+
+/**
+ * Forget the project's generated book — the record only; the file is the
+ * caller's act, done after this returns.
+ *
+ * Records first, file last, the same ordering `forgetEpubExport` uses and for
+ * the same reason: an unrecorded stray is invisible to every consumer, while a
+ * record naming a file that is gone is what makes a versions page offer to mint
+ * a working copy from nothing.
+ */
+export async function forgetGeneratedEpub(projectDir: string): Promise<GeneratedEpubLocation> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  const record = manifest.outputs?.generatedEpub;
+  if (!record?.path) {
+    throw new Error(
+      `${path.basename(projectDir)} has no outputs.generatedEpub, so there is no generated book to `
+      + 'delete. The record is the only thing that says a project has one.'
+    );
+  }
+  const answer: GeneratedEpubLocation = {
+    relPath: record.path,
+    absPath: toAbs(projectDir, record.path),
+    modifiedAt: record.modifiedAt,
+    origin: record.origin,
+    sha256: record.sha256,
+  };
+  const saved = await modifyManifest(projectId, (m) => {
+    if (m.outputs) delete m.outputs.generatedEpub;
+  });
+  if (!saved.success) {
+    throw new Error(
+      `Could not forget ${record.path} in ${path.basename(projectDir)}'s manifest: ${saved.error}. `
+      + 'Nothing was deleted.'
+    );
+  }
+  return answer;
+}
+
 /** What a naming migration did, so a caller can say it once on the console. */
 export interface WorkingEpubRenameSummary {
   /** The book's path before and after, project-relative. Null when nothing moved. */
@@ -1097,6 +1241,313 @@ async function sourceOriginalEpub(
   return null;
 }
 
+/** The archive-grade EPUB a project's working copy is minted from. */
+export interface WorkingCopySource {
+  absPath: string;
+  /**
+   * Which archive-grade book this is.
+   *
+   *  - `archive-epub` — the file the user handed us, in `archive/` (or, for a
+   *    project from the pre-archive era, `source/original.epub`).
+   *  - `generated-epub` — the book a page reader cast from the user's PDF.
+   *
+   * Nothing here may ever be written to. The kind travels because the surfaces
+   * that talk about erasing changes have to name the book the user lands on, and
+   * "your original" and "the book cast from your pages" are different sentences.
+   */
+  kind: 'archive-epub' | 'generated-epub';
+}
+
+/** The source, or the sentence saying why this project has none. Never both. */
+type WorkingCopySourceAnswer =
+  | { source: WorkingCopySource; refusal: null }
+  | { source: null; refusal: string };
+
+/**
+ * Which file this project's working copy is a copy OF — decided by what the
+ * ARCHIVE ORIGINAL IS, never by looking for whichever EPUB happens to be around.
+ *
+ * ── A classification, not a ladder ──────────────────────────────────────────
+ *
+ * Two kinds of project, and the archive original's format says which:
+ *
+ *  - Its original is an EPUB. The working copy is a copy of that file, and the
+ *    project has no generated book because nothing generated one.
+ *  - Its original is a PDF. The working copy is a copy of the book cast from its
+ *    pages, and the project has no archive EPUB because the user never handed us
+ *    one.
+ *
+ * The two are exclusive by construction, so this asks the format first and then
+ * demands exactly one answer. Falling from one to the other would be a fallback
+ * in the precise sense the house rule forbids: a project whose archive EPUB has
+ * been moved away would silently start minting from something else, and every
+ * record keyed to the original's bytes would then describe the wrong book.
+ *
+ * Every refusal is a whole sentence naming what is missing, because the callers
+ * are a button the user just pressed and a project the user just opened.
+ */
+async function classifyWorkingCopySource(
+  projectDir: string
+): Promise<WorkingCopySourceAnswer> {
+  const manifest = await readManifestAt(projectDir);
+  const format = await archiveOriginalFormat(projectDir);
+
+  if (format === 'epub') {
+    const archived = await sourceOriginalEpub(projectDir, manifest);
+    if (archived) return { source: { absPath: archived, kind: 'archive-epub' }, refusal: null };
+    return {
+      source: null,
+      refusal: 'Its archive original is an EPUB, and that file is not in the project, so there is '
+        + 'nothing to copy. Restore it from your backup or re-import the book.',
+    };
+  }
+
+  if (format === 'pdf') {
+    const generated = await readGeneratedEpub(projectDir);
+    if (generated === null) {
+      return {
+        source: null,
+        refusal: 'Its pages have not been read into a book yet, and a PDF reaches an editable book '
+          + 'only through Convert to EPUB. Run that over it first.',
+      };
+    }
+    if (!fs.existsSync(generated.absPath)) {
+      return {
+        source: null,
+        // NOT answered by adopting the working copy instead. That copy has been
+        // edited since it was cast, so treating it as the generated original
+        // would quietly redefine "erase all changes" as "go back to whatever the
+        // book said when its cast went missing".
+        refusal: `Its generated book is recorded as ${generated.relPath}, and that file is not `
+          + 'there. Only a fresh Convert to EPUB can make one — the working copy beside it has been '
+          + 'edited since it was cast and is not the same book.',
+      };
+    }
+    return { source: { absPath: generated.absPath, kind: 'generated-epub' }, refusal: null };
+  }
+
+  if (format === null) {
+    return {
+      source: null,
+      refusal: 'It has no archive original — nothing was imported into it that a book could be '
+        + 'made from.',
+    };
+  }
+  return {
+    source: null,
+    refusal: `Its archive original is a ${format}, which nothing here can turn into a book.`,
+  };
+}
+
+/**
+ * The archive-grade EPUB this project's working copy comes from, or null.
+ *
+ * Null is a real state and the callers that use this form of the question treat
+ * it as one: a project opening does not mint a working copy it has no source
+ * for, and says nothing about it. The callers that were ASKED to mint use
+ * `requireWorkingCopySource` and get the sentence.
+ */
+export async function workingCopySource(projectDir: string): Promise<WorkingCopySource | null> {
+  return (await classifyWorkingCopySource(projectDir)).source;
+}
+
+/** The same question, for a caller that was asked to do something about it. */
+export async function requireWorkingCopySource(projectDir: string): Promise<WorkingCopySource> {
+  const answer = await classifyWorkingCopySource(projectDir);
+  if (answer.source) return answer.source;
+  throw new Error(`${path.basename(projectDir)} cannot be given a working copy. ${answer.refusal}`);
+}
+
+/**
+ * Where a working copy may be minted to, having proved it is not somewhere it
+ * must never go.
+ *
+ * TWO refusals, and they are the same rule stated about the two files that carry
+ * it: the archive original is what the user handed us, and the generated book is
+ * the hour of GPU that read their pages. Both are archive-grade — nothing may
+ * write to either — so a mint whose target resolved onto one of them is refused
+ * rather than performed. The generated book is checked even when it is not the
+ * source, because "may never be written to" is a property of the file rather
+ * than of which mint happens to be running.
+ *
+ * It resolves a path and compares strings; it writes nothing. That is what lets
+ * `ensureBookEpub` ask it BEFORE it clears anything, so a project that was never
+ * going to get a copy does not have its records cleared for one.
+ */
+async function mintTargetFor(
+  projectDir: string,
+  source: WorkingCopySource
+): Promise<ExportEpubLocation> {
+  const target = await exportEpubTarget(projectDir);
+  const resolved = path.resolve(target.absPath);
+  if (resolved === path.resolve(source.absPath)) {
+    throw new Error(
+      `${path.basename(projectDir)}'s working copy would be written over the very book it is a copy `
+      + `of (${target.relPath}). Refusing: ${source.kind === 'archive-epub'
+        ? 'the archive is the one file nothing may edit.'
+        : 'the book cast from your pages is kept as it was cast, and nothing may edit it.'}`
+    );
+  }
+  const generated = await readGeneratedEpub(projectDir);
+  if (generated !== null && resolved === path.resolve(generated.absPath)) {
+    throw new Error(
+      `${path.basename(projectDir)}'s working copy would be written over the book cast from its `
+      + `pages (${generated.relPath}). Refusing: that book is archive-grade, and overwriting it `
+      + 'would put an hour of page reading behind every edit the user makes.'
+    );
+  }
+  return target;
+}
+
+/**
+ * Mint the working copy: a byte-identical copy of an archive-grade book,
+ * recorded as `outputs.epub`.
+ *
+ * THE ONE MINT. `ensureBookEpub` calls it after clearing what the old copy
+ * carried, and `vlm-convert` calls it having just written a fresh generated
+ * book; a second copy-and-register somewhere else is how the two would come to
+ * produce different things.
+ *
+ * ── The copy is the source's bytes, and that is PROVED ──────────────────────
+ *
+ * Nothing is translated or rewritten here: the working copy IS the book it came
+ * from. "Identical bytes" is the whole claim the naming, the analysis cache and
+ * every stamp downstream rest on, and a short copy would break all of them
+ * silently. A copy that is not identical is a failed copy and is refused as one.
+ *
+ * It does NOT clear anything. Clearing is `resetEditorRecords`, composed by the
+ * caller that means it — a conversion that honoured the user's deleted pages
+ * must not then throw that list away, and a re-mint of a deleted copy must.
+ */
+export async function mintWorkingCopyFrom(
+  projectDir: string,
+  source: WorkingCopySource
+): Promise<ExportEpubLocation> {
+  const target = await mintTargetFor(projectDir, source);
+  await atomicCopyFile(source.absPath, target.absPath);
+
+  const [sourceDigest, copyDigest] = await Promise.all([
+    sha256Of(source.absPath),
+    sha256Of(target.absPath),
+  ]);
+  if (sourceDigest !== copyDigest) {
+    await fs.promises.rm(target.absPath, { force: true });
+    throw new Error(
+      `${path.basename(projectDir)}'s working copy did not come out identical to the book it was `
+      + `copied from (${sourceDigest.slice(0, 12)} vs ${copyDigest.slice(0, 12)}). The copy has been `
+      + 'removed. A working copy that is not those bytes is not this book, and every stamp written '
+      + 'against it afterwards would name paragraphs that are not where they say. Try opening the '
+      + 'book again; if it keeps happening, the disk is the place to look.'
+    );
+  }
+
+  await registerEpubExport(projectDir, target.absPath);
+  console.log(
+    `[manifest-service] ${path.basename(projectDir)}: minted ${target.relPath} from its `
+    + `${source.kind === 'archive-epub' ? 'EPUB original' : 'generated book'}, byte-identical `
+    + `(${copyDigest.slice(0, 12)}).`
+  );
+  return target;
+}
+
+/** What `ensureGeneratedEpub` found, so a caller can say it once. */
+export interface GeneratedEpubAdoption {
+  /** The generated book that was adopted from the working copy, or null. */
+  adopted: GeneratedEpubLocation | null;
+  /**
+   * The sentence for a project whose recorded generated book is not on disk, or
+   * null. Not an exception: the project still opens, and every act that needs
+   * the generated book refuses with its own sentence.
+   */
+  missing: string | null;
+}
+
+/**
+ * Give a PDF-origin project the generated book it predates, once.
+ *
+ * ── Why there is a migration at all ─────────────────────────────────────────
+ *
+ * Every PDF project made before 2026-08-09 has its cast book AS its working
+ * copy: `vlm-convert` wrote straight onto `outputs.epub`. Erasing changes on one
+ * of those would delete the cast, so the erase act has to refuse them — and a
+ * feature that refuses the whole library is not a feature. So the working copy
+ * is COPIED to `source/<archive basename>.generated.epub` and that copy becomes
+ * the project's archive-grade book.
+ *
+ * ── Why copying an EDITED book is honest ────────────────────────────────────
+ *
+ * Those bytes may already carry folded chapter openings and named headings. They
+ * are still the earliest state of the book that exists on this disk — the
+ * pristine cast is gone, and only re-reading the pages could bring it back — so
+ * they are recorded as `origin: 'adopted'` and every surface that offers to
+ * erase changes says which book the user lands on. The alternative was to leave
+ * those projects with no generated book at all, which costs them the hour of GPU
+ * the first time they want their edits cleared.
+ *
+ * ── Idempotent, and it never guesses ────────────────────────────────────────
+ *
+ * A project that already records a generated book is left alone, whether or not
+ * the file is there — a record whose file has gone is REPORTED, never replaced
+ * by the working copy, because that copy has been edited since and adopting it
+ * would silently redefine what erasing changes goes back to. A project that is
+ * not PDF-origin, or has no book on disk yet, has nothing to adopt and that is
+ * an ordinary answer rather than a refusal.
+ */
+export async function ensureGeneratedEpub(projectDir: string): Promise<GeneratedEpubAdoption> {
+  const nothing: GeneratedEpubAdoption = { adopted: null, missing: null };
+
+  if (await archiveOriginalFormat(projectDir) !== 'pdf') return nothing;
+
+  const recorded = await readGeneratedEpub(projectDir);
+  if (recorded !== null) {
+    if (fs.existsSync(recorded.absPath)) return nothing;
+    return {
+      adopted: null,
+      missing: `${path.basename(projectDir)} records its generated book as ${recorded.relPath}, and `
+        + 'that file is not there. Nothing has been put in its place — the working copy beside it '
+        + 'has been edited since it was cast, so it is not the same book. Convert to EPUB again to '
+        + 'make one.',
+    };
+  }
+
+  const book = await readExportEpub(projectDir);
+  // No book yet is the ordinary state of a PDF nobody has converted. The cast
+  // itself writes the generated book, so there is nothing here to do for it.
+  if (book === null || !fs.existsSync(book.absPath)) return nothing;
+
+  const target = await generatedEpubTarget(projectDir);
+  if (path.resolve(target.absPath) === path.resolve(book.absPath)) {
+    throw new Error(
+      `${path.basename(projectDir)}'s generated book and its working copy would be the same file `
+      + `(${target.relPath}). The two names are derived from one stem and must differ; this project's `
+      + 'manifest records a book under a name nothing here produces.'
+    );
+  }
+  await atomicCopyFile(book.absPath, target.absPath);
+
+  const [bookDigest, copyDigest] = await Promise.all([
+    sha256Of(book.absPath),
+    sha256Of(target.absPath),
+  ]);
+  if (bookDigest !== copyDigest) {
+    await fs.promises.rm(target.absPath, { force: true });
+    throw new Error(
+      `${path.basename(projectDir)}'s generated book did not come out identical to the working copy `
+      + `it was adopted from (${bookDigest.slice(0, 12)} vs ${copyDigest.slice(0, 12)}). The copy has `
+      + 'been removed and nothing was recorded, because a generated book that is not those bytes '
+      + 'would put a different book behind every future erase.'
+    );
+  }
+
+  const adopted = await registerGeneratedEpub(projectDir, target.absPath, 'adopted');
+  console.log(
+    `[manifest-service] ${path.basename(projectDir)}: adopted ${book.relPath} as its generated book `
+    + `${adopted.relPath} (${copyDigest.slice(0, 12)}). Erasing this book's changes now costs a file `
+    + 'copy instead of an hour of page reading.'
+  );
+  return { adopted, missing: null };
+}
+
 /**
  * Throw away everything the user has recorded against this project's book.
  *
@@ -1202,32 +1653,36 @@ export interface EnsuredBookEpub extends ExportEpubLocation {
 }
 
 /**
- * The project's book EPUB, minting it from an EPUB original if there is none.
+ * The project's book EPUB, minting it from the project's archive-grade book if
+ * there is none.
  *
  * ── WHAT PROBLEM THIS SOLVES ────────────────────────────────────────────────
  *
- * `outputs.epub` is the ONE book a pass reads and rewrites, and a book that came
- * out of `foundry vlm-convert` has one from the moment it exists. A project
- * imported AS an EPUB does not: its only EPUB is the archive original, which is
- * the thing the archive exists to preserve. Simplify, Translate and the
- * narration strikes would all have had to either refuse those projects or write
- * to the archive — and writing to the archive is the one thing that must never
- * happen, because it is unrecoverable and it is what the user handed us.
+ * `outputs.epub` is the ONE book a pass reads and rewrites, and it must never be
+ * a file the project cannot get back. Both kinds of project have exactly one
+ * archive-grade book behind it (`classifyWorkingCopySource`): an EPUB-native
+ * project has the file the user handed us, and a PDF-origin one has the book a
+ * page reader cast from its pages. Neither may be written to — the first is
+ * unrecoverable, and the second is an hour of GPU — so Simplify, Translate and
+ * the narration strikes all write to a COPY.
  *
- * So the book is minted lazily: the first act that needs one COPIES the original
- * into `source/<Book Title>.epub` and records it. From then on the project looks
- * exactly like a converted one, and every later pass writes to the copy.
+ * So the book is minted lazily: the first act that needs one copies the
+ * archive-grade book into `source/<archive basename>.working.epub` and records
+ * it. From then on every pass writes to the copy, and the book it was copied
+ * from is still there to make it again.
  *
  * ── NO PROVENANCE ENTRY ─────────────────────────────────────────────────────
  *
  * `registerEpubExport` starts the book's provenance over, and nothing is
- * appended after it: this book has had nothing done to it. It IS the original,
- * copied. An `appliedPasses` entry here would claim a transformation that did
- * not happen, and a diff viewer would offer a review of nothing.
+ * appended after it: this book has had nothing done to it. It IS the book it was
+ * copied from. An `appliedPasses` entry here would claim a transformation that
+ * did not happen, and a diff viewer would offer a review of nothing. (The
+ * conversion that CAST a generated book is recorded by `vlm-convert` against the
+ * copy it mints, which is where that history belongs.)
  *
- * A project with no EPUB original is REFUSED by name. A PDF with no book has no
- * book; converting one is what makes it, and this helper is not a second, silent
- * way to end up with something to narrate.
+ * A project with nothing archive-grade to copy is REFUSED by name — a PDF whose
+ * pages have never been read has no book, and this helper is not a second,
+ * silent way to end up with something to narrate.
  *
  * ── The naming migration runs FIRST ─────────────────────────────────────────
  *
@@ -1258,26 +1713,24 @@ export async function ensureBookEpub(projectDir: string): Promise<EnsuredBookEpu
   if (existing && fs.existsSync(existing.absPath)) return { ...existing, remint: null };
 
   const manifest = await readManifestAt(projectDir);
-  const original = await sourceOriginalEpub(projectDir, manifest);
-  if (!original) {
-    // Two different situations, and they get the same answer for the same
-    // reason: there is no EPUB in this project that is safe to write to.
+  // Two different situations, and they get the same answer for the same reason:
+  // this project has no archive-grade book that a copy could be made of.
+  const answer = await classifyWorkingCopySource(projectDir);
+  if (answer.source === null) {
     throw new Error(
       existing
         ? `${path.basename(projectDir)}'s manifest records its book as ${existing.relPath}, but that `
-          + 'file is not there, and the project has no EPUB original to make a new one from.'
-        : `${path.basename(projectDir)} has no book EPUB. Its source is not an EPUB, so one has to `
-          + 'be made from the pages — run Convert to EPUB over it first.'
+          + `file is not there, and it cannot be made again. ${answer.refusal}`
+        : `${path.basename(projectDir)} has no book EPUB. ${answer.refusal}`
     );
   }
+  const source = answer.source;
 
-  const target = await exportEpubTarget(projectDir);
-  if (path.resolve(target.absPath) === path.resolve(original)) {
-    throw new Error(
-      `${path.basename(projectDir)}'s book would be written over its own archive original `
-      + `(${target.relPath}). Refusing: the archive is the one file nothing may edit.`
-    );
-  }
+  // Asked BEFORE anything is cleared, and it writes nothing: a project whose
+  // copy would land on the archive original or on the generated book is refused
+  // here rather than after its records have been thrown away for a copy it was
+  // never going to get.
+  await mintTargetFor(projectDir, source);
 
   // ── Counted BEFORE anything is cleared ─────────────────────────────────────
   //
@@ -1297,6 +1750,7 @@ export async function ensureBookEpub(projectDir: string): Promise<EnsuredBookEpu
   // has no record to have named anything, and is not this.
   const remint: WorkingCopyRemint | null = existing === null ? null : {
     relPath: existing.relPath,
+    source: source.kind,
     deletedBlockIds: clearedBlocks,
     deletedPages: clearedPages,
     narrationStrikes: strikes,
@@ -1314,35 +1768,7 @@ export async function ensureBookEpub(projectDir: string): Promise<EnsuredBookEpu
   // was not going to get.
   if (remint !== null) await resetEditorRecords(projectDir);
 
-  await atomicCopyFile(original, target.absPath);
-
-  // ── The copy is the archive's bytes, and that is PROVED ────────────────────
-  //
-  // Nothing is translated or rewritten here: the working copy IS the archive
-  // original. "Identical bytes" is the whole claim the naming, the analysis
-  // cache and every stamp downstream rest on, and a short copy would break all
-  // of them silently. A copy that is not identical is a failed copy and is
-  // refused as one.
-  const [originalDigest, copyDigest] = await Promise.all([
-    sha256Of(original),
-    sha256Of(target.absPath),
-  ]);
-  if (originalDigest !== copyDigest) {
-    await fs.promises.rm(target.absPath, { force: true });
-    throw new Error(
-      `${path.basename(projectDir)}'s working copy did not come out identical to its archive `
-      + `original (${originalDigest.slice(0, 12)} vs ${copyDigest.slice(0, 12)}). The copy has been `
-      + 'removed. A working copy that is not the archive\'s bytes is not this book, and every stamp '
-      + 'written against it afterwards would name paragraphs that are not where they say. Try '
-      + 'opening the book again; if it keeps happening, the disk is the place to look.'
-    );
-  }
-
-  await registerEpubExport(projectDir, target.absPath);
-  console.log(
-    `[manifest-service] ${path.basename(projectDir)}: minted ${target.relPath} from its EPUB `
-    + `original, byte-identical (${copyDigest.slice(0, 12)}).`
-  );
+  const target = await mintWorkingCopyFrom(projectDir, source);
   if (remint !== null) {
     console.warn(`[manifest-service] ${path.basename(projectDir)}: ${describeWorkingCopyRemint(remint)}`);
   }

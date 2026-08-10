@@ -16,6 +16,7 @@ import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-ta
 import type { PassDiffEntry } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
 import { samePath } from '@shared/document/same-path';
+import { describeWorkingCopyRemint } from '@shared/document/working-copy-remint';
 import {
   STAR_LABELS,
   STAR_MEANINGS,
@@ -47,6 +48,12 @@ interface VersionRow {
   stageBoundaries?: Array<{ stage: string; finishedAt: string }>;
   /** The 'exported' row only: when Reflow wrote this book, if it was recorded. */
   builtAt?: string;
+  /**
+   * The 'generated' row only: whether these bytes are the page reader's own
+   * output, or the working copy adopted when the project was migrated. It says
+   * which book erasing changes goes back to, so the confirmation can be true.
+   */
+  generatedOrigin?: 'cast' | 'adopted';
   // Present only on the synthetic 'analysis' entry (its durable version pin):
   analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
   analysisFlagCount?: number;
@@ -441,7 +448,7 @@ const AUDIO_EXTS = new Set([
                   <button class="act" [disabled]="narrationRefusalReason() !== null"
                           [title]="narrationTitle()" (click)="process.emit()">Process</button>
                 }
-                @if (row.v.editable || row.v.type === 'narration') {
+                @if (row.v.editable || row.v.type === 'narration' || row.v.type === 'generated') {
                   <!-- The narration copy is NOT editable and never becomes so —
                        it is re-cut from the book and the strikes every time
                        Export TTS copy runs, so anything typed into it would be
@@ -464,11 +471,12 @@ const AUDIO_EXTS = new Set([
                   <button class="act" (click)="exportDoc.emit(row.v.path)" [title]="exportTitle(row.v)">Export</button>
                 }
                 @if (deletable(row.v)) {
-                  <button class="act danger" (click)="removeDoc(row.v)" [title]="deleteTitle(row.v)">Delete</button>
-                }
-                @if (row.v.type === 'original') {
-                  <button class="act danger" (click)="resetEdits()"
-                          title="Clear all editor edits for this source and start fresh (the archive file is untouched)">Reset edits</button>
+                  <!-- The book row's danger button says "Erase all changes", not
+                       "Delete": deleting that file was never durable — the next
+                       open mints it again byte-identical — so the label names
+                       what the act really is (Owen, 2026-08-09). -->
+                  <button class="act danger" (click)="removeDoc(row.v)"
+                          [title]="deleteTitle(row.v)">{{ deleteLabel(row.v) }}</button>
                 }
               </div>
             </div>
@@ -1173,6 +1181,7 @@ export class StudioVersionsComponent {
     const of = (type: string): VersionRow | null => docs.find(v => v.type === type) ?? null;
 
     const archiveRow = of('archive');
+    const generatedRow = of('generated');
     const workingRow = of('working');
     const epubRow = of('exported');
 
@@ -1190,6 +1199,7 @@ export class StudioVersionsComponent {
 
     return {
       archive: archiveRow ? { id: archiveRow.id } : null,
+      generated: generatedRow ? { id: generatedRow.id } : null,
       working: workingRow && workingRow.stageBoundaries
         ? {
           id: workingRow.id,
@@ -1238,7 +1248,9 @@ export class StudioVersionsComponent {
     const input = this.familyInput();
     const family = new Map(versionFamily(input).map(r => [r.id, r]));
     const reviews = this.reviewByStar();
-    const ladder = ['archive', 'working', 'exported'];
+    // Derivation order: the archive PDF's pages are cast into the generated
+    // book, and the book the user edits is a byte copy of that.
+    const ladder = ['archive', 'generated', 'working', 'exported'];
     const rank = (v: VersionRow): number => {
       const at = ladder.indexOf(v.type);
       // Everything outside the family (legacy stage outputs, the old source/
@@ -1410,6 +1422,10 @@ export class StudioVersionsComponent {
     if (v.type === 'narration') {
       return 'Look at what narration will actually read. It is re-cut from your working copy every '
         + 'time you export, so it opens read-only.';
+    }
+    if (v.type === 'generated') {
+      return 'Look at what the page reader actually produced — the only way to tell a bad reading '
+        + 'from a bad edit. Nothing writes to it, so it opens read-only.';
     }
     return 'Open this file in the editor';
   }
@@ -2329,8 +2345,8 @@ export class StudioVersionsComponent {
   /**
    * Which rows can be deleted, and by what.
    *
-   * Three different acts, each routed to the code that already owns it — see
-   * `removeDoc`. What is NOT here is a fourth: 'original' (the pre-archive
+   * Four different acts, each routed to the code that already owns it — see
+   * `removeDoc`. What is NOT here is a fifth: 'original' (the pre-archive
    * `source/original.*` of an old project) and 'analysis' (deleted by its own
    * button, which also removes the checkpoint) keep their existing protection.
    *
@@ -2356,14 +2372,30 @@ export class StudioVersionsComponent {
     return !['original', 'analysis', 'narration'].includes(v.type);
   }
 
+  /**
+   * What the danger button on each row is CALLED.
+   *
+   * The book row's is not "Delete" any more, and that is the whole of Owen's
+   * 2026-08-09 ruling: "the thing they 'delete' is actually the changes, not the
+   * working copy." Deleting that file was never a durable act — the next open
+   * mints it again, byte-identical — so the button says what actually happens.
+   */
+  deleteLabel(v: VersionRow): string {
+    return v.type === 'exported' ? 'Erase all changes' : 'Delete';
+  }
+
   deleteTitle(v: VersionRow): string {
     switch (v.type) {
       case 'archive':
         return 'Delete the original this book was imported from — and everything cast from it';
+      case 'generated':
+        return 'Delete the book read out of your pages. Reading them again is an hour of GPU — '
+          + 'erasing your changes, on the row below, is not.';
       case 'working':
         return 'Delete your working copy: the cast text and your block curation. The original is untouched.';
       case 'exported':
-        return 'Delete the book EPUB, and the record of every pass applied to it';
+        return 'Clear every change and put a fresh byte-identical copy in its place. The book it '
+          + 'was copied from is untouched.';
       default:
         return 'Delete this version';
     }
@@ -2678,6 +2710,13 @@ export class StudioVersionsComponent {
    * Delete the working copy: the PDF, its binding record and the machine-local
    * scan scratch — the three files `document:discard` removes as ONE act.
    *
+   * THE WORKING **PDF** — `<Original>.working.pdf`, the retired artifact — and
+   * not the book. The row it sits on can only appear for a project that already
+   * has one on disk (nothing mints them any more, and the library holds zero),
+   * which is why this still says "the cast text layer": that is what a working
+   * PDF carries. The act on the book row is `eraseBookChanges`, which is a
+   * different thing entirely and says so in its own words.
+   *
    * That handler, not a `deleteFile` on the PDF. The binding is what says a
    * working document exists and which original it was cast from; deleting the
    * file alone would leave a record vouching for a document that is gone, which
@@ -2778,6 +2817,10 @@ export class StudioVersionsComponent {
 
     const working = this.documents().find(d => d.type === 'working') ?? null;
     const book = this.documents().find(d => d.type === 'exported') ?? null;
+    // A PDF project keeps the book read out of its pages when the PDF goes, and
+    // the working copy can still be made from THAT — so "it cannot be rebuilt"
+    // is only true when there is no generated book standing behind it.
+    const generated = this.documents().find(d => d.type === 'generated') ?? null;
     const detail = [
       `This deletes ${v.path}`,
       '',
@@ -2792,13 +2835,20 @@ export class StudioVersionsComponent {
           '',
         ]
         : []),
-      ...(book
+      ...(generated
         ? [
-          `KEPT: the book you built from it — ${book.path.split(/[\\/]/).pop()} — with everything `
-          + 'applied to it. It cannot be rebuilt once the original is gone.',
+          `KEPT: the book read out of its pages — ${generated.path.split(/[\\/]/).pop()} — and your `
+          + 'working copy of it, with everything applied. Those pages cannot be read again once the '
+          + 'PDF is gone, but your book and your edits are not affected.',
           '',
         ]
-        : []),
+        : book
+          ? [
+            `KEPT: the book you built from it — ${book.path.split(/[\\/]/).pop()} — with everything `
+            + 'applied to it. It cannot be rebuilt once the original is gone.',
+            '',
+          ]
+          : []),
       'KEPT: your finished audiobooks, the rendered sentence cache, the cover and all metadata.',
       '',
       'This cannot be undone.',
@@ -2841,75 +2891,167 @@ export class StudioVersionsComponent {
   }
 
   /**
-   * Delete the book EPUB — and, with it, the diffs of every pass applied to it.
+   * Erase every change made to the book — the act that used to be called
+   * "delete the book EPUB".
    *
-   * Owen, third session: "if that file is removed, so is the diff and its
-   * viewing button." So this is `document:delete-book`, one act in main, rather
-   * than a `deleteFile` with tidying bolted on: the manifest record, the
-   * `appliedPasses` provenance, the `stages/NN-<kind>/` directories those passes
-   * wrote, the binding's own note of the book, and last of all the file.
+   * ── Why the delete became an erase ──────────────────────────────────────────
+   *
+   * Owen, 2026-08-09: "whats the goal of creating a working copy in the first
+   * place? … to make changes reversible and to protect an archived file … the
+   * thing they 'delete' is actually the changes, not the working copy."
+   *
+   * Deleting this file was never durable: the next thing that asks for the book
+   * mints it again from the archive-grade book behind it, byte-identical. So the
+   * button says what actually happens, and it goes through the SAME code path a
+   * user deleting the file in Explorer takes (`book:erase-changes` →
+   * `ensureBookEpub`) rather than a second one that could drift from it.
+   *
+   * The confirmation counts what goes because the receipt afterwards counts the
+   * same things — the strikes and the deletions are usually the largest numbers
+   * in an evening's work, and a user is owed them before as well as after.
    */
-  private async removeBookEpub(v: VersionRow): Promise<void> {
+  private async eraseBookChanges(v: VersionRow): Promise<void> {
     const dir = this.projectDir();
     if (!dir) return;
     const withDiffs = this.passDiffs();
     const passes = this.item()?.appliedPasses ?? [];
+    const generated = this.documents().find(d => d.type === 'generated') ?? null;
+    const name = v.path.split(/[\\/]/).pop();
+
+    // Which book the fresh copy comes from, in the user's words. The generated
+    // row's presence is the measurement — main emits it exactly when the project
+    // has one on disk — and its origin says whether those bytes are the reader's
+    // own output or a working copy adopted when the project was migrated.
+    const restoredFrom = generated === null
+      ? 'the original you imported'
+      : generated.generatedOrigin === 'cast'
+        ? 'the book read out of your PDF\'s pages'
+        : 'the book read out of your PDF\'s pages, as it stood when BookForge started keeping it '
+          + '(so any edits made before that are still in it)';
+
     const detail = [
-      `This deletes ${v.path.split(/[\\/]/).pop()}.`,
-      '',
+      `Every change you have made to ${name} is cleared, and a byte-identical fresh copy takes its `
+      + 'place immediately:',
+      '  • your block and page deletions',
+      '  • text corrections, splits, merges and category learning',
+      '  • chapter markers and any chapter openings you folded',
+      '  • everything struck out for narration',
+      '  • undo / redo history',
       ...(passes.length > 0
         ? [
-          `GOES WITH IT: the record of the ${passes.length} pass${passes.length === 1 ? '' : 'es'} `
-          + 'applied to this book, and their stars'
+          `  • the record of the ${passes.length} pass${passes.length === 1 ? '' : 'es'} applied to `
+          + 'this book, and their stars'
           + (withDiffs.length > 0
-            ? `, including the ${withDiffs.length} you can still review — once the book is gone `
-            + 'there is no file for those changes to be changes TO.'
-            : '.'),
-          '',
+            ? ` — including the ${withDiffs.length} you can still review, which have nothing left to `
+            + 'be changes TO'
+            : ''),
         ]
         : []),
-      'KEPT: the archive original and your working copy. Build the book again from them whenever '
-      + 'you like — the passes are re-runnable.',
+      '',
+      `The copy is made from ${restoredFrom}, which is not touched by this and never is.`,
+      ...(generated !== null
+        ? ['', 'Your pages are NOT read again — that is the row above, and it costs an hour of GPU.']
+        : []),
     ].join('\n');
 
     const { confirmed } = await this.electron.showConfirmDialog({
-      title: 'Delete the book',
-      message: `Delete "${v.label}"?`,
+      title: 'Erase all changes',
+      message: `Erase every change made to "${v.label}"?`,
       detail,
-      confirmLabel: 'Delete', cancelLabel: 'Cancel', type: 'warning',
+      confirmLabel: 'Erase all changes', cancelLabel: 'Cancel', type: 'warning',
     });
     if (!confirmed) return;
 
-    const res = await this.electron.deleteBookEpub(dir);
-    if (!res.success) {
+    const res = await this.electron.eraseBookChanges(dir);
+    if (!res.success || !res.remint) {
       await this.electron.showMessageDialog({
-        title: 'Delete failed',
-        message: res.error || 'Could not delete the book. Try again.',
+        title: 'Nothing was erased',
+        message: res.error || 'The changes could not be erased, and nothing said why. Your working '
+          + 'copy is untouched.',
         type: 'error',
       });
+      await this.load();
       return;
     }
     // The whole-file diff sidecar (`<name>.diff.json`) an older pipeline wrote
     // beside this book, if the versions scan found one. It is not in the
-    // manifest's provenance, so main cannot see it — but it is a diff OF THIS
-    // FILE, and the file has just gone.
+    // manifest's provenance, so main cannot see it — but it is a diff OF THE
+    // BYTES that have just been replaced.
     if (v.diffRecordPath) {
       const delDiff = await this.electron.deleteFile(v.diffRecordPath);
       if (!delDiff.success) {
-        console.warn('[studio-versions] the book was deleted but its diff sidecar survived:', delDiff.error);
+        console.warn('[studio-versions] the changes were erased but a diff sidecar survived:', delDiff.error);
       }
+    }
+    // The receipt — the same sentence main writes to its console and the picker
+    // shows when the copy is re-made by the other route.
+    await this.electron.showMessageDialog({
+      title: 'Every change erased',
+      message: describeWorkingCopyRemint(res.remint),
+      type: 'info',
+    });
+    await this.load();
+    this.changed.emit();
+  }
+
+  /**
+   * Delete the book cast from this project's pages — the heavy act.
+   *
+   * The one that costs the hour of GPU, kept deliberately separate from erasing
+   * changes so the cheap act cannot be pressed by somebody meaning the expensive
+   * one or the other way round. The working copy goes with it, because a working
+   * copy is a copy OF this book and nothing could mint another once it is gone.
+   */
+  private async removeGeneratedEpub(v: VersionRow): Promise<void> {
+    const dir = this.projectDir();
+    if (!dir) return;
+    const working = this.documents().find(d => d.type === 'exported') ?? null;
+    const detail = [
+      `This deletes ${v.path.split(/[\\/]/).pop()} — every page of your PDF as the reader read it.`,
+      '',
+      ...(working !== null
+        ? [
+          'GOES WITH IT: your working copy and everything recorded against it, because a working '
+          + 'copy is a copy of this book and there would be nothing left to make another from:',
+          `  • ${working.path.split(/[\\/]/).pop()}`,
+          '  • your deletions, chapter markers, narration strikes and applied passes',
+          '',
+        ]
+        : []),
+      'KEPT: the archive PDF. Convert to EPUB reads its pages again to start over — an hour of GPU, '
+      + 'where erasing your changes is a file copy.',
+      '',
+      'This cannot be undone.',
+    ].join('\n');
+
+    const { confirmed } = await this.electron.showConfirmDialog({
+      title: 'Delete the book read from your pages',
+      message: `Delete "${v.label}" and start the whole conversion over?`,
+      detail,
+      confirmLabel: 'Delete and start over', cancelLabel: 'Cancel', type: 'warning',
+    });
+    if (!confirmed) return;
+
+    const res = await this.electron.deleteGeneratedEpub(dir);
+    if (!res.success) {
+      await this.electron.showMessageDialog({
+        title: 'Delete failed',
+        message: res.error || 'Could not delete the generated book. Nothing was removed.',
+        type: 'error',
+      });
     }
     await this.load();
     this.changed.emit();
   }
 
   async removeDoc(v: VersionRow): Promise<void> {
-    // The family's three rows are three different acts, each owned by the code
-    // that already knows how to undo that artifact. Only the rows below them —
-    // the legacy stage outputs — take the generic file delete.
+    // The family's rows are four different acts, each owned by the code that
+    // already knows how to undo that artifact. Only the rows below them — the
+    // legacy stage outputs — take the generic file delete.
     if (v.type === 'working') { await this.removeWorkingCopy(v); return; }
     if (v.type === 'archive') { await this.removeArchiveOriginal(v); return; }
-    if (v.type === 'exported') { await this.removeBookEpub(v); return; }
+    if (v.type === 'generated') { await this.removeGeneratedEpub(v); return; }
+    if (v.type === 'exported') { await this.eraseBookChanges(v); return; }
 
     const { confirmed } = await this.electron.showConfirmDialog({
       title: 'Delete version',
@@ -2986,78 +3128,22 @@ export class StudioVersionsComponent {
     }
   }
 
-  /**
-   * Clear ALL persisted editor state for this project's source (deletions,
-   * corrections, splits/merges, chapter markers, crops, category learning,
-   * undo/redo) via the shared pipeline:reset-editor-state handler — the same
-   * code path as Studio's context-menu reset. The archive/original file is
-   * untouched. Deleting the export is opt-in and routed through the same
-   * deleteFile mechanism removeDoc uses.
-   *
-   * The export is NAMED AFTER THE BOOK, so every string here says the name the
-   * record actually carries. Hard-coding "exported.epub" told the user a file
-   * existed that has not been written since the rename (Aug 3 2026).
-   */
-  async resetEdits(): Promise<void> {
-    const dir = this.projectDir();
-    if (!dir) return;
-
-    // The exported working EPUB (if any) goes stale the moment edits are cleared.
-    const exported = this.documents().find(d => d.type === 'exported');
-    const exportedName = exported ? exported.path.split(/[\\/]/).pop()! : null;
-
-    const detail = [
-      'This clears every edit you made in the editor for this source:',
-      '  • deleted blocks and deleted pages',
-      '  • text corrections and block edits',
-      '  • block splits and merges',
-      '  • chapter markers',
-      '  • crop regions',
-      '  • category learning and custom categories',
-      '  • undo / redo history',
-      '',
-      'The archive/original source file itself is NOT touched — re-opening the editor starts fresh, as if the file had just been imported.',
-    ].join('\n');
-
-    const { confirmed, checkboxChecked } = await this.electron.showConfirmDialog({
-      title: 'Reset edits',
-      message: 'Reset all editor edits for this book?',
-      detail,
-      confirmLabel: 'Reset edits', cancelLabel: 'Cancel', type: 'warning',
-      checkboxLabel: exportedName ? `Also delete ${exportedName}` : undefined,
-    });
-    if (!confirmed) return;
-
-    const res = await this.electron.resetEditorState(dir);
-    if (!res.success) {
-      await this.electron.showMessageDialog({
-        title: 'Reset failed',
-        message: res.error || 'Could not reset editor state. Try again.',
-        type: 'error',
-      });
-      return;
-    }
-
-    if (checkboxChecked && exported && exportedName) {
-      // The SAME delete the book's own row performs — the record, the passes
-      // applied to it and their diffs go with the file. A plain unlink here
-      // would leave `outputs.epub` naming a file that is gone and a "Review
-      // changes" star for a book nobody has.
-      const del = await this.electron.deleteBookEpub(dir);
-      if (!del.success) {
-        // Edits were reset, but the stale export survived (e.g. a transient
-        // lock on the synced drive) — say so instead of implying it's gone.
-        await this.electron.showMessageDialog({
-          title: `${exportedName} not deleted`,
-          message: `Edits were reset, but ${exportedName} could not be deleted: ${del.error || 'unknown error'}. Delete it manually from the Versions list.`,
-          type: 'warning',
-        });
-      }
-    }
-
-    await this.load();
-    this.changed.emit();
-  }
+  // ── "Reset edits" is gone, folded into "Erase all changes" ─────────────────
+  //
+  // It sat on the 'original' row and cleared the manifest records through
+  // `pipeline:reset-editor-state`, leaving the book file exactly where it was —
+  // so a user who pressed it got a book with no records and bytes still carrying
+  // the folded openings and named headings those records described. It also
+  // offered a checkbox to delete the export, which is the other half of the same
+  // act done as an afterthought.
+  //
+  // "Erase all changes" on the book row is that act, done completely and in one
+  // code path: the same wholesale reset, then a byte-identical fresh copy. Two
+  // buttons performing subtly different resets is exactly the drift the single
+  // `resetEditorRecords` was pulled out to prevent, so the weaker one is retired
+  // rather than kept beside it. The rail's own "Erase all changes and start
+  // over" (`pipeline:reset-editor-state`) is untouched — it is the picker's, it
+  // destroys the open editor window, and it is not this page's button.
 
   /** Delete every cached sentence-audio file for this book (all languages). */
   async deleteCache(): Promise<void> {

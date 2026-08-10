@@ -88,7 +88,7 @@ export function starForPassKind(kind: string): VersionStar | null {
   return PASS_STARS[kind] ?? null;
 }
 
-export type FamilyRowKind = 'archive' | 'working' | 'epub';
+export type FamilyRowKind = 'archive' | 'generated' | 'working' | 'epub';
 
 /**
  * The stars a row of this kind CAN earn — its columns, lit or not.
@@ -102,6 +102,10 @@ export type FamilyRowKind = 'archive' | 'working' | 'epub';
 export function starSlotsFor(kind: FamilyRowKind): VersionStar[] {
   switch (kind) {
     case 'archive':
+    // The generated book earns none for the same reason the archive does not:
+    // it is archive-grade, nothing may write to it, so no pass has ever landed
+    // on it. Every pass runs on the working copy minted FROM it.
+    case 'generated':
     // The working copy earns none either, and that is a fact about what runs
     // rather than a gap: curation is a person editing a file, and there is no
     // stage over it whose completion a star could report.
@@ -130,6 +134,12 @@ export interface VersionFamilyInput {
    * under one that is not there.
    */
   readonly archive: { readonly id: string } | null;
+  /**
+   * The book cast from the archive PDF's pages, when the project has one ON
+   * DISK. Null for an EPUB-native project — nothing generated a book, because
+   * the user handed us one — and null for a PDF nobody has converted.
+   */
+  readonly generated: { readonly id: string } | null;
   /**
    * The working copy. Present only when the binding record AND the file are
    * both there — a record without a file describes a document that is gone, and
@@ -202,6 +212,10 @@ export function latestPassByKind<T extends PassRecord>(
 export function starsFor(kind: FamilyRowKind, input: VersionFamilyInput): VersionStar[] {
   switch (kind) {
     case 'archive':
+    // Same construction and the same guarantee as the archive's: this branch
+    // reads no input at all, so nothing can light a star on a file nothing
+    // writes to.
+    case 'generated':
       return [];
     // Same construction, same guarantee: the working branch reads neither the
     // boundaries nor the passes, so no input can light a star on it.
@@ -226,6 +240,12 @@ export function starsFor(kind: FamilyRowKind, input: VersionFamilyInput): Versio
  * The children are indented only when there IS a parent on disk. A working copy
  * shown one level in under nothing would read as belonging to the row above it,
  * whatever that row happened to be.
+ *
+ * The ladder is archive → generated → working → book, and it is the derivation
+ * order too: the archive PDF's pages are cast into the generated book, and the
+ * book the user edits is a byte copy of that. The generated row is a CHILD of
+ * the archive rather than a second parent, because it is derived from it —
+ * everything below the archive is.
  */
 export function versionFamily(input: VersionFamilyInput): VersionFamilyRow[] {
   const rows: VersionFamilyRow[] = [];
@@ -237,6 +257,15 @@ export function versionFamily(input: VersionFamilyInput): VersionFamilyRow[] {
       kind: 'archive',
       depth: 0,
       stars: starsFor('archive', input),
+      staleness: null,
+    });
+  }
+  if (input.generated) {
+    rows.push({
+      id: input.generated.id,
+      kind: 'generated',
+      depth: childDepth,
+      stars: starsFor('generated', input),
       staleness: null,
     });
   }

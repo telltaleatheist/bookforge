@@ -406,25 +406,39 @@ function inferredPagesFrom(stderr: string): number {
 /**
  * Convert a project's PDF into its book, and record it.
  *
- * The four acts, in this order, and the order is the design:
+ * The five acts, in this order, and the order is the design:
  *
  *  1. foundry writes the EPUB into `/tmp/bookforge-staging/`. Nothing lands in
  *     the synced library until the run has finished and exited zero — a
  *     half-written EPUB inside the library is a half-written EPUB propagating to
  *     every other machine.
- *  2. It is moved onto `exportEpubTarget`'s path, atomically at the destination.
- *     WHERE it goes and what it is CALLED are `manifest-service`'s answers, not
- *     this module's: the book's name is derived in one place
+ *  2. It is moved onto `generatedEpubTarget`'s path, atomically at the
+ *     destination. WHERE it goes and what it is CALLED are `manifest-service`'s
+ *     answers, not this module's: the book's name is derived in one place
  *     (docs: "One place derives the name").
- *  3. `registerEpubExport` records it — which also ends the OLD book's
+ *
+ *     This is the GENERATED BOOK, and it is archive-grade — nothing writes to it
+ *     ever again. It used to land straight on `outputs.epub`, which made the
+ *     cast and the editable book one file and put this hour of GPU inside the
+ *     thing a user throws away to start their edits over (Owen, 2026-08-09: "an
+ *     epub generated from a pdf… should be treated as an archive file").
+ *  3. `registerGeneratedEpub` records it with its digest.
+ *  4. `mintWorkingCopyFrom` makes the byte-identical working copy the user edits
+ *     and records THAT as `outputs.epub` — which also ends the old book's
  *     provenance and drops the narration copy cut from it, because this is a
  *     rebuild and the passes applied to the previous bytes did not happen to
- *     these.
- *  4. `appendAppliedPass` writes the conversion into the fresh provenance, so
+ *     these. It is the same mint an EPUB-native project's copy gets, so there is
+ *     one answer to "where did this working copy come from" whatever the project
+ *     started as.
+ *  5. `appendAppliedPass` writes the conversion into the fresh provenance, so
  *     the versions page can say where this book came from. It goes AFTER the
- *     export for the same reason the foundry passes' records do: an export
- *     starts provenance over, and a record written before it would be erased by
- *     it.
+ *     mint for the same reason the foundry passes' records do: registering an
+ *     export starts provenance over, and a record written before it would be
+ *     erased by it.
+ *
+ * What is NOT done here is a reset. The user's deleted pages are a fact about
+ * the PDF and were just OBEYED by this run (`--skip-pages`); clearing them
+ * because the book was rebuilt would silently un-skip them on the next cast.
  */
 export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmConvertResult> {
   // FIRST, before a project is resolved or 38 MB of foundry is fetched: whether
@@ -459,7 +473,7 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
   // other stage for the duration of something that has not started yet.
   await ensureFoundryPath();
 
-  const target = await manifestService.exportEpubTarget(project.projectDir);
+  const generatedTarget = await manifestService.generatedEpubTarget(project.projectDir);
   const manifest = await manifestService.getManifest(project.projectId);
   if (!manifest.success || !manifest.manifest) {
     throw new Error(
@@ -651,8 +665,11 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     return run;
   });
 
-  await moveIntoPlace(stagedEpub, target.absPath);
-  await manifestService.registerEpubExport(project.projectDir, target.absPath);
+  await moveIntoPlace(stagedEpub, generatedTarget.absPath);
+  const generated = await manifestService.registerGeneratedEpub(
+    project.projectDir, generatedTarget.absPath, 'cast');
+  const target = await manifestService.mintWorkingCopyFrom(
+    project.projectDir, { absPath: generated.absPath, kind: 'generated-epub' });
 
   const unreadable = unreadablePagesFrom(result.stderr);
   const totalPages = totalPagesFrom(result.stderr) ?? 0;

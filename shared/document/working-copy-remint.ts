@@ -58,6 +58,20 @@
 export interface WorkingCopyRemint {
   /** The book the record named, project-relative — the file that was missing. */
   relPath: string;
+  /**
+   * WHICH archive-grade book the fresh copy was made from.
+   *
+   * Two kinds of project and two true sentences, and only one of them can be
+   * said about a given book: an EPUB-native project's copy is the file the user
+   * handed us, and a PDF-origin project's is the book a page reader cast out of
+   * their pages (`outputs.generatedEpub`, archive-grade since 2026-08-09).
+   *
+   * It is on the receipt because the receipt's last line tells the user what
+   * they are now looking at, and telling somebody they are looking at "the
+   * archive original" when their archive is a PDF is a sentence they cannot
+   * make sense of.
+   */
+  source: 'archive-epub' | 'generated-epub';
   /** Block deletions that were recorded in `manifest.source`, and are gone. */
   deletedBlockIds: number;
   /** Page deletions in `manifest.source`, gone with them. */
@@ -101,11 +115,21 @@ export function describeWorkingCopyRemint(remint: WorkingCopyRemint): string {
   const list = cleared.length === 2
     ? `${cleared[0]} and ${cleared[1]}`
     : `${cleared[0]}, ${cleared[1]} and ${cleared[2]}`;
+  // The book it came from, named as the user knows it. A PDF-origin project has
+  // no archive EPUB to have been copied — its archive is the PDF — so calling
+  // the source "the archive original" there would describe a file that does not
+  // exist.
+  const from = remint.source === 'archive-epub'
+    ? { made: 'this project\'s archive original', now: 'the archive original, unedited' }
+    : {
+      made: 'the book read out of this project\'s pages',
+      now: 'that book exactly as it was read, with none of your edits',
+    };
   return (
-    `${remint.relPath} was not on disk, so it has been made again from this project's archive `
-    + 'original. Deleting the working copy is how a book is started over, and it was taken that '
-    + 'way: your edits are recorded in the project rather than written into the file, and every '
-    + `record made against the copy that is gone was cleared with it — ${list}. The copy you are `
-    + 'looking at now is the archive original, unedited.'
+    `${remint.relPath} was not on disk, so it has been made again from ${from.made}. Deleting the `
+    + 'working copy is how a book is started over, and it was taken that way: your edits are '
+    + 'recorded in the project rather than written into the file, and every record made against '
+    + `the copy that is gone was cleared with it — ${list}. The copy you are looking at now is `
+    + `${from.now}.`
   );
 }

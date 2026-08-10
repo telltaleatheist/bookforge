@@ -454,6 +454,18 @@ export interface ProjectExportInfo {
   target: { relPath: string; absPath: string };
   /** The existing export, or null when the project has never exported. */
   exported: { relPath: string; absPath: string; modifiedAt?: string } | null;
+  /**
+   * The book a page reader cast out of this project's PDF, or null.
+   *
+   * Null for an EPUB-native project — nothing generated a book, because the user
+   * handed us one — and null for a PDF whose pages have never been read. It is a
+   * separate artifact from `exported`: the working copy is a byte-identical copy
+   * OF this, and this is what nothing may write to.
+   */
+  generated: {
+    relPath: string; absPath: string; modifiedAt?: string;
+    origin: 'cast' | 'adopted'; sha256: string;
+  } | null;
   /** Absolute JPEG/PNG cover, or null for a book without one. */
   coverPath: string | null;
   /**
@@ -1363,6 +1375,10 @@ export class ElectronService {
     return {
       target: result.target,
       exported: result.exported ?? null,
+      // Main sends null for every project that has no generated book on disk,
+      // which is every EPUB-native one and every unconverted PDF. Absent means
+      // the same thing from a main that predates the field.
+      generated: result.generated ?? null,
       coverPath: result.coverPath ?? null,
       // Main sends the list whenever there is a book; a project with none sends
       // nothing, which is "no book has any passes" rather than a value missing.
@@ -2729,8 +2745,8 @@ export class ElectronService {
    * is not there yet.
    *
    * The same call the project's own opening makes, so a copy made by hand and
-   * one made automatically are one act. Refuses a PDF project by name: its
-   * working copy is what vlm-convert writes.
+   * one made automatically are one act. Refuses by name a project with nothing
+   * archive-grade to copy — a PDF whose pages have never been read.
    */
   async ensureWorkingEpub(projectDir: string): Promise<{
     success: boolean;
@@ -2746,6 +2762,58 @@ export class ElectronService {
   }> {
     if (this.isElectron) {
       return (window as any).electron.vlm.ensureWorkingEpub(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Erase every change made to this book.
+   *
+   * The working copy is deleted and a byte-identical one takes its place, with
+   * nothing recorded against it — the same act as deleting
+   * `<archive basename>.working.epub` in Explorer, which is exactly why it goes
+   * through the same code (`book:erase-changes` → `ensureBookEpub`). The receipt
+   * is the same `WorkingCopyRemint` sentence that path produces.
+   *
+   * Refuses by name a project with nothing archive-grade to re-mint from, with
+   * the working copy still on disk: there is no state in which this deletes a
+   * book it cannot make again.
+   */
+  async eraseBookChanges(projectDir: string): Promise<{
+    success: boolean;
+    path?: string;
+    relPath?: string;
+    remint?: WorkingCopyRemint;
+    /** Which book the fresh copy came from — the user's original, or the cast. */
+    source?: 'archive-epub' | 'generated-epub';
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.eraseChanges(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Delete the book cast from this project's pages, and the working copy minted
+   * from it.
+   *
+   * The heavy act, and deliberately not the same button as erasing changes: a
+   * re-cast reads every page again, where erasing changes is a file copy. The
+   * working copy goes with it because nothing could mint another one.
+   */
+  async deleteGeneratedEpub(projectDir: string): Promise<{
+    success: boolean;
+    removed?: {
+      relPath: string;
+      fileRemoved: boolean;
+      workingCopyRelPath: string | null;
+      droppedPasses: number;
+    };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.deleteGeneratedEpub(projectDir);
     }
     return { success: false, error: 'Not running in Electron' };
   }

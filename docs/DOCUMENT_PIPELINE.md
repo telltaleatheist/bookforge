@@ -16,16 +16,31 @@ and every mutable thing is a copy of it, bound to it by sha256 where the
 sidecar-binding protocol applies. Every stage is document-in → document-out: a
 real file in the project folder, openable by any external tool.
 
+**The book cast from a PDF joins that class (2026-08-09).** `vlm-convert` writes
+`source/<Original>.generated.epub` and nothing ever writes to it again; the file
+the user edits is a byte-identical working copy minted from it, exactly as an
+EPUB-native project's copy is minted from the file the user handed us. Owen: "an
+epub generated from a pdf… should be treated as an archive file. a working copy
+of the generated epub is created." The payoff is that **erasing a book's changes
+costs a file copy instead of an hour of GPU** — the cast survives it.
+
 ## The three flows
 
 All three converge on the same tail:
 
 ```
-1  PDF ─▶ create working copy ─▶ curate (delete pages/blocks) ─▶ Create EPUB (vlm, skips deleted pages) ─▶ book EPUB
-2  PDF ──────────────────────────────────────────────────────▶ Convert to EPUB (vlm, whole document) ───▶ book EPUB
-3  EPUB original ── first strike/pass lazily mints the book as a COPY (ensureBookEpub) ─────────────────▶ book EPUB
+1  PDF ─▶ create working copy ─▶ curate (delete pages/blocks) ─▶ Create EPUB (vlm, skips deleted pages) ─▶ generated EPUB ─▶ copy ─▶ working copy
+2  PDF ──────────────────────────────────────────────────────▶ Convert to EPUB (vlm, whole document) ───▶ generated EPUB ─▶ copy ─▶ working copy
+3  EPUB original ─────────────────────────────────────────────────────────────────────────────────────────────────────────▶ copy ─▶ working copy
 
-                     book EPUB ─▶ strikes (categories, elements, pages) ─▶ Export TTS copy ─▶ TTS
+                     working copy ─▶ strikes (categories, elements, pages) ─▶ Export TTS copy ─▶ TTS
+
+The copy in flows 1-3 is one function, `manifestService.mintWorkingCopyFrom`:
+byte-identical, sha256-verified, recorded as `outputs.epub`. `ensureBookEpub`
+makes it lazily for a project that has none — and when the recorded copy is
+MISSING it first runs the wholesale `resetEditorRecords`, so deleting the working
+copy (in Explorer, or through the versions page's **Erase all changes**) clears
+every change and puts back the archive-grade bytes.
 ```
 
 ## Documents
@@ -34,7 +49,8 @@ All three converge on the same tail:
 |---|---|
 | `archive/<Original>.pdf` / `source/original.epub` | The immutable original. Its sha256 is the identity everything else is bound to. |
 | `<Original>.working.pdf` | Mutable curation copy of a PDF original, in the project root. Minted by `document:create-working-copy` (electron/working-copy.ts): plain copy + `/Foundry` marker (producer `bookforge-working-copy/1`) + sidecar binding + **seeded block annotations** from the app's own analysis, so it is born curatable. Instant, no queue. Structural edits only — its text is never rewritten. |
-| `source/<Book Title>.epub` | The project's book, recorded as `manifest.outputs.epub` (the ONE authority — nothing is found by filename). Written by `vlm:convert`, or minted as a copy of an EPUB original by `manifestService.ensureBookEpub` the first time a strike or pass needs a mutable book. |
+| `source/<Original>.generated.epub` | The book `vlm:convert` cast from a PDF's pages, recorded as `manifest.outputs.generatedEpub` with its sha256 and its `origin` (`cast`, or `adopted` for a project migrated from before this file existed). **Archive-grade: nothing writes to it.** Deleting it is the heavy act — a re-cast reads every page again. |
+| `source/<Original>.working.epub` | The project's book and the ONE editable file, recorded as `manifest.outputs.epub` (the ONE authority — nothing is found by filename). Always a byte-identical copy of the archive-grade book behind it: the archive EPUB, or the generated EPUB above. |
 | `source/<Book Title>.tts.epub` | The narration copy — `outputs.ttsEpub`. Derived, disposable, rebuilt from the book + the strike record at any time. |
 
 ## Conversion — `foundry vlm-convert`
