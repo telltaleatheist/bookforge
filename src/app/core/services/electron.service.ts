@@ -1407,19 +1407,41 @@ export class ElectronService {
       throw new Error('Resolving a project export path needs the desktop app.');
     }
     const result = await (window as any).electron.projects.exportInfo(projectDir, familyId);
-    if (!result.success || !result.target) {
+    if (!result.success) {
       throw new Error(result.error || 'Could not resolve the project\'s export path.');
     }
-    if (typeof result.familyId !== 'string' || result.familyId.length === 0) {
+    // NULL familyId + NULL target is one coherent answer: a bare PDF with no
+    // working chain yet — the project opens, there is simply no chain to quote
+    // and no place a book must be written to. They are null TOGETHER or present
+    // together; half of each is a broken main. `undefined` familyId is the
+    // older-build case the original check existed for, kept as its own arm.
+    // (This wrapper used to require both unconditionally, which made every
+    // bare-PDF open die with "Could not resolve the project's export path" —
+    // found live 2026-08-10 on the first bare project opened after the
+    // chain-less answer shipped.)
+    if (result.familyId === undefined) {
       throw new Error(
         'The project opened without saying which working chain it opened. Reload the window — '
         + 'this is an older build of main, and every act this window performs afterwards would be '
         + 'about a version nothing named.'
       );
     }
+    const chainless = result.familyId === null;
+    if (chainless !== (result.target === null || result.target === undefined)) {
+      throw new Error(
+        'The project answered with half a chain — a working-chain id and an export target must '
+        + 'both be present or both be absent. Reload the window and report this if it recurs.'
+      );
+    }
+    if (!chainless && (typeof result.familyId !== 'string' || result.familyId.length === 0)) {
+      throw new Error(
+        'The project named a working chain with an empty id. Reload the window and report this '
+        + 'if it recurs.'
+      );
+    }
     return {
       familyId: result.familyId,
-      target: result.target,
+      target: result.target ?? null,
       exported: result.exported ?? null,
       // Main sends null for every project that has no generated book on disk,
       // which is every EPUB-native one and every unconverted PDF. Absent means
