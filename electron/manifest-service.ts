@@ -33,6 +33,8 @@ import type {
   AppliedPassKind,
   LedgerEntry,
   GeneratedEpubOutput,
+  BookFamily,
+  EpubOutput,
   BookEdit,
   MergeChapterOpeningEdit,
   NameChapterOpenersEdit,
@@ -55,6 +57,12 @@ import {
   describeWorkingCopyRemint,
   type WorkingCopyRemint,
 } from '../shared/document/working-copy-remint';
+import {
+  describeFamilies,
+  familyOwnsPickerRecords,
+  familyStem,
+  resolveFamily,
+} from '../shared/document/book-families';
 import {
   migrateNarrationDeletionsForFold,
   narrationDeletionsStaleReason,
@@ -964,6 +972,25 @@ export function exportEpubRelPath(manifest: ProjectManifest): string {
   return `source/${component}`;
 }
 
+/**
+ * Where a FAMILY's working copy lives: `source/<family stem>.working.epub`.
+ *
+ * The per-chain form of `exportEpubRelPath` above, and the one every mint uses
+ * now. The stem comes from the family's own SOURCE rather than from the
+ * project's archive original (`familyStem`, shared/document/book-families.ts),
+ * which is what lets two chains in one project have two working copies that each
+ * declare which book they are a copy of.
+ *
+ * For a project's FIRST family the two derivations agree by construction — that
+ * family's source IS the archive original, or the book cast from it — which is
+ * why the migration renames nothing.
+ */
+export function familyEpubRelPath(family: BookFamily, manifest: ProjectManifest): string {
+  const component = requireLegalComponent(
+    `${familyStem(family.source)}${WORKING_EPUB_SUFFIX}`, manifest);
+  return `source/${component}`;
+}
+
 /** Read a manifest straight off disk — works for a directory the library doesn't own. */
 async function readManifestAt(projectDir: string): Promise<ProjectManifest> {
   const raw = await fs.promises.readFile(path.join(projectDir, MANIFEST_FILENAME), 'utf-8');
@@ -1002,9 +1029,12 @@ function toAbs(projectDir: string, relPath: string): string {
  * Deliberately NOT the recorded path: a book retitled since its last export gets
  * the new name, and registerEpubExport removes the superseded file.
  */
-export async function exportEpubTarget(projectDir: string): Promise<ExportEpubLocation> {
-  const manifest = await readManifestAt(projectDir);
-  const relPath = exportEpubRelPath(manifest);
+export async function exportEpubTarget(
+  projectDir: string,
+  familyId?: string
+): Promise<ExportEpubLocation> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
+  const relPath = familyEpubRelPath(family, manifest);
   return { relPath, absPath: toAbs(projectDir, relPath) };
 }
 
@@ -1021,10 +1051,13 @@ export async function exportEpubTarget(projectDir: string): Promise<ExportEpubLo
  * writes the record, and a migration that touches a user's files to save them a
  * re-run is a trade nobody asked for.)
  */
-export async function readExportEpub(projectDir: string): Promise<ExportEpubLocation | null> {
-  const manifest = await readManifestAt(projectDir);
+export async function readExportEpub(
+  projectDir: string,
+  familyId?: string
+): Promise<ExportEpubLocation | null> {
+  const { family } = await requireFamily(projectDir, familyId);
 
-  const recorded = manifest.outputs?.epub;
+  const recorded = family.epub;
   if (!recorded?.path) return null;
   return { relPath: recorded.path, absPath: toAbs(projectDir, recorded.path), modifiedAt: recorded.modifiedAt };
 }
@@ -1113,6 +1146,16 @@ export async function registerGeneratedEpub(
   const saved = await modifyManifest(projectId, (m) => {
     if (!m.outputs) m.outputs = {};
     m.outputs.generatedEpub = { path: relPath, modifiedAt, sha256, origin };
+    // ── The chain hanging off this book learns the new digest, here ──────────
+    //
+    // A re-cast writes different bytes to the same path, and the family's
+    // `source.sha256` is what says which book its working copy is a copy OF. In
+    // the same transaction as the record it describes, because a family stamped
+    // with the previous cast is a claim that the copy beside it was proved
+    // against bytes nobody has any more.
+    for (const family of m.families ?? []) {
+      if (family.source.path === relPath) family.source.sha256 = sha256;
+    }
   });
   if (!saved.success) {
     throw new Error(
@@ -1120,6 +1163,10 @@ export async function registerGeneratedEpub(
       + `${saved.error}. Nothing may mint a working copy from a book the project does not record.`
     );
   }
+  // A PDF project's FIRST cast is also the moment it becomes able to have a
+  // chain at all — until now `classifyWorkingCopySource` refused it, having
+  // nothing archive-grade to hang one off. Idempotent for every later cast.
+  await ensureBookFamilies(projectDir);
   return { relPath, absPath: epubAbsPath, modifiedAt, sha256, origin };
 }
 
@@ -1205,14 +1252,15 @@ export interface WorkingEpubRenameSummary {
  * problem and it has its own sentence for it.
  */
 export async function migrateWorkingEpubNaming(
-  projectDir: string
+  projectDir: string,
+  familyId?: string
 ): Promise<WorkingEpubRenameSummary> {
   const nothing: WorkingEpubRenameSummary = { from: null, to: null, ttsFrom: null, ttsTo: null };
-  const manifest = await readManifestAt(projectDir);
+  const { manifest, family } = await requireFamily(projectDir, familyId);
 
-  const recorded = manifest.outputs?.epub?.path;
+  const recorded = family.epub?.path;
   if (!recorded) return nothing;
-  const targetRel = exportEpubRelPath(manifest);
+  const targetRel = familyEpubRelPath(family, manifest);
   if (recorded === targetRel) return nothing;
 
   const fromAbs = toAbs(projectDir, recorded);
@@ -1230,7 +1278,7 @@ export async function migrateWorkingEpubNaming(
   // The narration copy is resolved BEFORE the book moves, because its name is
   // derived from the book's — asking afterwards would derive it from the new name
   // and find nothing.
-  const ttsRecorded = manifest.outputs?.ttsEpub?.path ?? null;
+  const ttsRecorded = family.ttsEpub?.path ?? null;
   const ttsTargetRel = narrationEpubRelPath(targetRel);
 
   await fs.promises.rename(fromAbs, toAbsPath);
@@ -1250,8 +1298,9 @@ export async function migrateWorkingEpubNaming(
     // used, because that call means "the book has been rebuilt" and drops the
     // applied passes, the narration strikes and the pass diffs with it. Nothing
     // has been rebuilt here: the same bytes have a truer name.
-    if (m.outputs?.epub) m.outputs.epub.path = targetRel;
-    if (m.outputs?.ttsEpub && ttsMoved) m.outputs.ttsEpub.path = ttsTargetRel;
+    const target = familyIn(m, family.id);
+    if (target.epub) target.epub.path = targetRel;
+    if (target.ttsEpub && ttsMoved) target.ttsEpub.path = ttsTargetRel;
   });
   if (!saved.success) {
     throw new Error(
@@ -1408,11 +1457,476 @@ export async function workingCopySource(projectDir: string): Promise<WorkingCopy
   return (await classifyWorkingCopySource(projectDir)).source;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The FAMILIES — one working chain per archive-grade EPUB
+//
+// `manifest.families` is the authority on every book a project has and on
+// everything derived from each. The rules about identity are pure and live in
+// shared/document/book-families.ts; this is where they meet the disk.
+//
+// EVERY reader and writer below goes through `requireFamily`. That is the whole
+// mechanism: a project with one chain answers unambiguously, a project with
+// several refuses unless the caller says which, and there is no third path in
+// which something picks one.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The project's working chains, in the order they were minted. */
+export async function readBookFamilies(projectDir: string): Promise<BookFamily[]> {
+  return (await readManifestAt(projectDir)).families ?? [];
+}
+
+/**
+ * A family id: `fam-` and eight hex characters, from the same RNG the ledger
+ * mints entry ids with.
+ *
+ * Not derived from the source path, the title, or a counter. See
+ * `FamilyIdentity.id` for why — a name derived from a file is a name that
+ * changes when the file is renamed, and every record keyed to the old one is
+ * then orphaned in place.
+ */
+function mintFamilyId(): string {
+  return `fam-${crypto.randomBytes(4).toString('hex')}`;
+}
+
+/** A family and the manifest it was read from, so a caller reads the file once. */
+export interface ResolvedFamily {
+  manifest: ProjectManifest;
+  family: BookFamily;
+}
+
+/**
+ * THE CHOKEPOINT. Which family this call is about, or a refusal that names the
+ * alternatives.
+ *
+ * Every reader and writer of a book's records goes through here, and that is
+ * what makes the ambiguity rule a property of the model rather than a habit of
+ * its callers. The refusal sentences are `resolveFamily`'s, written once where
+ * they can be tested without a project.
+ */
+export async function requireFamily(
+  projectDir: string,
+  familyId?: string
+): Promise<ResolvedFamily> {
+  let manifest = await readManifestAt(projectDir);
+
+  // ── The migration happens HERE, at the one door everything comes through ───
+  //
+  // A project that predates chains has its book at the legacy record, and it has
+  // to become a chain before anything can be asked about it. Doing that at the
+  // chokepoint rather than at two or three "open" handlers is what makes it
+  // total: the library has ~385 projects and dozens of paths that reach a book
+  // (a listing, a narration state, a chapter rename), and a normalization only
+  // some of them trigger is one that leaves the rest refusing a project that
+  // used to work.
+  //
+  // A write from a read is deliberate, and has precedent alongside
+  // `migrateWorkingEpubNaming` and `ensureGeneratedEpub` — a one-time
+  // normalization happens the next time anything asks about the project, or it
+  // never happens at all. It costs nothing once done: the check is on the
+  // manifest already in hand.
+  let adoptionRefusal: string | null = null;
+  if ((manifest.families ?? []).length === 0) {
+    adoptionRefusal = (await ensureBookFamilies(projectDir)).refusal;
+    manifest = await readManifestAt(projectDir);
+  }
+
+  // ── The migration's own sentence wins, when it has one ────────────────────
+  //
+  // `resolveFamily` can only say "this project has no working chain", which is
+  // true and useless: it does not say WHY, and every why is a different thing
+  // for the user to do — read this PDF's pages, restore an EPUB you moved,
+  // re-import a book whose original was never recorded. `ensureBookFamilies`
+  // knows which, having just tried; discarding that for the generic line would
+  // turn an actionable refusal into a dead end.
+  if ((manifest.families ?? []).length === 0 && adoptionRefusal !== null) {
+    throw new Error(adoptionRefusal);
+  }
+
+  const answer = resolveFamily(manifest.families ?? [], familyId, path.basename(projectDir));
+  if (answer.refusal !== null) throw new Error(answer.refusal);
+  return { manifest, family: answer.family };
+}
+
+/**
+ * The same family, located inside a manifest a `modifyManifest` callback is
+ * holding — by ID, never by position.
+ *
+ * The resolution above happens on a manifest read before the lock was taken, and
+ * the write happens on one read inside it. Indexing by position across those two
+ * reads would write to whichever chain had moved into that slot; the id is what
+ * survives the gap, which is the whole reason it is opaque and stable.
+ */
+function familyIn(m: ProjectManifest, id: string): BookFamily {
+  const family = (m.families ?? []).find((f) => f.id === id);
+  if (!family) {
+    throw new Error(
+      `${m.projectId || '(no id)'} has no working chain called ${id} any more — it had `
+      + `${describeFamilies(m.families ?? [])} when this write was locked. Nothing was changed.`
+    );
+  }
+  return family;
+}
+
+/** The family's book record, refusing by name when it has none. */
+function requireFamilyEpub(family: BookFamily, projectDir: string): EpubOutput {
+  if (!family.epub?.path) {
+    throw new Error(
+      `${path.basename(projectDir)}'s ${path.basename(family.source.path)} chain has no working `
+      + 'copy recorded, so there is no book for this act to be about. Open the book once and it '
+      + 'will be made.'
+    );
+  }
+  return family.epub;
+}
+
+/**
+ * WHICH archive-grade book a project's one chain hangs off — decided from the
+ * RECORDS, without asking whether the file is still there.
+ *
+ * ── Why this is not `classifyWorkingCopySource` ─────────────────────────────
+ *
+ * Because that one answers "can a copy be made right now", and this one answers
+ * "what is this chain OF" — and the difference is exactly a file that has been
+ * moved away. THE RECORD IS THE ONLY ANSWER is the rule everywhere else in this
+ * module (`readExportEpub`, `readGeneratedEpub`, `readArchiveOriginal` all say
+ * so in as many words), and a migration that required the archive original to be
+ * present would give no chain to a project whose EPUB the user had moved — which
+ * would take a book they can still read, still narrate and still export, and
+ * make every one of those refuse.
+ *
+ * So existence is asked LATER, by `requireFamilySource`, at the moment a copy is
+ * actually about to be made, where the refusal can name the act it is refusing.
+ *
+ * A project with no record of an archive-grade book at all still gets nothing:
+ * there is no identity to record, and inventing one would be a chain whose
+ * source is a guess.
+ */
+async function classifyRecordedFamilySource(
+  projectDir: string
+): Promise<{ source: { relPath: string; kind: 'archive-epub' | 'generated-epub' }; refusal: null }
+  | { source: null; refusal: string }> {
+  const manifest = await readManifestAt(projectDir);
+  const format = await archiveOriginalFormat(projectDir);
+
+  if (format === 'epub') {
+    const archived = (manifest.archive ?? []).find(
+      (a) => a.role === 'original' && (a.format || '').toLowerCase() === 'epub');
+    if (archived?.path) {
+      return { source: { relPath: archived.path, kind: 'archive-epub' }, refusal: null };
+    }
+    // The pre-archive layout, which `archiveOriginalFormat` already treats as
+    // the same fact in an older place. Located by EXISTENCE because nothing ever
+    // recorded it — that is what makes it the older place.
+    const legacyRel = 'source/original.epub';
+    if (fs.existsSync(toAbs(projectDir, legacyRel))) {
+      return { source: { relPath: legacyRel, kind: 'archive-epub' }, refusal: null };
+    }
+    return {
+      source: null,
+      refusal: 'Its archive original is recorded as an EPUB, and the manifest does not say where. '
+        + 'Re-import the book.',
+    };
+  }
+
+  if (format === 'pdf') {
+    const generated = manifest.outputs?.generatedEpub;
+    if (!generated?.path) {
+      return {
+        source: null,
+        refusal: 'Its pages have not been read into a book yet, and a PDF reaches an editable book '
+          + 'only through Convert to EPUB. Run that over it first.',
+      };
+    }
+    return { source: { relPath: generated.path, kind: 'generated-epub' }, refusal: null };
+  }
+
+  if (format === null) {
+    return {
+      source: null,
+      refusal: 'It has no archive original — nothing was imported into it that a book could be '
+        + 'made from.',
+    };
+  }
+  return {
+    source: null,
+    refusal: `Its archive original is a ${format}, which nothing here can turn into a book.`,
+  };
+}
+
+/** What `ensureBookFamilies` did, so a caller can say it once on the console. */
+export interface FamiliesAdoption {
+  /** The family minted from what the project already recorded, or null. */
+  minted: BookFamily | null;
+  /**
+   * The sentence for a project that has nothing archive-grade to hang a chain
+   * off, or null. NOT an exception: a PDF nobody has converted is an ordinary
+   * project that opens fine, and every act that needs a book refuses in its own
+   * words.
+   */
+  refusal: string | null;
+}
+
+/**
+ * Give a project its working chains, once.
+ *
+ * ── Why there is a migration at all ─────────────────────────────────────────
+ *
+ * Every project made before families has its one book at `outputs.epub` and its
+ * narration copy at `outputs.ttsEpub`. Those records describe a chain that hangs
+ * off exactly one archive-grade EPUB — the project just had no way to say which,
+ * because there could only ever be one. `classifyWorkingCopySource` already
+ * answers that question from the archive original's format, so the family is
+ * minted from the answer the project has been giving all along, and the records
+ * are MOVED under it.
+ *
+ * ── Moved, not copied ───────────────────────────────────────────────────────
+ *
+ * `outputs.epub` and `outputs.ttsEpub` are deleted in the same transaction. Two
+ * copies of one record is how a book comes to be edited through one of them and
+ * read through the other; the legacy fields are declared as legacy and read by
+ * this function alone (see ManifestOutputs).
+ *
+ * NOT A SINGLE FILE MOVES. The family's stem is derived from its source exactly
+ * as `workingEpubStem` derived it from the archive original, so
+ * `<stem>.working.epub` and `<stem>.tts.epub` are the names they already have.
+ *
+ * ── Idempotent, and it never guesses ────────────────────────────────────────
+ *
+ * A project that already has families is left alone. A project whose source
+ * cannot be classified gets NO family and the refusal is reported — never an
+ * empty chain invented to have something to show, because a chain with no source
+ * is a book nothing can ever make again.
+ */
+export async function ensureBookFamilies(projectDir: string): Promise<FamiliesAdoption> {
+  if ((await readBookFamilies(projectDir)).length > 0) return { minted: null, refusal: null };
+
+  // ── The OTHER migration runs first, and the order is not negotiable ────────
+  //
+  // A PDF project made before generated books were kept has its cast AS its
+  // working copy, and no `outputs.generatedEpub`. `classifyWorkingCopySource`
+  // refuses such a project — correctly, it has nothing archive-grade — so a
+  // chain minted before the adoption would be no chain at all, and the project
+  // would keep its book at the legacy record forever. Adopting first gives it
+  // the archive-grade book the chain then hangs off.
+  //
+  // Idempotent (a project that already has one costs a read and a stat), and its
+  // `missing` report is deliberately not surfaced here: this function's callers
+  // are asking about chains, and the callers that own that sentence ask
+  // `ensureGeneratedEpub` themselves.
+  await ensureGeneratedEpub(projectDir);
+
+  const existing = await readManifestAt(projectDir);
+  const answer = await classifyRecordedFamilySource(projectDir);
+  if (answer.source === null) {
+    return {
+      minted: null,
+      refusal: `${path.basename(projectDir)} has no working chain yet. ${answer.refusal}`,
+    };
+  }
+  const relPath = answer.source.relPath;
+  const absPath = toAbs(projectDir, relPath);
+  const family: BookFamily = {
+    id: mintFamilyId(),
+    source: {
+      path: relPath,
+      kind: answer.source.kind,
+      // Measured off the file, not taken from a record: a digest handed to us is
+      // a claim about bytes rather than a measurement of them.
+      //
+      // NULL when the file is not there. That is a real state — a project whose
+      // archive EPUB the user moved away still has a book they can read — and
+      // the honest record of it is "not measured", never a digest of nothing.
+      // Nothing depends on this to prove a copy: `deriveWorkingCopy` measures
+      // the source and the copy at the moment it makes one, which is the only
+      // measurement that can say the copy came out right.
+      sha256: fs.existsSync(absPath) ? await sha256Of(absPath) : null,
+    },
+  };
+
+  const projectId = requireLibraryProjectId(projectDir, existing);
+  const saved = await modifyManifest(projectId, (m) => {
+    // Re-checked inside the lock: two windows opening one project would
+    // otherwise both mint, and the project would end up with two chains hanging
+    // off one book — which is exactly the ambiguity families exist to remove.
+    if (m.families && m.families.length > 0) return;
+    if (m.outputs?.epub) family.epub = m.outputs.epub;
+    if (m.outputs?.ttsEpub) family.ttsEpub = m.outputs.ttsEpub;
+    m.families = [family];
+    if (m.outputs) {
+      delete m.outputs.epub;
+      delete m.outputs.ttsEpub;
+    }
+  });
+  if (!saved.success) {
+    throw new Error(
+      `Could not give ${path.basename(projectDir)} its working chain: ${saved.error}. Nothing was `
+      + 'moved — the book is still recorded where it was.'
+    );
+  }
+
+  // Read back rather than reported from the object above: another window may
+  // have won the race inside the lock, in which case THIS call minted nothing
+  // and must say so rather than announce a chain it did not create.
+  const minted = (await readBookFamilies(projectDir)).find((f) => f.id === family.id) ?? null;
+  if (minted === null) return { minted: null, refusal: null };
+  console.log(
+    `[manifest-service] ${path.basename(projectDir)}: its book now hangs off `
+    + `${minted.source.path} as ${minted.id}`
+    + (minted.epub ? `, carrying ${minted.epub.path}` : ', with no working copy yet')
+    + (minted.ttsEpub ? ` and ${minted.ttsEpub.path}` : '') + '.'
+  );
+  return { minted, refusal: null };
+}
+
+/**
+ * Add a SECOND working chain beside the ones a project already has.
+ *
+ * Owen: "i do have different versions of books, and i want to be able to run
+ * adjustment chains on different versions." This is that act — a different
+ * edition of the book, archive-grade, getting a chain of its own with its own
+ * working copy, its own ledger, its own strikes and its own narration copy.
+ *
+ * ── The stem collision is refused BY NAME ───────────────────────────────────
+ *
+ * Every file in a family is named `source/<family stem>.…`, and the stem is the
+ * source's basename. Two sources that share a basename — `archive/Dune.epub` and
+ * a second edition also called `Dune.epub` — would name ONE working copy, and
+ * the second family's mint would silently overwrite the first family's book.
+ * There is no name to fall back to that would still declare which source the
+ * copy belongs to, so this refuses and says which file to rename.
+ *
+ * The source must be INSIDE the project and must already exist: a chain hanging
+ * off a file the project does not hold is a book it can never make again.
+ */
+export async function addBookFamily(
+  projectDir: string,
+  source: WorkingCopySource
+): Promise<BookFamily> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  if (!fs.existsSync(source.absPath)) {
+    throw new Error(
+      `Cannot give ${path.basename(projectDir)} a chain for ${source.absPath}: that file is not `
+      + 'there. A working chain hangs off a book the project holds.'
+    );
+  }
+  const rel = path.relative(projectDir, source.absPath);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(
+      `Cannot give ${path.basename(projectDir)} a chain for ${source.absPath}: it lies outside the `
+      + 'project directory, so nothing here could keep it.'
+    );
+  }
+  const relPath = rel.split(path.sep).join('/');
+
+  const family: BookFamily = {
+    id: mintFamilyId(),
+    source: { path: relPath, kind: source.kind, sha256: await sha256Of(source.absPath) },
+  };
+  const stem = familyStem(family.source);
+
+  for (const existing of manifest.families ?? []) {
+    if (existing.source.path.toLowerCase() === relPath.toLowerCase()) {
+      throw new Error(
+        `${path.basename(projectDir)} already has a working chain hanging off ${relPath} `
+        + `(${existing.id}). A second one would give the same book two sets of edits and two `
+        + 'working copies with one name.'
+      );
+    }
+    if (familyStem(existing.source).toLowerCase() === stem.toLowerCase()) {
+      throw new Error(
+        `${path.basename(projectDir)} already has a chain whose files are named after "${stem}" `
+        + `(${existing.source.path}). ${relPath} has the same name, so both chains would write to `
+        + `source/${stem}${WORKING_EPUB_SUFFIX} and the second would destroy the first. Rename one `
+        + 'of the two books and add it again.'
+      );
+    }
+  }
+
+  const saved = await modifyManifest(projectId, (m) => {
+    if (!m.families) m.families = [];
+    m.families.push(family);
+  });
+  if (!saved.success) {
+    throw new Error(
+      `Could not record ${path.basename(projectDir)}'s new working chain for ${relPath}: `
+      + `${saved.error}. Nothing was added.`
+    );
+  }
+  console.log(
+    `[manifest-service] ${path.basename(projectDir)}: added the chain ${family.id} hanging off `
+    + `${relPath}; its files will be named after "${stem}".`
+  );
+  return family;
+}
+
+/**
+ * Forget a working chain — the records only; the files are the caller's act.
+ *
+ * Records first, files last, the ordering every remover here uses. Refuses the
+ * LAST family: a project with no chain has no book, and the difference between
+ * that and "this project's book cannot be found" is a difference the erase and
+ * re-mint paths depend on being able to see.
+ */
+export async function forgetBookFamily(
+  projectDir: string,
+  familyId: string
+): Promise<BookFamily> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  if ((manifest.families ?? []).length <= 1) {
+    throw new Error(
+      `${path.basename(projectDir)} has only the one working chain (${family.id}, off `
+      + `${family.source.path}), and a project without one has no book at all. Erase its changes `
+      + 'instead, or delete the project.'
+    );
+  }
+  const saved = await modifyManifest(projectId, (m) => {
+    m.families = (m.families ?? []).filter((f) => f.id !== familyId);
+  });
+  if (!saved.success) {
+    throw new Error(
+      `Could not forget ${path.basename(projectDir)}'s ${familyId} chain: ${saved.error}. Nothing `
+      + 'was deleted.'
+    );
+  }
+  return family;
+}
+
 /** The same question, for a caller that was asked to do something about it. */
 export async function requireWorkingCopySource(projectDir: string): Promise<WorkingCopySource> {
   const answer = await classifyWorkingCopySource(projectDir);
   if (answer.source) return answer.source;
   throw new Error(`${path.basename(projectDir)} cannot be given a working copy. ${answer.refusal}`);
+}
+
+/**
+ * The archive-grade book a FAMILY hangs off, proved to be on disk.
+ *
+ * This is what every mint and every erase resolves through now. It differs from
+ * `requireWorkingCopySource` above in the one way that matters: that one asks
+ * the PROJECT what its single book is (and is what mints the first family),
+ * while this asks a NAMED chain what its own source is. A project with two
+ * chains has two answers, and only this form can give the right one.
+ */
+export async function requireFamilySource(
+  projectDir: string,
+  familyId?: string
+): Promise<WorkingCopySource> {
+  const { family } = await requireFamily(projectDir, familyId);
+  const absPath = toAbs(projectDir, family.source.path);
+  if (!fs.existsSync(absPath)) {
+    throw new Error(
+      `${path.basename(projectDir)}'s ${family.id} chain hangs off ${family.source.path}, and that `
+      + 'file is not there. Nothing was put in its place — the working copy beside it has been '
+      + `edited since, so it is not that book. ${family.source.kind === 'archive-epub'
+        ? 'Restore it from your backup or re-import the book.'
+        : 'Only a fresh Convert to EPUB can make one.'}`
+    );
+  }
+  return { absPath, kind: family.source.kind };
 }
 
 /**
@@ -1433,9 +1947,10 @@ export async function requireWorkingCopySource(projectDir: string): Promise<Work
  */
 async function mintTargetFor(
   projectDir: string,
-  source: WorkingCopySource
+  source: WorkingCopySource,
+  familyId?: string
 ): Promise<ExportEpubLocation> {
-  const target = await exportEpubTarget(projectDir);
+  const target = await exportEpubTarget(projectDir, familyId);
   const resolved = path.resolve(target.absPath);
   if (resolved === path.resolve(source.absPath)) {
     throw new Error(
@@ -1452,6 +1967,31 @@ async function mintTargetFor(
       + `pages (${generated.relPath}). Refusing: that book is archive-grade, and overwriting it `
       + 'would put an hour of page reading behind every edit the user makes.'
     );
+  }
+  // ── And over EVERY OTHER CHAIN'S source, and every other chain's copy ───────
+  //
+  // The two refusals above name the files THIS mint knows about. A project with
+  // several chains has archive-grade books this mint has never heard of, and a
+  // second chain's working copy is somebody's evening of edits — neither is a
+  // file to discover by overwriting it. `addBookFamily` already refuses a source
+  // that would collide by name, so reaching here means a manifest that says
+  // something no act of this app writes; it is named rather than performed.
+  for (const other of await readBookFamilies(projectDir)) {
+    if (other.id === familyId) continue;
+    if (resolved === path.resolve(toAbs(projectDir, other.source.path))) {
+      throw new Error(
+        `${path.basename(projectDir)}'s working copy would be written over ${other.source.path}, `
+        + `which is the archive-grade book its ${other.id} chain hangs off. Refusing: nothing may `
+        + 'write to a book another version is minted from.'
+      );
+    }
+    if (other.epub?.path && resolved === path.resolve(toAbs(projectDir, other.epub.path))) {
+      throw new Error(
+        `${path.basename(projectDir)}'s working copy would be written over ${other.epub.path}, `
+        + `which is the ${other.id} chain's own working copy. Refusing: that file carries a `
+        + 'different version\'s edits, and this mint does not know what they are.'
+      );
+    }
   }
   return target;
 }
@@ -1478,13 +2018,15 @@ async function mintTargetFor(
  */
 export async function mintWorkingCopyFrom(
   projectDir: string,
-  source: WorkingCopySource
+  source: WorkingCopySource,
+  familyId?: string
 ): Promise<ExportEpubLocation> {
   // `keepRecords: false` is what this call has always done: `registerEpubExport`
   // replaced `outputs.epub` wholesale and the strikes went with it. Its callers
   // are a fresh cast and a fresh copy of the archive — neither is a book the old
   // strikes describe.
-  return deriveWorkingCopy(projectDir, { from: 'base', base: source, keepRecords: false });
+  return deriveWorkingCopy(
+    projectDir, { from: 'base', base: source, keepRecords: false }, familyId);
 }
 
 /**
@@ -1550,21 +2092,25 @@ export type WorkingCopyDerivation =
  */
 export async function deriveWorkingCopy(
   projectDir: string,
-  derivation: WorkingCopyDerivation
+  derivation: WorkingCopyDerivation,
+  familyId?: string
 ): Promise<ExportEpubLocation> {
+  const resolved = await requireFamily(projectDir, familyId);
+  const family = resolved.family;
+
   // The refusals that protect the archive-grade files are asked about the BASE
   // in both cases: they are properties of those files, not of which copy happens
   // to be running, and `mintTargetFor` writes nothing so it is safe to ask first.
   const base = derivation.from === 'base'
     ? derivation.base
-    : await requireWorkingCopySource(projectDir);
-  const target = await mintTargetFor(projectDir, base);
+    : await requireFamilySource(projectDir, family.id);
+  const target = await mintTargetFor(projectDir, base, family.id);
 
   const sourceAbs = derivation.from === 'base'
     ? base.absPath
     : toAbs(projectDir, derivation.keep[derivation.keep.length - 1].snapshot);
 
-  const priorEpub = (await readManifestAt(projectDir)).outputs?.epub;
+  const priorEpub = family.epub;
 
   // ── The one edit that cannot be carried across, named before anything moves ─
   //
@@ -1664,7 +2210,7 @@ export async function deriveWorkingCopy(
         : {},
     }
     : undefined;
-  await registerEpubExport(projectDir, target.absPath, carry);
+  await registerEpubExport(projectDir, target.absPath, carry, family.id);
   const fromWhat = derivation.from === 'base'
     ? `its ${base.kind === 'archive-epub' ? 'EPUB original' : 'generated book'}`
     : `the ledger snapshot ${listLedgerLabels(derivation.keep)} left`;
@@ -1735,7 +2281,26 @@ export async function ensureGeneratedEpub(projectDir: string): Promise<Generated
     };
   }
 
-  const book = await readExportEpub(projectDir);
+  // ── Read from the LEGACY record, and why that is not a second authority ────
+  //
+  // A project that reaches this line has an archive PDF and no generated book,
+  // so `classifyWorkingCopySource` refuses it and `ensureBookFamilies` gives it
+  // no chain — by construction it has none, and its book is still where projects
+  // kept it before chains existed. This migration runs FIRST for exactly that
+  // reason (`ensureBookFamilies` calls it), and once it has, the chain minted
+  // afterwards hangs off the generated book this adopted.
+  const manifest = await readManifestAt(projectDir);
+  if ((manifest.families ?? []).length > 0) {
+    throw new Error(
+      `${path.basename(projectDir)} has working chains but no generated book, while its archive `
+      + 'original is a PDF — a state nothing here writes. A chain off a PDF project hangs off the '
+      + 'book cast from its pages, so this manifest describes a chain whose source cannot exist.'
+    );
+  }
+  const legacy = manifest.outputs?.epub;
+  const book = legacy?.path
+    ? { relPath: legacy.path, absPath: toAbs(projectDir, legacy.path) }
+    : null;
   // No book yet is the ordinary state of a PDF nobody has converted. The cast
   // itself writes the generated book, so there is nothing here to do for it.
   if (book === null || !fs.existsSync(book.absPath)) return nothing;
@@ -1803,14 +2368,22 @@ export async function ensureGeneratedEpub(projectDir: string): Promise<Generated
  *     records above were made in, and with those records gone it is a claim
  *     about nothing.
  *  3. `manifest.chapters` / `chaptersSource` — the editor's chapter markers.
- *  4. The narration strikes and the book edits, both sub-fields of
- *     `outputs.epub`. A strike IS an editor edit said as the element it names
+ *  4. The narration strikes and the book edits, both sub-fields of the FAMILY's
+ *     `epub`. A strike IS an editor edit said as the element it names
  *     (shared/vlm/narration-deletions.ts), and a book edit is a chapter opening
  *     the user folded; a reset that cleared one and left the other would put the
  *     book back on screen looking untouched and then quietly cut the narration
  *     copy by strikes nothing on screen explains.
  *  5. The editor's scratch and diagnostics files under `source/`, which have no
  *     other delete path.
+ *
+ * ── Which of those a NON-OWNING chain clears ────────────────────────────────
+ *
+ * Only 4. Items 1, 2, 3 and 5 are the picker's curation of the document the
+ * ARCHIVE ORIGINAL is, and a second version added beside it is a different file
+ * that was never laid out with them (`familyOwnsPickerRecords`). For a project
+ * with one chain — every project in the library today — that chain always owns
+ * them, so this is the same reset it has always been.
  *
  * The BOOK ITSELF is not touched, and neither is any other deliverable: this
  * clears RECORDS. `ensureBookEpub` replaces the file in its own act, after this
@@ -1824,46 +2397,71 @@ export async function ensureGeneratedEpub(projectDir: string): Promise<Generated
  * untyped sub-fields this is here to delete. A malformed manifest throws out of
  * the JSON.parse and is never overwritten with a guessed structure.
  */
-export async function resetEditorRecords(projectDir: string): Promise<void> {
+export async function resetEditorRecords(projectDir: string, familyId?: string): Promise<void> {
   const manifestPath = path.join(projectDir, MANIFEST_FILENAME);
   if (!fs.existsSync(manifestPath)) {
     throw new Error(`Cannot reset ${projectDir}: it has no ${MANIFEST_FILENAME}.`);
   }
+  // WHICH chain is being reset is settled before the raw read below, through the
+  // one chokepoint, so a project with several refuses here rather than clearing
+  // the picker's curation on behalf of a book nobody named.
+  const { family } = await requireFamily(projectDir, familyId);
+  const archiveOriginal = await readArchiveOriginal(projectDir);
+
   const manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf-8'));
 
-  delete manifest.editor;
-  if (manifest.source && typeof manifest.source === 'object') {
-    for (const key of [
-      'deletedBlockIds',
-      'deletedBlockLines',
-      'foundryAutoDiscardedLines',
-      'deletedHighlightIds',
-      'pageOrder',
-      'deletedPages',
-      'removeBackgrounds',
-      EDITOR_LAYOUT_MANIFEST_KEY,
-    ]) {
-      delete manifest.source[key];
+  // ── The picker's records go only with the chain they describe ──────────────
+  //
+  // `familyOwnsPickerRecords` is the rule and shared/document/book-families.ts
+  // is where it is argued: the editor state, the deletion keys under `source`
+  // and the chapter markers are the curation of the document the ARCHIVE
+  // ORIGINAL is, so a second version added beside it must not have them cleared
+  // when its own changes are erased — that curation is not about its book.
+  if (familyOwnsPickerRecords(family, archiveOriginal?.relPath ?? null)) {
+    delete manifest.editor;
+    if (manifest.source && typeof manifest.source === 'object') {
+      for (const key of [
+        'deletedBlockIds',
+        'deletedBlockLines',
+        'foundryAutoDiscardedLines',
+        'deletedHighlightIds',
+        'pageOrder',
+        'deletedPages',
+        'removeBackgrounds',
+        EDITOR_LAYOUT_MANIFEST_KEY,
+      ]) {
+        delete manifest.source[key];
+      }
     }
+    delete manifest.chapters;
+    delete manifest.chaptersSource;
   }
-  delete manifest.chapters;
-  delete manifest.chaptersSource;
-  if (manifest.outputs?.epub) {
-    delete manifest.outputs.epub.narrationDeletions;
-    delete manifest.outputs.epub.bookEdits;
+
+  // The book's OWN records, always: they are positional inside this family's
+  // working copy and describe nothing else.
+  const target = (manifest.families ?? []).find(
+    (f: { id?: string }) => f.id === family.id);
+  if (target?.epub) {
+    delete target.epub.narrationDeletions;
+    delete target.epub.bookEdits;
   }
 
   manifest.modifiedAt = new Date().toISOString();
   await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
 
-  const sourceDir = path.join(projectDir, 'source');
-  for (const file of [
-    'load-trace.log',
-    'save-diagnostics.json',
-    'export-diagnostics.json',
-    'deleted-examples.json',
-  ]) {
-    try { await fs.promises.unlink(path.join(sourceDir, file)); } catch { /* absent */ }
+  // Scratch written BY the picker, about the document it curated — so it goes
+  // with that curation, on the same condition, and a non-owning chain leaves it
+  // exactly where it is.
+  if (familyOwnsPickerRecords(family, archiveOriginal?.relPath ?? null)) {
+    const sourceDir = path.join(projectDir, 'source');
+    for (const file of [
+      'load-trace.log',
+      'save-diagnostics.json',
+      'export-diagnostics.json',
+      'deleted-examples.json',
+    ]) {
+      try { await fs.promises.unlink(path.join(sourceDir, file)); } catch { /* absent */ }
+    }
   }
 }
 
@@ -1938,44 +2536,60 @@ export interface EnsuredBookEpub extends ExportEpubLocation {
  * `shared/document/working-copy-remint.ts` says in what words; the caller that
  * has a user in front of it is the one that tells them.
  */
-export async function ensureBookEpub(projectDir: string): Promise<EnsuredBookEpub> {
-  await migrateWorkingEpubNaming(projectDir);
-  const existing = await readExportEpub(projectDir);
+export async function ensureBookEpub(
+  projectDir: string,
+  familyId?: string
+): Promise<EnsuredBookEpub> {
+  // `requireFamily` gives a project that predates chains its chain on the way
+  // past, so this reaches a project that has one or refuses by name.
+  const { family } = await requireFamily(projectDir, familyId);
+
+  await migrateWorkingEpubNaming(projectDir, family.id);
+  const existing = await readExportEpub(projectDir, family.id);
   if (existing && fs.existsSync(existing.absPath)) return { ...existing, remint: null };
 
   const manifest = await readManifestAt(projectDir);
   // Two different situations, and they get the same answer for the same reason:
-  // this project has no archive-grade book that a copy could be made of.
-  const answer = await classifyWorkingCopySource(projectDir);
-  if (answer.source === null) {
+  // this chain's archive-grade book is not there to be copied.
+  let source: WorkingCopySource;
+  try {
+    source = await requireFamilySource(projectDir, family.id);
+  } catch (err) {
     throw new Error(
       existing
         ? `${path.basename(projectDir)}'s manifest records its book as ${existing.relPath}, but that `
-          + `file is not there, and it cannot be made again. ${answer.refusal}`
-        : `${path.basename(projectDir)} has no book EPUB. ${answer.refusal}`
+          + `file is not there, and it cannot be made again. ${(err as Error).message}`
+        : `${path.basename(projectDir)} has no book EPUB. ${(err as Error).message}`
     );
   }
-  const source = answer.source;
 
   // Asked BEFORE anything is cleared, and it writes nothing: a project whose
   // copy would land on the archive original or on the generated book is refused
   // here rather than after its records have been thrown away for a copy it was
   // never going to get.
-  await mintTargetFor(projectDir, source);
+  await mintTargetFor(projectDir, source, family.id);
 
   // ── Counted BEFORE anything is cleared ─────────────────────────────────────
   //
   // This is the last instant at which the numbers exist: the reset below drops
-  // the two `manifest.source` lists and `registerEpubExport` later replaces
-  // `outputs.epub` wholesale, which takes the strikes with it. All three are
+  // the two `manifest.source` lists and `registerEpubExport` later replaces this
+  // family's `epub` wholesale, which takes the strikes with it. All three are
   // read from one manifest snapshot, so they describe one moment.
   //
   // An absent list is a real state (a project nothing has been deleted in) and
   // is the only thing its absence can mean; it is not a missing value standing
   // in for one that should have been there.
-  const clearedBlocks = manifest.source?.deletedBlockIds?.length ?? 0;
-  const clearedPages = manifest.source?.deletedPages?.length ?? 0;
-  const strikes = manifest.outputs?.epub?.narrationDeletions?.elements.length ?? 0;
+  //
+  // The picker's two counts are reported only when THIS chain is the one whose
+  // reset would clear them (`familyOwnsPickerRecords`) — a receipt naming block
+  // deletions that are still there afterwards would be a lie about what the act
+  // cost.
+  const ownsPickerRecords = familyOwnsPickerRecords(
+    family, (await readArchiveOriginal(projectDir))?.relPath ?? null);
+  const clearedBlocks = ownsPickerRecords ? manifest.source?.deletedBlockIds?.length ?? 0 : 0;
+  const clearedPages = ownsPickerRecords ? manifest.source?.deletedPages?.length ?? 0 : 0;
+  const bookRecord = (manifest.families ?? []).find((f) => f.id === family.id)?.epub;
+  const strikes = bookRecord?.narrationDeletions?.elements.length ?? 0;
 
   // ── The ledger is not a record of the user's edits, so it does not go ───────
   //
@@ -1987,7 +2601,7 @@ export async function ensureBookEpub(projectDir: string): Promise<EnsuredBookEpu
   // user has their own act for taking those back. Throwing an hour of model time
   // away because somebody meant "start my edits over" is the failure this branch
   // exists to prevent, and the receipt names what stood so it is never silent.
-  const ledger = manifest.outputs?.epub?.ledger ?? [];
+  const ledger = bookRecord?.ledger ?? [];
 
   // A record that named a book, for a book that was not there. The FIRST copy
   // has no record to have named anything, and is not this.
@@ -2010,15 +2624,17 @@ export async function ensureBookEpub(projectDir: string): Promise<EnsuredBookEpu
   // It runs only here, past both refusals above, so a project that has no
   // archive original to mint from never has its records cleared for a copy it
   // was not going to get.
-  if (remint !== null) await resetEditorRecords(projectDir);
+  if (remint !== null) await resetEditorRecords(projectDir, family.id);
 
   // `keepRecords: false` in both branches: a re-mint has just run the wholesale
   // reset above, and a FIRST copy has nothing recorded against it. There is
   // nothing to keep, and saying so is what keeps the flag from becoming a place
   // records could quietly survive a reset.
   const target = ledger.length === 0
-    ? await deriveWorkingCopy(projectDir, { from: 'base', base: source, keepRecords: false })
-    : await deriveWorkingCopy(projectDir, { from: 'ledger', keep: ledger, keepRecords: false });
+    ? await deriveWorkingCopy(
+      projectDir, { from: 'base', base: source, keepRecords: false }, family.id)
+    : await deriveWorkingCopy(
+      projectDir, { from: 'ledger', keep: ledger, keepRecords: false }, family.id);
   if (remint !== null) {
     console.warn(`[manifest-service] ${path.basename(projectDir)}: ${describeWorkingCopyRemint(remint)}`);
   }
@@ -2164,9 +2780,10 @@ function passIdentity(pass: AppliedPass): string {
 export async function registerEpubExport(
   projectDir: string,
   epubAbsPath: string,
-  carry?: EpubCarry
+  carry?: EpubCarry,
+  familyId?: string
 ): Promise<void> {
-  const manifest = await readManifestAt(projectDir);
+  const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
   const rel = path.relative(projectDir, epubAbsPath);
@@ -2186,31 +2803,32 @@ export async function registerEpubExport(
   // that removal at a receipt the book still needs.
   const superseded = passesAfterEpubEvent(
     'epub-rebuilt',
-    (manifest.outputs?.epub?.appliedPasses ?? []).filter(
+    (family.epub?.appliedPasses ?? []).filter(
       (pass) => !carriedPassIds.has(passIdentity(pass))));
-  const droppedEntries = (manifest.outputs?.epub?.ledger ?? []).filter(
+  const droppedEntries = (family.epub?.ledger ?? []).filter(
     (entry) => !carriedEntryIds.has(entry.id));
 
   const saved = await modifyManifest(projectId, (m) => {
-    if (!m.outputs) m.outputs = {};
-    m.outputs.epub = { path: relPath, modifiedAt: new Date().toISOString() };
+    const target = familyIn(m, family.id);
+    target.epub = { path: relPath, modifiedAt: new Date().toISOString() };
     if (carried.length > 0) {
-      m.outputs.epub.appliedPasses = carriedPasses;
-      m.outputs.epub.ledger = carried;
+      target.epub.appliedPasses = carriedPasses;
+      target.epub.ledger = carried;
     }
     if (carry?.records.narrationDeletions) {
-      m.outputs.epub.narrationDeletions = carry.records.narrationDeletions;
+      target.epub.narrationDeletions = carry.records.narrationDeletions;
     }
     if (carry?.records.bookEdits) {
-      m.outputs.epub.bookEdits = carry.records.bookEdits;
+      target.epub.bookEdits = carry.records.bookEdits;
     }
     // The narration copy was cut from the book that has just been replaced, and
-    // so were the strikes it was cut by (they go with `outputs.epub` in the
-    // assignment above). A record that survived would tell the TTS step to
+    // so were the strikes it was cut by (they go with this family's `epub` in
+    // the assignment above). A record that survived would tell the TTS step to
     // narrate a file made out of a book nobody has any more. The FILE is left
     // where it is: this code does not delete a user's EPUBs, and the next export
-    // writes over it under the same derived name.
-    delete m.outputs.ttsEpub;
+    // writes over it under the same derived name. Only THIS chain's copy goes —
+    // another version's narration copy was cut from a book nothing here touched.
+    delete target.ttsEpub;
   });
   if (!saved.success) {
     throw new Error(`Exported to ${epubAbsPath}, but recording it in the manifest failed: ${saved.error}`);
@@ -2255,28 +2873,30 @@ export interface EpubForgetSummary {
  * Refuses a project with no `outputs.epub`, naming it: the caller believed there
  * was a book to delete, and there is not.
  */
-export async function forgetEpubExport(projectDir: string): Promise<EpubForgetSummary> {
-  const manifest = await readManifestAt(projectDir);
+export async function forgetEpubExport(
+  projectDir: string,
+  familyId?: string
+): Promise<EpubForgetSummary> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
-  const record = manifest.outputs?.epub;
+  const record = family.epub;
   if (!record?.path) {
     throw new Error(
-      `${projectDir} has no outputs.epub, so there is no book EPUB to delete. The record is the `
-      + 'only thing that says where a project\'s book is; a file in the folder that nothing records '
-      + 'is not this project\'s book.'
+      `${projectDir}'s ${path.basename(family.source.path)} chain records no book, so there is no `
+      + 'book EPUB to delete. The record is the only thing that says where a chain\'s book is; a '
+      + 'file in the folder that nothing records is not this project\'s book.'
     );
   }
   const relPath = record.path;
   const lifecycle = passesAfterEpubEvent('epub-deleted', record.appliedPasses ?? []);
 
   const saved = await modifyManifest(projectId, (m) => {
-    if (m.outputs) {
-      delete m.outputs.epub;
-      // Cut from the book that is going. See registerEpubExport for why the file
-      // itself is left alone.
-      delete m.outputs.ttsEpub;
-    }
+    const target = familyIn(m, family.id);
+    delete target.epub;
+    // Cut from the book that is going. See registerEpubExport for why the file
+    // itself is left alone.
+    delete target.ttsEpub;
   });
   if (!saved.success) {
     throw new Error(
@@ -2327,9 +2947,10 @@ export function passStageRelDir(index: number, kind: AppliedPassKind): string {
  */
 export async function nextPassStageRelDir(
   projectDir: string,
-  kind: AppliedPassKind
+  kind: AppliedPassKind,
+  familyId?: string
 ): Promise<string> {
-  const passes = await readAppliedPasses(projectDir);
+  const passes = await readAppliedPasses(projectDir, familyId);
   return passStageRelDir(passes.length + 1, kind);
 }
 
@@ -2340,16 +2961,20 @@ export async function nextPassStageRelDir(
  * to a specific file, and there is no such file to describe. That is a caller bug
  * (the pass ran against something it did not register), not a state to paper over.
  */
-export async function appendAppliedPass(projectDir: string, pass: AppliedPass): Promise<void> {
-  const manifest = await readManifestAt(projectDir);
+export async function appendAppliedPass(
+  projectDir: string,
+  pass: AppliedPass,
+  familyId?: string
+): Promise<void> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
   const saved = await modifyManifest(projectId, (m) => {
-    const epub = m.outputs?.epub;
+    const epub = familyIn(m, family.id).epub;
     if (!epub) {
       throw new Error(
-        `Cannot record the ${pass.kind} pass for ${projectDir}: the project has no outputs.epub, `
-        + 'so there is no book for the pass to have been applied to.'
+        `Cannot record the ${pass.kind} pass for ${projectDir}: its ${family.id} chain records no `
+        + 'book, so there is nothing for the pass to have been applied to.'
       );
     }
     epub.appliedPasses = [...(epub.appliedPasses ?? []), pass];
@@ -2368,9 +2993,12 @@ export async function appendAppliedPass(projectDir: string, pass: AppliedPass): 
  * The book's ledger, oldest first. An empty list is a real answer: this book has
  * had nothing run over it, or nothing that could be recorded as undoable.
  */
-export async function readBookLedger(projectDir: string): Promise<LedgerEntry[]> {
-  const manifest = await readManifestAt(projectDir);
-  return manifest.outputs?.epub?.ledger ?? [];
+export async function readBookLedger(
+  projectDir: string,
+  familyId?: string
+): Promise<LedgerEntry[]> {
+  const { family } = await requireFamily(projectDir, familyId);
+  return family.epub?.ledger ?? [];
 }
 
 /** Where an entry's directory is on this disk. */
@@ -2392,8 +3020,12 @@ export function ledgerEntryDir(projectDir: string, id: string): string {
  * `appendAppliedPass` does: the caller believes a pass just rewrote a book this
  * project does not have.
  */
-export async function appendLedgerEntry(projectDir: string, entry: LedgerEntry): Promise<void> {
-  const manifest = await readManifestAt(projectDir);
+export async function appendLedgerEntry(
+  projectDir: string,
+  entry: LedgerEntry,
+  familyId?: string
+): Promise<void> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
   const snapshot = toAbs(projectDir, entry.snapshot);
@@ -2406,11 +3038,11 @@ export async function appendLedgerEntry(projectDir: string, entry: LedgerEntry):
   }
 
   const saved = await modifyManifest(projectId, (m) => {
-    const epub = m.outputs?.epub;
+    const epub = familyIn(m, family.id).epub;
     if (!epub) {
       throw new Error(
-        `Cannot record the ${entry.kind} ledger entry for ${projectDir}: the project has no `
-        + 'outputs.epub, so there is no book for the pass to have been applied to.'
+        `Cannot record the ${entry.kind} ledger entry for ${projectDir}: its ${family.id} chain `
+        + 'records no book, so there is nothing for the pass to have been applied to.'
       );
     }
     epub.ledger = [...(epub.ledger ?? []), entry];
@@ -2451,14 +3083,18 @@ export interface LedgerChange {
  * — with the ledger gone, that derivation comes off the archive-grade base,
  * which is what "byte-identical to the original" means.
  */
-export async function clearBookLedger(projectDir: string): Promise<LedgerChange> {
-  const manifest = await readManifestAt(projectDir);
+export async function clearBookLedger(
+  projectDir: string,
+  familyId?: string
+): Promise<LedgerChange> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
-  const dropped = manifest.outputs?.epub?.ledger ?? [];
+  const dropped = family.epub?.ledger ?? [];
   if (dropped.length === 0) return { dropped: [], kept: [], removedPaths: [] };
 
   const saved = await modifyManifest(projectId, (m) => {
-    if (m.outputs?.epub) delete m.outputs.epub.ledger;
+    const epub = familyIn(m, family.id).epub;
+    if (epub) delete epub.ledger;
   });
   if (!saved.success) {
     throw new Error(
@@ -2508,20 +3144,22 @@ export interface LedgerEntryDeletion extends LedgerChange {
  */
 export async function deleteLedgerEntry(
   projectDir: string,
-  id: string
+  id: string,
+  familyId?: string
 ): Promise<LedgerEntryDeletion> {
-  const entries = await readBookLedger(projectDir);
+  const { family } = await requireFamily(projectDir, familyId);
+  const entries = await readBookLedger(projectDir, family.id);
   const deletion: LedgerDeletion<LedgerEntry> = ledgerAfterDeleting(entries, id);
 
   const book = deletion.kept.length === 0
     ? await deriveWorkingCopy(projectDir, {
       from: 'base',
-      base: await requireWorkingCopySource(projectDir),
+      base: await requireFamilySource(projectDir, family.id),
       keepRecords: true,
-    })
+    }, family.id)
     : await deriveWorkingCopy(projectDir, {
       from: 'ledger', keep: deletion.kept, keepRecords: true,
-    });
+    }, family.id);
 
   // `registerEpubExport` inside the derivation has already dropped the cascaded
   // entries and removed their directories — the record went first and the files
@@ -2559,16 +3197,20 @@ export async function deleteLedgerEntry(
  * `appendAppliedPass` does: the caller believes it just wrote a book this
  * project does not have.
  */
-export async function touchBookEpub(projectDir: string, at: string): Promise<void> {
-  const manifest = await readManifestAt(projectDir);
+export async function touchBookEpub(
+  projectDir: string,
+  at: string,
+  familyId?: string
+): Promise<void> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
   const saved = await modifyManifest(projectId, (m) => {
-    const epub = m.outputs?.epub;
+    const epub = familyIn(m, family.id).epub;
     if (!epub) {
       throw new Error(
-        `Cannot record an edit to ${projectDir}'s book: the project has no outputs.epub, so there `
-        + 'is no book to have been edited.'
+        `Cannot record an edit to ${projectDir}'s book: its ${family.id} chain records none, so `
+        + 'there is no book to have been edited.'
       );
     }
     epub.modifiedAt = at;
@@ -2614,19 +3256,20 @@ export async function recordChapterOpeningFold(
   projectDir: string,
   edit: MergeChapterOpeningEdit,
   removedIndices: readonly number[],
+  familyId?: string,
 ): Promise<ChapterOpeningFoldRecord> {
-  const manifest = await readManifestAt(projectDir);
+  const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
   let droppedStrikes: string[] = [];
   let renumberedStrikes = 0;
 
   const saved = await modifyManifest(projectId, (m) => {
-    const epub = m.outputs?.epub;
+    const epub = familyIn(m, family.id).epub;
     if (!epub) {
       throw new Error(
-        `Cannot record the chapter-opening fold in ${projectDir}: the project has no outputs.epub, `
-        + 'so there is no book to have been folded.'
+        `Cannot record the chapter-opening fold in ${projectDir}: its ${family.id} chain records `
+        + 'no book, so there is nothing to have been folded.'
       );
     }
 
@@ -2686,16 +3329,17 @@ export async function recordChapterOpeningFold(
 export async function recordChapterOpeningNaming(
   projectDir: string,
   edit: NameChapterOpenersEdit,
+  familyId?: string,
 ): Promise<void> {
-  const manifest = await readManifestAt(projectDir);
+  const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
   const saved = await modifyManifest(projectId, (m) => {
-    const epub = m.outputs?.epub;
+    const epub = familyIn(m, family.id).epub;
     if (!epub) {
       throw new Error(
-        `Cannot record the chapter-opening naming in ${projectDir}: the project has no `
-        + 'outputs.epub, so there is no book to have been named.'
+        `Cannot record the chapter-opening naming in ${projectDir}: its ${family.id} chain records `
+        + 'no book, so there is nothing to have been named.'
       );
     }
 
@@ -2736,21 +3380,24 @@ export async function recordChapterOpeningNaming(
  * distinguishing here, because the caller that cares whether there IS a book
  * asks `readExportEpub`, which answers that question exactly.
  */
-export async function readAppliedPasses(projectDir: string): Promise<AppliedPass[]> {
-  const manifest = await readManifestAt(projectDir);
-  return manifest.outputs?.epub?.appliedPasses ?? [];
+export async function readAppliedPasses(
+  projectDir: string,
+  familyId?: string
+): Promise<AppliedPass[]> {
+  const { family } = await requireFamily(projectDir, familyId);
+  return family.epub?.appliedPasses ?? [];
 }
 
 /** Every pass that has a diff, in execution order, with the diff resolved. */
-export async function listPassDiffs(projectDir: string): Promise<Array<{
+export async function listPassDiffs(projectDir: string, familyId?: string): Promise<Array<{
   kind: AppliedPassKind;
   at: string;
   params?: Record<string, unknown>;
   relPath: string;
   absPath: string;
 }>> {
-  const manifest = await readManifestAt(projectDir);
-  return (manifest.outputs?.epub?.appliedPasses ?? [])
+  const { family } = await requireFamily(projectDir, familyId);
+  return (family.epub?.appliedPasses ?? [])
     .filter((p) => !!p.diff)
     .map((p) => ({
       kind: p.kind,
@@ -2822,8 +3469,9 @@ export async function applyEditorLayoutMigration(
     deletions: { deletedPages: number[]; deletedBlockIds: string[] } | null;
     narration: { epubSha256: string; elements: string[] } | null;
   },
+  familyId?: string,
 ): Promise<void> {
-  const manifest = await readManifestAt(projectDir);
+  const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
   const saved = await modifyManifest(projectId, (m) => {
@@ -2851,8 +3499,9 @@ export async function applyEditorLayoutMigration(
     // book on the next open, so dropping them loses nothing that is derived.
     m.chapters = [];
 
-    if (migration.narration && m.outputs?.epub) {
-      m.outputs.epub.narrationDeletions = {
+    const epub = familyIn(m, family.id).epub;
+    if (migration.narration && epub) {
+      epub.narrationDeletions = {
         epubSha256: migration.narration.epubSha256,
         elements: [...migration.narration.elements].sort(),
         updatedAt: new Date().toISOString(),
@@ -2895,10 +3544,11 @@ export async function writeEditorLayout(
 
 /** What the user has struck out of the project's book, or null when nothing. */
 export async function readNarrationDeletions(
-  projectDir: string
+  projectDir: string,
+  familyId?: string
 ): Promise<NarrationDeletions | null> {
-  const manifest = await readManifestAt(projectDir);
-  return manifest.outputs?.epub?.narrationDeletions ?? null;
+  const { family } = await requireFamily(projectDir, familyId);
+  return family.epub?.narrationDeletions ?? null;
 }
 
 /**
@@ -2970,17 +3620,18 @@ export async function readEditorStateDeletions(
  */
 export async function writeNarrationDeletions(
   projectDir: string,
-  deletions: NarrationDeletions
+  deletions: NarrationDeletions,
+  familyId?: string
 ): Promise<void> {
-  const manifest = await readManifestAt(projectDir);
+  const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
   const saved = await modifyManifest(projectId, (m) => {
-    const epub = m.outputs?.epub;
+    const epub = familyIn(m, family.id).epub;
     if (!epub) {
       throw new Error(
-        `Cannot record narration deletions for ${projectDir}: the project has no outputs.epub, so `
-        + 'there is no book for them to be strikes out of.'
+        `Cannot record narration deletions for ${projectDir}: its ${family.id} chain records no `
+        + 'book, so there is nothing for them to be strikes out of.'
       );
     }
     epub.narrationDeletions = deletions;
@@ -3013,20 +3664,21 @@ export async function editNarrationDeletions(
   projectDir: string,
   bookSha256: string,
   edit: { strike: readonly string[]; unstrike: readonly string[] },
+  familyId?: string,
 ): Promise<{ deletions: NarrationDeletions; staleReason: null }
   | { deletions: null; staleReason: string }> {
-  const manifest = await readManifestAt(projectDir);
+  const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
   let written: NarrationDeletions | null = null;
   let staleReason: string | null = null;
 
   const saved = await modifyManifest(projectId, (m) => {
-    const epub = m.outputs?.epub;
+    const epub = familyIn(m, family.id).epub;
     if (!epub) {
       throw new Error(
-        `Cannot record narration deletions for ${projectDir}: the project has no outputs.epub, so `
-        + 'there is no book for them to be strikes out of.'
+        `Cannot record narration deletions for ${projectDir}: its ${family.id} chain records no `
+        + 'book, so there is nothing for them to be strikes out of.'
       );
     }
     const recorded = epub.narrationDeletions ?? null;
@@ -3061,11 +3713,15 @@ export async function editNarrationDeletions(
 }
 
 /** Forget the strikes — the book stays exactly as it is. */
-export async function clearNarrationDeletions(projectDir: string): Promise<void> {
-  const manifest = await readManifestAt(projectDir);
+export async function clearNarrationDeletions(
+  projectDir: string,
+  familyId?: string
+): Promise<void> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
   const saved = await modifyManifest(projectId, (m) => {
-    if (m.outputs?.epub) delete m.outputs.epub.narrationDeletions;
+    const epub = familyIn(m, family.id).epub;
+    if (epub) delete epub.narrationDeletions;
   });
   if (!saved.success) {
     throw new Error(`Clearing the narration deletions for ${projectDir} failed: ${saved.error}`);
@@ -3078,11 +3734,14 @@ export async function clearNarrationDeletions(projectDir: string): Promise<void>
  *
  * Refuses a project with no book, because there is nothing to cut a copy from.
  */
-export async function narrationEpubTarget(projectDir: string): Promise<ExportEpubLocation> {
-  const book = await readExportEpub(projectDir);
+export async function narrationEpubTarget(
+  projectDir: string,
+  familyId?: string
+): Promise<ExportEpubLocation> {
+  const book = await readExportEpub(projectDir, familyId);
   if (!book) {
     throw new Error(
-      `${path.basename(projectDir)} has no book EPUB recorded (manifest outputs.epub), so there is `
+      `${path.basename(projectDir)} has no book EPUB recorded on this chain, so there is `
       + 'nothing to cut a narration copy from. Convert or build the book first.'
     );
   }
@@ -3094,9 +3753,12 @@ export async function narrationEpubTarget(projectDir: string): Promise<ExportEpu
  * Where the project's narration copy IS, or null when it has never been
  * exported. The record is the only answer — same rule as the book itself.
  */
-export async function readNarrationEpub(projectDir: string): Promise<ExportEpubLocation | null> {
-  const manifest = await readManifestAt(projectDir);
-  const recorded = manifest.outputs?.ttsEpub;
+export async function readNarrationEpub(
+  projectDir: string,
+  familyId?: string
+): Promise<ExportEpubLocation | null> {
+  const { family } = await requireFamily(projectDir, familyId);
+  const recorded = family.ttsEpub;
   if (!recorded?.path) return null;
   return {
     relPath: recorded.path,
@@ -3115,10 +3777,11 @@ export async function readNarrationEpub(projectDir: string): Promise<ExportEpubL
  * has to know that before it can decide whether the copy can come with it.
  */
 export async function readNarrationEpubRecord(
-  projectDir: string
+  projectDir: string,
+  familyId?: string
 ): Promise<NarrationEpubOutput | null> {
-  const manifest = await readManifestAt(projectDir);
-  return manifest.outputs?.ttsEpub ?? null;
+  const { family } = await requireFamily(projectDir, familyId);
+  return family.ttsEpub ?? null;
 }
 
 /**
@@ -3132,15 +3795,19 @@ export async function readNarrationEpubRecord(
  * is the cheapest artifact in the project to lose: Export TTS copy cuts it
  * again from the book and the strikes, both of which are untouched by this.
  */
-export async function forgetNarrationEpub(projectDir: string): Promise<ExportEpubLocation> {
-  const manifest = await readManifestAt(projectDir);
+export async function forgetNarrationEpub(
+  projectDir: string,
+  familyId?: string
+): Promise<ExportEpubLocation> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
-  const recorded = manifest.outputs?.ttsEpub;
+  const recorded = family.ttsEpub;
   if (!recorded?.path) {
     throw new Error(
-      `${path.basename(projectDir)} has no outputs.ttsEpub, so there is no narration copy to `
-      + 'delete. The record is the only thing that says a project has one.'
+      `${path.basename(projectDir)}'s ${path.basename(family.source.path)} chain records no `
+      + 'narration copy, so there is none to delete. The record is the only thing that says a '
+      + 'chain has one.'
     );
   }
   const answer: ExportEpubLocation = {
@@ -3149,7 +3816,7 @@ export async function forgetNarrationEpub(projectDir: string): Promise<ExportEpu
     modifiedAt: recorded.modifiedAt,
   };
   const saved = await modifyManifest(projectId, (m) => {
-    if (m.outputs) delete m.outputs.ttsEpub;
+    delete familyIn(m, family.id).ttsEpub;
   });
   if (!saved.success) {
     throw new Error(
@@ -3160,17 +3827,17 @@ export async function forgetNarrationEpub(projectDir: string): Promise<ExportEpu
   return answer;
 }
 
-/** Record a written narration copy as `outputs.ttsEpub`. */
+/** Record a written narration copy against the chain it was cut from. */
 export async function registerNarrationEpub(
   projectDir: string,
-  record: NarrationEpubOutput
+  record: NarrationEpubOutput,
+  familyId?: string
 ): Promise<void> {
-  const manifest = await readManifestAt(projectDir);
+  const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
   const saved = await modifyManifest(projectId, (m) => {
-    if (!m.outputs) m.outputs = {};
-    m.outputs.ttsEpub = record;
+    familyIn(m, family.id).ttsEpub = record;
   });
   if (!saved.success) {
     throw new Error(
@@ -3236,24 +3903,23 @@ export function foundrySourceRecordKeys(manifest: ProjectManifest): string[] {
  * unrecorded stray (invisible to every consumer, per the export contract) rather
  * than a record pointing at a file that is gone.
  */
-export async function clearProcessingRecords(projectDir: string): Promise<{
+export async function clearProcessingRecords(projectDir: string, familyId?: string): Promise<{
   hadEpubRecord: boolean;
   appliedPasses: number;
   clearedSourceKeys: string[];
 }> {
-  const manifest = await readManifestAt(projectDir);
+  const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
-  const hadEpubRecord = !!manifest.outputs?.epub;
-  const appliedPasses = manifest.outputs?.epub?.appliedPasses?.length ?? 0;
+  const hadEpubRecord = !!family.epub;
+  const appliedPasses = family.epub?.appliedPasses?.length ?? 0;
   const clearedSourceKeys = foundrySourceRecordKeys(manifest);
 
   const saved = await modifyManifest(projectId, (m) => {
-    if (m.outputs) {
-      delete m.outputs.epub;
-      // Cut from the book, and going with it. Its file is in the reset's own
-      // item list, named, so the user reads it before saying yes.
-      delete m.outputs.ttsEpub;
-    }
+    const target = familyIn(m, family.id);
+    delete target.epub;
+    // Cut from the book, and going with it. Its file is in the reset's own
+    // item list, named, so the user reads it before saying yes.
+    delete target.ttsEpub;
     const source = m.source as unknown as Record<string, unknown> | undefined;
     if (source) for (const key of clearedSourceKeys) delete source[key];
   });

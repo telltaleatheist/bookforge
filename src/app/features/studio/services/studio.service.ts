@@ -3,7 +3,10 @@ import { ElectronService } from '../../../core/services/electron.service';
 import { LibraryService } from '../../../core/services/library.service';
 import { StudioItem, StudioItemType, FetchUrlResult, EditAction } from '../models/studio.types';
 import { SortField, SortPreference, DEFAULT_SORT, defaultDirectionFor, sortStudioItems } from '../models/studio-sort';
-import type { AudiobookOutput, ArchiveEntry, AppliedPass } from '../../../core/models/manifest.types';
+import type {
+  AudiobookOutput, ArchiveEntry, AppliedPass, BookFamily,
+} from '../../../core/models/manifest.types';
+import { soleFamily } from '@shared/document/book-families';
 
 const SORT_STORAGE_KEY = 'bookforge-studio-sort';
 
@@ -212,11 +215,36 @@ export class StudioService {
         // Source files. New projects no longer keep a redundant source/original.*;
         // the pristine archive 'original' file IS the source. Legacy projects that
         // still have source/original.* keep working via the fallback below.
-        // The export is named after the book, so `outputs.epub` is the only thing
-        // that can point at it. listProjects() migrates pre-rename projects into
-        // that record before this runs, so an absent record means "never exported".
-        if (manifest.outputs?.epub?.path) {
-          paths['source-exported'] = `${projectDir}/${manifest.outputs.epub.path}`;
+        // The export is named after the book, so the chain's own record is the
+        // only thing that can point at it. listProjects() migrates pre-rename
+        // projects before this runs, so an absent record means "never exported".
+        //
+        // A project with SEVERAL chains has no single "the book", and this scan
+        // is a listing that cannot ask which — so it claims none rather than
+        // picking one, and says so once on the console. The row is then a book
+        // with no export, which is visibly incomplete; a guessed path would be
+        // invisibly wrong, and the user would open the wrong version from it.
+        const chain = soleFamily<BookFamily>(manifest.families ?? []);
+        if (chain === null && (manifest.families ?? []).length > 1) {
+          console.warn(
+            `[StudioService] ${manifest.projectId} has ${manifest.families.length} working chains; `
+            + 'this listing shows no book for it until the page can say which version it means.'
+          );
+        }
+        // A project that still holds the LEGACY record has not been through the
+        // migration yet, because `manifestList` is a pure read that deliberately
+        // does the minimum at startup. Opening the project migrates it. Said out
+        // loud rather than shown as a book with no export, which is what it
+        // would otherwise look like — a gap nobody could account for.
+        if (chain === null && manifest.outputs?.epub?.path) {
+          console.warn(
+            `[StudioService] ${manifest.projectId} still records its book at the pre-chain `
+            + 'location, so this listing cannot place it. Opening the project moves it and the row '
+            + 'is right from then on.'
+          );
+        }
+        if (chain?.epub?.path) {
+          paths['source-exported'] = `${projectDir}/${chain.epub.path}`;
         }
         paths['source-original'] = `${projectDir}/source/original.epub`;
         paths['source-pdf'] = `${projectDir}/source/original.pdf`;
@@ -287,7 +315,7 @@ export class StudioService {
         // against `outputs.epub`. The stage copies this replaced are gone for the
         // mono pipeline, and scanning for them would have answered "no" for every
         // book processed by the pass pipeline.
-        const appliedPasses = manifest.outputs?.epub?.appliedPasses ?? [];
+        const appliedPasses = soleFamily<BookFamily>(manifest.families ?? [])?.epub?.appliedPasses ?? [];
         const hasSimplified = appliedPasses.some((p: AppliedPass) => p.kind === 'simplify');
         // `detection` counts: it is the pass that turns a run directory into a
         // book, so a project carrying it has a processed EPUB even when the OCR
@@ -529,9 +557,14 @@ export class StudioService {
       for (const manifest of result.projects) {
         const projectDir = `${projectsPath}/${manifest.projectId}`;
         const paths: Record<string, string> = {
-          // Located by its manifest record — the export is named after the book.
-          ...(manifest.outputs?.epub?.path
-            ? { 'source-exported': `${projectDir}/${manifest.outputs.epub.path}` }
+          // Located by its chain's own record — the export is named after the
+          // book. A project with several chains claims none here, for the reason
+          // spelled out in loadBooks above.
+          ...(soleFamily<BookFamily>(manifest.families ?? [])?.epub?.path
+            ? {
+              'source-exported':
+                `${projectDir}/${soleFamily<BookFamily>(manifest.families)!.epub!.path}`,
+            }
             : {}),
           'source-original': `${projectDir}/source/original.epub`,
           'source-pdf': `${projectDir}/source/original.pdf`,
@@ -547,7 +580,7 @@ export class StudioService {
         const exists = (key: string) => !!existsMap[paths[key]];
 
         // Same provenance rule as books — see loadBooks.
-        const appliedPasses = manifest.outputs?.epub?.appliedPasses ?? [];
+        const appliedPasses = soleFamily<BookFamily>(manifest.families ?? [])?.epub?.appliedPasses ?? [];
         // `detection` counts: it is the pass that turns a run directory into a
         // book, so a project carrying it has a processed EPUB even when the OCR
         // repair was skipped (a born-digital PDF needs no repairing).

@@ -43,6 +43,18 @@ export interface ProjectManifest {
   // Archive
   archive?: ArchiveEntry[];
 
+  /**
+   * The project's WORKING CHAINS, one per archive-grade EPUB, in the order they
+   * were minted. See {@link BookFamily} and shared/document/book-families.ts.
+   *
+   * Absent means the project predates families and has not been opened since;
+   * `ensureBookFamilies` mints them once, from what the project already records.
+   * An EMPTY list is a different fact and a real one: a project whose archive
+   * original is a PDF nobody has converted has nothing archive-grade to hang a
+   * chain off yet.
+   */
+  families?: BookFamily[];
+
   // Book variants — distinct editions/languages/formats of the SAME book in one
   // project (English epub, German epub, the m4b audiobook…). The primaryVariantId
   // variant represents the project (its metadata mirrors `metadata`). Separate
@@ -360,19 +372,89 @@ export interface ManifestOutputs {
   /**
    * The book cast from a PDF's pages — archive-grade, and never the file the
    * user edits. See GeneratedEpubOutput.
+   *
+   * Still project-global, and correctly so: a project has ONE archive original,
+   * a PDF is cast exactly once, and the cast is a FAMILY SOURCE rather than a
+   * link in a chain (`BookFamily.source`, kind `generated-epub`).
    */
   generatedEpub?: GeneratedEpubOutput;
-  /** The project's converted book — see EpubOutput. */
+  /**
+   * LEGACY. The project's one converted book, from before a project could have
+   * more than one.
+   *
+   * Read by exactly one function — `ensureBookFamilies`, which MOVES it under
+   * the family that owns it and deletes it here — and written by nothing. It is
+   * still declared because every manifest on disk carries it until that
+   * migration has run, and a type that refused to admit a field the file has
+   * would make those projects unreadable (the same reason
+   * `ManifestSource.deletedBlockLines` is still declared).
+   *
+   * Nothing else may read it. The book lives at `families[].epub`, and a second
+   * reader here is how a project with two chains would come to have one of them
+   * silently treated as "the" book.
+   */
   epub?: EpubOutput;
   /**
-   * The narration copy: the book with what the user struck out of it removed.
+   * LEGACY, exactly as `epub` above is, and moved by the same migration into
+   * `families[].ttsEpub`.
    *
-   * A SECOND file, never the book. `outputs.epub` is the complete converted book
-   * and stays complete; this is what the TTS step reads when it is there, and
-   * the wizard says which of the two it is using rather than swapping one for
-   * the other. Written by `book:export-narration-epub` from
-   * `epub.narrationDeletions`; see shared/vlm/narration-deletions.ts.
+   * The narration copy: the book with what the user struck out of it removed. A
+   * SECOND file, never the book — the book stays complete; this is what the TTS
+   * step reads when it is there. Written by `book:export-narration-epub` from
+   * its family's `epub.narrationDeletions`; see shared/vlm/narration-deletions.ts.
    */
+  ttsEpub?: NarrationEpubOutput;
+}
+
+/**
+ * ONE WORKING CHAIN: an archive-grade EPUB, and everything derived from it.
+ *
+ * Owen, 2026-08-10: "we'll change the architecture to make working chains
+ * per-archive-file… i do have different versions of books, and i want to be able
+ * to run adjustment chains on different versions."
+ *
+ * The rules about family IDENTITY — which family a question is about, what the
+ * files in one are named after — are pure and live in
+ * shared/document/book-families.ts, because main, the modules that hold their
+ * own manifest, and the renderer's library scan all have to agree about them.
+ * This is the storage side: the records those rules resolve to.
+ *
+ * ── Why the records live INSIDE the family ──────────────────────────────────
+ *
+ * Because they describe a specific file, and there are now several. A strike is
+ * positional inside one book; a ledger entry's snapshot is a copy of one book; a
+ * narration copy is cut from one book. Keeping them beside the family's own
+ * `epub` is what makes "delete this version's changes" reach exactly the records
+ * that version owns — the same reason `narrationDeletions` lives inside
+ * `EpubOutput` rather than beside it.
+ */
+export interface BookFamily {
+  /** `fam-<8 hex>` — opaque, minted once, never derived. See FamilyIdentity. */
+  id: string;
+  /**
+   * The archive-grade EPUB this chain hangs off. Its `path` is repointed when
+   * the file is renamed; the `id` above never moves.
+   */
+  source: {
+    path: string;
+    kind: 'archive-epub' | 'generated-epub';
+    /**
+     * The source's sha256 when this chain was minted, or NULL when the file was
+     * not there to be measured.
+     *
+     * Null is a real state rather than a gap: a project whose archive EPUB the
+     * user moved away still has a book they can read, narrate and export, and
+     * the chain that records all of that is entitled to say "I never saw those
+     * bytes" instead of carrying a digest of nothing. Nothing proves a copy with
+     * it — `deriveWorkingCopy` measures the source and the copy at the moment it
+     * makes one, which is the only measurement that can say a copy came out
+     * right — so this is provenance, not a check.
+     */
+    sha256: string | null;
+  };
+  /** This family's working copy — `source/<family stem>.working.epub`. */
+  epub?: EpubOutput;
+  /** This family's narration copy — `source/<family stem>.tts.epub`. */
   ttsEpub?: NarrationEpubOutput;
 }
 

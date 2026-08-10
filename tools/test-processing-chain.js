@@ -47,6 +47,13 @@ process.env.BOOKFORGE_USERDATA_DIR = process.env.BOOKFORGE_USERDATA_DIR
 fs.mkdirSync(process.env.BOOKFORGE_USERDATA_DIR, { recursive: true });
 
 const chain = require(path.join(DIST, 'processing-chain.js'));
+// The planner resolves a working chain before it plans anything, and minting
+// one the first time a project is asked about is a WRITE — which needs to
+// resolve the project's id off the library's own path layout
+// (`requireLibraryProjectId`). Every fixture below has to live under
+// `<base>/projects/<name>` for that resolution to agree with itself.
+const manifestService = require(path.join(DIST, 'manifest-service.js'));
+manifestService.setLibraryBasePath(SCRATCH);
 
 let passed = 0;
 const failures = [];
@@ -65,12 +72,15 @@ const TRANSLATE = {
 /**
  * A project laid out the way a real one is.
  *
- * `book` writes an EPUB into `source/` and records it, which is the only state
- * the planner cares about; `passes` seeds the provenance a run has to number
- * itself after.
+ * `book` writes an EPUB into `source/` and records it as the working copy;
+ * `archiveEpub` — on by default, off for a PDF-origin project — is the
+ * archive-grade original a working chain is minted off, independent of
+ * whether a working copy has been made from it yet: a project can have one
+ * without the other, and the planner has to resolve a chain either way.
+ * `passes` seeds the provenance a run has to number itself after.
  */
-function project(name, { book = true, pdf = false, passes = [] } = {}) {
-  const dir = path.join(SCRATCH, name);
+function project(name, { book = true, pdf = false, archiveEpub = !pdf, passes = [] } = {}) {
+  const dir = path.join(SCRATCH, 'projects', name);
   fs.mkdirSync(path.join(dir, 'source'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'archive'), { recursive: true });
 
@@ -83,6 +93,10 @@ function project(name, { book = true, pdf = false, passes = [] } = {}) {
     outputs: {},
   };
 
+  if (archiveEpub) {
+    fs.writeFileSync(path.join(dir, 'archive', 'A Test Book.epub'), 'not really a zip either');
+    manifest.archive = [{ path: 'archive/A Test Book.epub', role: 'original', format: 'epub' }];
+  }
   if (book) {
     fs.writeFileSync(path.join(dir, 'source', 'A Test Book.epub'), 'not really a zip');
     manifest.outputs.epub = {
@@ -166,7 +180,12 @@ test('the pass settings travel into the job config verbatim', async () => {
 // ── refusals ────────────────────────────────────────────────────────────────
 
 test('a project with no book says what makes one', async () => {
-  const dir = project('bookless', { book: false, pdf: true });
+  // An archive-grade EPUB is on record — a working chain CAN be minted off it —
+  // but nothing has ever made a working copy from it, which is the shape
+  // `resolveSource`'s own refusal is for. (A PDF that has never been converted
+  // has no working chain AT ALL, so it never reaches this message — it is
+  // refused earlier, by name, for its own reason.)
+  const dir = project('bookless', { book: false });
   const message = await refusal({ projectDir: dir, passes: [SIMPLIFY] });
   assert.match(message, /no book EPUB/i);
   assert.match(message, /Convert to EPUB/,

@@ -77,6 +77,7 @@ import { withProjectStage } from './document-stage-run';
 import { moveIntoPlace } from './processing-passes';
 import { sha256File } from './sidecar-binding';
 import * as manifestService from './manifest-service';
+import { resolveFamily } from '../shared/document/book-families';
 import {
   FOUNDRY_VERSION_FOR_READINGS_FLAGS,
   describeReadingsDecision,
@@ -267,7 +268,13 @@ export async function inspectVlmReadingsBank(
  */
 async function readBank(
   readingsPath: string,
-  manifest: { outputs?: { epub?: { appliedPasses?: Array<{ kind: string; at: string; params?: Record<string, unknown> }> } } },
+  manifest: {
+    families?: Array<{
+      id: string;
+      source: { path: string; kind: 'archive-epub' | 'generated-epub'; sha256: string | null };
+      epub?: { appliedPasses?: Array<{ kind: string; at: string; params?: Record<string, unknown> }> };
+    }>;
+  },
   pdfSha256: string,
 ): Promise<VlmReadingsBank> {
   const pages = await bankedPageCount(readingsPath);
@@ -310,7 +317,24 @@ async function readBank(
   // An absent list is a book with no provenance — a project that has never
   // exported an EPUB — which is a real state and the honest answer is "no
   // conversion is recorded", not a missing value being papered over.
-  const passes = manifest.outputs?.epub?.appliedPasses ?? [];
+  //
+  // WHICH chain's provenance, through the one resolver every surface uses
+  // (shared/document/book-families.ts) — with the NO-CHAIN case answered here
+  // rather than refused, because it is the ordinary state of the project this
+  // dialog is usually open on: a PDF nobody has converted has no chain, so it
+  // has no book, so no conversion is recorded against one. That is a fact about
+  // the project, not a question this cannot answer.
+  //
+  // Several chains IS refused. Matching this PDF's cast against another
+  // version's passes would read a finished conversion out of a book that is not
+  // the one being converted.
+  const families = manifest.families ?? [];
+  let passes: Array<{ kind: string; at: string; params?: Record<string, unknown> }> = [];
+  if (families.length > 0) {
+    const chain = resolveFamily(families, undefined, path.basename(readingsPath));
+    if (chain.refusal !== null) throw new Error(chain.refusal);
+    passes = chain.family.epub?.appliedPasses ?? [];
+  }
   const mine = passes.filter(
     (pass) => pass.kind === 'vlm-convert' && pass.params?.['sourceSha256'] === pdfSha256,
   );

@@ -3512,7 +3512,20 @@ function setupIpcHandlers(): void {
   // manifest (the book's title) and the cover from the library root, neither of
   // which the renderer is the authority on. A project with no cover answers
   // coverPath null — that is an ordinary book, not an error.
-  ipcMain.handle('projects:export-info', async (_event, projectDir: string) => {
+  /**
+   * `familyId` names WHICH working chain the picker is opening.
+   *
+   * The picker arrives here from a row on the versions page, which knows the
+   * chain it drew (`editor:get-versions` puts the id on it). Absent is the
+   * ordinary case and means the project's only chain; a project with several
+   * refuses rather than opening whichever book it reached first — which would
+   * put the user's edits into a version they were not looking at.
+   */
+  ipcMain.handle('projects:export-info', async (
+    _event,
+    projectDir: string,
+    familyId?: string
+  ) => {
     try {
       // ── The working copy is made here, invisibly, because this is where the
       // book is asked for ──────────────────────────────────────────────────────
@@ -3549,23 +3562,23 @@ function setupIpcHandlers(): void {
       // window is looking when the fact is discovered. Nobody downstream
       // re-derives it; there is nothing left to derive it from.
       let remint: WorkingCopyRemint | null = null;
-      await manifestService.migrateWorkingEpubNaming(projectDir);
       const adoption = await manifestService.ensureGeneratedEpub(projectDir);
       if (adoption.missing !== null) console.warn(`[projects:export-info] ${adoption.missing}`);
-      const recordedBefore = await manifestService.readExportEpub(projectDir);
+      await manifestService.migrateWorkingEpubNaming(projectDir, familyId);
+      const recordedBefore = await manifestService.readExportEpub(projectDir, familyId);
       if (!recordedBefore || !fsSync.existsSync(recordedBefore.absPath)) {
         // Asked as "is there something to copy", not as "did it work": a project
         // with nothing archive-grade behind it is an ordinary state here (a PDF
         // nobody has converted), and minting is simply not one of the things
         // opening it does.
         if (await manifestService.workingCopySource(projectDir) !== null) {
-          remint = (await manifestService.ensureBookEpub(projectDir)).remint;
+          remint = (await manifestService.ensureBookEpub(projectDir, familyId)).remint;
           await nameOpeningsOfRemintedCopy(projectDir, remint);
         }
       }
 
-      const target = await manifestService.exportEpubTarget(projectDir);
-      const record = await manifestService.readExportEpub(projectDir);
+      const target = await manifestService.exportEpubTarget(projectDir, familyId);
+      const record = await manifestService.readExportEpub(projectDir, familyId);
       const exported = record && fsSync.existsSync(record.absPath) ? record : null;
       // The book cast from this project's pages, when it has one ON DISK. The
       // picker needs it to tell that artifact apart from the archive original:
@@ -3592,9 +3605,14 @@ function setupIpcHandlers(): void {
       // rail lights its pass entries from this, and asking twice — once for the
       // path, once for the provenance — is how two surfaces come to disagree
       // about the same book.
-      const appliedPasses = await manifestService.readAppliedPasses(projectDir);
+      const appliedPasses = await manifestService.readAppliedPasses(projectDir, familyId);
+      // WHICH chain everything above is about, handed back so the window that
+      // opened can quote it in every act it performs afterwards rather than
+      // asking again and possibly being answered about a different version.
+      const { family } = await manifestService.requireFamily(projectDir, familyId);
       return {
         success: true, target, exported, generated, archive, coverPath, appliedPasses, remint,
+        familyId: family.id,
       };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -7331,9 +7349,13 @@ function setupIpcHandlers(): void {
    * book like any other project, which is what makes erasing a PDF book's changes
    * cost a file copy rather than an hour of GPU.
    */
-  ipcMain.handle('book:ensure-working-copy', async (_event, projectDir: string) => {
+  ipcMain.handle('book:ensure-working-copy', async (
+    _event,
+    projectDir: string,
+    familyId?: string
+  ) => {
     try {
-      const book = await manifestService.ensureBookEpub(projectDir);
+      const book = await manifestService.ensureBookEpub(projectDir, familyId);
       await nameOpeningsOfRemintedCopy(projectDir, book.remint);
       broadcastToAllWindows('project:files-changed', projectDir);
       // The re-mint travels back from here too, for the same reason it travels
@@ -7398,7 +7420,8 @@ function setupIpcHandlers(): void {
   ipcMain.handle('book:erase-changes', async (
     _event,
     rawProjectDir: string,
-    scope: 'everything' | 'working-changes'
+    scope: 'everything' | 'working-changes',
+    familyId?: string
   ) => {
     try {
       if (scope !== 'everything' && scope !== 'working-changes') {
@@ -7411,8 +7434,10 @@ function setupIpcHandlers(): void {
         };
       }
       const projectDir = normalizeFsPath(rawProjectDir);
-      const source = await manifestService.requireWorkingCopySource(projectDir);
-      const existing = await manifestService.readExportEpub(projectDir);
+      // The CHAIN's own source, not the project's: with several versions in one
+      // project, "what does this erase go back to" has one answer per version.
+      const source = await manifestService.requireFamilySource(projectDir, familyId);
+      const existing = await manifestService.readExportEpub(projectDir, familyId);
       if (existing === null) {
         return {
           success: false,
@@ -7427,14 +7452,18 @@ function setupIpcHandlers(): void {
       // entries gone the mint below derives from the archive-grade base, which
       // is what makes "everything" mean byte-identical to the original.
       const ledger = scope === 'everything'
-        ? await manifestService.clearBookLedger(projectDir)
-        : { dropped: [], kept: await manifestService.readBookLedger(projectDir), removedPaths: [] };
+        ? await manifestService.clearBookLedger(projectDir, familyId)
+        : {
+          dropped: [],
+          kept: await manifestService.readBookLedger(projectDir, familyId),
+          removedPaths: [],
+        };
 
       if (fsSync.existsSync(existing.absPath)) {
         await fs.unlink(existing.absPath);
       }
 
-      const book = await manifestService.ensureBookEpub(projectDir);
+      const book = await manifestService.ensureBookEpub(projectDir, familyId);
       if (book.remint === null) {
         // Unreachable: the record was there a moment ago and its file is not, so
         // `ensureBookEpub` re-minted. Said out loud rather than papered over —
@@ -7493,7 +7522,8 @@ function setupIpcHandlers(): void {
   ipcMain.handle('book:delete-ledger-entry', async (
     _event,
     rawProjectDir: string,
-    entryId: string
+    entryId: string,
+    familyId?: string
   ) => {
     try {
       const projectDir = normalizeFsPath(rawProjectDir);
@@ -7501,7 +7531,7 @@ function setupIpcHandlers(): void {
       // autosave its in-memory state over a manifest that has just been rewritten.
       destroyEditorWindowsFor(rawProjectDir, projectDir);
 
-      const deletion = await manifestService.deleteLedgerEntry(projectDir, entryId);
+      const deletion = await manifestService.deleteLedgerEntry(projectDir, entryId, familyId);
       // A fresh copy of the book is a fresh set of chapter openings, exactly as
       // after any other mint — idempotent, and derived from the chapter titles
       // this project stores rather than from anything the deletion knew.
@@ -7539,7 +7569,11 @@ function setupIpcHandlers(): void {
    * last. A failure part-way leaves unrecorded strays (invisible to every
    * consumer) rather than records vouching for files that are gone.
    */
-  ipcMain.handle('book:delete-generated-epub', async (_event, rawProjectDir: string) => {
+  ipcMain.handle('book:delete-generated-epub', async (
+    _event,
+    rawProjectDir: string,
+    familyId?: string
+  ) => {
     try {
       const projectDir = normalizeFsPath(rawProjectDir);
       const generated = await manifestService.readGeneratedEpub(projectDir);
@@ -7557,10 +7591,10 @@ function setupIpcHandlers(): void {
       // record, the passes applied to it, the stage directories those passes
       // wrote, and the bindings that vouch for it. A project with no book
       // recorded has none of that to drop, which is an ordinary state here.
-      const book = await manifestService.readExportEpub(projectDir);
+      const book = await manifestService.readExportEpub(projectDir, familyId);
       let droppedPasses = 0;
       if (book !== null) {
-        const forgotten = await manifestService.forgetEpubExport(projectDir);
+        const forgotten = await manifestService.forgetEpubExport(projectDir, familyId);
         droppedPasses = forgotten.droppedPasses;
         if (fsSync.existsSync(forgotten.absPath)) await fs.unlink(forgotten.absPath);
       }
@@ -7597,10 +7631,14 @@ function setupIpcHandlers(): void {
    * copy is the cheapest artifact in the project — Export TTS copy cuts it
    * again from the book and the strikes, which this does not touch.
    */
-  ipcMain.handle('book:delete-tts-copy', async (_event, rawProjectDir: string) => {
+  ipcMain.handle('book:delete-tts-copy', async (
+    _event,
+    rawProjectDir: string,
+    familyId?: string
+  ) => {
     try {
       const projectDir = normalizeFsPath(rawProjectDir);
-      const forgotten = await manifestService.forgetNarrationEpub(projectDir);
+      const forgotten = await manifestService.forgetNarrationEpub(projectDir, familyId);
       let fileRemoved = false;
       if (fsSync.existsSync(forgotten.absPath)) {
         await fs.unlink(forgotten.absPath);
@@ -10658,6 +10696,16 @@ function setupIpcHandlers(): void {
         // reader of this handler can see where the button goes without having to
         // know the picker redirects at all.
         openPath?: string;
+        // Present on the 'exported' and 'narration' rows: WHICH WORKING CHAIN
+        // this row belongs to.
+        //
+        // Owen, 2026-08-10: "having the epub listed under documents instead of
+        // versions breaks the chain of custody" — and a row that cannot say
+        // which chain it is on is the same break said differently. Every act a
+        // row offers (erase, delete a pass, delete the TTS copy) takes this and
+        // hands it back, so a project with two versions acts on the one the user
+        // pressed rather than on whichever the code reached first.
+        familyId?: string;
         // Present only on the 'archive' row: the manifest variant that IS this
         // file, so Delete can go through `variant:delete` — the one code path
         // that removes a version of a book (record first, file only after the
@@ -10730,6 +10778,7 @@ function setupIpcHandlers(): void {
         language?: string,
         extra?: {
           openPath?: string;
+          familyId?: string;
           variantId?: string;
           primaryPath?: string;
           stageBoundaries?: Array<{ stage: string; finishedAt: string }>;
@@ -10802,6 +10851,7 @@ function setupIpcHandlers(): void {
             diffRecordPath,
             diffOriginalPath,
             ...(extra?.openPath ? { openPath: extra.openPath } : {}),
+            ...(extra?.familyId ? { familyId: extra.familyId } : {}),
             ...(extra?.variantId ? { variantId: extra.variantId } : {}),
             ...(extra?.primaryPath ? { primaryPath: extra.primaryPath } : {}),
             ...(extra?.stageBoundaries ? { stageBoundaries: extra.stageBoundaries } : {}),
@@ -10848,6 +10898,20 @@ function setupIpcHandlers(): void {
       const adoption = await manifestService.ensureGeneratedEpub(projectDir);
       if (adoption.missing !== null) console.warn(`[editor:get-versions] ${adoption.missing}`);
 
+      // ── The project's working chains, given to it here if it predates them ──
+      //
+      // Same placement and same argument as the adoption above: a one-time
+      // normalization happens the next time anything asks about the project, or
+      // it never happens at all. `requireFamily` also does this on its way past,
+      // so this is belt and braces — but this listing is the one surface that
+      // shows a project which HAS no book yet, and those never reach the
+      // chokepoint.
+      const chainsAdoption = await manifestService.ensureBookFamilies(projectDir);
+      if (chainsAdoption.refusal !== null) {
+        console.warn(`[editor:get-versions] ${chainsAdoption.refusal}`);
+      }
+      const families = await manifestService.readBookFamilies(projectDir);
+
       // ── The family: the archive original and the working copy it minted ─────
       //
       // RULED 2026-08-04 (docs/PIPELINE_V2_PLAN.md), reversing the old rule that
@@ -10873,7 +10937,17 @@ function setupIpcHandlers(): void {
       // Read HERE, before the family rows, because two of them are opened ON it:
       // the archive and the cast are read-only, and pointing at their own file
       // would be pointing the user at a book they cannot edit.
-      const exportRecord = await manifestService.readExportEpub(projectDir);
+      //
+      // A project with SEVERAL chains has several — one per version — and the
+      // ARCHIVE and GENERATED rows below open on the copy of the chain that
+      // hangs off THEM, which for those two rows is the project's own archive
+      // original. So the one asked for here is the sole chain's, and a project
+      // with several leaves those rows without an open target rather than
+      // pointing them at some other version's book.
+      const soleChain = families.length === 1 ? families[0] : null;
+      const exportRecord = soleChain === null
+        ? null
+        : await manifestService.readExportEpub(projectDir, soleChain.id);
       // Only a copy that is ON DISK may be named as a row's open target. A
       // record whose file has gone is a re-mint waiting to happen, and the
       // picker is where that happens and says so — sending it the archive
@@ -11027,18 +11101,32 @@ function setupIpcHandlers(): void {
       // id/type stay 'exported' — they are the contract the version consumers
       // key off. (`exportRecord` is read up with the family rows, which open on
       // it.)
-      if (exportRecord) {
+      //
+      // ── ONE PAIR OF ROWS PER CHAIN ────────────────────────────────────────
+      //
+      // A project may now hold several versions, each with its own working copy,
+      // its own ledger and its own narration copy, so this walks the chains
+      // rather than asking the project for "the" book. The row ID stays
+      // `exported`/`narration` when there is ONE chain — that is the contract
+      // every existing consumer keys off, and with one chain it names exactly
+      // one row, so nothing has to change to keep working. With several, each
+      // row takes its chain's id (`exported:fam-…`), because two rows sharing an
+      // id are two rows nothing can tell apart.
+      for (const chain of families) {
+        const chainExport = await manifestService.readExportEpub(projectDir, chain.id);
+        const sole = families.length === 1;
+        if (chainExport) {
         // The book's ledger, read from the manifest rather than by scanning
         // `source/ledger/`: a directory that nothing records is not this book's
         // history, exactly as a book that nothing records is not this project's
         // book. The UI pass that renders these rows owns the layout; this side
         // owes it the entries, in the order they ran, and whether each has a
         // frozen diff worth offering a review button for.
-        const bookLedger = await manifestService.readBookLedger(projectDir);
+        const bookLedger = await manifestService.readBookLedger(projectDir, chain.id);
         await addVersion(
+          sole ? 'exported' : `exported:${chain.id}`,
           'exported',
-          'exported',
-          path.basename(exportRecord.absPath, path.extname(exportRecord.absPath)),
+          path.basename(chainExport.absPath, path.extname(chainExport.absPath)),
           // Named as what it IS rather than as an output, because the act on
           // this row is now "Erase all changes": a row calling itself "the EPUB
           // with your edits applied" beside a button that clears them is a row
@@ -11048,17 +11136,20 @@ function setupIpcHandlers(): void {
           // project has one, else the archive original the copy was minted
           // from. A project with neither still has a true, if parentless,
           // sentence — that state is real (a legacy layout mid-migration).
-          `Your copy of ${generatedRecord
-            ? path.basename(generatedRecord.absPath)
-            : archiveOriginal
-              ? path.basename(archiveOriginal.absPath)
-              : 'the book'}, and every change you have made to it`,
-          exportRecord.absPath,
+          //
+          // The parent is now the CHAIN'S OWN SOURCE rather than whichever
+          // archive-grade file the project happens to hold: with several
+          // versions in one project those are different files, and naming the
+          // wrong one is precisely the broken custody Owen was describing.
+          `Your copy of ${path.basename(chain.source.path)}, and every change you `
+          + 'have made to it',
+          chainExport.absPath,
           '✅',
           true,
           undefined,
           {
-            builtAt: recordedEpubBuilds.get(exportRecord.relPath.toLowerCase()),
+            familyId: chain.id,
+            builtAt: recordedEpubBuilds.get(chainExport.relPath.toLowerCase()),
             ledger: bookLedger.map((entry) => ({
               id: entry.id,
               kind: entry.kind,
@@ -11077,29 +11168,37 @@ function setupIpcHandlers(): void {
             })),
           }
         );
-      }
+        }
 
-      // The NARRATION COPY, when one has been cut: the book minus what the user
-      // struck out, and the file narration prefers as its input the moment it
-      // exists (ll-wizard `ttsInput`). It was written and recorded here all
-      // along and simply had no row — so the one place a user looks to see what
-      // versions of a book exist said the copy they had just made did not, and
-      // there was no way to open, play or delete it (Aug 8 2026).
-      //
-      // NOT editable: it is a derived cut, remade from the book and the strikes
-      // every time `Export TTS copy` runs, so an edit made here would be thrown
-      // away by the next export without saying so.
-      const narrationRecord = await manifestService.readNarrationEpub(projectDir);
-      if (narrationRecord) {
-        await addVersion(
-          'narration',
-          'narration',
-          `${path.basename(narrationRecord.absPath, path.extname(narrationRecord.absPath))}`,
-          'The book with what you struck out removed — what narration reads',
-          narrationRecord.absPath,
-          '🎙️',
-          false
-        );
+        // The NARRATION COPY, when one has been cut: the book minus what the
+        // user struck out, and the file narration prefers as its input the
+        // moment it exists (ll-wizard `ttsInput`). It was written and recorded
+        // here all along and simply had no row — so the one place a user looks
+        // to see what versions of a book exist said the copy they had just made
+        // did not, and there was no way to open, play or delete it (Aug 8 2026).
+        //
+        // It carries its chain's id because the Process button on this row is
+        // how narration is told which document it has (Owen's law: the pipeline
+        // knows the file because the user came to it FROM the button on that
+        // document).
+        //
+        // NOT editable: it is a derived cut, remade from the book and the
+        // strikes every time `Export TTS copy` runs, so an edit made here would
+        // be thrown away by the next export without saying so.
+        const narrationRecord = await manifestService.readNarrationEpub(projectDir, chain.id);
+        if (narrationRecord) {
+          await addVersion(
+            sole ? 'narration' : `narration:${chain.id}`,
+            'narration',
+            `${path.basename(narrationRecord.absPath, path.extname(narrationRecord.absPath))}`,
+            'The book with what you struck out removed — what narration reads',
+            narrationRecord.absPath,
+            '🎙️',
+            false,
+            undefined,
+            { familyId: chain.id }
+          );
+        }
       }
 
       // 2. Cleaned/Simplified EPUB from stages/01-cleanup/

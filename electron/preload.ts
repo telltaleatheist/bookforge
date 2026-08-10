@@ -890,8 +890,14 @@ export interface ElectronAPI {
     getFolder: () => Promise<{ path: string }>;
     findManifestBySource: (fileHash: string | undefined, sourcePath: string | undefined) => Promise<{ found: boolean; projectPath?: string; error?: string }>;
     loadFromPath: (filePath: string) => Promise<ProjectLoadResult>;
-    exportInfo: (projectDir: string) => Promise<{
+    exportInfo: (projectDir: string, familyId?: string) => Promise<{
       success: boolean;
+      /**
+       * WHICH working chain everything below is about — echoed back so a window
+       * can quote it in every act it performs afterwards rather than asking
+       * again and possibly being answered about a different version.
+       */
+      familyId?: string;
       target?: { relPath: string; absPath: string };
       exported?: { relPath: string; absPath: string; modifiedAt?: string } | null;
       /**
@@ -1361,7 +1367,7 @@ export interface ElectronAPI {
      * project with nothing archive-grade to copy — a PDF whose pages have never
      * been read.
      */
-    ensureWorkingEpub: (projectDir: string) =>
+    ensureWorkingEpub: (projectDir: string, familyId?: string) =>
       Promise<{ success: boolean; path?: string; relPath?: string; error?: string }>;
     /**
      * Erase changes made to this book, at one of two scopes: the working copy is
@@ -1381,7 +1387,9 @@ export interface ElectronAPI {
      */
     eraseChanges: (
       projectDir: string,
-      scope: 'everything' | 'working-changes'
+      scope: 'everything' | 'working-changes',
+      /** Which chain's changes. Absent is the project's only one; several refuse. */
+      familyId?: string
     ) => Promise<{
       success: boolean;
       path?: string;
@@ -1401,7 +1409,7 @@ export interface ElectronAPI {
      * asked for is the first, and anything after it is the CASCADE, which the
      * confirmation has to be able to name before the act runs.
      */
-    deleteLedgerEntry: (projectDir: string, entryId: string) => Promise<{
+    deleteLedgerEntry: (projectDir: string, entryId: string, familyId?: string) => Promise<{
       success: boolean;
       path?: string;
       relPath?: string;
@@ -1436,7 +1444,7 @@ export interface ElectronAPI {
      * could only have been minted from it. The heavy act: a re-cast is an hour
      * of GPU, where erasing changes is a file copy.
      */
-    deleteGeneratedEpub: (projectDir: string) => Promise<{
+    deleteGeneratedEpub: (projectDir: string, familyId?: string) => Promise<{
       success: boolean;
       removed?: {
         relPath: string;
@@ -1451,7 +1459,7 @@ export interface ElectronAPI {
      * delete in the project — Export TTS copy cuts it again from the book and
      * the strikes, which stay exactly as they are.
      */
-    deleteTtsCopy: (projectDir: string) => Promise<{
+    deleteTtsCopy: (projectDir: string, familyId?: string) => Promise<{
       success: boolean;
       removed?: { relPath: string; fileRemoved: boolean };
       error?: string;
@@ -2748,8 +2756,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('projects:find-manifest-by-source', fileHash, sourcePath),
     loadFromPath: (filePath: string) =>
       ipcRenderer.invoke('projects:load-from-path', filePath),
-    exportInfo: (projectDir: string) =>
-      ipcRenderer.invoke('projects:export-info', projectDir),
+    exportInfo: (projectDir: string, familyId?: string) =>
+      ipcRenderer.invoke('projects:export-info', projectDir, familyId),
   },
   library: {
     seedBookPath: () =>
@@ -3318,18 +3326,21 @@ const electronAPI: ElectronAPI = {
     readingsBank: (request: VlmConvertRequest) =>
       ipcRenderer.invoke('vlm:readings-bank', request),
     readerStatus: () => ipcRenderer.invoke('vlm:reader-status'),
-    ensureWorkingEpub: (projectDir: string) =>
-      ipcRenderer.invoke('book:ensure-working-copy', projectDir),
-    eraseChanges: (projectDir: string, scope: 'everything' | 'working-changes') =>
-      ipcRenderer.invoke('book:erase-changes', projectDir, scope),
-    deleteLedgerEntry: (projectDir: string, entryId: string) =>
-      ipcRenderer.invoke('book:delete-ledger-entry', projectDir, entryId),
+    // `familyId` on each of these is WHICH working chain the row the user
+    // pressed belongs to. Absent means the project's only one; a project with
+    // several refuses rather than acting on whichever the code reached first.
+    ensureWorkingEpub: (projectDir: string, familyId?: string) =>
+      ipcRenderer.invoke('book:ensure-working-copy', projectDir, familyId),
+    eraseChanges: (projectDir: string, scope: 'everything' | 'working-changes', familyId?: string) =>
+      ipcRenderer.invoke('book:erase-changes', projectDir, scope, familyId),
+    deleteLedgerEntry: (projectDir: string, entryId: string, familyId?: string) =>
+      ipcRenderer.invoke('book:delete-ledger-entry', projectDir, entryId, familyId),
     removeFootnoteReferences: (projectDir: string) =>
       ipcRenderer.invoke('book:remove-footnote-references', projectDir),
-    deleteGeneratedEpub: (projectDir: string) =>
-      ipcRenderer.invoke('book:delete-generated-epub', projectDir),
-    deleteTtsCopy: (projectDir: string) =>
-      ipcRenderer.invoke('book:delete-tts-copy', projectDir),
+    deleteGeneratedEpub: (projectDir: string, familyId?: string) =>
+      ipcRenderer.invoke('book:delete-generated-epub', projectDir, familyId),
+    deleteTtsCopy: (projectDir: string, familyId?: string) =>
+      ipcRenderer.invoke('book:delete-tts-copy', projectDir, familyId),
     ensureNarrationEpub: (projectDir: string) =>
       ipcRenderer.invoke('narration:ensure-copy', projectDir),
     narrationState: (projectDir: string) =>

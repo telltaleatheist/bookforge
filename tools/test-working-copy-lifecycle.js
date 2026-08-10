@@ -57,6 +57,22 @@ const writeManifest = (dir, manifest) =>
   fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2));
 
 /**
+ * The book record, where it lives now: under the family that owns it.
+ *
+ * `manifest.outputs.epub` was the one book a project could have. A project may
+ * now have several chains, so the record moved inside the family whose source it
+ * hangs off — and a fixture that reads it (or mutates it, after the code under
+ * test has had a chance to mint the family) reads it there instead. Every
+ * fixture in this file mints exactly one chain, so there is exactly one family
+ * to mean.
+ */
+const bookRecordOf = (dir) => {
+  const families = readManifest(dir).families ?? [];
+  assert.strictEqual(families.length, 1, `expected one working chain, found ${families.length}`);
+  return families[0].epub;
+};
+
+/**
  * An EPUB, as far as everything under test is concerned: a file of bytes with a
  * sha256. Nothing here parses one — the working copy is proved by digest, and a
  * digest does not care whether the zip is valid.
@@ -83,11 +99,17 @@ function populateRecords(dir) {
   };
   manifest.chapters = [{ id: 'c1', title: 'One', page: 1, level: 1 }];
   manifest.chaptersSource = 'editor';
-  manifest.outputs.epub.narrationDeletions = {
+  // Some callers populate before the project has a chain (still `outputs.epub`,
+  // which `ensureBookFamilies` will move on its way past); others populate after
+  // a caller upstream already minted one, in which case the book record it wrote
+  // to has already moved. Either way, this writes the strikes and book edits onto
+  // wherever the book currently lives.
+  const book = (manifest.families ?? [])[0]?.epub ?? manifest.outputs.epub;
+  book.narrationDeletions = {
     elements: ['OEBPS/ch1.xhtml#3', 'OEBPS/ch1.xhtml#4'],
     bookSha256: 'whatever',
   };
-  manifest.outputs.epub.bookEdits = [
+  book.bookEdits = [
     { kind: 'name-chapter-openers', at: '2026-08-09T00:00:00.000Z', named: [] },
   ];
   writeManifest(dir, manifest);
@@ -103,9 +125,9 @@ function assertRecordsCleared(dir, label, sourceType) {
     assert.strictEqual(
       manifest.source[key], undefined, `${label}: manifest.source.${key} survived`);
   }
-  assert.strictEqual(
-    manifest.outputs.epub.narrationDeletions, undefined, `${label}: strikes survived`);
-  assert.strictEqual(manifest.outputs.epub.bookEdits, undefined, `${label}: book edits survived`);
+  const book = bookRecordOf(dir);
+  assert.strictEqual(book.narrationDeletions, undefined, `${label}: strikes survived`);
+  assert.strictEqual(book.bookEdits, undefined, `${label}: book edits survived`);
   // The source's IDENTITY is not a record of anything the user did, and must
   // never go with them — a project that forgot what file it came from could not
   // be reconciled with the library again.

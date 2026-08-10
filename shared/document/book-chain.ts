@@ -93,7 +93,7 @@ export interface ChainLedgerEntry {
 export interface BookChainInput {
   /** Every document row main emitted, in main's own order. */
   readonly rows: readonly ChainRow[];
-  /** `outputs.epub.ledger`, in execution order. Empty is the ordinary case. */
+  /** The chain's `epub.ledger`, in execution order. Empty is the ordinary case. */
   readonly ledger: readonly ChainLedgerEntry[];
 }
 

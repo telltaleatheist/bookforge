@@ -184,8 +184,11 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
 
   // Stage numbering carries on from what the book already records: a pass writes
   // the book in place, so the run adds to that book's history rather than
-  // starting one.
-  const base = record ? (manifest.outputs?.epub?.appliedPasses?.length ?? 0) : 0;
+  // starting one. Read through the chain resolver rather than off the manifest,
+  // so a project with several versions cannot number this run's stages from a
+  // different version's history — and so `record` and this count are answers
+  // about the same book.
+  const base = record ? (await manifestService.readAppliedPasses(projectDir)).length : 0;
 
   const jobs: PlannedPassJob[] = passes.map((pass: ChainPassRequest, i: number) => {
     if (pass.kind === 'simplify' && !pass.simplify) {

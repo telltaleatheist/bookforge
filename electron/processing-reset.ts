@@ -290,7 +290,10 @@ export async function resetBookProcessing(
     });
   }
 
-  const passCount = manifest.outputs?.epub?.appliedPasses?.length ?? 0;
+  // Through the chain resolver, like the two records above it: a reset preview
+  // that counted one version's passes beside another version's book would name a
+  // cost the act does not have.
+  const passCount = (await manifestService.readAppliedPasses(projectDir)).length;
   items.push({
     kind: 'provenance',
     label: passCount > 0

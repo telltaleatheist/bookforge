@@ -54,7 +54,22 @@ const readManifest = (dir) =>
 const writeManifest = (dir, manifest) =>
   fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2));
 
-const ledgerOf = (dir) => readManifest(dir).outputs.epub.ledger ?? [];
+/**
+ * The book record, where it lives now: under the family that owns it.
+ *
+ * `manifest.outputs.epub` was the one book a project could have, and the ledger
+ * hangs off it. Every fixture in this file goes through `makeProject`, which
+ * mints its one chain during setup (`ensureBookEpub`), so by the time a test
+ * body reads or mutates the book record the legacy field is already gone and
+ * this is where it lives instead.
+ */
+const bookRecordOf = (dir) => {
+  const families = readManifest(dir).families ?? [];
+  assert.strictEqual(families.length, 1, `expected one working chain, found ${families.length}`);
+  return families[0].epub;
+};
+
+const ledgerOf = (dir) => bookRecordOf(dir).ledger ?? [];
 
 let passed = 0;
 const failures = [];
@@ -159,7 +174,11 @@ function populateRecords(dir) {
   manifest.source = { ...manifest.source, deletedBlockIds: ['b-1', 'b-2'], deletedPages: [4] };
   manifest.chapters = [{ id: 'c1', title: 'One', page: 1, level: 1 }];
   manifest.chaptersSource = 'editor';
-  manifest.outputs.epub.narrationDeletions = {
+  // Every fixture reaching this point has already been through `makeProject`,
+  // which mints the chain, so the book record to strike is the family's.
+  const families = manifest.families ?? [];
+  assert.strictEqual(families.length, 1, `expected one working chain, found ${families.length}`);
+  families[0].epub.narrationDeletions = {
     elements: ['OEBPS/ch1.xhtml#1'], epubSha256: 'whatever',
   };
   writeManifest(dir, manifest);
@@ -172,7 +191,7 @@ function assertRecordsPresent(dir, label) {
     m.source.deletedBlockIds, ['b-1', 'b-2'], `${label}: block deletions were cleared`);
   assert.deepStrictEqual(m.source.deletedPages, [4], `${label}: page deletions were cleared`);
   assert.ok(m.chapters, `${label}: chapter markers were cleared`);
-  assert.ok(m.outputs.epub.narrationDeletions, `${label}: narration strikes were cleared`);
+  assert.ok(bookRecordOf(dir).narrationDeletions, `${label}: narration strikes were cleared`);
 }
 
 function assertRecordsCleared(dir, label) {
@@ -182,7 +201,7 @@ function assertRecordsCleared(dir, label) {
   assert.strictEqual(m.source.deletedPages, undefined, `${label}: page deletions survived`);
   assert.strictEqual(m.chapters, undefined, `${label}: chapter markers survived`);
   assert.strictEqual(
-    m.outputs.epub.narrationDeletions, undefined, `${label}: narration strikes survived`);
+    bookRecordOf(dir).narrationDeletions, undefined, `${label}: narration strikes survived`);
 }
 
 /**
@@ -494,7 +513,9 @@ test('a fold made since the pass refuses the deletion, rather than mis-placing s
   // to match it in the same transaction. Going back past it would undo the
   // removal in the bytes and leave every later strike one element out.
   const manifest = readManifest(dir);
-  manifest.outputs.epub.bookEdits = [{
+  assert.strictEqual(
+    (manifest.families ?? []).length, 1, `expected one working chain, found ${(manifest.families ?? []).length}`);
+  manifest.families[0].epub.bookEdits = [{
     kind: 'merge-chapter-opening',
     at: new Date(Date.parse(entry.createdAt) + 1000).toISOString(),
     file: 'OEBPS/ch1.xhtml',
