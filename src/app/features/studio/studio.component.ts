@@ -344,7 +344,7 @@ import { samePath } from '@shared/document/same-path';
                       (skipped)="versionsPanel.set('skipped')"
                       (continueJob)="onContinueJob()"
                       (assemble)="goToProcessing()"
-                      (process)="goToNarration()"
+                      (process)="goToNarration($event.path)"
                       (correctSentences)="startCorrectSentences()"
                       (changed)="onFileChanged()"
                       (compareActive)="versionsComparing.set($event)"
@@ -377,9 +377,9 @@ import { samePath } from '@shared/document/same-path';
                     (close)="correctSentencesActive.set(false)"
                     (queued)="onProcessQueued(); correctSentencesActive.set(false)"
                   />
-                } @else if (currentEpubPath()) {
+                } @else if (processEpubPath()) {
                   <app-ll-wizard
-                    [epubPath]="currentEpubPath()"
+                    [epubPath]="processEpubPath()"
                     [originalEpubPath]="selectedItem()?.epubPath || ''"
                     [title]="selectedMetadata()?.title || ''"
                     [projectTitle]="selectedMetadata()?.title || ''"
@@ -1761,6 +1761,31 @@ export class StudioComponent implements OnInit, OnDestroy {
   });
 
   /**
+   * The file a Process button NAMED, when the user reached this tab through one.
+   *
+   * Null is the ordinary state — the Process tab clicked directly, or Continue
+   * and Assemble, none of which is a statement about a document. It is not a
+   * default for a failed lookup: it is the difference between "narrate this
+   * file" and "narrate this project's book", and those are two genuinely
+   * different requests now that the versions page shows both the book and the
+   * narration copy cut from it as their own lines.
+   *
+   * Cleared whenever the selected book changes, because a path from another
+   * project's page is not this one's document.
+   */
+  private readonly narrationDocument = signal<string | null>(null);
+
+  /**
+   * The document the Process wizard is given.
+   *
+   * The named file when a Process button named one, and the project's own book
+   * otherwise. Not a fallback for a missing value — the two are separate
+   * requests, and which one was made is recorded rather than guessed.
+   */
+  readonly processEpubPath = computed<string>(() =>
+    this.narrationDocument() ?? this.currentEpubPath());
+
+  /**
    * True when the user hasn't finalized via the editor yet (no export recorded).
    *
    * Answered by StudioItem.exportedEpubPath, which comes from the manifest's
@@ -1976,8 +2001,15 @@ export class StudioComponent implements OnInit, OnDestroy {
    * which button was pressed. It reuses goToProcessing exactly as Continue and
    * Assemble do; the bump is what the wizard listens for.
    */
-  goToNarration(): void {
+  goToNarration(document?: string): void {
     this.goToProcessing();
+    // WHICH file, when the caller named one. The versions page's Process button
+    // does (Owen, 2026-08-09: "the tts pipeline knows exactly which file its
+    // working with because the user came to the tts page FROM the button on that
+    // document"), and the wizard is handed that file rather than looking one up.
+    // Cleared when it did not, so the previous press cannot leak into a Process
+    // reached by another door.
+    this.narrationDocument.set(document ?? null);
     // Re-read the selected project first. The versions page re-measures itself
     // on `document:stage-finished` and the ITEM does not, so a book built in the
     // picker a moment ago can be showing an EPUB row here while the record this
@@ -2077,6 +2109,10 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.versionsComparing.set(false);
     this.finalizingContent.set('idle');
     this.diffPaths.set(null);
+    // A file named by a Process button belongs to the book it was pressed on.
+    // Another book is another document, and carrying the old path across would
+    // point the Process wizard at a file that is not in this project.
+    this.narrationDocument.set(null);
   }
 
   playItem(item: StudioItem): void {

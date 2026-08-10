@@ -10583,6 +10583,13 @@ function setupIpcHandlers(): void {
           label: string;
           createdAt: string;
           hasReceipt: boolean;
+          // The entry's own two files, ABSOLUTE, so the row can act on them: the
+          // book exactly as that pass left it, and the diff frozen at the moment
+          // it ran. `hasReceipt` stays because it is the question the button
+          // asks — a `receiptPath` that names a file which is not there would be
+          // a disabled button with no reason to give.
+          snapshotPath: string;
+          receiptPath: string | null;
         }>;
         // Present only on the synthetic 'analysis' entry:
         analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
@@ -10623,6 +10630,10 @@ function setupIpcHandlers(): void {
             createdAt: string;
             /** Whether this entry froze a diff worth offering for review. */
             hasReceipt: boolean;
+            /** The book as this pass left it, absolute — the line opens it. */
+            snapshotPath: string;
+            /** The frozen diff, absolute, or null when the pass recorded none. */
+            receiptPath: string | null;
           }>;
         }
       ) => {
@@ -10926,6 +10937,15 @@ function setupIpcHandlers(): void {
               label: entry.label,
               createdAt: entry.createdAt,
               hasReceipt: entry.receipt !== null,
+              // Resolved here, once, from the project-relative paths the entry
+              // records. The renderer holds no project directory to join them
+              // onto and must never learn to — the same rule the rest of these
+              // rows follow, which is why every one of them carries an absolute
+              // `path` rather than a relative one.
+              snapshotPath: path.resolve(projectDir, entry.snapshot.split('/').join(path.sep)),
+              receiptPath: entry.receipt === null
+                ? null
+                : path.resolve(projectDir, entry.receipt.split('/').join(path.sep)),
             })),
           }
         );

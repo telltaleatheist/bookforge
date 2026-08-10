@@ -34,7 +34,7 @@ import {
   formatPageRate,
   type ConversionRateSample,
 } from '@shared/vlm/eta';
-import { VLM_CONVERT_STAGE } from '@shared/vlm/conversion';
+import { VLM_CONVERT_STAGE, type VlmConvertDestination } from '@shared/vlm/conversion';
 import type { VlmReadingsChoice } from '@shared/vlm/readings-bank';
 import { samePath } from '@shared/document/same-path';
 
@@ -99,6 +99,18 @@ export interface VlmConvertJobConfig {
    * permanent rather than transitional.
    */
   readings?: VlmReadingsChoice;
+  /**
+   * Where this run's book LANDS — replace the project's book, or be added beside
+   * it as another archive file.
+   *
+   * Answered on the versions page before the row was added, and recorded here
+   * for exactly the reason `readings` is: a row that waits overnight and a retry
+   * of a failed row must both do what the user chose, not what a later build
+   * thinks is sensible. ABSENT means 'replace', which is the only thing a
+   * conversion did before this field existed — every row already in a
+   * `queue.json` written by an older build meant that, permanently.
+   */
+  destination?: VlmConvertDestination;
 }
 
 /** One sub-bar under the row's own, in the shape the queue's stage list takes. */
@@ -178,6 +190,9 @@ export function buildConversionConfig(
     // its user never made — absent is a state with a defined meaning
     // (`readingsChoiceOfJob`), not a hole to fill in.
     ...(raw.readings ? { readings: raw.readings } : {}),
+    // Same rule, same reason: absent means 'replace', which is what every row
+    // enqueued before this field existed meant.
+    ...(raw.destination ? { destination: raw.destination } : {}),
   };
 }
 
@@ -347,6 +362,9 @@ export async function runConversionJob(
       // the first start and on every retry alike. A retry that re-decided would
       // be the queue overruling the user between two attempts at one job.
       ...(config.readings ? { readings: config.readings } : {}),
+      // Where the finished book lands, as recorded on the row. Unchanged across
+      // retries for the same reason the readings answer is.
+      ...(config.destination ? { destination: config.destination } : {}),
     });
     if (!result.success || !result.result) {
       // Main's own sentence — it names the missing Python, the model it could

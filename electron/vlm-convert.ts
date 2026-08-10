@@ -439,6 +439,11 @@ function inferredPagesFrom(stderr: string): number {
  * What is NOT done here is a reset. The user's deleted pages are a fact about
  * the PDF and were just OBEYED by this run (`--skip-pages`); clearing them
  * because the book was rebuilt would silently un-skip them on the next cast.
+ *
+ * Acts 2-5 are what makes a cast into THIS PROJECT'S BOOK, and a request that
+ * asked for a NEW COPY (`destination: 'new-copy'`) does none of them — it
+ * registers the reading as another archive-grade variant and stops. See the
+ * branch below, which says what it deliberately leaves alone and why.
  */
 export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmConvertResult> {
   // FIRST, before a project is resolved or 38 MB of foundry is fetched: whether
@@ -664,6 +669,65 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     }
     return run;
   });
+
+  const unreadableEarly = unreadablePagesFrom(result.stderr);
+
+  /*
+   * ── A SECOND archive file, and nothing else ────────────────────────────────
+   *
+   * Owen, 2026-08-09: a conversion ordered on a project that already has an EPUB
+   * can be told to leave that book alone — the new reading "is added as a new
+   * archive file right next to the archive epub that already exists".
+   *
+   * What this branch does NOT do is the whole of it. No `registerGeneratedEpub`,
+   * no `mintWorkingCopyFrom`, no `appendAppliedPass`: those three are what make a
+   * cast into THIS PROJECT'S BOOK, and running them would replace the working
+   * copy the user is editing and end its ledger — which is the exact thing they
+   * chose not to do. The file is registered as an ordinary ebook VARIANT
+   * (`addVariant`), which is the one path that lands a book in `archive/` with a
+   * readable name and a record, whatever a project's migration state
+   * (`getVariants` only synthesises `arch:` rows for projects with no real
+   * variants, so writing to `manifest.archive[]` would leave most projects with a
+   * file and no row).
+   *
+   * It gets no working chain. That is a decision, not an omission: a project has
+   * one `outputs.epub`, and a chain per archive file is a later change.
+   */
+  if (request.destination === 'new-copy') {
+    // Named before it is registered. `addVariant` reads the FILENAME for the
+    // version's title, and the staging name is a sha — a version called
+    // "vlm-convert-3f2a9c11" is a row nobody can identify a month later.
+    const readableName = `${path.basename(generatedTarget.absPath, '.generated.epub')}.epub`;
+    const readable = path.join(path.dirname(stagedEpub), readableName);
+    await moveIntoPlace(stagedEpub, readable);
+    const { addVariant } = await import('./library-actions.js');
+    const added = await addVariant(project.projectId, readable);
+    // The staged copy has served its purpose either way — `addVariant` COPIES
+    // into archive/, so leaving this behind would fill the staging directory
+    // with whole books.
+    try { await fs.promises.rm(readable, { force: true }); } catch { /* staging */ }
+    if (!added.success || !added.variant) {
+      throw new Error(
+        `The pages were read, but the book could not be added beside this project's existing `
+        + `archive files: ${added.error ?? 'no reason given'}. Nothing else was changed — the book `
+        + 'you were editing is untouched.'
+      );
+    }
+    const absPath = path.join(project.projectDir, added.variant.path.split('/').join(path.sep));
+    console.log(
+      `[vlm-convert] ${path.basename(project.projectDir)}: read the pages into a NEW archive file, `
+      + `${added.variant.path}. The project's book, its working copy and its ledger are untouched.`
+    );
+    return {
+      endpoint: endpoint === null ? null : endpoint.url,
+      epubPath: absPath,
+      relPath: added.variant.path,
+      inferredPages: inferredPagesFrom(result.stderr),
+      totalPages: totalPagesFrom(result.stderr) ?? 0,
+      unreadable: unreadableEarly,
+      skippedPages,
+    };
+  }
 
   await moveIntoPlace(stagedEpub, generatedTarget.absPath);
   const generated = await manifestService.registerGeneratedEpub(
