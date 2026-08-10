@@ -2063,6 +2063,12 @@ function setupIpcHandlers(): void {
         if (!layoutIsStale) {
           editorState.undoStack = mergedData.undo_stack || [];
           editorState.redoStack = mergedData.redo_stack || [];
+          // The block table the two stacks (and blockSplits/blockMerges below)
+          // name their blocks in — every record there is an id, and this is
+          // where the blocks themselves live. Holds only what the document
+          // cannot produce again on the next open, so it is usually absent; see
+          // shared/document/editor-history.ts.
+          editorState.historyBlocks = mergedData.history_blocks || undefined;
           editorState.blockEdits = mergedData.block_edits || undefined;
           editorState.customCategories = mergedData.custom_categories || undefined;
           editorState.ocrBlocks = mergedData.ocr_blocks || undefined;
@@ -3477,6 +3483,10 @@ function setupIpcHandlers(): void {
           remove_backgrounds: source.removeBackgrounds || false,
           undo_stack: withheld(editor.undoStack || [], []),
           redo_stack: withheld(editor.redoStack || [], []),
+          // Keyed by block id like everything the two stacks name, so it is
+          // withheld with them: a block table from another layout would resolve
+          // ids that mean something else here.
+          history_blocks: withheld(editor.historyBlocks || undefined, undefined),
           block_edits: withheld(editor.blockEdits || undefined, undefined),
           custom_categories: withheld(editor.customCategories || undefined, undefined),
           ocr_blocks: withheld(editor.ocrBlocks || undefined, undefined),
