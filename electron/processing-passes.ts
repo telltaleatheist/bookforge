@@ -39,6 +39,7 @@ import type { BrowserWindow } from 'electron';
 import * as manifestService from './manifest-service';
 import { writePassDiff, type PassDiffUnit } from './diff-cache';
 import { loadEpubForComparison } from './epub-processor';
+import type { AppliedPass } from './manifest-types';
 import type {
   PassJobConfig,
   PassJobResult,
@@ -114,6 +115,32 @@ export async function moveIntoPlace(fromAbsPath: string, toAbsPath: string): Pro
     await fs.promises.copyFile(fromAbsPath, sibling);
     await fs.promises.rename(sibling, toAbsPath);
     await fs.promises.unlink(fromAbsPath);
+  }
+}
+
+/**
+ * Record the pass in the book's LEDGER, so the user can take it back on its own.
+ *
+ * One act with the rewrite, and it runs immediately after the `appliedPasses`
+ * record is appended: the snapshot it takes is the book this pass produced, and
+ * a moment later that book is one the user has been editing again.
+ *
+ * A refusal is SAID and not thrown. The pass succeeded — the book is rewritten,
+ * its provenance records it, its diff is on disk — and what could not be
+ * promised is only that it is undoable in isolation. Failing the job here would
+ * report an hour of model time as wasted when it was not. See
+ * electron/book-ledger.ts for the cases (a structural rewrite, an unreadable
+ * result, a project with no archive-grade base).
+ */
+async function recordInLedger(
+  config: PassJobConfig,
+  label: string,
+  pass: AppliedPass
+): Promise<void> {
+  const { registerLedgerPass } = await import('./book-ledger.js');
+  const recorded = await registerLedgerPass(config.projectDir, { kind: pass.kind, label, pass });
+  if (recorded.refusal !== null) {
+    console.warn(`[processing-pass] ${recorded.refusal}`);
   }
 }
 
@@ -194,12 +221,14 @@ async function runSimplifyPass(
   await writePassDiff(diff.abs, pairChapters(before.chapters, after.chapters));
 
   const bookAfter = await replaceBookEpub(config.projectDir, produced);
-  await manifestService.appendAppliedPass(config.projectDir, {
+  const applied: AppliedPass = {
     kind: 'simplify',
     at: new Date().toISOString(),
     params: { mode: params.mode, provider: params.aiProvider, model: params.aiModel },
     diff: diff.rel,
-  });
+  };
+  await manifestService.appendAppliedPass(config.projectDir, applied);
+  await recordInLedger(config, 'Simplify', applied);
   return { success: true, outputPath: bookAfter };
 }
 
@@ -245,7 +274,7 @@ async function runTranslatePass(
   }
 
   const bookAfter = await replaceBookEpub(config.projectDir, result.outputPath);
-  await manifestService.appendAppliedPass(config.projectDir, {
+  const applied: AppliedPass = {
     kind: 'translate',
     at: new Date().toISOString(),
     params: {
@@ -254,7 +283,12 @@ async function runTranslatePass(
       provider: params.aiProvider,
       model: params.aiModel,
     },
-  });
+  };
+  await manifestService.appendAppliedPass(config.projectDir, applied);
+  // No diff to freeze — a translation shares no words with what it replaced, so
+  // the entry's receipt is null and the row says so rather than offering a review
+  // of a wall of red and green.
+  await recordInLedger(config, `Translate to ${params.targetLang}`, applied);
   return { success: true, outputPath: bookAfter };
 }
 

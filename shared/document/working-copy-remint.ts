@@ -84,6 +84,22 @@ export interface WorkingCopyRemint {
    * plain statement that those four hundred strikes went with the file.
    */
   narrationStrikes: number;
+  /**
+   * The ledger entries the fresh copy STILL CARRIES, oldest first, by label.
+   *
+   * Empty is the ordinary case and the one this receipt was written for: a book
+   * nothing has been run over comes back as the archive-grade original exactly.
+   *
+   * A non-empty list changes what the last line of the receipt can truthfully
+   * say. A pass rewrote the book's bytes and its snapshot is what the fresh copy
+   * was derived from (shared/document/book-ledger.ts), so the user is NOT
+   * looking at the unedited original — they are looking at the book those passes
+   * produced, with their own edits gone. Deleting the working copy means "start
+   * my edits over"; it has never meant "throw away the hour of model time too",
+   * and a receipt that claimed the original was back would be describing a file
+   * the project does not have.
+   */
+  kept: readonly string[];
 }
 
 /** `n thing(s)`, the plural spelling this codebase uses everywhere. */
@@ -125,6 +141,26 @@ export function describeWorkingCopyRemint(remint: WorkingCopyRemint): string {
       made: 'the book read out of this project\'s pages',
       now: 'that book exactly as it was read, with none of your edits',
     };
+  // A book with recorded passes was NOT copied from the archive-grade book: it
+  // was derived from the snapshot the last of those passes left, which is the
+  // only file that has them applied. Both halves of the sentence change, because
+  // both would otherwise be false.
+  if (remint.kept.length > 0) {
+    const list = remint.kept.length === 1
+      ? remint.kept[0]
+      : `${remint.kept.slice(0, -1).join(', ')} and ${remint.kept[remint.kept.length - 1]}`;
+    return (
+      `${remint.relPath} was not on disk, so it has been made again from ${from.made} with `
+      + `${list} applied. Deleting the working copy is how a book's EDITS are started over, and it `
+      + 'was taken that way: your edits are recorded in the project rather than written into the '
+      + `file, and every record made against the copy that is gone was cleared with it — ${cleared
+        .join(', ')
+        .replace(/, ([^,]*)$/, ' and $1')}. The pass${remint.kept.length === 1 ? '' : 'es'} `
+      + `rewrote the book itself and ${remint.kept.length === 1 ? 'is' : 'are'} recorded in its `
+      + `ledger, so ${remint.kept.length === 1 ? 'it was' : 'they were'} kept — delete the ledger `
+      + 'entr(y/ies) to go back further.'
+    );
+  }
   return (
     `${remint.relPath} was not on disk, so it has been made again from ${from.made}. Deleting the `
     + 'working copy is how a book is started over, and it was taken that way: your edits are '

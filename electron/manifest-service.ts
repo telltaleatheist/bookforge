@@ -31,12 +31,21 @@ import type {
   NarrationFlags,
   AppliedPass,
   AppliedPassKind,
+  LedgerEntry,
   GeneratedEpubOutput,
+  BookEdit,
   MergeChapterOpeningEdit,
   NameChapterOpenersEdit,
   SourceType,
 } from './manifest-types.js';
 import { passesAfterEpubEvent } from '../shared/document/pass-lifecycle';
+import {
+  describeLedgerDeletion,
+  ledgerAfterDeleting,
+  ledgerEntryRelDir,
+  listLedgerLabels,
+  type LedgerDeletion,
+} from '../shared/document/book-ledger';
 import {
   EDITOR_LAYOUT_MANIFEST_KEY,
   LAYOUT_KEYED_EDITOR_FIELDS,
@@ -1471,11 +1480,151 @@ export async function mintWorkingCopyFrom(
   projectDir: string,
   source: WorkingCopySource
 ): Promise<ExportEpubLocation> {
-  const target = await mintTargetFor(projectDir, source);
-  await atomicCopyFile(source.absPath, target.absPath);
+  // `keepRecords: false` is what this call has always done: `registerEpubExport`
+  // replaced `outputs.epub` wholesale and the strikes went with it. Its callers
+  // are a fresh cast and a fresh copy of the archive — neither is a book the old
+  // strikes describe.
+  return deriveWorkingCopy(projectDir, { from: 'base', base: source, keepRecords: false });
+}
+
+/**
+ * WHERE the working copy is being derived from — the archive-grade base, or a
+ * point in the book's ledger.
+ *
+ * The two are the same act on two different files, which is why they are one
+ * function: copy, prove the bytes, record. What differs is only what the record
+ * says afterwards, and that difference is the whole of the ledger's truth table.
+ */
+export type WorkingCopyDerivation =
+  /**
+   * The archive-grade book. The copy carries no passes and no ledger, which is
+   * what "byte-identical to the archive original" means.
+   */
+  | { from: 'base'; base: WorkingCopySource; keepRecords: boolean }
+  /**
+   * The snapshot the last KEPT entry left. The copy carries those entries' bytes
+   * and, with them, their provenance — so the entries and their `AppliedPass`
+   * records are put back after the register has ended the old book's.
+   */
+  | { from: 'ledger'; keep: readonly LedgerEntry[]; keepRecords: boolean };
+
+/**
+ * Whether this derivation is one the user's WORKING CHANGES survive.
+ *
+ * Stated by the caller rather than inferred from where the bytes come from,
+ * because the two are genuinely independent. Deleting the only ledger entry
+ * derives from the BASE and must keep every strike and deletion ("if they delete
+ * footnotes, itll only have working changes present"); a re-mint of a deleted
+ * working copy derives from a SNAPSHOT and must keep none, the reset having just
+ * cleared them. Guessing from the source would get one of those two wrong.
+ *
+ * It governs only the records that live inside `outputs.epub` —
+ * `narrationDeletions` and `bookEdits` — because those are the ones
+ * `registerEpubExport` replaces along with the record. Everything else the user
+ * recorded lives elsewhere in the manifest and no derivation touches it.
+ */
+
+/**
+ * Derive the working copy — from the archive-grade base, or from a ledger
+ * snapshot — and record it.
+ *
+ * THE ONE DERIVATION. Everything that puts a working copy on disk comes through
+ * here: `ensureBookEpub` after a missing file, the erase acts, the ledger
+ * deletion, and `vlm-convert` having just cast a book. A second copy-and-register
+ * somewhere else is how two of them would come to produce different things.
+ *
+ * ── The copy is the source's bytes, and that is PROVED ──────────────────────
+ *
+ * Nothing is translated or rewritten here: the working copy IS the book it came
+ * from. "Identical bytes" is the whole claim the naming, the analysis cache and
+ * every stamp downstream rest on, and a short copy would break all of them
+ * silently. A copy that is not identical is a failed copy and is refused as one.
+ * A ledger snapshot is checked against the digest recorded WITH the entry as
+ * well, because a snapshot whose bytes have changed since it was taken is not
+ * the book that pass produced and deriving from it would put unknown text under
+ * a record that names a known one.
+ *
+ * It does NOT clear anything. Clearing is `resetEditorRecords`, composed by the
+ * caller that means it — a conversion that honoured the user's deleted pages
+ * must not then throw that list away, and a re-mint of a deleted copy must.
+ */
+export async function deriveWorkingCopy(
+  projectDir: string,
+  derivation: WorkingCopyDerivation
+): Promise<ExportEpubLocation> {
+  // The refusals that protect the archive-grade files are asked about the BASE
+  // in both cases: they are properties of those files, not of which copy happens
+  // to be running, and `mintTargetFor` writes nothing so it is safe to ask first.
+  const base = derivation.from === 'base'
+    ? derivation.base
+    : await requireWorkingCopySource(projectDir);
+  const target = await mintTargetFor(projectDir, base);
+
+  const sourceAbs = derivation.from === 'base'
+    ? base.absPath
+    : toAbs(projectDir, derivation.keep[derivation.keep.length - 1].snapshot);
+
+  const priorEpub = (await readManifestAt(projectDir)).outputs?.epub;
+
+  // ── The one edit that cannot be carried across, named before anything moves ─
+  //
+  // A chapter-opening FOLD removes elements from the book, which re-keys every
+  // strike after it — and the strike record was migrated to match in the same
+  // transaction (`recordChapterOpeningFold`). Deriving back past that fold undoes
+  // it in the bytes while the migrated record still describes the folded book, so
+  // every strike after a fold would land an element out. It only matters when the
+  // records are being kept: a derivation that clears them has nothing to
+  // mis-apply.
+  //
+  // A fold made BEFORE a pass ran cannot reach here — `registerLedgerPass`
+  // compares the snapshot's enumeration to the base's and refuses the entry when
+  // they differ — so the comparison is against the point being returned to.
+  if (derivation.keepRecords) {
+    const returningTo = derivation.from === 'ledger'
+      ? derivation.keep[derivation.keep.length - 1].createdAt
+      : '';
+    const foldedSince = (priorEpub?.bookEdits ?? []).filter(
+      (edit) => edit.kind === 'merge-chapter-opening' && edit.at > returningTo);
+    if (foldedSince.length > 0) {
+      const target = derivation.from === 'ledger'
+        ? `the snapshot ${derivation.keep[derivation.keep.length - 1].label} left`
+        : 'the archive-grade original';
+      throw new Error(
+        `${path.basename(projectDir)}'s book has had ${foldedSince.length} chapter opening(s) folded `
+        + `since ${target} was written, and a fold REMOVES elements from the book. Going back to it `
+        + 'would put those elements back while your strikes still describe the folded book, so every '
+        + 'strike after a fold would name the wrong paragraph. Erase this book\'s working changes '
+        + 'first (that clears the folds with everything else), then delete the ledger entry.'
+      );
+    }
+  }
+
+  if (derivation.from === 'ledger') {
+    const entry = derivation.keep[derivation.keep.length - 1];
+    if (!fs.existsSync(sourceAbs)) {
+      throw new Error(
+        `${path.basename(projectDir)}'s ledger records ${entry.label} with a snapshot at `
+        + `${entry.snapshot}, and that file is not there. Nothing has been put in its place — the `
+        + 'working copy beside it has been edited since, so it is not that book. Delete the ledger '
+        + 'entry to go back to what came before it.'
+      );
+    }
+    const onDisk = await sha256Of(sourceAbs);
+    if (onDisk !== entry.snapshotSha256) {
+      throw new Error(
+        `${path.basename(projectDir)}'s ledger snapshot for ${entry.label} (${entry.snapshot}) is `
+        + `not the book it was recorded as (${entry.snapshotSha256.slice(0, 12)} vs `
+        + `${onDisk.slice(0, 12)}). Nothing was copied. A snapshot that has changed since it was `
+        + 'taken is not what that pass produced, and deriving a working copy from it would put text '
+        + 'nobody recorded under a record that names text somebody did.'
+      );
+    }
+  }
+
+  await atomicCopyFile(sourceAbs, target.absPath);
 
   const [sourceDigest, copyDigest] = await Promise.all([
-    sha256Of(source.absPath),
+    sha256Of(sourceAbs),
     sha256Of(target.absPath),
   ]);
   if (sourceDigest !== copyDigest) {
@@ -1489,11 +1638,39 @@ export async function mintWorkingCopyFrom(
     );
   }
 
-  await registerEpubExport(projectDir, target.absPath);
+  // A carry is passed whenever this derivation preserves ANYTHING — the ledger
+  // entries, the working-change records, or both. A derivation that preserves
+  // neither passes none, which is the ordinary rebuild `registerEpubExport` was
+  // written for and behaves exactly as it always has.
+  const carry: EpubCarry | undefined = derivation.from === 'ledger' || derivation.keepRecords
+    ? {
+      ledger: derivation.from === 'ledger' ? derivation.keep : [],
+      records: derivation.keepRecords
+        ? {
+          // Re-stamped onto the bytes that are there now, keys untouched. The
+          // record is what the user struck; the stamp is only the claim about
+          // WHICH book those positions are in, and the enumeration is the same
+          // one the ledger's invariant guarantees.
+          ...(priorEpub?.narrationDeletions
+            ? {
+              narrationDeletions: {
+                ...priorEpub.narrationDeletions,
+                epubSha256: copyDigest,
+              },
+            }
+            : {}),
+          ...(priorEpub?.bookEdits ? { bookEdits: priorEpub.bookEdits } : {}),
+        }
+        : {},
+    }
+    : undefined;
+  await registerEpubExport(projectDir, target.absPath, carry);
+  const fromWhat = derivation.from === 'base'
+    ? `its ${base.kind === 'archive-epub' ? 'EPUB original' : 'generated book'}`
+    : `the ledger snapshot ${listLedgerLabels(derivation.keep)} left`;
   console.log(
-    `[manifest-service] ${path.basename(projectDir)}: minted ${target.relPath} from its `
-    + `${source.kind === 'archive-epub' ? 'EPUB original' : 'generated book'}, byte-identical `
-    + `(${copyDigest.slice(0, 12)}).`
+    `[manifest-service] ${path.basename(projectDir)}: minted ${target.relPath} from ${fromWhat}, `
+    + `byte-identical (${copyDigest.slice(0, 12)}).`
   );
   return target;
 }
@@ -1728,6 +1905,12 @@ export interface EnsuredBookEpub extends ExportEpubLocation {
  * conversion that CAST a generated book is recorded by `vlm-convert` against the
  * copy it mints, which is where that history belongs.)
  *
+ * The one exception proves the rule: a copy derived from a LEDGER SNAPSHOT is
+ * not a copy of the archive-grade book, it is a copy of what a pass produced, so
+ * that pass's record is carried across with the bytes it describes
+ * (`deriveWorkingCopy`). The claim and the file still agree — which is the only
+ * thing this paragraph has ever been about.
+ *
  * A project with nothing archive-grade to copy is REFUSED by name — a PDF whose
  * pages have never been read has no book, and this helper is not a second,
  * silent way to end up with something to narrate.
@@ -1794,6 +1977,18 @@ export async function ensureBookEpub(projectDir: string): Promise<EnsuredBookEpu
   const clearedPages = manifest.source?.deletedPages?.length ?? 0;
   const strikes = manifest.outputs?.epub?.narrationDeletions?.elements.length ?? 0;
 
+  // ── The ledger is not a record of the user's edits, so it does not go ───────
+  //
+  // Owen's truth table: "if they delete working changes but keep footnotes, the
+  // working copy will have no changes except footnotes removed." Deleting the
+  // working copy IS deleting working changes, so a book with recorded passes
+  // comes back from the last snapshot in its ledger rather than from the archive
+  // — the passes rewrote the book itself, they have their own rows, and the
+  // user has their own act for taking those back. Throwing an hour of model time
+  // away because somebody meant "start my edits over" is the failure this branch
+  // exists to prevent, and the receipt names what stood so it is never silent.
+  const ledger = manifest.outputs?.epub?.ledger ?? [];
+
   // A record that named a book, for a book that was not there. The FIRST copy
   // has no record to have named anything, and is not this.
   const remint: WorkingCopyRemint | null = existing === null ? null : {
@@ -1802,6 +1997,7 @@ export async function ensureBookEpub(projectDir: string): Promise<EnsuredBookEpu
     deletedBlockIds: clearedBlocks,
     deletedPages: clearedPages,
     narrationStrikes: strikes,
+    kept: ledger.map((entry) => entry.label),
   };
 
   // ── The deletions and changes go with the file the user deleted ────────────
@@ -1816,11 +2012,27 @@ export async function ensureBookEpub(projectDir: string): Promise<EnsuredBookEpu
   // was not going to get.
   if (remint !== null) await resetEditorRecords(projectDir);
 
-  const target = await mintWorkingCopyFrom(projectDir, source);
+  // `keepRecords: false` in both branches: a re-mint has just run the wholesale
+  // reset above, and a FIRST copy has nothing recorded against it. There is
+  // nothing to keep, and saying so is what keeps the flag from becoming a place
+  // records could quietly survive a reset.
+  const target = ledger.length === 0
+    ? await deriveWorkingCopy(projectDir, { from: 'base', base: source, keepRecords: false })
+    : await deriveWorkingCopy(projectDir, { from: 'ledger', keep: ledger, keepRecords: false });
   if (remint !== null) {
     console.warn(`[manifest-service] ${path.basename(projectDir)}: ${describeWorkingCopyRemint(remint)}`);
   }
   return { ...target, modifiedAt: new Date().toISOString(), remint };
+}
+
+/**
+ * sha256 of a file, streamed — the same digest every identity check here uses,
+ * and the one a ledger snapshot is proved with (electron/book-ledger.ts). Two
+ * digest implementations is how a snapshot would come to be "identical" to one
+ * of them and not the other.
+ */
+export function sha256OfFile(filePath: string): Promise<string> {
+  return sha256Of(filePath);
 }
 
 /** sha256 of a file, streamed — the same digest every identity check here uses. */
@@ -1835,30 +2047,35 @@ function sha256Of(filePath: string): Promise<string> {
 }
 
 /**
- * Remove what a set of superseded passes left on disk.
+ * Remove what a set of superseded records left on disk.
  *
- * The paths come from `passesAfterEpubEvent` and from nowhere else — this
- * function does not decide what a pass owns, it carries out a decision already
- * made and tested (`shared/document/pass-lifecycle.ts`,
- * `tools/test-pass-lifecycle.js`). Each is re-checked to be inside the project
+ * TWO kinds of path reach this, and neither is decided here: the stage
+ * directories of dropped passes, from `passesAfterEpubEvent`
+ * (`shared/document/pass-lifecycle.ts`, `tools/test-pass-lifecycle.js`), and the
+ * directories of dropped LEDGER entries, from `ledgerAfterDeleting`
+ * (`shared/document/book-ledger.ts`). This function carries out decisions
+ * already made and tested. Each path is re-checked to be inside the project
  * before anything is removed, because a manifest is a file on a synced drive and
- * a `diff` field that had walked out of the project would otherwise aim an `rm`
- * at whatever it named.
+ * a field that had walked out of the project would otherwise aim an `rm` at
+ * whatever it named.
  *
  * A path that is already gone is not an error: the record and the file are two
  * things, and the record outliving the file is the ordinary way a half-finished
  * delete or a half-synced folder shows up.
  */
-async function removePassArtifacts(projectDir: string, relPaths: readonly string[]): Promise<string[]> {
+async function removeSupersededArtifacts(
+  projectDir: string,
+  relPaths: readonly string[]
+): Promise<string[]> {
   const removed: string[] = [];
   for (const relPath of relPaths) {
     const abs = path.resolve(projectDir, relPath.split('/').join(path.sep));
     const inside = path.relative(path.resolve(projectDir), abs);
     if (!inside || inside.startsWith('..') || path.isAbsolute(inside)) {
       throw new Error(
-        `${projectDir}'s manifest records a pass diff at "${relPath}", which resolves outside the `
-        + 'project. Nothing was removed. Fix the record — a diff belongs to the book it was applied '
-        + 'to, and a book cannot own a file in another folder.'
+        `${projectDir}'s manifest records a superseded artifact at "${relPath}", which resolves `
+        + 'outside the project. Nothing was removed. Fix the record — a diff and a snapshot belong '
+        + 'to the book they were made from, and a book cannot own a file in another folder.'
       );
     }
     if (!fs.existsSync(abs)) continue;
@@ -1895,8 +2112,60 @@ async function removePassArtifacts(projectDir: string, relPaths: readonly string
  * pre-rename `exported.epub` — stops being the project's book the moment this
  * returns, and stays on disk until its owner deletes it. This code does not
  * delete a user's books.
+ *
+ * ── The one caller that is NOT a rebuild says so, by carrying ───────────────
+ *
+ * `deriveWorkingCopy` from a LEDGER SNAPSHOT writes bytes that a pass really did
+ * produce, so ending that pass's provenance would delete a true record to
+ * describe an event that did not happen. That caller — and only that caller —
+ * passes `carry`, and what it carries is put back in the SAME manifest
+ * transaction that replaces the record. Everything not carried is superseded
+ * exactly as before, files and all, so the ledger and the pass list can only
+ * shrink here and never grow behind the caller's back.
+ *
+ * An absent `carry` is a real state, not a missing argument: it is the sentence
+ * "this is a new book, and nothing that was true of the old one is true of it".
  */
-export async function registerEpubExport(projectDir: string, epubAbsPath: string): Promise<void> {
+export interface EpubCarry {
+  /**
+   * The ledger entries the bytes being recorded still carry, oldest first, with
+   * the `AppliedPass` records those entries hold. Entries the book no longer
+   * carries are dropped, and their directories come off disk.
+   */
+  ledger: readonly LedgerEntry[];
+  /**
+   * The WORKING-CHANGE records that live inside `outputs.epub` and would
+   * otherwise be replaced with it.
+   *
+   * `narrationDeletions` and `bookEdits` are not facts about the file — they are
+   * the user's edits, kept here only because a rebuild invalidates them and this
+   * is where a rebuild can reach them. A re-derivation is not a rebuild: the
+   * ledger's invariant says the element enumeration is unchanged, so every
+   * strike still names the paragraph it named. Dropping them here would clear an
+   * evening of strikes as a side effect of deleting a pass, which is the exact
+   * opposite of "if they delete footnotes, itll only have working changes
+   * present".
+   *
+   * The caller re-stamps `narrationDeletions.epubSha256` onto the new bytes
+   * before handing it over — keys untouched, stamp refreshed, which is the same
+   * move `nameChapterOpenings` makes after a text-only rewrite.
+   */
+  records: {
+    narrationDeletions?: NarrationDeletions;
+    bookEdits?: BookEdit[];
+  };
+}
+
+/** `simplify@2026-08-09T…` — what makes two pass records the same record. */
+function passIdentity(pass: AppliedPass): string {
+  return `${pass.kind}@${pass.at}`;
+}
+
+export async function registerEpubExport(
+  projectDir: string,
+  epubAbsPath: string,
+  carry?: EpubCarry
+): Promise<void> {
   const manifest = await readManifestAt(projectDir);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
@@ -1906,12 +2175,35 @@ export async function registerEpubExport(projectDir: string, epubAbsPath: string
   }
   const relPath = rel.split(path.sep).join('/');
 
+  const carried = carry ? [...carry.ledger] : [];
+  const carriedPasses = carried.map((entry) => entry.pass);
+  const carriedPassIds = new Set(carriedPasses.map(passIdentity));
+  const carriedEntryIds = new Set(carried.map((entry) => entry.id));
+
+  // Only the passes the new bytes do NOT carry are superseded. Asked this way
+  // round rather than by trimming afterwards, because `passesAfterEpubEvent` is
+  // what decides which FILES come off, and handing it a carried pass would aim
+  // that removal at a receipt the book still needs.
   const superseded = passesAfterEpubEvent(
-    'epub-rebuilt', manifest.outputs?.epub?.appliedPasses ?? []);
+    'epub-rebuilt',
+    (manifest.outputs?.epub?.appliedPasses ?? []).filter(
+      (pass) => !carriedPassIds.has(passIdentity(pass))));
+  const droppedEntries = (manifest.outputs?.epub?.ledger ?? []).filter(
+    (entry) => !carriedEntryIds.has(entry.id));
 
   const saved = await modifyManifest(projectId, (m) => {
     if (!m.outputs) m.outputs = {};
     m.outputs.epub = { path: relPath, modifiedAt: new Date().toISOString() };
+    if (carried.length > 0) {
+      m.outputs.epub.appliedPasses = carriedPasses;
+      m.outputs.epub.ledger = carried;
+    }
+    if (carry?.records.narrationDeletions) {
+      m.outputs.epub.narrationDeletions = carry.records.narrationDeletions;
+    }
+    if (carry?.records.bookEdits) {
+      m.outputs.epub.bookEdits = carry.records.bookEdits;
+    }
     // The narration copy was cut from the book that has just been replaced, and
     // so were the strikes it was cut by (they go with `outputs.epub` in the
     // assignment above). A record that survived would tell the TTS step to
@@ -1924,10 +2216,13 @@ export async function registerEpubExport(projectDir: string, epubAbsPath: string
     throw new Error(`Exported to ${epubAbsPath}, but recording it in the manifest failed: ${saved.error}`);
   }
 
-  const removed = await removePassArtifacts(projectDir, superseded.removePaths);
+  const removed = await removeSupersededArtifacts(projectDir, [
+    ...superseded.removePaths,
+    ...droppedEntries.map((entry) => entry.dir),
+  ]);
   if (removed.length > 0) {
     console.log(`[manifest-service] the rebuilt book supersedes ${superseded.dropped.length} pass`
-      + `(es); removed ${removed.join(', ')}`);
+      + `(es) and ${droppedEntries.length} ledger entr(y/ies); removed ${removed.join(', ')}`);
   }
 }
 
@@ -1990,7 +2285,13 @@ export async function forgetEpubExport(projectDir: string): Promise<EpubForgetSu
     );
   }
 
-  const removedPaths = await removePassArtifacts(projectDir, lifecycle.removePaths);
+  const removedPaths = await removeSupersededArtifacts(projectDir, [
+    ...lifecycle.removePaths,
+    // The ledger's snapshots are copies of the book that has just been forgotten.
+    // With no book they are a chain to nothing, and their entries went with
+    // `outputs.epub` in the transaction above.
+    ...(record.ledger ?? []).map((entry) => entry.dir),
+  ]);
   return {
     relPath,
     absPath: toAbs(projectDir, relPath),
@@ -2057,6 +2358,188 @@ export async function appendAppliedPass(projectDir: string, pass: AppliedPass): 
   if (!saved.success) {
     throw new Error(`The ${pass.kind} pass finished, but recording it in the manifest failed: ${saved.error}`);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The ledger — the passes a user can take back, one at a time
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The book's ledger, oldest first. An empty list is a real answer: this book has
+ * had nothing run over it, or nothing that could be recorded as undoable.
+ */
+export async function readBookLedger(projectDir: string): Promise<LedgerEntry[]> {
+  const manifest = await readManifestAt(projectDir);
+  return manifest.outputs?.epub?.ledger ?? [];
+}
+
+/** Where an entry's directory is on this disk. */
+export function ledgerEntryDir(projectDir: string, id: string): string {
+  return toAbs(projectDir, ledgerEntryRelDir(id));
+}
+
+/**
+ * Record a ledger entry against the book, as the last thing in the chain.
+ *
+ * The snapshot and the receipt are already on disk when this runs
+ * (electron/book-ledger.ts writes them, and it is the only caller): the FILES go
+ * first here, deliberately, so an interrupt leaves a directory nothing names —
+ * invisible, and cleaned up by the next thing that supersedes it — rather than
+ * an entry naming a snapshot that was never written, which is a "go back to
+ * this" the project cannot honour.
+ *
+ * Refuses a project with no `outputs.epub` for the same reason
+ * `appendAppliedPass` does: the caller believes a pass just rewrote a book this
+ * project does not have.
+ */
+export async function appendLedgerEntry(projectDir: string, entry: LedgerEntry): Promise<void> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  const snapshot = toAbs(projectDir, entry.snapshot);
+  if (!fs.existsSync(snapshot)) {
+    throw new Error(
+      `Cannot record the ${entry.label} ledger entry for ${path.basename(projectDir)}: its snapshot `
+      + `${entry.snapshot} is not on disk. An entry without its snapshot offers the user a way back `
+      + 'to a book nobody has.'
+    );
+  }
+
+  const saved = await modifyManifest(projectId, (m) => {
+    const epub = m.outputs?.epub;
+    if (!epub) {
+      throw new Error(
+        `Cannot record the ${entry.kind} ledger entry for ${projectDir}: the project has no `
+        + 'outputs.epub, so there is no book for the pass to have been applied to.'
+      );
+    }
+    epub.ledger = [...(epub.ledger ?? []), entry];
+  });
+  if (!saved.success) {
+    throw new Error(
+      `The ${entry.kind} pass finished and its snapshot was taken, but recording the ledger entry `
+      + `failed: ${saved.error}`
+    );
+  }
+}
+
+/** What clearing or deleting from the ledger did, so a caller can say it. */
+export interface LedgerChange {
+  /** The entries that went, in the order they ran. */
+  dropped: LedgerEntry[];
+  /** The entries that stand, oldest first. */
+  kept: LedgerEntry[];
+  /** What came off disk with the dropped ones, project-relative. */
+  removedPaths: string[];
+}
+
+/**
+ * Throw the whole ledger away: the entries, their snapshots and their receipts.
+ *
+ * This is the ledger's half of "erase EVERYTHING" — the counterpart of
+ * `resetEditorRecords`, which is the working changes' half. Two named resets for
+ * two record sets, each with exactly one implementation, rather than one
+ * function with a flag: the sets are cleared by different acts as often as they
+ * are cleared together (a re-mint of a deleted working copy clears the records
+ * and KEEPS the ledger, which is the whole point of act 1).
+ *
+ * Records first, files last: an interrupt leaves directories nothing names, and
+ * the derivation that follows is already correct. The other order would delete a
+ * user's snapshots and leave entries offering to go back to them.
+ *
+ * It does not touch the book. The caller derives a fresh working copy afterwards
+ * — with the ledger gone, that derivation comes off the archive-grade base,
+ * which is what "byte-identical to the original" means.
+ */
+export async function clearBookLedger(projectDir: string): Promise<LedgerChange> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+  const dropped = manifest.outputs?.epub?.ledger ?? [];
+  if (dropped.length === 0) return { dropped: [], kept: [], removedPaths: [] };
+
+  const saved = await modifyManifest(projectId, (m) => {
+    if (m.outputs?.epub) delete m.outputs.epub.ledger;
+  });
+  if (!saved.success) {
+    throw new Error(
+      `Could not clear ${path.basename(projectDir)}'s ledger: ${saved.error}. Nothing was deleted — `
+      + 'the snapshots and their diffs are still there.'
+    );
+  }
+
+  const removedPaths = await removeSupersededArtifacts(
+    projectDir, dropped.map((entry) => entry.dir));
+  return { dropped: [...dropped], kept: [], removedPaths };
+}
+
+/** What `deleteLedgerEntry` did — including the entries it had to take with it. */
+export interface LedgerEntryDeletion extends LedgerChange {
+  /** The book the working copy was derived from afterwards. */
+  book: ExportEpubLocation;
+  /** The paragraph for the user, naming every entry that went. */
+  message: string;
+}
+
+/**
+ * Delete one entry from the ledger, and everything that was applied after it.
+ *
+ * ── The act, in the order it has to happen ──────────────────────────────────
+ *
+ *  1. `ledgerAfterDeleting` decides what stands and what cascades. That rule is
+ *     pure and tested without a project (`shared/document/book-ledger.ts`), so
+ *     the confirmation the UI shows and the deletion that happens cannot
+ *     disagree about which entries are about to go.
+ *  2. The working copy is DERIVED from the last standing snapshot, or from the
+ *     archive-grade base when nothing stands. That derivation is the same
+ *     `deriveWorkingCopy` every other copy comes through, digest-proved, and it
+ *     is what carries the standing entries and their provenance across
+ *     `registerEpubExport` — which is also what drops the cascaded ones and
+ *     takes their directories off disk.
+ *  3. The user's WORKING CHANGES are not touched. They are records keyed to the
+ *     base's element enumeration, a ledger pass may not change that enumeration
+ *     (`registerLedgerPass` refuses one that would), and so they describe the
+ *     re-derived book exactly as they described the old one. That is the whole
+ *     reason the two are separate lines in the UI.
+ *
+ * The caller re-names the chapter openings afterwards, as it does after every
+ * mint: naming is idempotent and derived from the chapter titles the project
+ * stores, so it is a normalization that can be re-applied to any rebuild rather
+ * than a layer that has to be preserved.
+ */
+export async function deleteLedgerEntry(
+  projectDir: string,
+  id: string
+): Promise<LedgerEntryDeletion> {
+  const entries = await readBookLedger(projectDir);
+  const deletion: LedgerDeletion<LedgerEntry> = ledgerAfterDeleting(entries, id);
+
+  const book = deletion.kept.length === 0
+    ? await deriveWorkingCopy(projectDir, {
+      from: 'base',
+      base: await requireWorkingCopySource(projectDir),
+      keepRecords: true,
+    })
+    : await deriveWorkingCopy(projectDir, {
+      from: 'ledger', keep: deletion.kept, keepRecords: true,
+    });
+
+  // `registerEpubExport` inside the derivation has already dropped the cascaded
+  // entries and removed their directories — the record went first and the files
+  // second, in one place, so this reports what happened rather than doing it a
+  // second time.
+  const removedPaths = deletion.cascaded
+    .map((entry) => entry.dir)
+    .filter((dir) => !fs.existsSync(toAbs(projectDir, dir)));
+
+  const message = describeLedgerDeletion(deletion);
+  console.log(`[manifest-service] ${path.basename(projectDir)}: ${message}`);
+  return {
+    dropped: [...deletion.cascaded],
+    kept: [...deletion.kept],
+    removedPaths,
+    book,
+    message,
+  };
 }
 
 /**

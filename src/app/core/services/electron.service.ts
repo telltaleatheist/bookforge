@@ -2785,29 +2785,77 @@ export class ElectronService {
   }
 
   /**
-   * Erase every change made to this book.
+   * Erase changes made to this book, at one of two scopes.
    *
-   * The working copy is deleted and a byte-identical one takes its place, with
-   * nothing recorded against it — the same act as deleting
-   * `<archive basename>.working.epub` in Explorer, which is exactly why it goes
-   * through the same code (`book:erase-changes` → `ensureBookEpub`). The receipt
-   * is the same `WorkingCopyRemint` sentence that path produces.
+   * The working copy is deleted and a fresh one takes its place — the same act
+   * as deleting `<archive basename>.working.epub` in Explorer, which is exactly
+   * why it goes through the same code (`book:erase-changes` → `ensureBookEpub`).
+   * The receipt is the same `WorkingCopyRemint` sentence that path produces.
+   *
+   * A book carries two kinds of change and they are erased separately:
+   *
+   *  - `'working-changes'` — the user's records go (deletions, strikes, chapter
+   *    markers, editor state) and the passes recorded in the book's ledger stand,
+   *    so the fresh copy comes back from the last snapshot.
+   *  - `'everything'` — the ledger goes too, and the fresh copy is byte-identical
+   *    to the archive-grade book behind the project.
+   *
+   * The scope is REQUIRED and not defaulted: the two acts destroy different
+   * amounts of the user's work, and a caller that has not said which it means has
+   * not asked for either.
    *
    * Refuses by name a project with nothing archive-grade to re-mint from, with
    * the working copy still on disk: there is no state in which this deletes a
    * book it cannot make again.
    */
-  async eraseBookChanges(projectDir: string): Promise<{
+  async eraseBookChanges(
+    projectDir: string,
+    scope: 'everything' | 'working-changes'
+  ): Promise<{
     success: boolean;
     path?: string;
     relPath?: string;
     remint?: WorkingCopyRemint;
     /** Which book the fresh copy came from — the user's original, or the cast. */
     source?: 'archive-epub' | 'generated-epub';
+    /** Ledger entries this erase threw away, by label. */
+    droppedLedger?: string[];
+    /** Ledger entries that stand, by label — what the fresh copy still carries. */
+    keptLedger?: string[];
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.vlm.eraseChanges(projectDir);
+      return (window as any).electron.vlm.eraseChanges(projectDir, scope);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Delete one entry from this book's ledger, and everything applied after it.
+   *
+   * The working copy is re-derived from the snapshot before the deleted entry —
+   * or from the archive-grade book when it was the first — and the user's working
+   * changes are KEPT: they are records against the book rather than bytes in it,
+   * and a ledger pass may not move the elements they name.
+   *
+   * `deleted` is every entry that went, oldest first. The one that was asked for
+   * is the first; anything after it is the cascade, and naming those is what lets
+   * a confirmation tell the user what pressing delete on one row will cost — each
+   * later snapshot was produced from the one before it, so there is no book on
+   * disk with a middle entry removed and the later ones still applied.
+   */
+  async deleteBookLedgerEntry(projectDir: string, entryId: string): Promise<{
+    success: boolean;
+    path?: string;
+    relPath?: string;
+    /** The paragraph for the user, naming every entry that went. */
+    message?: string;
+    deleted?: Array<{ id: string; kind: string; label: string; createdAt: string }>;
+    kept?: Array<{ id: string; kind: string; label: string; createdAt: string }>;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.deleteLedgerEntry(projectDir, entryId);
     }
     return { success: false, error: 'Not running in Electron' };
   }

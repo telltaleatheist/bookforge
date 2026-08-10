@@ -441,6 +441,28 @@ export interface EpubOutput {
    */
   appliedPasses?: AppliedPass[];
   /**
+   * The LEDGER: the passes the user committed to, each one deletable on its own,
+   * oldest first.
+   *
+   * Absent is a real state and the common one — a book nothing has been run
+   * over. It is never an empty list standing in for "we did not look".
+   *
+   * A ledger entry is a SUPERSET of an `appliedPasses` entry, and the two answer
+   * different questions. `appliedPasses` says what has been done to the bytes
+   * that are there now; the ledger says what can be TAKEN BACK, and it can only
+   * say that because each entry keeps a snapshot of the book as its pass left
+   * it. A pass that ran before the ledger existed, or one whose snapshot was
+   * refused (see `registerLedgerPass`), appears in `appliedPasses` and not here:
+   * it happened, and it cannot be undone in isolation.
+   *
+   * It lives inside this record deliberately, where `registerEpubExport` drops
+   * it — a rebuild writes a book the snapshots are not a chain to, so a ledger
+   * that survived would offer to "go back" to a file that is not this book's
+   * ancestor. The one derivation that means to keep it says so, by carrying it
+   * (`deriveWorkingCopy` → `registerEpubExport`'s `carry`).
+   */
+  ledger?: LedgerEntry[];
+  /**
    * What the user has struck out of this book FOR NARRATION — never applied to
    * the file itself.
    *
@@ -585,6 +607,71 @@ export interface AppliedPass {
    * to diff against (tesseract) or nothing meaningful to diff (translate).
    */
   diff?: string;
+}
+
+/**
+ * One entry in the book's ledger: a pass, and the book as that pass left it.
+ *
+ * ── Why a snapshot and not a reverse diff ───────────────────────────────────
+ *
+ * Because a pass is an AI rewrite of a whole book, and the only thing that can
+ * reliably put the previous text back is the previous text. Owen licensed the
+ * copies outright — "we can create as many copies as we need logistically, this
+ * is just how the ui should work" — so the entry keeps the bytes rather than a
+ * recipe for reconstructing them.
+ *
+ * The chain reads base → entry[0].snapshot → entry[1].snapshot → …, and the
+ * working copy is derived from the LAST snapshot. Deleting an entry re-derives
+ * from the one before it (`deleteLedgerEntry` in manifest-service).
+ */
+export interface LedgerEntry {
+  /**
+   * Stable, unique, and also the name of the directory this entry owns —
+   * `NN-<kind>-<random>`, e.g. `01-simplify-3f2a9c11`. The ordinal is for a
+   * human reading `source/ledger/`; the random tail is what keeps two runs of
+   * the same pass at the same position from colliding.
+   */
+  id: string;
+  kind: AppliedPassKind;
+  /** What the row says, e.g. "Simplify". */
+  label: string;
+  /** When the pass finished — the same instant as `pass.at`. */
+  createdAt: string;
+  /** The directory this entry owns, project-relative: `source/ledger/<id>`. */
+  dir: string;
+  /**
+   * The book as this pass left it, project-relative. Deriving the working copy
+   * from it is a byte-for-byte copy, proved by digest like every other mint.
+   */
+  snapshot: string;
+  /** The snapshot's sha256 when it was taken — what a derivation proves against. */
+  snapshotSha256: string;
+  /**
+   * The pass's diff, FROZEN into this entry's directory when the pass ran, or
+   * null.
+   *
+   * Owen: "the diff is frozen in time when the footnote removal ran." It is a
+   * copy rather than a pointer at `stages/NN-<kind>/diff.json` precisely because
+   * that directory is cleared by every rebuild of the book
+   * (`passesAfterEpubEvent`), and a receipt that vanished when the book was
+   * re-derived would be a review button with nothing behind it.
+   *
+   * Null is a REAL state, not a missing value: `translate` deliberately records
+   * no diff (a translation shares no words with what it replaced), and a pass
+   * whose diff was never written has none to freeze. It is reported as "no diff
+   * was recorded", never rebuilt.
+   */
+  receipt: string | null;
+  /**
+   * The provenance record these snapshot bytes carry.
+   *
+   * Held on the entry so a derivation can put `appliedPasses` back truthfully:
+   * `registerEpubExport` ends the old book's provenance wholesale, which is
+   * right for a rebuild and wrong for a re-derivation of a book that still HAS
+   * these passes applied. Its `diff` points at this entry's frozen receipt, not
+   * at the stage directory, for the reason above.
+   */
+  pass: AppliedPass;
 }
 
 export interface AudiobookOutput {
