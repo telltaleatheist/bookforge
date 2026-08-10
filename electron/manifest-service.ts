@@ -38,6 +38,7 @@ import type {
   BookEdit,
   MergeChapterOpeningEdit,
   NameChapterOpenersEdit,
+  StampElementIdsEdit,
   SetBlockCategoryEdit,
   SourceType,
 } from './manifest-types.js';
@@ -2663,10 +2664,11 @@ export async function resetEditorRecords(projectDir: string, familyId?: string):
  * erase re-minted the copy, which read as the erase having done nothing.
  *
  * The measurement mirrors `resetEditorRecords` clause for clause, against the
- * same shared key list, with ONE deliberate exception: an automatic
- * `name-chapter-openers` book edit does not count. Every fresh mint writes one
- * (it is unattended — it runs when the project opens), so counting it would put
- * the answer back to "always yes".
+ * same shared key list, with two deliberate exceptions: the AUTOMATIC book
+ * edits do not count. `name-chapter-openers` and `stamp-element-ids` are both
+ * unattended — they run when the project opens, and every fresh mint writes one
+ * of each — so counting either would put the answer back to "always yes", which
+ * is the bug this measurement exists to fix.
  *
  * Empty containers do not count either: the picker's save writes
  * `undoStack: []` / `redoStack: []` on every save, so the KEY existing is a
@@ -2704,7 +2706,7 @@ export async function workingChangesByFamily(
     // The book's OWN records — positional inside this family's working copy.
     const strikes = hasContent(family.epub?.narrationDeletions?.elements);
     const deliberateEdits = (family.epub?.bookEdits ?? [])
-      .some((edit) => edit.kind !== 'name-chapter-openers');
+      .some((edit) => edit.kind !== 'name-chapter-openers' && edit.kind !== 'stamp-element-ids');
     answer[family.id] = strikes || deliberateEdits
       || (pickerRecords
         && familyOwnsPickerRecords(family, archiveOriginal?.relPath ?? null));
@@ -3687,6 +3689,76 @@ export async function recordChapterOpeningNaming(
   if (!saved.success) {
     throw new Error(
       `The book's chapter openings were named, but recording that in ${projectDir}'s manifest `
+      + `failed: ${saved.error}`
+    );
+  }
+}
+
+/**
+ * Record the ELEMENT-ID STAMP: re-stamp the strikes, touch the book, log the
+ * edit — one transaction, for the same reason the naming pass's is one.
+ *
+ * ── Why the strikes are RE-STAMPED and not migrated ────────────────────────
+ *
+ * Because the stamp moves nothing. It writes an attribute onto elements that
+ * were already there, and the synthesized wrappers it makes real were already IN
+ * the walk — every reader has been creating them in memory and counting them for
+ * as long as the walk has existed. So every text-unit index and every image
+ * ordinal is exactly where it was, and each strike still names the element it
+ * named. `stampElementIdsInBookFile` measures that claim against the written
+ * file, per document, before this is ever reached.
+ *
+ * The sha256 pair on the edit is PROVENANCE — what the book was and what it
+ * became. The stamp is the beginning of the end of sha-keyed records, but phase 1
+ * changes no key format and retires nothing, so the strike record's own stamp
+ * must follow the book across this edit like it follows it across every other.
+ * A stamp that stranded the strike record would have thrown away the user's work
+ * to lay the groundwork for keeping it.
+ *
+ * The stamp is CHECKED against `fromSha256` rather than overwritten, exactly as
+ * the naming pass's record is. A record describing some other book cannot be
+ * followed, and quietly re-stamping it here would forge agreement.
+ */
+export async function recordElementIdStamping(
+  projectDir: string,
+  edit: StampElementIdsEdit,
+  familyId?: string,
+): Promise<void> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  const saved = await modifyManifest(projectId, (m) => {
+    const epub = familyIn(m, family.id).epub;
+    if (!epub) {
+      throw new Error(
+        `Cannot record the element-id stamp in ${projectDir}: its ${family.id} chain records no `
+        + 'book, so there is nothing to have been stamped.'
+      );
+    }
+
+    const recorded = epub.narrationDeletions;
+    if (recorded !== undefined) {
+      if (recorded.epubSha256 !== edit.fromSha256) {
+        throw new Error(
+          `${path.basename(projectDir)}'s narration strikes are stamped with a different book than `
+          + 'the one whose elements were just given their ids, so they name positions in a file '
+          + 'nobody has and cannot be carried onto it. The book has been edited; strike what you '
+          + 'want left out of the narration again.'
+        );
+      }
+      epub.narrationDeletions = {
+        ...recorded,
+        epubSha256: edit.toSha256,
+        updatedAt: edit.at,
+      };
+    }
+
+    epub.modifiedAt = edit.at;
+    (epub.bookEdits ??= []).push(edit);
+  });
+  if (!saved.success) {
+    throw new Error(
+      `The book's elements were given their ids, but recording that in ${projectDir}'s manifest `
       + `failed: ${saved.error}`
     );
   }

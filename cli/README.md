@@ -280,6 +280,11 @@ Settings → Add-ons), the banked-readings decision with its **foundry ≥ 0.9.0
 working copy recorded as `outputs.epub`, and the `vlm-convert` provenance entry. Nothing
 about a converted project says it was done from here.
 
+The book this writes is **not yet stamped**: its elements get their stable `data-bf-uid`
+identities — and its chapter openings get their stored names — the first time the project
+is opened in the app, exactly as a book made through the app's own Convert to EPUB does.
+Both passes are idempotent and unattended, so nothing here needs to ask for them.
+
 ```bash
 # Convert one PDF-only project, reading every page afresh:
 python cli/bookforge-tts.py --generate-epub \

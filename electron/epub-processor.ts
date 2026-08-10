@@ -10,6 +10,7 @@ import * as fsSync from 'fs';
 import * as path from 'path';
 import * as zlib from 'zlib';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import { promisify } from 'util';
 import * as cheerio from 'cheerio';
 import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
@@ -3049,16 +3050,32 @@ export function extractBlockTexts(xhtml: string): string[] {
 }
 
 /**
- * Extract text from each block element in XHTML using cheerio,
- * also returning the tag name per block.
+ * Extract text from each block element in XHTML using cheerio, also returning
+ * the tag name AND the element's attributes per block.
+ *
+ * The attributes are not decoration. `data-bf-uid` is the element's identity,
+ * `data-bf-cat` is what the model that read the page said it was,
+ * `data-bf-user-cat` is what a person said it was, and
+ * `data-bf-category`/`data-bf-group`/`data-bf-blocks` are the reflow's
+ * provenance. A writer that rebuilds a chapter from these texts and emits bare
+ * `<p>` tags destroys all of it \u2014 which is exactly what the AI-cleanup rebuild
+ * did until 2026-08-10 (see `rebuildChapterPreservingHeadings` in
+ * electron/ai-bridge.ts). Anything that takes text OUT of a document in order to
+ * put text back must take the attributes with it.
  */
-export function extractBlockTextsWithTags(xhtml: string): Array<{ text: string; tagName: string }> {
+export function extractBlockTextsWithTags(
+  xhtml: string,
+): Array<{ text: string; tagName: string; attrs: Record<string, string> }> {
   const $ = cheerio.load(xhtml, { xmlMode: true });
-  const blocks: Array<{ text: string; tagName: string }> = [];
+  const blocks: Array<{ text: string; tagName: string; attrs: Record<string, string> }> = [];
   $(BLOCK_SELECTORS).each((_, el) => {
     const text = $(el).text().replace(/\u00AD\s*/g, '').trim();
     if (text.length > 0) {
-      blocks.push({ text, tagName: (el as any).tagName?.toLowerCase() || 'p' });
+      blocks.push({
+        text,
+        tagName: (el as any).tagName?.toLowerCase() || 'p',
+        attrs: { ...((el as any).attribs ?? {}) },
+      });
     }
   });
   return blocks;
@@ -8095,6 +8112,320 @@ export async function nameChapterOpeningsInBookFile(
   }
 
   return { edits, skipped };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Element identity — the stamp that makes an element a THING rather than a place
+//
+// ── What is wrong with a position ───────────────────────────────────────────
+//
+// Every record this app keeps about a book element — a narration strike, a
+// chapter marker, a saved deletion, a layout row — names it `<zip entry>#<index>`:
+// the element's PLACE in one enumeration walk. A place is not an identity. Any
+// edit that adds or removes an element renumbers every element after it, so
+// every record past the edit now names a different paragraph, and the app has
+// grown a whole apparatus to survive that: sha256 stamps that void a record when
+// the bytes move, structural guards that refuse a ledger entry when a count
+// changes, fingerprint-and-carry migrations that renumber strikes across a fold.
+// All of it exists because the book has no way to say "this element is that
+// element".
+//
+// ── What this is ────────────────────────────────────────────────────────────
+//
+// `data-bf-uid` on every narration unit and every picture of the WORKING COPY.
+// Short, random, unique within the book, and once written never changed: the
+// element carries its own name, and an edit somewhere else in the document
+// cannot take it away. Phase 2 migrates the key formats onto it and retires the
+// compensation machinery above; phase 1 — this — only makes sure the stamp
+// EXISTS and that every writer preserves it.
+//
+// ── Why the working copy and not the archive ────────────────────────────────
+//
+// Because the archive original is immutable (memory:
+// pipeline-source-model-archive-as-source) and the working copy is the one file
+// this app edits. A stamp is an edit.
+//
+// ── Why the synthesized wrappers become real ────────────────────────────────
+//
+// `collectExportUnits` MUTATES the document it walks: a run of stray text that no
+// element covers is moved into a synthesized `<div>` so it can be a unit at all.
+// Every caller has been throwing that mutation away and re-doing it on the next
+// parse, which means those units are phantoms — elements that exist in memory,
+// during a walk, and nowhere on disk. An identity cannot be given to a phantom.
+//
+// So this pass PERSISTS them: the wrapper is written into the book and becomes
+// real markup with a real uid. Ratified by Owen, 2026-08-10 — the working copy is
+// the one editable file, and elements that exist only in memory are exactly the
+// disease. It means the first stamp of such a book writes structural markup, and
+// it moves NOTHING: the wrapper was already in the walk every reader performed,
+// at the same index, so the enumeration before and after this pass is identical.
+// That claim is measured below and the file is destroyed if it fails.
+//
+// ── Why re-running it writes nothing ────────────────────────────────────────
+//
+// A book whose every walked element already carries a uid is not copied. The
+// bytes stamp the narration strike record and key the layout caches, so writing
+// a book that differs only in its zip timestamps would void both for nothing.
+// This is the same contract the naming pass keeps, for the same reasons.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The attribute an element's stable identity is written as. */
+export const ELEMENT_UID_ATTR = 'data-bf-uid';
+
+/**
+ * A fresh element id: four random bytes as hex, the same shape a ledger entry's
+ * suffix uses. Short enough to read in a diff, wide enough that a book of a
+ * hundred thousand elements does not collide by accident — and it is checked
+ * for collision anyway.
+ *
+ * It contains only `[0-9a-f]`, which is what keeps it out of trouble with the
+ * two characters that already mean something: `#` separates a document from an
+ * index in a narration key, and `|` separates the ids sharing one quire stamp.
+ */
+function mintElementUid(): string {
+  return crypto.randomBytes(4).toString('hex');
+}
+
+/** What the element-id stamp did to a book. */
+export interface ElementIdStampResult {
+  /** How many elements were given an id they did not have. */
+  stamped: number;
+  /** Every walked element of the book, stamped now or already. */
+  total: number;
+  /** The zip entries rewritten, in spine order. Empty when nothing was written. */
+  files: string[];
+  /**
+   * How many synthesized wrappers this pass turned into real markup. Nonzero
+   * only on a book's FIRST stamp, and only where the source had stray text.
+   */
+  wrappersPersisted: number;
+}
+
+/**
+ * Give every narration unit and every picture of a book a stable id, in the
+ * book.
+ *
+ * A book that already carries one on every walked element is NOT copied to
+ * `outputPath` — see the section header above for why that is a contract and not
+ * an optimization. An empty `files` therefore means `outputPath` was never
+ * created.
+ */
+export async function stampElementIdsInBookFile(
+  inputPath: string,
+  outputPath: string,
+): Promise<ElementIdStampResult> {
+  const bookName = path.basename(inputPath);
+  const whatFor = `the element-id stamp of ${bookName}`;
+
+  // ── The book, walked ONCE, exactly as the narration writer walks it ───────
+  //
+  // `collectExportUnits` then `collectImageElements`, per spine document, in
+  // spine order — the one walk that makes a key the picker recorded and a key
+  // resolved here the same element.
+  const processor = new EpubProcessor();
+  const perFile = new Map<string, {
+    doc: any;
+    /** Every walked element of this document: text units then pictures. */
+    elements: any[];
+    units: number;
+    images: number;
+    wrappers: number;
+  }>();
+  const order: string[] = [];
+  try {
+    const structure = await processor.open(inputPath);
+    for (const chapter of structure.chapters) {
+      const entryName = normalizeZipEntryName(processor.resolvePath(chapter.href));
+      if (perFile.has(entryName)) continue;  // a spine document listed twice is one file
+      const { doc, body } = parseXhtmlBody(await processor.readFile(entryName), entryName);
+      // Every element the DOCUMENT holds, before the walk touches it. What the
+      // walk then produces that is not in this set is an element the walk MADE:
+      // a synthesized wrapper. `fromCatchAll` does not answer that question —
+      // the catch-all's other form collects an EXISTING element (an `<i>` whose
+      // text no unit covers), which is already real markup and needs no writing.
+      const preexisting = new Set<any>();
+      const noteElements = (node: any): void => {
+        if (node.nodeType === 1) preexisting.add(node);
+        if (!node.childNodes) return;
+        for (let i = 0; i < node.childNodes.length; i++) noteElements(node.childNodes[i]);
+      };
+      noteElements(body);
+
+      const elements: any[] = [];
+      let wrappers = 0;
+      for (const c of collectExportUnits(doc, body, entryName)) {
+        elements.push(c.el);
+        if (!preexisting.has(c.el)) wrappers++;
+      }
+      const units = elements.length;
+      for (const el of collectImageElements(body)) elements.push(el);
+      perFile.set(entryName, { doc, elements, units, images: elements.length - units, wrappers });
+      order.push(entryName);
+    }
+  } finally {
+    processor.close();
+  }
+
+  // ── The ids the book already carries ──────────────────────────────────────
+  //
+  // Read before a single one is minted, so a fresh id can be checked against
+  // them. A book carrying the SAME id on two elements has no identity to build
+  // on and is refused by name: nothing this app writes can produce that state
+  // (a merge keeps the first source's id and drops the rest), so a book in it
+  // has been edited by something else and guessing which element is the real
+  // one would be forging an answer.
+  const taken = new Set<string>();
+  for (const [file, walked] of perFile) {
+    for (const el of walked.elements) {
+      const existing = el.getAttribute?.(ELEMENT_UID_ATTR);
+      if (existing === null || existing === undefined || existing === '') continue;
+      if (existing.includes('#') || existing.includes('|')) {
+        throw new Error(
+          `${file} carries the element id "${existing}", which contains a character that already `
+          + 'separates the parts of a key (`#` a document from an index, `|` the ids sharing one '
+          + 'stamp). An id no key can be built out of is not an identity. Nothing was written.'
+        );
+      }
+      if (taken.has(existing)) {
+        throw new Error(
+          `${bookName} carries the element id "${existing}" on more than one element (${file}). An `
+          + 'id that names two elements names neither, and nothing this app writes can produce '
+          + 'that. Nothing was written.'
+        );
+      }
+      taken.add(existing);
+    }
+  }
+
+  // ── The stamp ─────────────────────────────────────────────────────────────
+  let stamped = 0;
+  let total = 0;
+  let wrappersPersisted = 0;
+  const replacements = new Map<string, Buffer>();
+  const files: string[] = [];
+  /** Every id this book should carry when it is read back, by document. */
+  const expected = new Map<string, { ids: string[]; units: number; images: number }>();
+
+  for (const file of order) {
+    const walked = perFile.get(file)!;
+    const ids: string[] = [];
+    let mintedHere = 0;
+    for (const el of walked.elements) {
+      total++;
+      const existing = el.getAttribute?.(ELEMENT_UID_ATTR);
+      if (existing !== null && existing !== undefined && existing !== '') {
+        ids.push(existing);
+        continue;
+      }
+      if (typeof el.setAttribute !== 'function') {
+        throw new Error(
+          `${file} holds an element the walk produced that cannot be given an id (a <`
+          + `${(el.tagName ?? '?').toLowerCase()}> with no attributes). Every element the walk `
+          + 'produces is an element a record can name, so one that cannot be stamped would be a '
+          + 'silent hole in the book\'s identity. Nothing was written.'
+        );
+      }
+      let uid = mintElementUid();
+      while (taken.has(uid)) uid = mintElementUid();
+      taken.add(uid);
+      el.setAttribute(ELEMENT_UID_ATTR, uid);
+      ids.push(uid);
+      stamped++;
+      mintedHere++;
+    }
+    // A document is rewritten when it gained an id OR when its walk synthesized
+    // a wrapper — the wrapper is the mutation this pass exists to make real, and
+    // a document whose only change was one would otherwise be left with a
+    // phantom element forever.
+    if (mintedHere > 0 || walked.wrappers > 0) {
+      replacements.set(file, serializeEditedDocument(walked.doc));
+      files.push(file);
+      wrappersPersisted += walked.wrappers;
+      expected.set(file, { ids, units: walked.units, images: walked.images });
+    }
+  }
+
+  if (replacements.size === 0) return { stamped: 0, total, files: [], wrappersPersisted: 0 };
+
+  await writeBookWithReplacedEntries(inputPath, outputPath, replacements);
+
+  // ── The promise, kept or the file destroyed ───────────────────────────────
+  //
+  // Re-walked with the same two enumerations that produced the ids, and the
+  // written file must prove three things. That it holds the same elements it
+  // held, in the same numbers — which is what entitles the caller to re-stamp a
+  // positional strike record onto these bytes without migrating a key, and what
+  // makes persisting a wrapper a no-op for every existing record. That every
+  // walked element carries exactly ONE id and no id is used twice. And that the
+  // document carries no id the walk did not produce — a stamp on an element
+  // nothing enumerates is an identity nothing can resolve.
+  try {
+    const check = new ZipReader(outputPath);
+    await check.open();
+    try {
+      const seen = new Set<string>();
+      for (const [file, want] of expected) {
+        const written = parseXhtmlBody((await check.readEntry(file)).toString('utf8'), file);
+        const units = collectExportUnits(written.doc, written.body, whatFor);
+        const images = collectImageElements(written.body);
+        if (units.length !== want.units || images.length !== want.images) {
+          throw new Error(
+            `${file} held ${want.units} text element(s) and ${want.images} picture(s), and the `
+            + `stamped file holds ${units.length} and ${images.length}. Stamping an element adds `
+            + 'no element and removes none, so every narration strike recorded against this book '
+            + 'would now name the wrong element. Nothing was written.'
+          );
+        }
+        const walkedNow = [...units.map((u) => u.el), ...images];
+        const ids: string[] = [];
+        for (const el of walkedNow) {
+          const uid = el.getAttribute?.(ELEMENT_UID_ATTR);
+          if (uid === null || uid === undefined || uid === '') {
+            throw new Error(
+              `${file} came out of the stamp with an element that carries no id. A book whose `
+              + 'identity is incomplete is one no record can be keyed to. Nothing was written.'
+            );
+          }
+          if (seen.has(uid)) {
+            throw new Error(
+              `${file} came out of the stamp carrying the id "${uid}" on more than one element. An `
+              + 'id that names two elements names neither. Nothing was written.'
+            );
+          }
+          seen.add(uid);
+          ids.push(uid);
+        }
+        if (ids.join('|') !== want.ids.join('|')) {
+          throw new Error(
+            `${file} came out of the stamp carrying different ids, or the same ids in a different `
+            + 'order, than the walk that wrote them produced. Nothing was written.'
+          );
+        }
+
+        // No id the walk did not produce: read off the BYTES, not the walk, so a
+        // stamp hiding on an element nothing enumerates is caught.
+        const mine = new Set(ids);
+        const raw = (await check.readEntry(file)).toString('utf8');
+        const re = new RegExp(`${ELEMENT_UID_ATTR}="([^"]*)"`, 'g');
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(raw)) !== null) {
+          if (!mine.has(m[1])) {
+            throw new Error(
+              `${file} carries the element id "${m[1]}" on something the walk does not enumerate, `
+              + 'so it is an identity nothing can resolve. Nothing was written.'
+            );
+          }
+        }
+      }
+    } finally {
+      check.close();
+    }
+  } catch (err) {
+    await fs.rm(outputPath, { force: true });
+    throw err;
+  }
+
+  return { stamped, total, files, wrappersPersisted };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

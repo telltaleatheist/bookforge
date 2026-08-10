@@ -40,7 +40,7 @@ import * as path from 'path';
 
 import {
   writeNarrationEpub, epubCarriesConversionStamps, foldChapterOpeningInBookFile,
-  nameChapterOpeningsInBookFile, readEpubConversionUnits,
+  nameChapterOpeningsInBookFile, readEpubConversionUnits, stampElementIdsInBookFile,
   markupCategoriesForUnits, readEpubTocTargets, signNarrationElements,
   type MarkupUnit, type NamedChapterOpening, type UnnamedChapterOpening,
   type NarrationSignedUnit,
@@ -1139,6 +1139,120 @@ export interface ChapterOpeningNamingSummary {
   named: NamedChapterOpening[];
   /** Chapters left alone, and why. Never a failure; see below. */
   skipped: UnnamedChapterOpening[];
+}
+
+/** What the element-id stamp did to a project's working copy. */
+export interface ElementIdStampSummary {
+  /** How many elements were given an id they did not have. Zero is the norm. */
+  stamped: number;
+  /** How many elements the book's walk produces in total. */
+  total: number;
+  /** How many synthesized wrappers became real markup. First stamp only. */
+  wrappersPersisted: number;
+}
+
+/**
+ * Give every element of the project's working copy a stable id, in the book.
+ *
+ * ── Where this sits ────────────────────────────────────────────────────────
+ *
+ * Immediately BEFORE `nameChapterOpenings`, at every door that opens or re-mints
+ * a working copy. An element's identity has to exist before anything writes to
+ * the element, and the naming pass is the first thing that does.
+ *
+ * IDEMPOTENT, and that is the contract that makes running it on every open safe:
+ * the second open finds every element already carrying its id, writes no byte,
+ * and touches neither the book nor the manifest by so much as a timestamp. A
+ * book whose bytes changed on every open would void the narration copy, the
+ * analysis cache and the strike record for nothing.
+ *
+ * ── What is never touched ──────────────────────────────────────────────────
+ *
+ * The ARCHIVE. `outputs.epub` is the working copy and is the only file opened
+ * for writing (memory: pipeline-source-model-archive-as-source). A project with
+ * no working copy at all is normal — a PDF before Generate EPUB — and returns
+ * "nothing stamped" rather than an error.
+ *
+ * ── Why the strike record is re-stamped and not migrated ───────────────────
+ *
+ * Because NO element moves: the stamp writes an attribute onto elements that
+ * were already there, and the synthesized wrappers it makes real were already in
+ * the walk every reader performs. `stampElementIdsInBookFile` measures that
+ * against the written file. A record stamped with some OTHER book cannot be
+ * followed, so this REFUSES rather than forging agreement — and the refusal is
+ * only reachable when there is something to stamp, which keeps a void record
+ * from making an already-stamped project unopenable.
+ *
+ * The user is told NOTHING. Identity is plumbing; the console says what
+ * happened and the screen says nothing at all.
+ */
+export async function stampElementIds(
+  projectDir: string,
+  familyId?: string,
+): Promise<ElementIdStampSummary> {
+  const nothing: ElementIdStampSummary = { stamped: 0, total: 0, wrappersPersisted: 0 };
+
+  const book = await manifestService.readExportEpub(projectDir, familyId);
+  if (!book || !fs.existsSync(book.absPath)) return nothing;
+
+  const { sha256: fromSha256 } = await sha256File(book.absPath);
+
+  // Read now, judged after the pass has said whether it has anything to do — an
+  // already-stamped book must open even when its strikes are void.
+  const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
+  const stale = narrationDeletionsStaleReason(recorded, fromSha256);
+
+  await fs.promises.mkdir(STAGING_DIR, { recursive: true });
+  const staged = path.join(STAGING_DIR, `stamp-uids-${fromSha256.slice(0, 16)}.epub`);
+  const result = await stampElementIdsInBookFile(book.absPath, staged);
+
+  if (result.files.length === 0) {
+    // Every element already carries its id. Idempotence is the contract, so the
+    // working copy is not replaced by bytes that would differ only in their zip
+    // timestamps — and no staged copy was written to have to move. The `rm` is
+    // for the case where it was and something below refused.
+    await fs.promises.rm(staged, { force: true });
+    return { stamped: 0, total: result.total, wrappersPersisted: 0 };
+  }
+
+  if (stale !== null) {
+    await fs.promises.rm(staged, { force: true });
+    throw new Error(
+      `${result.stamped} element(s) of ${path.basename(book.absPath)} still have no stable id, and `
+      + 'they were NOT given one, because the narration strikes recorded against this book cannot '
+      + `be carried onto the edit.\n\n${stale}`
+    );
+  }
+
+  await moveIntoPlace(staged, book.absPath);
+  const { sha256: toSha256 } = await sha256File(book.absPath);
+  const at = new Date().toISOString();
+
+  await manifestService.recordElementIdStamping(projectDir, {
+    kind: 'stamp-element-ids',
+    at,
+    stamped: result.stamped,
+    total: result.total,
+    files: result.files,
+    wrappersPersisted: result.wrappersPersisted,
+    fromSha256,
+    toSha256,
+  }, familyId);
+
+  console.log(
+    `[narration-export] ${path.basename(projectDir)}: gave ${result.stamped} of ${result.total} `
+    + `element(s) in ${path.basename(book.absPath)} a stable id across ${result.files.length} `
+    + `document(s)`
+    + (result.wrappersPersisted === 0
+      ? '.'
+      : `, and made ${result.wrappersPersisted} synthesized text wrapper(s) real markup.`)
+  );
+
+  return {
+    stamped: result.stamped,
+    total: result.total,
+    wrappersPersisted: result.wrappersPersisted,
+  };
 }
 
 /**
