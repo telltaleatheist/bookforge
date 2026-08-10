@@ -4738,6 +4738,25 @@ export class ElectronService {
   }
 
   /**
+   * One project's editor state, from the sidecar file it lives in.
+   *
+   * A manifest from `manifestGet`/`manifestList` does NOT carry editor state any
+   * more — it is document-scale working data and the catalog stopped hauling it
+   * around. Ask here, per project, when you are about to edit that project.
+   * `editor: null` means the project has none, which is a real answer.
+   */
+  async manifestGetEditorState(projectId: string): Promise<{
+    success: boolean;
+    editor?: any;
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.manifest?.getEditorState) {
+      return (window as any).electron.manifest.getEditorState(projectId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
    * List all unified projects
    */
   async manifestList(filter?: { type?: 'book' | 'article' }): Promise<{

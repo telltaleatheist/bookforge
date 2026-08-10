@@ -20,6 +20,7 @@ import {
   atomicCopyFile,
   getLibraryBasePath,
 } from './manifest-service.js';
+import { writeEditorState } from './editor-state-store.js';
 import { embedAndVerifyVtt } from './metadata-tools.js';
 import type {
   ProjectManifest,
@@ -598,8 +599,11 @@ export async function migrateArticleProject(
     const manifestContent = await fs.promises.readFile(manifestPath, 'utf-8');
     const manifest: ProjectManifest = JSON.parse(manifestContent);
 
-    // Add editor state
-    manifest.editor = {
+    // Add editor state — into its own file beside the manifest, which is where
+    // it lives (electron/editor-state-store.ts). An import that wrote it into
+    // the manifest would mint exactly the pre-sidecar shape the sweep exists to
+    // undo.
+    await writeEditorState(projectPath, {
       deletedSelectors: llProject.deletedSelectors || [],
       undoStack: llProject.undoStack?.map(a => ({
         type: a.type,
@@ -611,7 +615,7 @@ export async function migrateArticleProject(
         ids: a.selectors || [],
         timestamp: a.timestamp,
       })) || [],
-    };
+    });
 
     // Add translation stage if content was translated
     if (fs.existsSync(path.join(projectPath, 'stages', '02-translate', 'sentence_pairs.json'))) {
@@ -672,8 +676,8 @@ async function updateMigratedManifest(
       manifest.metadata.coverPath = coverPath;
     }
 
-    // Add editor state
-    manifest.editor = {
+    // Add editor state — into its own file beside the manifest, as above.
+    await writeEditorState(path.dirname(manifestPath), {
       undoStack: bfp.undo_stack?.map(a => ({
         type: a.type,
         ids: a.ids || a.blockIds || [],
@@ -684,7 +688,7 @@ async function updateMigratedManifest(
         ids: a.ids || a.blockIds || [],
         timestamp: a.timestamp || new Date().toISOString(),
       })) || [],
-    };
+    });
 
     // If we have audiobook project data, add pipeline state
     if (abProject) {

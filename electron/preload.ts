@@ -2358,6 +2358,15 @@ export interface ElectronAPI {
       manifestPath?: string;
       error?: string;
     }>;
+    /**
+     * One project's editor state, from its own file. `get`/`list` do NOT carry
+     * it — that is the point. `editor: null` means the project has none.
+     */
+    getEditorState: (projectId: string) => Promise<{
+      success: boolean;
+      editor?: Record<string, unknown> | null;
+      error?: string;
+    }>;
     list: (filter?: { type?: 'book' | 'article' }) => Promise<{
       success: boolean;
       projects?: Record<string, unknown>[];
@@ -4259,6 +4268,15 @@ const electronAPI: ElectronAPI = {
       manifestPath?: string;
       error?: string;
     }> => ipcRenderer.invoke('manifest:update', update),
+
+    // One project's editor state, from the sidecar file it lives in. A manifest
+    // from `get`/`list` does NOT carry it — ask here, per project, when you are
+    // about to edit that project. `editor: null` means it has none.
+    getEditorState: (projectId: string): Promise<{
+      success: boolean;
+      editor?: any;
+      error?: string;
+    }> => ipcRenderer.invoke('manifest:get-editor-state', projectId),
 
     // List all projects
     list: (filter?: { type?: 'book' | 'article' }): Promise<{

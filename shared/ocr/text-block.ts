@@ -3,7 +3,7 @@
  *
  * These three types used to be declared in
  * `src/app/features/pdf-picker/services/pdf.service.ts`, which put them out of
- * reach of the main process and the CLI even though `manifest.editor.ocrBlocks`
+ * reach of the main process and the CLI even though the stored `ocrBlocks`
  * is exactly an array of `TextBlock`. They live under `shared/` so the one
  * program that produces those blocks (the OCR post-processor) and the two
  * programs that persist and re-load them (the renderer's project save, the CLI's

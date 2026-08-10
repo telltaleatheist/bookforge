@@ -36,6 +36,25 @@ const opt = (n, d) => { const i = argv.indexOf(`--${n}`); return i >= 0 && i + 1
 const has = (n) => argv.includes(`--${n}`);
 const tilde = (p) => p.replace(/^~(?=\/)/, os.homedir());
 
+/**
+ * A main-process module, from the compiled build.
+ *
+ * The generator below is bundled from source because it is a renderer service;
+ * main-process modules are not, because they are already built by
+ * `npm run build:electron` and re-bundling them here would be a second build of
+ * code that has one. A missing dist is a loud instruction, never a fallback to a
+ * local reimplementation.
+ */
+function requireCompiled(file) {
+  const abs = path.join(REPO_ROOT, 'dist', 'electron', file);
+  if (!fs.existsSync(abs)) {
+    console.error(`export-epub: ${abs} is not built. Compile first:\n` +
+      '  npx tsc -p tsconfig.electron.json');
+    process.exit(1);
+  }
+  return require(abs);
+}
+
 if (has('help') || has('h') || argv.length === 0) {
   console.error(
     'usage: node cli/export-epub.js --project <projectDir> --out <book.epub>\n' +
@@ -128,7 +147,12 @@ async function loadExportService() {
 // paths, and the load handler around :3325 is its mirror; read both before
 // changing anything here.
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-const editor = manifest.editor ?? {};
+// Editor state is a per-project SIDECAR (`editor-state.json`), not a manifest
+// key. The precedence rule between the sidecar and the pre-sidecar
+// `manifest.editor` is implemented in exactly one place — read it from there
+// rather than restating it here, so a CLI run and an app run cannot disagree
+// about which copy a half-migrated project means.
+const editor = requireCompiled('editor-state-store.js').peekEditorStateSync(projectPath) ?? {};
 const source = manifest.source ?? {};
 const meta = manifest.metadata ?? {};
 
@@ -137,7 +161,7 @@ const manualBlocks = editor.manualBlocks ?? [];
 const blocks = [...ocrBlocks, ...manualBlocks];
 if (blocks.length === 0) {
   console.error(
-    `export-epub: ${manifestPath} carries no editor.ocrBlocks, so there is nothing to export.\n` +
+    `export-epub: ${projectPath} carries no editor ocrBlocks, so there is nothing to export.\n` +
     'OCR the book first: node --require cli/electron-stub.js cli/ocr-pdf.js <book.pdf> --project ' +
     projectPath);
   process.exit(1);

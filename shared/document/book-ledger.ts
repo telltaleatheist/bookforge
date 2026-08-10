@@ -17,7 +17,7 @@
  *
  * A project's edits come in two shapes and they compose differently:
  *
- *  1. WORKING CHANGES are RECORDS — `manifest.editor`, the `manifest.source`
+ *  1. WORKING CHANGES are RECORDS — the editor state, the `manifest.source`
  *     deletion keys, the chapter markers, `narrationDeletions`, `bookEdits`.
  *     They name elements by POSITION in the book's one enumeration walk
  *     (shared/vlm/narration-deletions.ts) and are re-applied over whatever the

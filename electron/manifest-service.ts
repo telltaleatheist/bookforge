@@ -63,6 +63,19 @@ import {
   familyStem,
   resolveFamily,
 } from '../shared/document/book-families';
+// The picker's working state is a per-project SIDECAR, not a manifest key — see
+// electron/editor-state-store.ts for why and for the precedence rule. That
+// module imports `atomicWriteFile` back from here; the cycle is safe because
+// neither module runs anything at load time and every use is inside a function.
+import {
+  adoptLegacyEditorKey,
+  deleteEditorState,
+  migrateEditorState,
+  readEditorState,
+  stripEditorKey,
+  updateEditorState,
+  writeEditorState,
+} from './editor-state-store.js';
 import {
   migrateNarrationDeletionsForFold,
   narrationDeletionsStaleReason,
@@ -478,6 +491,11 @@ async function saveManifestImpl(manifest: ProjectManifest): Promise<ManifestSave
   try {
     // Last line of defence: whatever the caller built, NFD never reaches the file.
     normalizeManifestPaths(manifest);
+    // And the other last line of defence: `editor` is a sidecar file now, and no
+    // manifest write may put it back. The callers below preserve the ON-DISK
+    // copy before they get here, so anything still on the object at this point
+    // came from a caller that has not been converted — dropped, and said so.
+    stripEditorKey(manifest, 'saveManifest');
     manifest.modifiedAt = new Date().toISOString();
     const manifestPath = getManifestPath(manifest.projectId);
     await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
@@ -489,9 +507,19 @@ async function saveManifestImpl(manifest: ProjectManifest): Promise<ManifestSave
 
 /**
  * Save (overwrite) a project manifest. Acquires the per-project lock.
+ *
+ * The manifest handed in is a WHOLE object from somewhere else — usually a
+ * renderer that fetched it earlier — so the file on disk is migrated first and
+ * the caller's own `editor` key is then dropped by `saveManifestImpl`. Both
+ * halves are needed: the migration is what saves a project whose editor state is
+ * still in its manifest from being overwritten by this call, and the drop is
+ * what stops a stale renderer from putting megabytes back.
  */
 export async function saveManifest(manifest: ProjectManifest): Promise<ManifestSaveResult> {
-  return acquireLock(manifest.projectId, () => saveManifestImpl(manifest));
+  return acquireLock(manifest.projectId, async () => {
+    await migrateEditorState(getProjectPath(manifest.projectId));
+    return saveManifestImpl(manifest);
+  });
 }
 
 /**
@@ -508,6 +536,11 @@ export async function modifyManifest(
     if (!result.success || !result.manifest) {
       return { success: false, error: result.error || 'Project not found' };
     }
+    // The object just read IS the disk copy, so a legacy `editor` on it is the
+    // authoritative one — move it to the sidecar HERE. Without this, the first
+    // unrelated write to an unmigrated project (a finished audiobook, a tag)
+    // would drop a book's entire editing history at `saveManifestImpl`.
+    await adoptLegacyEditorKey(getProjectPath(projectId), result.manifest);
     await fn(result.manifest);
     return saveManifestImpl(result.manifest);
   });
@@ -517,7 +550,7 @@ export async function modifyManifest(
  * Update specific fields in a manifest (locked read-modify-write)
  */
 export async function updateManifest(update: ManifestUpdate): Promise<ManifestSaveResult> {
-  return modifyManifest(update.projectId, (manifest) => {
+  return modifyManifest(update.projectId, async (manifest) => {
     if (update.source) {
       manifest.source = { ...manifest.source, ...update.source };
     }
@@ -541,7 +574,19 @@ export async function updateManifest(update: ManifestUpdate): Promise<ManifestSa
       }
     }
     if (update.editor) {
-      manifest.editor = { ...manifest.editor, ...update.editor };
+      // The SAME merge as before — a partial update layered over what is stored —
+      // but against the sidecar, which is where editor state lives. It runs
+      // inside `modifyManifest`'s per-project lock, so it cannot interleave with
+      // another update of the same project, and `adoptLegacyEditorKey` has
+      // already put any pre-sidecar copy where this reads from.
+      //
+      // The one caller today is Studio's `updateArticle` (deletedSelectors,
+      // undoStack, redoStack); its contract is unchanged.
+      const patch = update.editor;
+      await updateEditorState(
+        getProjectPath(update.projectId),
+        (state) => ({ ...state, ...patch }),
+      );
     }
     if (update.projectType !== undefined) {
       // Re-classify a project as a book or an article. Every consumer — Studio's
@@ -2520,6 +2565,17 @@ export async function resetEditorRecords(projectDir: string, familyId?: string):
   // ORIGINAL is, so a second version added beside it must not have them cleared
   // when its own changes are erased — that curation is not about its book.
   if (familyOwnsPickerRecords(family, archiveOriginal?.relPath ?? null)) {
+    // Editor state is a sidecar file (electron/editor-state-store.ts) and the
+    // manifest key is its pre-sidecar location, so BOTH go — the delete below is
+    // the migration for a project that has not been swept yet.
+    //
+    // The sidecar goes FIRST, before the manifest transaction. A crash in
+    // between then leaves the legacy key in place, which re-migrates on the next
+    // contact and puts the state back — so the whole reset reads as not having
+    // happened, and pressing the button again does it. The other order would
+    // leave an orphan sidecar that is authoritative and stale: a reset that
+    // cleared the deletions and the chapters but silently kept the undo stack.
+    await deleteEditorState(projectDir);
     delete manifest.editor;
     if (manifest.source && typeof manifest.source === 'object') {
       for (const key of PICKER_SOURCE_RECORD_KEYS) {
@@ -3619,7 +3675,7 @@ export async function applyEditorLayoutMigration(
   const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
-  const saved = await modifyManifest(projectId, (m) => {
+  const saved = await modifyManifest(projectId, async (m) => {
     const source = (m.source ?? {}) as unknown as Record<string, unknown>;
     if (migration.deletions) {
       source.deletedPages = migration.deletions.deletedPages;
@@ -3631,11 +3687,17 @@ export async function applyEditorLayoutMigration(
     delete source.pageOrder;
     source[EDITOR_LAYOUT_MANIFEST_KEY] = migration.layout;
 
-    const editor = m.editor as unknown as Record<string, unknown> | undefined;
+    // The retired editor fields, in the sidecar they live in now
+    // (electron/editor-state-store.ts). Inside `modifyManifest`'s lock, and
+    // after `adoptLegacyEditorKey` has moved any pre-sidecar copy there, so this
+    // reads and writes the one authoritative copy. A project with no editor
+    // state has nothing to retire and is NOT given an empty sidecar.
+    const editor = await readEditorState(projectDir) as unknown as Record<string, unknown> | null;
     if (editor) {
       delete editor.undoStack;
       delete editor.redoStack;
       for (const field of LAYOUT_KEYED_EDITOR_FIELDS) delete editor[field];
+      await writeEditorState(projectDir, editor);
     }
 
     // The picker's chapter markers are position-linked and mostly carry only a

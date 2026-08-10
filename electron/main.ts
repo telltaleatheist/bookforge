@@ -27,6 +27,7 @@ import {
   EDITOR_LAYOUT_MANIFEST_KEY,
 } from './editor-layout';
 import { migrateLegacyEpubEditorRecords } from './legacy-epub-layout';
+import { readEditorState, sweepEditorState, writeEditorState } from './editor-state-store';
 import * as manifestMigration from './manifest-migration';
 import * as archiveMigration from './archive-migration';
 import { findEbookConvert } from './ebook-convert-bridge';
@@ -1978,8 +1979,21 @@ function setupIpcHandlers(): void {
         // travels back with the result, because the other half of that rule is
         // that anything the user DID delete in such a window is not saved
         // either, and they have to be told.
+        // The picker's working state, from the sidecar it lives in
+        // (electron/editor-state-store.ts), migrated on contact. It is read
+        // BEFORE the layout question because the census that answers that
+        // question counts editor records, and it is read from the store rather
+        // than off `manifest` because the manifest no longer carries them.
+        const storedEditor = await readEditorState(filePath) ?? {};
+        // ...and the pre-sidecar key is taken off the in-memory manifest so the
+        // write at the end of this handler cannot put it back. `readEditorState`
+        // has already moved whatever was on disk into the sidecar.
+        delete manifest.editor;
+
         const layoutState = readEditorLayoutState(
-          path.basename(filePath), manifest.source?.type ?? '', manifest,
+          path.basename(filePath),
+          manifest.source?.type ?? '',
+          { source: manifest.source, editor: storedEditor, chapters: manifest.chapters },
         );
         const layoutIsStale = layoutState.refusal !== null;
         if (layoutIsStale) {
@@ -2036,38 +2050,44 @@ function setupIpcHandlers(): void {
             currentEpubEditorLayout(new Date().toISOString());
         }
 
-        if (!manifest.editor) manifest.editor = {};
+        // ── The editor state, into its own file ───────────────────────────
+        //
+        // Same sixteen keys, same withholding rule, same wholesale container the
+        // reset wipes — a DIFFERENT file. `editorState` starts as what was
+        // stored, so the stale-layout case still leaves the layout-keyed records
+        // exactly as they were rather than writing an empty set over them.
+        const editorState = storedEditor as Record<string, unknown>;
         if (!layoutIsStale) {
-          manifest.editor.undoStack = mergedData.undo_stack || [];
-          manifest.editor.redoStack = mergedData.redo_stack || [];
-          manifest.editor.blockEdits = mergedData.block_edits || undefined;
-          manifest.editor.customCategories = mergedData.custom_categories || undefined;
-          manifest.editor.ocrBlocks = mergedData.ocr_blocks || undefined;
+          editorState.undoStack = mergedData.undo_stack || [];
+          editorState.redoStack = mergedData.redo_stack || [];
+          editorState.blockEdits = mergedData.block_edits || undefined;
+          editorState.customCategories = mergedData.custom_categories || undefined;
+          editorState.ocrBlocks = mergedData.ocr_blocks || undefined;
           // Blocks the USER authored (chapter boxes), kept apart from ocrBlocks on
           // purpose: restoring ocrBlocks calls replaceTextBlocksOnPages, which drops
           // every non-image block on the pages it touches, so a manual block riding
           // in there would take that page's native text layer with it.
-          manifest.editor.manualBlocks = mergedData.manual_blocks || undefined;
-          manifest.editor.categoryCorrections = mergedData.category_corrections || undefined;
-          manifest.editor.learnedCategories = mergedData.learned_categories || undefined;
-          manifest.editor.paragraphBreaks = mergedData.paragraph_breaks || undefined;
+          editorState.manualBlocks = mergedData.manual_blocks || undefined;
+          editorState.categoryCorrections = mergedData.category_corrections || undefined;
+          editorState.learnedCategories = mergedData.learned_categories || undefined;
+          editorState.paragraphBreaks = mergedData.paragraph_breaks || undefined;
           // Block splits/merges, crop regions and legacy text corrections
           // previously never reached the manifest (only the retired single-file
           // .bfp projects persisted them), so text-mode splits and crops were lost
           // on reload for manifest projects. They round-trip through
-          // manifest.editor now — the same wholesale-cleared container the reset
+          // the editor state now — the same wholesale-cleared container the reset
           // handler wipes, so reset still covers them automatically.
           // `|| undefined` omits empty keys (mirrors the fields above and the
-          // renderer's own serializer), so old manifests are unchanged.
-          manifest.editor.blockSplits = mergedData.block_splits || undefined;
-          manifest.editor.blockMerges = mergedData.block_merges || undefined;
-          manifest.editor.cropRegions = mergedData.crop_regions || undefined;
-          manifest.editor.textCorrections = mergedData.text_corrections || undefined;
+          // renderer's own serializer), so old projects are unchanged.
+          editorState.blockSplits = mergedData.block_splits || undefined;
+          editorState.blockMerges = mergedData.block_merges || undefined;
+          editorState.cropRegions = mergedData.crop_regions || undefined;
+          editorState.textCorrections = mergedData.text_corrections || undefined;
         }
         // Keyed by CATEGORY id, and tuning numbers: neither names a position in
         // a layout, so both are written whatever the layout state is.
-        manifest.editor.ocrCategories = mergedData.ocr_categories || undefined;
-        manifest.editor.classificationThresholds = mergedData.classification_thresholds || undefined;
+        editorState.ocrCategories = mergedData.ocr_categories || undefined;
+        editorState.classificationThresholds = mergedData.classification_thresholds || undefined;
         // The digest of the exact file the edit set was made against. This is
         // the ONE signal the renderer's projectEditsMismatchReason gate has:
         // dropped here, the gate reads "nothing on file can prove otherwise"
@@ -2075,7 +2095,7 @@ function setupIpcHandlers(): void {
         // happens to be open (the review EPUB, Aug 2 2026). Lives in editor
         // because it describes the edit set, and the wholesale editor reset
         // must clear it with the edits it vouches for.
-        manifest.editor.sourceFileSha256 = mergedData.source_file_sha256 || undefined;
+        editorState.sourceFileSha256 = mergedData.source_file_sha256 || undefined;
 
         // Chapters. The picker's markers carry a `page` and mostly no `blockId`,
         // so they are positions in the layout like everything above — and a
@@ -2104,6 +2124,11 @@ function setupIpcHandlers(): void {
           console.log(`[project:save] Writing to manifest: ${catCount} corrections, ${learnedCount} learned, ${paraCount} paragraph breaks`);
         }
 
+        // The sidecar first, then the manifest — the same order the migration
+        // uses, and for the same reason: the manifest carries the layout stamp
+        // that says which pagination the editor records above were made in, so
+        // it must never land ahead of the records it vouches for.
+        await writeEditorState(filePath, editorState);
         await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
         // The save SUCCEEDED — the metadata, the highlights and everything that
         // does not name a position went to disk. `staleLayoutRefusal` says what
@@ -3405,8 +3430,13 @@ function setupIpcHandlers(): void {
           sourcePath = exportedEpubPath;
         }
 
-        // Convert manifest to BookForgeProject format expected by the editor
-        const editor = manifest.editor || {};
+        // Convert manifest to BookForgeProject format expected by the editor.
+        //
+        // The editor state comes from its sidecar (electron/editor-state-store.ts),
+        // migrated on contact. An empty object is the honest reading of "this
+        // project has never been edited" — it is not standing in for a value
+        // that should have been there.
+        const editor = (await readEditorState(filePath) ?? {}) as Record<string, any>;
 
         // ── What a stale layout costs the payload ──────────────────────────
         //
@@ -9769,6 +9799,23 @@ function setupIpcHandlers(): void {
     return manifestService.updateManifest(update);
   });
 
+  // ── One project's editor state ────────────────────────────────────────────
+  //
+  // Its own channel because it is its own FILE (electron/editor-state-store.ts):
+  // `manifest:get` and `manifest:list` no longer carry it, and that is the whole
+  // point — the catalog must not haul a book's OCR blocks around to draw a list.
+  // Asked for per project, by whatever is about to edit that project.
+  //
+  // `null` means the project has no editor state, which is a real answer.
+  ipcMain.handle('manifest:get-editor-state', async (_event, projectId: string) => {
+    try {
+      const state = await readEditorState(manifestService.getProjectPath(projectId));
+      return { success: true, editor: state };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // List all projects
   ipcMain.handle('manifest:list', async (_event, filter?: { type?: 'book' | 'article' }) => {
     return manifestService.listProjects(filter);
@@ -11802,6 +11849,36 @@ app.whenReady().then(async () => {
   // Religiously clear the e2a tmp dir on every startup — nothing is converting
   // yet, so any leftovers are from prior/failed/interrupted runs.
   void cleanE2aTmpDir();
+
+  // ── Move every project's editor state out of its manifest ────────────────
+  //
+  // `manifest:list` reads and parses EVERY manifest on every Studio load, and
+  // until this sweep has run those manifests still carry the picker's working
+  // state — 146.6 MB of 148 MB of manifest content across this library, one book
+  // at 26 MB. Migrate-on-contact alone would only fix a project somebody opened,
+  // so the list would stay slow for months; this does the whole library once.
+  //
+  // BACKGROUND and NOT AWAITED: it is pure file movement, the window must not
+  // wait for it, and every project it fails on is logged by name and skipped
+  // (editor-state-store.ts) rather than aborting the rest. Only runs once a
+  // library location is known — before that there is nothing to sweep, and
+  // `library:set-root` will have swept nothing because a fresh library has no
+  // pre-sidecar projects in it.
+  if (customLibraryRoot) {
+    void sweepEditorState(manifestService.getProjectsPath())
+      .then(({ scanned, migrated, failed }) => {
+        console.log(
+          `[Startup] Editor state: migrated ${migrated} of ${scanned} project(s) out of `
+          + `manifest.json into editor-state.json${failed > 0 ? `, ${failed} failed` : ''}.`,
+        );
+      })
+      .catch((err) => {
+        console.error(
+          '[Startup] The editor-state sweep could not run at all:', (err as Error).message,
+          '— projects will still migrate as they are opened.',
+        );
+      });
+  }
 
   // Auto-start bookshelf server if configured
   await autoStartBookshelf();

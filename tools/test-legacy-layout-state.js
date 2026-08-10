@@ -37,6 +37,12 @@ const { readEditorLayoutState, currentEpubEditorLayout, EDITOR_LAYOUT_MANIFEST_K
 const manifestService = require(path.join(DIST, 'manifest-service.js'));
 const { editorStateTranslationRefusal } = require(path.join(DIST, 'narration-editor-state.js'));
 const { migrateLegacyEpubEditorRecords } = require(path.join(DIST, 'legacy-epub-layout.js'));
+// The editor records live in a per-project sidecar now, so the assertions about
+// which of them survive a carry-over ask the module that owns that file. The
+// fixtures below still WRITE them into `manifest.editor` on purpose: that is the
+// pre-sidecar shape every project in the library is in, and the migration
+// on contact is part of what is under test.
+const { peekEditorStateSync } = require(path.join(DIST, 'editor-state-store.js'));
 
 let passed = 0;
 const failures = [];
@@ -171,17 +177,21 @@ test('(a) the carry-over is ONE transaction: new records, new stamp, the rest re
     assert.deepStrictEqual(book.narrationDeletions.elements, ['OEBPS/ch1.xhtml#4']);
     assert.strictEqual(book.narrationDeletions.epubSha256, 'sha-of-the-book');
 
-    // Everything the old layout explained is gone.
+    // Everything the old layout explained is gone. The editor records were
+    // carried out of the manifest into the sidecar on the way, so that is where
+    // this reads them — and the manifest must no longer hold the key at all.
+    const editor = peekEditorStateSync(dir);
+    assert.strictEqual(m.editor, undefined, 'the pre-sidecar key must not survive a write');
     assert.strictEqual(m.source.pageOrder, undefined);
-    assert.strictEqual(m.editor.undoStack, undefined);
-    assert.strictEqual(m.editor.redoStack, undefined);
-    assert.strictEqual(m.editor.categoryCorrections, undefined);
-    assert.strictEqual(m.editor.paragraphBreaks, undefined);
+    assert.strictEqual(editor.undoStack, undefined);
+    assert.strictEqual(editor.redoStack, undefined);
+    assert.strictEqual(editor.categoryCorrections, undefined);
+    assert.strictEqual(editor.paragraphBreaks, undefined);
     assert.deepStrictEqual(m.chapters, []);
 
     // And everything that never named a position is untouched.
-    assert.deepStrictEqual(m.editor.ocrCategories, { title: { id: 'title', name: 'Titles' } });
-    assert.strictEqual(m.editor.sourceFileSha256, 'deadbeef');
+    assert.deepStrictEqual(editor.ocrCategories, { title: { id: 'title', name: 'Titles' } });
+    assert.strictEqual(editor.sourceFileSha256, 'deadbeef');
     assert.strictEqual(m.source.type, 'epub');
     assert.strictEqual(m.source.fileHash, 'abc123');
     assert.strictEqual(m.metadata.title, 'Apocalypse Delayed');

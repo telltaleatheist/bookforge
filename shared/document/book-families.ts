@@ -248,7 +248,7 @@ export function describeFamilies(families: readonly FamilyIdentity[]): string {
  *
  * ── The one record set that did not move under a family ─────────────────────
  *
- * `manifest.editor`, the deletion keys under `manifest.source` and
+ * The editor state, the deletion keys under `manifest.source` and
  * `manifest.chapters` are the picker's curation of A DOCUMENT LAID OUT AT A
  * POINT IN TIME — page numbers and block ids, stamped with the pagination they
  * were made in (`source.editorLayout`). They are not records about a book's

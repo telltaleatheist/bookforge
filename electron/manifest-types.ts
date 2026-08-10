@@ -34,6 +34,19 @@ export interface ProjectManifest {
   chapters: ManifestChapter[];
   pipeline: ManifestPipeline;
   outputs: ManifestOutputs;
+  /**
+   * LEGACY LOCATION — the pre-sidecar home of the picker's working state.
+   *
+   * Editor state now lives in `<projectDir>/editor-state.json` and is owned by
+   * electron/editor-state-store.ts. This key is declared only because manifests
+   * written before that change still carry it; it is migrated OUT on contact
+   * (and by the startup sweep), and while it is present it is the authoritative
+   * copy — see the precedence rule in editor-state-store.ts.
+   *
+   * NO CODE MAY WRITE IT. Every manifest write path strips it, loudly, because
+   * this is what made a 26 MB manifest that `manifest:list` re-parsed on every
+   * Studio load.
+   */
   editor?: ManifestEditorState;
 
   // Organization
