@@ -55,12 +55,16 @@ interface EditState {
           @if (totalChanges() > 0) {
             <span class="change-badge">{{ totalChanges() }} changes</span>
           }
-          <label class="whitespace-toggle" title="When enabled, ignores differences in whitespace, paragraph breaks, and newlines">
+          <!-- Frozen in pass mode: a receipt shows the edits the pass recorded, and
+               no setting here can change what it did. -->
+          <label class="whitespace-toggle" [title]="isPassDiff()
+            ? 'This is the diff the pass recorded when it ran, so whitespace handling is fixed as it was then'
+            : 'When enabled, ignores differences in whitespace, paragraph breaks, and newlines'">
             <input
               type="checkbox"
               [checked]="ignoreWhitespace()"
               (change)="toggleIgnoreWhitespace()"
-              [disabled]="loading() || chapterLoading()"
+              [disabled]="isPassDiff() || loading() || chapterLoading()"
             />
             <span class="toggle-label">Ignore whitespace</span>
           </label>
@@ -139,12 +143,18 @@ interface EditState {
             <span>Loading...</span>
           }
         </div>
-      } @else if (error()) {
+      } @else if (error(); as reason) {
+        <!-- The reason, not a shrug: it names the file and what is wrong with it. -->
         <div class="state-message error">
-          <span>{{ error() }}</span>
+          <span>{{ reason }}</span>
           <desktop-button variant="ghost" size="xs" (click)="retry()">
             Retry
           </desktop-button>
+        </div>
+      } @else if (passNotice(); as notice) {
+        <!-- A receipt that read fine and recorded nothing. Inline, no dialog. -->
+        <div class="state-message">
+          <p>{{ notice }}</p>
         </div>
       } @else if (chaptersMeta().length > 0) {
         <!-- Chapter content -->
@@ -230,11 +240,9 @@ interface EditState {
             <span class="hint">Hover over highlighted text to see original. Double-click to edit.</span>
           }
         </div>
-      } @else if (isPassDiff()) {
-        <div class="state-message">
-          <p>This pass ran and changed nothing in the book.</p>
-        </div>
       } @else {
+        <!-- A pass receipt never lands here: it is loading, changed, empty, or
+             unreadable, and each of those has its own branch above. -->
         <div class="state-message">
           <p>No chapters to compare.</p>
         </div>
@@ -755,6 +763,16 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly error = signal<string | null>(null);
   readonly loadingProgress = signal<DiffLoadingProgress | null>(null);
   readonly chapterLoading = signal(false);
+  /**
+   * A pass receipt that was read perfectly well and recorded no edits.
+   *
+   * Its own state, beside `error` rather than inside it: "this pass changed
+   * nothing" and "this receipt cannot be read" are different facts, and the
+   * receipts written before the keepFootnoteMarkers fix really do record zero
+   * changes — a diff of the book against itself. Showing them honestly is the
+   * requirement; hanging or claiming a failure is not.
+   */
+  readonly passNotice = signal<string | null>(null);
 
   // Tooltip state
   readonly tooltipVisible = signal(false);
@@ -955,6 +973,7 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
       this.diffService.error$.subscribe(error => this.error.set(error)),
       this.diffService.loadingProgress$.subscribe(progress => this.loadingProgress.set(progress)),
       this.diffService.chapterLoading$.subscribe(loading => this.chapterLoading.set(loading)),
+      this.diffService.passNotice$.subscribe(notice => this.passNotice.set(notice)),
       this.diffService.session$.subscribe(session => {
         // Skip processing if component is destroyed
         if (this.isDestroyed) return;
@@ -980,9 +999,13 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
       })
     );
 
-    // Fallback: also try loading after a short delay in case effect doesn't fire
+    // Fallback: also try loading after a short delay in case effect doesn't fire.
+    // It must not fire over a load that already ANSWERED — a receipt that reported
+    // no changes, or one that reported why it could not be read, has finished, and
+    // re-running it would flash the message away and put the spinner back up.
     setTimeout(() => {
       if (this.chaptersMeta().length > 0 || this.loading()) return;
+      if (this.passNotice() || this.error()) return;
       const passDiff = this.passDiffPath();
       if (passDiff) {
         void this.diffService.loadPassDiff(passDiff);
