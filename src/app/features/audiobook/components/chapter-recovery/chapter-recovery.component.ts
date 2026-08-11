@@ -429,14 +429,18 @@ export class ChapterRecoveryComponent {
     );
   }
 
+  // Milliseconds are part of the value, not decoration: this same string is sent
+  // to applyChapters() as the chapter START. Flooring it to the second opens each
+  // chapter on the tail of the previous chapter's last word.
   formatTimestamp(seconds: number | null): string {
     if (seconds === null) return '--:--:--';
 
     const hours = Math.floor(seconds / 3600);
     const mins = Math.floor((seconds % 3600) / 60);
     const secs = Math.floor(seconds % 60);
+    const ms = Math.round((seconds - Math.floor(seconds)) * 1000);
 
-    return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
   }
 
   async applyChapters(): Promise<void> {

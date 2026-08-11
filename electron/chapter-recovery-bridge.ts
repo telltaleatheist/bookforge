@@ -386,18 +386,30 @@ export async function detectChapters(
 }
 
 /**
- * Format seconds to HH:MM:SS timestamp
+ * Format seconds to an HH:MM:SS.mmm timestamp
+ *
+ * Milliseconds are kept: this string is what `applyChaptersToM4b` writes as the
+ * chapter START, so truncating it here would move every mark up to a second
+ * earlier than the boundary that was measured.
  */
 function formatSecondsToTimestamp(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
   const secs = Math.floor(seconds % 60);
+  const ms = Math.round((seconds - Math.floor(seconds)) * 1000);
 
-  return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
 }
 
 /**
- * Parse HH:MM:SS timestamp to milliseconds (for ffmpeg)
+ * Parse HH:MM:SS(.mmm) timestamp to milliseconds (for ffmpeg)
+ *
+ * The seconds field carries an optional fraction. A chapter boundary is a
+ * SENTENCE boundary, and sentence boundaries do not land on whole seconds — a
+ * mark rounded down to the second opens the chapter on the tail of the previous
+ * chapter's last word. Timestamps a user types by hand ("01:23:45") stay exact
+ * integers; a timestamp carried over from a measured boundary keeps its
+ * milliseconds.
  */
 function parseTimestampToMs(timestamp: string): number {
   const parts = timestamp.split(':');
@@ -406,13 +418,13 @@ function parseTimestampToMs(timestamp: string): number {
   if (parts.length === 3) {
     hours = parseInt(parts[0]);
     mins = parseInt(parts[1]);
-    secs = parseInt(parts[2]);
+    secs = parseFloat(parts[2]);
   } else if (parts.length === 2) {
     mins = parseInt(parts[0]);
-    secs = parseInt(parts[1]);
+    secs = parseFloat(parts[1]);
   }
 
-  return (hours * 3600 + mins * 60 + secs) * 1000;
+  return Math.round((hours * 3600 + mins * 60 + secs) * 1000);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -450,6 +462,28 @@ export async function applyChaptersToM4b(
     const metadataPath = path.join(os.tmpdir(), `bf-chapters-${stamp}.txt`);
     const chapteredTmp = path.join(stageDir, `.chaptered-${stamp}.m4b`);
 
+    // The final chapter ends where the AUDIO ends. Guessing (the old code added a
+    // flat hour) writes a chapter that runs past the end of the file, which players
+    // show as a chapter longer than the book. The duration is knowable, so it is
+    // read, and a file whose duration cannot be read is a refusal — a bad END is
+    // written into the user's audiobook and only shows up while listening.
+    const { probeAudio } = await import('./metadata-tools.js');
+    const probed = await probeAudio(m4bPath);
+    if (!probed.durationSec || !Number.isFinite(probed.durationSec)) {
+      return { success: false, error: `Could not read the duration of ${path.basename(m4bPath)}; refusing to write chapters without a real end time.` };
+    }
+    const durationMs = Math.round(probed.durationSec * 1000);
+
+    // A mark past the end of the audio is unreachable — the chapter can never be
+    // played. Catch it here rather than shipping a dead entry in the chapter list.
+    const past = chapters.find(c => parseTimestampToMs(c.timestamp) >= durationMs);
+    if (past) {
+      return {
+        success: false,
+        error: `Chapter "${past.title}" starts at ${past.timestamp}, at or past the end of the audio (${(durationMs / 1000).toFixed(3)}s).`
+      };
+    }
+
     // Build ffmpeg metadata format
     // https://ffmpeg.org/ffmpeg-formats.html#Metadata-1
     let metadata = ';FFMETADATA1\n';
@@ -458,10 +492,10 @@ export async function applyChaptersToM4b(
       const chapter = chapters[i];
       const startMs = parseTimestampToMs(chapter.timestamp);
 
-      // End time is start of next chapter, or we'll let ffmpeg figure it out
+      // End time is the start of the next chapter; the last one ends with the file.
       const endMs = i < chapters.length - 1
         ? parseTimestampToMs(chapters[i + 1].timestamp)
-        : startMs + 3600000; // Default 1 hour if last chapter
+        : durationMs;
 
       metadata += '\n[CHAPTER]\n';
       metadata += `TIMEBASE=1/1000\n`;
@@ -473,7 +507,20 @@ export async function applyChaptersToM4b(
     await fs.writeFile(metadataPath, metadata, 'utf-8');
 
     // Run ffmpeg to add chapters
-    // ffmpeg -i input.m4b -i chapters.txt -map_metadata 1 -codec copy output.m4b
+    // ffmpeg -i input.m4b -i chapters.txt -map_metadata 0 -map_chapters 1 -codec copy out.m4b
+    //
+    // The two mapping flags are NOT interchangeable and both are load-bearing:
+    //
+    //  -map_chapters 1  is what actually installs the new chapters. Chapters are
+    //    their own mapping: without this flag ffmpeg copies them from the first
+    //    input that HAS chapters, so a file that already has chapters keeps them
+    //    and the metadata file is silently ignored — the write "succeeds" and
+    //    changes nothing. That is precisely the fix-my-wrong-chapters case this
+    //    whole feature exists for, so it must be stated.
+    //
+    //  -map_metadata 0  keeps the book's global tags (title, artist, album,
+    //    date…). The metadata file we just wrote contains ONLY [CHAPTER] blocks,
+    //    so taking global metadata from it strips every tag off the audiobook.
     return new Promise((resolve) => {
       const ffmpeg = spawn(getFfmpegPath(), [
         '-y',  // Overwrite output
@@ -483,7 +530,8 @@ export async function applyChaptersToM4b(
         // corrupt sample tables that the mp4 muxer refuses to copy, and the new
         // chapters from the metadata file supersede them anyway.
         '-map', '0', '-map', '-0:d',
-        '-map_metadata', '1',  // Use metadata from chapters file
+        '-map_metadata', '0',   // Keep the book's own tags
+        '-map_chapters', '1',   // Replace chapters with the ones we just wrote
         '-codec', 'copy',  // Don't re-encode
         chapteredTmp
       ]);
@@ -503,6 +551,48 @@ export async function applyChaptersToM4b(
         }
 
         if (code === 0) {
+          // Read the chapters back off the staged file BEFORE publishing it. An
+          // ffmpeg exit of 0 says the remux ran, not that the chapters we asked
+          // for are in the result — a mapping mistake produces a clean exit and a
+          // file that still carries the OLD chapters. Verifying the staging copy
+          // means a write that did not take is reported as a failure and the
+          // user's audiobook is left untouched.
+          try {
+            const written = await probeEmbeddedChapters(chapteredTmp);
+            const expected = chapters.map(c => ({
+              title: c.title.replace(/[=\n\r]/g, ' '),
+              startMs: parseTimestampToMs(c.timestamp)
+            }));
+            const mismatch =
+              written.length !== expected.length
+                ? `expected ${expected.length} chapters, file has ${written.length}`
+                : expected
+                    .map((e, i) => {
+                      const w = written[i];
+                      const driftMs = Math.abs(Math.round(w.start * 1000) - e.startMs);
+                      if (driftMs > 2) return `chapter ${i + 1} starts at ${w.start.toFixed(3)}s, expected ${(e.startMs / 1000).toFixed(3)}s`;
+                      if (w.title.trim() !== e.title.trim()) return `chapter ${i + 1} is titled ${JSON.stringify(w.title)}, expected ${JSON.stringify(e.title)}`;
+                      return null;
+                    })
+                    .find(Boolean) ?? null;
+
+            if (mismatch) {
+              try { await fs.unlink(chapteredTmp); } catch { /* best-effort cleanup */ }
+              resolve({
+                success: false,
+                error: `Chapters were not written as requested (${mismatch}); the audiobook was left unchanged.`
+              });
+              return;
+            }
+          } catch (err) {
+            try { await fs.unlink(chapteredTmp); } catch { /* best-effort cleanup */ }
+            resolve({
+              success: false,
+              error: `Could not verify the chapters that were written: ${err instanceof Error ? err.message : String(err)}`
+            });
+            return;
+          }
+
           // Atomically publish the chaptered file over the original with a SINGLE
           // same-filesystem rename — no _backup sibling is ever written next to the
           // target, so a protected archive/ folder is never littered. The rename
