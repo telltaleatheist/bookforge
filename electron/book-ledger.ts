@@ -42,7 +42,7 @@ import * as path from 'path';
 
 import * as manifestService from './manifest-service';
 import { enumerateNarrationElements } from './quire-stamp';
-import { epubTreeSha256 } from './sidecar-binding';
+import { bookDigest } from './sidecar-binding';
 import { ledgerEntryRelDir } from '../shared/document/book-ledger';
 import type { AppliedPass, AppliedPassKind, LedgerEntry } from './manifest-types';
 
@@ -186,40 +186,39 @@ export async function registerLedgerPass(
   // A book is a ZIP today and the working copy becomes an exploded DIRECTORY
   // (source/<base>.working/) so that editing one chapter writes one entry. The
   // snapshot is the same snapshot either way — a copy, proved to be the book it
-  // was copied from — but a directory needs a recursive copy and a TREE digest
-  // (`epubTreeSha256`: sha256 over `<name>\0<sha256 of its bytes>` for every
-  // entry, sorted), because a directory has no bytes of its own to stream.
+  // was copied from — but a directory needs a recursive copy, and its identity
+  // is measured over its contents rather than streamed off bytes it does not
+  // have. A tree snapshot is not named `snapshot.epub` — a directory wearing a
+  // file's extension is the masquerade this whole change is getting rid of.
   //
-  // The two digests are never compared to each other, only to another digest of
-  // the SAME kind: a snapshot is proved against the book it was copied from, and
-  // the two are always the same container. A tree snapshot is not named
-  // `snapshot.epub` — a directory wearing a file's extension is the masquerade
-  // this whole change is getting rid of.
+  // `bookDigest` is that measurement, and it is the ONLY one this file makes.
+  // Phase 1 dispatched here by hand and recorded a tree's digest as bare hex,
+  // which is what a ZIP's digest looks like — so `snapshotSha256`, which is
+  // persisted and compared, could have said "archived book" about an exploded
+  // one with nothing anywhere to tell them apart (shared/book-digest.ts).
   const bookIsTree = (await fs.promises.stat(book.absPath)).isDirectory();
   const snapshotName = bookIsTree ? 'snapshot' : 'snapshot.epub';
   const snapshotRel = `${relDir}/${snapshotName}`;
   const snapshotAbs = path.join(absDir, snapshotName);
-  const digestOf = (target: string): Promise<string> => bookIsTree
-    ? epubTreeSha256(target).then((identity) => identity.sha256)
-    : manifestService.sha256OfFile(target);
   if (bookIsTree) {
     await fs.promises.cp(book.absPath, snapshotAbs, { recursive: true });
   } else {
     await fs.promises.copyFile(book.absPath, snapshotAbs);
   }
-  const [bookDigest, snapshotDigest] = await Promise.all([
-    digestOf(book.absPath),
-    digestOf(snapshotAbs),
+  const [bookIdentity, snapshotIdentity] = await Promise.all([
+    bookDigest(book.absPath),
+    bookDigest(snapshotAbs),
   ]);
-  if (bookDigest !== snapshotDigest) {
+  const snapshotDigest = snapshotIdentity.digest;
+  if (bookIdentity.digest !== snapshotDigest) {
     await fs.promises.rm(absDir, { recursive: true, force: true });
     return {
       entry: null,
       refusal:
         `${registration.label} finished, but its snapshot did not come out identical to the book it `
-        + `was copied from (${bookDigest.slice(0, 12)} vs ${snapshotDigest.slice(0, 12)}). The `
-        + 'snapshot has been removed and no entry was recorded — a snapshot that is not those bytes '
-        + 'is not what this pass produced.',
+        + `was copied from (${bookIdentity.hex.slice(0, 12)} vs `
+        + `${snapshotIdentity.hex.slice(0, 12)}). The snapshot has been removed and no entry was `
+        + 'recorded — a snapshot that is not those bytes is not what this pass produced.',
     };
   }
 
@@ -262,7 +261,7 @@ export async function registerLedgerPass(
   await manifestService.appendLedgerEntry(projectDir, entry);
   console.log(
     `[book-ledger] ${path.basename(projectDir)}: ${registration.label} is entry ${id} in this `
-    + `book's ledger — snapshot ${snapshotRel} (${snapshotDigest.slice(0, 12)})`
+    + `book's ledger — snapshot ${snapshotRel} (${snapshotIdentity.hex.slice(0, 12)})`
     + `${receipt === null ? ', no diff recorded' : `, diff frozen at ${receipt}`}.`
   );
   return { entry, refusal: null };
