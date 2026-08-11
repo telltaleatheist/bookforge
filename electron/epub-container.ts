@@ -523,28 +523,32 @@ export async function openEpubSource(epubPath: string): Promise<EpubSource> {
 /**
  * A book opened for writing, whichever container it is to be in.
  *
- * The kind is read off the filesystem for a path that exists. For a path that
- * does NOT exist there is nothing to read it off, and this refuses to guess: a
- * name ending in `.epub` is a zip because that is what the extension means, and
- * anything else is a refusal telling the caller to make the directory first.
- * (Minting a tree therefore starts with `mkdir` — one line, at the one place
- * that mints, in exchange for never silently producing the wrong container.)
+ * The kind is STATED by the caller, never inferred. Every site that writes a
+ * book knows what it is writing — the `.tts.epub` handed to ebook2audiobook is
+ * a zip because e2a parses a zip; the working copy is a tree because it gets
+ * edited. Inferring it from the name is a guess, and it guesses wrong in the
+ * one case that matters: a staging file named `retitle-<sha>.epub` that is
+ * about to be landed on a book which is a TREE would be written as a zip, and
+ * the mistake only surfaces later, as a book-shaped file in a tree's place.
+ *
+ * When something already exists at the path, its kind must agree with the one
+ * asked for. Writing a zip over a tree (or the reverse) is never what a caller
+ * meant, and it is caught here rather than half-done on disk.
  */
-export async function createEpubSink(outputPath: string): Promise<EpubSink> {
+export async function createEpubSink(
+  outputPath: string,
+  kind: EpubContainerKind,
+): Promise<EpubSink> {
   const abs = path.resolve(outputPath);
-  const kind = await epubContainerKindAt(abs);
+  const existing = await epubContainerKindAt(abs);
+  if (existing !== null && existing !== kind) {
+    throw new Error(
+      `${abs} is already ${existing === 'directory' ? 'an exploded directory' : 'a file'}, but it `
+      + `was asked for as ${kind === 'directory' ? 'an exploded directory' : 'a ZIP'}. A book does `
+      + 'not change container by being written over; nothing was written.'
+    );
+  }
   if (kind === 'directory') return new DirectoryEpubSink(abs);
-  if (kind === 'zip') {
-    const { ZipWriter } = await import('./epub-processor.js');
-    return new ZipWriter();
-  }
-  if (abs.toLowerCase().endsWith('.epub')) {
-    const { ZipWriter } = await import('./epub-processor.js');
-    return new ZipWriter();
-  }
-  throw new Error(
-    `Nothing is at ${abs}, so whether this book should be written as a ZIP or as an exploded `
-    + 'directory cannot be read off the filesystem, and the name does not end in .epub either. '
-    + 'Create the directory first if a tree was meant; nothing was written.'
-  );
+  const { ZipWriter } = await import('./epub-processor.js');
+  return new ZipWriter();
 }

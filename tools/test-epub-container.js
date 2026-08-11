@@ -464,17 +464,35 @@ test('a file that is not a zip says it was a FILE', async () => {
   await assert.rejects(() => openEpubSource(junk), /is a file and could not be read as a ZIP/);
 });
 
-test('the sink factory picks the container the path already is', async () => {
+test('the sink factory writes the container it was TOLD to write', async () => {
   const dir = tmp('sink-factory');
   const zipPath = await writeFixtureZip(path.join(dir, 'book.epub'));
   const treeDir = writeFixtureTree(path.join(dir, 'book.working'));
-  assert.ok(await createEpubSink(zipPath) instanceof ZipWriter);
-  assert.ok(await createEpubSink(treeDir) instanceof DirectoryEpubSink);
-  // A path that is not there yet: `.epub` means a zip, and anything else is a
-  // refusal rather than a guess.
-  assert.ok(await createEpubSink(path.join(dir, 'fresh.epub')) instanceof ZipWriter);
-  await assert.rejects(() => createEpubSink(path.join(dir, 'fresh.working')),
-    /cannot be read off the filesystem/);
+  assert.ok(await createEpubSink(zipPath, 'zip') instanceof ZipWriter);
+  assert.ok(await createEpubSink(treeDir, 'directory') instanceof DirectoryEpubSink);
+  // A path that is not there yet needs no guess — the caller said which.
+  assert.ok(await createEpubSink(path.join(dir, 'fresh.epub'), 'zip') instanceof ZipWriter);
+  assert.ok(await createEpubSink(path.join(dir, 'fresh.working'), 'directory')
+    instanceof DirectoryEpubSink);
+});
+
+test('the name never decides the container: a staging file named .epub can be a tree', async () => {
+  // The real case this protects: book-chapters.ts stages a retitle as
+  // `retitle-<sha>.epub` and lands it on the book. When the book is a TREE, an
+  // extension-driven factory would silently write a zip there.
+  const dir = tmp('sink-name-lies');
+  const staged = path.join(dir, 'retitle-abc123.epub');
+  assert.ok(await createEpubSink(staged, 'directory') instanceof DirectoryEpubSink);
+});
+
+test('a sink may not change what a path already is', async () => {
+  const dir = tmp('sink-conflict');
+  const zipPath = await writeFixtureZip(path.join(dir, 'book.epub'));
+  const treeDir = writeFixtureTree(path.join(dir, 'book.working'));
+  await assert.rejects(() => createEpubSink(zipPath, 'directory'),
+    /is already a file, but it was asked for as an exploded directory/);
+  await assert.rejects(() => createEpubSink(treeDir, 'zip'),
+    /is already an exploded directory, but it was asked for as a ZIP/);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
