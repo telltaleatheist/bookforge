@@ -8440,7 +8440,25 @@ function setupIpcHandlers(): void {
       if (chapterName !== undefined) {
         // The book already carries the category; what is missing is the entry.
         // The add runs the naming pass itself, so nothing below has to.
-        const added = await addBookChapter(projectDir, result.file, chapterName, familyId);
+        //
+        // A throw HERE is not a refusal that left the project as it found it:
+        // the category write above landed, so the failure answer still says
+        // which entry moved and every window is still told the project changed —
+        // otherwise a half-applied gesture would leave the book relabelled and
+        // every view of it stale.
+        let added;
+        try {
+          added = await addBookChapter(projectDir, result.file, chapterName, familyId);
+        } catch (err) {
+          broadcastToAllWindows('project:files-changed', projectDir);
+          return {
+            success: false,
+            error:
+              `That block is now a ${categoryId} in the book, but listing its document in the `
+              + `table of contents failed: ${(err as Error).message}`,
+            rewrittenEntries: [...rewrittenEntries],
+          };
+        }
         for (const entry of added.rewrittenEntries) rewrittenEntries.add(entry);
         broadcastToAllWindows('project:files-changed', projectDir);
         return {

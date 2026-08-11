@@ -14937,14 +14937,30 @@ export class PdfPickerComponent implements OnInit {
         // Main's own sentence, verbatim: it names the element, the category or
         // the project that was missing. The first one stops the run — the rest
         // would fail the same way, and a stack of identical alerts helps nobody.
+        // A failure answer CAN still name rewritten entries — a gesture that
+        // relabelled the block and then could not list its document moved bytes
+        // before it stopped — and those are unioned so the redraw below covers
+        // what actually landed.
+        if (Array.isArray(answer.rewrittenEntries)) {
+          for (const entry of answer.rewrittenEntries) rewrittenEntries.add(entry);
+        }
         refusal = answer.error === undefined
           ? 'The relabel came back without a result and without a reason, which is a fault in '
             + 'BookForge rather than anything about this book. Nothing was written.'
           : answer.error;
         break;
       }
+      if (answer.rewrittenEntries === undefined) {
+        // A success that does not say which entries it rewrote cannot be
+        // followed by a redraw of the right documents — and main always says,
+        // so this is a fault in BookForge, not a book state.
+        refusal = 'The relabel landed but main did not say which of the book\'s documents it '
+          + 'rewrote, so the pages on screen cannot be laid out again. Close and re-open the '
+          + 'book to see the change.';
+        break;
+      }
       repaint.push(...sharing);
-      for (const entry of answer.rewrittenEntries ?? []) rewrittenEntries.add(entry);
+      for (const entry of answer.rewrittenEntries) rewrittenEntries.add(entry);
       if (openingUnnamed === null && typeof answer.openingUnnamed === 'string') {
         openingUnnamed = answer.openingUnnamed;
       }
