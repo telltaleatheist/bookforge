@@ -58,8 +58,29 @@ const {
   verifyNarrationStrikes,
 } = require(path.join(DIST, 'shared', 'vlm', 'narration-deletions.js'));
 
-const sha256 = (file) =>
-  crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+// A book's identity and its entries, read the way the app reads them: the
+// working copy is a FOLDER of the book's parts, so nothing here may
+// readFileSync one.
+const { bookDigestOf, placeBook } = require('./fixture-book');
+
+// THE BOOK'S identity as the app records it (shared/book-digest.ts).
+const sha256 = (book) => bookDigestOf(book);
+
+/**
+ * Put a freshly built book AT the project's book path.
+ *
+ * `writeEpub` builds an ARCHIVE, which is what a fixture can build; the book it
+ * is standing in for is a FOLDER of its parts. So it is built beside the book
+ * and landed through the seam, entry by entry — the same thing every writer in
+ * the app does now that the two containers are different things.
+ */
+async function writeEpubAtBook(bookPath, chapters) {
+  const staged = `${bookPath}.fixture-source.epub`;
+  await writeEpub(staged, chapters);
+  await placeBook(staged, bookPath);
+  fs.rmSync(staged);
+  return bookPath;
+}
 
 const readManifest = (dir) =>
   JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf-8'));
@@ -179,7 +200,7 @@ const RESTRUCTURED_ONE = [CHAPTER_ONE[0], CHAPTER_ONE[3]];
 test('the footnote-reference pass carries the strikes onto the book it writes', async () => {
   const dir = await makeProject('carry-footnote-refs');
   const before = await manifestService.readExportEpub(dir);
-  const beforeSha = sha256(before.absPath);
+  const beforeSha = await sha256(before.absPath);
 
   const struck = await narrationExport.editNarrationDeletions(
     dir, { strike: STRIKES, unstrike: [] });
@@ -196,7 +217,7 @@ test('the footnote-reference pass carries the strikes onto the book it writes', 
     `the carry was refused: ${result.narrationCarryNote}`);
 
   const book = await manifestService.readExportEpub(dir);
-  const afterSha = sha256(book.absPath);
+  const afterSha = await sha256(book.absPath);
   assert.notStrictEqual(afterSha, beforeSha, 'the pass did not change the book');
 
   const carried = await manifestService.readNarrationDeletions(dir);
@@ -281,7 +302,7 @@ test('a refused carry LEAVES the record — it is the user\'s, not the pass\'s',
   // also what Syncthing carrying a manifest and a book across two machines a
   // few seconds apart looks like from here.
   const book = await manifestService.readExportEpub(dir);
-  await writeEpub(book.absPath, [RESTRUCTURED_ONE, CHAPTER_TWO]);
+  await writeEpubAtBook(book.absPath, [RESTRUCTURED_ONE, CHAPTER_TWO]);
 
   const state = await narrationExport.readNarrationState(dir);
   assert.ok(state.deletions, 'THE FAILURE: reading the state deleted the user\'s strikes');
@@ -301,7 +322,7 @@ test('a shifted strike is surfaced BY NAME, with both texts', async () => {
   const dir = await makeProject('carry-mismatch');
   await narrationExport.editNarrationDeletions(dir, { strike: STRIKES, unstrike: [] });
   const book = await manifestService.readExportEpub(dir);
-  await writeEpub(book.absPath, [RESTRUCTURED_ONE, CHAPTER_TWO]);
+  await writeEpubAtBook(book.absPath, [RESTRUCTURED_ONE, CHAPTER_TWO]);
 
   const state = await narrationExport.readNarrationState(dir);
   const shifted = state.mismatched.find((m) => m.key === 'OEBPS/ch1.xhtml#1');
@@ -319,7 +340,7 @@ test('a shifted strike does NOT get cut, and the refusal names it', async () => 
   const dir = await makeProject('carry-mismatch-cut');
   await narrationExport.editNarrationDeletions(dir, { strike: STRIKES, unstrike: [] });
   const book = await manifestService.readExportEpub(dir);
-  await writeEpub(book.absPath, [RESTRUCTURED_ONE, CHAPTER_TWO]);
+  await writeEpubAtBook(book.absPath, [RESTRUCTURED_ONE, CHAPTER_TWO]);
 
   await assert.rejects(
     () => narrationExport.exportNarrationEpub(dir),
@@ -340,7 +361,7 @@ test('a record with NO fingerprints keeps working, and says it cannot be checked
   const book = await manifestService.readExportEpub(dir);
   // The shape a record written before Aug 2026 has: keys, a stamp, no prints.
   await manifestService.writeNarrationDeletions(dir, {
-    epubSha256: sha256(book.absPath), elements: STRIKES, updatedAt: '2026-07-01T00:00:00.000Z',
+    epubSha256: await sha256(book.absPath), elements: STRIKES, updatedAt: '2026-07-01T00:00:00.000Z',
   });
 
   // Stamp still matches: the fast path certifies it and nothing is owed.
@@ -354,7 +375,7 @@ test('a record with NO fingerprints keeps working, and says it cannot be checked
 
   // Now the book moves. The record survives, the strikes still apply, and the
   // one thing that is said out loud is that nothing could check them.
-  await writeEpub(book.absPath, [RESTRUCTURED_ONE, CHAPTER_TWO]);
+  await writeEpubAtBook(book.absPath, [RESTRUCTURED_ONE, CHAPTER_TWO]);
   const stale = await narrationExport.readNarrationState(dir);
   assert.ok(stale.deletions, 'a record with no fingerprints was cleared');
   assert.ok(/recorded before BookForge remembered what each strike struck/.test(stale.staleReason),
@@ -393,7 +414,7 @@ test('the sha fast path reads no text at all', async () => {
 test('the re-stamp and the pass record land in ONE manifest write', async () => {
   const dir = await makeProject('carry-transaction');
   const book = await manifestService.readExportEpub(dir);
-  const fromSha256 = sha256(book.absPath);
+  const fromSha256 = await sha256(book.absPath);
   await manifestService.writeNarrationDeletions(dir, {
     epubSha256: fromSha256, elements: STRIKES, updatedAt: '2026-08-01T00:00:00.000Z',
     fingerprints: { 'OEBPS/ch1.xhtml#1': 'She counted twelve' },
@@ -421,7 +442,7 @@ test('the re-stamp and the pass record land in ONE manifest write', async () => 
 test('a refused carry records the pass, leaves the record, and says why', async () => {
   const dir = await makeProject('carry-transaction-refused');
   const book = await manifestService.readExportEpub(dir);
-  const fromSha256 = sha256(book.absPath);
+  const fromSha256 = await sha256(book.absPath);
   await manifestService.writeNarrationDeletions(dir, {
     epubSha256: fromSha256, elements: STRIKES, updatedAt: '2026-08-01T00:00:00.000Z',
   });
@@ -450,7 +471,7 @@ test('a record edited WHILE the pass ran is not re-stamped on a stale proof', as
 
   const recorded = await manifestService.appendAppliedPass(
     dir, { kind: 'footnote-refs', at: '2026-08-10T00:00:00.000Z', params: {} },
-    { outcome: 'carried', fromSha256: sha256(book.absPath), toSha256: 'the-new-book',
+    { outcome: 'carried', fromSha256: await sha256(book.absPath), toSha256: 'the-new-book',
       fingerprints: {} });
   assert.strictEqual(recorded.narrationCarried, false);
   assert.ok(/edited while/.test(recorded.narrationNote), recorded.narrationNote);
