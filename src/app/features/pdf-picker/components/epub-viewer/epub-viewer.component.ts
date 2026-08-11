@@ -1195,7 +1195,18 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     } catch (err) {
       if (cancelled()) return;
       this.unmountBand(index);
-      this.setState(index, { kind: 'refused', why: String((err as Error).message ?? err) });
+      const why = String((err as Error).message ?? err);
+      // A refusal is STICKY: the guard at the top of this method returns early
+      // for `refused`, so this band shows a placeholder for the rest of the
+      // book's life and only re-opening clears it. That is a loud enough thing
+      // to happen that it does not get to happen silently — the band tells the
+      // user, and this tells whoever has to work out why afterwards, naming the
+      // document rather than just the band number.
+      console.error(
+        `[epub-viewer] band ${index} (${band.mount.document}, ${band.pageCount} page(s) at `
+        + `page ${band.firstPage + 1}) REFUSED and will not be retried: ${why}`,
+      );
+      this.setState(index, { kind: 'refused', why });
     }
   }
 
