@@ -13,6 +13,11 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { promisify } from 'util';
 import * as cheerio from 'cheerio';
+// Type-only, and it must stay that way: epub-container.ts imports ZipReader and
+// ZipWriter back out of this file (lazily, inside its factories) to build the
+// zip half of the seam. `import type` is erased on emit, so the two modules
+// describe each other without either one loading the other at require time.
+import type { EpubSink, EpubSource } from './epub-container';
 import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
 import { blockCategoryForVlm } from '../shared/vlm/conversion';
 import { isFootnoteMarkerSupText, stripFootnoteMarkerSups } from '../shared/text/sup-markers';
@@ -88,7 +93,13 @@ interface ZipEntry {
 // ZIP Parsing (minimal implementation for EPUB)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export class ZipReader {
+/**
+ * A book read out of a ZIP — the original and, at the two boundaries that stay
+ * zipped (`archive/` and the `.tts.epub` handed to ebook2audiobook), the only
+ * one. `implements EpubSource` is a claim, not a change: every method below is
+ * exactly as it was, and the interface was derived FROM them.
+ */
+export class ZipReader implements EpubSource {
   private fd: number | null = null;
   private entries: Map<string, ZipEntry> = new Map();
   private filePath: string;
@@ -868,7 +879,14 @@ async function copyTempToOutput(tempPath: string, outputPath: string): Promise<v
   }
 }
 
-export class ZipWriter {
+/**
+ * A book written as a ZIP. `implements EpubSink` is a claim, not a change — the
+ * methods are untouched. Its directory counterpart (`DirectoryEpubSink`) differs
+ * in exactly one observable way: an entry whose bytes are unchanged costs
+ * nothing there, whereas here every entry is deflated into a fresh archive every
+ * time, which is the 25.7 MB that made the seam worth building.
+ */
+export class ZipWriter implements EpubSink {
   private entries: Array<{ name: string; data: Buffer; isCompressed: boolean }> = [];
 
   addFile(name: string, data: Buffer, compress: boolean = true): void {

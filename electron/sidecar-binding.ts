@@ -24,6 +24,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { digestAudiobookCues, parseAudiobookVttStrict } from './audiobook-analysis-canonical';
+import { listEpubTreeEntries, resolveEpubEntryPath } from './epub-container';
 
 export const SIDECAR_BINDING_VERSION = 'bookforge-sidecar-binding-v1' as const;
 export const SIDECAR_VTT_DIGEST_ALGORITHM = 'bookforge-vtt-cues-v1' as const;
@@ -83,6 +84,65 @@ export async function sha256File(filePath: string): Promise<{ sha256: string; si
     throw new Error(`File changed while its identity was being hashed: ${filePath}`);
   }
   return { sha256: hash.digest('hex'), size: after.size };
+}
+
+/** The algorithm name for a tree identity, so a recorded digest says what it is. */
+export const EPUB_TREE_DIGEST_ALGORITHM = 'bookforge-epub-tree-v1' as const;
+
+/**
+ * `sha256File`'s directory sibling — the content identity of an EXPLODED EPUB.
+ *
+ * The working copy is becoming a directory (`source/<base>.working/`) so that
+ * editing one chapter writes one file instead of re-deflating a 25.7 MB archive.
+ * A directory has no bytes of its own to hash, and the bytes a zip of it would
+ * have are not an identity either: they move with compression level, entry order
+ * and the zero timestamps `ZipWriter` writes. So the identity is defined over
+ * the CONTENT, canonically:
+ *
+ *     sha256( for each entry, sorted by name: `<name>\0<sha256 of its bytes>\n` )
+ *
+ * Order-independent (the listing is sorted, not enumerated), deterministic
+ * across machines and across a mint, and blind to everything about the container
+ * that is not the book.
+ *
+ * The integrity property is `sha256File`'s, twice over. Each entry is hashed
+ * through `sha256File` itself, so a file that moves mid-hash is the same loud
+ * `File changed while its identity was being hashed` it has always been; and the
+ * tree is re-listed afterwards, so an entry appearing or disappearing WHILE the
+ * hash was being taken is a refusal too. A tree hash that quietly described a
+ * book that no longer exists is precisely the thing this is here to prevent.
+ */
+export async function epubTreeSha256(
+  dirPath: string
+): Promise<{ sha256: string; size: number; entryCount: number }> {
+  const abs = path.resolve(dirPath);
+  const before = await fs.promises.stat(abs);
+  if (!before.isDirectory()) throw new Error(`Not a directory: ${abs}`);
+
+  // Sorted by name, NOT by the order the filesystem handed them over: two
+  // machines enumerate a directory differently and must still agree on the book.
+  const names = (await listEpubTreeEntries(abs)).slice().sort();
+  const lines: string[] = [];
+  let size = 0;
+  for (const name of names) {
+    const entry = await sha256File(resolveEpubEntryPath(abs, name));
+    lines.push(`${name}\0${entry.sha256}\n`);
+    size += entry.size;
+  }
+
+  const after = (await listEpubTreeEntries(abs)).slice().sort();
+  const moved = after.length !== names.length || after.some((name, i) => name !== names[i]);
+  if (moved) {
+    throw new Error(
+      `Tree changed while its identity was being hashed: ${abs} (${names.length} entries when the `
+      + `hash started, ${after.length} when it finished). No digest was returned — a tree hash that `
+      + 'described a book which no longer exists is worse than no hash at all.'
+    );
+  }
+
+  const hash = crypto.createHash('sha256');
+  hash.update(lines.join(''), 'utf8');
+  return { sha256: hash.digest('hex'), size, entryCount: names.length };
 }
 
 // Delivery-tier identity cache: (absolute path) → last known {sha256,size,mtime}.

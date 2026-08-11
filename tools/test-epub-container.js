@@ -1,0 +1,578 @@
+#!/usr/bin/env node
+/**
+ * Tests for the EPUB CONTAINER SEAM — electron/epub-container.ts and the tree
+ * identity beside it (`epubTreeSha256` in electron/sidecar-binding.ts).
+ *
+ *   npx tsc -p tsconfig.electron.json && node tools/test-epub-container.js
+ *
+ * ── What this seam is for ───────────────────────────────────────────────────
+ *
+ * Measured on `Dietrich Bonhoeffer - A Biography…working.epub` (2026-08-11):
+ * changing one chapter LABEL — 84 KB of markup — re-deflated a 25.7 MB archive,
+ * re-hashed it, minted a new cache identity off the moved bytes, and re-composed
+ * a 25.7 MB stamped copy. Ten edits in four minutes left ~340 MB of cache. The
+ * layout was never the slow part; the zip-as-identity was.
+ *
+ * So the working copy becomes an exploded DIRECTORY, and this file is the seam
+ * that makes that flip mechanical. Nothing routes through it yet — phase 1 is
+ * deliberately no behaviour change — which is exactly why it has to be tested on
+ * its own terms now, before any call site depends on it being right.
+ *
+ * WHAT IS ASSERTED, and why each is a way the flip could be silently wrong:
+ *
+ * A TREE AND ITS ZIP ARE THE SAME BOOK — same entry names, same bytes, entry for
+ * entry. If that equivalence does not hold, every consumer above the seam (spine
+ * parse, layout, narration keys) reads a different book depending on which
+ * container it happened to be handed, and nothing downstream would say so.
+ *
+ * `mimetype` COMES FIRST out of a tree, because a directory has no order and half
+ * the rewrite sites in this app do `for (const e of source.getEntries())
+ * sink.addFile(e, …)`. Sorted alphabetically, lowercase `mimetype` lands LAST,
+ * and the `.tts.epub` minted from that tree would be an OCF violation that
+ * strict readers refuse — discovered, if ever, in ebook2audiobook.
+ *
+ * AN UNCHANGED ENTRY IS NOT REWRITTEN, because that single property IS the win.
+ * A rewrite loop that touched all 79 entries would be the 25.7 MB again with
+ * extra steps, and it would look like it worked.
+ *
+ * A WRITE IS THE WHOLE BOOK, because `ZipWriter.write()` is: an entry that was
+ * not added is not in the archive. A tree that kept members of books past would
+ * drift from the zip semantics every call site was written against.
+ *
+ * THE TREE HASH IS CANONICAL — stable, order-independent, and moving the moment
+ * one entry's bytes move. Identity is what a cache is keyed by and what a
+ * snapshot is proved with; an identity that depended on readdir order would
+ * differ between two machines holding the identical book.
+ *
+ * NAMES THAT CANNOT BE FILES ARE REFUSED, LOUDLY — traversal, absolute names,
+ * backslashes, and the Windows device names (CLAUDE.md: NUL/CON/PRN/AUX/COM1-9/
+ * LPT1-9). A tree that silently dropped an entry it could not write would be a
+ * book missing a chapter with nothing anywhere saying so.
+ */
+'use strict';
+
+const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+
+const REPO = path.resolve(__dirname, '..');
+const DIST = path.join(REPO, 'dist', 'electron');
+for (const file of ['epub-container.js', 'epub-processor.js', 'sidecar-binding.js']) {
+  if (!fs.existsSync(path.join(DIST, file))) {
+    console.error(`Compile first: npx tsc -p tsconfig.electron.json (missing dist/electron/${file})`);
+    process.exit(1);
+  }
+}
+
+const {
+  DirectoryEpubSource,
+  DirectoryEpubSink,
+  openEpubSource,
+  createEpubSink,
+  epubContainerKindAt,
+  listEpubTreeEntries,
+  orderEpubEntryNames,
+  resolveEpubEntryPath,
+} = require(path.join(DIST, 'epub-container.js'));
+const { ZipReader, ZipWriter } = require(path.join(DIST, 'epub-processor.js'));
+const { epubTreeSha256 } = require(path.join(DIST, 'sidecar-binding.js'));
+
+// ── the fixture ─────────────────────────────────────────────────────────────
+//
+// A small but honest EPUB: the stored `mimetype`, the container, an OPF, two
+// spine documents, an image with real binary bytes (so "same bytes" is not just
+// a UTF-8 round trip), and a nested resource two directories deep — the depth an
+// exploded tree adds over the archive it came from.
+const BOOK = [
+  ['mimetype', Buffer.from('application/epub+zip', 'utf8')],
+  ['META-INF/container.xml', Buffer.from(
+    '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+    + '<rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/>'
+    + '</rootfiles></container>', 'utf8')],
+  ['EPUB/content.opf', Buffer.from('<?xml version="1.0"?><package version="3.0"><manifest/></package>', 'utf8')],
+  ['EPUB/text/c0001.xhtml', Buffer.from('<html><body><p>Chapter one.</p></body></html>', 'utf8')],
+  ['EPUB/text/c0002.xhtml', Buffer.from('<html><body><p>Chapter two.</p></body></html>', 'utf8')],
+  ['EPUB/images/plate-01.png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0x7f, 0x01])],
+  ['EPUB/styles/nested/deep/print.css', Buffer.from('body { margin: 0 }', 'utf8')],
+];
+
+let scratch = null;
+function tmp(name) {
+  const dir = path.join(scratch, name);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** The fixture written as a real ZIP, through the writer the app actually uses. */
+async function writeFixtureZip(outPath) {
+  const writer = new ZipWriter();
+  for (const [name, data] of BOOK) writer.addFile(name, data, name !== 'mimetype');
+  await fs.promises.mkdir(path.dirname(outPath), { recursive: true });
+  await writer.write(outPath);
+  return outPath;
+}
+
+/** The fixture written as a tree, by hand — NOT through the sink under test. */
+function writeFixtureTree(dir, entries = BOOK) {
+  for (const [name, data] of entries) {
+    const abs = path.join(dir, ...name.split('/'));
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, data);
+  }
+  return dir;
+}
+
+function mtimesOf(dir) {
+  const seen = new Map();
+  const walk = (at, prefix) => {
+    for (const dirent of fs.readdirSync(at, { withFileTypes: true })) {
+      const name = `${prefix}${dirent.name}`;
+      if (dirent.isDirectory()) walk(path.join(at, dirent.name), `${name}/`);
+      else seen.set(name, fs.statSync(path.join(at, dirent.name)).mtimeMs);
+    }
+  };
+  walk(dir, '');
+  return seen;
+}
+
+/** Freeze every file's mtime well in the past, so any rewrite is unmistakable. */
+function ageEverything(dir, when = new Date('2020-01-01T00:00:00Z')) {
+  for (const name of [...mtimesOf(dir).keys()]) {
+    fs.utimesSync(path.join(dir, ...name.split('/')), when, when);
+  }
+}
+
+let passed = 0;
+const failures = [];
+const tests = [];
+const test = (name, fn) => tests.push({ name, fn });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A tree and its zip are the same book
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a tree yields the same entry NAMES as the zip of it', async () => {
+  const zipPath = await writeFixtureZip(path.join(tmp('same-names'), 'book.epub'));
+  const treeDir = writeFixtureTree(tmp('same-names-tree'));
+
+  const zip = new ZipReader(zipPath);
+  await zip.open();
+  const tree = new DirectoryEpubSource(treeDir);
+  await tree.open();
+  try {
+    assert.deepStrictEqual(
+      [...tree.getEntries()].sort(),
+      [...zip.getEntries()].sort(),
+      'the tree and the archive do not hold the same set of entries'
+    );
+    assert.strictEqual(tree.getEntries().length, BOOK.length);
+  } finally {
+    zip.close();
+    tree.close();
+  }
+});
+
+test('a tree yields the same BYTES as the zip of it, entry for entry', async () => {
+  const zipPath = await writeFixtureZip(path.join(tmp('same-bytes'), 'book.epub'));
+  const treeDir = writeFixtureTree(tmp('same-bytes-tree'));
+
+  const zip = new ZipReader(zipPath);
+  await zip.open();
+  const tree = new DirectoryEpubSource(treeDir);
+  await tree.open();
+  try {
+    for (const name of zip.getEntries()) {
+      const fromZip = await zip.readEntry(name);
+      const fromTree = await tree.readEntry(name);
+      assert.ok(
+        fromZip.equals(fromTree),
+        `${name} differs between the archive and the tree `
+        + `(${fromZip.length} vs ${fromTree.length} bytes)`
+      );
+    }
+    // …including the binary one, which a UTF-8 round trip would have mangled.
+    const png = await tree.readEntry('EPUB/images/plate-01.png');
+    assert.ok(png.equals(BOOK.find(([n]) => n.endsWith('.png'))[1]), 'the image bytes moved');
+  } finally {
+    zip.close();
+    tree.close();
+  }
+});
+
+test('hasEntry agrees with the zip, both ways', async () => {
+  const zipPath = await writeFixtureZip(path.join(tmp('has-entry'), 'book.epub'));
+  const treeDir = writeFixtureTree(tmp('has-entry-tree'));
+  const zip = new ZipReader(zipPath);
+  await zip.open();
+  const tree = new DirectoryEpubSource(treeDir);
+  await tree.open();
+  try {
+    for (const name of ['mimetype', 'EPUB/text/c0002.xhtml', 'EPUB/text/c0009.xhtml', 'EPUB']) {
+      assert.strictEqual(tree.hasEntry(name), zip.hasEntry(name), `hasEntry disagrees for ${name}`);
+    }
+    // `EPUB` is a directory in the tree and is not an entry in either container.
+    assert.strictEqual(tree.hasEntry('EPUB'), false);
+  } finally {
+    zip.close();
+    tree.close();
+  }
+});
+
+test('a missing entry fails the same way it does in a zip', async () => {
+  const zipPath = await writeFixtureZip(path.join(tmp('missing'), 'book.epub'));
+  const treeDir = writeFixtureTree(tmp('missing-tree'));
+  const zip = new ZipReader(zipPath);
+  await zip.open();
+  const tree = new DirectoryEpubSource(treeDir);
+  await tree.open();
+  try {
+    let fromZip = null;
+    let fromTree = null;
+    try { await zip.readEntry('EPUB/text/nope.xhtml'); } catch (err) { fromZip = err.message; }
+    try { await tree.readEntry('EPUB/text/nope.xhtml'); } catch (err) { fromTree = err.message; }
+    assert.strictEqual(fromZip, 'Entry not found: EPUB/text/nope.xhtml');
+    assert.strictEqual(fromTree, fromZip, 'the tree refuses a missing entry in different words');
+  } finally {
+    zip.close();
+    tree.close();
+  }
+});
+
+test('mimetype is listed FIRST out of a tree, or the zip minted from it is invalid', async () => {
+  const treeDir = writeFixtureTree(tmp('order'));
+  const tree = new DirectoryEpubSource(treeDir);
+  await tree.open();
+  try {
+    assert.strictEqual(tree.getEntries()[0], 'mimetype',
+      `mimetype is not first: ${tree.getEntries().slice(0, 3).join(', ')}`);
+    // Sorted alphabetically it would be LAST — that is the trap this guards.
+    assert.notStrictEqual([...tree.getEntries()].sort()[0], 'mimetype');
+    // Everything after it is deterministic, which is what makes a tree hashable.
+    const rest = tree.getEntries().slice(1);
+    assert.deepStrictEqual(rest, [...rest].sort(), 'the rest of the listing is not sorted');
+  } finally {
+    tree.close();
+  }
+});
+
+test('a source that was never opened refuses rather than reporting an empty book', async () => {
+  const tree = new DirectoryEpubSource(tmp('unopened'));
+  assert.throws(() => tree.getEntries(), /not open/i);
+  await assert.rejects(() => tree.readEntry('mimetype'), /not open/i);
+});
+
+test('a directory that is not there is a refusal, not an empty book', async () => {
+  const tree = new DirectoryEpubSource(path.join(scratch, 'no-such-tree'));
+  await assert.rejects(() => tree.open(), /ENOENT|no such file/i);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The sink: an unchanged entry costs nothing
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('an entry whose bytes are unchanged is NOT rewritten — the whole point', async () => {
+  const treeDir = writeFixtureTree(tmp('no-rewrite'));
+  ageEverything(treeDir);
+  const before = mtimesOf(treeDir);
+
+  // The shape every rewrite site in this app has: read every entry, swap one,
+  // write every entry back.
+  const sink = new DirectoryEpubSink(treeDir);
+  for (const [name, data] of BOOK) {
+    const swapped = name === 'EPUB/text/c0001.xhtml'
+      ? Buffer.from('<html><body><p>Chapter one, renamed.</p></body></html>', 'utf8')
+      : data;
+    sink.addFile(name, swapped, name !== 'mimetype');
+  }
+  await sink.write(treeDir);
+
+  const report = sink.lastWrite();
+  assert.deepStrictEqual(report.written, ['EPUB/text/c0001.xhtml'],
+    `more than the edited entry was written: ${report.written.join(', ')}`);
+  assert.strictEqual(report.unchanged.length, BOOK.length - 1);
+  assert.deepStrictEqual(report.removed, []);
+
+  const after = mtimesOf(treeDir);
+  for (const [name, mtime] of before) {
+    if (name === 'EPUB/text/c0001.xhtml') {
+      assert.notStrictEqual(after.get(name), mtime, 'the edited entry was not actually written');
+    } else {
+      assert.strictEqual(after.get(name), mtime, `${name} was rewritten and did not need to be`);
+    }
+  }
+  assert.strictEqual(
+    fs.readFileSync(path.join(treeDir, 'EPUB', 'text', 'c0001.xhtml'), 'utf8'),
+    '<html><body><p>Chapter one, renamed.</p></body></html>'
+  );
+});
+
+test('a write that changes nothing at all writes nothing at all', async () => {
+  const treeDir = writeFixtureTree(tmp('idempotent'));
+  ageEverything(treeDir);
+  const before = mtimesOf(treeDir);
+
+  const sink = new DirectoryEpubSink(treeDir);
+  for (const [name, data] of BOOK) sink.addFile(name, data);
+  await sink.write(treeDir);
+
+  assert.deepStrictEqual(sink.lastWrite().written, []);
+  assert.strictEqual(sink.lastWrite().bytesWritten, 0);
+  assert.deepStrictEqual([...mtimesOf(treeDir)].sort(), [...before].sort(),
+    'a no-op write still touched files');
+});
+
+test('an entry that was not added is REMOVED, as a re-written zip would not hold it', async () => {
+  const treeDir = writeFixtureTree(tmp('removal'));
+  const sink = new DirectoryEpubSink(treeDir);
+  for (const [name, data] of BOOK) {
+    if (name === 'EPUB/styles/nested/deep/print.css') continue;
+    sink.addFile(name, data);
+  }
+  await sink.write(treeDir);
+
+  assert.deepStrictEqual(sink.lastWrite().removed, ['EPUB/styles/nested/deep/print.css']);
+  assert.ok(!fs.existsSync(path.join(treeDir, 'EPUB', 'styles', 'nested', 'deep', 'print.css')));
+  // The directories the dropped entry lived in go with it — a tree that kept
+  // empty scaffolding would not compare equal to the book it is supposed to be.
+  assert.ok(!fs.existsSync(path.join(treeDir, 'EPUB', 'styles')), 'emptied directories were kept');
+  assert.ok(fs.existsSync(path.join(treeDir, 'EPUB', 'text', 'c0001.xhtml')), 'it took a sibling with it');
+});
+
+test('a sink written into an empty place produces the same book as the zip', async () => {
+  const zipPath = await writeFixtureZip(path.join(tmp('mint'), 'book.epub'));
+  const treeDir = tmp('mint-tree');
+  const sink = new DirectoryEpubSink(treeDir);
+  for (const [name, data] of BOOK) sink.addFile(name, data, name !== 'mimetype');
+  await sink.write(treeDir);
+  assert.strictEqual(sink.lastWrite().written.length, BOOK.length);
+
+  const zip = new ZipReader(zipPath);
+  await zip.open();
+  const tree = new DirectoryEpubSource(treeDir);
+  await tree.open();
+  try {
+    assert.deepStrictEqual([...tree.getEntries()].sort(), [...zip.getEntries()].sort());
+    for (const name of zip.getEntries()) {
+      assert.ok((await zip.readEntry(name)).equals(await tree.readEntry(name)), `${name} differs`);
+    }
+  } finally {
+    zip.close();
+    tree.close();
+  }
+});
+
+test('the same entry added twice is refused, not silently collapsed', async () => {
+  const sink = new DirectoryEpubSink(tmp('dup'));
+  sink.addFile('EPUB/text/c0001.xhtml', Buffer.from('a'));
+  assert.throws(() => sink.addFile('EPUB/text/c0001.xhtml', Buffer.from('b')), /twice/);
+});
+
+test('a sink asked to write somewhere other than its own directory refuses', async () => {
+  const sink = new DirectoryEpubSink(tmp('bound'));
+  sink.addFile('mimetype', Buffer.from('application/epub+zip'));
+  await assert.rejects(() => sink.write(tmp('bound-elsewhere')), /bound to its directory|asked to write/);
+});
+
+test('a sink pointed at an existing FILE refuses instead of deleting it', async () => {
+  const dir = tmp('file-in-the-way');
+  const inTheWay = path.join(dir, 'book.epub');
+  fs.writeFileSync(inTheWay, 'not a directory');
+  const sink = new DirectoryEpubSink(inTheWay);
+  sink.addFile('mimetype', Buffer.from('application/epub+zip'));
+  await assert.rejects(() => sink.write(inTheWay), /is a file/);
+  assert.strictEqual(fs.readFileSync(inTheWay, 'utf8'), 'not a directory', 'it removed the file anyway');
+});
+
+test('asking what a write cost before any write refuses rather than reporting zero', () => {
+  const sink = new DirectoryEpubSink(tmp('unwritten'));
+  assert.throws(() => sink.lastWrite(), /has not been written/);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Names that cannot become files
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a traversing entry name is refused, at add time, by name', () => {
+  const root = tmp('traversal');
+  const sink = new DirectoryEpubSink(root);
+  assert.throws(() => sink.addFile('../escaped.xhtml', Buffer.from('x')), /path segment|traversing/);
+  assert.throws(() => sink.addFile('EPUB/../../escaped.xhtml', Buffer.from('x')), /path segment|traversing/);
+  assert.throws(() => resolveEpubEntryPath(root, '/etc/passwd'), /absolute/);
+  assert.throws(() => resolveEpubEntryPath(root, 'C:/Windows/system.ini'), /absolute/);
+  assert.throws(() => resolveEpubEntryPath(root, 'EPUB\\text\\c1.xhtml'), /backslash/);
+  assert.throws(() => resolveEpubEntryPath(root, ''), /Empty/);
+});
+
+test('a Windows device name is refused rather than becoming an unwritable file', () => {
+  const root = tmp('devices');
+  for (const name of ['NUL', 'EPUB/text/CON.xhtml', 'aux/thing.png', 'EPUB/COM1']) {
+    assert.throws(() => resolveEpubEntryPath(root, name), /reserves|device/i,
+      `${name} was not refused`);
+  }
+  assert.doesNotThrow(() => resolveEpubEntryPath(root, 'EPUB/text/console.xhtml'),
+    'a name that merely starts with a device name was refused');
+});
+
+test('a path component past the filesystem cap is refused by name, not as an ENOENT', () => {
+  const root = tmp('long');
+  assert.throws(() => resolveEpubEntryPath(root, `EPUB/text/${'a'.repeat(256)}.xhtml`), /component/);
+  assert.doesNotThrow(() => resolveEpubEntryPath(root, `EPUB/text/${'a'.repeat(200)}.xhtml`));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The factories
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('the factory chooses by what the path IS, and names the kind', async () => {
+  const dir = tmp('factory');
+  const zipPath = await writeFixtureZip(path.join(dir, 'book.epub'));
+  const treeDir = writeFixtureTree(path.join(dir, 'book.working'));
+
+  assert.strictEqual(await epubContainerKindAt(zipPath), 'zip');
+  assert.strictEqual(await epubContainerKindAt(treeDir), 'directory');
+  assert.strictEqual(await epubContainerKindAt(path.join(dir, 'absent')), null);
+
+  const fromZip = await openEpubSource(zipPath);
+  const fromTree = await openEpubSource(treeDir);
+  try {
+    assert.ok(fromZip instanceof ZipReader, 'a file did not open as a ZIP');
+    assert.ok(fromTree instanceof DirectoryEpubSource, 'a directory did not open as a tree');
+    // Already open: the factory hands back a source that is ready to read.
+    assert.deepStrictEqual([...fromZip.getEntries()].sort(), [...fromTree.getEntries()].sort());
+  } finally {
+    fromZip.close();
+    fromTree.close();
+  }
+});
+
+test('opening something that is not there says so, and says where', async () => {
+  await assert.rejects(() => openEpubSource(path.join(scratch, 'nothing-here.epub')),
+    /No EPUB at .*nothing-here\.epub/);
+});
+
+test('a directory that cannot be read as a book says it was a DIRECTORY', async () => {
+  const dir = tmp('bad-tree');
+  fs.symlinkSync(path.join(dir, 'absent-target'), path.join(dir, 'link.xhtml'), 'file');
+  await assert.rejects(() => openEpubSource(dir), /is a directory and could not be read/);
+});
+
+test('a file that is not a zip says it was a FILE', async () => {
+  const junk = path.join(tmp('bad-zip'), 'book.epub');
+  fs.writeFileSync(junk, 'this is not an archive');
+  await assert.rejects(() => openEpubSource(junk), /is a file and could not be read as a ZIP/);
+});
+
+test('the sink factory picks the container the path already is', async () => {
+  const dir = tmp('sink-factory');
+  const zipPath = await writeFixtureZip(path.join(dir, 'book.epub'));
+  const treeDir = writeFixtureTree(path.join(dir, 'book.working'));
+  assert.ok(await createEpubSink(zipPath) instanceof ZipWriter);
+  assert.ok(await createEpubSink(treeDir) instanceof DirectoryEpubSink);
+  // A path that is not there yet: `.epub` means a zip, and anything else is a
+  // refusal rather than a guess.
+  assert.ok(await createEpubSink(path.join(dir, 'fresh.epub')) instanceof ZipWriter);
+  await assert.rejects(() => createEpubSink(path.join(dir, 'fresh.working')),
+    /cannot be read off the filesystem/);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tree identity
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('the tree hash is stable across two runs of the same tree', async () => {
+  const treeDir = writeFixtureTree(tmp('stable'));
+  const first = await epubTreeSha256(treeDir);
+  const second = await epubTreeSha256(treeDir);
+  assert.strictEqual(first.sha256, second.sha256);
+  assert.strictEqual(first.entryCount, BOOK.length);
+  assert.strictEqual(first.size, BOOK.reduce((sum, [, data]) => sum + data.length, 0));
+  assert.match(first.sha256, /^[0-9a-f]{64}$/);
+});
+
+test('the tree hash MOVES when one entry\'s bytes move — by one byte', async () => {
+  const treeDir = writeFixtureTree(tmp('one-byte'));
+  const before = await epubTreeSha256(treeDir);
+  const abs = path.join(treeDir, 'EPUB', 'text', 'c0002.xhtml');
+  fs.writeFileSync(abs, '<html><body><p>Chapter twe.</p></body></html>');
+  const after = await epubTreeSha256(treeDir);
+  assert.notStrictEqual(after.sha256, before.sha256, 'an edited chapter did not move the identity');
+  assert.strictEqual(after.entryCount, before.entryCount);
+});
+
+test('the tree hash moves when an entry is added or dropped', async () => {
+  const treeDir = writeFixtureTree(tmp('membership'));
+  const before = await epubTreeSha256(treeDir);
+  fs.writeFileSync(path.join(treeDir, 'EPUB', 'text', 'c0003.xhtml'), '<html/>');
+  const added = await epubTreeSha256(treeDir);
+  assert.notStrictEqual(added.sha256, before.sha256);
+  fs.rmSync(path.join(treeDir, 'EPUB', 'text', 'c0003.xhtml'));
+  assert.strictEqual((await epubTreeSha256(treeDir)).sha256, before.sha256,
+    'putting the tree back did not put the identity back');
+});
+
+test('the tree hash does not depend on the order the filesystem hands entries over', async () => {
+  // Two trees, the same book, written in opposite orders.
+  const forwards = writeFixtureTree(tmp('order-a'), BOOK);
+  const backwards = writeFixtureTree(tmp('order-b'), [...BOOK].reverse());
+  assert.strictEqual(
+    (await epubTreeSha256(forwards)).sha256,
+    (await epubTreeSha256(backwards)).sha256,
+    'creation order changed the identity'
+  );
+
+  // And, independently of what readdir happens to do on this machine: the digest
+  // is recomputed here from a SHUFFLED entry list. If the listing inside were not
+  // sorted, this could not match.
+  const shuffled = [...BOOK];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = (i * 7 + 3) % (i + 1);
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  const canonical = [...shuffled]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([name, data]) => `${name}\0${crypto.createHash('sha256').update(data).digest('hex')}\n`)
+    .join('');
+  const expected = crypto.createHash('sha256').update(canonical, 'utf8').digest('hex');
+  assert.strictEqual((await epubTreeSha256(forwards)).sha256, expected,
+    'the digest is not sha256 over the canonical sorted `<name>\\0<sha256>\\n` listing');
+});
+
+test('a tree hash of something that is not a directory is a refusal', async () => {
+  const zipPath = await writeFixtureZip(path.join(tmp('not-a-tree'), 'book.epub'));
+  await assert.rejects(() => epubTreeSha256(zipPath), /Not a directory/);
+});
+
+test('listEpubTreeEntries and orderEpubEntryNames are the one listing', async () => {
+  const treeDir = writeFixtureTree(tmp('listing'));
+  const names = await listEpubTreeEntries(treeDir);
+  assert.deepStrictEqual(names, orderEpubEntryNames(BOOK.map(([n]) => n)));
+  assert.deepStrictEqual(orderEpubEntryNames(['b', 'mimetype', 'a']), ['mimetype', 'a', 'b']);
+  assert.deepStrictEqual(orderEpubEntryNames(['b', 'a']), ['a', 'b']);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+(async () => {
+  scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'bookforge-epub-container-'));
+  try {
+    for (const { name, fn } of tests) {
+      try {
+        await fn();
+        passed++;
+        console.log(`  ok  ${name}`);
+      } catch (err) {
+        failures.push({ name, err });
+        console.log(`FAIL  ${name}`);
+        console.log(`      ${err.message}`);
+      }
+    }
+  } finally {
+    // A leaked descriptor would make this fail on Windows — and did, once, which
+    // is how the factory's missing `close()` on a failed open was found.
+    fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+  console.log(`\nepub-container: ${passed}/${tests.length} passed`);
+  process.exit(failures.length === 0 ? 0 : 1);
+})();

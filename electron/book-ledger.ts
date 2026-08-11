@@ -42,6 +42,7 @@ import * as path from 'path';
 
 import * as manifestService from './manifest-service';
 import { enumerateNarrationElements } from './quire-stamp';
+import { epubTreeSha256 } from './sidecar-binding';
 import { ledgerEntryRelDir } from '../shared/document/book-ledger';
 import type { AppliedPass, AppliedPassKind, LedgerEntry } from './manifest-types';
 
@@ -180,12 +181,35 @@ export async function registerLedgerPass(
   const absDir = manifestService.ledgerEntryDir(projectDir, id);
   await fs.promises.mkdir(absDir, { recursive: true });
 
-  const snapshotRel = `${relDir}/snapshot.epub`;
-  const snapshotAbs = path.join(absDir, 'snapshot.epub');
-  await fs.promises.copyFile(book.absPath, snapshotAbs);
+  // ── The snapshot, of whichever container this book is in ──────────────────
+  //
+  // A book is a ZIP today and the working copy becomes an exploded DIRECTORY
+  // (source/<base>.working/) so that editing one chapter writes one entry. The
+  // snapshot is the same snapshot either way — a copy, proved to be the book it
+  // was copied from — but a directory needs a recursive copy and a TREE digest
+  // (`epubTreeSha256`: sha256 over `<name>\0<sha256 of its bytes>` for every
+  // entry, sorted), because a directory has no bytes of its own to stream.
+  //
+  // The two digests are never compared to each other, only to another digest of
+  // the SAME kind: a snapshot is proved against the book it was copied from, and
+  // the two are always the same container. A tree snapshot is not named
+  // `snapshot.epub` — a directory wearing a file's extension is the masquerade
+  // this whole change is getting rid of.
+  const bookIsTree = (await fs.promises.stat(book.absPath)).isDirectory();
+  const snapshotName = bookIsTree ? 'snapshot' : 'snapshot.epub';
+  const snapshotRel = `${relDir}/${snapshotName}`;
+  const snapshotAbs = path.join(absDir, snapshotName);
+  const digestOf = (target: string): Promise<string> => bookIsTree
+    ? epubTreeSha256(target).then((identity) => identity.sha256)
+    : manifestService.sha256OfFile(target);
+  if (bookIsTree) {
+    await fs.promises.cp(book.absPath, snapshotAbs, { recursive: true });
+  } else {
+    await fs.promises.copyFile(book.absPath, snapshotAbs);
+  }
   const [bookDigest, snapshotDigest] = await Promise.all([
-    manifestService.sha256OfFile(book.absPath),
-    manifestService.sha256OfFile(snapshotAbs),
+    digestOf(book.absPath),
+    digestOf(snapshotAbs),
   ]);
   if (bookDigest !== snapshotDigest) {
     await fs.promises.rm(absDir, { recursive: true, force: true });

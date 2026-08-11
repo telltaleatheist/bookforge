@@ -109,21 +109,95 @@ async function replaceBookEpub(projectDir: string, producedAbsPath: string): Pro
  */
 export async function moveIntoPlace(fromAbsPath: string, toAbsPath: string): Promise<void> {
   await fs.promises.mkdir(path.dirname(toAbsPath), { recursive: true });
+
+  // A book is about to stop always being a FILE: the working copy becomes an
+  // exploded directory so that editing one chapter writes one entry. The move is
+  // the same move either way — copy beside the destination, land it with one
+  // rename — but the two steps that assumed a file (`copyFile`, `unlink`) have to
+  // know which they are looking at, and a directory cannot be renamed ONTO a
+  // directory that already exists. For a FILE nothing below changes: the fast
+  // path is the same single rename it has always been, and every failure is the
+  // same failure.
+  const source = await statOrNull(fromAbsPath);
+  const destination = await statOrNull(toAbsPath);
+  const treeOntoTree = source?.isDirectory() === true && destination?.isDirectory() === true;
+
+  if (!treeOntoTree) {
+    try {
+      await renameOntoDestination(fromAbsPath, toAbsPath);
+      return;
+    } catch {
+      // fall through to the copy-beside-the-destination path
+    }
+  }
+
+  const sibling = `${toAbsPath}.bookforge-tmp`;
+  await copyArtifact(fromAbsPath, sibling);
+  try {
+    await landOnDestination(sibling, toAbsPath);
+  } catch (err) {
+    // The book was not replaced, so nothing beside it may claim it was
+    // half-way: a stranded sibling would be adopted by nothing and synced by
+    // everything.
+    await fs.promises.rm(sibling, { recursive: true, force: true });
+    throw err;
+  }
+  if (source?.isDirectory() === true) {
+    await fs.promises.rm(fromAbsPath, { recursive: true });
+  } else {
+    await fs.promises.unlink(fromAbsPath);
+  }
+}
+
+/** Copy a book to `toAbsPath`, whether it is one file or a tree of them. */
+async function copyArtifact(fromAbsPath: string, toAbsPath: string): Promise<void> {
+  const source = await fs.promises.stat(fromAbsPath);
+  if (!source.isDirectory()) {
+    await fs.promises.copyFile(fromAbsPath, toAbsPath);
+    return;
+  }
+  // A stale sibling from a previous crashed move would otherwise merge with the
+  // new one, producing a "copy" holding entries of two different books.
+  await fs.promises.rm(toAbsPath, { recursive: true, force: true });
+  await fs.promises.cp(fromAbsPath, toAbsPath, { recursive: true });
+}
+
+/**
+ * The last step: the staged copy becomes the destination.
+ *
+ * For a file — every case that exists today — this is the one rename it always
+ * was. A DIRECTORY cannot be renamed onto a directory that is already there, so
+ * the old one is stepped aside first and put back if the landing fails; the
+ * moment that matters is still a single rename, and there is never a window in
+ * which the destination holds half of each book.
+ */
+async function landOnDestination(fromAbsPath: string, toAbsPath: string): Promise<void> {
+  const destination = await statOrNull(toAbsPath);
+  if (destination === null || !destination.isDirectory()) {
+    await renameOntoDestination(fromAbsPath, toAbsPath);
+    return;
+  }
+  const displaced = `${toAbsPath}.bookforge-old`;
+  await fs.promises.rm(displaced, { recursive: true, force: true });
+  await renameOntoDestination(toAbsPath, displaced);
   try {
     await renameOntoDestination(fromAbsPath, toAbsPath);
-  } catch {
-    const sibling = `${toAbsPath}.bookforge-tmp`;
-    await fs.promises.copyFile(fromAbsPath, sibling);
-    try {
-      await renameOntoDestination(sibling, toAbsPath);
-    } catch (err) {
-      // The book was not replaced, so nothing beside it may claim it was
-      // half-way: a stranded sibling would be adopted by nothing and synced by
-      // everything.
-      await fs.promises.rm(sibling, { force: true });
-      throw err;
-    }
-    await fs.promises.unlink(fromAbsPath);
+  } catch (err) {
+    // Nothing is at the destination and the caller is about to be told the move
+    // failed, so the book that WAS there goes back before that sentence is true.
+    await renameOntoDestination(displaced, toAbsPath);
+    throw err;
+  }
+  await fs.promises.rm(displaced, { recursive: true, force: true });
+}
+
+/** `stat`, with "nothing is there" as an answer rather than an exception. */
+async function statOrNull(absPath: string): Promise<fs.Stats | null> {
+  try {
+    return await fs.promises.stat(absPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
   }
 }
 

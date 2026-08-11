@@ -74,6 +74,8 @@
     "test:rail-tasks": "npx tsc -p tsconfig.electron.json && node tools/test-rail-tasks.js",
     "test:family-lifecycle": "npx tsc -p tsconfig.electron.json && node tools/test-family-lifecycle.js",
     "test:component-upgrades": "npx tsc -p tsconfig.electron.json && node tools/test-component-upgrades.js",
+    "test:epub-container": "npx tsc -p tsconfig.electron.json && node tools/test-epub-container.js",
+    "test:artifact-movement": "npx tsc -p tsconfig.electron.json && node tools/test-artifact-movement.js",
     "test:quire": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/test-quire.js",
     "quire:paginate": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/quire-paginate.js",
     "quire:probe-host": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/probe-quire-host.js",
