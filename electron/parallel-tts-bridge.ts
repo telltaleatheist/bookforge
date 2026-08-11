@@ -67,6 +67,18 @@ function writeWorkerLog(line: string): void {
     workerLogStream.write(`${new Date().toISOString()} ${line}\n`);
   }
 }
+
+/**
+ * vLLM's per-preemption scheduler warning ("Sequence group N is preempted by
+ * PreemptionMode.RECOMPUTE … not enough KV cache space"). Recompute-mode
+ * preemption is lossless — the output is bit-identical, only wall-clock is
+ * spent — so the line is kept out of the console (which is read live for
+ * runaways and truncations) and kept IN the worker log file, where the
+ * cumulative count is the evidence of KV pressure.
+ */
+function isKvPreemptionNote(line: string): boolean {
+  return /is preempted by PreemptionMode|not enough KV cache space/.test(line);
+}
 import { getMetadataToolPath, applyMetadata, AudiobookMetadata, embedAndVerifyVtt, deleteSidecarsForM4b } from './metadata-tools';
 import * as manifestService from './manifest-service';
 import { isCudaTtsInstalled } from './components/cuda-tts';
@@ -3671,7 +3683,12 @@ function startWorker(
     for (const line of lines) {
       if (!line.trim()) continue;
       const logLine = `[WORKER ${workerId}] ${line.trim()}`;
-      console.log(logLine);
+      // vLLM warns on every KV-cache preemption. That is a performance note about
+      // scheduling, not a defect in any sentence — the console is watched for
+      // runaways and truncations, and this line lands between them looking like
+      // one. It still goes to the worker log file, where the preemption count is
+      // real diagnostic data; it just doesn't interrupt a person reading along.
+      if (!isKvPreemptionNote(line)) console.log(logLine);
       writeWorkerLog(logLine);
 
       // Parse progress - support both output formats:
@@ -3775,7 +3792,9 @@ function startWorker(
     for (const line of lines) {
       if (!line.trim()) continue;
       const logLine = `[WORKER ${workerId} STDERR] ${line.trim()}`;
-      console.log(logLine);
+      // Same KV-preemption note as on stdout — vLLM's logger can land on either
+      // stream depending on how the env wires it up.
+      if (!isKvPreemptionNote(line)) console.log(logLine);
       writeWorkerLog(logLine);
 
       // Parse progress from stderr too (both formats)
