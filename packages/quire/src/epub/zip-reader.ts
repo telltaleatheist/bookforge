@@ -12,6 +12,7 @@ import * as fsSync from 'fs';
 import * as zlib from 'zlib';
 import { promisify } from 'util';
 import { quireFail } from '../errors';
+import type { QuireEntrySource, QuireEntrySourceKind } from './entry-source';
 
 const inflateRaw = promisify(zlib.inflateRaw);
 
@@ -23,14 +24,20 @@ interface ZipEntry {
   localHeaderOffset: number;
 }
 
-export class QuireZipReader {
+export class QuireZipReader implements QuireEntrySource {
+  readonly kind: QuireEntrySourceKind = 'zip';
+
   private fd: number | null = null;
   private entries = new Map<string, ZipEntry>();
 
-  constructor(private readonly filePath: string) {}
+  constructor(readonly sourcePath: string) {}
+
+  describe(): string {
+    return `the EPUB archive ${this.sourcePath}`;
+  }
 
   open(): void {
-    this.fd = fsSync.openSync(this.filePath, 'r');
+    this.fd = fsSync.openSync(this.sourcePath, 'r');
     try {
       this.readCentralDirectory();
     } catch (err) {
@@ -57,10 +64,10 @@ export class QuireZipReader {
   async readEntry(name: string): Promise<Buffer> {
     const entry = this.entries.get(name);
     if (!entry) {
-      quireFail('ZIP_ENTRY_MISSING', `the archive ${this.filePath} has no entry "${name}"`);
+      quireFail('ZIP_ENTRY_MISSING', `the archive ${this.sourcePath} has no entry "${name}"`);
     }
     if (this.fd === null) {
-      quireFail('ZIP_CLOSED', `the archive ${this.filePath} is closed`);
+      quireFail('ZIP_CLOSED', `the archive ${this.sourcePath} is closed`);
     }
 
     const localHeader = Buffer.alloc(30);
@@ -88,7 +95,7 @@ export class QuireZipReader {
   }
 
   private readCentralDirectory(): void {
-    if (this.fd === null) quireFail('ZIP_CLOSED', `the archive ${this.filePath} is closed`);
+    if (this.fd === null) quireFail('ZIP_CLOSED', `the archive ${this.sourcePath} is closed`);
     const size = fsSync.fstatSync(this.fd).size;
 
     const searchSize = Math.min(65557, size);
@@ -100,7 +107,7 @@ export class QuireZipReader {
       if (search.readUInt32LE(i) === 0x06054b50) { eocd = size - searchSize + i; break; }
     }
     if (eocd === -1) {
-      quireFail('ZIP_NO_EOCD', `${this.filePath} has no end-of-central-directory record — it is not a ZIP archive`);
+      quireFail('ZIP_NO_EOCD', `${this.sourcePath} has no end-of-central-directory record — it is not a ZIP archive`);
     }
 
     const rec = Buffer.alloc(22);
@@ -115,7 +122,7 @@ export class QuireZipReader {
     let off = 0;
     for (let i = 0; i < count; i++) {
       if (dir.readUInt32LE(off) !== 0x02014b50) {
-        quireFail('ZIP_BAD_DIRECTORY', `${this.filePath} has an invalid central directory entry at index ${i}`);
+        quireFail('ZIP_BAD_DIRECTORY', `${this.sourcePath} has an invalid central directory entry at index ${i}`);
       }
       const compressionMethod = dir.readUInt16LE(off + 10);
       const compressedSize = dir.readUInt32LE(off + 20);

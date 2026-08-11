@@ -9,9 +9,17 @@
  * hide: quire would find stamps in documents it never walked (or walk documents
  * with no stamps), and every stamp it never saw is reported as unplaced. That is
  * the guarantee — a silent disagreement is impossible.
+ *
+ * The walk reads the book through a {@link QuireEntrySource}, so it is the same
+ * walk whether the book is a zipped `.epub` or an exploded working directory.
+ * Which container a book came out of is a fact about the container and never a
+ * fact about the book.
  */
+import * as fsSync from 'fs';
 import { quireFail } from '../errors';
 import { QuireZipReader } from './zip-reader';
+import { QuireDirectoryReader } from './directory-reader';
+import type { QuireEntrySource, QuireEntrySourceKind } from './entry-source';
 import type { QuireSpineWarning } from '../types';
 
 /** Content types EpubProcessor accepts as spine documents. Kept identical on purpose. */
@@ -62,7 +70,7 @@ export interface SpineDocument {
 }
 
 export class QuireArchive {
-  private readonly zip: QuireZipReader;
+  private readonly source: QuireEntrySource;
   private opened = false;
 
   /** Spine documents in spine order, deduplicated the way EpubProcessor dedupes them. */
@@ -71,23 +79,70 @@ export class QuireArchive {
   opfEntry = '';
   rootPath = '';
 
-  constructor(readonly epubPath: string) {
-    this.zip = new QuireZipReader(epubPath);
+  /**
+   * The one-argument form is the ZIPPED form, and always has been: a caller who
+   * writes `new QuireArchive(p)` gets a `.epub` file read as a ZIP, whatever `p`
+   * happens to be on disk. A book that is an exploded directory is only ever
+   * reached by asking for one — {@link QuireArchive.fromDirectory} — or by
+   * handing this constructor the source outright. Nothing here sniffs the path.
+   */
+  constructor(readonly epubPath: string, source?: QuireEntrySource) {
+    this.source = source === undefined ? new QuireZipReader(epubPath) : source;
+  }
+
+  /** A zipped `.epub`. The same thing `new QuireArchive(p)` builds, said out loud. */
+  static fromZip(epubPath: string): QuireArchive {
+    return new QuireArchive(epubPath, new QuireZipReader(epubPath));
+  }
+
+  /** A book exploded into a directory, its files at their archive-relative paths. */
+  static fromDirectory(directoryPath: string): QuireArchive {
+    return new QuireArchive(directoryPath, new QuireDirectoryReader(directoryPath));
+  }
+
+  /**
+   * A book at a path the caller has already decided is a book, opened as
+   * whichever container is actually there.
+   *
+   * This is the ONE place quire looks at the filesystem to choose, and it looks
+   * at exactly one thing — is it a directory — on a path it was handed as a book
+   * location. It does not guess from an extension, and it does not look around
+   * for a book near the path it was given: a path that cannot be examined is a
+   * refusal naming the path, not a search.
+   */
+  static fromBookPath(bookPath: string): QuireArchive {
+    let stat: fsSync.Stats;
+    try {
+      stat = fsSync.statSync(bookPath);
+    } catch (err) {
+      quireFail(
+        'BOOK_PATH_UNREADABLE',
+        `${bookPath} cannot be examined, so quire cannot tell whether the book is a zipped EPUB `
+        + `or an exploded directory: ${(err as Error).message}`,
+      );
+    }
+    return stat.isDirectory() ? QuireArchive.fromDirectory(bookPath) : QuireArchive.fromZip(bookPath);
+  }
+
+  /** Which container this book was opened from. Worth reporting beside any refusal. */
+  get sourceKind(): QuireEntrySourceKind {
+    return this.source.kind;
   }
 
   async open(): Promise<void> {
-    this.zip.open();
+    this.source.open();
     this.opened = true;
 
-    const containerXml = await this.zip.readText('META-INF/container.xml');
+    const containerXml = await this.source.readText('META-INF/container.xml');
     const rootfile = getAllTags(containerXml, 'rootfile')[0];
     const fullPath = rootfile?.attributes['full-path'];
     if (!fullPath) {
-      quireFail('EPUB_NO_ROOTFILE', `${this.epubPath}: META-INF/container.xml names no rootfile`);
+      quireFail('EPUB_NO_ROOTFILE',
+        `${this.source.describe()}: META-INF/container.xml names no rootfile`);
     }
     this.opfEntry = normalizeEntryName(fullPath);
 
-    const opfXml = await this.zip.readText(this.opfEntry);
+    const opfXml = await this.source.readText(this.opfEntry);
     const slash = this.opfEntry.lastIndexOf('/');
     this.rootPath = slash === -1 ? '' : this.opfEntry.slice(0, slash);
 
@@ -130,7 +185,8 @@ export class QuireArchive {
     }
 
     if (this.spine.length === 0) {
-      quireFail('EPUB_EMPTY_SPINE', `${this.epubPath}: the OPF spine yielded no readable documents`);
+      quireFail('EPUB_EMPTY_SPINE',
+        `${this.source.describe()}: the OPF spine yielded no readable documents`);
     }
   }
 
@@ -145,21 +201,26 @@ export class QuireArchive {
       } catch { /* malformed percent-escape — not a URL-encoded href */ }
     }
     for (const c of candidates) {
-      if (c && this.zip.hasEntry(join(c))) return join(c);
+      if (c && this.source.hasEntry(join(c))) return join(c);
     }
     quireFail(
       'EPUB_HREF_UNRESOLVED',
-      `${this.epubPath}: manifest href "${href}" matches no entry in the archive`,
+      `manifest href "${href}" matches no entry in ${this.source.describe()}`,
     );
   }
 
   hasEntry(name: string): boolean {
-    return this.zip.hasEntry(name);
+    return this.source.hasEntry(name);
+  }
+
+  /** Every entry of the book, by name. The same strings whichever container it is. */
+  entryNames(): string[] {
+    return this.source.entryNames();
   }
 
   async readEntry(name: string): Promise<Buffer> {
-    if (!this.opened) quireFail('ARCHIVE_CLOSED', `${this.epubPath} is not open`);
-    return this.zip.readEntry(name);
+    if (!this.opened) quireFail('ARCHIVE_CLOSED', `${this.source.describe()} is not open`);
+    return this.source.readEntry(name);
   }
 
   async readText(name: string): Promise<string> {
@@ -168,7 +229,7 @@ export class QuireArchive {
 
   close(): void {
     if (this.opened) {
-      this.zip.close();
+      this.source.close();
       this.opened = false;
     }
   }

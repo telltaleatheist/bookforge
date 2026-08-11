@@ -33,6 +33,11 @@
  *     seconds rather than in minutes — the last one because Paged.js's work
  *     queue ticks on requestAnimationFrame, and a throttled host turns that into
  *     a 60x slowdown that nothing else in this file would notice.
+ *  7. CONTAINER INDEPENDENCE — the same book read from an exploded DIRECTORY and
+ *     from its zip names the same entries, holds the same bytes, parses the same
+ *     spine and paginates into the same pages. The working copy is becoming a
+ *     tree so that an edit writes one file instead of re-deflating the book, and
+ *     this is what says the book did not change identity on the way.
  */
 'use strict';
 
@@ -54,7 +59,7 @@ const { app } = require('electron');
 const DIST = path.join(__dirname, '..', 'dist');
 const {
   Quire, resolveQuireRequest, MultiColumnStrategy, PagedStrategy, PAGEDJS_VERSION, QuireError,
-  MONOLITHIC_OVERFLOW_RULE,
+  MONOLITHIC_OVERFLOW_RULE, QuireArchive, QuireZipReader, QuireDirectoryReader,
 } = require(path.join(DIST, 'packages/quire/src/index.js'));
 const { stampEpubForQuire } = require(path.join(DIST, 'electron/quire-stamp.js'));
 const {
@@ -1337,6 +1342,254 @@ async function testRelayoutOfAnUnknownEntryIsRefused() {
   }
 }
 
+// ── 7. A book that was never zipped ───────────────────────────────────────
+/**
+ * The working copy is an exploded DIRECTORY — the book's entries as real files
+ * at their archive-relative paths — so that editing one chapter writes that
+ * chapter instead of re-deflating 25 MB. Which container a book came out of has
+ * to be a fact about the container and never a fact about the book, and these
+ * three tests are what makes that a claim rather than a hope.
+ *
+ * The fixture is built by EXPLODING a book that already exists in this file, at
+ * test time, so the two sides are provably the same bytes rather than two
+ * hand-written trees that drifted. It is written with the platform's own
+ * separator, the way a real exploder writes it, which is the point on Windows:
+ * the files genuinely sit behind backslashes and the reader has to hand back
+ * `OEBPS/text/a.xhtml` regardless.
+ */
+async function explodeEpub(epubPath, destDir) {
+  const reader = new QuireZipReader(epubPath);
+  reader.open();
+  try {
+    for (const name of reader.entryNames()) {
+      const full = path.join(destDir, ...name.split('/'));
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, await reader.readEntry(name));
+    }
+  } finally {
+    reader.close();
+  }
+  return destDir;
+}
+
+/** Killing America, exploded once and reused. Cleaned up with the scratch dir. */
+let explodedKaDir = null;
+async function explodedKa() {
+  if (!explodedKaDir) explodedKaDir = await explodeEpub(KA, path.join(scratch, 'ka-exploded'));
+  return explodedKaDir;
+}
+
+/**
+ * The same real book, read both ways, agreeing about everything quire asks a
+ * container for: which entries exist, what is in them, and what the spine is.
+ *
+ * Entry names are the load-bearing part. BookForge's element keys are built on
+ * them and a cached page map is keyed by them, so a book that becomes a tree and
+ * a book that stays a zip have to name their parts identically or every id in
+ * the system quietly moves.
+ */
+async function testDirectoryAndZipAreTheSameBook() {
+  const exploded = await explodedKa();
+
+  const fromZip = QuireArchive.fromZip(KA);
+  const fromDir = QuireArchive.fromDirectory(exploded);
+  try {
+    await fromZip.open();
+    await fromDir.open();
+
+    assertEqual(fromZip.sourceKind, 'zip', 'the zipped book must report the container it came from');
+    assertEqual(fromDir.sourceKind, 'directory',
+      'the exploded book must report the container it came from');
+
+    const zipNames = fromZip.entryNames();
+    const dirNames = fromDir.entryNames();
+    const inZip = new Set(zipNames);
+    const inDir = new Set(dirNames);
+    const missing = zipNames.filter((n) => !inDir.has(n));
+    const extra = dirNames.filter((n) => !inZip.has(n));
+    assert(missing.length === 0 && extra.length === 0,
+      `the two containers do not name the same entries — the directory is missing `
+      + `[${missing.slice(0, 5).join(', ')}] and has [${extra.slice(0, 5).join(', ')}] the zip does not`);
+    assertEqual(dirNames.length, zipNames.length,
+      'the two containers report a different number of entries');
+    assertEqual(zipNames.length, 40, 'Killing America has 40 entries');
+
+    // The normalization, named. A directory walk on Windows produces backslashes
+    // unless something stops it, and one of those in an entry name would be a
+    // key nothing else in BookForge can match.
+    const backslashed = dirNames.filter((n) => n.includes('\\'));
+    assert(backslashed.length === 0,
+      `${backslashed.length} entry name(s) carry a Windows separator, e.g. ${backslashed[0]}`);
+    assert(dirNames.some((n) => n.includes('/')),
+      'the fixture was meant to have entries in subdirectories, so the separator is under test');
+    assert(!dirNames.some((n) => n.endsWith('/')),
+      'a directory is not an entry, and the directory reader must not list one');
+
+    // The spine — the answer everything above the container is built on.
+    assertEqual(fromDir.opfEntry, fromZip.opfEntry, 'the two containers found different OPFs');
+    assertEqual(fromDir.rootPath, fromZip.rootPath, 'the two containers found different OPF roots');
+    assertEqual(JSON.stringify(fromDir.spine), JSON.stringify(fromZip.spine),
+      'the two containers parsed different spines out of the same book');
+    assertEqual(JSON.stringify(fromDir.spineWarnings), JSON.stringify(fromZip.spineWarnings),
+      'the two containers disagree about what the spine could not resolve');
+    assertEqual(fromZip.spine.length, 24, 'Killing America has 24 spine documents');
+
+    // And the bytes behind every one of those names, not merely the names.
+    for (const name of zipNames) {
+      const a = await fromZip.readEntry(name);
+      const b = await fromDir.readEntry(name);
+      assert(a.equals(b),
+        `${name} is ${a.length} bytes in the zip and ${b.length} in the directory`);
+    }
+  } finally {
+    fromZip.close();
+    fromDir.close();
+  }
+}
+
+/**
+ * All the way through: a stamped book exploded to a tree, opened with
+ * `Quire.openDocument`, paginated, and indistinguishable from the same book
+ * opened as a zip — page for page, block for block, split for split.
+ *
+ * The fixture nests its documents one level deeper than the rest of this file
+ * (`OEBPS/text/a.xhtml`) because two levels is where a naive join stops being
+ * enough, and because that is the shape a converted book actually has.
+ */
+async function testAnExplodedBookPaginatesIdentically() {
+  const epub = path.join(scratch, 'exploded.epub');
+  const paras = [];
+  for (let i = 0; i < 60; i++) {
+    paras.push(`<p>Paragraph ${i} of a book that was never zipped, with enough words in it to `
+      + 'set a line or two and give the fragmenter somewhere to break.</p>');
+  }
+  await buildEpub(epub, [
+    { name: 'text/a.xhtml', xhtml: page(`<h1>One</h1>${paras.join('')}`, 'One') },
+    { name: 'text/b.xhtml', xhtml: page(`<h1>Two</h1>${paras.slice(0, 20).join('')}`, 'Two') },
+  ]);
+  const stamped = path.join(scratch, 'exploded.stamped.epub');
+  await stampEpubForQuire(epub, stamped, 'exploded');
+  const tree = await explodeEpub(stamped, path.join(scratch, 'exploded-tree'));
+
+  // The tree really is nested, or the test below proves less than it looks.
+  assert(fs.existsSync(path.join(tree, 'OEBPS', 'text', 'a.xhtml')),
+    'the exploded fixture does not have its documents two directories deep');
+
+  const layoutOf = async (bookPath) => {
+    const doc = await Quire.openDocument(bookPath, { strategy: new PagedStrategy() });
+    try {
+      await doc.layout({ width: 600, height: 900, fontSize: 18 });
+      assert(doc.countPages() > 2, 'the fixture was meant to run to several pages');
+      return { snapshot: relayoutSnapshot(doc), spine: doc.spine.slice() };
+    } finally {
+      await doc.close();
+    }
+  };
+
+  const zipped = await layoutOf(stamped);
+  const directory = await layoutOf(tree);
+
+  assertEqual(directory.spine.join(','), zipped.spine.join(','),
+    'the exploded book and the zipped book have different spines');
+  assertEqual(directory.spine.join(','), 'OEBPS/text/a.xhtml,OEBPS/text/b.xhtml',
+    'the spine entry names must be archive-relative and forward-slashed whichever container '
+    + 'the book came out of');
+  assertSameSnapshot(directory.snapshot, zipped.snapshot,
+    'a book read from a directory against the same book read from its zip');
+}
+
+/**
+ * What the directory reader refuses, and that it refuses the SAME WAY.
+ *
+ * A missing entry raises `ZIP_ENTRY_MISSING` — the code the zip reader raises —
+ * because a caller handling a missing entry must not have to know which
+ * container it came out of. Everything that reaches outside the book is a
+ * refusal of its own, named separately, because an escape and an absence are
+ * different faults. And nothing here looks for a book anywhere but where it was
+ * told: a directory that is not an EPUB tree fails saying so, rather than
+ * quietly finding the `.epub` sitting next to it.
+ */
+async function testDirectoryReaderRefusals() {
+  const exploded = await explodedKa();
+  const refuses = async (fn, code, what) => {
+    let threw = null;
+    try {
+      await fn();
+    } catch (err) {
+      threw = err;
+    }
+    assert(threw !== null, `the directory reader accepted ${what}`);
+    assert(threw instanceof QuireError,
+      `expected a QuireError for ${what}, got ${threw && threw.name}: ${threw && threw.message}`);
+    assert(new RegExp(code).test(threw.message),
+      `the refusal for ${what} should be ${code}; it said: ${threw.message}`);
+  };
+
+  const reader = new QuireDirectoryReader(exploded);
+  reader.open();
+  try {
+    // The absence, with the zip reader's own code.
+    await refuses(() => reader.readEntry('OEBPS/never-existed.xhtml'), 'ZIP_ENTRY_MISSING',
+      'an entry the book does not have');
+    const zip = new QuireZipReader(KA);
+    zip.open();
+    try {
+      await refuses(() => zip.readEntry('OEBPS/never-existed.xhtml'), 'ZIP_ENTRY_MISSING',
+        'an entry the zipped book does not have — the code the directory must match');
+    } finally {
+      zip.close();
+    }
+
+    // The escapes. `path.resolve` collapses these, so each is checked on what it
+    // RESOLVES to rather than on how it was spelled.
+    for (const bad of [
+      '../secret',
+      '../../Windows/win.ini',
+      'OEBPS/../../secret.png',
+      path.resolve(scratch, 'outside-the-book.txt'),
+    ]) {
+      await refuses(() => reader.readEntry(bad), 'DIR_ENTRY_ESCAPE', `the traversal "${bad}"`);
+    }
+
+    // A traversal that lands back INSIDE the book is still not that entry's
+    // name. It must be refused as missing, never silently normalized into a
+    // read — the same rule the protocol handler holds for `a/../b`.
+    await refuses(() => reader.readEntry('OEBPS/../mimetype'), 'ZIP_ENTRY_MISSING',
+      'a traversal that normalizes back onto a real entry');
+
+    // hasEntry is a question, not an operation: a hostile name is `false`.
+    for (const bad of ['../secret', 'OEBPS/../mimetype', 'OEBPS/never-existed.xhtml']) {
+      assertEqual(reader.hasEntry(bad), false, `hasEntry("${bad}") must be false`);
+    }
+    assertEqual(reader.hasEntry('mimetype'), true, 'hasEntry must find a real entry');
+  } finally {
+    reader.close();
+  }
+
+  // Closed is closed.
+  await refuses(() => reader.readEntry('mimetype'), 'DIR_CLOSED', 'a read after close');
+
+  // A file is not a tree, and quire does not go looking for the tree it wanted.
+  await refuses(async () => new QuireDirectoryReader(KA).open(), 'DIR_NOT_A_DIRECTORY',
+    'a zipped .epub opened as a directory');
+  await refuses(async () => new QuireDirectoryReader(path.join(scratch, 'no-such-tree')).open(),
+    'DIR_UNREADABLE', 'a directory that is not there');
+  const notABook = path.join(scratch, 'not-a-book');
+  fs.mkdirSync(notABook, { recursive: true });
+  await refuses(async () => new QuireDirectoryReader(notABook).open(), 'DIR_EMPTY',
+    'an empty directory');
+  // The one that matters most: a directory beside a perfectly good .epub of the
+  // same book still fails on its own terms rather than reading the neighbour.
+  const decoy = path.join(scratch, 'decoy');
+  fs.mkdirSync(path.join(decoy, 'book.working'), { recursive: true });
+  fs.copyFileSync(KA, path.join(decoy, 'book.working.epub'));
+  fs.writeFileSync(path.join(decoy, 'book.working', 'mimetype'), 'application/epub+zip');
+  await refuses(async () => {
+    const a = QuireArchive.fromDirectory(path.join(decoy, 'book.working'));
+    await a.open();
+  }, 'ZIP_ENTRY_MISSING', 'a tree with no container.xml sitting beside a complete .epub');
+}
+
 // ── run ───────────────────────────────────────────────────────────────────
 async function main() {
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'quire-test-'));
@@ -1379,6 +1632,13 @@ async function main() {
     testRelayoutRefusalLeavesTheBookAsItWas);
   await check('a relayout of a document the spine does not have is refused',
     testRelayoutOfAnUnknownEntryIsRefused);
+  console.log('exploded directory');
+  await check('a book read from a directory names the same entries as its zip',
+    testDirectoryAndZipAreTheSameBook);
+  await check('an exploded book paginates into exactly the same pages as its zip',
+    testAnExplodedBookPaginatesIdentically);
+  await check('the directory reader refuses absences and escapes, each by name',
+    testDirectoryReaderRefusals);
 
   console.log('');
   console.log(`${passed} passed, ${failures.length} failed`);

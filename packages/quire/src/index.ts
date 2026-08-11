@@ -33,7 +33,11 @@ export const Quire = {
    */
   registerScheme: registerQuireScheme,
 
-  /** Open a stamped EPUB. Call `await doc.layout(...)` before asking about pages. */
+  /**
+   * Open a stamped EPUB — either a zipped `.epub` or a working copy exploded
+   * into a directory, whichever is at the path. Call `await doc.layout(...)`
+   * before asking about pages.
+   */
   openDocument(epubPath: string, options: QuireOpenOptions = {}): Promise<QuireDocument> {
     return QuireDocument.open(epubPath, options);
   },
@@ -45,6 +49,8 @@ export { QuireError } from './errors';
 export { QuireArchive, normalizeEntryName } from './epub/archive';
 export { buildPaginationShell } from './epub/shell';
 export { QuireZipReader } from './epub/zip-reader';
+export { QuireDirectoryReader } from './epub/directory-reader';
+export type { QuireEntrySource, QuireEntrySourceKind } from './epub/entry-source';
 export {
   QUIRE_SCHEME, quireCsp, quireCspMeta, registerQuireScheme, resolveQuireRequest, contentTypeFor,
 } from './host/protocol';

@@ -200,7 +200,11 @@ export class QuireDocument {
 
   private constructor(readonly epubPath: string, options: QuireOpenOptions) {
     this.strategy = options.strategy ?? new PagedStrategy();
-    this.archive = new QuireArchive(epubPath);
+    // `epubPath` is a path the caller has already decided is a book, so the book
+    // is read out of whichever container is at it — a zipped `.epub` or an
+    // exploded working directory. That is one `stat`, not a search: a path that
+    // is not there is refused by name rather than looked for nearby.
+    this.archive = QuireArchive.fromBookPath(epubPath);
     this.sessionId = `q${crypto.randomBytes(12).toString('hex')}`;
   }
 
