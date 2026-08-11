@@ -69,13 +69,16 @@ const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-chapter-add-'));
 process.env.BOOKFORGE_USERDATA_DIR = path.join(ROOT, 'userdata');
 
 const manifestService = require(path.join(DIST, 'electron', 'manifest-service.js'));
-const { ZipReader, ZipWriter, readEpubElementCategories } =
+const { ZipWriter, readEpubElementCategories } =
   require(path.join(DIST, 'electron', 'epub-processor.js'));
 const { setBookBlockCategory } = require(path.join(DIST, 'electron', 'book-categories.js'));
 const {
   addBookChapter, readBookChapterTitles, readChapterTitlesOfBook, renameBookChapter,
 } = require(path.join(DIST, 'electron', 'book-chapters.js'));
 const narrationExport = require(path.join(DIST, 'electron', 'narration-export.js'));
+// A book is a folder of its parts now, so its identity and its documents are
+// read through the app's own seam rather than through readFileSync/ZipReader.
+const { bookDigestOf, bookEntryText } = require('./fixture-book');
 
 let failures = 0;
 const results = [];
@@ -179,8 +182,9 @@ const NAV_IN_SPINE = {
   'OEBPS/c0001.xhtml': CONVERTED['OEBPS/c0001.xhtml'],
 };
 
-const sha256 = (file) =>
-  crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+// THE BOOK'S identity, measured the way the app records it: the working copy is
+// an exploded folder, and `readFileSync` over one is an EISDIR.
+const sha256 = (book) => bookDigestOf(book);
 
 const readManifest = (dir) =>
   JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf-8'));
@@ -227,13 +231,7 @@ async function makeProject(id, files = CONVERTED) {
 
 /** What one document of the project's book reads as. */
 async function documentText(bookPath, entry) {
-  const reader = new ZipReader(bookPath);
-  await reader.open();
-  try {
-    return (await reader.readEntry(entry)).toString('utf8');
-  } finally {
-    reader.close();
-  }
+  return bookEntryText(bookPath, entry);
 }
 
 const bookOf = async (dir) => (await manifestService.readExportEpub(dir)).absPath;
@@ -313,7 +311,7 @@ async function run() {
   await check('the manifest records the add as its own kind of edit', async () => {
     const dir = await makeProject('record');
     const bookPath = await bookOf(dir);
-    const before = sha256(bookPath);
+    const before = await sha256(bookPath);
     const added = await addBookChapter(dir, 'OEBPS/c0001.xhtml', 'Chapter Two');
 
     const edits = bookRecordOf(dir).bookEdits ?? [];
@@ -327,7 +325,7 @@ async function run() {
     // that runs after it writes again and records its own entry, so the book on
     // disk is the LAST record's `toSha256` and not this one's.
     assert.strictEqual(record.toSha256, added.bookSha256);
-    assert.strictEqual(sha256(bookPath), edits[edits.length - 1].toSha256,
+    assert.strictEqual(await sha256(bookPath), edits[edits.length - 1].toSha256,
       'the last recorded edit does not describe the book on disk');
     // Not a rename with a blank before: the history has to say which happened.
     assert.strictEqual(record.titleBefore, undefined);
@@ -344,7 +342,7 @@ async function run() {
     const carried = await manifestService.readNarrationDeletions(dir);
     assert.ok(carried, 'THE FAILURE: the strikes were cleared by an add that moved no element');
     assert.deepStrictEqual(carried.elements, ['OEBPS/c0000.xhtml#1'], 'a strike was dropped');
-    assert.strictEqual(carried.epubSha256, sha256(await bookOf(dir)),
+    assert.strictEqual(carried.epubSha256, await sha256(await bookOf(dir)),
       'the record was not re-stamped onto the book on disk');
   });
 
@@ -392,13 +390,13 @@ async function run() {
     const dir = await makeProject('nav-in-spine', NAV_IN_SPINE);
     await narrationExport.editNarrationDeletions(
       dir, { strike: ['OEBPS/nav.xhtml#1'], unstrike: [] });
-    const before = sha256(await bookOf(dir));
+    const before = await sha256(await bookOf(dir));
 
     await refuses(
       addBookChapter(dir, 'OEBPS/c0001.xhtml', 'Chapter Two'),
       'OEBPS/nav.xhtml is both a table of contents and a document this book reads',
       'every strike after it would name a different paragraph');
-    assert.strictEqual(sha256(await bookOf(dir)), before, 'a refused add wrote the book anyway');
+    assert.strictEqual(await sha256(await bookOf(dir)), before, 'a refused add wrote the book anyway');
 
     // The SAME book with nothing struck takes the add: the refusal is about the
     // record, not about the shape of the book.
@@ -421,12 +419,12 @@ async function run() {
 
   await check('a document the book already lists is refused at the project door too', async () => {
     const dir = await makeProject('already-listed');
-    const before = sha256(await bookOf(dir));
+    const before = await sha256(await bookOf(dir));
     await refuses(
       addBookChapter(dir, 'OEBPS/c0000.xhtml', 'Something Else'),
       'already calls it "The Nazi Revolution"',
       'Rename the chapter instead');
-    assert.strictEqual(sha256(await bookOf(dir)), before, 'a refused add wrote the book anyway');
+    assert.strictEqual(await sha256(await bookOf(dir)), before, 'a refused add wrote the book anyway');
   });
 
   for (const [status, name, detail] of results) {

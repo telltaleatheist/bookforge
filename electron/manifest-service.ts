@@ -2849,6 +2849,39 @@ async function copyBookProvingEveryEntry(
 }
 
 /**
+ * The same book, in a different container, proved entry by entry.
+ *
+ * The one caller is `replaceBookEpub` (electron/processing-passes.ts), which
+ * lands a pass's output on the working copy: Simplify writes an ARCHIVE out of
+ * an hour of model time and the working copy is a FOLDER of its parts, so the
+ * two do not match and a `moveIntoPlace` between them would leave a file
+ * standing where the tree belongs. That conversion goes through the same proof
+ * every other copy in this file goes through, which is why it lives here rather
+ * than being a second copy written beside its caller.
+ *
+ * `to` must be a STAGING path, never the book itself: a refusal here removes
+ * whatever it had written, and aiming that at the book would take the user's
+ * copy away in the course of failing to replace it. The caller lands the result
+ * with `moveIntoPlace`, so the book is only ever replaced by something already
+ * proved.
+ */
+export async function copyBookIntoContainer(
+  fromAbsPath: string,
+  toAbsPath: string,
+  toKind: EpubContainerKind,
+  whatFor: string,
+): Promise<ProvedBookCopy> {
+  return copyBookProvingEveryEntry(
+    fromAbsPath,
+    toAbsPath,
+    toKind,
+    (problem) =>
+      `${whatFor} could not be written as ${toKind === 'directory' ? 'a folder of its parts' : 'an archive'}: `
+      + `${problem}. Nothing of it was left at ${toAbsPath}.`,
+  );
+}
+
+/**
  * Every content entry of `fromAbs` is in `toAbs`, with the same bytes, and there
  * is nothing else there. Throws naming the first entry that says otherwise.
  */

@@ -45,14 +45,40 @@ const { registerLedgerPass } = require(path.join(DIST, 'electron', 'book-ledger.
 // pre-sidecar location a fixture may still be written in.
 const { peekEditorStateSync } =
   require(path.join(DIST, 'electron', 'editor-state-store.js'));
-const { ZipReader, ZipWriter } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+const { ZipWriter } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+const {
+  bookDigestOf, bookEntryBytes, bookEntryNames, bookEntryText, placeBook, replaceBookEntry,
+} = require('./fixture-book');
+const { removeEpubContainer } = require(path.join(DIST, 'electron', 'epub-container.js'));
 const { runProcessingPass } = require(path.join(DIST, 'electron', 'processing-passes.js'));
 const {
   ledgerAfterDeleting, describeLedgerDeletion, listLedgerLabels,
 } = require(path.join(DIST, 'shared', 'document', 'book-ledger.js'));
 
-const sha256 = (file) =>
-  crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+// THE BOOK'S identity as the app records it. The working copy and every ledger
+// snapshot taken of it are FOLDERS of a book's parts now, so nothing here may
+// readFileSync one — and two folders are still compared by digest, exactly as
+// two files were.
+const sha256 = (book) => bookDigestOf(book);
+
+/**
+ * Two books hold the same entries with the same bytes.
+ *
+ * "Byte-identical to the archive original" is what a derived working copy used
+ * to be, and it cannot be said that way any more: the archive is a file hashed
+ * over its compressed bytes and the copy is a folder hashed over its contents,
+ * so the two never share a digest no matter how identical the book is. This is
+ * the same claim, proved the way `deriveWorkingCopy` proves it — entry for
+ * entry, names and bytes.
+ */
+async function sameBook(a, b, message) {
+  const [an, bn] = await Promise.all([bookEntryNames(a), bookEntryNames(b)]);
+  assert.deepStrictEqual([...an].sort(), [...bn].sort(), message);
+  for (const name of an) {
+    const [ab, bb] = await Promise.all([bookEntryBytes(a, name), bookEntryBytes(b, name)]);
+    assert.ok(ab.equals(bb), `${message} (${name})`);
+  }
+}
 
 const readManifest = (dir) =>
   JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf-8'));
@@ -159,9 +185,15 @@ async function runPass(dir, { kind, label, chapters }) {
   const stageAbs = path.join(dir, stageRel.split('/').join(path.sep));
   fs.mkdirSync(stageAbs, { recursive: true });
 
+  // The produced book is an ARCHIVE (a renderer and a model both hand this app
+  // zip bytes) and the working copy is a FOLDER of the book's parts, so landing
+  // it is no longer a rename — it is the conversion `replaceBookEpub` performs,
+  // proved entry for entry. Written the same way here so this helper still
+  // mirrors the real pass step for step.
   const produced = path.join(stageAbs, 'out.epub');
   await writeEpub(produced, chapters);
-  fs.renameSync(produced, book.absPath);
+  await placeBook(produced, book.absPath);
+  fs.rmSync(produced);
 
   const diffRel = `${stageRel}/diff.json`;
   fs.writeFileSync(
@@ -225,7 +257,7 @@ function assertRecordsCleared(dir, label) {
 async function erase(dir, scope) {
   if (scope === 'everything') await manifestService.clearBookLedger(dir);
   const before = await manifestService.readExportEpub(dir);
-  fs.rmSync(before.absPath, { force: true });
+  await removeEpubContainer(before.absPath);
   return manifestService.ensureBookEpub(dir);
 }
 
@@ -315,10 +347,10 @@ test('a text-only pass records a ledger entry with a snapshot and a frozen diff'
 
   const book = await manifestService.readExportEpub(dir);
   assert.strictEqual(
-    sha256(path.join(dir, entry.snapshot.split('/').join(path.sep))), sha256(book.absPath),
+    await sha256(path.join(dir, entry.snapshot.split('/').join(path.sep))), await sha256(book.absPath),
     'the snapshot is not the book the pass produced');
   assert.strictEqual(
-    entry.snapshotSha256, sha256(book.absPath), 'the recorded digest is not the snapshot\'s');
+    entry.snapshotSha256, await sha256(book.absPath), 'the recorded digest is not the snapshot\'s');
   assert.ok(entry.receipt, 'the pass wrote a diff and the entry froze none');
   assert.ok(
     fs.existsSync(path.join(dir, entry.receipt.split('/').join(path.sep))),
@@ -360,14 +392,14 @@ test('(a) erasing WORKING CHANGES keeps the pass: the copy is the snapshot', asy
     kind: 'simplify', label: 'Simplify', chapters: [undigit(CHAPTER_ONE), undigit(CHAPTER_TWO)],
   });
   populateRecords(dir);
-  const snapshotDigest = sha256(path.join(dir, entry.snapshot.split('/').join(path.sep)));
-  const archiveDigest = sha256(archiveOf(dir));
+  const snapshotDigest = await sha256(path.join(dir, entry.snapshot.split('/').join(path.sep)));
+  const archiveDigest = await sha256(archiveOf(dir));
 
   const after = await erase(dir, 'working-changes');
 
-  assert.strictEqual(sha256(after.absPath), snapshotDigest,
+  assert.strictEqual(await sha256(after.absPath), snapshotDigest,
     'the fresh copy is not the book the pass produced');
-  assert.notStrictEqual(sha256(after.absPath), archiveDigest,
+  assert.notStrictEqual(await sha256(after.absPath), archiveDigest,
     'the fresh copy went back past the pass — the pass was thrown away');
   assertRecordsCleared(dir, 'erase working-changes');
   assert.strictEqual(ledgerOf(dir).length, 1, 'the ledger entry went with the working changes');
@@ -386,20 +418,20 @@ test('(b) deleting the LEDGER ENTRY keeps the working changes: the copy is the b
     kind: 'simplify', label: 'Simplify', chapters: [undigit(CHAPTER_ONE), undigit(CHAPTER_TWO)],
   });
   populateRecords(dir);
-  const archiveDigest = sha256(archiveOf(dir));
+  const archiveDigest = await sha256(archiveOf(dir));
   const entryDir = path.join(dir, entry.dir.split('/').join(path.sep));
 
   const deletion = await manifestService.deleteLedgerEntry(dir, entry.id);
 
   assert.deepStrictEqual(deletion.dropped.map((e) => e.id), [entry.id]);
   assert.deepStrictEqual(deletion.kept, [], 'nothing should stand — there was one entry');
-  assert.strictEqual(sha256(deletion.book.absPath), archiveDigest,
-    'the copy is not byte-identical to the archive original');
+  await sameBook(deletion.book.absPath, archiveOf(dir),
+    'the copy does not hold the archive original\'s entries');
   assertRecordsPresent(dir, 'delete ledger entry');
   assert.deepStrictEqual(ledgerOf(dir), [], 'the entry survived its own deletion');
   assert.strictEqual(fs.existsSync(entryDir), false,
     'the entry\'s snapshot and frozen diff were left on disk');
-  assert.strictEqual(sha256(archiveOf(dir)), archiveDigest, 'the archive original was written to');
+  assert.strictEqual(await sha256(archiveOf(dir)), archiveDigest, 'the archive original was written to');
   const passes = await manifestService.readAppliedPasses(dir);
   assert.deepStrictEqual(passes, [], 'the deleted pass still claims to describe these bytes');
 });
@@ -410,13 +442,13 @@ test('(c) erasing EVERYTHING is the archive original, with nothing recorded', as
     kind: 'simplify', label: 'Simplify', chapters: [undigit(CHAPTER_ONE), undigit(CHAPTER_TWO)],
   });
   populateRecords(dir);
-  const archiveDigest = sha256(archiveOf(dir));
+  const archiveDigest = await sha256(archiveOf(dir));
   const entryDir = path.join(dir, entry.dir.split('/').join(path.sep));
 
   const after = await erase(dir, 'everything');
 
-  assert.strictEqual(sha256(after.absPath), archiveDigest,
-    'the fresh copy is not byte-identical to the archive original');
+  await sameBook(after.absPath, archiveOf(dir),
+    'the fresh copy does not hold the archive original\'s entries');
   assertRecordsCleared(dir, 'erase everything');
   assert.deepStrictEqual(ledgerOf(dir), [], 'the ledger survived "erase everything"');
   assert.strictEqual(fs.existsSync(entryDir), false, 'the snapshot was left on disk');
@@ -430,14 +462,14 @@ test('(d) a deleted working copy comes back from the snapshot, and says what sto
     kind: 'simplify', label: 'Simplify', chapters: [undigit(CHAPTER_ONE), undigit(CHAPTER_TWO)],
   });
   populateRecords(dir);
-  const snapshotDigest = sha256(path.join(dir, entry.snapshot.split('/').join(path.sep)));
+  const snapshotDigest = await sha256(path.join(dir, entry.snapshot.split('/').join(path.sep)));
   const book = await manifestService.readExportEpub(dir);
 
   // The user deletes the file in Explorer, meaning "start my edits over".
-  fs.rmSync(book.absPath, { force: true });
+  await removeEpubContainer(book.absPath);
   const after = await manifestService.ensureBookEpub(dir);
 
-  assert.strictEqual(sha256(after.absPath), snapshotDigest,
+  assert.strictEqual(await sha256(after.absPath), snapshotDigest,
     'the re-minted copy threw the pass away');
   assert.ok(after.remint, 'a re-mint must produce a receipt');
   assert.deepStrictEqual(after.remint.kept, ['Simplify'],
@@ -464,7 +496,7 @@ test('(e) deleting the FIRST of two entries cascades, and names both', async () 
   assert.strictEqual(first.refusal, null, `first pass refused: ${first.refusal}`);
   assert.strictEqual(second.refusal, null, `second pass refused: ${second.refusal}`);
   populateRecords(dir);
-  const archiveDigest = sha256(archiveOf(dir));
+  const archiveDigest = await sha256(archiveOf(dir));
 
   const deletion = await manifestService.deleteLedgerEntry(dir, first.entry.id);
 
@@ -474,7 +506,7 @@ test('(e) deleting the FIRST of two entries cascades, and names both', async () 
   assert.ok(/Translate to fr/.test(deletion.message),
     `the answer does not name the cascade: ${deletion.message}`);
   assert.deepStrictEqual(ledgerOf(dir), [], 'entries survived the cascade');
-  assert.strictEqual(sha256(deletion.book.absPath), archiveDigest,
+  await sameBook(deletion.book.absPath, archiveOf(dir),
     'the copy is not back at the archive original');
   for (const entry of [first.entry, second.entry]) {
     assert.strictEqual(
@@ -494,14 +526,14 @@ test('deleting the LAST of two entries keeps the first, bytes and record', async
     label: 'Translate to fr',
     chapters: [undigit(CHAPTER_ONE).map((p) => `FR ${p}`), undigit(CHAPTER_TWO).map((p) => `FR ${p}`)],
   });
-  const firstSnapshot = sha256(path.join(dir, first.entry.snapshot.split('/').join(path.sep)));
+  const firstSnapshot = await sha256(path.join(dir, first.entry.snapshot.split('/').join(path.sep)));
 
   const deletion = await manifestService.deleteLedgerEntry(dir, second.entry.id);
 
   assert.deepStrictEqual(deletion.dropped.map((e) => e.label), ['Translate to fr'],
     'deleting the last entry cascaded');
   assert.deepStrictEqual(deletion.kept.map((e) => e.label), ['Simplify']);
-  assert.strictEqual(sha256(deletion.book.absPath), firstSnapshot,
+  assert.strictEqual(await sha256(deletion.book.absPath), firstSnapshot,
     'the copy is not the book the surviving pass left');
   assert.strictEqual(ledgerOf(dir).length, 1, 'the surviving entry was dropped too');
   assert.ok(
@@ -538,7 +570,7 @@ test('a fold made since the pass refuses the deletion, rather than mis-placing s
     fromSha256: 'a', toSha256: 'b',
   }];
   writeManifest(dir, manifest);
-  const bookDigest = sha256((await manifestService.readExportEpub(dir)).absPath);
+  const bookDigest = await sha256((await manifestService.readExportEpub(dir)).absPath);
 
   await assert.rejects(
     () => manifestService.deleteLedgerEntry(dir, entry.id),
@@ -546,7 +578,7 @@ test('a fold made since the pass refuses the deletion, rather than mis-placing s
       && /Erase this book's working changes first/.test(err.message),
     'the refusal must name the fold and the way out');
   assert.strictEqual(
-    sha256((await manifestService.readExportEpub(dir)).absPath), bookDigest,
+    await sha256((await manifestService.readExportEpub(dir)).absPath), bookDigest,
     'the refused deletion rewrote the book anyway');
   assert.strictEqual(ledgerOf(dir).length, 1, 'the refused deletion dropped the entry anyway');
 });
@@ -586,18 +618,12 @@ async function runFootnotePass(dir) {
 
 /** Every content document of an EPUB, concatenated — what the reader will see. */
 async function bookMarkup(epubPath) {
-  const reader = new ZipReader(epubPath);
-  await reader.open();
-  try {
-    let out = '';
-    for (const entry of reader.getEntries()) {
-      if (!/\.(xhtml|html|htm)$/i.test(entry)) continue;
-      out += (await reader.readEntry(entry)).toString('utf8');
-    }
-    return out;
-  } finally {
-    reader.close();
+  let out = '';
+  for (const entry of await bookEntryNames(epubPath)) {
+    if (!/\.(xhtml|html|htm)$/i.test(entry)) continue;
+    out += await bookEntryText(epubPath, entry);
   }
+  return out;
 }
 
 test('the footnote pass takes the numbers OUT OF THE BOOK, and keeps the ordinal', async () => {
@@ -651,8 +677,8 @@ test('the pass is TEXT-ONLY, so the structural guard passes and it gets a ledger
     'the frozen diff is not on disk');
   // The snapshot IS the book the pass produced.
   assert.strictEqual(
-    sha256(path.join(dir, entry.snapshot.split('/').join(path.sep))),
-    sha256((await manifestService.readExportEpub(dir)).absPath),
+    await sha256(path.join(dir, entry.snapshot.split('/').join(path.sep))),
+    await sha256((await manifestService.readExportEpub(dir)).absPath),
     'the snapshot is not the book the pass wrote');
   // And the provenance says it happened.
   const passes = await manifestService.readAppliedPasses(dir);
@@ -663,7 +689,7 @@ test('a second run is REFUSED by name, and records nothing', async () => {
   const dir = await makeProjectWith('footnote-twice', [FOOTED_ONE, FOOTED_TWO]);
   const first = await runFootnotePass(dir);
   assert.strictEqual(first.success, true, `the first run failed: ${first.error}`);
-  const bookAfterFirst = sha256((await manifestService.readExportEpub(dir)).absPath);
+  const bookAfterFirst = await sha256((await manifestService.readExportEpub(dir)).absPath);
 
   const second = await runFootnotePass(dir);
 
@@ -676,7 +702,7 @@ test('a second run is REFUSED by name, and records nothing', async () => {
   // Nothing was written — not even the book's own bytes back over itself, which
   // would move its timestamp and invalidate every cache keyed on it.
   assert.strictEqual(
-    sha256((await manifestService.readExportEpub(dir)).absPath), bookAfterFirst,
+    await sha256((await manifestService.readExportEpub(dir)).absPath), bookAfterFirst,
     'the refused run rewrote the book');
 });
 
@@ -693,7 +719,7 @@ test('a book with no markers at all gets the same refusal, first time', async ()
 
 test('deleting the entry puts the numbers BACK, byte-identically', async () => {
   const dir = await makeProjectWith('footnote-undo', [FOOTED_ONE, FOOTED_TWO]);
-  const archiveDigest = sha256(archiveOf(dir));
+  const archiveDigest = await sha256(archiveOf(dir));
   const result = await runFootnotePass(dir);
   assert.strictEqual(result.success, true, `the pass failed: ${result.error}`);
   // The user's evening, made against the stripped book and keyed to positions
@@ -702,8 +728,8 @@ test('deleting the entry puts the numbers BACK, byte-identically', async () => {
 
   const deletion = await manifestService.deleteLedgerEntry(dir, result.ledgerEntryId);
 
-  assert.strictEqual(sha256(deletion.book.absPath), archiveDigest,
-    'the book did not come back byte-identical to the archive original');
+  await sameBook(deletion.book.absPath, archiveOf(dir),
+    'the book did not come back holding the archive original\'s entries');
   const restored = await bookMarkup(deletion.book.absPath);
   assert.ok(/<sup class="calibre11">55<\/sup>/.test(restored), 'the bare marker did not come back');
   assert.ok(/<sup><a href="#fn-9"/.test(restored), 'the anchor-wrapped marker did not come back');
@@ -726,7 +752,7 @@ test('a paragraph that was ONLY a marker says [break] now, and the entry still r
     ['Before the note.', '<sup>77</sup>', 'After the note.'],
     ['A chapter with an already empty paragraph.', '', 'And its last line.'],
   ]);
-  const archiveDigest = sha256(archiveOf(dir));
+  const archiveDigest = await sha256(archiveOf(dir));
 
   const result = await runFootnotePass(dir);
   assert.strictEqual(result.success, true, `the pass failed: ${result.error}`);
@@ -745,8 +771,8 @@ test('a paragraph that was ONLY a marker says [break] now, and the entry still r
   // And the way back is intact: delete the entry, the marker returns, the
   // [break] goes, byte-identical to the archive.
   const deletion = await manifestService.deleteLedgerEntry(dir, result.ledgerEntryId);
-  assert.strictEqual(sha256(deletion.book.absPath), archiveDigest,
-    'the book did not come back byte-identical after the [break] repair');
+  await sameBook(deletion.book.absPath, archiveOf(dir),
+    'the book did not come back holding the archive original\'s entries after the [break] repair');
 });
 
 // ── A record whose file is gone is REPORTED, never quietly rebuilt ───────────
@@ -756,9 +782,9 @@ test('a ledger snapshot that is missing refuses by name', async () => {
   const { entry } = await runPass(dir, {
     kind: 'simplify', label: 'Simplify', chapters: [undigit(CHAPTER_ONE), undigit(CHAPTER_TWO)],
   });
-  fs.rmSync(path.join(dir, entry.snapshot.split('/').join(path.sep)), { force: true });
+  await removeEpubContainer(path.join(dir, entry.snapshot.split('/').join(path.sep)));
   const book = await manifestService.readExportEpub(dir);
-  fs.rmSync(book.absPath, { force: true });
+  await removeEpubContainer(book.absPath);
 
   await assert.rejects(
     () => manifestService.ensureBookEpub(dir),
@@ -774,9 +800,9 @@ test('a ledger snapshot whose bytes have changed refuses by digest', async () =>
     kind: 'simplify', label: 'Simplify', chapters: [undigit(CHAPTER_ONE), undigit(CHAPTER_TWO)],
   });
   const snapshot = path.join(dir, entry.snapshot.split('/').join(path.sep));
-  fs.appendFileSync(snapshot, 'somebody edited the snapshot');
+  await replaceBookEntry(snapshot, 'OEBPS/ch1.xhtml', '<html>somebody edited the snapshot</html>');
   const book = await manifestService.readExportEpub(dir);
-  fs.rmSync(book.absPath, { force: true });
+  await removeEpubContainer(book.absPath);
 
   await assert.rejects(
     () => manifestService.ensureBookEpub(dir),

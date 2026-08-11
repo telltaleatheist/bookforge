@@ -39,6 +39,9 @@ import type { BrowserWindow } from 'electron';
 import * as manifestService from './manifest-service';
 import { writePassDiff, type PassDiffUnit } from './diff-cache';
 import { loadEpubForComparison } from './epub-processor';
+import { removeEpubContainer, stagedContainerKindFor } from './epub-container';
+import { bookDigest } from './sidecar-binding';
+import { bookDigestHex } from '../shared/book-digest';
 import { narrationCarryRefusal, type NarrationDeletionsCarry } from '../shared/vlm/narration-deletions';
 import type { AppliedPass } from './manifest-types';
 import type {
@@ -82,20 +85,54 @@ export async function requireBookEpub(projectDir: string): Promise<string> {
 }
 
 /**
- * Put a pass's output in the book's place, atomically.
+ * Put a pass's output in the book's place, and say what the book then IS.
  *
- * The produced file is renamed ONTO the recorded path — one filesystem
- * operation, so a reader (or Syncthing) sees the old book or the new one and
- * never a half-written one. The rename also deletes the working copy, which is
- * what keeps a stage directory from becoming a second place a book lives.
+ * When the two are the same kind of container the produced book is renamed ONTO
+ * the recorded path — one filesystem operation, so a reader (or Syncthing) sees
+ * the old book or the new one and never a half-written one. The rename also
+ * takes the produced copy away, which is what keeps a stage directory from
+ * becoming a second place a book lives.
+ *
+ * ── When they are NOT the same kind ─────────────────────────────────────────
+ *
+ * The working copy is a folder of the book's parts and some passes produce an
+ * archive: `cleanupEpub` writes `stages/01-simplify/out.epub` out of an hour of
+ * model time, and a renderer-built book arrives as zip bytes. `moveIntoPlace` is
+ * a MOVE and is deliberately blind to what it is moving, so landing a zip on a
+ * tree that way would leave a file standing where the working copy belongs —
+ * the container downgrade nothing downstream would notice until the next edit.
+ *
+ * So the conversion is done HERE, deliberately, through the one copy in this app
+ * that proves its result entry by entry, and the produced book is removed only
+ * once that proof has passed. The book's identity comes back with it: it was
+ * measured by the code that guarantees the landing, which is the only place it
+ * can be measured and mean something.
  */
-async function replaceBookEpub(projectDir: string, producedAbsPath: string): Promise<string> {
+async function replaceBookEpub(
+  projectDir: string,
+  producedAbsPath: string
+): Promise<{ bookPath: string; digest: string }> {
   const bookPath = await requireBookEpub(projectDir);
   if (!fs.existsSync(producedAbsPath)) {
     throw new Error(`The pass reported success but wrote no file at ${producedAbsPath}.`);
   }
-  await moveIntoPlace(producedAbsPath, bookPath);
-  return bookPath;
+  const producedKind = await stagedContainerKindFor(producedAbsPath);
+  const bookKind = await stagedContainerKindFor(bookPath);
+  if (producedKind === bookKind) {
+    await moveIntoPlace(producedAbsPath, bookPath);
+  } else {
+    // Converted BESIDE the produced book, never onto the book: a refused
+    // conversion removes what it wrote, and the book has to still be there
+    // afterwards. The landing is `moveIntoPlace` either way, so the book is
+    // replaced by one filesystem operation with something already proved.
+    const staged = `${producedAbsPath}.bookforge-as-${bookKind}`;
+    await removeEpubContainer(staged);
+    await manifestService.copyBookIntoContainer(
+      producedAbsPath, staged, bookKind, `the book this pass produced`);
+    await moveIntoPlace(staged, bookPath);
+    await removeEpubContainer(producedAbsPath);
+  }
+  return { bookPath, digest: (await bookDigest(bookPath)).digest };
 }
 
 /**
@@ -303,7 +340,9 @@ export async function verifyNarrationCarry(
   const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
   if (recorded === null) return { outcome: 'none' };
 
-  const fromSha256 = await manifestService.sha256OfFile(beforeAbsPath);
+  // Through `bookDigest`, which measures a book in whichever container it is —
+  // this one is the working copy, a folder of its parts.
+  const { digest: fromSha256 } = await bookDigest(beforeAbsPath);
   if (recorded.epubSha256 !== fromSha256) {
     return {
       outcome: 'refused',
@@ -325,25 +364,27 @@ export async function verifyNarrationCarry(
 /**
  * Seal the verdict against the book that is now on disk.
  *
- * The proof was made about the file the pass PRODUCED; the stamp has to name
- * the file the project CALLS its book. `replaceBookEpub` renames one onto the
- * other, so the two are the same bytes — and this measures that rather than
- * asserting it, because the stamp is the thing every later reader trusts. The
- * fingerprints come off the same file, so the carried strikes describe the book
- * they are about to name.
+ * The proof was made about the book the pass PRODUCED; the stamp has to name
+ * the book the project CALLS its book. `replaceBookEpub` puts one in the other's
+ * place and measures what it landed — by a rename when the two are the same kind
+ * of container, and by a copy proved entry for entry when they are not — and
+ * this re-measures rather than asserting, because the stamp is the thing every
+ * later reader trusts and something else writing the book in between is exactly
+ * what it would be trusting through. The fingerprints come off the same book, so
+ * the carried strikes describe the one they are about to name.
  */
 async function sealNarrationCarry(
   verdict: Awaited<ReturnType<typeof verifyNarrationCarry>>,
   bookAbsPath: string,
-  producedSha256: string,
+  landedDigest: string,
 ): Promise<NarrationDeletionsCarry> {
   if (verdict.outcome !== 'provable') return verdict;
-  const toSha256 = await manifestService.sha256OfFile(bookAbsPath);
-  if (toSha256 !== producedSha256) {
+  const { digest: toSha256, hex } = await bookDigest(bookAbsPath);
+  if (toSha256 !== landedDigest) {
     return {
       outcome: 'refused',
-      reason: `the book on disk (${toSha256.slice(0, 12)}) is not the file this pass verified `
-        + `(${producedSha256.slice(0, 12)}), so the proof describes bytes nobody has.`,
+      reason: `the book on disk (${hex.slice(0, 12)}) is not the one this pass landed `
+        + `(${bookDigestHex(landedDigest).slice(0, 12)}), so the proof describes a book nobody has.`,
     };
   }
   const { narrationFingerprintsOfBook } = await import('./quire-stamp.js');
@@ -368,11 +409,11 @@ async function carryNarrationAcrossPass(
   producedAbsPath: string,
 ): Promise<{ carry: NarrationDeletionsCarry; bookAfter: string }> {
   const verdict = await verifyNarrationCarry(config.projectDir, beforeAbsPath, producedAbsPath);
-  const producedSha256 = verdict.outcome === 'provable'
-    ? await manifestService.sha256OfFile(producedAbsPath)
-    : '';
-  const bookAfter = await replaceBookEpub(config.projectDir, producedAbsPath);
-  return { carry: await sealNarrationCarry(verdict, bookAfter, producedSha256), bookAfter };
+  const landed = await replaceBookEpub(config.projectDir, producedAbsPath);
+  return {
+    carry: await sealNarrationCarry(verdict, landed.bookPath, landed.digest),
+    bookAfter: landed.bookPath,
+  };
 }
 
 function absStage(config: PassJobConfig): string {
@@ -606,7 +647,10 @@ async function runFootnoteRefsPass(config: PassJobConfig): Promise<PassJobResult
     // It is removed rather than moved into place: rewriting the book with its
     // own contents would move its timestamp and invalidate every analysis cache
     // keyed on it, for a pass that changed nothing.
-    await fs.promises.rm(produced, { force: true });
+    // Whichever container the pass staged it in: a produced book is a folder of
+    // its parts whenever the book it was read from is one, and a non-recursive
+    // rm cannot take one away.
+    await removeEpubContainer(produced);
     return {
       success: false,
       error: 'No footnote reference markers remain in this book, so nothing was changed and nothing '
