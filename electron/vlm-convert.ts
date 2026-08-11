@@ -67,7 +67,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { ensureFoundryPath, foundryVersion, runFoundry } from './foundry-bridge';
-import { ensureVlmPageServer, wslVlmRefusal } from './vlm-page-server';
+import { ensureVlmPageServer, recentServerLog, wslVlmRefusal } from './vlm-page-server';
 import { getActiveBundledEnvPath, relocatablePythonPath } from './e2a-env-bootstrap';
 import { getDefaultE2aPath } from './e2a-paths';
 import { resolveDocumentProject } from './document-project';
@@ -804,9 +804,14 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     if (run.code !== 0) {
       // foundry's own stderr is the message a user needs — it names the missing
       // Python, the model it could not load, the page it choked on. Never
-      // paraphrased, and never replaced with an exit code.
+      // paraphrased, and never replaced with an exit code. The page-reader's
+      // recent lines ride along when the server is still holding any: a mid-run
+      // engine-core death prints its stack trace ONLY into the server's stream,
+      // while foundry sees 500s that say "see stack trace (above)".
+      const serverSaid = recentServerLog();
       throw new Error(
         `foundry vlm-convert failed (exit ${run.code}).\n${run.stderr.trim() || lastMessage}`
+        + (serverSaid ? `\n\n── the page-reader's last lines ──\n${serverSaid}` : '')
       );
     }
     if (!fs.existsSync(stagedEpub)) {

@@ -249,6 +249,17 @@ function logTail(entry: RunningServer, lines = 12): string {
 }
 
 /**
+ * The page-reader's recent lines, for a caller whose conversion failed AFTER
+ * the server came up. A mid-run engine-core death prints its stack trace into
+ * this stream and nowhere else — the API stays up answering 500s whose body
+ * only says "see stack trace (above)", so without this the actual cause dies
+ * with the process and the failure reads as a bare exit code.
+ */
+export function recentServerLog(lines = 60): string {
+  return server === null ? '' : logTail(server, lines);
+}
+
+/**
  * Spawn the server and wait for it to answer, or throw naming what went wrong.
  *
  * The GPU is acquired BEFORE the spawn and released only when the server stops,
