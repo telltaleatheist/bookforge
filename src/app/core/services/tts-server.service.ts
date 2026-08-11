@@ -12,8 +12,15 @@ export type TtsServerState = 'stopped' | 'starting' | 'warming' | 'running';
  *
  * `state` tracks the engine itself regardless of how it was started.
  * `serviceMode` is true only when the user pinned it as a resident service
- * (nav rail / "Start server"): pinned engines survive listen-window close and
- * idle timeout, so external clients (e.g. a browser extension) can rely on it.
+ * (nav rail / "Start server"): pinned engines survive listen-window close, so
+ * external clients (e.g. a browser extension) can rely on the endpoint.
+ *
+ * The two are genuinely independent, and PARKED is the combination that proves
+ * it: on idle timeout a pinned engine frees its weights but stays armed, so
+ * `state` is 'stopped' while `serviceMode` is still true. The API server keeps
+ * listening and the next request cold-starts the engine. Every UI surface here
+ * renders `state` alone, which is what parking looks like from the outside —
+ * the engine really is down.
  */
 @Injectable({ providedIn: 'root' })
 export class TtsServerService {

@@ -360,9 +360,17 @@ function startIdleWatch(): void {
   idleTimer = setInterval(() => {
     const timeoutMs = getIdleTimeoutMs();
     if (timeoutMs === null) return; // set to never
-    if (!serviceMode && isSessionActive() && Date.now() - lastActivityAt > timeoutMs) {
-      console.log(`[XTTS Pool] Idle for ${Math.round(timeoutMs / 60000)} min — shutting down`);
-      void endSession();
+    if (isSessionActive() && Date.now() - lastActivityAt > timeoutMs) {
+      const minutes = Math.round(timeoutMs / 60000);
+      // Service mode is not exempt: the weights come down either way. It just
+      // PARKS — the service stays armed and the next speak cold-starts a worker.
+      if (serviceMode) {
+        console.log(`[XTTS Pool] Idle for ${minutes} min — parking the engine (service stays armed)`);
+        void endSession({ keepServiceArmed: true });
+      } else {
+        console.log(`[XTTS Pool] Idle for ${minutes} min — shutting down`);
+        void endSession();
+      }
     }
   }, 60_000);
   idleTimer.unref?.();
@@ -962,9 +970,14 @@ export function stop(): void {
 }
 
 /**
- * End the session - kill all workers
+ * End the session - kill all workers.
+ *
+ * `keepServiceArmed` is idle PARKING: it ends the ENGINE but leaves the service
+ * armed — serviceMode stays true, the TTS API server keeps listening, and the
+ * next speak cold-starts fresh workers. Clients see state 'stopped' with
+ * serviceMode still on, which is exactly what happened.
  */
-export async function endSession(): Promise<void> {
+export async function endSession(opts?: { keepServiceArmed?: boolean }): Promise<void> {
   console.log('[XTTS Pool] Ending session...');
   // Suppress the close handlers' crash-path broadcast while WE kill the
   // workers — endSession does its own single broadcast at the end.
@@ -989,7 +1002,9 @@ export async function endSession(): Promise<void> {
 
   workers = [];
   currentVoice = null;
-  serviceMode = false;  // engine off ⇒ service off
+  // engine off ⇒ service off, EXCEPT when parking: an idle park frees the
+  // weights but keeps the service armed for the next request.
+  if (!opts?.keepServiceArmed) serviceMode = false;
 
   if (hadWorkers) {
     broadcast('play:session-ended', { code: 0 });

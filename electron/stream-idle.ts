@@ -6,6 +6,12 @@
  * article after article wants it to stay hot; someone who streamed one paragraph
  * wants the memory back — so it's a persisted setting rather than a constant.
  *
+ * Since 2026-08-11 the window applies in SERVICE MODE too. Service mode used to
+ * be exempt, which meant starting the TTS server for the browser extension held
+ * ~14 GB until the app quit. Now the timeout PARKS the engine instead of turning
+ * the service off: the worker is killed, serviceMode stays true, the TTS API
+ * server keeps listening, and the next speak cold-starts the worker again.
+ *
  * Lives in its own module, not in streaming-engine.ts, because BOTH worker pools
  * need to read it and streaming-engine.ts already imports them: putting it there
  * would close an import cycle.

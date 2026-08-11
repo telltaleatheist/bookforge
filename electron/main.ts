@@ -5855,9 +5855,13 @@ function setupIpcHandlers(): void {
 
   // ── TTS service: the engine pinned as a resident service ──
   // Unlike the implicit play-button start, service mode survives listen-window
-  // close and idle timeout, so external clients (e.g. a browser extension) can
-  // rely on it. State changes broadcast on 'tts-service:state' to all windows;
-  // the main process is the single source of truth.
+  // close. It does NOT hold the weights forever: on idle timeout the ENGINE
+  // PARKS — the worker is killed and its memory freed, serviceMode stays true
+  // and the API server keeps listening — so an external client (e.g. a browser
+  // extension) still has a live endpoint while the machine gets its RAM back,
+  // and the next speak pays the cold start. State changes broadcast on
+  // 'tts-service:state' to all windows; the main process is the single source
+  // of truth.
 
   // Live-sync the streaming voice/engine selection to the renderer: when it
   // changes from ANY source (the in-app picker, or an extension client via the
