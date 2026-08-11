@@ -19,7 +19,9 @@ import type {
 } from '@shared/vlm/conversion';
 import type { VlmReadingsBank } from '@shared/vlm/readings-bank';
 import type { NarrationDeletions, NarrationState } from '@shared/vlm/narration-deletions';
-import type { BookChapterRenameResult, BookChapterTitles } from '@shared/vlm/chapter-titles';
+import type {
+  BookChapterAddResult, BookChapterRenameResult, BookChapterTitles,
+} from '@shared/vlm/chapter-titles';
 import type {
   DocumentBlocksPayload,
   DocumentPipelineState,
@@ -3423,6 +3425,44 @@ export class ElectronService {
   }
 
   /**
+   * List one of the book's documents in its table(s) of contents, under a name.
+   *
+   * The operation a rename is not: a rename replaces the text of an entry the
+   * book already carries, and a document listed nowhere has none — which is why
+   * "rename the chapter to give it one" used to be advice nothing could follow.
+   * `file` is the document's zip entry name, the same identity a rename and a
+   * narration strike use.
+   *
+   * The naming pass is PART of this call rather than a step after it, so
+   * `openingsNamed`, `openingUnnamed` and `rewrittenEntries` already describe the
+   * whole gesture (electron/book-chapters.ts, `addBookChapter`).
+   */
+  async addBookChapter(
+    projectDir: string,
+    file: string,
+    title: string,
+    /**
+     * Which working chain this is about. Absent is the ordinary case and
+     * means the project's only one; a project with several refuses, naming
+     * them, rather than acting on a version the user is not looking at.
+     */
+    familyId?: string
+  ): Promise<{
+    success: boolean;
+    result?: BookChapterAddResult;
+    openingsNamed?: number;
+    openingUnnamed?: string | null;
+    /** Every zip entry of the book the whole gesture rewrote — main's own list. */
+    rewrittenEntries?: string[];
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.addChapter(projectDir, file, title, familyId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
    * Say, in the book itself, what one of its elements IS.
    *
    * The category palette's write for a BOOK. A relabel used to be recorded on
@@ -3452,7 +3492,15 @@ export class ElectronService {
      * means the project's only one; a project with several refuses, naming
      * them, rather than acting on a version the user is not looking at.
      */
-    familyId?: string
+    familyId?: string,
+    /**
+     * The name to LIST this document under, for a promotion to `chapter` in a
+     * document the table of contents does not name. Left out, an unlisted
+     * document comes back with `needsChapterName` and nothing is listed; main
+     * re-checks listedness itself either way, so a name for a document that has
+     * since gained an entry is refused rather than doubling it.
+     */
+    chapterName?: string
   ): Promise<{
     success: boolean;
     result?: {
@@ -3460,13 +3508,30 @@ export class ElectronService {
       categoryBefore: string | null; categoryAfter: string;
       written: boolean; fromSha256: string; toSha256: string;
     };
+    /** What the listing did, present only when `chapterName` was given. */
+    added?: BookChapterAddResult;
     openingsNamed?: number;
     openingUnnamed?: string | null;
+    /**
+     * The document that has no entry in the book's table of contents, or null.
+     *
+     * The machine-readable half of `openingUnnamed`: the sentence says the page
+     * cannot print a name because the book states none, and this says which
+     * document to offer one for.
+     */
+    needsChapterName?: string | null;
+    /**
+     * Every zip entry of the book this gesture rewrote — the relabelled
+     * document, the tables of contents a listing touched, and every opening the
+     * naming pass rewrote. Main's own list, never inferred here: an empty one
+     * means nothing on disk moved and nothing needs laying out again.
+     */
+    rewrittenEntries?: string[];
     error?: string;
   }> {
     if (this.isElectron) {
       return (window as any).electron.vlm.setBlockCategory(
-        projectDir, elementKey, categoryId, familyId);
+        projectDir, elementKey, categoryId, familyId, chapterName);
     }
     return { success: false, error: 'Not running in Electron' };
   }

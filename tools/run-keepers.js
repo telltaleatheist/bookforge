@@ -24,6 +24,8 @@ const SUITES = [
   'test-pass-diff',
   'test-narration-deletions',
   'test-book-block-category',
+  'test-book-chapter-titles',
+  'test-book-chapter-add',
   'test-narration-carry',
   'test-writer-attribute-safety',
   'test-element-uid-stamp',

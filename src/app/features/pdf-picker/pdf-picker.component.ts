@@ -23,6 +23,10 @@ import {
   DocumentNavTab,
   type ChapterRow,
 } from './components/document-nav/document-nav.component';
+import {
+  ChapterNameModalComponent,
+  type ChapterNamePrompt,
+} from './components/chapter-name-modal/chapter-name-modal.component';
 import type { DocumentRef, ResetTarget } from '@shared/document/pipeline-types';
 import {
   blockTableFromRecord,
@@ -479,6 +483,7 @@ const PDF_HAS_NO_BOOK_MESSAGE =
     FilePickerComponent,
     CropPanelComponent,
     DocumentNavComponent,
+    ChapterNameModalComponent,
     ExportSettingsModalComponent,
     TaskRailComponent,
   ],
@@ -654,11 +659,15 @@ const PDF_HAS_NO_BOOK_MESSAGE =
                chapter's WHOLE name, clicked to jump there. This is the EPUB's
                navigation column — the page timeline it replaces is a raster
                affordance and is not rendered for a book at all. -->
-          @if (showsEpubViewer() && curationChapterRows().length > 0) {
+          @if (showsEpubViewer() && railChapterRows().length > 0) {
             <div class="chapter-rail">
               <div class="chapter-rail-header">Chapters</div>
               <div class="chapter-rail-list">
-                @for (row of curationChapterRows(); track row.id) {
+                <!-- A row with no page is a chapter the book READS and does not
+                     NAME, with no block on any page behind it. There is nowhere
+                     to jump to, so it is not a rail item — the Chapter tab is
+                     where it is listed, and where it can be given a name. -->
+                @for (row of railChapterRows(); track row.id) {
                   <button
                     class="chapter-rail-item"
                     [title]="'Page ' + (row.page + 1)"
@@ -1144,6 +1153,21 @@ const PDF_HAS_NO_BOOK_MESSAGE =
           </div>
         </div>
       </div>
+    }
+
+    <!--
+      Name-this-chapter prompt: the one modal on this page that ASKS rather than
+      reports. Its own component because this file's stylesheet is at the
+      per-component budget and a modal that holds only the text being typed is
+      presentational — see chapter-name-modal.component.ts.
+    -->
+    @if (chapterNamePrompt(); as prompt) {
+      <app-chapter-name-modal
+        [prompt]="prompt"
+        [initialName]="chapterNameDraft()"
+        (name)="confirmChapterName($event)"
+        (dismiss)="cancelChapterName()"
+      />
     }
 
     <!-- Library Save Modal -->
@@ -4640,26 +4664,71 @@ export class PdfPickerComponent implements OnInit {
       // `chapterOpeningsAfterDeletions`, which the service derives them by.
       return this.documentBlocks.chapterBlocks()
         .map(b => ({
-          id: b.id, title: b.text.trim(), page: b.page, blockId: b.id, readOnlyReason: null,
+          id: b.id, title: b.text.trim(), page: b.page, blockId: b.id,
+          readOnlyReason: null, unlistedFile: null,
         }));
     }
 
     const openings = this.bookChapterOpeningBlocks();
-    if (openings.length > 0) return this.bookChapterRows(openings);
+    const listed: ChapterRow[] = openings.length > 0
+      ? this.bookChapterRows(openings)
+      // `blockId: null` even for a chapter record that carries one. Those records
+      // are the legacy PDF chapter-marker path, whose blockId points into a
+      // document that is not live here; a row claiming to be backed by it would
+      // offer a selection the page would not paint.
+      : this.chapters().map(c => ({
+        id: c.id,
+        title: c.title,
+        page: c.page,
+        blockId: null,
+        readOnlyReason: 'read from this book\'s own table of contents, with no block on any page '
+          + 'behind it. Label the heading a chapter opening to edit it here.',
+        unlistedFile: null,
+      }));
 
-    // `blockId: null` even for a chapter record that carries one. Those records
-    // are the legacy PDF chapter-marker path, whose blockId points into a
-    // document that is not live here; a row claiming to be backed by it would
-    // offer a selection the page would not paint.
-    return this.chapters().map(c => ({
-      id: c.id,
-      title: c.title,
-      page: c.page,
-      blockId: null,
-      readOnlyReason: 'read from this book\'s own table of contents, with no block on any page '
-        + 'behind it. Label the heading a chapter opening to edit it here.',
-    }));
+    // ── The chapters the book READS and does not NAME ────────────────────────
+    //
+    // Appended rather than woven in: the rows above are ordered by the page the
+    // opening sits on, and a document with no chapter-opening block has no page
+    // to be ordered by. They are the last thing in the list because they are the
+    // thing left to do — each one is a chapter an audiobook would announce as
+    // nothing at all.
+    return [...listed, ...this.unlistedChapterRows(listed)];
   });
+
+  /**
+   * One row per spine document no table of contents names, minus the ones a
+   * chapter-opening block already put on the list.
+   *
+   * The subtraction is the whole reason this takes the rows above as an
+   * argument. A document can be unlisted AND carry a block the user labelled a
+   * chapter opening — that is the ordinary way into this state — and
+   * `bookChapterRows` already draws it, as an unlisted row, with the block's own
+   * printed heading in the box. Drawing it here too would show the same chapter
+   * twice with two boxes that write to the same place.
+   */
+  private unlistedChapterRows(shown: readonly ChapterRow[]): ChapterRow[] {
+    if (!this.viewingBook()) return [];
+    const answer = this.bookChapterTitlesAnswer();
+    const dir = this.projectPath();
+    if (!answer || !dir || answer.dir !== dir || answer.titles === null) return [];
+
+    const claimed = new Set(
+      shown.map(row => row.unlistedFile).filter((file): file is string => file !== null));
+    return answer.titles.unlistedDocuments
+      .filter(file => !claimed.has(file))
+      .map(file => ({
+        id: `unlisted:${file}`,
+        // The book states nothing about this document, so the row states
+        // nothing either. The name box opens empty, which is honest: there is
+        // no heading on any page for it to have been pre-filled from.
+        title: '',
+        page: null,
+        blockId: null,
+        readOnlyReason: null,
+        unlistedFile: file,
+      }));
+  }
 
   /**
    * The chapter-opening blocks of the book on screen, as rows.
@@ -4684,13 +4753,18 @@ export class PdfPickerComponent implements OnInit {
    */
   private bookChapterRows(openings: readonly TextBlock[]): ChapterRow[] {
     const navTitles = this.bookChapterTitleByFile();
+    const unlisted = this.bookUnlistedDocuments();
     const isBook = this.viewingBook();
     const claimed = new Set<string>();
 
     return openings.map(block => {
       const element = block.bf_element;
       const file = element === undefined ? null : parseNarrationElementKey(element).file;
-      const opensDocument = file !== null && navTitles.has(file) && !claimed.has(file);
+      // The FIRST opening in a document owns that document's entry — the one
+      // the book names it by, or the one it would gain. A later one is a split
+      // point the book does not have yet, and owns neither.
+      const opensDocument = file !== null && (navTitles.has(file) || unlisted.has(file))
+        && !claimed.has(file);
       if (file !== null) claimed.add(file);
 
       // The nav entry when this row owns it; the print otherwise. The book's
@@ -4698,17 +4772,46 @@ export class PdfPickerComponent implements OnInit {
       // names are stored in this epub") — the thing that should change to
       // match them is the OPENER BLOCK'S TEXT, because that is what TTS
       // reads, not the name shown here.
-      const title = opensDocument ? navTitles.get(file)! : block.text.trim();
+      //
+      // A document the book does not name has no entry to read, so the row
+      // shows the PRINT — which is also what the name box opens on, and very
+      // nearly always the name the user is about to list it under.
+      const listed = file !== null && navTitles.has(file);
+      const title = opensDocument && listed ? navTitles.get(file)! : block.text.trim();
 
       return {
         id: block.id,
         title,
         page: block.page,
         blockId: block.id,
-        readOnlyReason: this.bookRetitleRefusal(isBook, file, navTitles, opensDocument),
+        readOnlyReason: this.bookRetitleRefusal(isBook, file, navTitles, unlisted, opensDocument),
+        // Only the row that owns the document offers to list it: two boxes for
+        // one entry would let the second overwrite what the first inserted.
+        unlistedFile: opensDocument && !listed ? file : null,
       };
     });
   }
+
+  /**
+   * The chapter rows the rail beside the viewer can jump to: the ones a page
+   * exists for.
+   *
+   * The rail is a navigation column and nothing else, so a row with no page —
+   * a chapter the book reads and does not name, with no block behind it — has
+   * no place in it. It has one in the Chapter tab, which is a list of what the
+   * book contains rather than a set of destinations.
+   */
+  readonly railChapterRows = computed<readonly (ChapterRow & { page: number })[]>(() =>
+    this.curationChapterRows()
+      .filter((row): row is ChapterRow & { page: number } => row.page !== null));
+
+  /** The book's spine documents that no table of contents names. */
+  private readonly bookUnlistedDocuments = computed<ReadonlySet<string>>(() => {
+    const answer = this.bookChapterTitlesAnswer();
+    const dir = this.projectPath();
+    if (!answer || !dir || answer.dir !== dir || answer.titles === null) return new Set();
+    return new Set(answer.titles.unlistedDocuments);
+  });
 
   /**
    * Why this row's title cannot be retyped, or null when it can be.
@@ -4723,6 +4826,7 @@ export class PdfPickerComponent implements OnInit {
     isBook: boolean,
     file: string | null,
     navTitles: ReadonlyMap<string, string>,
+    unlisted: ReadonlySet<string>,
     opensDocument: boolean,
   ): string | null {
     if (!isBook) {
@@ -4733,9 +4837,13 @@ export class PdfPickerComponent implements OnInit {
       return 'this heading could not be matched to the markup it was laid out from, so there is no '
         + 'chapter document to rename.';
     }
-    if (!navTitles.has(file)) {
-      return 'this book\'s table of contents does not list the document this heading is in, so the '
-        + 'chapter has no title there to change.';
+    // A document the contents does not list is no longer refused: it is the row
+    // that OFFERS to list it. What is still refused is a document the book does
+    // not read at all — a heading laid out from markup the spine never reaches —
+    // because there is no chapter there to name.
+    if (!navTitles.has(file) && !unlisted.has(file)) {
+      return 'this book does not read the document this heading is in, so there is no chapter '
+        + 'there for the contents to name.';
     }
     if (!opensDocument) {
       return 'this heading is not the one its chapter document opens with, so the book has no '
@@ -4852,6 +4960,23 @@ export class PdfPickerComponent implements OnInit {
   // Alert modal state
   readonly alertModal = signal<AlertModal | null>(null);
   readonly showLibrarySaveModal = signal(false);
+
+  /**
+   * The chapter the book READS and does not NAME, waiting for a name.
+   *
+   * Set when a relabel to `chapter` comes back with `needsChapterName`: the
+   * block is the document's opening now, and an opening prints its chapter's
+   * stored name, which this document has none of. `reason` is MAIN's sentence
+   * about that, said in the prompt rather than in an alert the user would have
+   * to dismiss before being offered the fix.
+   *
+   * `blockId` is the block the relabel was about, kept so the reader lands back
+   * on it once the changed documents are laid out again.
+   */
+  readonly chapterNamePrompt =
+    signal<(ChapterNamePrompt & { blockId: string | null }) | null>(null);
+  /** What the prompt's box opens on: the heading printed on the page. */
+  readonly chapterNameDraft = signal('');
 
   // Split block popover state
   readonly splitPopoverBlock = signal<TextBlock | null>(null);
@@ -7129,6 +7254,35 @@ export class PdfPickerComponent implements OnInit {
       modal.onCancel();
     }
     this.closeAlert();
+  }
+
+  /**
+   * List the chapter under the typed name.
+   *
+   * Down `book:add-chapter` and NOT a second relabel: the category is already in
+   * the book — the first call wrote it, which is why the answer was able to say
+   * the document had no entry — and asking for it again would rewrite the book
+   * to say what it already says.
+   */
+  confirmChapterName(title: string): void {
+    const prompt = this.chapterNamePrompt();
+    if (prompt === null) return;
+    this.chapterNamePrompt.set(null);
+    void this.listBookChapter(prompt.file, title, prompt.blockId);
+  }
+
+  /**
+   * Leave the chapter unlisted.
+   *
+   * Nothing is undone and nothing more is said: the block IS its document's
+   * opening now, the book records that, and the prompt's own sentence already
+   * told the user that the contents does not name the chapter. The Chapter tab
+   * carries the row from here on, marked as unlisted, so the offer is still
+   * standing.
+   */
+  cancelChapterName(): void {
+    this.chapterNamePrompt.set(null);
+    this.chapterNameDraft.set('');
   }
 
   onBlockHover(_block: LaidOutBlock | null): void {
@@ -14322,11 +14476,29 @@ export class PdfPickerComponent implements OnInit {
     this.onSetBlockCategory({ blockIds: [event.blockId], categoryId: BODY_CATEGORY });
   }
 
-  retitleChapterBlock(event: { blockId: string; title: string }): void {
+  /**
+   * A chapter row was named — which is one of three different edits, told apart
+   * by what the row carries rather than by anything guessed here.
+   *
+   * A working PDF's chapter IS its block, and its annotation text is the title.
+   * A book chapter the contents lists is renamed IN the contents. A book chapter
+   * the contents does not list has no entry to rename and is LISTED under the
+   * typed name instead — the operation "rename the chapter to give it one" used
+   * to describe and nothing could perform.
+   */
+  retitleChapterBlock(
+    event: { blockId: string | null; unlistedFile: string | null; title: string },
+  ): void {
     if (this.documentLayerLive()) {
+      if (event.blockId === null) return;  // a working PDF has no unlisted documents
       this.documentBlocks.retitle(event.blockId, event.title);
       return;
     }
+    if (event.unlistedFile !== null) {
+      void this.listBookChapter(event.unlistedFile, event.title, event.blockId);
+      return;
+    }
+    if (event.blockId === null) return;
     void this.retitleBookChapter(event.blockId, event.title);
   }
 
@@ -14464,6 +14636,100 @@ export class PdfPickerComponent implements OnInit {
         message: 'This project has an exported narration copy that was cut from a different '
           + 'version of the book, so the rename was not applied to it. Export the narration copy '
           + 'again before making the audiobook, or it will announce the old chapter title.',
+        type: 'warning',
+      });
+    }
+  }
+
+  /**
+   * List one of the book's documents in its table of contents, under a name.
+   *
+   * The edit a rename is not. A rename replaces the text of an entry the book
+   * already carries; a document listed nowhere has none, which is why promoting
+   * a heading to a chapter opening in one used to end in "rename the chapter to
+   * give it one" and the rename then refusing (Owen, 2026-08-10). The book stays
+   * the only store — the entry goes into every list the book navigates by — so
+   * nothing is saved on this side and the round trip below re-reads it.
+   *
+   * `anchorBlockId` is the block the gesture was ABOUT when there is one, so the
+   * reader lands back where they were after the changed documents are laid out
+   * again. A row for a document with no chapter-opening block has none, and the
+   * view then stays exactly where it is rather than jumping somewhere guessed.
+   */
+  private async listBookChapter(
+    file: string,
+    title: string,
+    anchorBlockId: string | null,
+  ): Promise<void> {
+    const dir = this.projectPath();
+    if (!dir) {
+      this.showAlert({
+        title: 'This book is not in a project',
+        message: 'A chapter is listed in the project\'s book EPUB, and this document does not '
+          + 'belong to a project. Import it from Studio first.',
+        type: 'warning',
+      });
+      return;
+    }
+
+    const anchorElement = anchorBlockId === null
+      ? undefined
+      : this.blocks().find(b => b.id === anchorBlockId)?.bf_element;
+
+    const answer = await this.electronService.addBookChapter(
+      dir, file, title, this.workingChainId());
+    if (!answer.success || !answer.result) {
+      // Main's own sentence, verbatim: it names the document, the project or the
+      // list that refused, and this is the only place it is said.
+      this.showAlert({
+        title: 'That chapter was not listed',
+        message: answer.error === undefined
+          ? 'The add came back with no result and no reason. Nothing was written.'
+          : answer.error,
+        type: 'error',
+      });
+      return;
+    }
+
+    // Re-read the book: the contents is the store, so this is both "show the new
+    // chapter" and "prove it landed". It also re-reads the narration state, whose
+    // record main re-stamped onto the book's new bytes.
+    await this.refreshBookEpub();
+
+    // Said BEFORE the relayout below, which rebuilds the frames this gesture was
+    // made in and would otherwise take the reason with it.
+    if (typeof answer.openingUnnamed === 'string') {
+      this.showAlert({
+        title: 'The page still prints what it printed',
+        message: `This chapter is now called "${title}" in the book's table of contents, and the `
+          + `heading on the page was not rewritten to match. ${answer.openingUnnamed}`,
+        type: 'warning',
+      });
+    }
+
+    const rewritten = answer.rewrittenEntries;
+    if (rewritten === undefined) {
+      this.showAlert({
+        title: 'This book may still show the old contents',
+        message: 'The chapter was listed in the book, but main did not say which of its documents '
+          + 'it rewrote, so the pages on screen were not laid out again. Close and re-open the '
+          + 'book to see the change.',
+        type: 'warning',
+      });
+    } else if (rewritten.length > 0) {
+      await this.relayoutBookAfterEdit(rewritten, anchorElement);
+    }
+
+    if (answer.result.narrationCopy === 'already-stale') {
+      // The one case the add could not keep in step, said out loud. A stale
+      // narration copy is the file the audiobook would actually be built from,
+      // so silence here would mean a chapter announced under no name at all with
+      // nothing on screen explaining why.
+      this.showAlert({
+        title: 'The narration copy does not list the new chapter',
+        message: 'This project has an exported narration copy that was cut from a different '
+          + 'version of the book, so the new chapter was not listed in it. Export the narration '
+          + 'copy again before making the audiobook, or it will not announce this chapter.',
         type: 'warning',
       });
     }
@@ -14652,9 +14918,17 @@ export class PdfPickerComponent implements OnInit {
     }
 
     const repaint: string[] = [];
-    let openingsNamed = 0;
+    // Every entry of the book these writes between them rewrote — main's own
+    // list, per call, unioned. A window with this book paginated lays exactly
+    // these out again, and an EMPTY set is the real answer "nothing on disk
+    // moved", which is a reason to redraw nothing at all.
+    const rewrittenEntries = new Set<string>();
     let openingUnnamed: string | null = null;
     let refusal: string | null = null;
+    // The first document that came back with no entry in the table of contents,
+    // and the block the user pointed at when it did — the prompt below is
+    // pre-filled from that block's own printed heading.
+    let unnamed: { file: string; blockId: string; reason: string } | null = null;
 
     for (const [element, sharing] of byElement) {
       const answer = await this.electronService.setBookBlockCategory(
@@ -14670,9 +14944,15 @@ export class PdfPickerComponent implements OnInit {
         break;
       }
       repaint.push(...sharing);
-      openingsNamed += answer.openingsNamed ?? 0;
+      for (const entry of answer.rewrittenEntries ?? []) rewrittenEntries.add(entry);
       if (openingUnnamed === null && typeof answer.openingUnnamed === 'string') {
         openingUnnamed = answer.openingUnnamed;
+      }
+      if (unnamed === null && typeof answer.needsChapterName === 'string'
+        && typeof answer.openingUnnamed === 'string') {
+        unnamed = {
+          file: answer.needsChapterName, blockId: sharing[0], reason: answer.openingUnnamed,
+        };
       }
     }
 
@@ -14698,9 +14978,11 @@ export class PdfPickerComponent implements OnInit {
     // exactly why, and that sentence is owed here, where the relabel was asked
     // for (shared/document/chapter-opening-report.ts).
     //
-    // Said BEFORE the re-open below, which closes the document and would
-    // otherwise take the reason with it.
-    if (openingUnnamed !== null) {
+    // Not said as an ALERT when the reason is that the book names no chapter in
+    // this document: that one has a fix, and the prompt below carries the same
+    // sentence with the fix attached rather than making the user dismiss the
+    // sentence to be offered it.
+    if (openingUnnamed !== null && unnamed === null) {
       this.showAlert({
         title: 'The page still prints what it printed',
         message: 'This block is now a chapter opening in the book, and the heading on the page was '
@@ -14709,48 +14991,37 @@ export class PdfPickerComponent implements OnInit {
       });
     }
 
-    // The naming pass rewrote a heading, so the markup this window laid out no
-    // longer exists and only a real re-open ends with the two agreeing — the
-    // same move a rename makes, and then back to the page the user was on.
-    if (openingsNamed > 0) {
-      const docId = this.activeDocumentId();
-      const doc = docId === null ? undefined : this.openDocuments().find(d => d.id === docId);
-      const first = this.blocks().find(b => b.id === repaint[0]);
-      if (doc !== undefined && first !== undefined) {
-        const target = doc.projectPath ?? doc.libraryPath;
-        const page = first.page;
-        queueMicrotask(async () => {
-          this.closeDocument(docId!);
-          await this.openTarget(target, 'restoring');
-          this.scrollBackAfterReopen(page);
-        });
-      }
+    // ── The documents that changed are laid out again, and only those ───────
+    //
+    // The relabel and the naming pass after it rewrite the book's own markup, so
+    // the markup this window laid out no longer exists. This used to be
+    // `closeDocument` + `openTarget` — a whole re-open, which re-stamps the
+    // book, paginates every spine document again and rebuilds the editor from
+    // nothing, for one changed attribute in one document. A rename stopped doing
+    // that in Aug 2026 and a relabel had no reason to keep doing it: main now
+    // says WHICH entries it rewrote, and exactly those are laid out again in the
+    // book main still has open (`quire:relayout-entries`).
+    //
+    // An empty list means no byte moved — the book already said what it was
+    // asked to say — and then nothing is redrawn at all.
+    if (rewrittenEntries.size > 0) {
+      const anchor = this.blocks().find(b => b.id === repaint[0]);
+      await this.relayoutBookAfterEdit([...rewrittenEntries], anchor?.bf_element);
     }
-  }
 
-  /**
-   * Put the window back on `page` once a re-opened book is laid out.
-   *
-   * A re-open is a full close-and-open — the only refresh that ends with the
-   * window and the file agreeing — and it starts at page 1. The viewer cannot
-   * be asked for the old page the instant `openTarget` resolves: its bands are
-   * rendered by the change detection that resolution schedules, and
-   * `scrollToPage` finds no band element until they are in the DOM (it does
-   * nothing, silently, by design). There is no "laid out" event to wait on, so
-   * the ask is made on animation frames until the book reports the page exists,
-   * and then one frame later so the band is rendered. The budget is what keeps
-   * this from being a spinner: a second at 60fps, after which the book is
-   * simply open at the top — the same place it would have been anyway.
-   */
-  private scrollBackAfterReopen(page: number, framesLeft = 60): void {
-    if (page <= 0) return;
-    requestAnimationFrame(() => {
-      if (this.epubViewerReady() === null || page >= this.totalPages()) {
-        if (framesLeft > 0) this.scrollBackAfterReopen(page, framesLeft - 1);
-        return;
-      }
-      requestAnimationFrame(() => this.scrollToPage(page));
-    });
+    // ── The chapter the book does not name, and the offer to name it ────────
+    //
+    // Last, because it is a question and everything above is a report: the book
+    // now calls this block its document's chapter opening, and an opening prints
+    // its chapter's stored name, which this document has none of. Answering the
+    // prompt lists it; declining leaves the block as its opening and the row in
+    // the Chapter tab, marked unlisted, with the same offer still standing.
+    if (unnamed !== null) {
+      const block = this.blocks().find(b => b.id === unnamed!.blockId);
+      this.chapterNameDraft.set(block === undefined ? '' : block.text.replace(/\s+/g, ' ').trim());
+      this.chapterNamePrompt.set(
+        { file: unnamed.file, blockId: unnamed.blockId, reason: unnamed.reason });
+    }
   }
 
   /**

@@ -33,7 +33,9 @@ import type {
 import type { WorkingCopyRemint } from '../shared/document/working-copy-remint';
 import type { VlmReadingsBank } from '../shared/vlm/readings-bank';
 import type { NarrationDeletions, NarrationState } from '../shared/vlm/narration-deletions';
-import type { BookChapterRenameResult, BookChapterTitles } from '../shared/vlm/chapter-titles';
+import type {
+  BookChapterAddResult, BookChapterRenameResult, BookChapterTitles,
+} from '../shared/vlm/chapter-titles';
 import type { TextLayerReport } from '../shared/pdf/text-layer';
 import type {
   DocumentBlocksPayload,
@@ -1542,6 +1544,29 @@ export interface ElectronAPI {
         result?: BookChapterRenameResult;
         openingsNamed?: number;
         openingUnnamed?: string | null;
+        rewrittenEntries?: string[];
+        error?: string;
+      }>;
+    /**
+     * LIST one of the book's documents as a chapter, under a name — the edit a
+     * rename is not.
+     *
+     * A rename replaces the text of an entry the table of contents already
+     * carries, and a document listed nowhere has none, so "rename the chapter to
+     * give it one" was advice nothing could follow. This inserts the entry, in
+     * spine order, into every list the book navigates by.
+     *
+     * The naming pass runs INSIDE the add rather than after it — a chapter given
+     * a name whose opening still prints the scan's heading is half an act — so
+     * the answer already describes the whole gesture.
+     */
+    addChapter: (projectDir: string, file: string, title: string, familyId?: string) =>
+      Promise<{
+        success: boolean;
+        result?: BookChapterAddResult;
+        openingsNamed?: number;
+        openingUnnamed?: string | null;
+        rewrittenEntries?: string[];
         error?: string;
       }>;
     /**
@@ -1559,9 +1584,16 @@ export interface ElectronAPI {
      * stale, and the same per-chapter sentence says why a page did not follow.
      * `openingUnnamed` is only ever set for a promotion: for a demotion, "this
      * document marks no chapter opening" is what was asked for.
+     *
+     * `chapterName` makes the promotion and the LISTING one gesture, for a
+     * document the table of contents does not name. Left out, such a document
+     * comes back with `needsChapterName` — the machine-readable half of
+     * `openingUnnamed`, which is what lets the window offer to supply the name
+     * instead of only reporting that the book states none.
      */
     setBlockCategory: (
-      projectDir: string, elementKey: string, categoryId: string, familyId?: string
+      projectDir: string, elementKey: string, categoryId: string, familyId?: string,
+      chapterName?: string
     ) => Promise<{
       success: boolean;
       result?: {
@@ -1569,8 +1601,11 @@ export interface ElectronAPI {
         categoryBefore: string | null; categoryAfter: string;
         written: boolean; fromSha256: string; toSha256: string;
       };
+      added?: BookChapterAddResult;
       openingsNamed?: number;
       openingUnnamed?: string | null;
+      needsChapterName?: string | null;
+      rewrittenEntries?: string[];
       error?: string;
     }>;
   };
@@ -3407,14 +3442,26 @@ const electronAPI: ElectronAPI = {
     renameChapter: (projectDir: string, file: string, title: string, familyId?: string) =>
       ipcRenderer.invoke('book:rename-chapter', projectDir, file, title, familyId),
     /**
+     * List a document the table of contents does NOT name, under a name. The
+     * other half of a rename — see electron/book-chapters.ts, `addBookChapter`.
+     */
+    addChapter: (projectDir: string, file: string, title: string, familyId?: string) =>
+      ipcRenderer.invoke('book:add-chapter', projectDir, file, title, familyId),
+    /**
      * Say what one element of the book IS — a relabel, written into the working
      * copy's own markup so every derivation reads the same answer. See
      * electron/book-categories.ts.
+     *
+     * `chapterName` makes a promotion to `chapter` in an unlisted document one
+     * gesture: the block becomes the opening AND the document is listed under
+     * that name. Left out, an unlisted document comes back with
+     * `needsChapterName`, which is the window's cue to ask for one.
      */
     setBlockCategory: (
-      projectDir: string, elementKey: string, categoryId: string, familyId?: string) =>
+      projectDir: string, elementKey: string, categoryId: string, familyId?: string,
+      chapterName?: string) =>
       ipcRenderer.invoke(
-        'book:set-block-category', projectDir, elementKey, categoryId, familyId),
+        'book:set-block-category', projectDir, elementKey, categoryId, familyId, chapterName),
   },
   play: {
     startSession: () =>

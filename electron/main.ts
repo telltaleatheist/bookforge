@@ -46,6 +46,9 @@ import { samePath } from '../shared/document/same-path';
 // The one rule that turns the chapter-opening naming pass's per-chapter outcome
 // into the sentence the picker owes the user after a rename.
 import { chapterOpeningRefusal } from '../shared/document/chapter-opening-report';
+// A block's element key says which DOCUMENT it is in, which is the identity a
+// chapter is listed, renamed and struck by.
+import { parseNarrationElementKey } from '../shared/vlm/narration-deletions';
 import { addVariant, importAudiobookProject, saveVariantMetadata, setPrimaryVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
@@ -8304,6 +8307,42 @@ function setupIpcHandlers(): void {
   });
 
   /**
+   * List one of the book's documents as a chapter, under a name.
+   *
+   * The other half of `book:rename-chapter`, and the one that did not exist: a
+   * rename replaces an entry the table of contents already carries, and a
+   * document it lists nowhere has none to replace. That was a dead end wherever
+   * the app told a user to "rename the chapter to give it one" — the Chapter
+   * tab's unlisted rows, and the relabel below. See electron/book-chapters.ts.
+   *
+   * There is no naming pass to run afterwards HERE: unlike a rename, the add
+   * runs it itself, because a chapter that has only just been given a name and
+   * whose opening still prints the scan's heading is a half-finished act rather
+   * than a normalization that can wait. So the answer already carries
+   * `openingsNamed`, `openingUnnamed` and every entry the whole gesture rewrote.
+   */
+  ipcMain.handle('book:add-chapter', async (
+    _event, projectDir: string, file: string, title: string, familyId?: string) => {
+    try {
+      const { addBookChapter } = await import('./book-chapters.js');
+      const result = await addBookChapter(projectDir, file, title, familyId);
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return {
+        success: true, result,
+        openingsNamed: result.openingsNamed,
+        openingUnnamed: result.openingUnnamed,
+        rewrittenEntries: result.rewrittenEntries,
+      };
+    } catch (err) {
+      // The add is one transaction and its refusals all say "nothing was
+      // written" — bar the one that says the entry landed and the opening did
+      // not, which is the add's own sentence and is shown verbatim.
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
    * Say what one element of the book IS — the picker's category palette, for a
    * book.
    *
@@ -8336,41 +8375,118 @@ function setupIpcHandlers(): void {
    * the page did not follow. For a demotion, "this document marks no chapter
    * opening" is precisely what the user just asked for, and saying it back to
    * them would be noise.
+   *
+   * ── `chapterName`: the promotion and the listing as ONE gesture ───────────
+   *
+   * Promoting a block to `chapter` in a document the table of contents does not
+   * list used to end in advice nothing could follow — "Rename the chapter to
+   * give it one", and the rename refused every unlisted document. With a name in
+   * hand this handler does the listing too (`addBookChapter`), so the user's one
+   * gesture ends with the book calling that document a chapter, naming it, and
+   * printing the name on the page.
+   *
+   * LISTEDNESS IS RE-CHECKED HERE, off the book, before anything is written. The
+   * window asks for the name because a previous answer said the document was
+   * unlisted, and between the two the book may have gained an entry; acting on
+   * the window's belief would insert a second entry for a chapter that already
+   * has one. A name for a document that IS listed is refused, and a name at all
+   * for anything but a promotion to `chapter` is refused, both before the
+   * category is written — a refusal must leave the project as it found it.
    */
   ipcMain.handle('book:set-block-category', async (
     _event, projectDir: string, elementKey: string, categoryId: string,
-    familyId?: string) => {
+    familyId?: string, chapterName?: string) => {
     try {
+      const { addBookChapter, readBookChapterTitles } = await import('./book-chapters.js');
+
+      /** What the BOOK says about this document's entry, asked rather than assumed. */
+      const namedInContents = async (file: string): Promise<boolean> => {
+        const titles = await readBookChapterTitles(projectDir, familyId);
+        const row = titles?.chapters.find((c) => c.file === file);
+        return row !== undefined && row.navTitle.trim().length > 0;
+      };
+
+      if (chapterName !== undefined) {
+        if (categoryId !== 'chapter') {
+          return {
+            success: false,
+            error:
+              `A chapter name was given for a block being labelled ${categoryId}, and only a `
+              + 'chapter opening has one — the name belongs to the chapter its document is, not to '
+              + 'the block. Nothing was written.',
+          };
+        }
+        const file = parseNarrationElementKey(elementKey).file;
+        if (await namedInContents(file)) {
+          return {
+            success: false,
+            error:
+              `${file} is already listed under a name in this book's table of contents, so it `
+              + 'cannot be listed again — a second entry would show the same chapter twice. '
+              + 'Rename the chapter instead. Nothing was written.',
+          };
+        }
+      }
+
       const { setBookBlockCategory } = await import('./book-categories.js');
       const result = await setBookBlockCategory(projectDir, elementKey, categoryId, familyId);
+
+      // Every entry of the book this ONE gesture rewrote — the relabelled
+      // document, and below it whatever the listing and the naming pass touched.
+      // The window lays exactly these out again instead of re-opening the book,
+      // so the list has to be the whole truth.
+      const rewrittenEntries = new Set<string>(result.written ? [result.file] : []);
+
+      if (chapterName !== undefined) {
+        // The book already carries the category; what is missing is the entry.
+        // The add runs the naming pass itself, so nothing below has to.
+        const added = await addBookChapter(projectDir, result.file, chapterName, familyId);
+        for (const entry of added.rewrittenEntries) rewrittenEntries.add(entry);
+        broadcastToAllWindows('project:files-changed', projectDir);
+        return {
+          success: true, result, added,
+          openingsNamed: added.openingsNamed,
+          openingUnnamed: added.openingUnnamed,
+          rewrittenEntries: [...rewrittenEntries],
+        };
+      }
 
       if (!result.written) {
         // The book already said it. No bytes moved, so there is nothing for the
         // naming pass to find that it would not have found before, and nothing
         // for any window to re-read.
-        return { success: true, result, openingsNamed: 0, openingUnnamed: null };
+        return {
+          success: true, result, openingsNamed: 0, openingUnnamed: null, rewrittenEntries: [],
+        };
       }
 
       let openingsNamed = 0;
       let openingUnnamed: string | null = null;
+      // Non-null when this document has no entry in the table of contents and
+      // therefore no name to print: the machine-readable half of the sentence
+      // below, so the window can offer to supply one instead of only saying that
+      // one is missing.
+      let needsChapterName: string | null = null;
       try {
         const { nameChapterOpenings } = await import('./narration-export.js');
         const summary = await nameChapterOpenings(projectDir, familyId);
         openingsNamed = summary.edited;
+        for (const edit of summary.named) rewrittenEntries.add(edit.file);
         if (categoryId === 'chapter') {
           // A document the table of contents does not name has no stored name to
           // print, and the pass therefore never reaches it — which
           // `chapterOpeningRefusal` would report as a pass that fell short. It
           // did not; the book simply does not call this document a chapter, and
           // that is the sentence the user is owed.
-          const { readBookChapterTitles } = await import('./book-chapters.js');
-          const titles = await readBookChapterTitles(projectDir, familyId);
-          const row = titles?.chapters.find((c) => c.file === result.file);
-          openingUnnamed = row === undefined || row.navTitle.trim().length === 0
-            ? `${result.file} is not listed under a name in this book's table of contents, so `
-              + 'there is no stored name for its opening to print. Rename the chapter to give it '
-              + 'one.'
-            : chapterOpeningRefusal(summary, result.file);
+          if (await namedInContents(result.file)) {
+            openingUnnamed = chapterOpeningRefusal(summary, result.file);
+          } else {
+            needsChapterName = result.file;
+            openingUnnamed =
+              `${result.file} is not listed under a name in this book's table of contents, so `
+              + 'there is no stored name for its opening to print. Give the chapter a name and it '
+              + 'will be listed under it.';
+          }
         }
       } catch (err) {
         broadcastToAllWindows('project:files-changed', projectDir);
@@ -8383,7 +8499,10 @@ function setupIpcHandlers(): void {
       }
 
       broadcastToAllWindows('project:files-changed', projectDir);
-      return { success: true, result, openingsNamed, openingUnnamed };
+      return {
+        success: true, result, openingsNamed, openingUnnamed, needsChapterName,
+        rewrittenEntries: [...rewrittenEntries],
+      };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

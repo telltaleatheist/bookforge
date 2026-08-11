@@ -64,8 +64,16 @@ export interface ChapterRow {
   id: string;
   /** What this chapter is called — see above for where that comes from. */
   title: string;
-  /** Zero-based page the opening sits on. */
-  page: number;
+  /**
+   * Zero-based page the opening sits on, or null when nothing on any page
+   * corresponds to the row.
+   *
+   * Null is real for a document the book READS and does not NAME whose pages
+   * carry no chapter-opening block: the row exists because the spine has the
+   * document, and there is no block to say which page it starts on. A number
+   * invented for it would scroll the reader somewhere the row is not.
+   */
+  page: number | null;
   /**
    * The block this row is a view of, or null when the row was read out of the
    * book's navigation and has no block on any page.
@@ -89,6 +97,18 @@ export interface ChapterRow {
    * sentence instead of a pencil that does nothing.
    */
   readOnlyReason: string | null;
+  /**
+   * The document this row is a chapter of that the book's table of contents does
+   * NOT name, or null for every row the contents already names.
+   *
+   * Two rows that look alike are two different edits: typing into a named row
+   * REPLACES what the book says about that document, and typing into one of
+   * these makes the book say anything about it at all for the first time. The
+   * shell needs to know which, so the row carries it — and the row is drawn
+   * differently, because a chapter the contents does not list is one the
+   * audiobook will not announce and a reader cannot navigate to.
+   */
+  unlistedFile: string | null;
 }
 
 /**
@@ -206,12 +226,15 @@ export interface ChapterRow {
           <p class="tab-hint">
             Every chapter opening, in reading order — double-click one to retype
             its title, or × to say it is not a chapter. Ctrl/⌘-click or
-            shift-click to pick several, then Merge.
+            shift-click to pick several, then Merge. A row marked
+            <em>not in the contents</em> is a chapter this book does not name:
+            type a name and it is listed under it.
           </p>
           @for (row of chapterRows(); track row.id) {
             <div
               class="chapter-row"
               [class.editing]="editingId() === row.id"
+              [class.unlisted]="row.unlistedFile !== null"
               [class.selected]="row.blockId !== null && isSelected(row.blockId)"
             >
               @if (editingId() === row.id) {
@@ -248,12 +271,22 @@ export interface ChapterRow {
                   (click)="onRowClick(row, $event)"
                   (dblclick)="startEditing(row)"
                 >{{ row.title || '(no title)' }}</button>
-                <span class="chapter-page">p{{ row.page + 1 }}</span>
+                @if (row.unlistedFile !== null) {
+                  <!--
+                    Said on the row and not only in a tooltip: a chapter the
+                    contents does not list is one the audiobook will never
+                    announce, and that is the whole reason to type a name here.
+                  -->
+                  <span class="chapter-unlisted">not in the contents</span>
+                }
+                @if (row.page !== null) {
+                  <span class="chapter-page">p{{ row.page + 1 }}</span>
+                }
                 @if (row.readOnlyReason === null) {
                   <button
                     type="button"
                     class="chapter-pencil"
-                    title="Edit this chapter's title"
+                    [title]="pencilTooltip(row)"
                     (click)="startEditing(row)"
                   >✎</button>
                 }
@@ -510,6 +543,19 @@ export interface ChapterRow {
       white-space: nowrap;
     }
 
+    /* A chapter the book READS and does not NAME. Dimmed rather than hidden:
+       the document is there and the audiobook will reach it, silently, under no
+       title at all — which is exactly the state the user has to be able to see
+       in order to fix it. */
+    .chapter-row.unlisted .chapter-title { color: var(--text-secondary); }
+
+    .chapter-unlisted {
+      flex: none;
+      font-size: var(--ui-font-xs);
+      color: var(--warning);
+      white-space: nowrap;
+    }
+
     /* A row the book states but no block backs. Still legible — it IS one of the
        book's chapters — but visibly not a thing this list can act on. */
     .chapter-readonly {
@@ -614,11 +660,19 @@ export class DocumentNavComponent {
    */
   readonly chapterClick = output<{ blockIds: string[]; additive: boolean }>();
   /**
-   * A chapter was retyped. Only ever emitted for a row with a block behind it —
-   * that block is how the shell knows which chapter of which artifact this is,
-   * and a row read out of a book's navigation has no such address.
+   * A chapter was named. Two addresses, and a row carries exactly one of them.
+   *
+   * `blockId` is the block the row is a view of, which is how the shell knows
+   * which chapter of which artifact this is — the only address a working PDF's
+   * chapters have, and the one a listed book chapter is renamed through.
+   * `unlistedFile` is the document the book READS and does not NAME, which has
+   * no entry to rename and is LISTED under the typed name instead. Both are
+   * emitted so the shell can tell the two edits apart without re-deriving the
+   * row's case, and a row with neither is never editable in the first place.
    */
-  readonly retitle = output<{ blockId: string; title: string }>();
+  readonly retitle = output<{
+    blockId: string | null; unlistedFile: string | null; title: string;
+  }>();
   /**
    * A chapter row was dismissed: this block is not a chapter opening.
    *
@@ -759,10 +813,23 @@ export class DocumentNavComponent {
     return this.selectedBlockIds().includes(blockId);
   }
 
+  /** What the pencil does on this row — retype a name, or give the book one. */
+  pencilTooltip(row: ChapterRow): string {
+    return row.unlistedFile === null
+      ? 'Edit this chapter\'s title'
+      : 'Name this chapter and list it in the contents';
+  }
+
   /** Why a row cannot be retyped, or the plain "which chapter is this". */
   rowTooltip(row: ChapterRow): string {
     const reason = row.readOnlyReason;
-    return reason === null ? row.title : `${row.title} — ${reason}`;
+    if (reason !== null) return `${row.title} — ${reason}`;
+    if (row.unlistedFile !== null) {
+      return `${row.title} — this book's table of contents does not list `
+        + `${row.unlistedFile}, so an audiobook would reach this chapter under no name at all. `
+        + 'Type one and it is listed under it.';
+    }
+    return row.title;
   }
 
   /**
@@ -818,9 +885,14 @@ export class DocumentNavComponent {
 
   startEditing(row: ChapterRow): void {
     // The shell already said why this one cannot be retyped, and the row shows
-    // it on hover — see ChapterRow.readOnlyReason.
-    if (row.readOnlyReason !== null || row.blockId === null) return;
+    // it on hover — see ChapterRow.readOnlyReason. A row with neither a block
+    // nor an unlisted document behind it has no address to name anything at.
+    if (row.readOnlyReason !== null) return;
+    if (row.blockId === null && row.unlistedFile === null) return;
     this.editing.set(row.id);
+    // The box opens on the row's OWN words — for a chapter the contents does not
+    // name, that is the heading printed on the page, which is very nearly always
+    // the name the user is about to type.
     this.draftTitle.set(row.title);
   }
 
@@ -834,13 +906,20 @@ export class DocumentNavComponent {
    * An empty title is refused by leaving the row alone rather than by writing
    * one: a chapter with no words is a heading the book cannot navigate to, and
    * the way to say "this is not a chapter" is to relabel the block.
+   *
+   * "Unchanged" is one thing for a chapter the book names and another for one it
+   * does not. A named row that comes back with the name it already had is a
+   * no-op. An UNLISTED row's title is the heading printed on the page, and
+   * confirming it unchanged is the user saying "list it under exactly that" —
+   * which is a real edit and the likeliest one they meant.
    */
   commitTitle(row: ChapterRow): void {
     if (this.editing() !== row.id) return;
     this.editing.set(null);
-    if (row.blockId === null) return;
+    if (row.blockId === null && row.unlistedFile === null) return;
     const title = this.draftTitle().trim();
-    if (title.length === 0 || title === row.title) return;
-    this.retitle.emit({ blockId: row.blockId, title });
+    if (title.length === 0) return;
+    if (row.unlistedFile === null && title === row.title) return;
+    this.retitle.emit({ blockId: row.blockId, unlistedFile: row.unlistedFile, title });
   }
 }

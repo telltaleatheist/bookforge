@@ -40,6 +40,7 @@ import type {
   NameChapterOpenersEdit,
   StampElementIdsEdit,
   RenameChapterEdit,
+  AddChapterEdit,
   SetBlockCategoryEdit,
   SourceType,
 } from './manifest-types.js';
@@ -4057,6 +4058,66 @@ export async function recordChapterRename(
     throw new Error(
       `${edit.file} was renamed in the book, but recording that in ${projectDir}'s manifest `
       + `failed: ${saved.error}`
+    );
+  }
+  return { alreadyVoid };
+}
+
+/**
+ * Record a chapter ADD: touch the book, re-stamp the strikes, log the edit —
+ * one transaction, for the same reason `recordChapterRename`'s is one.
+ *
+ * The strikes are RE-STAMPED and not migrated, and the claim behind that is
+ * narrower here than anywhere else on this path: an insert into a table of
+ * contents adds an element, so the claim only holds while no walked document's
+ * enumeration moved. `addBookChapter` proves that BEFORE it writes — a table of
+ * contents that is itself a spine document is the one shape where the insert
+ * moves keys, and a strike naming such a document refuses the add outright — so
+ * by the time this runs every recorded position still names what it named.
+ *
+ * `alreadyVoid` is the same answer it is for a rename: a record stamped with
+ * some OTHER book is left exactly as it is and said out loud, because
+ * re-stamping it would forge agreement with a book it was never made against.
+ */
+export async function recordChapterAdd(
+  projectDir: string,
+  edit: AddChapterEdit,
+  familyId?: string,
+): Promise<{ alreadyVoid: boolean }> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  let alreadyVoid = false;
+  const saved = await modifyManifest(projectId, (m) => {
+    alreadyVoid = false;
+    const epub = familyIn(m, family.id).epub;
+    if (!epub) {
+      throw new Error(
+        `Cannot record the chapter add in ${projectDir}: its ${family.id} chain records no book, `
+        + 'so there is no table of contents to have listed a chapter in.'
+      );
+    }
+
+    const recorded = epub.narrationDeletions;
+    if (recorded !== undefined) {
+      if (recorded.epubSha256 === edit.fromSha256) {
+        epub.narrationDeletions = {
+          ...recorded,
+          epubSha256: edit.toSha256,
+          updatedAt: edit.at,
+        };
+      } else {
+        alreadyVoid = true;
+      }
+    }
+
+    epub.modifiedAt = edit.at;
+    (epub.bookEdits ??= []).push(edit);
+  });
+  if (!saved.success) {
+    throw new Error(
+      `${edit.file} was listed in the book's table of contents, but recording that in `
+      + `${projectDir}'s manifest failed: ${saved.error}`
     );
   }
   return { alreadyVoid };

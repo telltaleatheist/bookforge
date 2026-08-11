@@ -58,6 +58,7 @@
     "test:legacy-layout-state": "npx tsc -p tsconfig.electron.json && node tools/test-legacy-layout-state.js",
     "test:working-copy-remint": "npx tsc -p tsconfig.electron.json && node tools/test-working-copy-remint.js",
     "test:book-chapter-titles": "npx tsc -p tsconfig.electron.json && node tools/test-book-chapter-titles.js",
+    "test:book-chapter-add": "npx tsc -p tsconfig.electron.json && node tools/test-book-chapter-add.js",
     "test:chapter-openings": "npx tsc -p tsconfig.electron.json && node tools/test-chapter-openings.js",
     "test:vlm-endpoint": "npx tsc -p tsconfig.electron.json && node tools/test-vlm-endpoint.js",
     "test:vlm-readings-bank": "npx tsc -p tsconfig.electron.json && node tools/test-vlm-readings-bank.js",

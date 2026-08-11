@@ -754,6 +754,42 @@ export interface RenameChapterEdit {
 }
 
 /**
+ * An ADD: a spine document the book's table(s) of contents did not list is
+ * listed now, under a name a person typed.
+ *
+ * Its own kind and not a {@link RenameChapterEdit} with an empty `titleBefore`,
+ * because the two are different acts and the history has to be able to say which
+ * happened. A rename replaces what a book already said about a chapter; this is
+ * the book saying anything at all about a document for the first time, which is
+ * what makes the chapter navigable and gives the audiobook a title to announce.
+ *
+ * STRUCTURE-BEARING, unlike every other edit here, and only in one place: the
+ * entry is inserted into each table of contents, so a table of contents that is
+ * ITSELF a spine document gains an element and every narration key after it in
+ * that one document would name something else. `addBookChapter` refuses before
+ * writing when a strike names such a document, rather than re-stamping a record
+ * whose positions the insert moved. Everywhere else — the chapter document's
+ * `<head><title>`, the NCX, a nav that is not in the spine — no element of any
+ * walked document moves, so the strike record is re-stamped onto the new bytes
+ * with its keys untouched, the same claim {@link RenameChapterEdit} makes.
+ *
+ * One entry per LISTED CHAPTER, because that is the act.
+ */
+export interface AddChapterEdit {
+  kind: 'add-chapter';
+  at: string;
+  /** The chapter document's zip entry name — the identity a strike is keyed by. */
+  file: string;
+  /** The name every table of contents now lists it under. */
+  title: string;
+  /** The tables of contents the entry was inserted into, as zip entry names. */
+  tocFiles: string[];
+  /** The book's sha256 before the add and after it. */
+  fromSha256: string;
+  toSha256: string;
+}
+
+/**
  * One edit to a book's markup. A union on purpose: every edit gets its own
  * `kind` and its own before/after fields rather than a shared "details" bag
  * nothing can read.
@@ -763,7 +799,8 @@ export type BookEdit =
   | NameChapterOpenersEdit
   | SetBlockCategoryEdit
   | StampElementIdsEdit
-  | RenameChapterEdit;
+  | RenameChapterEdit
+  | AddChapterEdit;
 
 /**
  * What has ever been done to a book — the things that can be done to one now,

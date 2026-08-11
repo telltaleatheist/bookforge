@@ -54,6 +54,20 @@ export interface BookChapterTitles {
   tocFiles: string[];
   /** Every document the tables of contents list, in the order they list them. */
   chapters: BookChapterTitle[];
+  /**
+   * The book's own spine documents that NO table of contents names, in reading
+   * order.
+   *
+   * The other half of the same question `chapters` answers, and it has to be
+   * asked out loud because an unlisted document is not a document without a
+   * chapter — it is a chapter the audiobook will never announce and a reader
+   * cannot navigate to. Until Aug 2026 the picker could only say so: promoting a
+   * block to `chapter` in one of these documents produced "Rename the chapter to
+   * give it one", and the rename refused every document the contents did not
+   * already list. `addBookChapter` is the operation that advice needs, and this
+   * is the list of documents it can be asked for.
+   */
+  unlistedDocuments: string[];
 }
 
 /**
@@ -104,4 +118,46 @@ export interface BookChapterRenameResult {
    */
   rewrittenEntries: string[];
   narrationCopy: NarrationCopyOutcome;
+}
+
+/**
+ * What became of the book when a spine document GAINED a table-of-contents
+ * entry.
+ *
+ * The same shape as a rename bar the one field a rename has and an add cannot:
+ * `previousTitle`. There was no previous title — the book said nothing about
+ * this document at all, which is the whole reason the operation exists — and
+ * carrying a blank `titleBefore` through the manifest would record a rename from
+ * "" rather than the act that happened.
+ *
+ * `openingsNamed` and `openingUnnamed` are here rather than on the IPC answer
+ * because the naming pass is PART of the add: a chapter that has just been given
+ * a name whose opening still prints the scan's heading is a half-finished
+ * gesture, and both callers (the Chapter tab and the relabel-to-chapter flow)
+ * need the same completion. See electron/book-chapters.ts, `addBookChapter`.
+ */
+export interface BookChapterAddResult {
+  /** The chapter document that was listed, as a zip entry name. */
+  file: string;
+  /** What every table of contents calls it now. */
+  title: string;
+  /** The book's sha256 after the rewrite. */
+  bookSha256: string;
+  /** The tables of contents the entry was inserted into, as zip entry names. */
+  rewrittenTocs: string[];
+  /**
+   * EVERY zip entry of the book whose bytes this add changed — the tables of
+   * contents, the chapter document whose `<head><title>` was filled in, and any
+   * document the naming pass rewrote an opening in. Stated rather than derived,
+   * for the reason {@link BookChapterRenameResult.rewrittenEntries} gives.
+   */
+  rewrittenEntries: string[];
+  narrationCopy: NarrationCopyOutcome;
+  /** How many chapter openings the naming pass rewrote across the whole book. */
+  openingsNamed: number;
+  /**
+   * Why THIS chapter's opening does not print its new name, or null when it
+   * does (shared/document/chapter-opening-report.ts).
+   */
+  openingUnnamed: string | null;
 }
