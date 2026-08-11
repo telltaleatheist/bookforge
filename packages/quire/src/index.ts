@@ -67,5 +67,6 @@ export {
 } from './types';
 export type {
   QuireBlock, QuireBox, QuireGeometry, QuireLayoutOptions, QuireOverflow,
-  QuirePageBoxModel, QuirePageMount, QuireReport, QuireSpineWarning, QuireUnplaced,
+  QuirePageBoxModel, QuirePageMapSnapshot, QuirePageMount, QuireReport, QuireSpineWarning,
+  QuireUnplaced,
 } from './types';

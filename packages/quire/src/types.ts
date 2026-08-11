@@ -191,6 +191,28 @@ export interface QuireReport {
 }
 
 /**
+ * A whole book's pagination as plain data, offered back to
+ * `QuireDocument.hydrateFromPageMap` so a book that was laid out once need not
+ * be laid out again. Everything in it is what a layout's own report and pages
+ * said — `pages[n]` is exactly `loadPage(n).getBlocks()` — and it is validated
+ * against the open document on the way in, never adapted. Structurally a subset
+ * of the map BookForge caches (`electron/quire-page-map.ts`), declared here so
+ * the package does not know about the cache.
+ */
+export interface QuirePageMapSnapshot {
+  /** The paginator that made it, by name. A different one is refused. */
+  strategyName: string;
+  geometry: { width: number; height: number; fontSize: number };
+  pageCount: number;
+  /** Blocks per GLOBAL page, page 0 first. */
+  pages: QuireBlock[][];
+  documents: string[];
+  documentPageOffsets: number[];
+  unplaced: QuireUnplaced[];
+  overflows: QuireOverflow[];
+}
+
+/**
  * How a strategy relates pages to DOM. This is the fact a display surface has
  * to plan around, so it is part of the public shape rather than a private
  * detail of whichever strategy is current.

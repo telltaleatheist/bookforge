@@ -24,7 +24,7 @@ import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import { ipcMain } from 'electron';
 import { Quire, type QuireDocument } from '../packages/quire/src';
-import type { QuirePageMount } from '../packages/quire/src/types';
+import type { QuirePageMount, QuireReport } from '../packages/quire/src/types';
 import {
   enumerateNarrationElements, stampSpineDocuments, verifyStampedDocuments,
 } from './quire-stamp';
@@ -138,7 +138,46 @@ export async function openBookForViewer(
   const doc = await Quire.openDocument(stampedPath);
   let opening: QuireViewerOpening;
   try {
-    const report = await doc.layout(geometry);
+    // ── The layout: the cached page map when it is valid, live otherwise ────
+    // The SAME cache the analysis path reads and writes (`pageMap` in
+    // epub-quire-analysis.ts): the same sha-derived key, the same strategy name,
+    // the same geometry in the file name. A valid hit hydrates the document
+    // without paginating anything; a miss paginates ONCE and saves the map, so
+    // whichever of the viewer and the analysis reaches a book first pays for
+    // the layout and the other reads it back. One map under both halves is also
+    // what retired the "analyzed as X but opens as Y" disagreement this
+    // function used to police by re-paginating on every open.
+    //
+    // A map that loads but fails validation — wrong strategy, wrong geometry,
+    // wrong spine, internally inconsistent — is a MISS, not an error: it is
+    // retired loudly together with the analysis payloads built from it, and the
+    // book is laid out for real.
+    let report: QuireReport | null = null;
+    let cachedMap: QuirePageMap | null = null;
+    try {
+      cachedMap = await loadCachedPageMap(fileHash, doc.strategyName, geometry);
+    } catch (err) {
+      await discardPoisonedPageMap(fileHash, doc.strategyName, geometry, (err as Error).message);
+    }
+    if (cachedMap !== null) {
+      try {
+        report = await doc.hydrateFromPageMap(cachedMap, geometry);
+        console.log(`[quire-viewer] ${path.basename(epubPath)}: hydrated from the cached `
+          + `page map in ${Math.round(report.layoutMs)} ms`);
+      } catch (err) {
+        report = null;
+        await discardPoisonedPageMap(fileHash, doc.strategyName, geometry, (err as Error).message);
+      }
+    }
+    if (report === null) {
+      report = await doc.layout(geometry);
+      // Saved through the same writer the analysis path uses
+      // (`saveCachedPageMap` of `pageMapOfDocument`), so `epub-quire-analysis`
+      // finds this layout instead of paginating the same book a second time.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const service = require('./quire-service') as typeof import('./quire-service');
+      await saveCachedPageMap(fileHash, service.pageMapOfDocument(doc, geometry));
+    }
     if (report.unplaced.length > 0) {
       const names = report.unplaced.slice(0, 5).map((u) => `${u.id} (${u.tag}, ${u.display})`);
       throw new Error(
@@ -148,18 +187,6 @@ export async function openBookForViewer(
       );
     }
     const pageCount = doc.countPages();
-
-    // The analyzer trusts a CACHED page map; this bridge just paginated the
-    // same stamped book live. Pagination is deterministic, so a cached map
-    // that disagrees with what was measured right here is a leftover of a
-    // build that laid books out differently — poison that feeds the analysis
-    // a page world this viewer cannot show, which the picker then refuses as
-    // "analyzed as X but opens as Y" forever. Deleted here, together with the
-    // analysis payloads built from it, so the very next analysis
-    // re-paginates and the two meet on the same number. (Measured 2026-08-09:
-    // a v2-named map paginated without the v2 margin said 183 pages against a
-    // live 235, and nothing would ever have retired it.)
-    await discardCachedMapsDisagreeingWith(fileHash, doc.strategyName, geometry, pageCount);
 
     // One block per page FRAGMENT — the same shape the analysis emits, with the
     // same id derivation, so the harness drives the viewer with exactly the
@@ -271,38 +298,27 @@ export async function openBookForViewer(
 }
 
 /**
- * Retire a cached page map that contradicts this book's live pagination.
+ * Retire a cached page map that failed to load or to validate against the book
+ * being opened.
  *
- * A map that cannot even be read for this geometry, or that carries a
- * different page count than the layout just measured, is poison from a stale
- * build: no future run of THIS build will ever produce it, so no future run
- * should ever read it. The analysis payloads in the same directory embed
- * page-keyed blocks derived from some map, so they go with it — all of them
- * pure cache, rebuilt from the book on the next analysis.
+ * Such a map is poison from a stale build: no future run of THIS build will
+ * ever produce it, so no future run should ever read it. (Measured 2026-08-09:
+ * a v2-named map paginated without the v2 margin said 183 pages against a live
+ * 235, and nothing would ever have retired it.) The analysis payloads in the
+ * same directory embed page-keyed blocks derived from some map, so they go
+ * with it — all of them pure cache, rebuilt from the book on the next analysis.
  */
-async function discardCachedMapsDisagreeingWith(
+async function discardPoisonedPageMap(
   fileHash: string,
   strategyName: string,
   geometry: QuireViewerGeometry,
-  livePageCount: number,
+  why: string,
 ): Promise<void> {
-  let cached: QuirePageMap | null = null;
-  let unreadable: string | null = null;
-  try {
-    cached = await loadCachedPageMap(fileHash, strategyName, geometry);
-  } catch (err) {
-    unreadable = (err as Error).message;
-  }
-  if (unreadable === null && (cached === null || cached.pageCount === livePageCount)) return;
-
   const mapAt = pageMapPath(fileHash, strategyName, geometry);
   console.warn(
-    `[quire-viewer] the cached page map at ${mapAt} `
-    + (unreadable !== null
-      ? `cannot be read for this layout (${unreadable})`
-      : `says ${cached!.pageCount} page(s), but this book lays out live as ${livePageCount}`)
-    + ' — a leftover of a build that paginated differently. Deleting it and the analysis'
-    + ' payloads built from it, so the next analysis re-paginates.',
+    `[quire-viewer] the cached page map at ${mapAt} is a MISS: ${why} — a leftover of a build `
+    + 'that paginated differently. Deleting it and the analysis payloads built from it, so the '
+    + 'next analysis re-paginates.',
   );
   await fsPromises.rm(mapAt, { force: true });
   const dir = quireCacheDir(fileHash);

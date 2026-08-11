@@ -33,6 +33,7 @@ import {
   type QuireGeometry,
   type QuireLayoutOptions,
   type QuireOverflow,
+  type QuirePageMapSnapshot,
   type QuirePageMount,
   type QuireReport,
   type QuireUnplaced,
@@ -51,11 +52,83 @@ export interface QuireOpenOptions {
   strategy?: QuireStrategy;
 }
 
+/**
+ * One spine document's contribution to the book, in DOCUMENT-LOCAL terms:
+ * `localPages[n]` are the blocks of the document's own page `n`, and every page
+ * number inside (`splitFrom`/`splitTo`, `overflows[].page`) is local too. Global
+ * numbers are applied by `buildPageIndex`/`buildReport` from `pageOffset` — kept
+ * local here so an entry can come from a live measurement OR from a cached page
+ * map ({@link QuireDocument.hydrateFromPageMap}) and be indistinguishable to
+ * everything downstream, `relayoutDocument` included.
+ */
 interface DocumentLayout {
   entry: string;
   pageOffset: number;
   pageCount: number;
-  measurement: StrategyMeasurement;
+  /** Blocks per LOCAL page, in flow order within each page. */
+  localPages: QuireBlock[][];
+  /** Every stamped id in this document, placed first (flow order), then unplaced. */
+  stampedIds: string[];
+  unplaced: QuireUnplaced[];
+  /** `page` is LOCAL to this document's flow. */
+  overflows: QuireOverflow[];
+}
+
+/**
+ * Fold a strategy's raw measurement into the document-local layout shape.
+ *
+ * The block objects built here are exactly the ones `buildPageIndex` used to
+ * build inline — same field derivations, same push order (placement, then
+ * fragment, then id) — only without the page offset, which is applied later.
+ */
+function layoutFromMeasurement(
+  entry: string,
+  pageOffset: number,
+  measurement: StrategyMeasurement,
+): DocumentLayout {
+  const localPages: QuireBlock[][] = Array.from(
+    { length: measurement.pageCount }, () => [] as QuireBlock[]);
+  const stampedIds: string[] = [];
+  for (const placement of measurement.placed) {
+    for (const id of placement.ids) stampedIds.push(id);
+    const pages = placement.fragments.map((f) => f.page);
+    const spans = pages.length > 1;
+    const splitFrom = spans ? Math.min(...pages) : null;
+    const splitTo = spans ? Math.max(...pages) : null;
+    for (const fragment of placement.fragments) {
+      for (const id of placement.ids) {
+        localPages[fragment.page].push({
+          type: placement.type,
+          bbox: { x: fragment.x, y: fragment.y, w: fragment.w, h: fragment.h },
+          text: placement.type === 'image' ? null : (fragment.text ?? ''),
+          id,
+          splitFrom,
+          splitTo,
+          font: placement.font,
+          lines: fragment.lines,
+        });
+      }
+    }
+  }
+  const unplaced: QuireUnplaced[] = [];
+  for (const miss of measurement.unplaced) {
+    for (const id of miss.ids) {
+      stampedIds.push(id);
+      unplaced.push({
+        id, document: entry, tag: miss.tag,
+        reason: 'not-rendered', display: miss.display, hasText: miss.hasText,
+      });
+    }
+  }
+  const overflows: QuireOverflow[] = [];
+  for (const over of measurement.overflows) {
+    for (const id of over.ids) {
+      overflows.push({
+        id, document: entry, page: over.page, axis: over.axis, overshoot: over.overshoot,
+      });
+    }
+  }
+  return { entry, pageOffset, pageCount: measurement.pageCount, localPages, stampedIds, unplaced, overflows };
 }
 
 export class QuirePage {
@@ -199,18 +272,7 @@ export class QuireDocument {
    */
   async layout(options: QuireLayoutOptions): Promise<QuireReport> {
     this.assertOpen();
-    for (const [key, value] of Object.entries(options)) {
-      if (key === 'gap' && value === undefined) continue;
-      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-        quireFail('BAD_GEOMETRY', `layout(): ${key} must be a positive finite number, got ${String(value)}`);
-      }
-    }
-    const geometry: QuireGeometry = {
-      width: options.width,
-      height: options.height,
-      fontSize: options.fontSize,
-      gap: options.gap ?? QUIRE_COLUMN_GAP,
-    };
+    const geometry = this.resolveGeometry(options, 'layout()');
     this.geometry = geometry;
 
     const started = Date.now();
@@ -250,15 +312,185 @@ export class QuireDocument {
           `${spineDoc.entry}: ${parsed.error}\n${parsed.stack ?? ''}`.trim(),
         );
       }
-      this.layouts.push({
-        entry: spineDoc.entry, pageOffset, pageCount: parsed.pageCount, measurement: parsed,
-      });
+      this.layouts.push(layoutFromMeasurement(spineDoc.entry, pageOffset, parsed));
       pageOffset += parsed.pageCount;
     }
     this.loadedDocument = this.archive.spine.length - 1;
     this.presentedPage = -1;
 
     this.buildPageIndex(pageOffset);
+    this.report = this.buildReport(Date.now() - started);
+    return this.report;
+  }
+
+  /**
+   * Stand the document up from a page map a previous layout of the SAME book at
+   * the SAME geometry produced, instead of paginating it again.
+   *
+   * Pagination is deterministic (gate G0), so a map made by this strategy, at
+   * this geometry, for this spine, IS what `layout(options)` would measure —
+   * and everything `layout()` establishes is established here from the map:
+   * the per-document layouts, the page index, the report, the shells the
+   * `quire://` protocol serves, and the analysis surface. The one difference is
+   * that the analysis surface has NOTHING loaded — `relayoutDocument` and
+   * `toPng` load the single document they need on first use, which is the whole
+   * saving: a hydrated open never navigates the offscreen window at all.
+   *
+   * The map is VALIDATED, never adapted: a strategy, geometry or spine that
+   * does not match this document is a refusal naming the disagreement, so the
+   * caller can retire the cache entry and lay out for real. A refusal leaves
+   * the document exactly as opened — `layout()` may still be called.
+   *
+   * `stampedIds` in the report is rebuilt as each document's placed ids in
+   * first-appearance page order followed by its unplaced ids — flow order for
+   * everything a fragmenting strategy produces (fragments ascend pages), and
+   * nothing consumes the order today. Every other report field is the map's.
+   *
+   * `layoutMs` afterwards is the time hydration took — the truthful cost of
+   * THIS standing-up, exactly as `relayoutDocument` reports its own time.
+   */
+  async hydrateFromPageMap(
+    map: QuirePageMapSnapshot,
+    options: QuireLayoutOptions,
+  ): Promise<QuireReport> {
+    this.assertOpen();
+    if (this.report) {
+      quireFail(
+        'ALREADY_LAID_OUT',
+        'hydrateFromPageMap() stands up a freshly opened document; this one already has a '
+        + 'layout, and a cached map cannot be reconciled with live state it did not produce.',
+      );
+    }
+    const geometry = this.resolveGeometry(options, 'hydrateFromPageMap()');
+    const started = Date.now();
+
+    // ── The map must be THIS book's, at THIS geometry, by THIS paginator ────
+    const refuse = (why: string): never => quireFail(
+      'PAGE_MAP_MISMATCH',
+      `the page map offered for ${this.epubPath} ${why} — it was made from a different layout, `
+      + 'so no page number in it may be believed. Retire it and lay the book out.',
+    );
+    if (map.strategyName !== this.strategy.name) {
+      refuse(`was made by ${map.strategyName}, but this document paginates with ${this.strategy.name}`);
+    }
+    if (
+      map.geometry.width !== geometry.width
+      || map.geometry.height !== geometry.height
+      || map.geometry.fontSize !== geometry.fontSize
+    ) {
+      refuse(
+        `was made at ${map.geometry.width}x${map.geometry.height}x${map.geometry.fontSize}, `
+        + `but this layout is ${geometry.width}x${geometry.height}x${geometry.fontSize}`,
+      );
+    }
+    const spine = this.archive.spine.map((s) => s.entry);
+    if (
+      map.documents.length !== spine.length
+      || map.documents.some((entry, at) => entry !== spine[at])
+    ) {
+      refuse(
+        `describes the spine [${map.documents.join(', ')}], but this book's spine is `
+        + `[${spine.join(', ')}]`,
+      );
+    }
+    if (map.pages.length !== map.pageCount) {
+      refuse(`says ${map.pageCount} page(s) but carries ${map.pages.length} page(s) of blocks`);
+    }
+    if (map.documentPageOffsets.length !== map.documents.length) {
+      refuse(
+        `carries ${map.documentPageOffsets.length} page offset(s) for ${map.documents.length} document(s)`,
+      );
+    }
+    if (map.documents.length > 0 && map.documentPageOffsets[0] !== 0) {
+      refuse(`starts its first document on page ${map.documentPageOffsets[0]}, leaving earlier pages unowned`);
+    }
+
+    // ── Per-document layouts, sliced back out of the global map ─────────────
+    const layouts: DocumentLayout[] = [];
+    let claimedUnplaced = 0;
+    let claimedOverflows = 0;
+    for (let at = 0; at < map.documents.length; at++) {
+      const entry = map.documents[at];
+      const pageOffset = map.documentPageOffsets[at];
+      const end = at + 1 < map.documentPageOffsets.length
+        ? map.documentPageOffsets[at + 1]
+        : map.pageCount;
+      if (!Number.isInteger(pageOffset) || pageOffset < 0 || end < pageOffset || end > map.pageCount) {
+        refuse(`gives ${entry} the page range [${pageOffset}, ${end}), which is not a range of the book`);
+      }
+      const localPages: QuireBlock[][] = [];
+      for (let page = pageOffset; page < end; page++) {
+        localPages.push(map.pages[page].map((block) => {
+          if (
+            (block.splitFrom !== null && (block.splitFrom < pageOffset || block.splitFrom >= end))
+            || (block.splitTo !== null && (block.splitTo < pageOffset || block.splitTo >= end))
+          ) {
+            refuse(
+              `puts a fragment of ${block.id} on page ${page} of ${entry} with a split run `
+              + `${block.splitFrom}–${block.splitTo} outside that document's pages`,
+            );
+          }
+          return {
+            ...block,
+            bbox: { ...block.bbox },
+            splitFrom: block.splitFrom === null ? null : block.splitFrom - pageOffset,
+            splitTo: block.splitTo === null ? null : block.splitTo - pageOffset,
+          };
+        }));
+      }
+      const unplaced = map.unplaced.filter((u) => u.document === entry);
+      const overflows = map.overflows.filter((o) => o.document === entry).map((over) => {
+        if (over.page < pageOffset || over.page >= end) {
+          refuse(`reports an overflow of ${over.id} on page ${over.page}, outside ${entry}'s pages`);
+        }
+        return { ...over, page: over.page - pageOffset };
+      });
+      claimedUnplaced += unplaced.length;
+      claimedOverflows += overflows.length;
+      const placedIds = new Set<string>();
+      const stampedIds: string[] = [];
+      for (const blocks of localPages) {
+        for (const block of blocks) {
+          if (placedIds.has(block.id)) continue;
+          placedIds.add(block.id);
+          stampedIds.push(block.id);
+        }
+      }
+      for (const miss of unplaced) stampedIds.push(miss.id);
+      layouts.push({
+        entry, pageOffset, pageCount: end - pageOffset, localPages, stampedIds, unplaced, overflows,
+      });
+    }
+    if (claimedUnplaced !== map.unplaced.length || claimedOverflows !== map.overflows.length) {
+      refuse('names documents in its unplaced/overflow records that are not in the spine');
+    }
+
+    // ── The same surfaces layout() leaves behind ────────────────────────────
+    // Built into locals first: a refusal anywhere above or a shell that cannot
+    // be built leaves the document exactly as opened.
+    const layoutCss = this.strategy.layoutCss(geometry);
+    const overrides = new Map<string, { body: Buffer; contentType: string }>();
+    for (const spineDoc of this.archive.spine) {
+      const source = await this.sourceFor(spineDoc.entry);
+      const shell = buildPaginationShell(source, spineDoc.entry, layoutCss);
+      overrides.set(spineDoc.entry, {
+        body: Buffer.from(shell.xhtml, 'utf8'),
+        contentType: 'application/xhtml+xml',
+      });
+    }
+    const host = await OffscreenWindowHost.create({
+      session: this.session, width: geometry.width, height: geometry.height,
+    });
+
+    // ── Commit ──────────────────────────────────────────────────────────────
+    this.geometry = geometry;
+    for (const [entry, body] of overrides) this.overrides.set(entry, body);
+    if (this.analysisHost) this.analysisHost.destroy();
+    this.analysisHost = host;
+    this.loadedDocument = -1;
+    this.presentedPage = -1;
+    this.layouts = layouts;
+    this.buildPageIndex(map.pageCount);
     this.report = this.buildReport(Date.now() - started);
     return this.report;
   }
@@ -375,9 +607,7 @@ export class QuireDocument {
     // Staged into locals first, so a throw between here and the last assignment
     // cannot leave a page index spliced onto layouts it does not describe.
     const layouts = this.layouts.slice();
-    layouts[at] = {
-      entry, pageOffset: layouts[at].pageOffset, pageCount: measured.pageCount, measurement: measured,
-    };
+    layouts[at] = layoutFromMeasurement(entry, layouts[at].pageOffset, measured);
     let pageOffset = layouts[at].pageOffset + measured.pageCount;
     for (let i = at + 1; i < layouts.length; i++) {
       layouts[i] = { ...layouts[i], pageOffset };
@@ -438,27 +668,17 @@ export class QuireDocument {
   private buildPageIndex(totalPages: number): void {
     this.pageIndex = Array.from({ length: totalPages }, () => [] as QuireBlock[]);
     for (const layout of this.layouts) {
-      for (const placement of layout.measurement.placed) {
-        const pages = placement.fragments.map((f) => f.page);
-        const spans = pages.length > 1;
-        const splitFrom = spans ? layout.pageOffset + Math.min(...pages) : null;
-        const splitTo = spans ? layout.pageOffset + Math.max(...pages) : null;
-        for (const fragment of placement.fragments) {
-          const globalPage = layout.pageOffset + fragment.page;
-          for (const id of placement.ids) {
-            this.pageIndex[globalPage].push({
-              type: placement.type,
-              bbox: { x: fragment.x, y: fragment.y, w: fragment.w, h: fragment.h },
-              text: placement.type === 'image' ? null : (fragment.text ?? ''),
-              id,
-              splitFrom,
-              splitTo,
-              font: placement.font,
-              lines: fragment.lines,
-            });
-          }
+      layout.localPages.forEach((blocks, localPage) => {
+        const globalPage = layout.pageOffset + localPage;
+        for (const block of blocks) {
+          this.pageIndex[globalPage].push({
+            ...block,
+            bbox: { ...block.bbox },
+            splitFrom: block.splitFrom === null ? null : layout.pageOffset + block.splitFrom,
+            splitTo: block.splitTo === null ? null : layout.pageOffset + block.splitTo,
+          });
         }
-      }
+      });
     }
   }
 
@@ -467,25 +687,10 @@ export class QuireDocument {
     const unplaced: QuireUnplaced[] = [];
     const overflows: QuireOverflow[] = [];
     for (const layout of this.layouts) {
-      for (const placement of layout.measurement.placed) {
-        for (const id of placement.ids) stampedIds.push(id);
-      }
-      for (const miss of layout.measurement.unplaced) {
-        for (const id of miss.ids) {
-          stampedIds.push(id);
-          unplaced.push({
-            id, document: layout.entry, tag: miss.tag,
-            reason: 'not-rendered', display: miss.display, hasText: miss.hasText,
-          });
-        }
-      }
-      for (const over of layout.measurement.overflows) {
-        for (const id of over.ids) {
-          overflows.push({
-            id, document: layout.entry,
-            page: layout.pageOffset + over.page, axis: over.axis, overshoot: over.overshoot,
-          });
-        }
+      stampedIds.push(...layout.stampedIds);
+      unplaced.push(...layout.unplaced);
+      for (const over of layout.overflows) {
+        overflows.push({ ...over, page: layout.pageOffset + over.page });
       }
     }
     return {
@@ -634,6 +839,22 @@ export class QuireDocument {
 
   private urlFor(entry: string): string {
     return `quire://${this.sessionId}/${entry.split('/').map(encodeURIComponent).join('/')}`;
+  }
+
+  /** Validate a caller's page box and resolve the optional gap. One reader, two callers. */
+  private resolveGeometry(options: QuireLayoutOptions, caller: string): QuireGeometry {
+    for (const [key, value] of Object.entries(options)) {
+      if (key === 'gap' && value === undefined) continue;
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+        quireFail('BAD_GEOMETRY', `${caller}: ${key} must be a positive finite number, got ${String(value)}`);
+      }
+    }
+    return {
+      width: options.width,
+      height: options.height,
+      fontSize: options.fontSize,
+      gap: options.gap ?? QUIRE_COLUMN_GAP,
+    };
   }
 
   private requireGeometry(): QuireGeometry {
