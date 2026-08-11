@@ -1132,18 +1132,29 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
 
     this.setState(index, { kind: 'mounting' });
     const flow = this.layout() === 'flow';
-    const frame = mountQuirePage(band.mount, host, {
-      partition: this.source().partition, flow,
-    });
-    this.mounted.set(index, frame);
     // A mount can be CANCELLED — the user scrolls past a chapter before it has
     // finished laying itself out, and an off-screen frame cannot finish anyway.
     // Every await below therefore checks that this frame is still the band's
     // frame, and returns silently if it is not. Without that check a cancelled
     // mount comes back as a refusal, and the band would tell the user its
     // chapter is broken when all that happened is that they scrolled.
-    const cancelled = (): boolean => this.mounted.get(index) !== frame;
+    //
+    // Before the frame exists there is nothing to cancel AGAINST, so the check
+    // is false until it does. Creating it is inside the try for the same reason
+    // everything else is: this method sets `mounting` above, and `mounting` is a
+    // state only this method leaves. A throw between that line and the frame
+    // being recorded used to escape as a rejected promise nobody awaited, with
+    // no frame in `mounted` for `unmountBand` to find and reset — so the band
+    // said "Laying out …" for the rest of the book's life, and the guard at the
+    // top of this method refused to try again. Every exit is now `ready`,
+    // `refused` or `unmounted`.
+    let frame: MountedQuirePage | null = null;
+    const cancelled = (): boolean => frame !== null && this.mounted.get(index) !== frame;
     try {
+      frame = mountQuirePage(band.mount, host, {
+        partition: this.source().partition, flow,
+      });
+      this.mounted.set(index, frame);
       // The frame is one page wide until it has been arranged; give it the
       // band's size straight away so the layout does not jump under the user.
       frame.element.style.width = `${band.width}px`;
@@ -1241,11 +1252,29 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     });
   }
 
+  /**
+   * Put a band back to having no frame — whether or not it currently has one.
+   *
+   * The "whether or not" is the point. This used to return early when there was
+   * no frame to destroy, which left the band's STATE wherever it happened to be,
+   * and a band holding `mounting` with no frame is a band nothing can ever move
+   * again: `mountBand` refuses to start while the state says mounting, and the
+   * only thing that clears mounting is a frame this band does not have. The
+   * off-screen drop below (`reconcileVisibility`) reached exactly that early
+   * return, so scrolling past a chapter mid-mount could strand it for the rest
+   * of the book's life.
+   *
+   * Having no frame IS being unmounted, so that is what it now says. The same
+   * change lets `remountDocuments` clear a REFUSED band: a document that has
+   * been rewritten is new bytes, and new bytes deserve their own attempt rather
+   * than inheriting the verdict on the old ones.
+   */
   private unmountBand(index: number): void {
     const frame = this.mounted.get(index);
-    if (!frame) return;
-    frame.destroy();
-    this.mounted.delete(index);
+    if (frame) {
+      frame.destroy();
+      this.mounted.delete(index);
+    }
     this.syncTargets.delete(index);
     this.setState(index, { kind: 'unmounted' });
   }
