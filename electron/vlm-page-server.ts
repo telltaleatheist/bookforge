@@ -109,6 +109,20 @@ const DESKTOP_MARGIN_MB = 1_500;
 /** Never reserve more than this fraction of the card, however empty it looks. */
 const UTIL_CEILING = 0.85;
 
+/**
+ * Never reserve more than this many MB, however empty the card looks.
+ *
+ * The fraction ceiling alone sizes the reservation to the CARD (an idle 24 GB
+ * card → ~20 GiB reserved), but the model only needs ~6 GB of weights plus a
+ * few GiB of KV cache — and through WSL's dxg layer every reserved GiB is ALSO
+ * backed by committed host RAM. On 2026-08-11 that ~20 GiB reservation held the
+ * machine at 93% commit all night and OOM-killed the processes around it (bun,
+ * ffmpeg, python) while most of the reserved VRAM sat idle. Size to the model's
+ * need, not the card's emptiness; if KV runs tight vLLM preempts and slows
+ * down, which beats the machine falling over.
+ */
+const RESERVE_CAP_MB = 12_288;
+
 /** The arbiter owner label. Distinct from every TTS owner, so we are sequenced. */
 const GPU_OWNER = 'vlm-page-reader';
 
@@ -194,7 +208,7 @@ async function sizeReservation(): Promise<{ util: number; freeMB: number | null 
     // terms and say so, which is more useful than a number invented here.
     return { util: UTIL_CEILING, freeMB: null };
   }
-  const reserveMB = mem.freeMB - DESKTOP_MARGIN_MB;
+  const reserveMB = Math.min(mem.freeMB - DESKTOP_MARGIN_MB, RESERVE_CAP_MB);
   const util = Math.max(Math.min(reserveMB / mem.totalMB, UTIL_CEILING), 0.05);
   return { util: Math.round(util * 100) / 100, freeMB: mem.freeMB };
 }
