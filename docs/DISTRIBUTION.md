@@ -310,55 +310,33 @@ until it is published.
     repo's own `test:*` scripts run before their harness.
 13. **Commit** the BookForge-side change.
 
-### 2.8 Foundry's own downloads
+### 2.8 Foundry's own downloads — RETIRED
 
-Foundry is itself a downloader, and its artifacts are separate from the CLI
-binary. This matters because BookForge and foundry share one copy on disk.
+**There are none left that BookForge shares.** This section used to describe two
+of them and the one-copy-on-disk rule that made them BookForge's business:
 
-**Stage models** — `src/models/catalog.ts` declares one base
-(`foundry:4b`, `foundry-4b-f16.gguf`, 8,051,285,600 bytes) and three stage models
-(`foundry-ocr-v1-4b`, `foundry-footnotes-v1-4b` — LoRA adapters at ~132 MB each;
-`foundry-blocks-v1-4b` — a *fused* full checkpoint at ~8 GB, declared
-`kind: 'full'` for that reason). All four live at
-`https://huggingface.co/owenmorgan/foundry-models/resolve/main/…`, each with an
-sha256 and byte count, verified on arrival by `downloadVerified`
-(`src/models/download.ts`). Two standing rules in that file are worth carrying
-anywhere else a catalog like this is written: **entries are never deleted once
-published** (someone is mid-book with those weights on disk), and **`rank` picks
-the default** among the models actually present, so a new version becomes the
-default without anything being uninstalled first.
+- **Stage models** — a 4B base plus three stage models (`foundry-ocr-v1-4b`,
+  `foundry-footnotes-v1-4b`, `foundry-blocks-v1-4b`) on
+  `huggingface.co/owenmorgan/foundry-models`, pulled by `foundry models pull`,
+  and — for the 8 GB blocks checkpoint — by BookForge's own Settings → Add-ons
+  into *foundry's* platform data dir so there was never a second copy.
+- **A vendored Tesseract**, pinned exactly (binary *and* tessdata) because
+  Tesseract was the segmenter those models were trained against.
 
-**The vendored Tesseract** — foundry pins an exact Tesseract *and* exact
-tessdata, because Tesseract is the segmenter its models were trained against;
-picking up whatever is on PATH silently shifts the input distribution and every
-symptom then points at the models. The pin lives in
-`vendor/tesseract/manifest.json` (committed) and is compiled into the binary; the
-files are downloaded by `foundry models pull` from the **`assets`** release tag on
-`telltaleatheist/foundry`. To record and publish a platform, in this order:
+All of it is gone from both sides. BookForge retired the stages in Aug 2026 —
+`electron/blocks-models.ts` and the 8 GB component with it — and foundry then
+removed the pipeline, the `models` command, the catalog and the vendored
+Tesseract from its own main (its `pre-vlm-strip` tag is the last build that had
+them). The surviving route is `vlm-convert`, whose weights live wherever the
+conversion's route put them: an OpenAI-compatible endpoint, the WSL page reader,
+or MLX on an Apple Silicon Mac. **BookForge downloads nothing on foundry's
+behalf, and the two no longer share a directory.**
 
-```bash
-tools/scan-vendor-tesseract.sh [path/to/tesseract] [lang ...]
-tar -czf tesseract-<version>-<platform>.tar.gz -C vendor/tesseract/<platform> .
-gh release upload assets tesseract-<version>-<platform>.tar.gz --clobber
-node tools/record-vendor-artifact.mjs <platform> <url>
-```
-
-`record-vendor-artifact.mjs` **downloads the URL and hashes what arrives** — it
-never reads the tarball you just built. A hash taken from the local file asserts
-things nobody checked: that the upload finished, that it landed on the tag you
-meant, that nothing rewrote it. Same rule as §2.5: upload, verify the uploaded
-bytes, *then* record. Today only `win32-x64` has a published artifact; the
-darwin-arm64 pin is explicitly `"portable": false` (a Homebrew launcher whose
-dylibs are not beside it) and linux-x64 is unrecorded. `vendor/tesseract/README.md`
-documents both honestly and says what a real bundle would need.
-
-**One copy on disk.** `getBlocksModelsDir()` in `electron/blocks-models.ts`
-resolves to *foundry's* platform data dir —
-`~/Library/Application Support/foundry/models` on macOS,
-`%LOCALAPPDATA%\foundry\models` on Windows, `$XDG_DATA_HOME/foundry/models`
-otherwise. `foundry models pull` and BookForge's Settings → Add-ons fetch the same
-8 GB file into the same directory, so there is never a second copy. That is why
-the file is named for the foundry stage rather than for the app asking.
+Foundry does publish pinned Python environments now (its prerelease-flagged
+`env-v1` tag: WSL/vLLM, Windows and Mac). BookForge installs none of them. There
+is one place adopting one would pay — `electron/vlm-page-server.ts` still needs a
+hand-built conda env (`dots`) that no component can install — and that remains an
+open decision, not a thing this doc describes as done.
 
 ---
 
@@ -863,21 +841,18 @@ Found while writing this. **Nothing here was changed** — this section is the
 record, not a to-do that was actioned.
 
 **9.1 — The blocks GGUF is not hash-verified when BookForge downloads it.**
-`electron/blocks-models.ts` (in `downloadBlocksModel`) checks the downloaded size
-against `def.bytes` and comments:
+**CLOSED by deletion, Aug 2026** — not by a fix. `electron/blocks-models.ts`
+checked the downloaded size against `def.bytes` and commented that the sha256 was
+"checked by the component path, which has a verify phase to report it in"; the
+component path (`fetchBlocksModel`) never called `sha256File` and never emitted a
+verify phase, so the 8 GB `sha256` in `BLOCKS_MODELS` was decorative. The stage
+that needed those weights was retired and the whole download went with it, so
+there is no unverified 8 GB artifact on this side any more.
 
-```ts
-// Size is the cheap integrity check; the sha256 in the catalog is checked
-// by the component path, which has a verify phase to report it in.
-```
-
-That is not true of the current code. The component path is `fetchBlocksModel`
-(`electron/components/component-manager.ts`), which calls `downloadBlocksModel`
-and then writes the record — it never calls `sha256File` and never emits a
-`verify` phase. So the 8 GB `sha256` in `BLOCKS_MODELS` is presently decorative on
-the BookForge side. Foundry's own `downloadVerified` (`src/models/download.ts`)
-*does* hash the same file, so the identical artifact is verified when
-`foundry models pull` fetches it and unverified when Settings → Add-ons does.
+It is kept here because the *shape* of the bug outlived the file and §9.2 below
+is the same one: **a declared sha256 nobody compares is worse than no sha256 at
+all**, because it reads as a check that happened. Grep for `sha256` on any new
+download path and prove something consumes it.
 
 **9.2 — Every overlay component downloads without an integrity check.** The four
 components that install *into* an existing env all bypass `downloadAndExtract`

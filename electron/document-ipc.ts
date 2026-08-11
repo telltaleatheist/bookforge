@@ -143,11 +143,13 @@ export function registerDocumentIpc(): void {
    *
    * `document:state` reports a document class too, but only the one recorded in
    * the working document's marker, which by definition does not exist until the
-   * cast has run. That is the wrong side of the question the picker has to answer
-   * the instant a book is opened: a **text** PDF is cast on arrival because
-   * `foundry scan --pdf` reads the publisher's own layer in seconds, while a
-   * **scanned** one means rendering every page at 200 dpi (~1.4 GB) and running
-   * Tesseract over all of them — minutes, and never behind the user's back.
+   * working copy has been minted. That is the wrong side of the question the
+   * picker has to answer the instant a book is opened, and the class still
+   * decides what it costs to read: a **text** PDF carries the publisher's own
+   * layer, while a **scanned** one has to be rendered page by page and read by a
+   * vision model — a long job, and never behind the user's back. (The stage that
+   * used to draw this distinction was `foundry scan --pdf` over Tesseract; the
+   * cost asymmetry outlived it.)
    *
    * So this measures the archive original itself (`pdf-analyzer` samples pages
    * and counts what the text layer yields). It writes nothing and casts nothing.

@@ -20,12 +20,16 @@
  * artifacts into a run directory, and this module carried the typed readers for
  * every one of them. All of it went in Aug 2026 when `vlm-convert` became the
  * only PDF→EPUB conversion, and the readers went with it: there is no run
- * directory left to read.
+ * directory left to read. Foundry then dropped the same pipeline from its own
+ * side (`pre-vlm-strip` is its last build that had it), so the two agree: one
+ * command, plus `doctor`, plus `--version`.
  *
- * The WEIGHTS are foundry's and always were. A model stage is spawned with
- * `--llama-server <ours>` and nothing else, so foundry resolves base and adapter
- * from its own catalog. A model this machine lacks is foundry's error to raise,
- * naming the model id and `foundry models pull`.
+ * Nothing is LENT to it any more. A model stage used to be spawned with
+ * `--llama-server <ours>` — BookForge's own llama.cpp — while foundry resolved
+ * base and adapter from its catalog. There are no model stages, foundry drives
+ * no llama.cpp, and the flag no longer exists. Where the vision model runs is
+ * decided by the conversion's route (electron/vlm-endpoint.ts) and passed as
+ * `--vlm-endpoint`, or left to MLX on an Apple Silicon Mac.
  *
  * ── Resolution, and why there is no PATH lookup ──
  *
@@ -35,10 +39,10 @@
  *   2. The managed component's installed entry.
  *
  * There is deliberately no third. A `foundry` on PATH is an unknown build with
- * unknown prompt formats and an unknown Tesseract pin, and running it would
- * produce a book that is quietly worse rather than an error — which is exactly
- * the class of failure foundry itself refuses. A missing binary is an error
- * naming both places that were checked.
+ * unknown prompt formats, and running it would produce a book that is quietly
+ * worse rather than an error — which is exactly the class of failure foundry
+ * itself refuses. A missing binary is an error naming both places that were
+ * checked.
  *
  * ── …and what happens when neither has one ──
  *
@@ -72,8 +76,8 @@ export class FoundryNotInstalledError extends Error {
       `The foundry CLI was not found. Checked:\n${checked.map((c) => `  ${c}`).join('\n')}\n`
       + `Set ${FOUNDRY_CLI_ENV_VAR} to the binary, or point the "Foundry CLI" `
       + `component at it in Settings → Add-ons. PATH is deliberately not searched: `
-      + `an unknown foundry build carries an unknown prompt format and an unknown `
-      + `Tesseract pin, and would degrade a book rather than fail.`
+      + `an unknown foundry build carries an unknown prompt format, and would `
+      + `degrade a book rather than fail.`
     );
     this.name = 'FoundryNotInstalledError';
   }

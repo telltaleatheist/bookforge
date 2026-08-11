@@ -1,10 +1,15 @@
 /**
  * The `foundry` CLI as an optional component.
  *
- * Foundry (github.com/telltaleatheist/foundry) is the extraction of this app's
- * page-layout model, OCR-repair edit contract and footnote-marker remover into a
- * standalone binary. BookForge drives it as a subprocess and reads its run
- * directory — see `electron/foundry-bridge.ts`.
+ * Foundry (github.com/telltaleatheist/foundry) is the standalone binary that
+ * reads a PDF's pages with a document vision model and assembles an EPUB.
+ * BookForge drives it as a subprocess — see `electron/foundry-bridge.ts`.
+ *
+ * It was once the extraction of this app's page-layout model, OCR-repair edit
+ * contract and footnote-marker remover, and BookForge read the run directory
+ * those stages wrote. Both halves of that dropped the pipeline in Aug 2026 —
+ * BookForge first, foundry after (its `pre-vlm-strip` tag is the last build that
+ * had it) — so there is no run directory on either side of the process boundary.
  *
  * It is declared here so it flows through the SAME ComponentService
  * download/install/verify/remove machinery as Calibre, the voices and the model
@@ -186,8 +191,8 @@ export function foundryCliComponent(): OptionalComponent {
     id: FOUNDRY_CLI_COMPONENT_ID,
     name: 'Foundry CLI',
     description:
-      'Recasts scanned PDFs into clean EPUBs: line segmentation with a pinned Tesseract, '
-      + 'block labelling, OCR repair and footnote-marker removal. Downloaded automatically '
+      'Recasts PDFs into clean EPUBs: a document vision model reads every page picture '
+      + 'and foundry assembles the answers into a book. Downloaded automatically '
       + 'the first time a pass needs it — or point this at a build of your own '
       + `(or set ${FOUNDRY_CLI_ENV_VAR}), which always wins.`,
     kind: 'foundry-cli',
@@ -200,8 +205,11 @@ export function foundryCliComponent(): OptionalComponent {
     // surfaces it as "not available for download" rather than fetching nothing.
     sizeBytes: mine ? mine.bytes : 0,
     requirements: {
-      // No GPU of its own: the model stages drive llama-server, which BookForge
-      // already bundles and passes in with --llama-server.
+      // No GPU of its own. The vision model runs wherever the conversion's route
+      // put it — an endpoint, the WSL reader, or MLX on an Apple Silicon Mac —
+      // and none of those is this binary. (It used to be llama-server, bundled by
+      // BookForge and handed over with `--llama-server`; foundry drives no
+      // llama.cpp at all now, and the flag is gone.)
       gpu: 'none',
       minDiskMB: 200,
     },
@@ -209,9 +217,8 @@ export function foundryCliComponent(): OptionalComponent {
     detect: {
       // The env var ONLY. No command-name lookup and no candidate paths: a
       // `foundry` found on PATH is an unknown build with an unknown prompt
-      // format and an unknown Tesseract pin, and using it would make a book
-      // quietly worse instead of failing. Same rule foundry applies to its own
-      // tesseract and llama-server.
+      // format, and using it would make a book quietly worse instead of failing.
+      // Same rule foundry applies to the interpreters it resolves for itself.
       envVar: FOUNDRY_CLI_ENV_VAR,
     },
     // `foundry --version` prints `foundry <version> (<commit>)`, so this both

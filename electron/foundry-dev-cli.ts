@@ -3,9 +3,9 @@
  *
  * This is all that remains of `foundry-interim-config`, which used to hold the
  * GGUF paths BookForge passed to foundry's model stages with `--base-model`.
- * Those are gone: foundry resolves every stage's weights from its OWN catalog
- * (`foundry models pull`, huggingface.co/owenmorgan/foundry-models), so there is
- * no interim configuration left to keep. The dev-binary nudge outlived it
+ * Those went when foundry started resolving its own weights, and the stages
+ * themselves went in Aug 2026 — there is no model stage, no catalog and no
+ * `models` command left on either side. The dev-binary nudge outlived all of it
  * because it was never interim — it is a permanent convenience for the one
  * machine that compiles foundry — and a file called "interim-config" holding
  * only a thing that is not interim is a name that lies.
@@ -59,6 +59,6 @@ export function primeFoundryDevCliPath(): void {
     '[foundry] No foundry binary found for development. Checked:\n'
     + DEV_CLI_CANDIDATES.map((c) => `  ${c}`).join('\n')
     + '\nBuild one with `tools/release-build.sh host` in the foundry checkout, '
-    + 'or set FOUNDRY_CLI_PATH. OCR will report this rather than falling back.'
+    + 'or set FOUNDRY_CLI_PATH. A conversion will report this rather than falling back.'
   );
 }
