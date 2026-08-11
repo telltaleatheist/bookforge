@@ -8,7 +8,7 @@ import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { getDefaultE2aPath, getDefaultE2aTmpPath, getPythonInvocation, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath, buildCondaSpawnEnv, shellEscapeArgs } from './e2a-paths';
 import * as os from 'os';
-import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b, embedAndVerifyVtt, deleteSidecarsForM4b } from './metadata-tools';
+import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b, embedAndVerifyVtt, deleteSidecarsForM4b, probeAudio } from './metadata-tools';
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
@@ -19,6 +19,22 @@ import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, resolveOrphe
 import { regenerateBoundSidecars } from './sidecar-migration';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 import { StageTracker, type StageSpec, type JobStageProgress } from './job-stages';
+
+/**
+ * The end timestamp of the LAST cue in a VTT, in seconds — or null when the text
+ * carries no cue. The assembly that writes the m4b writes this VTT from the same
+ * sentence set in the same pass, so its final cue end IS the length the audio is
+ * supposed to have, including partial (excluded-chapter) assemblies.
+ */
+function lastVttCueEndSeconds(vttText: string): number | null {
+  let last: number | null = null;
+  const cueRe = /-->\s+(\d{2,}):(\d{2}):(\d{2})\.(\d{3})/g;
+  let m: RegExpExecArray | null;
+  while ((m = cueRe.exec(vttText)) !== null) {
+    last = (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) + (+m[4]) / 1000;
+  }
+  return last;
+}
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -1993,6 +2009,47 @@ export async function startReassembly(
               '[REASSEMBLY] No transcript found — searched:', vttSearchDirs.join(', '),
               '\n  The audiobook will have NO transcript and the sidecar binder will record vtt: skipped-none.'
             );
+          }
+        }
+
+        // ── Completeness gate: the m4b must be as long as its own transcript ──
+        //
+        // exit-0 from e2a and a playable file prove NOTHING about completeness:
+        // ffmpeg can lose its parent mid-encode and still finalize a valid,
+        // moov-carrying, TRUNCATED m4b (Nuremberg 2026-08-11: 14.72h of a 20.12h
+        // book, promoted by hand because everything about the file looked done).
+        // The VTT written by the same assembly pass ends where the audio must
+        // end, so a file materially shorter than its transcript is a truncated
+        // export and is refused here — staging is kept for diagnosis, nothing is
+        // promoted or registered. A measurement that cannot be made is a refusal
+        // too, not a shrug: promoting an unverifiable file is how this defect
+        // shipped the first time.
+        if (outputPath && fs.existsSync(outputPath) && sealVttSource && fs.existsSync(sealVttSource)) {
+          const lastCueEnd = lastVttCueEndSeconds(fs.readFileSync(sealVttSource, 'utf8'));
+          if (lastCueEnd !== null) {
+            let m4bSeconds: number | null = null;
+            let probeError: string | null = null;
+            try {
+              m4bSeconds = (await probeAudio(outputPath)).durationSec;
+            } catch (probeErr) {
+              probeError = (probeErr as Error).message;
+            }
+            const shortfall = m4bSeconds === null ? null : lastCueEnd - m4bSeconds;
+            if (m4bSeconds === null || (shortfall as number) > 5) {
+              const detail = m4bSeconds === null
+                ? `its duration could not be measured (${probeError})`
+                : `it carries ${(m4bSeconds / 3600).toFixed(2)}h of audio but its own transcript `
+                  + `ends at ${(lastCueEnd / 3600).toFixed(2)}h — ${((shortfall as number) / 60).toFixed(1)} `
+                  + 'minutes of narration are missing from the file';
+              const error = `Assembly produced an incomplete audiobook: ${detail}. `
+                + 'The file was NOT promoted; it remains in the staging directory for diagnosis.';
+              reassemblyLog.error('Truncated/unverifiable m4b refused at finalize', {
+                jobId, outputPath, m4bSeconds, lastCueEnd, probeError,
+              });
+              console.error(`[REASSEMBLY] ${error}`);
+              resolve({ success: false, error });
+              return;
+            }
           }
         }
 
