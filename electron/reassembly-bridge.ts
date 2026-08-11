@@ -1883,7 +1883,21 @@ export async function startReassembly(
       }
     });
 
-    proc.on('close', async (code) => {
+    // ── The finalize keys off 'close' OR 'exit'-plus-drain, whichever first ──
+    //
+    // 'close' fires when the stdio STREAMS close, and e2a's app.py spawns
+    // multiprocessing children that inherit stdout. A parent that dies leaving
+    // such a child leaves the pipe open, and 'close' then never fires at all —
+    // which stranded a COMPLETE Nuremberg m4b in staging, unregistered, with no
+    // error said anywhere (2026-08-11: the parent died of STATUS_HEAP_CORRUPTION
+    // right after finishing the m4b; the orphan held the pipe for an hour until
+    // it was reaped by hand). 'exit' always fires when the process ends, so it
+    // arms a bounded wait for whatever the pipes still owe, and the finalize
+    // runs once from whichever event reaches it first.
+    let finalized = false;
+    const finalizeOnce = async (code: number | null): Promise<void> => {
+      if (finalized) return;
+      finalized = true;
       clearInterval(heartbeatInterval);
       activeHeartbeats.delete(jobId);
 
@@ -2241,6 +2255,19 @@ export async function startReassembly(
         });
         resolve({ success: false, error: errorMsg });
       }
+    };
+
+    proc.on('close', (code) => { void finalizeOnce(code); });
+    proc.on('exit', (code) => {
+      setTimeout(() => {
+        if (!finalized) {
+          console.warn(
+            '[REASSEMBLY] Process exited but its pipes stayed open (an orphaned child holding '
+            + 'stdout?) — finalizing from the exit code after the drain timeout.'
+          );
+          void finalizeOnce(code);
+        }
+      }, 30_000);
     });
 
     proc.on('error', (err) => {
