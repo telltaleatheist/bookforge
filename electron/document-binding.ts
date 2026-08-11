@@ -49,6 +49,7 @@ import * as path from 'path';
 
 import {
   SIDECAR_BINDING_VERSION,
+  bookDigest,
   boundedSidecarName,
   sha256File,
   writeFileAtomic,
@@ -429,18 +430,33 @@ export async function recordStageBoundary(args: {
   };
 }
 
-/** Record the book Reflow wrote. Replaces any earlier one — there is one book. */
+/**
+ * Record the book Reflow wrote. Replaces any earlier one — there is one book.
+ *
+ * The ONE record in this binding that names a BOOK rather than a document, and
+ * so the one measured through `bookDigest`: `binding.epub.path` is the manifest's
+ * `outputs.epub` (that is what `forgetBoundEpub` matches it against), which is
+ * the working copy, which is becoming an exploded directory. The other three
+ * records in this file are PDFs — the archive original and `<Original>.working.pdf`
+ * — and stay on `sha256File` because they stay files.
+ *
+ * A zip gives exactly the bare 64-hex value this recorded before; an exploded
+ * book gives a self-describing one (shared/book-digest.ts). Nothing compares
+ * this digest today, so nothing has to be taught to read it — but a book hashed
+ * the file way would simply throw the day the working copy is a directory, and
+ * that is not something to leave sitting in a binding writer.
+ */
 export async function recordExportedEpub(
   binding: DocumentBinding,
   projectDir: string,
   epubAbsPath: string
 ): Promise<DocumentBinding> {
-  const { sha256, size } = await sha256File(epubAbsPath);
+  const { digest, size } = await bookDigest(epubAbsPath);
   return {
     ...binding,
     epub: {
       path: toProjectRelative(projectDir, epubAbsPath),
-      sha256,
+      sha256: digest,
       bytes: size,
       writtenAt: new Date().toISOString(),
     },

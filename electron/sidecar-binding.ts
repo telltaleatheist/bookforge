@@ -24,7 +24,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { digestAudiobookCues, parseAudiobookVttStrict } from './audiobook-analysis-canonical';
-import { listEpubTreeEntries, resolveEpubEntryPath } from './epub-container';
+import {
+  listEpubTreeEntries,
+  resolveEpubEntryPath,
+  type EpubContainerKind,
+} from './epub-container';
+import {
+  EPUB_FILE_DIGEST_ALGORITHM,
+  EPUB_TREE_DIGEST_ALGORITHM,
+  formatBookDigest,
+  type BookDigestAlgorithm,
+} from '../shared/book-digest';
 
 export const SIDECAR_BINDING_VERSION = 'bookforge-sidecar-binding-v1' as const;
 export const SIDECAR_VTT_DIGEST_ALGORITHM = 'bookforge-vtt-cues-v1' as const;
@@ -86,8 +96,15 @@ export async function sha256File(filePath: string): Promise<{ sha256: string; si
   return { sha256: hash.digest('hex'), size: after.size };
 }
 
-/** The algorithm name for a tree identity, so a recorded digest says what it is. */
-export const EPUB_TREE_DIGEST_ALGORITHM = 'bookforge-epub-tree-v1' as const;
+// The algorithm names, and how a digest of each is written down, live in
+// `shared/book-digest.ts` — the renderer and the tools read the same recorded
+// values, so the vocabulary cannot be an electron-only one. Re-exported here
+// because this is where the digests are COMPUTED.
+export {
+  EPUB_FILE_DIGEST_ALGORITHM,
+  EPUB_TREE_DIGEST_ALGORITHM,
+  type BookDigestAlgorithm,
+} from '../shared/book-digest';
 
 /**
  * `sha256File`'s directory sibling — the content identity of an EXPLODED EPUB.
@@ -143,6 +160,147 @@ export async function epubTreeSha256(
   const hash = crypto.createHash('sha256');
   hash.update(lines.join(''), 'utf8');
   return { sha256: hash.digest('hex'), size, entryCount: names.length };
+}
+
+/** A book's measured identity, and everything a caller needs to know about it. */
+export interface BookIdentity {
+  /**
+   * The identity AS IT IS RECORDED AND COMPARED. Self-describing: an exploded
+   * book's digest carries its algorithm, an archived book's is the bare 64 hex
+   * characters every manifest on disk already holds (shared/book-digest.ts).
+   */
+  digest: string;
+  /**
+   * The 64 hex characters, tag stripped — for NAMES, not for identity. Slicing
+   * `digest` for a staged filename would give every exploded book the same
+   * prefix and collide two books' staging files.
+   */
+  hex: string;
+  algorithm: BookDigestAlgorithm;
+  /** What the book IS on disk, MEASURED. Never inferred from the path's name. */
+  container: EpubContainerKind;
+  /** The archive's length, or the sum of the tree's entries' lengths. */
+  size: number;
+  /** Entries in the tree. Absent for an archive, which is hashed, not opened. */
+  entryCount?: number;
+}
+
+/**
+ * A BOOK's identity, whichever container it is in — the one entry point every
+ * site that hashes the working copy goes through.
+ *
+ * ── Why a dispatcher and not two call sites ─────────────────────────────────
+ *
+ * The working copy is becoming an exploded directory, and there are 20 places
+ * that hash it: the strike record's stamp, every book edit's before-and-after,
+ * the narration copy's provenance. `sha256File` throws `Not a file` on a
+ * directory, so on the day the flip lands all 20 would throw at once — and the
+ * fix "hash it the other way here too" written 20 times is 20 chances to record
+ * an identity in a form the next reader does not expect. There is one rule and
+ * it lives here: what the path IS decides how it is measured, and the value
+ * says which way it was measured.
+ *
+ * ── The contract ────────────────────────────────────────────────────────────
+ *
+ *  - A regular FILE is hashed by `sha256File`, and `digest` is that hash
+ *    UNCHANGED — the bare 64 hex characters. This is the behaviour-preservation
+ *    guarantee: while every book is still a zip, every value this returns is
+ *    byte-for-byte the value the call site recorded before it was moved here.
+ *  - A DIRECTORY is hashed by `epubTreeSha256`, and `digest` carries the
+ *    algorithm tag so a reader can tell the two apart rather than reading a
+ *    re-measurement as a changed book.
+ *  - Anything else — a named pipe, a device, a socket, nothing at all — is a
+ *    refusal naming the path and what is actually there. There is no third way
+ *    to hash a book and no default to fall back to.
+ *
+ * ── The integrity property, in both directions ──────────────────────────────
+ *
+ * `sha256File` refuses a file that moved while it was being read, and
+ * `epubTreeSha256` refuses a tree whose entry list moved while it was being
+ * walked. Dispatching adds one more way to be wrong that neither of them can
+ * see: the CONTAINER ITSELF changing between the stat that chose the algorithm
+ * and the digest coming back — which is precisely what the migration does, and
+ * it does it by rename, so it is not hypothetical. So the kind is re-measured
+ * afterwards and a digest whose container moved underneath it is refused. A
+ * digest of something that is no longer there is not a digest.
+ */
+export async function bookDigest(bookPath: string): Promise<BookIdentity> {
+  const abs = path.resolve(bookPath);
+  const before = await statForDigest(abs);
+
+  if (before.isFile()) {
+    const { sha256, size } = await sha256File(abs);
+    await refuseIfContainerMoved(abs, 'zip');
+    return {
+      digest: formatBookDigest(EPUB_FILE_DIGEST_ALGORITHM, sha256),
+      hex: sha256,
+      algorithm: EPUB_FILE_DIGEST_ALGORITHM,
+      container: 'zip',
+      size,
+    };
+  }
+
+  if (before.isDirectory()) {
+    const { sha256, size, entryCount } = await epubTreeSha256(abs);
+    await refuseIfContainerMoved(abs, 'directory');
+    return {
+      digest: formatBookDigest(EPUB_TREE_DIGEST_ALGORITHM, sha256),
+      hex: sha256,
+      algorithm: EPUB_TREE_DIGEST_ALGORITHM,
+      container: 'directory',
+      size,
+      entryCount,
+    };
+  }
+
+  throw new Error(
+    `${abs} cannot be measured as a book: it is ${describeStatKind(before)}. A book is either an `
+    + 'archive file or a folder of its parts, and there is no way to take the identity of anything '
+    + 'else.'
+  );
+}
+
+async function statForDigest(abs: string): Promise<fs.Stats> {
+  try {
+    return await fs.promises.stat(abs);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(
+        `There is no book at ${abs}, so it has no identity to take. Nothing was measured.`
+      );
+    }
+    throw err;
+  }
+}
+
+/** Refuse a digest whose container changed while it was being taken. */
+async function refuseIfContainerMoved(abs: string, was: EpubContainerKind): Promise<void> {
+  const after = await statForDigest(abs);
+  const now: EpubContainerKind | 'neither' = after.isFile()
+    ? 'zip'
+    : after.isDirectory() ? 'directory' : 'neither';
+  if (now === was) return;
+  throw new Error(
+    `${abs} changed from ${describeContainer(was)} to ${
+      now === 'neither' ? describeStatKind(after) : describeContainer(now)
+    } while its identity was being taken. No digest was returned — one measured the way the old `
+    + 'container was measured would describe a book that is no longer there.'
+  );
+}
+
+function describeContainer(kind: EpubContainerKind): string {
+  return kind === 'zip' ? 'an archive file' : 'a folder of its parts';
+}
+
+function describeStatKind(stat: fs.Stats): string {
+  if (stat.isFile()) return 'a file';
+  if (stat.isDirectory()) return 'a directory';
+  if (stat.isFIFO()) return 'a named pipe';
+  if (stat.isSocket()) return 'a socket';
+  if (stat.isBlockDevice()) return 'a block device';
+  if (stat.isCharacterDevice()) return 'a character device';
+  if (stat.isSymbolicLink()) return 'a symbolic link with no target';
+  return 'neither a file nor a directory';
 }
 
 // Delivery-tier identity cache: (absolute path) → last known {sha256,size,mtime}.

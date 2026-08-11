@@ -51,7 +51,7 @@ import * as path from 'path';
 
 import { setElementCategoryInBookFile } from './epub-processor';
 import { moveIntoPlace } from './processing-passes';
-import { sha256File } from './sidecar-binding';
+import { bookDigest } from './sidecar-binding';
 import * as manifestService from './manifest-service';
 import {
   narrationDeletionsStaleReason,
@@ -121,7 +121,7 @@ export async function setBookBlockCategory(
   // The book as it stands, measured BEFORE anything is written: it is what says
   // whether the strike record was describing this book a moment ago, and what
   // the edit log records this relabel as having started from.
-  const { sha256: fromSha256 } = await sha256File(book.absPath);
+  const { digest: fromSha256, hex: fromHex } = await bookDigest(book.absPath);
   const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
   const stale = narrationDeletionsStaleReason(recorded, fromSha256);
   if (stale !== null) {
@@ -134,7 +134,10 @@ export async function setBookBlockCategory(
   }
 
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
-  const staged = path.join(STAGING_DIR, `relabel-${fromSha256.slice(0, 16)}.epub`);
+  // Named from the HEX, not from the recorded digest: an exploded book's digest
+  // carries an algorithm tag, and slicing that would give every book in the
+  // project the same staging name (shared/book-digest.ts, `bookDigestHex`).
+  const staged = path.join(STAGING_DIR, `relabel-${fromHex.slice(0, 16)}.epub`);
   const { written, edit } = await setElementCategoryInBookFile(
     book.absPath, staged, elementKey, categoryId);
 
@@ -154,7 +157,7 @@ export async function setBookBlockCategory(
   }
 
   await moveIntoPlace(staged, book.absPath);
-  const { sha256: toSha256 } = await sha256File(book.absPath);
+  const { digest: toSha256 } = await bookDigest(book.absPath);
   const at = new Date().toISOString();
 
   await manifestService.recordBlockCategoryChange(projectDir, {

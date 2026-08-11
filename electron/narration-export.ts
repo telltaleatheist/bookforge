@@ -59,7 +59,8 @@ import {
 } from './narration-editor-state';
 import { migrateLegacyEpubEditorRecords } from './legacy-epub-layout';
 import { moveIntoPlace } from './processing-passes';
-import { sha256File } from './sidecar-binding';
+import { bookDigest } from './sidecar-binding';
+import { bookDigestAlgorithmChange } from '../shared/book-digest';
 import * as manifestService from './manifest-service';
 import {
   describeUnstruckDeletions,
@@ -117,7 +118,7 @@ export async function readNarrationState(
     };
   }
 
-  const { sha256 } = await sha256File(book.absPath);
+  const { digest: sha256 } = await bookDigest(book.absPath);
   const converted = await epubCarriesConversionStamps(book.absPath);
   const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
   const staleReason = narrationDeletionsStaleReason(recorded, sha256);
@@ -191,7 +192,7 @@ export async function editNarrationDeletions(
   // `saveNarrationDeletions` below: a project imported AS an EPUB has no book
   // until something needs one, and the first strike is that moment.
   const book = await manifestService.ensureBookEpub(projectDir, familyId);
-  const { sha256 } = await sha256File(book.absPath);
+  const { digest: sha256 } = await bookDigest(book.absPath);
   const fingerprints = edit.strike.length === 0
     ? {}
     : narrationFingerprintsFor(await bookFingerprints(book.absPath, sha256), edit.strike);
@@ -270,7 +271,7 @@ export async function saveNarrationDeletions(
   // Translate pass makes (processing-passes `requireBookEpub`), so both routes
   // mint the same one book.
   const book = await manifestService.ensureBookEpub(projectDir, familyId);
-  const { sha256 } = await sha256File(book.absPath);
+  const { digest: sha256 } = await bookDigest(book.absPath);
   const kept = [...new Set(elements)].sort();
   // Fingerprinted like any other strike: this writer owns the whole answer, so
   // the whole answer is made self-describing rather than half of it.
@@ -472,7 +473,7 @@ export async function ensureNarrationEpub(
     );
   }
 
-  const { sha256 } = await sha256File(book.absPath);
+  const { digest: sha256 } = await bookDigest(book.absPath);
   const record = await manifestService.readNarrationEpubRecord(projectDir, familyId);
   if (record) {
     const abs = path.join(projectDir, record.path.split('/').join(path.sep));
@@ -486,14 +487,25 @@ export async function ensureNarrationEpub(
     }
   }
 
-  // Three states, one act, and the state is SAID because the sentence is what
+  // FOUR states, one act, and the state is SAID because the sentence is what
   // tells the user whether to look at the file again before narrating it.
+  //
+  // The fourth is the migration boundary: a copy cut when the book was a single
+  // archived file, read now that the book is a folder of its parts. The two
+  // stamps disagree because they are not the same kind of value, and saying
+  // "the book has changed" there would be false about a book nobody edited.
+  // The copy IS re-cut — the record cannot prove the copy current and a
+  // narration copy that might be a version behind is not one to narrate from —
+  // but the user is told the true reason for the minutes it costs.
+  const recut = record === null ? null : bookDigestAlgorithmChange(record.fromEpubSha256, sha256);
   const cutReason = record === null
     ? 'This book had no narration copy yet, so one was cut from your working copy.'
     : !fs.existsSync(path.join(projectDir, record.path.split('/').join(path.sep)))
       ? 'The narration copy this project recorded is not on disk any more, so it was cut again.'
-      : 'The book has changed since the narration copy was cut, so it was cut again from the '
-        + 'working copy as it is now.';
+      : recut !== null
+        ? `${recut} So the narration copy was cut again from your working copy as it is now.`
+        : 'The book has changed since the narration copy was cut, so it was cut again from the '
+          + 'working copy as it is now.';
 
   const written = await exportNarrationEpub(projectDir, options, familyId);
   return {
@@ -531,7 +543,7 @@ export async function exportNarrationEpub(
       + 'narration copy from.'
     );
   }
-  const { sha256 } = await sha256File(book.absPath);
+  const { digest: sha256, hex: bookHex } = await bookDigest(book.absPath);
   const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
   // ── The stamp decides HOW the strikes are checked, not WHETHER they live ──
   //
@@ -553,7 +565,10 @@ export async function exportNarrationEpub(
 
   const target = await manifestService.narrationEpubTarget(projectDir, familyId);
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
-  const staged = path.join(STAGING_DIR, `narration-${sha256.slice(0, 16)}.epub`);
+  // Named from the HEX, not from the recorded digest: an exploded book's digest
+  // carries an algorithm tag, and slicing that would give every book in the
+  // project the same staging name (shared/book-digest.ts, `bookDigestHex`).
+  const staged = path.join(STAGING_DIR, `narration-${bookHex.slice(0, 16)}.epub`);
 
   // ── A chapter opening speaks its chapter's NAME ───────────────────────────
   //
@@ -751,7 +766,7 @@ export async function strikeInNarrationCopy(
       + 'has no book to be recorded against.'
     );
   }
-  const { sha256 } = await sha256File(book.absPath);
+  const { digest: sha256 } = await bookDigest(book.absPath);
 
   const record = await manifestService.readNarrationEpubRecord(projectDir, familyId);
   if (record === null) {
@@ -768,10 +783,19 @@ export async function strikeInNarrationCopy(
     );
   }
   if (record.fromEpubSha256 !== sha256) {
+    // The refusal is the same either way — nothing here can pair a copy against
+    // a book it cannot prove the copy was cut from — but the REASON is not, and
+    // at the migration boundary "an earlier version of your book" would be a
+    // sentence about an edit that never happened.
+    const measured = bookDigestAlgorithmChange(record.fromEpubSha256, sha256);
     throw new Error(
-      'The TTS copy on disk was cut from an earlier version of your book, so a deletion made on it '
-      + 'would land on a different paragraph. Generate the TTS copy again from your book, then make '
-      + 'the deletion.'
+      measured === null
+        ? 'The TTS copy on disk was cut from an earlier version of your book, so a deletion made on '
+          + 'it would land on a different paragraph. Generate the TTS copy again from your book, '
+          + 'then make the deletion.'
+        : `${measured} So this deletion cannot be paired against the TTS copy on disk. Generate the `
+          + 'TTS copy again from your book — the new record is stamped the new way — then make the '
+          + 'deletion.'
     );
   }
   if (record.strippedSupMarkers === undefined) {
@@ -1040,7 +1064,7 @@ export async function mergeChapterOpening(
   // The book as it stands, measured BEFORE the rewrite: it is what says whether
   // the strike record was describing this book a moment ago, and it is what the
   // edit log records the fold as having started from.
-  const { sha256: fromSha256 } = await sha256File(book.absPath);
+  const { digest: fromSha256, hex: fromHex } = await bookDigest(book.absPath);
   const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
   const stale = narrationDeletionsStaleReason(recorded, fromSha256);
   if (stale !== null) {
@@ -1084,12 +1108,12 @@ export async function mergeChapterOpening(
   }
 
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
-  const staged = path.join(STAGING_DIR, `fold-${fromSha256.slice(0, 16)}.epub`);
+  const staged = path.join(STAGING_DIR, `fold-${fromHex.slice(0, 16)}.epub`);
   const folded = await foldChapterOpeningInBookFile(
     book.absPath, staged, openerKey, foldedKeys, name);
   await moveIntoPlace(staged, book.absPath);
 
-  const { sha256: toSha256 } = await sha256File(book.absPath);
+  const { digest: toSha256 } = await bookDigest(book.absPath);
   const at = new Date().toISOString();
 
   const record = await manifestService.recordChapterOpeningFold(
@@ -1195,7 +1219,7 @@ export async function stampElementIds(
   const book = await manifestService.readExportEpub(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) return nothing;
 
-  const { sha256: fromSha256 } = await sha256File(book.absPath);
+  const { digest: fromSha256, hex: fromHex } = await bookDigest(book.absPath);
 
   // Read now, judged after the pass has said whether it has anything to do — an
   // already-stamped book must open even when its strikes are void.
@@ -1203,7 +1227,7 @@ export async function stampElementIds(
   const stale = narrationDeletionsStaleReason(recorded, fromSha256);
 
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
-  const staged = path.join(STAGING_DIR, `stamp-uids-${fromSha256.slice(0, 16)}.epub`);
+  const staged = path.join(STAGING_DIR, `stamp-uids-${fromHex.slice(0, 16)}.epub`);
   const result = await stampElementIdsInBookFile(book.absPath, staged);
 
   if (result.files.length === 0) {
@@ -1225,7 +1249,7 @@ export async function stampElementIds(
   }
 
   await moveIntoPlace(staged, book.absPath);
-  const { sha256: toSha256 } = await sha256File(book.absPath);
+  const { digest: toSha256 } = await bookDigest(book.absPath);
   const at = new Date().toISOString();
 
   await manifestService.recordElementIdStamping(projectDir, {
@@ -1305,7 +1329,7 @@ export async function nameChapterOpenings(
   // The book as it stands, measured BEFORE anything is written: it is what says
   // whether the strike record was describing this book a moment ago, and what
   // the edit log records this pass as having started from.
-  const { sha256: fromSha256 } = await sha256File(book.absPath);
+  const { digest: fromSha256, hex: fromHex } = await bookDigest(book.absPath);
 
   // ── The names ─────────────────────────────────────────────────────────────
   //
@@ -1327,7 +1351,7 @@ export async function nameChapterOpenings(
   const stale = narrationDeletionsStaleReason(recorded, fromSha256);
 
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
-  const staged = path.join(STAGING_DIR, `name-openers-${fromSha256.slice(0, 16)}.epub`);
+  const staged = path.join(STAGING_DIR, `name-openers-${fromHex.slice(0, 16)}.epub`);
   const named = await nameChapterOpeningsInBookFile(book.absPath, staged, namesByFile);
 
   if (named.edits.length === 0) {
@@ -1349,7 +1373,7 @@ export async function nameChapterOpenings(
   }
 
   await moveIntoPlace(staged, book.absPath);
-  const { sha256: toSha256 } = await sha256File(book.absPath);
+  const { digest: toSha256 } = await bookDigest(book.absPath);
   const at = new Date().toISOString();
 
   await manifestService.recordChapterOpeningNaming(projectDir, {

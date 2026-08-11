@@ -97,7 +97,7 @@ import {
   type EpubSource,
 } from './epub-container';
 import { moveIntoPlace } from './processing-passes';
-import { sha256File } from './sidecar-binding';
+import { bookDigest } from './sidecar-binding';
 import * as manifestService from './manifest-service';
 import { chapterOpeningRefusal } from '../shared/document/chapter-opening-report';
 import { parseNarrationElementKey } from '../shared/vlm/narration-deletions';
@@ -1638,15 +1638,18 @@ export async function renameBookChapter(
 
   // The book as it stands, measured BEFORE the rewrite: it is what says whether
   // the records stamped with it were describing this book a moment ago.
-  const { sha256: before } = await sha256File(book.absPath);
+  const { digest: before, hex: beforeHex } = await bookDigest(book.absPath);
   const narration = await manifestService.readNarrationEpub(projectDir, familyId);
 
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
-  const staged = path.join(STAGING_DIR, `retitle-${before.slice(0, 16)}${STAGED_SUFFIX}`);
+  // Named from the HEX, not from the recorded digest: an exploded book's digest
+  // carries an algorithm tag, and slicing that would give every book in the
+  // project the same staging name (shared/book-digest.ts, `bookDigestHex`).
+  const staged = path.join(STAGING_DIR, `retitle-${beforeHex.slice(0, 16)}${STAGED_SUFFIX}`);
   const renamed = await renameChapterInBookFile(book.absPath, staged, chapterFile, title);
   await moveIntoPlace(staged, book.absPath);
 
-  const { sha256: after } = await sha256File(book.absPath);
+  const { digest: after } = await bookDigest(book.absPath);
   const at = new Date().toISOString();
 
   // ── ONE transaction: the touch, the re-stamp and the edit-log entry ────────
@@ -1713,7 +1716,7 @@ export async function renameBookChapter(
           );
         }
       } else {
-        const stagedCopy = path.join(STAGING_DIR, `retitle-tts-${before.slice(0, 16)}${STAGED_SUFFIX}`);
+        const stagedCopy = path.join(STAGING_DIR, `retitle-tts-${beforeHex.slice(0, 16)}${STAGED_SUFFIX}`);
         await rewriteChapterTitle(
           narration.absPath, stagedCopy, copyHits, chapterFile, title);
         // FILE first, then the record — deliberately the other way round from
@@ -1826,7 +1829,7 @@ export async function addBookChapter(
 
   // The book as it stands, measured BEFORE the rewrite: it is what says whether
   // the records stamped with it were describing this book a moment ago.
-  const { sha256: before } = await sha256File(book.absPath);
+  const { digest: before, hex: beforeHex } = await bookDigest(book.absPath);
   const narration = await manifestService.readNarrationEpub(projectDir, familyId);
 
   // ── The strikes an insert would move, asked before anything is written ────
@@ -1858,11 +1861,12 @@ export async function addBookChapter(
   }
 
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
-  const staged = path.join(STAGING_DIR, `add-chapter-${before.slice(0, 16)}${STAGED_SUFFIX}`);
+  // Named from the HEX — see `renameBookChapter` above.
+  const staged = path.join(STAGING_DIR, `add-chapter-${beforeHex.slice(0, 16)}${STAGED_SUFFIX}`);
   const added = await addChapterToBookFile(book.absPath, staged, chapterFile, title);
   await moveIntoPlace(staged, book.absPath);
 
-  const { sha256: after } = await sha256File(book.absPath);
+  const { digest: after } = await bookDigest(book.absPath);
   const at = new Date().toISOString();
 
   // ── ONE transaction: the touch, the re-stamp and the edit-log entry ───────
@@ -1923,7 +1927,7 @@ export async function addBookChapter(
           + 'table of contents. The two files have come apart; export the narration copy again.'
         );
       } else {
-        const stagedCopy = path.join(STAGING_DIR, `add-chapter-tts-${before.slice(0, 16)}${STAGED_SUFFIX}`);
+        const stagedCopy = path.join(STAGING_DIR, `add-chapter-tts-${beforeHex.slice(0, 16)}${STAGED_SUFFIX}`);
         await addChapterToBookFile(narration.absPath, stagedCopy, chapterFile, title);
         // FILE first, then the record — deliberately the other way round from
         // the book above, and the difference is what an interrupt costs. Here

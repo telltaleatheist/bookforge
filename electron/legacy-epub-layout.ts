@@ -117,7 +117,7 @@ import { describeEditorLayout, describeLayoutMigration } from '../shared/documen
 import * as manifestService from './manifest-service';
 import { peekEditorState } from './editor-state-store';
 import { readBookBlockLayer } from './narration-editor-state';
-import { sha256File } from './sidecar-binding';
+import { bookDigest } from './sidecar-binding';
 import {
   deriveNarrationStrikes,
   describeUnstruckDeletions,
@@ -394,7 +394,7 @@ async function carryDeletionsOver(
   const newBlockIds = struckBlockIds.filter((id) => !blockIdsOffDeletedPages.has(id)).sort();
   const newPages = [...struckPages].sort((a, b) => a - b);
 
-  const { sha256 } = await sha256File(bookAbsPath);
+  const { digest: sha256 } = await bookDigest(bookAbsPath);
   await retireAndStamp(
     projectDir,
     reading.current,

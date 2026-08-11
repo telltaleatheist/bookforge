@@ -110,6 +110,8 @@
  * had all three — nothing could be recorded for them, so their documents never
  * emptied and the pruning that would have removed them never fired.
  */
+import { bookDigestAlgorithmChange } from '../book-digest';
+
 export type NarrationElementKey = string;
 
 /** The prefix that puts a key in the IMAGE namespace rather than the unit one. */
@@ -1158,6 +1160,19 @@ export interface NarrationState {
  * It is deliberately NOT a verdict on any individual strike. That question is
  * answered per key, against the fingerprints, by `verifyNarrationStrikes` —
  * against the book, not against a hash of it.
+ *
+ * ── The stamp can also disagree WITHOUT the book having changed ─────────────
+ *
+ * A working copy that was a single archived file and is now a folder of its
+ * parts has its identity measured a different way (shared/book-digest.ts), so
+ * every record stamped before the unpacking stops matching at once — while the
+ * book, which was verified part for part during the unpacking, is character for
+ * character the one those strikes were made on. "This book has changed" would
+ * be a false sentence about work the user did, and it is the sentence five
+ * callers put in front of them. So a stamp that PROVABLY came from the other
+ * algorithm gets the true reason instead. It is still a stale reason — the two
+ * values genuinely cannot be compared, and every caller's caution still applies
+ * — it just stops claiming an edit that never happened.
  */
 export function narrationDeletionsStaleReason(
   deletions: NarrationDeletions | null | undefined,
@@ -1168,9 +1183,12 @@ export function narrationDeletionsStaleReason(
   const withoutFingerprints = deletions.elements.filter(
     (key) => parseNarrationElementKey(key).kind === 'unit'
       && deletions.fingerprints?.[key] === undefined).length;
+  // Null unless it can PROVE the two were computed differently — an unclassifiable
+  // stamp leaves the sentence below exactly as it has always been.
+  const measured = bookDigestAlgorithmChange(deletions.epubSha256, bookSha256);
   return (
-    'This book has changed since these deletions were made, so the positions they name may have '
-    + 'moved.'
+    (measured ?? 'This book has changed since these deletions were made, so the positions they name '
+      + 'may have moved.')
     + (withoutFingerprints > 0
       ? ` ${withoutFingerprints} of them were recorded before BookForge remembered what each strike `
         + 'struck, so there is nothing to check them against — they are applied as you made them.'

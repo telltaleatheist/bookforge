@@ -84,7 +84,19 @@ const {
   replaceChapterTextsInEpub,
   updateEpubMetadataStandalone,
 } = require(path.join(DIST, 'epub-processor.js'));
-const { epubTreeSha256 } = require(path.join(DIST, 'sidecar-binding.js'));
+const {
+  EPUB_FILE_DIGEST_ALGORITHM,
+  EPUB_TREE_DIGEST_ALGORITHM,
+  bookDigest,
+  epubTreeSha256,
+  sha256File,
+} = require(path.join(DIST, 'sidecar-binding.js'));
+const {
+  bookDigestAlgorithm,
+  bookDigestAlgorithmChange,
+  bookDigestHex,
+  formatBookDigest,
+} = require(path.join(REPO, 'dist', 'shared', 'book-digest.js'));
 
 // ── the fixture ─────────────────────────────────────────────────────────────
 //
@@ -575,6 +587,193 @@ test('listEpubTreeEntries and orderEpubEntryNames are the one listing', async ()
   assert.deepStrictEqual(names, orderEpubEntryNames(BOOK.map(([n]) => n)));
   assert.deepStrictEqual(orderEpubEntryNames(['b', 'mimetype', 'a']), ['mimetype', 'a', 'b']);
   assert.deepStrictEqual(orderEpubEntryNames(['b', 'a']), ['a', 'b']);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// bookDigest — the ONE entry point the 20 book-hashing sites go through
+//
+// Phase 2b is behaviour-preserving: every book on disk is still a zip, so every
+// digest recorded through `bookDigest` today must be the value `sha256File`
+// recorded yesterday, character for character. The first test below IS that
+// proof; the rest pin the parts that only start mattering after the flip.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('bookDigest of a ZIP is EXACTLY sha256File of it — the preservation proof', async () => {
+  const zipPath = await writeFixtureZip(path.join(tmp('digest-zip'), 'book.epub'));
+  const legacy = await sha256File(zipPath);
+  const measured = await bookDigest(zipPath);
+
+  assert.strictEqual(measured.digest, legacy.sha256,
+    'the recorded value moved — every stamp in ~43 projects would stop matching');
+  assert.strictEqual(measured.hex, legacy.sha256);
+  assert.strictEqual(measured.size, legacy.size);
+  assert.strictEqual(measured.algorithm, EPUB_FILE_DIGEST_ALGORITHM);
+  assert.strictEqual(measured.container, 'zip');
+  assert.strictEqual(measured.entryCount, undefined, 'a zip was opened to be counted');
+  assert.match(measured.digest, /^[0-9a-f]{64}$/, 'the file form must stay BARE 64 hex');
+});
+
+test('bookDigest of a TREE is epubTreeSha256 of it, tagged', async () => {
+  const treeDir = writeFixtureTree(tmp('digest-tree'));
+  const tree = await epubTreeSha256(treeDir);
+  const measured = await bookDigest(treeDir);
+
+  assert.strictEqual(measured.hex, tree.sha256);
+  assert.strictEqual(measured.digest, `${EPUB_TREE_DIGEST_ALGORITHM}:${tree.sha256}`);
+  assert.strictEqual(measured.size, tree.size);
+  assert.strictEqual(measured.entryCount, tree.entryCount);
+  assert.strictEqual(measured.algorithm, EPUB_TREE_DIGEST_ALGORITHM);
+  assert.strictEqual(measured.container, 'directory');
+});
+
+test('a tree digest and the zip of the same book do NOT collide', async () => {
+  // They are the same book and they must not read as the same identity: the two
+  // algorithms measure different things, and a reader that could not tell them
+  // apart is the whole reason the tag exists.
+  const zipPath = await writeFixtureZip(path.join(tmp('digest-both'), 'book.epub'));
+  const treeDir = writeFixtureTree(tmp('digest-both-tree'));
+  const zip = await bookDigest(zipPath);
+  const tree = await bookDigest(treeDir);
+  assert.notStrictEqual(zip.digest, tree.digest);
+  assert.notStrictEqual(zip.hex, tree.hex);
+  assert.notStrictEqual(zip.algorithm, tree.algorithm);
+});
+
+test('bookDigest of something that is neither is a loud refusal that names it', async () => {
+  const missing = path.join(tmp('digest-missing'), 'gone.epub');
+  await assert.rejects(() => bookDigest(missing), (err) => {
+    assert.match(err.message, /There is no book at/);
+    assert.ok(err.message.includes(missing), 'the refusal did not name the path');
+    return true;
+  });
+});
+
+test('a book that changes CONTAINER mid-hash is refused, not reported as a zip', async () => {
+  // The migration turns a zip into a tree AT THE SAME NAME. `sha256File` and
+  // `epubTreeSha256` each refuse a thing that moved while they read it, but
+  // neither can see the container itself being replaced between the stat that
+  // chose the algorithm and the digest coming back — so a dispatcher that only
+  // stats once could hand back a FILE hash for a path that is a directory by the
+  // time the caller writes it down. That is an identity for a book that is not
+  // there, and it is what this guard is for.
+  //
+  // The race is driven off the real events rather than a stubbed hash: the swap
+  // happens on the first stat AFTER the archive's bytes have finished streaming,
+  // which is exactly the window between `sha256File`'s own after-stat and the
+  // dispatcher's re-measurement of the container.
+  const abs = path.resolve(path.join(tmp('digest-swap'), 'book.epub'));
+  await writeFixtureZip(abs);
+
+  const realStream = fs.createReadStream;
+  const realStat = fs.promises.stat;
+  let streamed = false;
+  let swapped = false;
+  fs.createReadStream = (p, ...rest) => {
+    const stream = realStream(p, ...rest);
+    if (path.resolve(String(p)) === abs) stream.on('end', () => { streamed = true; });
+    return stream;
+  };
+  fs.promises.stat = async (p, ...rest) => {
+    const stat = await realStat(p, ...rest);
+    if (streamed && !swapped && path.resolve(String(p)) === abs) {
+      swapped = true;
+      // The flip, as the migration performs it: the archive goes, the exploded
+      // tree takes its name.
+      fs.rmSync(abs);
+      writeFixtureTree(abs);
+    }
+    return stat;
+  };
+  try {
+    await assert.rejects(() => bookDigest(abs),
+      /changed from an archive file to a folder of its parts while its identity was being taken/);
+  } finally {
+    fs.createReadStream = realStream;
+    fs.promises.stat = realStat;
+  }
+  assert.ok(swapped, 'the container was never swapped — this test proved nothing');
+});
+
+// ── the recorded form: what a stored digest says about itself ────────────────
+
+test('a bare 64-hex value still reads as the file algorithm, forever', async () => {
+  const legacy = 'a'.repeat(64);
+  assert.strictEqual(bookDigestAlgorithm(legacy), EPUB_FILE_DIGEST_ALGORITHM);
+  assert.strictEqual(bookDigestHex(legacy), legacy);
+  assert.strictEqual(formatBookDigest(EPUB_FILE_DIGEST_ALGORITHM, legacy), legacy,
+    'the file form gained a tag — every manifest on disk would have to be rewritten');
+});
+
+test('a tagged value reads as the tree algorithm and yields its hex back', async () => {
+  const hex = 'b'.repeat(64);
+  const tagged = formatBookDigest(EPUB_TREE_DIGEST_ALGORITHM, hex);
+  assert.strictEqual(tagged, `${EPUB_TREE_DIGEST_ALGORITHM}:${hex}`);
+  assert.strictEqual(bookDigestAlgorithm(tagged), EPUB_TREE_DIGEST_ALGORITHM);
+  assert.strictEqual(bookDigestHex(tagged), hex);
+  // The reason `hex` exists at all: staged filenames slice 16 characters off it,
+  // and slicing the recorded form would name every exploded book the same.
+  assert.notStrictEqual(tagged.slice(0, 16), hex.slice(0, 16));
+});
+
+test('a value that is neither is refused BY NAME, never classified', async () => {
+  for (const bad of ['', 'aaa', 'A'.repeat(64), `${EPUB_TREE_DIGEST_ALGORITHM}:nope`,
+    `sha256-file:${'c'.repeat(64)}`]) {
+    assert.throws(() => bookDigestAlgorithm(bad),
+      /is not a book identity this build understands/, `"${bad}" was classified`);
+  }
+  assert.throws(() => formatBookDigest(EPUB_TREE_DIGEST_ALGORITHM, 'short'),
+    /is not a SHA-256 digest/);
+});
+
+test('bookDigestAlgorithmChange answers only on PROOF, and never throws', async () => {
+  const hex = 'd'.repeat(64);
+  const file = hex;
+  const tree = formatBookDigest(EPUB_TREE_DIGEST_ALGORITHM, hex);
+
+  // Same algorithm, different books → not an algorithm change. The caller's own
+  // "this book has changed" sentence must survive.
+  assert.strictEqual(bookDigestAlgorithmChange(file, 'e'.repeat(64)), null);
+  assert.strictEqual(bookDigestAlgorithmChange(tree,
+    formatBookDigest(EPUB_TREE_DIGEST_ALGORITHM, 'e'.repeat(64))), null);
+
+  // Unclassifiable on either side → null, NOT a guess and NOT a throw. A message
+  // path holding a corrupt stamp must still produce its message.
+  assert.strictEqual(bookDigestAlgorithmChange('aaa', file), null);
+  assert.strictEqual(bookDigestAlgorithmChange(file, 'aaa'), null);
+  assert.strictEqual(bookDigestAlgorithmChange('', ''), null);
+
+  // Proof, both directions, and the sentence says the book did not change.
+  const unpacked = bookDigestAlgorithmChange(file, tree);
+  assert.ok(unpacked && /stored as a single archived file, and it is now stored as a folder/.test(unpacked));
+  assert.ok(/was not changed/.test(unpacked), 'the sentence did not say the book is intact');
+  const repacked = bookDigestAlgorithmChange(tree, file);
+  assert.ok(repacked && /stored as a folder of its parts, and it is now stored as a single archived/
+    .test(repacked));
+});
+
+test('the strike record reads a re-measurement as a re-measurement, not an edit', async () => {
+  // The consumer this whole shape exists for: ~43 projects hold strike records
+  // stamped the file way, and the migration re-measures every one of them the
+  // tree way without changing a character of any book. "This book has changed"
+  // in front of an evening's strikes would be false.
+  const { narrationDeletionsStaleReason } = require(
+    path.join(REPO, 'dist', 'shared', 'vlm', 'narration-deletions.js'));
+  const stamped = 'f'.repeat(64);
+  const record = { epubSha256: stamped, elements: ['c0001.xhtml#3'], updatedAt: 'x' };
+
+  const sameWay = narrationDeletionsStaleReason(record, 'a'.repeat(64));
+  assert.match(sameWay, /This book has changed since these deletions were made/);
+
+  const reMeasured = narrationDeletionsStaleReason(
+    record, formatBookDigest(EPUB_TREE_DIGEST_ALGORITHM, stamped));
+  assert.ok(!/This book has changed/.test(reMeasured),
+    'a re-measurement was reported to the user as an edit to their book');
+  assert.match(reMeasured, /stored as a folder of its parts/);
+  // Still a stale reason: the values genuinely cannot be compared, so every
+  // caller's caution (checking each strike against what it struck) still runs.
+  assert.ok(reMeasured.length > 0);
+  // And the "recorded before fingerprints existed" clause still lands on it.
+  assert.match(reMeasured, /nothing to check them against/);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
