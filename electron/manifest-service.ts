@@ -1762,21 +1762,17 @@ export async function migrateWorkingCopyContainer(
   const apply = options?.apply === true;
   const projectName = path.basename(projectDir);
 
-  // ── APPLY reconciles first. A DRY RUN reconciles nothing ──────────────────
+  // ── Read first, and reconcile ONLY for a project there is work to do in ───
   //
   // `requireFamily` mints a chain for a project that predates them, and
-  // `migrateWorkingEpubNaming` renames a book — both writes, both correct, both
-  // things a dry run has no business doing. So a dry run reads the manifest as
-  // it stands and says what it FINDS, including for a project whose book is
-  // still at the legacy `outputs.epub`; the apply run does the reconciliation
-  // this migration has always had to sit behind, and then reads the same way.
-  if (apply) {
-    const resolved = await requireFamily(projectDir, options?.familyId);
-    await migrateWorkingEpubNaming(projectDir, resolved.family.id);
-  }
-  const state = await recordedWorkingCopy(projectDir, options?.familyId);
-
-  const blank: WorkingCopyContainerMigration = {
+  // `migrateWorkingEpubNaming` renames a book — both writes, both correct, and
+  // both things a dry run has no business doing. So the state is read the way
+  // `requireFamily` reads it and WITHOUT its two writes, and the answers that
+  // need no migration (no chain, no book, a book that is already a folder of its
+  // parts) come back before anything is reconciled. A bare PDF nobody has
+  // converted is an ordinary project and this leaves it exactly as it found it,
+  // in either mode.
+  const blankFor = (state: RecordedWorkingCopy): WorkingCopyContainerMigration => ({
     projectDir,
     familyId: state.familyId,
     projectName,
@@ -1788,7 +1784,31 @@ export async function migrateWorkingCopyContainer(
     directoryMarkersDropped: [],
     restamped: [],
     leftStale: [],
-  };
+  });
+
+  const found = await recordedWorkingCopy(projectDir, options?.familyId);
+  if (found.recordedRel === null) return blankFor(found);
+  const foundKind = await epubContainerKindAt(toAbs(projectDir, found.recordedRel));
+  if (foundKind === null) return { ...blankFor(found), fromRelPath: found.recordedRel };
+  if (foundKind === 'directory') {
+    return {
+      ...blankFor(found),
+      outcome: 'already-exploded',
+      fromRelPath: found.recordedRel,
+      toRelPath: found.recordedRel,
+    };
+  }
+
+  // Past here there IS an archived working copy to unpack, so the reconciliation
+  // this migration sits behind is worth doing: the chain first, then the stem
+  // (a project carrying BOTH problems would otherwise have two right answers for
+  // where its exploded book goes).
+  if (apply) {
+    const resolved = await requireFamily(projectDir, options?.familyId);
+    await migrateWorkingEpubNaming(projectDir, resolved.family.id);
+  }
+  const state = await recordedWorkingCopy(projectDir, options?.familyId);
+  const blank = blankFor(state);
 
   const recorded = state.recordedRel;
   if (recorded === null) return blank;
@@ -1849,7 +1869,7 @@ export async function migrateWorkingCopyContainer(
     source.close();
   }
 
-  const found: WorkingCopyContainerMigration = {
+  const survey: WorkingCopyContainerMigration = {
     ...blank,
     outcome: 'would-explode',
     fromRelPath: recorded,
@@ -1858,7 +1878,7 @@ export async function migrateWorkingCopyContainer(
     bytes,
     directoryMarkersDropped,
   };
-  if (!apply) return found;
+  if (!apply) return survey;
 
   // ── The explosion, proved entry for entry ─────────────────────────────────
   //
@@ -1953,7 +1973,7 @@ export async function migrateWorkingCopyContainer(
     + '.'
   );
   return {
-    ...found,
+    ...survey,
     outcome: 'exploded',
     entries: copy.entries,
     directoryMarkersDropped: copy.directoryMarkersDropped,
