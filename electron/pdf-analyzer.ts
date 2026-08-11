@@ -17,7 +17,9 @@ import type { BlockCategoryProvenance } from '../shared/ocr/text-block';
 import type { UnalignedBlock } from './epub-processor';
 import type { NarrationLaidOutBlock } from '../shared/vlm/narration-deletions';
 import { TEXT_LAYER_MIN_CHARS_PER_PAGE, type TextLayerReport } from '../shared/pdf/text-layer';
-import { analyzeEpubWithQuire, epubPageGeometryWithQuire } from './epub-quire-analysis';
+import {
+  analyzeEpubWithQuire, epubOutlineFromQuire, epubPageGeometryWithQuire,
+} from './epub-quire-analysis';
 
 export type { BlockCategoryProvenance };
 
@@ -955,16 +957,16 @@ export class PDFAnalyzer {
         // Fix up spans from older caches that lack block_id
         this.assignBlockIdsToSpans();
 
-        // Open document for rendering (under WASM lock)
+        // Open document for rendering (under WASM lock). An EPUB is opened but
+        // NOT laid out: mupdf's reflow of the whole book is minutes of dead
+        // work for a document whose page facts are quire's (the cached
+        // analysis above was built from the quire map), whose outline is read
+        // from the quire map (`extractOutline`), and whose raster view the
+        // picker refuses to show (pdf-picker.component.ts, the two
+        // startOnDemandRendering gates).
         const data = await fsPromises.readFile(pdfPath);
         const mimeType = getMimeType(pdfPath);
-        this.doc = await this.withWasmLock(async () => {
-          const d = await openDocumentWithRetry(mupdfLib, data, mimeType);
-          if (mimeType === 'application/epub+zip') {
-            d.layout(600, 900, 18);
-          }
-          return d;
-        });
+        this.doc = await this.withWasmLock(() => openDocumentWithRetry(mupdfLib, data, mimeType));
 
         requireUnalignedFacts(cached, pdfPath);
         return {
@@ -1012,8 +1014,10 @@ export class PDFAnalyzer {
         throw err;
       }
 
-      // For the raster page view only — the numbers below are quire's.
-      if (isEpub) this.doc.layout(600, 900, 18);
+      // An EPUB is NOT laid out here. The reflow of the whole book was minutes
+      // of work whose products nothing reads any more: the page numbers below
+      // are quire's, the outline is read from the quire map (`extractOutline`),
+      // and the picker refuses mupdf's raster view of an EPUB outright.
     });
 
     // An EPUB's page COUNT is its pagination: there is no cheaper way to know
@@ -5796,6 +5800,15 @@ export class PDFAnalyzer {
   async extractOutline(): Promise<OutlineItem[]> {
     if (!this.doc) {
       throw new Error('No document loaded');
+    }
+
+    // An EPUB's outline comes from its own navigation, resolved against the
+    // QUIRE page map — the pages the picker shows. mupdf resolved the same
+    // targets against its own reflow of the book, a pagination nothing
+    // displays; and since analyzeQuick no longer runs that reflow, mupdf here
+    // holds an EPUB it never laid out at all.
+    if (this.pdfPath && getMimeType(this.pdfPath) === 'application/epub+zip') {
+      return epubOutlineFromQuire(this.pdfPath, await this.computeSourceSha256(this.pdfPath));
     }
 
     // loadOutline/resolveLink touch the WASM heap — serialize with other ops

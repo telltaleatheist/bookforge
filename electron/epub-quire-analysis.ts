@@ -42,10 +42,11 @@ import * as path from 'path';
 // use, but the analyzer's requires every flag to be stated rather than optional
 // — which is the right contract for the program that PRODUCES blocks, and is
 // what `PDFAnalyzer.blocks` is. Type-only, so nothing circular reaches runtime.
-import type { TextBlock, PageDimension } from './pdf-analyzer';
+import type { TextBlock, PageDimension, OutlineItem } from './pdf-analyzer';
 import type { BlockCategoryProvenance } from '../shared/ocr/text-block';
 import {
   readEpubElementCategories,
+  readEpubTocTargets,
   type EpubElementFact,
   type EpubElementReading,
 } from './epub-processor';
@@ -212,6 +213,42 @@ export async function epubPageGeometryWithQuire(
 ): Promise<{ pageCount: number; pageDimensions: PageDimension[] }> {
   const { map } = await pageMap(epubPath, sourceSha256.substring(0, 16), analysisStrategyName());
   return { pageCount: map.pageCount, pageDimensions: pageDimensionsOf(map) };
+}
+
+/**
+ * The book's table of contents as outline items, with pages in QUIRE's page
+ * space — the pages the picker actually shows for an EPUB.
+ *
+ * This replaces mupdf's `loadOutline` for EPUBs. mupdf resolved each nav target
+ * against ITS OWN reflow of the book, which is a different pagination than
+ * quire's under the same page numbers — so every outline page was a page of a
+ * layout nothing displays. Here a target resolves to the page its document
+ * STARTS on: quire lays every spine document out as its own flow, so a chapter
+ * document's first page IS its chapter opening. A target with a fragment deeper
+ * inside a document also lands on that document's first page — quire has no
+ * anchor→page index — which is stated here rather than approximated with a
+ * number from the wrong layout.
+ *
+ * Returned flat, in navigation order, exactly as `readEpubTocTargets` reads
+ * them. A target pointing outside the spine names no pages and is skipped, the
+ * same rule `markupCategoriesForUnits` applies to the same list.
+ */
+export async function epubOutlineFromQuire(
+  epubPath: string,
+  sourceSha256: string,
+): Promise<OutlineItem[]> {
+  const fileHash = sourceSha256.substring(0, 16);
+  const { map } = await pageMap(epubPath, fileHash, analysisStrategyName());
+  const startPageOf = new Map<string, number>();
+  map.documents.forEach((entry, at) => startPageOf.set(entry, map.documentPageOffsets[at]));
+
+  const outline: OutlineItem[] = [];
+  for (const target of await readEpubTocTargets(epubPath)) {
+    const entry = target.entryCandidates.find((candidate) => startPageOf.has(candidate));
+    if (entry === undefined) continue; // navigation points outside the spine
+    outline.push({ title: target.label, page: startPageOf.get(entry)! });
+  }
+  return outline;
 }
 
 /** One entry per page, all the same size: quire lays every page into one box. */
