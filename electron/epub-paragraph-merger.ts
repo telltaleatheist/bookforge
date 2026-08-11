@@ -11,7 +11,7 @@
  */
 
 import { StreamingZipWriter, parseXhtmlBody } from './epub-processor';
-import { openEpubSource } from './epub-container';
+import { createEpubSink, openEpubSource, stagedContainerKindFor } from './epub-container';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core algorithm
@@ -385,15 +385,30 @@ export async function mergeEpubParagraphs(epubPath: string): Promise<number> {
   }
 
   if (fixedCount > 0) {
-    const writer = new StreamingZipWriter();
-    await writer.open();
+    // ── Written back as whatever the book IS, never as whatever it was ────────
+    //
+    // `StreamingZipWriter.finalize` renames a complete ARCHIVE onto `epubPath`.
+    // Against an exploded book that is not a write-back, it is a container
+    // downgrade: a zip file left standing where a folder of the book's parts
+    // belonged, and every reader after it opening a book with none of the edits
+    // that were made in the meantime. So the container is measured and a tree is
+    // written entry by entry through the seam — which also means an entry these
+    // merges did not change is not rewritten at all.
+    if (await stagedContainerKindFor(epubPath) === 'directory') {
+      const sink = await createEpubSink(epubPath, 'directory');
+      for (const [name, data] of entryData) sink.addFile(name, data, name !== 'mimetype');
+      await sink.write(epubPath);
+    } else {
+      const writer = new StreamingZipWriter();
+      await writer.open();
 
-    for (const [name, data] of entryData) {
-      const compress = name !== 'mimetype';
-      await writer.addFile(name, data, compress);
+      for (const [name, data] of entryData) {
+        const compress = name !== 'mimetype';
+        await writer.addFile(name, data, compress);
+      }
+
+      await writer.finalize(epubPath);
     }
-
-    await writer.finalize(epubPath);
     console.log(`[PARAGRAPH-MERGER] Fixed ${fixedCount} chapters in ${epubPath}`);
   }
 

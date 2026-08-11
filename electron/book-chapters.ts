@@ -94,6 +94,8 @@ import {
   createEpubSink,
   openEpubSource,
   removeEpubContainer,
+  stagedContainerKindFor,
+  type EpubContainerKind,
   type EpubSource,
 } from './epub-container';
 import { moveIntoPlace } from './processing-passes';
@@ -879,7 +881,8 @@ async function rewriteChapterTitle(
         Buffer.from(applyEdits(source, list, path.basename(inputPath), file, title), 'utf8'),
       );
     }
-    await writeBookWithReplacements(zipReader, outputPath, replacements);
+    await writeBookWithReplacements(
+      zipReader, outputPath, replacements, await stagedContainerKindFor(inputPath));
   } finally {
     zipReader.close();
   }
@@ -897,8 +900,16 @@ async function writeBookWithReplacements(
   zipReader: EpubSource,
   outputPath: string,
   replacements: ReadonlyMap<string, Buffer>,
+  /**
+   * The container the staged result is written as. It is the container of the
+   * BOOK this result replaces, measured — `stagedContainerKindFor` — because the
+   * staging name (`retitle-<sha>.epub`, in a temp directory) says nothing true
+   * about what is inside it, and `moveIntoPlace` lands whatever this wrote onto
+   * a working copy that is a folder of its parts.
+   */
+  outputKind: EpubContainerKind,
 ): Promise<void> {
-  const zipWriter = await createEpubSink(outputPath, 'zip');
+  const zipWriter = await createEpubSink(outputPath, outputKind);
   for (const entry of zipReader.getEntries()) {
     const replaced = replacements.get(entry);
     const data = replaced === undefined ? await zipReader.readEntry(entry) : replaced;
@@ -1497,7 +1508,8 @@ export async function addChapterToBookFile(
         Buffer.from(applySplices(await sourceOf(target), splices, bookName, target), 'utf8'),
       );
     }
-    await writeBookWithReplacements(zipReader, outputPath, replacements);
+    await writeBookWithReplacements(
+      zipReader, outputPath, replacements, await stagedContainerKindFor(inputPath));
   } finally {
     zipReader.close();
   }

@@ -110,14 +110,20 @@ async function stampedCopy(epubPath: string, fileHash: string): Promise<string> 
  * analysis payload all name the same directory for the same bytes.
  */
 export async function bookFileHash(epubPath: string): Promise<string> {
-  const digest = await new Promise<string>((resolve, reject) => {
-    const hash = crypto.createHash('sha256');
-    const stream = fsSync.createReadStream(epubPath);
-    stream.on('data', (chunk) => hash.update(chunk));
-    stream.on('end', () => resolve(hash.digest('hex')));
-    stream.on('error', reject);
-  });
-  return digest.substring(0, 16);
+  // Measured through `bookDigest`, the one entry point that knows how to take a
+  // book's identity in either container: the working copy is a FOLDER of the
+  // book's parts, and a read stream over one is an EISDIR. The 16 hex characters
+  // are the digest's own — `hex`, never `digest`, because the tagged form would
+  // give every exploded book the same cache directory (`bookforge-epub-t`).
+  //
+  // An archive still hashes to exactly the value it always did, so no book's
+  // cache directory moves because of this line. An exploded book's key is its
+  // CONTENT hash, which does move whenever any entry is edited — that is the
+  // whole-book invalidation phase 3 replaces with a stable book key and
+  // per-document hashes. It is not made worse here; it is carried unchanged
+  // across the container change.
+  const { bookDigest } = await import('./sidecar-binding.js');
+  return (await bookDigest(epubPath)).hex.substring(0, 16);
 }
 
 /**

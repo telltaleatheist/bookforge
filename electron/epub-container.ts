@@ -521,6 +521,35 @@ export async function openEpubSource(epubPath: string): Promise<EpubSource> {
 }
 
 /**
+ * The container a REPLACEMENT for `bookPath` has to be written as.
+ *
+ * `createEpubSink` takes the kind from the caller and never guesses it, which is
+ * right — but a whole class of caller has the same answer for the same reason,
+ * and writing `'zip'` there by hand is how that answer went stale. Every pass in
+ * this app that rewrites a book stages its result somewhere and then lands it on
+ * the book with `moveIntoPlace`. The staged result IS that book, one edit later,
+ * so its container is the book's container — not a constant, and not a guess
+ * from the staging file's name (which is `<book>.tmp` or `retitle-<sha>.epub`
+ * and says nothing true about what is inside it).
+ *
+ * So it is MEASURED, here, off the book the result is going to replace. The day
+ * the working copy became a folder of its parts, every one of those sites had to
+ * stop writing a zip onto it; this is the one line that changes them all, and a
+ * book that is not there is a refusal rather than a default.
+ */
+export async function stagedContainerKindFor(bookPath: string): Promise<EpubContainerKind> {
+  const abs = path.resolve(bookPath);
+  const kind = await epubContainerKindAt(abs);
+  if (kind === null) {
+    throw new Error(
+      `There is no book at ${abs}, so there is no telling whether a replacement for it should be `
+      + 'written as an archive or as a folder of its parts. Nothing was written.'
+    );
+  }
+  return kind;
+}
+
+/**
  * A book opened for writing, whichever container it is to be in.
  *
  * The kind is STATED by the caller, never inferred. Every site that writes a
@@ -672,6 +701,46 @@ export async function partitionEpubEntries(source: EpubSource): Promise<EpubEntr
     directoryMarkers.push(name);
   }
   return { content, directoryMarkers };
+}
+
+/**
+ * Land a book that arrived as ARCHIVE BYTES, in whichever container it belongs.
+ *
+ * Two doors hand this app a whole EPUB as a buffer — the editor window's Save
+ * and the picker's export — because a renderer can build a zip and cannot build
+ * a directory. Written straight to disk those bytes are a FILE, and the working
+ * copy is a folder of its parts, so `fs.writeFile(bookPath, buffer)` is either
+ * an EISDIR or, worse, a zip sitting where a tree belongs.
+ *
+ * So the bytes are staged as the archive they are, read through the same seam
+ * every other book is read through, and written into `outputPath` as the kind
+ * the caller states. For `kind: 'zip'` the result is those bytes re-written
+ * entry for entry rather than copied — the same book, and the one code path.
+ */
+export async function writeEpubFromArchiveBytes(
+  archiveBytes: Buffer,
+  outputPath: string,
+  kind: EpubContainerKind,
+): Promise<void> {
+  const outAbs = path.resolve(outputPath);
+  await fs.promises.mkdir(path.dirname(outAbs), { recursive: true });
+  const staged = `${outAbs}.bookforge-incoming-${Math.random().toString(36).slice(2, 10)}`;
+  await fs.promises.writeFile(staged, archiveBytes);
+  try {
+    await rewriteEpubEntries({
+      from: staged,
+      to: outAbs,
+      toKind: kind,
+      build: async (source, sink) => {
+        for (const name of source.getEntries()) {
+          if (name.endsWith('/')) continue;
+          sink.addFile(name, await source.readEntry(name), name !== 'mimetype');
+        }
+      },
+    });
+  } finally {
+    await fs.promises.rm(staged, { force: true });
+  }
 }
 
 /**
