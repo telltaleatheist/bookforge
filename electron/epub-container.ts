@@ -612,6 +612,68 @@ export async function rewriteEpubEntries(options: {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Directory MARKER entries — the one thing a ZIP has that a tree cannot
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A book's entries, split into the ones a tree can hold and the ones it cannot. */
+export interface EpubEntryPartition {
+  /** The book's real entries: everything a tree holds as a file. */
+  readonly content: string[];
+  /**
+   * Zero-length `EPUB/`-style entries — a ZIP's record that a folder exists.
+   * Empty by definition and dropped by an explosion; listed so a caller can say
+   * out loud what it did not carry across.
+   */
+  readonly directoryMarkers: string[];
+}
+
+/**
+ * Split an open book's entries into content and directory MARKERS.
+ *
+ * ── The decision this function IS ───────────────────────────────────────────
+ *
+ * A ZIP central directory may carry an entry whose name ends in `/` and whose
+ * body is zero bytes — `EPUB/`, `OEBPS/images/`. It is a record that a folder
+ * exists, written by some zip tools and by no EPUB requirement; `ZipWriter`
+ * writes none, and no reader in this app or in quire ever reads one. An exploded
+ * tree cannot reproduce them: `listEpubTreeEntries` reports FILES, and a folder
+ * with no files in it is not a thing a tree can distinguish from a folder that
+ * was never there.
+ *
+ * So the ruling, made here once rather than guessed at five call sites: **a
+ * directory marker is not a book entry.** An explosion drops it, and an
+ * entry-for-entry verification compares CONTENT against content. Deciding the
+ * other way would refuse a valid migration of every publisher EPUB that happens
+ * to have been zipped by a tool that writes them.
+ *
+ * The one thing that is NOT waved through is a trailing-slash entry with bytes
+ * in it. That is not a folder record — it is a file whose name ends in a
+ * separator, which no filesystem can hold and which a silent drop would erase.
+ * It is refused by name.
+ */
+export async function partitionEpubEntries(source: EpubSource): Promise<EpubEntryPartition> {
+  const content: string[] = [];
+  const directoryMarkers: string[] = [];
+  for (const name of source.getEntries()) {
+    if (!name.endsWith('/')) {
+      content.push(name);
+      continue;
+    }
+    const bytes = await source.readEntry(name);
+    if (bytes.length > 0) {
+      throw new Error(
+        `This book has an entry called "${name}", whose name ends in a separator but which holds `
+        + `${bytes.length} bytes. A trailing slash means "this is a folder", and a folder has no `
+        + 'contents of its own — so this entry is neither a file a tree can hold nor a folder record '
+        + 'that can be dropped. Nothing was written.'
+      );
+    }
+    directoryMarkers.push(name);
+  }
+  return { content, directoryMarkers };
+}
+
 /**
  * Take away whichever container is at `epubPath`.
  *
