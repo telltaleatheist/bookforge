@@ -552,3 +552,77 @@ export async function createEpubSink(
   const { ZipWriter } = await import('./epub-processor.js');
   return new ZipWriter();
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The rewrite — the shape every edit in this app has
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Read a book, write the book it becomes, land it.
+ *
+ * ── Why this is one function and not twenty loops ───────────────────────────
+ *
+ * Every edit in this app has the same three lines and had them written out
+ * twenty times: open the book, walk its entries into a writer swapping the one
+ * or two that changed, put the result somewhere. The differences between the
+ * copies were never about the book — they were about which temp file each site
+ * invented, whether it remembered to close its reader, and in which order. Those
+ * are exactly the details that are WRONG for a tree, so they live here now, once.
+ *
+ * ── `from` and `to` may be the same book ────────────────────────────────────
+ *
+ * That is the interesting case and the reason for the ordering below. A ZIP
+ * cannot have one member replaced, so `ZipWriter.write()` materializes a
+ * complete archive beside the target and renames it on — and Windows refuses
+ * that rename while ANY descriptor is still open on the target, which is why the
+ * source is released before the sink lands rather than in a `finally` after it.
+ * A tree has no such constraint (`DirectoryEpubSink` opens only the entries whose
+ * bytes actually changed), so releasing first is the rule that is correct for
+ * both containers, and neither container's staging strategy is baked in here:
+ * `write()` decides. That is what makes phase 2c's one-file write fall out of
+ * these call sites for free instead of having to be re-plumbed through twenty
+ * hand-rolled `path + '.tmp'` renames.
+ *
+ * `build` receives the OPEN source and the sink, and decides everything about
+ * the result: an entry it does not add is not in the book that lands. It must
+ * not use the source after it returns — `readEntry` on a released source throws.
+ */
+export async function rewriteEpubEntries(options: {
+  /** The book to read. */
+  from: string;
+  /** Where the result lands. May be `from`. */
+  to: string;
+  /** The container `to` is written as — stated, never inferred. */
+  toKind: EpubContainerKind;
+  build: (source: EpubSource, sink: EpubSink) => Promise<void>;
+}): Promise<EpubSink> {
+  const source = await openEpubSource(options.from);
+  try {
+    const sink = await createEpubSink(options.to, options.toKind);
+    await options.build(source, sink);
+    // Before the land, never after it: see the header. Closing in the `finally`
+    // alone would hold a descriptor across the rename that lands a ZIP over the
+    // book it was read from. Both sources close idempotently, so the `finally`
+    // below stays as the arm that covers a `build` that threw.
+    source.close();
+    await sink.write(options.to);
+    return sink;
+  } finally {
+    source.close();
+  }
+}
+
+/**
+ * Take away whichever container is at `epubPath`.
+ *
+ * Every caller of this is the cleanup arm of a refusal whose message ends
+ * "Nothing was written." A plain `fs.rm(path, { force: true })` makes that
+ * sentence a lie for a directory: `rm` without `recursive` fails with ERR_FS_EISDIR
+ * on a non-empty one, and `force` swallows only ENOENT — so the half-written book
+ * stays on disk while the caller tells the user it does not exist, and the next
+ * pass reads it as if it had been verified. `recursive` removes a file just as
+ * happily as a tree, so one call is honest about both.
+ */
+export async function removeEpubContainer(epubPath: string): Promise<void> {
+  await fs.promises.rm(path.resolve(epubPath), { force: true, recursive: true });
+}

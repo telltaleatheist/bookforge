@@ -5339,7 +5339,8 @@ async function saveModifiedEpubLocal(
   outputPath: string,
   previouslySavedChapterIds?: Set<string>
 ): Promise<void> {
-  const { StreamingZipWriter, ZipReader } = await import('./epub-processor.js');
+  const { StreamingZipWriter } = await import('./epub-processor.js');
+  const { openEpubSource } = await import('./epub-container.js');
 
   const structure = processor.getStructure();
   if (!structure) {
@@ -5354,12 +5355,11 @@ async function saveModifiedEpubLocal(
   }
 
   // Open the existing output EPUB for reading previously-saved chapters
-  let outputReader: InstanceType<typeof import('./epub-processor.js').ZipReader> | null = null;
+  let outputReader: import('./epub-container.js').EpubSource | null = null;
   if (previouslySavedChapterIds && previouslySavedChapterIds.size > 0) {
     try {
       await fsPromises.access(outputPath);
-      outputReader = new ZipReader(outputPath);
-      await outputReader.open();
+      outputReader = await openEpubSource(outputPath);
     } catch {
       // Output EPUB doesn't exist yet — no previously saved chapters to read
       outputReader = null;
@@ -5370,7 +5370,7 @@ async function saveModifiedEpubLocal(
   await zipWriter.open();
 
   // Get all entries from the original EPUB
-  const entries = (processor as any).zipReader?.getEntries() || [];
+  const entries = processor.entryNames();
 
   for (const entryName of entries) {
     const chapterId = entryToChapterId.get(entryName);
@@ -5391,8 +5391,15 @@ async function saveModifiedEpubLocal(
     }
   }
 
-  // Close the output reader BEFORE finalize copies the temp file to outputPath.
-  // On Windows, the file can't be overwritten while a reader has it open.
+  // The reader of `outputPath` is released BEFORE the writer lands on it.
+  //
+  // This is the ZIP's constraint, and it is kept here because the writer is a
+  // StreamingZipWriter: `finalize` renames a complete archive onto `outputPath`,
+  // and Windows refuses that rename while any descriptor is still open on the
+  // target. The shared seam does NOT carry the assumption — `rewriteEpubEntries`
+  // releases first because that order is correct for a tree as well, not because
+  // a tree needs it; a tree write touches only the entries whose bytes changed
+  // and never renames the book.
   if (outputReader) {
     outputReader.close();
     outputReader = null;

@@ -34,11 +34,12 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import {
-  EpubProcessor, ZipReader, ZipWriter,
+  EpubProcessor,
   parseXhtmlBody, collectExportUnits, collectImageElements, normalizeZipEntryName,
   unitTextContent,
   type MarkupUnit,
 } from './epub-processor';
+import { openEpubSource, removeEpubContainer, rewriteEpubEntries } from './epub-container';
 import {
   narrationElementKey, narrationFingerprint, narrationImageElementKey,
   type NarrationDocumentShape, type NarrationElementKey,
@@ -224,20 +225,19 @@ export async function stampEpubForQuire(
     replacements, stamped, sharedElements, textUnitCount, imageElementCount,
   } = stampWalkedDocuments(walked, whatFor);
 
-  const zipReader = new ZipReader(epubPath);
-  try {
-    await zipReader.open();
-    const zipWriter = new ZipWriter();
-    for (const entry of zipReader.getEntries()) {
-      const data = replacements.get(entry) ?? await zipReader.readEntry(entry);
-      // `mimetype` is stored, never deflated — the EPUB spec requires it.
-      zipWriter.addFile(entry, data, entry !== 'mimetype');
-    }
-    await fs.mkdir(path.dirname(outputPath), { recursive: true });
-    await zipWriter.write(outputPath);
-  } finally {
-    zipReader.close();
-  }
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await rewriteEpubEntries({
+    from: epubPath,
+    to: outputPath,
+    toKind: 'zip',
+    build: async (source, sink) => {
+      for (const entry of source.getEntries()) {
+        const data = replacements.get(entry) ?? await source.readEntry(entry);
+        // `mimetype` is stored, never deflated — the EPUB spec requires it.
+        sink.addFile(entry, data, entry !== 'mimetype');
+      }
+    },
+  });
 
   // ── The promise, kept or the file destroyed ───────────────────────────
   // Re-read what was written and confirm every key is on exactly one element of
@@ -247,7 +247,7 @@ export async function stampEpubForQuire(
   try {
     await verifyStamps(outputPath, stamped, whatFor);
   } catch (err) {
-    await fs.rm(outputPath, { force: true });
+    await removeEpubContainer(outputPath);
     throw err;
   }
 
@@ -392,9 +392,8 @@ async function verifyStamps(
     if (list) list.push(s.key); else byFile.set(s.file, [s.key]);
   }
 
-  const zipReader = new ZipReader(stampedEpubPath);
+  const zipReader = await openEpubSource(stampedEpubPath);
   try {
-    await zipReader.open();
     for (const [file, keys] of byFile) {
       const xhtml = (await zipReader.readEntry(file)).toString('utf8');
       const found = new Set<string>();

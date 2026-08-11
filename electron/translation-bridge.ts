@@ -872,15 +872,15 @@ async function saveTranslatedEpub(
   modifiedChapters: Map<string, string>,
   outputPath: string
 ): Promise<void> {
-  const { ZipWriter } = await import('./epub-processor.js');
+  const { createEpubSink } = await import('./epub-container.js');
 
   const structure = processor.getStructure();
   if (!structure) {
     throw new Error('No EPUB structure');
   }
 
-  const zipWriter = new ZipWriter();
-  const entries = (processor as any).zipReader?.getEntries() || [];
+  const zipWriter = await createEpubSink(outputPath, 'zip');
+  const entries = processor.entryNames();
 
   for (const entryName of entries) {
     let isModified = false;

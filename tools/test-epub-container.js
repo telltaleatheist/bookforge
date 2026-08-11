@@ -74,9 +74,16 @@ const {
   epubContainerKindAt,
   listEpubTreeEntries,
   orderEpubEntryNames,
+  removeEpubContainer,
   resolveEpubEntryPath,
+  rewriteEpubEntries,
 } = require(path.join(DIST, 'epub-container.js'));
-const { ZipReader, ZipWriter } = require(path.join(DIST, 'epub-processor.js'));
+const {
+  ZipReader,
+  ZipWriter,
+  replaceChapterTextsInEpub,
+  updateEpubMetadataStandalone,
+} = require(path.join(DIST, 'epub-processor.js'));
 const { epubTreeSha256 } = require(path.join(DIST, 'sidecar-binding.js'));
 
 // ── the fixture ─────────────────────────────────────────────────────────────
@@ -568,6 +575,308 @@ test('listEpubTreeEntries and orderEpubEntryNames are the one listing', async ()
   assert.deepStrictEqual(names, orderEpubEntryNames(BOOK.map(([n]) => n)));
   assert.deepStrictEqual(orderEpubEntryNames(['b', 'mimetype', 'a']), ['mimetype', 'a', 'b']);
   assert.deepStrictEqual(orderEpubEntryNames(['b', 'a']), ['a', 'b']);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The rewrite — phase 2a
+//
+// Every edit in this app now has one shape: `rewriteEpubEntries` opens the book,
+// `build` walks its entries into a sink swapping what changed, and the SINK
+// lands its own container. The twenty hand-rolled `path + '.tmp'` + rename
+// dances that used to sit at each call site are gone, and this section is what
+// says the zip still comes out a zip without them.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Read a ZIP's FIRST local file header off the raw bytes.
+ *
+ * Not through `ZipReader` — the reader is order-blind, and the two things OCF
+ * requires of an EPUB (`mimetype` first, and STORED rather than deflated) are
+ * both properties of the byte layout that a reader would happily hide.
+ */
+function firstZipMember(zipPath) {
+  const bytes = fs.readFileSync(zipPath);
+  assert.strictEqual(bytes.readUInt32LE(0), 0x04034b50, 'the file does not begin with a local file header');
+  const nameLength = bytes.readUInt16LE(26);
+  return {
+    name: bytes.toString('utf8', 30, 30 + nameLength),
+    compressionMethod: bytes.readUInt16LE(8),
+  };
+}
+
+/** Every entry of a zip as `name → bytes`, through the reader the app uses. */
+async function readZipEntries(zipPath) {
+  const reader = await openEpubSource(zipPath);
+  try {
+    const out = new Map();
+    for (const name of reader.getEntries()) out.set(name, await reader.readEntry(name));
+    return out;
+  } finally {
+    reader.close();
+  }
+}
+
+/** Every file sitting beside a book — a stray `.tmp` is a staging that leaked. */
+function siblingsOf(bookPath) {
+  return fs.readdirSync(path.dirname(bookPath)).sort();
+}
+
+test('an in-place rewrite of a ZIP book lands a byte-valid EPUB', async () => {
+  const zipPath = await writeFixtureZip(path.join(tmp('inplace-zip'), 'book.epub'));
+  const before = await readZipEntries(zipPath);
+
+  await rewriteEpubEntries({
+    from: zipPath,
+    to: zipPath,
+    toKind: 'zip',
+    build: async (source, sink) => {
+      for (const name of source.getEntries()) {
+        const data = name === 'EPUB/text/c0001.xhtml'
+          ? Buffer.from('<html><body><p>Chapter one, renamed.</p></body></html>', 'utf8')
+          : await source.readEntry(name);
+        sink.addFile(name, data, name !== 'mimetype');
+      }
+    },
+  });
+
+  const after = await readZipEntries(zipPath);
+  assert.deepStrictEqual([...after.keys()].sort(), [...before.keys()].sort(),
+    'the rewrite changed which entries the book has');
+  for (const [name, data] of after) {
+    if (name === 'EPUB/text/c0001.xhtml') {
+      assert.strictEqual(data.toString('utf8'), '<html><body><p>Chapter one, renamed.</p></body></html>');
+    } else {
+      assert.ok(data.equals(before.get(name)), `${name} came through the rewrite different`);
+    }
+  }
+});
+
+test('an in-place rewrite keeps `mimetype` FIRST and STORED', async () => {
+  const zipPath = await writeFixtureZip(path.join(tmp('inplace-ocf'), 'book.epub'));
+  await rewriteEpubEntries({
+    from: zipPath,
+    to: zipPath,
+    toKind: 'zip',
+    build: async (source, sink) => {
+      for (const name of source.getEntries()) {
+        sink.addFile(name, await source.readEntry(name), name !== 'mimetype');
+      }
+    },
+  });
+  const first = firstZipMember(zipPath);
+  assert.strictEqual(first.name, 'mimetype', 'mimetype is not the first member of the archive');
+  assert.strictEqual(first.compressionMethod, 0, 'mimetype was deflated; OCF requires it stored');
+});
+
+test('an in-place rewrite leaves no staging file beside the book', async () => {
+  // The sink already stages and renames; the `epubPath + '.tmp'` the call sites
+  // used to add on top of that is exactly the file that gets left behind when a
+  // rewrite dies part way, and is a whole DIRECTORY once the book is a tree.
+  const dir = tmp('inplace-no-staging');
+  const zipPath = await writeFixtureZip(path.join(dir, 'book.epub'));
+  await rewriteEpubEntries({
+    from: zipPath,
+    to: zipPath,
+    toKind: 'zip',
+    build: async (source, sink) => {
+      for (const name of source.getEntries()) {
+        sink.addFile(name, await source.readEntry(name), name !== 'mimetype');
+      }
+    },
+  });
+  assert.deepStrictEqual(siblingsOf(zipPath), ['book.epub'],
+    'the rewrite left something beside the book');
+});
+
+test('the source is RELEASED before the sink lands, and says so if used after', async () => {
+  // The whole reason an in-place ZIP rewrite works on Windows at all. A source
+  // still holding the target is what turns the landing rename into EPERM — and
+  // it is checked by shape here rather than by hoping the platform complains.
+  const zipPath = await writeFixtureZip(path.join(tmp('release-first'), 'book.epub'));
+  let held = null;
+  await rewriteEpubEntries({
+    from: zipPath,
+    to: zipPath,
+    toKind: 'zip',
+    build: async (source, sink) => {
+      held = source;
+      for (const name of source.getEntries()) {
+        sink.addFile(name, await source.readEntry(name), name !== 'mimetype');
+      }
+    },
+  });
+  await assert.rejects(() => held.readEntry('mimetype'), /ZIP file not open/,
+    'the source was still open after the book was landed');
+});
+
+test('a rewrite that refuses part way leaves the book exactly as it was', async () => {
+  const dir = tmp('rewrite-refuses');
+  const zipPath = await writeFixtureZip(path.join(dir, 'book.epub'));
+  const before = fs.readFileSync(zipPath);
+
+  await assert.rejects(() => rewriteEpubEntries({
+    from: zipPath,
+    to: zipPath,
+    toKind: 'zip',
+    build: async (source, sink) => {
+      sink.addFile('mimetype', await source.readEntry('mimetype'), false);
+      throw new Error('the pass changed its mind');
+    },
+  }), /the pass changed its mind/);
+
+  assert.ok(fs.readFileSync(zipPath).equals(before), 'a refused rewrite changed the book');
+  assert.deepStrictEqual(siblingsOf(zipPath), ['book.epub']);
+  // And the descriptor went back: on Windows a held one makes this throw.
+  fs.renameSync(zipPath, path.join(dir, 'moved.epub'));
+});
+
+test('a rewrite onto a DIFFERENT path leaves the book it read alone', async () => {
+  const dir = tmp('rewrite-copy');
+  const zipPath = await writeFixtureZip(path.join(dir, 'book.epub'));
+  const before = fs.readFileSync(zipPath);
+  const outPath = path.join(dir, 'copy.epub');
+
+  await rewriteEpubEntries({
+    from: zipPath,
+    to: outPath,
+    toKind: 'zip',
+    build: async (source, sink) => {
+      for (const name of source.getEntries()) {
+        sink.addFile(name, await source.readEntry(name), name !== 'mimetype');
+      }
+    },
+  });
+
+  assert.ok(fs.readFileSync(zipPath).equals(before), 'the source book was touched');
+  assert.deepStrictEqual(
+    [...(await readZipEntries(outPath)).keys()].sort(),
+    [...(await readZipEntries(zipPath)).keys()].sort());
+});
+
+test('the same rewrite over a TREE writes only the entry that changed', async () => {
+  // The point of the exercise, on the shared path rather than on the sink alone:
+  // phase 2c changes `toKind` and nothing else, and this is the property that
+  // has to fall out of that one change.
+  const treeDir = writeFixtureTree(tmp('rewrite-tree'));
+  ageEverything(treeDir);
+  const mtimesBefore = mtimesOf(treeDir);
+
+  const sink = await rewriteEpubEntries({
+    from: treeDir,
+    to: treeDir,
+    toKind: 'directory',
+    build: async (source, into) => {
+      for (const name of source.getEntries()) {
+        const data = name === 'EPUB/text/c0001.xhtml'
+          ? Buffer.from('<html><body><p>Chapter one, relabelled.</p></body></html>', 'utf8')
+          : await source.readEntry(name);
+        into.addFile(name, data);
+      }
+    },
+  });
+
+  const report = sink.lastWrite();
+  assert.deepStrictEqual(report.written, ['EPUB/text/c0001.xhtml']);
+  assert.strictEqual(report.unchanged.length, BOOK.length - 1);
+  assert.deepStrictEqual(report.removed, []);
+
+  const mtimesAfter = mtimesOf(treeDir);
+  for (const [name, was] of mtimesBefore) {
+    if (name === 'EPUB/text/c0001.xhtml') continue;
+    assert.strictEqual(mtimesAfter.get(name), was, `${name} was rewritten and did not need to be`);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The cleanup after a refusal
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a refusal\'s cleanup removes the book it claims nothing was written to', async () => {
+  // Eight refusal arms in this app end with "Nothing was written." and then
+  // delete the staged book. They all called `fs.rm(path, { force: true })`,
+  // which cannot remove a directory — so the moment the staged book is a tree,
+  // the sentence becomes a lie and the half-written book is left for the next
+  // pass to read as if it had been verified.
+  const dir = tmp('refusal-cleanup');
+  const asTree = writeFixtureTree(path.join(dir, 'staged.working'));
+  const asZip = await writeFixtureZip(path.join(dir, 'staged.epub'));
+
+  await assert.rejects(() => fs.promises.rm(asTree, { force: true }),
+    /EISDIR|ERR_FS_EISDIR|EPERM/,
+    'the OLD cleanup call silently succeeded on a directory — this test proves nothing');
+  assert.ok(fs.existsSync(asTree), 'the old call removed the tree after all');
+
+  await removeEpubContainer(asTree);
+  assert.ok(!fs.existsSync(asTree), 'the staged tree survived its own refusal');
+
+  await removeEpubContainer(asZip);
+  assert.ok(!fs.existsSync(asZip), 'the staged zip survived its own refusal');
+
+  // And a refusal that fires before anything was staged is not itself a failure.
+  await removeEpubContainer(path.join(dir, 'never-existed.epub'));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The restructured call sites, end to end
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('updateEpubMetadataStandalone rewrites in place, valid, with nothing left over', async () => {
+  const dir = tmp('metadata-in-place');
+  // The shared fixture's OPF has no <metadata> for a title to land in, so this
+  // one book carries a real package document. Everything else is the fixture.
+  const withMetadata = BOOK.map(([name, data]) => name === 'EPUB/content.opf'
+    ? [name, Buffer.from(
+      '<?xml version="1.0"?><package version="3.0" xmlns="http://www.idpf.org/2007/opf">'
+      + '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Before</dc:title>'
+      + '</metadata><manifest/><spine/></package>', 'utf8')]
+    : [name, data]);
+  const zipPath = path.join(dir, 'book.epub');
+  {
+    const writer = new ZipWriter();
+    for (const [name, data] of withMetadata) writer.addFile(name, data, name !== 'mimetype');
+    await writer.write(zipPath);
+  }
+  const before = await readZipEntries(zipPath);
+
+  await updateEpubMetadataStandalone(zipPath, { title: 'A Renamed Book' });
+
+  const first = firstZipMember(zipPath);
+  assert.strictEqual(first.name, 'mimetype');
+  assert.strictEqual(first.compressionMethod, 0);
+  assert.deepStrictEqual(siblingsOf(zipPath), ['book.epub'],
+    'the in-place metadata write left its staging behind');
+
+  const after = await readZipEntries(zipPath);
+  assert.deepStrictEqual([...after.keys()].sort(), [...before.keys()].sort());
+  assert.match(after.get('EPUB/content.opf').toString('utf8'), /A Renamed Book/);
+  for (const [name, data] of after) {
+    if (name === 'EPUB/content.opf') continue;
+    assert.ok(data.equals(before.get(name)), `${name} changed and had no business changing`);
+  }
+});
+
+test('replaceChapterTextsInEpub reads the BOOK, not a duplicate of itself', async () => {
+  // It used to `copyEpubFile(input → output)` and then open the COPY as both the
+  // reader and the rewrite target: a full duplicate of the book whose every byte
+  // was immediately read back out and written again. The source is the book.
+  const dir = tmp('replace-chapters');
+  const zipPath = await writeFixtureZip(path.join(dir, 'book.epub'));
+  const outPath = path.join(dir, 'cleaned.epub');
+  const before = fs.readFileSync(zipPath);
+
+  const result = await replaceChapterTextsInEpub(zipPath, outPath, []);
+  assert.strictEqual(result.success, true, result.error);
+
+  assert.ok(fs.readFileSync(zipPath).equals(before), 'the input book was written to');
+  assert.deepStrictEqual(siblingsOf(outPath), ['book.epub', 'cleaned.epub'],
+    'the copy-then-rewrite left a staging file behind');
+
+  const written = await readZipEntries(outPath);
+  const source = await readZipEntries(zipPath);
+  assert.deepStrictEqual([...written.keys()].sort(), [...source.keys()].sort());
+  for (const [name, data] of written) {
+    assert.ok(data.equals(source.get(name)), `${name} did not survive the rewrite intact`);
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -10,7 +10,8 @@
  * at sentence boundaries.
  */
 
-import { ZipReader, StreamingZipWriter, parseXhtmlBody } from './epub-processor';
+import { StreamingZipWriter, parseXhtmlBody } from './epub-processor';
+import { openEpubSource } from './epub-container';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core algorithm
@@ -345,34 +346,43 @@ export function addHeadingPunctuation(xhtml: string): string {
  * Returns the number of chapters that were fixed.
  */
 export async function mergeEpubParagraphs(epubPath: string): Promise<number> {
-  const reader = new ZipReader(epubPath);
-  await reader.open();
-
-  const entries = reader.getEntries();
   const entryData = new Map<string, Buffer>();
   let fixedCount = 0;
 
-  for (const name of entries) {
-    const data = await reader.readEntry(name);
+  // Read the whole book and RELEASE it before anything is written back over it:
+  // `StreamingZipWriter.finalize` renames a complete archive onto `epubPath`,
+  // and Windows refuses that rename while a reader still holds the target. This
+  // is the ZIP's constraint, kept where the ZIP writer is — the shared seam does
+  // not carry it (see `rewriteEpubEntries`).
+  //
+  // The writer stays a StreamingZipWriter rather than an `EpubSink`: it exists
+  // so a fifty-megabyte book is not held twice in memory, and the seam's sink
+  // buffers every entry. Phase 2c gives the tree that property for free (an
+  // unchanged entry is never read into a write at all).
+  const reader = await openEpubSource(epubPath);
+  try {
+    for (const name of reader.getEntries()) {
+      const data = await reader.readEntry(name);
 
-    if (name.endsWith('.xhtml') || name.endsWith('.html') || name.endsWith('.htm')) {
-      const lowerName = name.toLowerCase();
-      if (!lowerName.includes('nav') && !lowerName.includes('toc')) {
-        const original = data.toString('utf-8');
-        // 1) Merge fragmented <p> tags, then 2) punctuate run-on headings/datelines.
-        const fixed = addHeadingPunctuation(mergeXhtmlParagraphs(original, name));
-        if (fixed !== original) {
-          entryData.set(name, Buffer.from(fixed, 'utf-8'));
-          fixedCount++;
-          continue;
+      if (name.endsWith('.xhtml') || name.endsWith('.html') || name.endsWith('.htm')) {
+        const lowerName = name.toLowerCase();
+        if (!lowerName.includes('nav') && !lowerName.includes('toc')) {
+          const original = data.toString('utf-8');
+          // 1) Merge fragmented <p> tags, then 2) punctuate run-on headings/datelines.
+          const fixed = addHeadingPunctuation(mergeXhtmlParagraphs(original, name));
+          if (fixed !== original) {
+            entryData.set(name, Buffer.from(fixed, 'utf-8'));
+            fixedCount++;
+            continue;
+          }
         }
       }
+
+      entryData.set(name, data);
     }
-
-    entryData.set(name, data);
+  } finally {
+    reader.close();
   }
-
-  reader.close();
 
   if (fixedCount > 0) {
     const writer = new StreamingZipWriter();

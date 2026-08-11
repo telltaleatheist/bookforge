@@ -30,8 +30,9 @@ import {
 } from './quire-stamp';
 import { blockId, bookFileHash, stampedCopyForViewer } from './epub-quire-analysis';
 import {
-  markupCategoriesForUnits, readEpubTocTargets, ZipReader, ZipWriter, type MarkupUnit,
+  markupCategoriesForUnits, readEpubTocTargets, type MarkupUnit,
 } from './epub-processor';
+import { createEpubSink, openEpubSource } from './epub-container';
 import { moveIntoPlace } from './processing-passes';
 import {
   loadCachedPageMap, pageMapPath, quireCacheDir, saveCachedPageMap, stampedEpubPath,
@@ -533,15 +534,19 @@ async function composeStampedCopy(
     );
   }
 
-  const bookZip = new ZipReader(bookPath);
-  const stampedZip = new ZipReader(oldStampedPath);
   const staged = `${outputPath}.staging-${crypto.randomBytes(6).toString('hex')}`;
+  const bookZip = await openEpubSource(bookPath);
+  let stampedZip;
   try {
-    await bookZip.open();
-    await stampedZip.open();
+    stampedZip = await openEpubSource(oldStampedPath);
+  } catch (err) {
+    bookZip.close();
+    throw err;
+  }
+  try {
     const carried = new Set(stampedZip.getEntries());
 
-    const writer = new ZipWriter();
+    const writer = await createEpubSink(staged, 'zip');
     for (const name of bookZip.getEntries()) {
       const fresh = freshlyStamped.get(name);
       let data: Buffer;

@@ -89,7 +89,13 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { EpubProcessor, ZipReader, ZipWriter, type EpubStructure } from './epub-processor';
+import { EpubProcessor, type EpubStructure } from './epub-processor';
+import {
+  createEpubSink,
+  openEpubSource,
+  removeEpubContainer,
+  type EpubSource,
+} from './epub-container';
 import { moveIntoPlace } from './processing-passes';
 import { sha256File } from './sidecar-binding';
 import * as manifestService from './manifest-service';
@@ -107,6 +113,19 @@ export type {
 };
 
 const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
+
+/**
+ * The suffix a staged book carries while it is between the edit and the move.
+ *
+ * NOT `.epub`. These names used to end in it, and the name was a claim the code
+ * could not keep: a staged copy of a book is whatever container the book is —
+ * the working copy becomes an exploded directory in phase 2c, and
+ * `retitle-<sha>.epub` would then be a DIRECTORY called `.epub`. Nothing reads
+ * these paths by extension (the container is stated at the sink and read off the
+ * filesystem at the source), so the honest name costs nothing and stops the
+ * next reader of this file believing a file is what it will find.
+ */
+const STAGED_SUFFIX = '.staged-book';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Reading the book's tables of contents
@@ -830,8 +849,7 @@ async function rewriteChapterTitle(
     });
   }
 
-  const zipReader = new ZipReader(inputPath);
-  await zipReader.open();
+  const zipReader = await openEpubSource(inputPath);
   try {
     const chapterXhtml = (await zipReader.readEntry(chapterFile)).toString('utf8');
     const docTitle = findDocTitle(chapterXhtml);
@@ -876,11 +894,11 @@ async function rewriteChapterTitle(
  * runs describing the same book.
  */
 async function writeBookWithReplacements(
-  zipReader: ZipReader,
+  zipReader: EpubSource,
   outputPath: string,
   replacements: ReadonlyMap<string, Buffer>,
 ): Promise<void> {
-  const zipWriter = new ZipWriter();
+  const zipWriter = await createEpubSink(outputPath, 'zip');
   for (const entry of zipReader.getEntries()) {
     const replaced = replacements.get(entry);
     const data = replaced === undefined ? await zipReader.readEntry(entry) : replaced;
@@ -1427,8 +1445,7 @@ export async function addChapterToBookFile(
     if (existing === undefined) splicesByFile.set(target, [splice]); else existing.push(splice);
   };
 
-  const zipReader = new ZipReader(inputPath);
-  await zipReader.open();
+  const zipReader = await openEpubSource(inputPath);
   try {
     const sources = new Map<string, string>();
     const sourceOf = async (target: string): Promise<string> => {
@@ -1515,7 +1532,7 @@ async function verifyChapterAdded(
 ): Promise<void> {
   const bookName = path.basename(inputPath);
   const refuse = async (sentence: string): Promise<never> => {
-    await fs.promises.rm(outputPath, { force: true });
+    await removeEpubContainer(outputPath);
     throw new Error(`${bookName}: ${sentence} Nothing was written.`);
   };
 
@@ -1625,7 +1642,7 @@ export async function renameBookChapter(
   const narration = await manifestService.readNarrationEpub(projectDir, familyId);
 
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
-  const staged = path.join(STAGING_DIR, `retitle-${before.slice(0, 16)}.epub`);
+  const staged = path.join(STAGING_DIR, `retitle-${before.slice(0, 16)}${STAGED_SUFFIX}`);
   const renamed = await renameChapterInBookFile(book.absPath, staged, chapterFile, title);
   await moveIntoPlace(staged, book.absPath);
 
@@ -1696,7 +1713,7 @@ export async function renameBookChapter(
           );
         }
       } else {
-        const stagedCopy = path.join(STAGING_DIR, `retitle-tts-${before.slice(0, 16)}.epub`);
+        const stagedCopy = path.join(STAGING_DIR, `retitle-tts-${before.slice(0, 16)}${STAGED_SUFFIX}`);
         await rewriteChapterTitle(
           narration.absPath, stagedCopy, copyHits, chapterFile, title);
         // FILE first, then the record — deliberately the other way round from
@@ -1841,7 +1858,7 @@ export async function addBookChapter(
   }
 
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
-  const staged = path.join(STAGING_DIR, `add-chapter-${before.slice(0, 16)}.epub`);
+  const staged = path.join(STAGING_DIR, `add-chapter-${before.slice(0, 16)}${STAGED_SUFFIX}`);
   const added = await addChapterToBookFile(book.absPath, staged, chapterFile, title);
   await moveIntoPlace(staged, book.absPath);
 
@@ -1906,7 +1923,7 @@ export async function addBookChapter(
           + 'table of contents. The two files have come apart; export the narration copy again.'
         );
       } else {
-        const stagedCopy = path.join(STAGING_DIR, `add-chapter-tts-${before.slice(0, 16)}.epub`);
+        const stagedCopy = path.join(STAGING_DIR, `add-chapter-tts-${before.slice(0, 16)}${STAGED_SUFFIX}`);
         await addChapterToBookFile(narration.absPath, stagedCopy, chapterFile, title);
         // FILE first, then the record — deliberately the other way round from
         // the book above, and the difference is what an interrupt costs. Here

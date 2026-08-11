@@ -13,11 +13,18 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { promisify } from 'util';
 import * as cheerio from 'cheerio';
-// Type-only, and it must stay that way: epub-container.ts imports ZipReader and
-// ZipWriter back out of this file (lazily, inside its factories) to build the
-// zip half of the seam. `import type` is erased on emit, so the two modules
-// describe each other without either one loading the other at require time.
+// epub-container.ts is a LEAF — fs/path only — and it imports ZipReader and
+// ZipWriter back out of THIS file lazily, inside its factories. So this value
+// import is safe in the one direction that matters: requiring epub-container
+// pulls in nothing, while requiring epub-processor pulls in the seam it now
+// routes every read and write through.
 import type { EpubSink, EpubSource } from './epub-container';
+import {
+  createEpubSink,
+  openEpubSource,
+  removeEpubContainer,
+  rewriteEpubEntries,
+} from './epub-container';
 import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
 import { blockCategoryForVlm } from '../shared/vlm/conversion';
 import { isFootnoteMarkerSupText, stripFootnoteMarkerSups } from '../shared/text/sup-markers';
@@ -283,14 +290,16 @@ function getAllTags(xml: string, tagName: string): Array<{ content: string; attr
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class EpubProcessor {
-  private zipReader: ZipReader | null = null;
+  private source: EpubSource | null = null;
   private structure: EpubStructure | null = null;
   private currentPath: string = '';
 
   async open(epubPath: string): Promise<EpubStructure> {
     this.currentPath = epubPath;
-    this.zipReader = new ZipReader(epubPath);
-    await this.zipReader.open();
+    // Through the seam, so the container is whatever the path IS. `openEpubSource`
+    // hands back an ALREADY-OPEN source and gives its handle back when the open
+    // fails — the leak that used to leave an unopenable book undeletable.
+    this.source = await openEpubSource(epubPath);
 
     // Find and parse container.xml
     const containerXml = await this.readFile('META-INF/container.xml');
@@ -427,26 +436,48 @@ export class EpubProcessor {
   }
 
   close(): void {
-    if (this.zipReader) {
-      this.zipReader.close();
-      this.zipReader = null;
+    if (this.source) {
+      this.source.close();
+      this.source = null;
     }
     this.structure = null;
   }
 
-  async readFile(filePath: string): Promise<string> {
-    if (!this.zipReader) {
+  /** The path this book was opened from. */
+  get openedPath(): string {
+    return this.currentPath;
+  }
+
+  /**
+   * Every entry name in the book, in the container's own order.
+   *
+   * Public because eleven sites used to reach through `(processor as any).zipReader`
+   * for exactly this and then write `|| []` after it — a fallback that turned
+   * "I could not read this book" into "this book has no entries", and whose
+   * result was a rewrite loop that iterated nothing and wrote an EMPTY EPUB over
+   * a real one. A closed processor throws here, in the same words every other
+   * read on it throws.
+   */
+  entryNames(): string[] {
+    if (!this.source) {
       throw new Error('EPUB not open');
     }
-    const buffer = await this.zipReader.readEntry(filePath);
+    return this.source.getEntries();
+  }
+
+  async readFile(filePath: string): Promise<string> {
+    if (!this.source) {
+      throw new Error('EPUB not open');
+    }
+    const buffer = await this.source.readEntry(filePath);
     return buffer.toString('utf8');
   }
 
   async readBinaryFile(filePath: string): Promise<Buffer> {
-    if (!this.zipReader) {
+    if (!this.source) {
       throw new Error('EPUB not open');
     }
-    return await this.zipReader.readEntry(filePath);
+    return await this.source.readEntry(filePath);
   }
 
   getStructure(): EpubStructure | null {
@@ -673,7 +704,7 @@ export class EpubProcessor {
       } catch { /* malformed percent-escape — not a URL-encoded href */ }
     }
     for (const c of candidates) {
-      if (c && this.zipReader?.hasEntry(join(c))) return join(c);
+      if (c && this.source?.hasEntry(join(c))) return join(c);
     }
     // Nothing matched — keep the historical behavior (fragment-stripped href)
     // so callers still surface a clear "Entry not found" error.
@@ -1278,7 +1309,7 @@ export async function saveModifiedEpub(outputPath: string): Promise<void> {
     throw new Error('No EPUB structure');
   }
 
-  const zipWriter = new ZipWriter();
+  const zipWriter = await createEpubSink(outputPath, 'zip');
 
   // Determine cover file path (if we have a modified cover)
   let coverFilePath: string | null = null;
@@ -1289,7 +1320,7 @@ export async function saveModifiedEpub(outputPath: string): Promise<void> {
   }
 
   // Get all entries from the original EPUB
-  const entries = (currentProcessor as any).zipReader?.getEntries() || [];
+  const entries = currentProcessor.entryNames();
 
   for (const entryName of entries) {
     // Check if this is the cover image that needs to be replaced
@@ -1482,7 +1513,14 @@ function escapeXml(text: string): string {
  * Add or replace a cover image in an existing EPUB file.
  * - If the EPUB already has a cover entry in the OPF, replaces the image data
  * - If the EPUB has no cover entry, adds the image file, OPF manifest item, and meta tag
- * - Writes via temp file for atomicity
+ *
+ * In place, through `rewriteEpubEntries` — which is also what makes the "writes
+ * via temp file for atomicity" this docstring used to claim actually true. The
+ * old shape opened the book, walked it into a writer with NO try/finally around
+ * the walk, and landed it; a read that threw part way (an entry the central
+ * directory names and the archive does not) left the reader's descriptor open on
+ * the book forever, and on Windows a held descriptor is exactly what makes the
+ * file undeletable and every later rename onto it EPERM.
  */
 export async function embedCoverInEpub(epubPath: string, coverImagePath: string): Promise<void> {
   const coverData = await fs.readFile(coverImagePath);
@@ -1492,17 +1530,17 @@ export async function embedCoverInEpub(epubPath: string, coverImagePath: string)
     : coverExt === 'webp' ? 'image/webp'
     : 'image/jpeg';
 
+  // The book's own account of itself, read and RELEASED before the rewrite
+  // opens it again: the structure is a plain object, and a processor still
+  // holding the book open is a descriptor across the land.
   const processor = new EpubProcessor();
   let structure: EpubStructure;
   try {
     structure = await processor.open(epubPath);
-  } catch (err) {
+  } finally {
     processor.close();
-    throw err;
   }
 
-  const zipWriter = new ZipWriter();
-  const entries = (processor as any).zipReader?.getEntries() || [];
   const rootPath = structure.rootPath; // e.g. 'OEBPS' or ''
 
   // Determine if EPUB already has a cover
@@ -1516,55 +1554,55 @@ export async function embedCoverInEpub(epubPath: string, coverImagePath: string)
   const newCoverHref = newCoverFilename; // relative to rootPath for OPF
   const newCoverEntry = rootPath ? `${rootPath}/${newCoverFilename}` : newCoverFilename;
 
-  let coverWritten = false;
-
-  for (const entryName of entries) {
-    // Replace existing cover image data
-    if (existingCoverEntry && entryName === existingCoverEntry) {
-      zipWriter.addFile(entryName, coverData, true);
-      coverWritten = true;
-      continue;
-    }
-
-    // Modify OPF to add cover metadata if EPUB has no existing cover
-    if (!existingCoverEntry && entryName === structure.opfPath) {
-      let opfXml = await processor.readFile(entryName);
-
-      // Add <item> to manifest
-      const manifestCloseMatch = opfXml.match(/<\/manifest>/i);
-      if (manifestCloseMatch && manifestCloseMatch.index !== undefined) {
-        const itemLine = `    <item id="cover-image" href="${newCoverHref}" media-type="${mediaType}"/>\n  `;
-        opfXml = opfXml.slice(0, manifestCloseMatch.index) + itemLine + opfXml.slice(manifestCloseMatch.index);
-      }
-
-      // Add <meta name="cover" content="cover-image"/> to metadata
-      const hasCoverMeta = /<meta[^>]+name\s*=\s*["']cover["']/i.test(opfXml);
-      if (!hasCoverMeta) {
-        const metadataCloseMatch = opfXml.match(/<\/metadata>/i);
-        if (metadataCloseMatch && metadataCloseMatch.index !== undefined) {
-          const metaLine = `    <meta name="cover" content="cover-image"/>\n  `;
-          opfXml = opfXml.slice(0, metadataCloseMatch.index) + metaLine + opfXml.slice(metadataCloseMatch.index);
+  await rewriteEpubEntries({
+    from: epubPath,
+    to: epubPath,
+    toKind: 'zip',
+    build: async (source, sink) => {
+      for (const entryName of source.getEntries()) {
+        // Replace existing cover image data
+        if (existingCoverEntry && entryName === existingCoverEntry) {
+          sink.addFile(entryName, coverData, true);
+          continue;
         }
+
+        // Modify OPF to add cover metadata if EPUB has no existing cover
+        if (!existingCoverEntry && entryName === structure.opfPath) {
+          let opfXml = (await source.readEntry(entryName)).toString('utf8');
+
+          // Add <item> to manifest
+          const manifestCloseMatch = opfXml.match(/<\/manifest>/i);
+          if (manifestCloseMatch && manifestCloseMatch.index !== undefined) {
+            const itemLine = `    <item id="cover-image" href="${newCoverHref}" media-type="${mediaType}"/>\n  `;
+            opfXml = opfXml.slice(0, manifestCloseMatch.index) + itemLine + opfXml.slice(manifestCloseMatch.index);
+          }
+
+          // Add <meta name="cover" content="cover-image"/> to metadata
+          const hasCoverMeta = /<meta[^>]+name\s*=\s*["']cover["']/i.test(opfXml);
+          if (!hasCoverMeta) {
+            const metadataCloseMatch = opfXml.match(/<\/metadata>/i);
+            if (metadataCloseMatch && metadataCloseMatch.index !== undefined) {
+              const metaLine = `    <meta name="cover" content="cover-image"/>\n  `;
+              opfXml = opfXml.slice(0, metadataCloseMatch.index) + metaLine + opfXml.slice(metadataCloseMatch.index);
+            }
+          }
+
+          sink.addFile(entryName, Buffer.from(opfXml, 'utf8'));
+          continue;
+        }
+
+        // Copy all other entries as-is
+        const data = await source.readEntry(entryName);
+        const compress = entryName !== 'mimetype';
+        sink.addFile(entryName, data, compress);
       }
 
-      zipWriter.addFile(entryName, Buffer.from(opfXml, 'utf8'));
-      continue;
-    }
-
-    // Copy all other entries as-is
-    const data = await processor.readBinaryFile(entryName);
-    const compress = entryName !== 'mimetype';
-    zipWriter.addFile(entryName, data, compress);
-  }
-
-  // If no existing cover was found, add the new cover file as a new entry
-  if (!existingCoverEntry) {
-    zipWriter.addFile(newCoverEntry, coverData, true);
-  }
-
-  processor.close();
-
-  await zipWriter.write(epubPath);
+      // If no existing cover was found, add the new cover file as a new entry
+      if (!existingCoverEntry) {
+        sink.addFile(newCoverEntry, coverData, true);
+      }
+    },
+  });
 }
 
 /**
@@ -1595,66 +1633,68 @@ export async function updateEpubCoverAndMetadata(
   let structure: EpubStructure;
   try {
     structure = await processor.open(epubPath);
-  } catch (err) {
-    processor.close();
-    throw err;
-  }
-
-  try {
-    const zipWriter = new ZipWriter();
-    const entries = (processor as any).zipReader?.getEntries() || [];
-    const rootPath = structure.rootPath;
-
-    const existingCoverHref = structure.metadata.coverPath;
-    const existingCoverEntry = existingCoverHref
-      ? (rootPath ? `${rootPath}/${existingCoverHref}` : existingCoverHref)
-      : null;
-    const newCoverFilename = `cover.${coverExt === 'jpeg' ? 'jpg' : coverExt}`;
-    const newCoverEntry = rootPath ? `${rootPath}/${newCoverFilename}` : newCoverFilename;
-    const addingNewCover = !!coverData && !existingCoverEntry;
-
-    for (const entryName of entries) {
-      // Replace an existing cover image's bytes.
-      if (coverData && existingCoverEntry && entryName === existingCoverEntry) {
-        zipWriter.addFile(entryName, coverData, true);
-        continue;
-      }
-      // OPF: apply metadata, and inject cover manifest/meta when adding a new cover.
-      if (entryName === structure.opfPath) {
-        let opfXml = updateOpfMetadata(await processor.readFile(entryName), metadata);
-        if (addingNewCover) {
-          const manifestCloseMatch = opfXml.match(/<\/manifest>/i);
-          if (manifestCloseMatch && manifestCloseMatch.index !== undefined) {
-            const itemLine = `    <item id="cover-image" href="${newCoverFilename}" media-type="${mediaType}"/>\n  `;
-            opfXml = opfXml.slice(0, manifestCloseMatch.index) + itemLine + opfXml.slice(manifestCloseMatch.index);
-          }
-          const hasCoverMeta = /<meta[^>]+name\s*=\s*["']cover["']/i.test(opfXml);
-          if (!hasCoverMeta) {
-            const metadataCloseMatch = opfXml.match(/<\/metadata>/i);
-            if (metadataCloseMatch && metadataCloseMatch.index !== undefined) {
-              const metaLine = `    <meta name="cover" content="cover-image"/>\n  `;
-              opfXml = opfXml.slice(0, metadataCloseMatch.index) + metaLine + opfXml.slice(metadataCloseMatch.index);
-            }
-          }
-        }
-        zipWriter.addFile(entryName, Buffer.from(opfXml, 'utf8'));
-        continue;
-      }
-      const data = await processor.readBinaryFile(entryName);
-      const compress = entryName !== 'mimetype';
-      zipWriter.addFile(entryName, data, compress);
-    }
-
-    if (addingNewCover && coverData) {
-      zipWriter.addFile(newCoverEntry, coverData, true);
-    }
-
-    const tempPath = epubPath + '.tmp';
-    await zipWriter.write(tempPath);
-    await fs.rename(tempPath, epubPath);
   } finally {
     processor.close();
   }
+
+  const rootPath = structure.rootPath;
+
+  const existingCoverHref = structure.metadata.coverPath;
+  const existingCoverEntry = existingCoverHref
+    ? (rootPath ? `${rootPath}/${existingCoverHref}` : existingCoverHref)
+    : null;
+  const newCoverFilename = `cover.${coverExt === 'jpeg' ? 'jpg' : coverExt}`;
+  const newCoverEntry = rootPath ? `${rootPath}/${newCoverFilename}` : newCoverFilename;
+  const addingNewCover = !!coverData && !existingCoverEntry;
+
+  // In place. The `epubPath + '.tmp'` + rename this used to end with was a
+  // SECOND staging on top of the sink's own — `ZipWriter.write` already
+  // materializes beside the target and renames on — and it is the half that is
+  // wrong for a tree, where `path + '.tmp'` is a whole directory left behind.
+  // The sink decides how its container lands; the site says only where.
+  await rewriteEpubEntries({
+    from: epubPath,
+    to: epubPath,
+    toKind: 'zip',
+    build: async (source, sink) => {
+      for (const entryName of source.getEntries()) {
+        // Replace an existing cover image's bytes.
+        if (coverData && existingCoverEntry && entryName === existingCoverEntry) {
+          sink.addFile(entryName, coverData, true);
+          continue;
+        }
+        // OPF: apply metadata, and inject cover manifest/meta when adding a new cover.
+        if (entryName === structure.opfPath) {
+          let opfXml = updateOpfMetadata(
+            (await source.readEntry(entryName)).toString('utf8'), metadata);
+          if (addingNewCover) {
+            const manifestCloseMatch = opfXml.match(/<\/manifest>/i);
+            if (manifestCloseMatch && manifestCloseMatch.index !== undefined) {
+              const itemLine = `    <item id="cover-image" href="${newCoverFilename}" media-type="${mediaType}"/>\n  `;
+              opfXml = opfXml.slice(0, manifestCloseMatch.index) + itemLine + opfXml.slice(manifestCloseMatch.index);
+            }
+            const hasCoverMeta = /<meta[^>]+name\s*=\s*["']cover["']/i.test(opfXml);
+            if (!hasCoverMeta) {
+              const metadataCloseMatch = opfXml.match(/<\/metadata>/i);
+              if (metadataCloseMatch && metadataCloseMatch.index !== undefined) {
+                const metaLine = `    <meta name="cover" content="cover-image"/>\n  `;
+                opfXml = opfXml.slice(0, metadataCloseMatch.index) + metaLine + opfXml.slice(metadataCloseMatch.index);
+              }
+            }
+          }
+          sink.addFile(entryName, Buffer.from(opfXml, 'utf8'));
+          continue;
+        }
+        const data = await source.readEntry(entryName);
+        const compress = entryName !== 'mimetype';
+        sink.addFile(entryName, data, compress);
+      }
+
+      if (addingNewCover && coverData) {
+        sink.addFile(newCoverEntry, coverData, true);
+      }
+    },
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1674,7 +1714,7 @@ export async function exportEpubAsBook(
   const processor = new EpubProcessor();
   try {
     const structure = await processor.open(sourcePath);
-    const zipWriter = new ZipWriter();
+    const zipWriter = await createEpubSink(outputPath, 'zip');
 
     // Resolve cover file path within the EPUB ZIP
     let coverEntryPath: string | null = null;
@@ -1688,7 +1728,7 @@ export async function exportEpubAsBook(
       }
     }
 
-    const entries = (processor as any).zipReader?.getEntries() || [];
+    const entries = processor.entryNames();
 
     for (const entryName of entries) {
       // Replace cover image if provided
@@ -1723,7 +1763,7 @@ export async function exportEpubAsBook(
 
 /**
  * Update metadata in an existing EPUB file in-place.
- * Opens the EPUB, updates OPF metadata fields, rewrites the ZIP atomically.
+ * Opens the EPUB, updates OPF metadata fields, rewrites the book atomically.
  * Uses its own EpubProcessor instance to avoid interfering with the PDF editor.
  */
 export async function updateEpubMetadataStandalone(
@@ -1731,31 +1771,32 @@ export async function updateEpubMetadataStandalone(
   metadata: Partial<EpubMetadata>
 ): Promise<void> {
   const processor = new EpubProcessor();
+  let opfPath: string;
   try {
-    const structure = await processor.open(epubPath);
-    const zipWriter = new ZipWriter();
-    const entries = (processor as any).zipReader?.getEntries() || [];
-
-    for (const entryName of entries) {
-      if (entryName === structure.opfPath) {
-        const originalOpf = await processor.readFile(entryName);
-        const newOpf = updateOpfMetadata(originalOpf, metadata);
-        zipWriter.addFile(entryName, Buffer.from(newOpf, 'utf8'));
-        continue;
-      }
-
-      const data = await processor.readBinaryFile(entryName);
-      const compress = entryName !== 'mimetype';
-      zipWriter.addFile(entryName, data, compress);
-    }
-
-    // Atomic write via temp file
-    const tempPath = epubPath + '.tmp';
-    await zipWriter.write(tempPath);
-    await fs.rename(tempPath, epubPath);
+    opfPath = (await processor.open(epubPath)).opfPath;
   } finally {
     processor.close();
   }
+
+  await rewriteEpubEntries({
+    from: epubPath,
+    to: epubPath,
+    toKind: 'zip',
+    build: async (source, sink) => {
+      for (const entryName of source.getEntries()) {
+        if (entryName === opfPath) {
+          const originalOpf = (await source.readEntry(entryName)).toString('utf8');
+          const newOpf = updateOpfMetadata(originalOpf, metadata);
+          sink.addFile(entryName, Buffer.from(newOpf, 'utf8'));
+          continue;
+        }
+
+        const data = await source.readEntry(entryName);
+        const compress = entryName !== 'mimetype';
+        sink.addFile(entryName, data, compress);
+      }
+    },
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2242,34 +2283,40 @@ export async function editEpubText(
       return { success: false, error: 'XHTML rebuild produced no changes' };
     }
 
-    // Create new EPUB with the modified chapter
-    const zipWriter = new ZipWriter();
-    const entries = (processor as any).zipReader?.getEntries() || [];
+    // The book, in place, with one document's bytes changed. The reader is
+    // released before the land (see `rewriteEpubEntries`), so `processor` is
+    // closed here rather than left to the `finally` — it is the descriptor a
+    // ZIP's rename onto this same path would trip over.
+    processor.close();
+    await rewriteEpubEntries({
+      from: epubPath,
+      to: epubPath,
+      toKind: 'zip',
+      build: async (source, sink) => {
+        for (const entryName of source.getEntries()) {
+          if (entryName === href) {
+            sink.addFile(entryName, Buffer.from(newXhtml, 'utf8'));
+          } else {
+            const data = await source.readEntry(entryName);
+            const compress = entryName !== 'mimetype';
+            sink.addFile(entryName, data, compress);
+          }
+        }
+      },
+    });
 
-    for (const entryName of entries) {
-      if (entryName === href) {
-        zipWriter.addFile(entryName, Buffer.from(newXhtml, 'utf8'));
-      } else {
-        const data = await processor.readBinaryFile(entryName);
-        const compress = entryName !== 'mimetype';
-        zipWriter.addFile(entryName, data, compress);
-      }
-    }
-
-    // Write to a temp file, then replace the original
-    const tempPath = epubPath + '.tmp';
-    await zipWriter.write(tempPath);
-
+    // Invalidate the diff cache since the EPUB changed.
+    //
+    // Through `deriveDiffPath`, which is the ONE derivation of this sibling and
+    // has been since it was written. What stood here was
+    // `epubPath.replace('.epub', '.diff.json')`, and `String.replace` returns
+    // its input UNCHANGED when the needle is not there — so for any book path
+    // without a literal lowercase `.epub` in it (a `.EPUB`, a `.working`
+    // directory, an extension-less staging name) this deleted THE BOOK THAT HAD
+    // JUST BEEN WRITTEN, and reported success.
+    const { deriveDiffPath } = await import('./diff-cache.js');
     const fs = await import('fs/promises');
-    await fs.rename(tempPath, epubPath);
-
-    // Invalidate the diff cache since the EPUB changed
-    const diffCachePath = epubPath.replace('.epub', '.diff.json');
-    try {
-      await fs.unlink(diffCachePath);
-    } catch {
-      // Cache file may not exist - that's fine
-    }
+    await fs.rm(deriveDiffPath(epubPath), { force: true });
 
     return { success: true };
   } catch (error) {
@@ -2470,29 +2517,30 @@ export async function replaceTextInEpub(
       return { success: false, error: 'Text not found in any chapter' };
     }
 
-    // Create new EPUB with the modified chapter
-    const zipWriter = new ZipWriter();
-    const entries = (processor as any).zipReader?.getEntries() || [];
-
-    for (const entryName of entries) {
-      if (entryName === foundHref) {
-        // Write modified content
-        zipWriter.addFile(entryName, Buffer.from(modifiedXhtml, 'utf8'));
-      } else {
-        // Copy file as-is
-        const data = await processor.readBinaryFile(entryName);
-        const compress = entryName !== 'mimetype';
-        zipWriter.addFile(entryName, data, compress);
-      }
-    }
-
-    // Write to a temp file, then replace the original
-    const tempPath = epubPath + '.tmp';
-    await zipWriter.write(tempPath);
-
-    // Replace original with temp
-    const fs = await import('fs/promises');
-    await fs.rename(tempPath, epubPath);
+    // The book, in place, with one document's bytes changed. `processor` is
+    // released here rather than in the `finally` because it holds the very path
+    // the sink is about to land on.
+    const replacedHref = foundHref;
+    const replacedXhtml = modifiedXhtml;
+    processor.close();
+    await rewriteEpubEntries({
+      from: epubPath,
+      to: epubPath,
+      toKind: 'zip',
+      build: async (source, sink) => {
+        for (const entryName of source.getEntries()) {
+          if (entryName === replacedHref) {
+            // Write modified content
+            sink.addFile(entryName, Buffer.from(replacedXhtml, 'utf8'));
+          } else {
+            // Copy file as-is
+            const data = await source.readEntry(entryName);
+            const compress = entryName !== 'mimetype';
+            sink.addFile(entryName, data, compress);
+          }
+        }
+      },
+    });
 
     return { success: true, chapterFound: foundInChapter || undefined };
   } catch (error) {
@@ -2531,8 +2579,8 @@ export async function exportEpubWithRemovals(
 
   try {
     const structure = await processor.open(inputPath);
-    const zipWriter = new ZipWriter();
-    const entries = (processor as any).zipReader?.getEntries() || [];
+    const zipWriter = await createEpubSink(outputPath, 'zip');
+    const entries = processor.entryNames();
 
     // Build a map of chapter ID -> href
     const chapterHrefs = new Map<string, string>();
@@ -2795,8 +2843,8 @@ export async function exportEpubWithDeletedBlocks(
 
   try {
     const structure = await processor.open(inputPath);
-    const zipWriter = new ZipWriter();
-    const entries = (processor as any).zipReader?.getEntries() || [];
+    const zipWriter = await createEpubSink(outputPath, 'zip');
+    const entries = processor.entryNames();
 
     // Group deleted blocks by section href
     const deletedBySection = new Map<string, number[]>();
@@ -3575,67 +3623,67 @@ export async function copyEpubReplaceBodies(
       }
     }
 
-    // Read all files from source, modify chapter bodies
-    const zipReader = new ZipReader(inputPath);
-    await zipReader.open();
-    const files = zipReader.getEntries();
-    const zipWriter = new ZipWriter();
+    // The structure has been read; the processor's descriptor is not wanted
+    // across the land, so it goes now rather than after the write.
+    processor.close();
 
     let sentenceIndex = globalSentenceStartIndex;
 
-    for (const file of files) {
-      const replacement = replacementByPath.get(file);
+    // Read all files from source, modify chapter bodies. The `outputPath + '.tmp'`
+    // + rename this used to end with was a second staging on top of the sink's
+    // own; the sink decides how its container lands.
+    await rewriteEpubEntries({
+      from: inputPath,
+      to: outputPath,
+      toKind: 'zip',
+      build: async (source, sink) => {
+        for (const file of source.getEntries()) {
+          const replacement = replacementByPath.get(file);
 
-      if (replacement) {
-        // Read original xhtml to preserve head/structure
-        const originalBuffer = await zipReader.readEntry(file);
-        const originalXhtml = originalBuffer.toString('utf8');
+          if (replacement) {
+            // Read original xhtml to preserve head/structure
+            const originalBuffer = await source.readEntry(file);
+            const originalXhtml = originalBuffer.toString('utf8');
 
-        // Build new body content
-        const $ = cheerio.load(originalXhtml, { xmlMode: true });
-        const body = $('body');
-        if (body.length === 0) {
-          // No body tag — just copy as-is
-          zipWriter.addFile(file, originalBuffer);
-          continue;
+            // Build new body content
+            const $ = cheerio.load(originalXhtml, { xmlMode: true });
+            const body = $('body');
+            if (body.length === 0) {
+              // No body tag — just copy as-is
+              sink.addFile(file, originalBuffer);
+              continue;
+            }
+
+            // Clear body and rebuild
+            body.empty();
+
+            // Add heading if present
+            if (replacement.heading) {
+              body.append(`<h1>${escapeXmlText(replacement.heading)}</h1>\n`);
+            }
+
+            // Add one <p> per sentence with global sentence index
+            for (const sentence of replacement.sentences) {
+              body.append(`<p id="s${sentenceIndex}">${escapeXmlText(sentence)}</p>\n`);
+              sentenceIndex++;
+            }
+
+            // Update lang attribute if present
+            if (replacement.lang) {
+              $('html').attr('xml:lang', replacement.lang);
+              $('html').attr('lang', replacement.lang);
+            }
+
+            const newXhtml = $.xml();
+            sink.addFile(file, Buffer.from(newXhtml, 'utf8'));
+          } else {
+            // Copy file as-is
+            const content = await source.readEntry(file);
+            sink.addFile(file, content);
+          }
         }
-
-        // Clear body and rebuild
-        body.empty();
-
-        // Add heading if present
-        if (replacement.heading) {
-          body.append(`<h1>${escapeXmlText(replacement.heading)}</h1>\n`);
-        }
-
-        // Add one <p> per sentence with global sentence index
-        for (const sentence of replacement.sentences) {
-          body.append(`<p id="s${sentenceIndex}">${escapeXmlText(sentence)}</p>\n`);
-          sentenceIndex++;
-        }
-
-        // Update lang attribute if present
-        if (replacement.lang) {
-          $('html').attr('xml:lang', replacement.lang);
-          $('html').attr('lang', replacement.lang);
-        }
-
-        const newXhtml = $.xml();
-        zipWriter.addFile(file, Buffer.from(newXhtml, 'utf8'));
-      } else {
-        // Copy file as-is
-        const content = await zipReader.readEntry(file);
-        zipWriter.addFile(file, content);
-      }
-    }
-
-    zipReader.close();
-    processor.close();
-
-    // Write the new EPUB
-    const tempPath = outputPath + '.tmp';
-    await zipWriter.write(tempPath);
-    await fs.rename(tempPath, outputPath);
+      },
+    });
 
     return { success: true };
   } catch (error) {
@@ -3659,8 +3707,17 @@ function escapeXmlText(text: string): string {
 
 /**
  * Replace text in multiple chapters of an EPUB while preserving structure.
- * This function duplicates the EPUB if outputPath differs from inputPath,
- * then replaces text content in specified chapters.
+ *
+ * ── Untangled (phase 2a) ────────────────────────────────────────────────────
+ *
+ * This used to DUPLICATE the whole book onto `outputPath` with `copyEpubFile`
+ * and then use that duplicate as both the reader and the rewrite target — a full
+ * copy of a 25 MB book whose every byte was immediately read back out and
+ * written again through a second temp. The source of this rewrite is
+ * `inputPath`; it always was, because the copy was byte-identical to it. So the
+ * copy is gone and the read comes from the book, which also makes
+ * `inputPath === outputPath` an ordinary in-place rewrite instead of the special
+ * case that had to be skipped.
  */
 export async function replaceChapterTextsInEpub(
   inputPath: string,
@@ -3668,67 +3725,48 @@ export async function replaceChapterTextsInEpub(
   chapterReplacements: Array<{ chapterId: string; newText: string }>
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    // If output path differs, copy the EPUB first
-    if (inputPath !== outputPath) {
-      const copyResult = await copyEpubFile(inputPath, outputPath);
-      if (!copyResult.success) {
-        return { success: false, error: `Failed to copy EPUB: ${copyResult.error}` };
-      }
-    }
-
-    // Now work with the output file
+    // The book's structure, read from the BOOK and released before the rewrite.
     const processor = new EpubProcessor();
-    const structure = await processor.open(outputPath);
-
-    // Process each chapter replacement
-    const zipWriter = new ZipWriter();
-    const tempOutputPath = outputPath + '.tmp';
-
-    // Copy all files from the original EPUB
-    const zipReader = new ZipReader(outputPath);
-    await zipReader.open();
-    const files = zipReader.getEntries();
-
-    // Create a map of chapter IDs to their file paths
     const chapterPathMap = new Map<string, string>();
-    for (const chapter of structure.chapters) {
-      const href = processor.resolvePath(chapter.href);
-      chapterPathMap.set(chapter.id, href);
-    }
-
-    // Process each file
-    for (const file of files) {
-      // Check if this file needs text replacement
-      const replacement = chapterReplacements.find(r =>
-        chapterPathMap.get(r.chapterId) === file
-      );
-
-      if (replacement) {
-        // This is a chapter that needs replacement — use cheerio-based replaceBlockTexts
-        const originalBuffer = await zipReader.readEntry(file);
-        const originalContent = originalBuffer.toString('utf8');
-
-        // Split new text into paragraphs (on double newlines)
-        const splitTexts = replacement.newText.split(/\n\n+/).map(p => p.trim()).filter(p => p.length > 0);
-
-        // Skip h1 headings — cleanup sends only body text, headings pass through untouched
-        const newContent = replaceBlockTexts(originalContent, splitTexts, { skipHeadings: true });
-        zipWriter.addFile(file, Buffer.from(newContent, 'utf8'));
-      } else {
-        // Copy file as-is
-        const content = await zipReader.readEntry(file);
-        zipWriter.addFile(file, content);
+    try {
+      const structure = await processor.open(inputPath);
+      for (const chapter of structure.chapters) {
+        chapterPathMap.set(chapter.id, processor.resolvePath(chapter.href));
       }
+    } finally {
+      processor.close();
     }
 
-    zipReader.close();
-    processor.close();
+    await rewriteEpubEntries({
+      from: inputPath,
+      to: outputPath,
+      toKind: 'zip',
+      build: async (source, sink) => {
+        for (const file of source.getEntries()) {
+          // Check if this file needs text replacement
+          const replacement = chapterReplacements.find(r =>
+            chapterPathMap.get(r.chapterId) === file
+          );
 
-    // Write the new EPUB
-    await zipWriter.write(tempOutputPath);
+          if (replacement) {
+            // This is a chapter that needs replacement — use cheerio-based replaceBlockTexts
+            const originalBuffer = await source.readEntry(file);
+            const originalContent = originalBuffer.toString('utf8');
 
-    // Replace the original with the temp file
-    await fs.rename(tempOutputPath, outputPath);
+            // Split new text into paragraphs (on double newlines)
+            const splitTexts = replacement.newText.split(/\n\n+/).map(p => p.trim()).filter(p => p.length > 0);
+
+            // Skip h1 headings — cleanup sends only body text, headings pass through untouched
+            const newContent = replaceBlockTexts(originalContent, splitTexts, { skipHeadings: true });
+            sink.addFile(file, Buffer.from(newContent, 'utf8'));
+          } else {
+            // Copy file as-is
+            const content = await source.readEntry(file);
+            sink.addFile(file, content);
+          }
+        }
+      },
+    });
 
     return { success: true };
   } catch (error) {
@@ -6753,8 +6791,7 @@ async function verifyNarrationCut(
   const problems: string[] = [];
   let kept = 0;
 
-  const zipReader = new ZipReader(outputPath);
-  await zipReader.open();
+  const zipReader = await openEpubSource(outputPath);
   try {
     for (const expected of expectations) {
       if (expected.removed) {
@@ -7137,7 +7174,7 @@ export async function writeNarrationEpub(
         { key: el.key, signature: el.signature });
     }
     if (survivingInDroppedDocument.length > 0) {
-      await fs.rm(outputPath, { force: true });
+      await removeEpubContainer(outputPath);
       throw new Error(
         `${file} was taken out of the narration copy, but ${survivingInDroppedDocument.length} `
         + `element(s) in it were never struck — the first is ${survivingInDroppedDocument[0]}. `
@@ -7179,9 +7216,12 @@ export async function writeNarrationEpub(
 
   let removedSupMarkers = 0;
 
-  const zipReader = new ZipReader(inputPath);
-  await zipReader.open();
-  try {
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await rewriteEpubEntries({
+    from: inputPath,
+    to: outputPath,
+    toKind: 'zip',
+    build: async (zipReader, zipWriter) => {
     // ── The book's own account of itself, brought in line ──────────────────
     //
     // Three files say what this book contains, and all three are edited before
@@ -7208,7 +7248,6 @@ export async function writeNarrationEpub(
       }
     }
 
-    const zipWriter = new ZipWriter();
     for (const entry of zipReader.getEntries()) {
       // The emptied documents themselves. Their images, styles and fonts stay:
       // this removes documents the strikes emptied, not assets, and an asset
@@ -7243,11 +7282,8 @@ export async function writeNarrationEpub(
       // compressed one makes the book unopenable in strict readers.
       zipWriter.addFile(entry, data, entry !== 'mimetype');
     }
-    await fs.mkdir(path.dirname(outputPath), { recursive: true });
-    await zipWriter.write(outputPath);
-  } finally {
-    zipReader.close();
-  }
+    },
+  });
 
   // ── The promise, kept or the file destroyed ───────────────────────────────
   //
@@ -7273,7 +7309,7 @@ export async function writeNarrationEpub(
       );
     }
   } catch (err) {
-    await fs.rm(outputPath, { force: true });
+    await removeEpubContainer(outputPath);
     throw err;
   }
 
@@ -7419,8 +7455,7 @@ export async function stripFootnoteReferencesFromBook(
   let removed = 0;
   let breaks = 0;
 
-  const zipReader = new ZipReader(inputPath);
-  await zipReader.open();
+  const zipReader = await openEpubSource(inputPath);
   try {
     for (const entry of zipReader.getEntries()) {
       if (!isContentDocumentEntry(entry)) continue;
@@ -7562,28 +7597,27 @@ async function writeBookWithReplacedEntries(
   replacements: ReadonlyMap<string, Buffer>,
 ): Promise<void> {
   const bookName = path.basename(inputPath);
-  const zipReader = new ZipReader(inputPath);
-  await zipReader.open();
-  try {
-    for (const entry of replacements.keys()) {
-      if (!zipReader.hasEntry(entry)) {
-        throw new Error(
-          `${bookName}'s spine lists ${entry} but its zip does not contain it, so there is nothing `
-          + 'to rewrite. Nothing was written.'
-        );
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await rewriteEpubEntries({
+    from: inputPath,
+    to: outputPath,
+    toKind: 'zip',
+    build: async (source, sink) => {
+      for (const entry of replacements.keys()) {
+        if (!source.hasEntry(entry)) {
+          throw new Error(
+            `${bookName}'s spine lists ${entry} but its zip does not contain it, so there is nothing `
+            + 'to rewrite. Nothing was written.'
+          );
+        }
       }
-    }
-    const zipWriter = new ZipWriter();
-    for (const entry of zipReader.getEntries()) {
-      const replacement = replacements.get(entry);
-      const data = replacement === undefined ? await zipReader.readEntry(entry) : replacement;
-      zipWriter.addFile(entry, data, entry !== 'mimetype');
-    }
-    await fs.mkdir(path.dirname(outputPath), { recursive: true });
-    await zipWriter.write(outputPath);
-  } finally {
-    zipReader.close();
-  }
+      for (const entry of source.getEntries()) {
+        const replacement = replacements.get(entry);
+        const data = replacement === undefined ? await source.readEntry(entry) : replacement;
+        sink.addFile(entry, data, entry !== 'mimetype');
+      }
+    },
+  });
 }
 
 /** One element the fold took out, and what it said before it went. */
@@ -7821,8 +7855,14 @@ export async function foldChapterOpeningInBookFile(
   const openerIndexAfter =
     opener.index - removedIndices.filter((i) => i < opener.index).length;
   try {
-    const check = new ZipReader(outputPath);
-    await check.open();
+    // Through the factory, which gives its handle back when the open FAILS. A
+    // bare `new ZipReader(p)` + `open()` takes an fs descriptor before it parses
+    // the central directory, so a book that does not read back as an archive left
+    // that descriptor held — and the very next thing this site does is DELETE the
+    // file it could not read, which on Windows is exactly what a held descriptor
+    // makes impossible. The refusal would then say "Nothing was written" over a
+    // book that was still sitting there.
+    const check = await openEpubSource(outputPath);
     let unitsAfter = 0;
     let imagesAfter = 0;
     let openerTextAfter = '';
@@ -7868,7 +7908,7 @@ export async function foldChapterOpeningInBookFile(
       unitsAfter,
     };
   } catch (err) {
-    await fs.rm(outputPath, { force: true });
+    await removeEpubContainer(outputPath);
     throw err;
   }
 }
@@ -8091,8 +8131,14 @@ export async function nameChapterOpeningsInBookFile(
   // the same number of pictures, and the opening — still at its own index,
   // since nothing was removed — reads the name.
   try {
-    const check = new ZipReader(outputPath);
-    await check.open();
+    // Through the factory, which gives its handle back when the open FAILS. A
+    // bare `new ZipReader(p)` + `open()` takes an fs descriptor before it parses
+    // the central directory, so a book that does not read back as an archive left
+    // that descriptor held — and the very next thing this site does is DELETE the
+    // file it could not read, which on Windows is exactly what a held descriptor
+    // makes impossible. The refusal would then say "Nothing was written" over a
+    // book that was still sitting there.
+    const check = await openEpubSource(outputPath);
     try {
       for (const want of expected) {
         const written = parseXhtmlBody(
@@ -8125,7 +8171,7 @@ export async function nameChapterOpeningsInBookFile(
       check.close();
     }
   } catch (err) {
-    await fs.rm(outputPath, { force: true });
+    await removeEpubContainer(outputPath);
     throw err;
   }
 
@@ -8378,8 +8424,14 @@ export async function stampElementIdsInBookFile(
   // document carries no id the walk did not produce — a stamp on an element
   // nothing enumerates is an identity nothing can resolve.
   try {
-    const check = new ZipReader(outputPath);
-    await check.open();
+    // Through the factory, which gives its handle back when the open FAILS. A
+    // bare `new ZipReader(p)` + `open()` takes an fs descriptor before it parses
+    // the central directory, so a book that does not read back as an archive left
+    // that descriptor held — and the very next thing this site does is DELETE the
+    // file it could not read, which on Windows is exactly what a held descriptor
+    // makes impossible. The refusal would then say "Nothing was written" over a
+    // book that was still sitting there.
+    const check = await openEpubSource(outputPath);
     try {
       const seen = new Set<string>();
       for (const [file, want] of expected) {
@@ -8439,7 +8491,7 @@ export async function stampElementIdsInBookFile(
       check.close();
     }
   } catch (err) {
-    await fs.rm(outputPath, { force: true });
+    await removeEpubContainer(outputPath);
     throw err;
   }
 
@@ -8639,8 +8691,14 @@ export async function setElementCategoryInBookFile(
   // through the same reader the analysis uses — the claim that matters, because
   // an attribute no reader honours is the invisible overlay this replaces.
   try {
-    const check = new ZipReader(outputPath);
-    await check.open();
+    // Through the factory, which gives its handle back when the open FAILS. A
+    // bare `new ZipReader(p)` + `open()` takes an fs descriptor before it parses
+    // the central directory, so a book that does not read back as an archive left
+    // that descriptor held — and the very next thing this site does is DELETE the
+    // file it could not read, which on Windows is exactly what a held descriptor
+    // makes impossible. The refusal would then say "Nothing was written" over a
+    // book that was still sitting there.
+    const check = await openEpubSource(outputPath);
     let unitsAfter = 0;
     let imagesAfter = 0;
     try {
@@ -8672,7 +8730,7 @@ export async function setElementCategoryInBookFile(
       );
     }
   } catch (err) {
-    await fs.rm(outputPath, { force: true });
+    await removeEpubContainer(outputPath);
     throw err;
   }
 
@@ -9232,7 +9290,7 @@ ${headingHtml}${section.content.join('\n')}
     }
   }
 
-  const zipWriter = new ZipWriter();
+  const zipWriter = await createEpubSink(outputPath, 'zip');
   zipWriter.addFile('mimetype', Buffer.from('application/epub+zip', 'utf8'), false);
   zipWriter.addFile('META-INF/container.xml', Buffer.from(containerXml, 'utf8'));
   zipWriter.addFile('OEBPS/content.opf', Buffer.from(contentOpf, 'utf8'));

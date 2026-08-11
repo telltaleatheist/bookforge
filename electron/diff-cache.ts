@@ -41,7 +41,7 @@ async function writeDiffCacheAtomic(diffPath: string, cache: DiffCacheFile): Pro
  * make replace() a no-op, and the atomic write would then clobber the cleaned
  * EPUB itself with diff JSON. Fail loudly if there's no extension to strip.
  */
-function deriveDiffPath(cleanedEpubPath: string): string {
+export function deriveDiffPath(cleanedEpubPath: string): string {
   const ext = path.extname(cleanedEpubPath);
   if (!ext) {
     throw new Error(`Cannot derive diff-cache path: "${cleanedEpubPath}" has no file extension`);

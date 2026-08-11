@@ -32,10 +32,9 @@ import {
   finalizeDiffCache,
   clearDiffCache
 } from './diff-cache.js';
+import { createEpubSink, openEpubSource } from './epub-container.js';
 import {
   EpubProcessor,
-  ZipReader,
-  ZipWriter,
   extractBlockTexts,
   replaceBlockTexts,
   formatNumberedParagraphs,
@@ -1800,8 +1799,7 @@ export async function runMonoTranslation(
     console.log(`[MONO-TRANSLATION] EPUB has ${structure.chapters.length} chapters`);
 
     // ── Step 2: Extract paragraphs from each chapter ────────────────────
-    const zipReader = new ZipReader(inputEpubPath);
-    await zipReader.open();
+    const zipReader = await openEpubSource(inputEpubPath);
 
     interface ChapterData {
       zipPath: string;
@@ -2040,7 +2038,7 @@ export async function runMonoTranslation(
       message: 'Writing translated EPUB...'
     });
 
-    const zipWriter = new ZipWriter();
+    const zipWriter = await createEpubSink(outputEpubPath, 'zip');
     const allEntries = zipReader.getEntries();
 
     for (const file of allEntries) {
@@ -2060,10 +2058,11 @@ export async function runMonoTranslation(
     zipReader.close();
     processor.close();
 
-    // Write via temp file for atomic operation
-    const tempPath = outputEpubPath + '.tmp';
-    await zipWriter.write(tempPath);
-    await fs.rename(tempPath, outputEpubPath);
+    // The sink lands its own container — `ZipWriter.write` already stages beside
+    // the target and renames on. The `outputEpubPath + '.tmp'` that stood here
+    // was a second staging on top of that, under a name that claims a container
+    // the sink is no longer obliged to produce.
+    await zipWriter.write(outputEpubPath);
 
     // Merge fragmented paragraphs in translated EPUB
     await mergeEpubParagraphs(outputEpubPath);
