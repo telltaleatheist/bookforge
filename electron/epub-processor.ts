@@ -920,8 +920,18 @@ async function copyTempToOutput(tempPath: string, outputPath: string): Promise<v
 export class ZipWriter implements EpubSink {
   private entries: Array<{ name: string; data: Buffer; isCompressed: boolean }> = [];
 
+  /**
+   * `mimetype` is not an ordinary entry, and callers do not get to treat it as
+   * one. OCF requires it to be the archive's FIRST entry and STORED — a
+   * deflated or misplaced one makes the book invalid, and strict readers refuse
+   * it. Most sites here pass `name !== 'mimetype'` for exactly that reason;
+   * `copyEpubReplaceBodies` and `replaceChapterTextsInEpub` did not, and took
+   * the `compress = true` default, so every book they wrote carried a deflated
+   * mimetype. That is not a mistake worth catching twice, so it is not the
+   * caller's to make: the writer of the format owns the format's invariant.
+   */
   addFile(name: string, data: Buffer, compress: boolean = true): void {
-    this.entries.push({ name, data, isCompressed: compress });
+    this.entries.push({ name, data, isCompressed: name === 'mimetype' ? false : compress });
   }
 
   async write(outputPath: string): Promise<void> {
@@ -929,7 +939,15 @@ export class ZipWriter implements EpubSink {
     const fileData: Buffer[] = [];
     let offset = 0;
 
-    for (const entry of this.entries) {
+    // …and first. The sources hand entries over with `mimetype` leading, so add
+    // order normally carries it, but "normally" is not what a format invariant
+    // means: a caller that adds entries in any other order still gets a valid
+    // book rather than one that opens everywhere except the strict readers.
+    const ordered = [...this.entries];
+    const mimetypeAt = ordered.findIndex((e) => e.name === 'mimetype');
+    if (mimetypeAt > 0) ordered.unshift(...ordered.splice(mimetypeAt, 1));
+
+    for (const entry of ordered) {
       const nameBuffer = Buffer.from(entry.name, 'utf8');
       let compressedData: Buffer;
       let compressionMethod: number;

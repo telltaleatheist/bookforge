@@ -668,6 +668,36 @@ test('an in-place rewrite keeps `mimetype` FIRST and STORED', async () => {
   assert.strictEqual(first.compressionMethod, 0, 'mimetype was deflated; OCF requires it stored');
 });
 
+test('the WRITER keeps mimetype stored and first, however the caller adds it', async () => {
+  // The two sites that copy a book entry by entry (copyEpubReplaceBodies,
+  // replaceChapterTextsInEpub) called addFile(name, data) with no compress
+  // argument and took the `true` default, so every book they wrote carried a
+  // DEFLATED mimetype — invalid per OCF, refused by strict readers, and
+  // invisible through ZipReader, which is order- and method-blind. Fixing those
+  // two callers would leave the next one free to make the same mistake, so the
+  // invariant belongs to the writer. Here the caller does BOTH wrong things at
+  // once: adds mimetype last, and asks for it compressed.
+  const zipPath = path.join(tmp('writer-owns-mimetype'), 'book.epub');
+  const writer = new ZipWriter();
+  for (const [name, data] of BOOK) {
+    if (name === 'mimetype') continue;
+    writer.addFile(name, data, true);
+  }
+  writer.addFile('mimetype', Buffer.from('application/epub+zip', 'utf8'), true);
+  await writer.write(zipPath);
+
+  const first = firstZipMember(zipPath);
+  assert.strictEqual(first.name, 'mimetype',
+    'mimetype was added last and the writer did not move it to the front');
+  assert.strictEqual(first.compressionMethod, 0,
+    'mimetype was asked for compressed and the writer obeyed; OCF requires it stored');
+
+  // The book is otherwise untouched: same entries, same bytes.
+  const back = await readZipEntries(zipPath);
+  assert.strictEqual(back.size, BOOK.length);
+  for (const [name, data] of BOOK) assert.ok(data.equals(back.get(name)), `${name} changed`);
+});
+
 test('an in-place rewrite leaves no staging file beside the book', async () => {
   // The sink already stages and renames; the `epubPath + '.tmp'` the call sites
   // used to add on top of that is exactly the file that gets left behind when a
