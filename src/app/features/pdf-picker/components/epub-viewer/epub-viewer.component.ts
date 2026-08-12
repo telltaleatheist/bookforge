@@ -1738,7 +1738,18 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     this.closeContextMenu();
   }
 
-  protected fire(which: 'selectLikeThis' | 'deleteLikeThis', block: LaidOutBlock): void {
+  /**
+   * Emit one of the block-scoped outputs and shut the menu.
+   *
+   * The union is written out rather than widened to `keyof this`: every name in
+   * it takes a `LaidOutBlock` and every one of them is a menu item, so a typo
+   * or an output with a different payload is a compile error here rather than a
+   * silently dead menu entry.
+   */
+  protected fire(
+    which: 'selectLikeThis' | 'deleteLikeThis' | 'editBlockText',
+    block: LaidOutBlock,
+  ): void {
     this[which].emit(block);
     this.closeContextMenu();
   }
