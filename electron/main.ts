@@ -1557,9 +1557,11 @@ function setupIpcHandlers(): void {
       const tempTextFile = path.join(tempDir, 'extracted.txt');
       const tempEpubFile = path.join(tempDir, 'output.epub');
 
-      // Detect file type
-      const ext = path.extname(filePath).toLowerCase();
-      const isEpub = ext === '.epub';
+      // A book is a book — `isBookPath`, not the raw extension: the working
+      // copy is `<stem>.working` (an exploded directory since Aug 2026), and
+      // the extension test here silently routed it down the PDF arm, where
+      // pdftotext was handed a directory.
+      const isBook = isBookPath(filePath);
 
       // Find ebook-convert using cross-platform discovery
       const ebookConvertPath = await findEbookConvert();
@@ -1569,10 +1571,21 @@ function setupIpcHandlers(): void {
 
       try {
         // Step 1: Extract text based on file type
-        if (isEpub) {
-          // For EPUB: use ebook-convert to extract text
+        if (isBook) {
+          // For EPUB: use ebook-convert to extract text. ebook-convert reads a
+          // ZIP epub, and the working copy may be the exploded tree (its
+          // editable form) — so a directory book is packed to a temp zip
+          // first, the same on-demand packing the legacy layout path uses
+          // (readEpubAsArchiveBytes, measured 397 ms on a 32 MB tree). The
+          // container is MEASURED, not read off the name.
           console.log('[Text-only EPUB] Extracting text from EPUB...');
-          await run(ebookConvertPath, [filePath, tempTextFile]);
+          let epubFileForConvert = filePath;
+          if ((await fsLocal.stat(filePath)).isDirectory()) {
+            const { readEpubAsArchiveBytes } = await import('./epub-container.js');
+            epubFileForConvert = path.join(tempDir, 'source.epub');
+            await fsLocal.writeFile(epubFileForConvert, await readEpubAsArchiveBytes(filePath));
+          }
+          await run(ebookConvertPath, [epubFileForConvert, tempTextFile]);
         } else {
           // For PDF: use pdftotext
           console.log('[Text-only EPUB] Extracting text from PDF...');
@@ -1586,7 +1599,7 @@ function setupIpcHandlers(): void {
         // Check if text was extracted
         const stats = await fsLocal.stat(tempTextFile);
         if (stats.size === 0) {
-          throw new Error(`No text extracted from ${isEpub ? 'EPUB' : 'PDF'}`);
+          throw new Error(`No text extracted from ${isBook ? 'EPUB' : 'PDF'}`);
         }
 
         // Step 2: Convert text to EPUB using ebook-convert
@@ -5565,6 +5578,19 @@ function setupIpcHandlers(): void {
     if (!fsSync.existsSync(normalizeFsPath(epubPath))) {
       return `The book this run was queued against is not there: ${epubPath}. Nothing was started. `
         + 'Export the narration copy again, or check that the drive it lives on is mounted.';
+    }
+    if (fsSync.statSync(normalizeFsPath(epubPath)).isDirectory()) {
+      // The working copy is an exploded DIRECTORY since Aug 2026, and a job
+      // queued against the book's own line (a project with no narration copy
+      // yet) used to hand that directory to e2a as `--ebook` — which dies
+      // hours in, inside e2a, with a sentence about the wrong thing. It is
+      // also the wrong BOOK: a narration run reads the exported TTS copy,
+      // which is the file the user's deletions are applied to; reading the
+      // working copy would narrate every struck footnote back in.
+      return `The book this run was queued against is a folder, not a narration copy: ${epubPath}. `
+        + 'That is the project\'s live working copy — a narration run reads the exported TTS '
+        + 'copy, which has your deletions applied. Nothing was started. Export the TTS copy from '
+        + 'the versions window and start the run from it.';
     }
     return null;
   };
