@@ -24,6 +24,10 @@ import {
   type ChapterRow,
 } from './components/document-nav/document-nav.component';
 import {
+  ChapterRailComponent,
+  type ChapterRailRow,
+} from './components/chapter-rail/chapter-rail.component';
+import {
   ChapterNameModalComponent,
   type ChapterNamePrompt,
 } from './components/chapter-name-modal/chapter-name-modal.component';
@@ -88,6 +92,7 @@ import {
   narrationDeletedPages,
   narrationDeletionEdit,
   parseNarrationElementKey,
+  struckWholeDocuments,
   type NarrationDeletionEdit,
   type NarrationDeletions,
   type NarrationElementKey,
@@ -538,6 +543,7 @@ const PDF_HAS_NO_BOOK_MESSAGE =
     FilePickerComponent,
     CropPanelComponent,
     DocumentNavComponent,
+    ChapterRailComponent,
     ChapterNameModalComponent,
     ExportSettingsModalComponent,
     TaskRailComponent,
@@ -711,26 +717,21 @@ const PDF_HAS_NO_BOOK_MESSAGE =
           </div>
 
           <!-- Chapter rail: a book's chapters beside the viewer, each row the
-               chapter's WHOLE name, clicked to jump there. This is the EPUB's
-               navigation column — the page timeline it replaces is a raster
-               affordance and is not rendered for a book at all. -->
+               chapter's WHOLE name, clicked to jump there — and each offering
+               the one act the rail carries, striking the chapter out of the
+               narration. Its own component, which is where its styles live.
+
+               A row with no page is a chapter the book READS and does not NAME,
+               with no block on any page behind it. There is nowhere to jump to,
+               so railChapterRows leaves it out — the Chapter tab is where it
+               is listed, and where it can be given a name. -->
           @if (showsEpubViewer() && railChapterRows().length > 0) {
-            <div class="chapter-rail">
-              <div class="chapter-rail-header">Chapters</div>
-              <div class="chapter-rail-list">
-                <!-- A row with no page is a chapter the book READS and does not
-                     NAME, with no block on any page behind it. There is nowhere
-                     to jump to, so it is not a rail item — the Chapter tab is
-                     where it is listed, and where it can be given a name. -->
-                @for (row of railChapterRows(); track row.id) {
-                  <button
-                    class="chapter-rail-item"
-                    [title]="'Page ' + (row.page + 1)"
-                    (click)="scrollToPage(row.page)"
-                  >{{ row.title }}</button>
-                }
-              </div>
-            </div>
+            <app-chapter-rail
+              [rows]="railChapterRows()"
+              [strikeRefusal]="curationReadOnlyReason()"
+              (jump)="scrollToPage($event)"
+              (strikeToggle)="toggleChapterStrike($event)"
+            />
           }
 
           <!-- Viewer + Timeline wrapper (stacked vertically) -->
@@ -1663,53 +1664,9 @@ const PDF_HAS_NO_BOOK_MESSAGE =
       }
     }
 
-    // The chapter rail: the EPUB's navigation column beside the viewer. Rows
-    // wrap — the whole point is the WHOLE chapter name, never an ellipsis.
-    .chapter-rail {
-      width: 230px;
-      flex-shrink: 0;
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-      background: var(--bg-surface);
-      border-right: 1px solid var(--border-subtle);
-    }
-
-    .chapter-rail-header {
-      padding: var(--ui-spacing-sm) var(--ui-spacing-lg);
-      font-size: var(--ui-font-xs);
-      color: var(--text-tertiary);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      border-bottom: 1px solid var(--border-subtle);
-    }
-
-    .chapter-rail-list {
-      flex: 1;
-      min-height: 0;
-      overflow-y: auto;
-      padding: var(--ui-spacing-sm);
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-
-    .chapter-rail-item {
-      text-align: left;
-      padding: var(--ui-spacing-xs) var(--ui-spacing-md);
-      font-size: var(--ui-font-sm);
-      line-height: 1.35;
-      color: var(--text-secondary);
-      background: none;
-      border: 0;
-      border-radius: 6px;
-      cursor: pointer;
-
-      &:hover {
-        background: var(--bg-elevated);
-        color: var(--text-primary);
-      }
-    }
+    // The chapter rail's own styles moved to ChapterRailComponent (2026-08-12),
+    // where the rows it styles are actually drawn — this stylesheet is over
+    // budget, and a rail that grew a strike toggle would only have added to it.
 
     .timeline-thumb {
       position: relative;
@@ -4924,6 +4881,9 @@ export class PdfPickerComponent implements OnInit {
       return this.documentBlocks.chapterBlocks()
         .map(b => ({
           id: b.id, title: b.text.trim(), page: b.page, blockId: b.id, groupBlockIds: [b.id],
+          // A working PDF's chapters are annotations on a PDF. There is no spine,
+          // no zip entry, and nothing a document-level gesture could address.
+          file: null, opensDocument: false,
           readOnlyReason: null, unlistedFile: null,
         }));
     }
@@ -4941,6 +4901,10 @@ export class PdfPickerComponent implements OnInit {
         page: c.page,
         blockId: null,
         groupBlockIds: [],
+        // Read out of the navigation, with no block behind it — so there is no
+        // element key, and no document to name. See ChapterRow.file.
+        file: null,
+        opensDocument: false,
         readOnlyReason: 'read from this book\'s own table of contents, with no block on any page '
           + 'behind it. Label the heading a chapter opening to edit it here.',
         unlistedFile: null,
@@ -4986,6 +4950,10 @@ export class PdfPickerComponent implements OnInit {
         page: null,
         blockId: null,
         groupBlockIds: [],
+        // The document IS what this row is about, and it is the only row about
+        // it — nothing else in the book points at it.
+        file,
+        opensDocument: true,
         readOnlyReason: null,
         unlistedFile: file,
       }));
@@ -5180,6 +5148,14 @@ export class PdfPickerComponent implements OnInit {
         page: visible === undefined ? anchor.page : visible.page,
         blockId: anchor.id,
         groupBlockIds: group.blocks.map(b => b.id),
+        // The document this row's chapter lives in, and whether this row is the
+        // one that OPENS it — the two facts every whole-document gesture needs.
+        // `file` is stated even when the book does not read the document, so the
+        // rail paints a struck one honestly; `opensDocument` is what decides
+        // whether a gesture is OFFERED, and it already answers "the book knows
+        // this document" as part of its own definition above.
+        file,
+        opensDocument,
         readOnlyReason: this.bookRetitleRefusal(isBook, file, navTitles, unlisted, opensDocument),
         // Only the row that owns the document offers to list it: two boxes for
         // one entry would let the second overwrite what the first inserted.
@@ -5190,16 +5166,62 @@ export class PdfPickerComponent implements OnInit {
 
   /**
    * The chapter rows the rail beside the viewer can jump to: the ones a page
-   * exists for.
+   * exists for — each carrying whether its chapter is struck out of the
+   * narration, and the document its × would toggle.
    *
-   * The rail is a navigation column and nothing else, so a row with no page —
-   * a chapter the book reads and does not name, with no block behind it — has
-   * no place in it. It has one in the Chapter tab, which is a list of what the
-   * book contains rather than a set of destinations.
+   * The rail is a navigation column FIRST, so a row with no page — a chapter the
+   * book reads and does not name, with no block behind it — has no place in it.
+   * It has one in the Chapter tab, which is a list of what the book contains
+   * rather than a set of destinations.
+   *
+   * `struck` and `strikeFile` are deliberately asymmetric. EVERY row of a struck
+   * document is painted struck, because that is the truth about the chapter on
+   * that row; only the row that OPENS the document is offered the toggle, so two
+   * rows in one document cannot each claim to strike the other out. See
+   * ChapterRow.opensDocument.
    */
-  readonly railChapterRows = computed<readonly (ChapterRow & { page: number })[]>(() =>
-    this.curationChapterRows()
-      .filter((row): row is ChapterRow & { page: number } => row.page !== null));
+  readonly railChapterRows = computed<readonly ChapterRailRow[]>(() => {
+    const struckDocuments = this.narrationStruckDocuments();
+    return this.curationChapterRows()
+      .filter((row): row is ChapterRow & { page: number } => row.page !== null)
+      .map(row => ({
+        id: row.id,
+        title: row.title,
+        page: row.page,
+        struck: row.file !== null && struckDocuments.has(row.file),
+        strikeFile: row.opensDocument ? row.file : null,
+      }));
+  });
+
+  /**
+   * The book's spine documents that are struck out of the narration WHOLE.
+   *
+   * The rail paints its rows from this, and its × decides which way to go from
+   * it. Both read the very sets the strike gesture consults — the block strikes
+   * and the deleted pages, through `struckWholeDocuments`, which is also the
+   * condition `deriveNarrationStrikes` escalates a document to `#doc` by. One
+   * rule, so the × and the paint cannot disagree with each other, or with the
+   * record the gesture goes on to write.
+   *
+   * `deletedBlockIds` rather than `narrationStruckBlockIds()`, because this is
+   * the question the SCREEN answers — is everything in this chapter struck
+   * through in front of the user — and it is the same set `toggleBlockStrikes`
+   * reads to decide which way it goes. The one block those two sets differ over
+   * is a SPLIT original, which is in the deletion set to be hidden behind its
+   * children rather than because anything struck it; a document containing one
+   * cannot escalate in the record, and the standing "could not be matched"
+   * report at export is what says so.
+   */
+  private readonly narrationStruckDocuments = computed<ReadonlySet<string>>(() =>
+    struckWholeDocuments(
+      this.blocks().map(b => ({
+        id: b.id,
+        page: b.page,
+        ...(b.bf_element !== undefined ? { element: b.bf_element } : {}),
+      })),
+      this.deletedBlockIds(),
+      this.deletedPages(),
+    ));
 
   /** The book's spine documents that no table of contents names. */
   private readonly bookUnlistedDocuments = computed<ReadonlySet<string>>(() => {
@@ -8437,6 +8459,35 @@ export class PdfPickerComponent implements OnInit {
     if (new Set(selected.map(id => this.editorState.getBlock(id)?.page)).size > 1
       && this.refuseBulkGestureWhileLoading('Deleting a selection spanning several pages')) return;
 
+    this.toggleBlockStrikes(selected);
+  }
+
+  /**
+   * THE strike toggle: strike these blocks out of the narration, or — when
+   * every one of them is already struck — put them all back.
+   *
+   * Lifted out of `deleteSelectedBlocks` on 2026-08-12 so the chapter rail's ×
+   * (`toggleChapterStrike`) can ride the SAME body rather than grow a second
+   * one. The two gestures differ only in how they name their blocks; everything
+   * below — which way the toggle goes, the page-carried compound, the history
+   * entries, the landing that posts the record difference, the re-render — is
+   * one behaviour with one implementation, so a hand-made strike and a
+   * whole-chapter strike can never come out differently.
+   *
+   * It takes the ids as an argument rather than reading the selection because
+   * the rail's rows are not a selection: `editorState.deleteSelectedBlocks()`
+   * (which this used to call) is exactly `deleteBlocks(selectedBlockIds())`, so
+   * naming the ids here is the same call with its one implicit input made
+   * explicit.
+   *
+   * The CALLER asks the refusals — `curationLocked`, and whatever bulk guard
+   * fits its own gesture — because they are about the gesture, not about the
+   * blocks.
+   */
+  private toggleBlockStrikes(blockIds: readonly string[]): void {
+    const selected = [...blockIds];
+    if (selected.length === 0) return;
+
     const deleted = this.deletedBlockIds();
 
     // On a book, a page whose every block is struck is presented as a deleted
@@ -8517,14 +8568,75 @@ export class PdfPickerComponent implements OnInit {
         if (block) affectedPages.add(block.page);
       }
 
-      // Delete the non-deleted selected blocks
-      this.landBlockDeletions(this.editorState.deleteSelectedBlocks(), true);
+      // Delete the non-deleted selected blocks. ONE `deleteBlocks` call, so the
+      // whole gesture is ONE history entry and one Ctrl-Z puts all of it back —
+      // which is the difference between undoing a struck chapter and pressing
+      // Ctrl-Z forty times.
+      this.landBlockDeletions(this.editorState.deleteBlocks(selected), true);
 
       // Re-render affected pages to remove deleted content
       for (const pageNum of affectedPages) {
         this.rerenderPageWithEdits(pageNum);
       }
     }
+  }
+
+  /**
+   * Strike a WHOLE CHAPTER out of the narration, or bring it back — the chapter
+   * rail's ×.
+   *
+   * Owen, 2026-08-12: "give me the ability to strike out entire chapters.
+   * everything in the chapter is stricken. maybe an X next to the chapter on the
+   * left nav bar. i wont need a bunch of indexes, for example." The case is
+   * whole back-matter documents — an index, a notes section — taken out of the
+   * reading in one click instead of forty.
+   *
+   * ── A chapter IS a spine document ─────────────────────────────────────────
+   *
+   * A converted book is one document per chapter, so "everything in the chapter"
+   * is every block laid out from that document's markup, and the record already
+   * has a name for exactly that state: `<zip entry>#doc`, the whole document
+   * struck by name. This gesture does not write that key — it strikes the
+   * blocks, and `deriveNarrationStrikes` escalates on its own when every one of
+   * them is struck, which is the same key a user would have reached by striking
+   * them one at a time. Nothing here is a second way into the record.
+   *
+   * ── Nothing is deleted from the book ──────────────────────────────────────
+   *
+   * A strike is a record about what gets NARRATED. The chapter stays in the
+   * book, on the page, and in the contents; its rail row stays where it is,
+   * dimmed and struck through, because that row is the only handle for putting
+   * it back.
+   *
+   * Blocks with no element key are not in the list: they cannot be attributed to
+   * a document, so nothing here is evidence about them. They are the same
+   * "could not be matched" refusal at export that a hand-made strike on them
+   * would earn — see `describeUnstruckDeletions`.
+   */
+  toggleChapterStrike(file: string): void {
+    if (this.curationLocked()) return;  // the artifact on screen is not curated here
+    // A chapter is not one page, and this reaches every block of a document the
+    // window may not have laid out yet. Struck at page 40 of 240, an index whose
+    // second half has not arrived would come out half-read — and half a struck
+    // document does not escalate, so the record would not even say so. Same
+    // guard, same sentence, as every other gesture that means "everywhere".
+    if (this.refuseBulkGestureWhileLoading('Striking a whole chapter out of the narration')) return;
+
+    const ids = this.blocks()
+      .filter(b => b.bf_element !== undefined
+        && parseNarrationElementKey(b.bf_element).file === file)
+      .map(b => b.id);
+    if (ids.length === 0) {
+      // The × is only drawn on a row whose chapter-opening block named this very
+      // document, so an empty answer is not a state — it is this window's block
+      // list and its chapter rows disagreeing about the same book.
+      throw new Error(
+        `The chapter rail offered to strike ${file}, and no block on any page was laid out from `
+        + 'it, so there is nothing to strike. The chapter rows and the blocks they were derived '
+        + 'from have come apart.'
+      );
+    }
+    this.toggleBlockStrikes(ids);
   }
 
   /**

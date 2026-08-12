@@ -643,6 +643,50 @@ export interface NarrationStrikes {
 }
 
 /**
+ * The spine documents EVERY strikeable block of which is struck: the escalation
+ * condition (see `deriveNarrationStrikes`), asked on its own.
+ *
+ * Lifted out of that function on 2026-08-12, when the picker's chapter rail
+ * grew a strike toggle (Owen: "give me the ability to strike out entire
+ * chapters… maybe an X next to the chapter on the left nav bar"). The rail has
+ * to answer "is this whole chapter struck?" to paint the row and to decide
+ * which way its × goes, and that is the SAME question the record answers when
+ * it escalates a document to `<zip entry>#doc`. Asked twice, the two would
+ * eventually disagree — a rail row painted struck over a record that never
+ * escalated, or an × that says "restore" over a document still being narrated —
+ * so there is one implementation and both callers read it.
+ *
+ * The two sets are read exactly as the derivation reads them: a block counts as
+ * struck when it is named individually OR its page is deleted, because a page
+ * deletion is the same statement said in one gesture.
+ *
+ * A document with NO strikeable blocks cannot be struck whole — see the
+ * escalation section below for why vacuous truth is refused here.
+ */
+export function struckWholeDocuments(
+  blocks: readonly { id: string; page: number; element?: NarrationElementKey }[],
+  deletedBlockIds: ReadonlySet<string>,
+  deletedPages: ReadonlySet<number>
+): Set<string> {
+  /** Element-carrying blocks per document, and how many of them are struck. */
+  const strikeable = new Map<string, number>();
+  const struck = new Map<string, number>();
+  for (const block of blocks) {
+    if (block.element === undefined) continue;
+    const file = parseNarrationElementKey(block.element).file;
+    strikeable.set(file, (strikeable.get(file) ?? 0) + 1);
+    if (deletedBlockIds.has(block.id) || deletedPages.has(block.page)) {
+      struck.set(file, (struck.get(file) ?? 0) + 1);
+    }
+  }
+  const whole = new Set<string>();
+  for (const [file, count] of strikeable) {
+    if (count > 0 && struck.get(file) === count) whole.add(file);
+  }
+  return whole;
+}
+
+/**
  * Everything the user has deleted, as ELEMENT STRIKES.
  *
  * ── Why pages are in here ───────────────────────────────────────────────────
@@ -715,9 +759,6 @@ export function deriveNarrationStrikes(
   const struckOnPage = new Map<number, number>();
   for (const page of deletedPages) struckOnPage.set(page, 0);
 
-  /** Element-carrying blocks per document, and how many of them are struck. */
-  const strikeableInDocument = new Map<string, number>();
-  const struckInDocument = new Map<string, number>();
   /** The document of the nearest aligned block at or before each position. */
   const documentBefore: Array<string | null> = new Array(inReadingOrder.length).fill(null);
   const documentAfter: Array<string | null> = new Array(inReadingOrder.length).fill(null);
@@ -742,12 +783,6 @@ export function deriveNarrationStrikes(
     seenBlockIds.add(block.id);
     const byBlock = deletedBlockIds.has(block.id);
     const byPage = deletedPages.has(block.page);
-
-    if (block.element !== undefined) {
-      const file = parseNarrationElementKey(block.element).file;
-      strikeableInDocument.set(file, (strikeableInDocument.get(file) ?? 0) + 1);
-      if (byBlock || byPage) struckInDocument.set(file, (struckInDocument.get(file) ?? 0) + 1);
-    }
 
     if (!byBlock && !byPage) continue;
 
@@ -778,10 +813,11 @@ export function deriveNarrationStrikes(
   for (const key of fromBlocks) fromPages.delete(key);
 
   // ── Escalation ────────────────────────────────────────────────────────────
-  const struckDocuments = new Set<string>();
-  for (const [file, strikeable] of strikeableInDocument) {
-    if (strikeable > 0 && struckInDocument.get(file) === strikeable) struckDocuments.add(file);
-  }
+  //
+  // The CONDITION is `struckWholeDocuments` above — one owner, because the
+  // picker's chapter rail asks it too. What follows is this function's own
+  // business: rewriting the answer into keys and attributing the gesture.
+  const struckDocuments = struckWholeDocuments(inReadingOrder, deletedBlockIds, deletedPages);
   for (const file of struckDocuments) {
     const key = narrationDocumentKey(file);
     // The document key inherits the gesture that named the document: a block

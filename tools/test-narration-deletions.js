@@ -71,6 +71,7 @@ const {
   NARRATION_FINGERPRINT_CHARS,
   planNarrationRemoval,
   splitNarrationDeletions,
+  struckWholeDocuments,
 } = require(path.join(DIST, 'shared', 'vlm', 'narration-deletions.js'));
 const {
   blockCategoryForVlm,
@@ -629,6 +630,47 @@ function illustratedLayout() {
     assert.deepStrictEqual(strikes.elements, ['OEBPS/c1.xhtml#0', 'OEBPS/c1.xhtml#1']);
     assert.ok(!strikes.elements.some((k) => k.endsWith('#doc')),
       'a partly-struck document escalated');
+  });
+
+  // The picker's chapter rail asks the escalation condition directly — it paints
+  // a chapter struck by it, and its × decides which way to go from it — so the
+  // condition is one exported function and this is the contract between the two
+  // callers. If these two ever disagree, a rail row is painted struck over a
+  // record that never escalated, or offers to "bring back" a chapter that is
+  // still being narrated.
+  await check('struckWholeDocuments IS what the derivation escalates by', () => {
+    const blocks = [
+      laid('a1', 0, 'OEBPS/c1.xhtml#0'),
+      laid('a2', 0, 'OEBPS/c1.xhtml#1'),
+      // The same document, on a second page — so a page gesture alone does not
+      // cover it and the two halves have to add up.
+      laid('a3', 1, 'OEBPS/c1.xhtml#2'),
+      laid('b1', 1, 'OEBPS/c2.xhtml#0'),
+      // No element: it cannot be attributed to a document, so it is no evidence
+      // either way and c2 is covered without it.
+      laid('b2', 1, null),
+    ];
+
+    // Nothing struck, nothing whole.
+    assert.deepStrictEqual([...struckWholeDocuments(blocks, new Set(), new Set())], []);
+
+    // Half of c1 struck by a page, half by blocks — a document is struck whole
+    // however the user got there, which is the whole-chapter gesture's case:
+    // the page presentation carries some of its blocks and the rest are named.
+    const mixed = struckWholeDocuments(blocks, new Set(['a3']), new Set([0]));
+    assert.deepStrictEqual([...mixed].sort(), ['OEBPS/c1.xhtml']);
+    assert.deepStrictEqual(
+      deriveNarrationStrikes(blocks, new Set(['a3']), new Set([0])).elements,
+      ['OEBPS/c1.xhtml#doc'],
+      'the derivation escalated exactly the document this reported');
+
+    // One block short is not whole — the same answer, from both.
+    const short = struckWholeDocuments(blocks, new Set(['a1', 'a2']), new Set());
+    assert.deepStrictEqual([...short], []);
+    assert.ok(
+      !deriveNarrationStrikes(blocks, new Set(['a1', 'a2']), new Set())
+        .elements.some((k) => k.endsWith('#doc')),
+      'the derivation escalated a document this said was not whole');
   });
 
   // Vacuous truth would say "every one of its zero strikeable blocks is struck"

@@ -113,6 +113,34 @@ export interface ChapterRow {
    */
   readOnlyReason: string | null;
   /**
+   * The spine document (zip entry) this row is a chapter of, or null when the
+   * row has none.
+   *
+   * Null is real three ways: a working PDF's chapters are annotations on a PDF
+   * and there is no zip entry anywhere; a chapter read out of the book's own
+   * navigation has no block and so no element key to read a document off; and a
+   * chapter-opening block the aligner could not place in the markup names
+   * nothing. Every one of those is "there is no document here", which is why
+   * they collapse to one null rather than three sentences — a row with no
+   * document is simply not offered the gestures that address one.
+   *
+   * The rail beside the viewer is what this is for: striking a chapter out of
+   * the narration is striking its DOCUMENT (see `toggleChapterStrike` in the
+   * shell), and painting a row as struck is asking whether that document is.
+   */
+  file: string | null;
+  /**
+   * True when this row is the opening its document's chapter BEGINS with.
+   *
+   * A document can carry more than one chapter-opening row: a heading the user
+   * labelled mid-chapter is a split point the next build should break at, and
+   * until it does, both rows are chapters of the SAME document. Whole-document
+   * gestures are therefore offered on the owner only — the same rule the
+   * unlisted-name box follows, and for the same reason. Two rows offering to
+   * strike one document would let the second one take the first one out.
+   */
+  opensDocument: boolean;
+  /**
    * The document this row is a chapter of that the book's table of contents does
    * NOT name, or null for every row the contents already names.
    *
