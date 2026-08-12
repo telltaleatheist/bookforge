@@ -8563,6 +8563,53 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * What one element of the book says right now — what the text editor opens on.
+   *
+   * A block is a PAGE'S WORTH of an element, so the editor cannot open on the
+   * block it was double-clicked from: a paragraph that spans a page break would
+   * be shown as its first half, and saving that would delete the second.
+   */
+  ipcMain.handle('book:read-block-text', async (
+    _event, projectDir: string, elementKey: string, familyId?: string) => {
+    try {
+      const { readBookBlockText } = await import('./book-text.js');
+      return { success: true, data: await readBookBlockText(projectDir, elementKey, familyId) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Make the book say what the reader typed.
+   *
+   * Down `book-text.ts` for the same reason a relabel goes down
+   * `book-categories.ts`: a correction that lives anywhere but in the book is
+   * invisible to the narration cut, the export, the Chapter tab, the naming pass
+   * and the viewer — which is exactly the bug this replaces.
+   *
+   * `rewrittenEntries` is the one document the edit touched, so the window lays
+   * that out again instead of re-opening the book. Unlike a relabel, this one is
+   * REAL layout: words changed, so the pages move and the document is measured.
+   */
+  ipcMain.handle('book:set-block-text', async (
+    _event, projectDir: string, elementKey: string, newText: string, familyId?: string) => {
+    try {
+      const { setBookBlockText } = await import('./book-text.js');
+      const result = await setBookBlockText(projectDir, elementKey, newText, familyId);
+      if (!result.written) {
+        // The book already reads that way — a retype that changed only
+        // whitespace nobody can see. No bytes moved, so no window has anything
+        // to re-read.
+        return { success: true, result, rewrittenEntries: [] };
+      }
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return { success: true, result, rewrittenEntries: [result.file] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ── Foundry CLI ─────────────────────────────────────────────────────────
   // The standalone binary this app's page-layout model, OCR-repair contract and
   // footnote-marker remover were extracted into (github.com/telltaleatheist/

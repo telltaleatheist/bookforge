@@ -794,10 +794,52 @@ export interface AddChapterEdit {
  * `kind` and its own before/after fields rather than a shared "details" bag
  * nothing can read.
  */
+/**
+ * A TEXT FIX: one element of the book now reads differently, because a person
+ * looking at the page retyped it.
+ *
+ * The picker's text editor, for a book. It used to write into editor state —
+ * keyed by BLOCK ID, which is a function of the page the element landed on, and
+ * read by the picker's own export and by nothing else. So a corrected chapter
+ * title was corrected on screen and wrong in the audiobook, and was thrown away
+ * whenever the pagination moved. It is an edit of the BOOK now, addressed by
+ * element, exactly as {@link SetBlockCategoryEdit} is.
+ *
+ * STRUCTURE-FREE but NOT text-free, which is the difference from every other
+ * edit in this union: words change. No element is added, removed or moved — the
+ * writer verifies the document's element and picture counts across the write —
+ * so the narration strike record's KEYS are still exact and are re-stamped onto
+ * the new bytes. What a strike's FINGERPRINT says about this element is not:
+ * the fingerprint is taken from the element's text, and the text is what
+ * changed. A strike on an edited element is therefore re-fingerprinted in the
+ * same transaction, which is the only place the two can be kept in step.
+ *
+ * One entry per EDITED ELEMENT, because that is the act: a person pointed at one
+ * block and said what it should read.
+ */
+export interface SetBlockTextEdit {
+  kind: 'set-block-text';
+  at: string;
+  /** The zip entry the element lives in. */
+  file: string;
+  /** `<zip entry>#<index>` — the position, unchanged by this edit. */
+  elementKey: string;
+  /** The element's tag, so the record names something a person can find again. */
+  tag: string;
+  /** What it read before, whitespace collapsed. */
+  textBefore: string;
+  /** What it reads now, whitespace collapsed. */
+  textAfter: string;
+  /** The book's sha256 before the edit and after it. */
+  fromSha256: string;
+  toSha256: string;
+}
+
 export type BookEdit =
   | MergeChapterOpeningEdit
   | NameChapterOpenersEdit
   | SetBlockCategoryEdit
+  | SetBlockTextEdit
   | StampElementIdsEdit
   | RenameChapterEdit
   | AddChapterEdit;

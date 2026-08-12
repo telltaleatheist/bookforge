@@ -30,6 +30,7 @@ import {
 import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
 import { blockCategoryForVlm } from '../shared/vlm/conversion';
 import { isFootnoteMarkerSupText, stripFootnoteMarkerSups } from '../shared/text/sup-markers';
+import { spliceForCollapsedText } from '../shared/document/element-text-edit';
 import type { UnnamedChapterOpeningKind } from '../shared/document/chapter-opening-report';
 import {
   narrationDocumentKey,
@@ -9377,3 +9378,268 @@ ${headingHtml}${section.content.join('\n')}
   };
 }
 
+
+// ── Editing what an element SAYS ────────────────────────────────────────────
+
+/** One element's text, before and after — the edit log's record of a fix. */
+export interface BookElementTextEdit {
+  file: string;
+  elementKey: NarrationElementKey;
+  tag: string;
+  /** What the element read, collapsed, before the edit. */
+  textBefore: string;
+  /** What it reads now. */
+  textAfter: string;
+}
+
+export interface BookElementTextResult {
+  /** False when the element already read that way and no byte was written. */
+  written: boolean;
+  edit: BookElementTextEdit;
+}
+
+/** One text node of an element, and where its characters sit in the run. */
+interface TextNodeSpan {
+  node: any;
+  /** Offset of this node's first character within the element's whole text. */
+  start: number;
+  /** One past its last. */
+  end: number;
+}
+
+/**
+ * The element's text nodes in document order, with their offsets in the text
+ * `getUnitTextContent` reports.
+ *
+ * The SAME walk, skipping the same subtrees, because the offsets have to index
+ * the string the rest of the app calls this element's text. A second description
+ * of "which text belongs to this element" would put every splice out by however
+ * much the two disagreed.
+ */
+function textNodeSpansOf(node: any, at = { offset: 0 }, out: TextNodeSpan[] = []): TextNodeSpan[] {
+  if (node.nodeType === 3 || node.nodeType === 4) { // TEXT_NODE, CDATA_SECTION
+    const value: string = node.nodeValue || '';
+    out.push({ node, start: at.offset, end: at.offset + value.length });
+    at.offset += value.length;
+    return out;
+  }
+  if (node.nodeType !== 1) return out;
+  const tag = node.tagName?.toLowerCase() || '';
+  if (UNIT_TEXT_SKIP_TAGS.has(tag)) return out;
+  if (!node.childNodes) return out;
+  for (let i = 0; i < node.childNodes.length; i++) textNodeSpansOf(node.childNodes[i], at, out);
+  return out;
+}
+
+/**
+ * Say, in the book, what one element's text should read.
+ *
+ * ── Why this is an edit of the BOOK ────────────────────────────────────────
+ *
+ * For the same reason a category is (`electron/book-categories.ts`): the picker
+ * has always been able to correct a block's text, and for a book that correction
+ * lived in editor state, keyed by BLOCK ID, and was read by the picker's own
+ * export and by nothing else. The narration cut, the preserving export, the
+ * Chapter tab, the naming pass and the viewer all went on reading the book — so
+ * a user who fixed a wrong chapter title saw it fixed on screen and heard the
+ * old one in the audiobook. Owen, on the same shape of bug in categories: "it
+ * apparently didnt actually change it to chapter, just visually?"
+ *
+ * A block id is also the wrong identity for it. `blockId(elementKey, page)` is a
+ * function of the PAGE the element landed on, so a text correction was bound to
+ * a pagination and had to be refused wholesale whenever the layout moved
+ * (`shared/document/editor-layout.ts` counts them among the layout-keyed
+ * records). Written into the book against the element key, it is bound to
+ * nothing but the element.
+ *
+ * ── The smallest possible change ──────────────────────────────────────────
+ *
+ * `newText` is what the reader typed, and what they were shown was the
+ * element's COLLAPSED text — so the difference between the two is worked out in
+ * that space and translated back into markup offsets
+ * (`shared/document/element-text-edit.ts`). Fixing one word rewrites one word.
+ * Every byte of markup outside the changed span — an `<em>`, a footnote marker,
+ * a line break the publisher put there — is untouched.
+ *
+ * What is REFUSED, rather than done destructively:
+ *
+ *  - a change whose span crosses an inline element, because applying it would
+ *    delete that element's markup along with its words. Named, with the tag, so
+ *    the user knows what is in the way.
+ *  - a change that would leave the element with no text at all. An element that
+ *    renders nothing gets no page from quire, and a book with one refuses to
+ *    open — so emptying a block is not how a block gets deleted, and pretending
+ *    otherwise would break the book at the next open rather than here.
+ *  - anything that alters how many elements or pictures the document holds.
+ *    Element keys are positions in the walk, so a text edit that moved one would
+ *    leave every narration strike below it naming the wrong element.
+ */
+export async function setElementTextInBookFile(
+  inputPath: string,
+  outputPath: string,
+  elementKey: NarrationElementKey,
+  newText: string,
+): Promise<BookElementTextResult> {
+  const bookName = path.basename(inputPath);
+  const whatFor = `the text edit of ${elementKey} in ${bookName}`;
+
+  const target = parseNarrationElementKey(elementKey);
+  if (target.kind === 'doc') {
+    throw new Error(
+      `${elementKey} names a whole document, and text is what one ELEMENT says. Nothing was `
+      + 'written.'
+    );
+  }
+  if (target.kind === 'image') {
+    throw new Error(
+      `${elementKey} names a picture, which has no text to correct. Nothing was written.`
+    );
+  }
+  const file = target.file;
+
+  const processor = new EpubProcessor();
+  let doc: any;
+  let el: any = null;
+  let unitsBefore = 0;
+  let imagesBefore = 0;
+  try {
+    const structure = await processor.open(inputPath);
+    const spine = new Set(
+      structure.chapters.map((c) => normalizeZipEntryName(processor.resolvePath(c.href))));
+    if (!spine.has(file)) {
+      throw new Error(
+        `${bookName} has no spine document ${file}, so ${elementKey} names no element in this `
+        + 'book. Nothing was written.'
+      );
+    }
+    const parsed = parseXhtmlBody(await processor.readFile(file), file);
+    doc = parsed.doc;
+    for (const c of collectExportUnits(parsed.doc, parsed.body, whatFor)) {
+      if (unitsBefore === target.index) el = c.el;
+      unitsBefore++;
+    }
+    imagesBefore = collectImageElements(parsed.body).length;
+  } finally {
+    processor.close();
+  }
+  if (el === null) {
+    throw new Error(
+      `${file} holds ${unitsBefore} text element(s), so ${elementKey} names nothing in it. The `
+      + 'book has been rewritten since these blocks were laid out; re-open it and edit again. '
+      + 'Nothing was written.'
+    );
+  }
+
+  const spans = textNodeSpansOf(el);
+  const raw = spans.map((s) => s.node.nodeValue || '').join('');
+  const textBefore = raw.replace(/\s+/g, ' ').trim();
+  const wanted = newText.replace(/\s+/g, ' ').trim();
+  const edit: BookElementTextEdit = {
+    file, elementKey, tag: String(el.tagName || '').toLowerCase(), textBefore, textAfter: wanted,
+  };
+
+  if (wanted.length === 0) {
+    throw new Error(
+      `${elementKey} would be left with no text at all. An element that renders nothing gets no `
+      + 'page, and a book with one in it does not open — so this is not how a block is removed. '
+      + 'Strike it instead, which keeps it in the book and out of the audiobook. Nothing was '
+      + 'written.'
+    );
+  }
+
+  const splice = spliceForCollapsedText(raw, wanted);
+  if (splice === null) return { written: false, edit };
+
+  // ── Which text node the change belongs to ────────────────────────────────
+  const touched = spans.filter((s) => s.start < splice.end && splice.start < s.end);
+  let landing: TextNodeSpan | undefined;
+  if (touched.length > 1) {
+    const inTheWay = [...new Set(touched.map((s) => {
+      const parent = s.node.parentNode;
+      return parent && parent !== el ? String(parent.tagName || '').toLowerCase() : null;
+    }).filter((t): t is string => t !== null))];
+    throw new Error(
+      `That change to ${elementKey} runs across ${touched.length} runs of text with markup between `
+      + `them${inTheWay.length > 0 ? ` — ${inTheWay.map((t) => `<${t}>`).join(', ')}` : ''}, and `
+      + 'applying it would delete that markup along with the words. Edit the text on one side of '
+      + 'it at a time. Nothing was written.'
+    );
+  }
+  if (touched.length === 1) {
+    landing = touched[0];
+  } else {
+    // An insertion, which touches no character. It goes at the start of the run
+    // that FOLLOWS it where there is one — so text appended after an `<em>`
+    // lands outside it rather than inside — and otherwise at the end of the last
+    // run, which is the only place left.
+    landing = spans.find((s) => s.start === splice.start)
+      ?? spans.find((s) => s.start <= splice.start && splice.start <= s.end);
+  }
+  if (landing === undefined) {
+    throw new Error(
+      `${elementKey} holds ${spans.length} run(s) of text and the change at character `
+      + `${splice.start} falls in none of them. Nothing was written.`
+    );
+  }
+
+  const value: string = landing.node.nodeValue || '';
+  const edited =
+    value.slice(0, splice.start - landing.start)
+    + splice.replacement
+    + value.slice(splice.end - landing.start);
+  // BOTH, and not by choice. In @xmldom/xmldom a text node's `nodeValue` is an
+  // ordinary assignable property, but `XMLSerializer` reads `data` — so setting
+  // only `nodeValue` changes what every walk in this file reads back and NOTHING
+  // about the bytes that get written, which is a silent no-op that verifies as
+  // "the book reads it back as what it always said". Setting only `data` is the
+  // mirror image: correct on disk, stale to the walks. Measured, not assumed.
+  landing.node.data = edited;
+  landing.node.nodeValue = edited;
+
+  await writeBookWithReplacedEntries(
+    inputPath, outputPath, new Map([[file, serializeEditedDocument(doc)]]));
+
+  // ── The promise, kept or the file destroyed ───────────────────────────────
+  try {
+    const check = await openEpubSource(outputPath);
+    let unitsAfter = 0;
+    let imagesAfter = 0;
+    let reads: string | null = null;
+    try {
+      const written = parseXhtmlBody((await check.readEntry(file)).toString('utf8'), file);
+      for (const c of collectExportUnits(written.doc, written.body, whatFor)) {
+        if (unitsAfter === target.index) {
+          reads = getUnitTextContent(c.el).replace(/\s+/g, ' ').trim();
+        }
+        unitsAfter++;
+      }
+      imagesAfter = collectImageElements(written.body).length;
+    } finally {
+      check.close();
+    }
+    if (unitsAfter !== unitsBefore) {
+      throw new Error(
+        `${file} held ${unitsBefore} text element(s) and the rewritten file holds ${unitsAfter}. `
+        + 'Correcting text adds and removes no element, so every narration strike recorded against '
+        + 'this book would now name the wrong one. Nothing was written.'
+      );
+    }
+    if (imagesAfter !== imagesBefore) {
+      throw new Error(
+        `${file} held ${imagesBefore} picture(s) and the rewritten file holds ${imagesAfter}. `
+        + 'Correcting text moves no picture. Nothing was written.'
+      );
+    }
+    if (reads !== wanted) {
+      throw new Error(
+        `${elementKey} was written to read "${wanted}" and ${bookName} reads it back as `
+        + `${reads === null ? 'nothing at all' : `"${reads}"`}. Nothing was written.`
+      );
+    }
+  } catch (err) {
+    await removeEpubContainer(outputPath);
+    throw err;
+  }
+
+  return { written: true, edit };
+}

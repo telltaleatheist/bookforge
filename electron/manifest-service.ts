@@ -42,6 +42,7 @@ import type {
   RenameChapterEdit,
   AddChapterEdit,
   SetBlockCategoryEdit,
+  SetBlockTextEdit,
   SourceType,
 } from './manifest-types.js';
 // The container seam. A book is a set of named entries, and whether those
@@ -105,6 +106,7 @@ import {
   migrateNarrationDeletionsForFold,
   narrationDeletionsStaleReason,
   narrationEpubRelPath,
+  narrationFingerprint,
   narrationFingerprintsFor,
   type NarrationDeletions,
   type NarrationDeletionsCarry,
@@ -4656,6 +4658,89 @@ export async function recordBlockCategoryChange(
       + `manifest failed: ${saved.error}`
     );
   }
+}
+
+/**
+ * Record a TEXT FIX: re-stamp the strikes, re-fingerprint the ONE element whose
+ * words changed, and log the edit — in one transaction, as the relabel's is.
+ *
+ * ── The one thing this does that the relabel does not ──────────────────────
+ *
+ * A relabel is text-free, so re-stamping the strike record's sha is the whole
+ * job: every key still names the element it named, and every fingerprint still
+ * describes the words that element says. A text fix changes the words. So a
+ * strike ON THE EDITED ELEMENT is carrying a fingerprint of a sentence the book
+ * no longer contains, and the next pass over it would refuse the whole record
+ * with "you struck 'Buy our other books…' and that position now says …".
+ *
+ * That strike is still the user's decision — they struck this element, then
+ * corrected its text; nothing about "leave this out of the audiobook" changed.
+ * So it is re-fingerprinted, to the words the element says now, and ONLY it.
+ * Every other strike is left exactly as it was, because nothing about any other
+ * element moved and a record that re-fingerprinted itself wholesale would forge
+ * agreement about elements this edit never touched.
+ *
+ * `refingerprinted` in the answer says whether that happened, so the caller can
+ * tell the user their strike now describes different words rather than leaving
+ * them to discover it.
+ */
+export async function recordBlockTextChange(
+  projectDir: string,
+  edit: SetBlockTextEdit,
+  familyId?: string,
+): Promise<{ refingerprinted: boolean }> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+  let refingerprinted = false;
+
+  const saved = await modifyManifest(projectId, (m) => {
+    const epub = familyIn(m, family.id).epub;
+    if (!epub) {
+      throw new Error(
+        `Cannot record the text fix in ${projectDir}: its ${family.id} chain records no book, so `
+        + 'there is no element to have been edited.'
+      );
+    }
+
+    const recorded = epub.narrationDeletions;
+    if (recorded !== undefined) {
+      if (recorded.epubSha256 !== edit.fromSha256) {
+        throw new Error(
+          `${path.basename(projectDir)}'s narration strikes are stamped with a different book than `
+          + 'the one whose element was just edited, so they name positions in a file nobody has '
+          + 'and cannot be carried onto it. The book has been edited; strike what you want left '
+          + 'out of the narration again.'
+        );
+      }
+      const fingerprints = { ...(recorded.fingerprints ?? {}) };
+      if (recorded.elements.includes(edit.elementKey)
+        && fingerprints[edit.elementKey] !== undefined) {
+        const print = narrationFingerprint(edit.textAfter);
+        // `null` is unreachable — the writer refuses to leave an element with no
+        // text — but a fingerprint of nothing would be a lie about a strike, so
+        // it is dropped rather than written as an empty string.
+        if (print === null) delete fingerprints[edit.elementKey];
+        else fingerprints[edit.elementKey] = print;
+        refingerprinted = true;
+      }
+      epub.narrationDeletions = {
+        ...recorded,
+        epubSha256: edit.toSha256,
+        updatedAt: edit.at,
+        ...(recorded.fingerprints === undefined ? {} : { fingerprints }),
+      };
+    }
+
+    epub.modifiedAt = edit.at;
+    (epub.bookEdits ??= []).push(edit);
+  });
+  if (!saved.success) {
+    throw new Error(
+      `${edit.elementKey} was edited in the book, but recording that in ${projectDir}'s manifest `
+      + `failed: ${saved.error}`
+    );
+  }
+  return { refingerprinted };
 }
 
 /**

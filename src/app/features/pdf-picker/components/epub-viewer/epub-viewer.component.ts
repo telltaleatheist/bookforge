@@ -258,6 +258,15 @@ const GRID_BASE_WIDTH = 200;
             <button type="button" (click)="fire('selectLikeThis', menu.block)">Select like this</button>
             <button type="button" (click)="fire('deleteLikeThis', menu.block)">Strike like this</button>
             <button type="button" (click)="onDeleteBlock(menu.block)">Strike this block</button>
+            <!--
+              Not a strike, and worth keeping apart from the three above it: a
+              strike leaves the book alone and keeps the block out of the
+              audiobook, whereas this changes what the BOOK says. The editor it
+              opens loads the whole ELEMENT's text, not this block's — a block
+              is a page's worth of an element, and a paragraph that spans a page
+              turn would otherwise be shown as its first half.
+            -->
+            <button type="button" (click)="fire('editBlockText', menu.block)">Edit text…</button>
             <div class="sep"></div>
           }
           <button type="button" (click)="onSelectAllOnPage(menu.page)">Select all on page {{ menu.page + 1 }}</button>
@@ -595,6 +604,11 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   readonly blockHover = output<LaidOutBlock | null>();
   readonly selectLikeThis = output<LaidOutBlock>();
   readonly deleteLikeThis = output<LaidOutBlock>();
+  /**
+   * Correct what the book SAYS here — the only gesture in this menu that
+   * rewrites the book's own words rather than recording something about them.
+   */
+  readonly editBlockText = output<LaidOutBlock>();
   readonly deleteBlock = output<string>();
   readonly marqueeSelect = output<{ blockIds: string[]; additive: boolean }>();
   readonly pageDeleteToggle = output<number>();

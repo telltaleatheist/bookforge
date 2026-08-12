@@ -3543,6 +3543,59 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /**
+   * What one element of the book says right now, whole.
+   *
+   * What the text editor opens on, and deliberately NOT the block's own text: a
+   * block is a page's worth of an element, so a paragraph that spans a page turn
+   * would be shown as its first half — and saving that would tell main the
+   * paragraph's whole text was that half.
+   */
+  async readBookBlockText(
+    projectDir: string,
+    elementKey: string,
+    familyId?: string,
+  ): Promise<{
+    success: boolean;
+    data?: { text: string; tag: string; file: string };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.readBlockText(projectDir, elementKey, familyId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Make the book say what the reader typed, for one element.
+   *
+   * The counterpart of `setBookBlockCategory`, and an edit of the BOOK for the
+   * same reason: a correction kept anywhere else is read by this window and by
+   * nothing that makes an audiobook.
+   */
+  async setBookBlockText(
+    projectDir: string,
+    elementKey: string,
+    newText: string,
+    familyId?: string,
+  ): Promise<{
+    success: boolean;
+    result?: {
+      file: string; elementKey: string;
+      textBefore: string; textAfter: string;
+      written: boolean; refingerprinted: boolean;
+      fromSha256: string; toSha256: string;
+    };
+    /** The one document the edit rewrote, or empty when the book already read that way. */
+    rewrittenEntries?: string[];
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.setBlockText(projectDir, elementKey, newText, familyId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   async precomputeDiffPair(originalPath: string, targetPath: string): Promise<{ success: boolean; cached?: boolean; chapters?: number; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.diff.precomputePair(originalPath, targetPath);
