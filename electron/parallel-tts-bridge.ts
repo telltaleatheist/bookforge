@@ -6285,7 +6285,27 @@ function emitComplete(
     workers: serializeWorkers(session.workers) as WorkerState[],
     estimatedRemaining: 0,
     message: success ? 'Conversion complete!' : error,
-    error
+    error,
+    // A terminal success has to SAY every stage finished, because nothing downstream
+    // can infer it: the renderer nullish-keeps `stages` (a one-off event carrying none
+    // must not blank the bars mid-run), so a completion without them leaves whatever
+    // the last APPLIED live tick reported frozen on screen. And the last live tick is
+    // routinely not the last one SENT — parallel TTS progress is rAF-coalesced in the
+    // renderer, and this event's own terminal handler drops the pending frame on
+    // purpose so a stale tick can't overwrite the completion. That is how a finished
+    // 925/925 run kept showing "Converting sentences · 90% · running" with a stale
+    // "Repairing over-long chunk 860…" beneath it while assembly was already encoding.
+    //
+    // Failure keeps the live list instead: how far the run actually got is the honest
+    // record of a failed run, and a bar reading 100% would be a lie about it.
+    ...(success
+      ? {
+          stages: buildTtsStages(session, { convertPct: 100, done: true }),
+          // Whatever the running stage was last doing is over. Empty, not undefined:
+          // the renderer nullish-keeps this field too, so undefined would preserve it.
+          stageDetail: '',
+        }
+      : {}),
   };
 
   rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
