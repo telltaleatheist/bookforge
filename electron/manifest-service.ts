@@ -4603,24 +4603,56 @@ export async function recordElementIdStamping(
 }
 
 /**
- * Record a RELABEL: re-stamp the strikes, touch the book, log the edit — one
+ * Record a RELABEL: re-stamp the strikes, touch the book, log the edits — one
  * transaction, for the same reason the naming pass's is one.
  *
  * The strikes are RE-STAMPED and not migrated because a relabel writes one
  * attribute on one element: nothing is added, removed or moved, so every
  * text-unit index and every image ordinal is exactly where it was and each
- * strike still names the element it named. `setElementCategoryInBookFile`
+ * strike still names the element it named. `setElementCategoriesInBookFile`
  * measures that claim against the written file before this is ever reached.
  *
  * The stamp is CHECKED against `fromSha256` rather than overwritten, exactly as
  * the naming pass's record is. A record describing some other book cannot be
  * followed, and quietly re-stamping it here would forge agreement.
+ *
+ * ── Why a LIST, and why they must be ONE write ─────────────────────────────
+ *
+ * A relabel of a run of blocks is one write of the book, so it has one before
+ * and one after, and it must reach the manifest as one transaction: recording
+ * them one at a time would re-stamp the strike record on the first and then
+ * refuse the second, because the stamp it checks against would already have
+ * moved to `toSha256`. So every edit in the list has to describe THAT write —
+ * the same `fromSha256` and the same `toSha256` — and a list that does not is
+ * refused rather than folded into whichever pair happened to come first.
+ *
+ * The edits are logged individually all the same: `bookEdits` is the record of
+ * what was done to the book element by element, and a batch is a fact about the
+ * gesture, not about the book.
  */
-export async function recordBlockCategoryChange(
+export async function recordBlockCategoryChanges(
   projectDir: string,
-  edit: SetBlockCategoryEdit,
+  edits: readonly SetBlockCategoryEdit[],
   familyId?: string,
 ): Promise<void> {
+  if (edits.length === 0) {
+    throw new Error(
+      `Nothing was named to record against ${projectDir}. A relabel that changed no element does `
+      + 'not reach this — it returns without touching the book.'
+    );
+  }
+  const from = edits[0].fromSha256;
+  const to = edits[0].toSha256;
+  const straggler = edits.find((e) => e.fromSha256 !== from || e.toSha256 !== to);
+  if (straggler !== undefined) {
+    throw new Error(
+      `${straggler.elementKey} is recorded as taking the book from ${straggler.fromSha256} to `
+      + `${straggler.toSha256}, and the relabel it arrived with took it from ${from} to ${to}. `
+      + 'These are edits to different books, so they are not one transaction and cannot be '
+      + 'recorded as one. Nothing was recorded.'
+    );
+  }
+
   const { manifest, family } = await requireFamily(projectDir, familyId);
   const projectId = requireLibraryProjectId(projectDir, manifest);
 
@@ -4635,7 +4667,7 @@ export async function recordBlockCategoryChange(
 
     const recorded = epub.narrationDeletions;
     if (recorded !== undefined) {
-      if (recorded.epubSha256 !== edit.fromSha256) {
+      if (recorded.epubSha256 !== from) {
         throw new Error(
           `${path.basename(projectDir)}'s narration strikes are stamped with a different book than `
           + 'the one whose element was just relabelled, so they name positions in a file nobody has '
@@ -4645,20 +4677,30 @@ export async function recordBlockCategoryChange(
       }
       epub.narrationDeletions = {
         ...recorded,
-        epubSha256: edit.toSha256,
-        updatedAt: edit.at,
+        epubSha256: to,
+        updatedAt: edits[edits.length - 1].at,
       };
     }
 
-    epub.modifiedAt = edit.at;
-    (epub.bookEdits ??= []).push(edit);
+    epub.modifiedAt = edits[edits.length - 1].at;
+    for (const edit of edits) (epub.bookEdits ??= []).push(edit);
   });
   if (!saved.success) {
     throw new Error(
-      `${edit.elementKey} was relabelled in the book, but recording that in ${projectDir}'s `
-      + `manifest failed: ${saved.error}`
+      `${edits.map((e) => e.elementKey).join(', ')} ${edits.length === 1 ? 'was' : 'were'} `
+      + `relabelled in the book, but recording that in ${projectDir}'s manifest failed: `
+      + `${saved.error}`
     );
   }
+}
+
+/** One relabel's record. The batch of one — see `recordBlockCategoryChanges`. */
+export async function recordBlockCategoryChange(
+  projectDir: string,
+  edit: SetBlockCategoryEdit,
+  familyId?: string,
+): Promise<void> {
+  await recordBlockCategoryChanges(projectDir, [edit], familyId);
 }
 
 /**

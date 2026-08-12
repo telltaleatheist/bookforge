@@ -8617,6 +8617,12 @@ export interface BookElementCategoryResult {
   edit: BookElementCategoryEdit;
 }
 
+/** One element in a relabel, and what the caller says it is. */
+export interface BookElementCategoryRequest {
+  elementKey: NarrationElementKey;
+  categoryId: string;
+}
+
 /**
  * Write a user's category for one element INTO the book.
  *
@@ -8670,130 +8676,225 @@ export interface BookElementCategoryResult {
  * the edited book beside the original — so the difference is only in the FAILURE
  * arm. Staged, a verification that fails deletes the staged book and the book
  * itself was never touched. In place there is nothing to delete but the book, so
- * the one document's original bytes are put back instead, and "Nothing was
+ * the touched documents' original bytes are put back instead, and "Nothing was
  * written" stays true of the book the caller still has.
+ *
+ * ── Why this takes a LIST ──────────────────────────────────────────────────
+ *
+ * A person relabels a RUN of blocks, not one. The picker sent them one at a
+ * time and awaited each, so a twenty-block selection paid twenty times for the
+ * three whole-book steps that do not depend on how many elements are named: the
+ * reading of every spine document that says what the book calls them, the write,
+ * and the reading that verifies it. Measured on the migrated Nuremberg project,
+ * 2026-08-11, one element cost ~500 ms and roughly 490 ms of that was those
+ * three; a second element in the same gesture is a `setAttribute` and a
+ * serialize.
+ *
+ * So the whole batch is read once, applied once, written once and verified once.
+ * The per-element answer is unchanged — one `BookElementCategoryResult` each, in
+ * the order asked, so the caller can tell the user what happened to each block.
+ *
+ * ── ALL OR NOTHING, and it is decided before the first byte ────────────────
+ *
+ * Every refusal this function has is raised for EVERY element BEFORE anything is
+ * written: a category outside the palette, a key naming a picture or a document,
+ * a key naming nothing, one element named twice. A batch with one bad element
+ * writes none of them — half a gesture is the state the user cannot see and
+ * cannot undo, and "which of my twenty landed?" is not a question this should
+ * ever make them ask.
+ *
+ * An element the book ALREADY calls what the caller says is not a refusal — it
+ * is `written: false` for that element and the rest of the batch proceeds, which
+ * is the same idempotence the singular form has always had. A batch of nothing
+ * but those writes no bytes at all.
  */
-export async function setElementCategoryInBookFile(
+export async function setElementCategoriesInBookFile(
   inputPath: string,
   outputPath: string,
-  elementKey: NarrationElementKey,
-  categoryId: string,
-): Promise<BookElementCategoryResult> {
+  requests: readonly BookElementCategoryRequest[],
+): Promise<BookElementCategoryResult[]> {
   const bookName = path.basename(inputPath);
-  const whatFor = `the relabel of ${elementKey} in ${bookName}`;
+  // The gesture, named for whatever it is: the helpers below quote this in their
+  // own refusals, and "the relabel of 12 elements" is what a person recognises
+  // where a list of twelve keys is not. One element keeps the sentence it has
+  // always had, so a single relabel's refusals read exactly as before.
+  const whatFor = requests.length === 1
+    ? `the relabel of ${requests[0].elementKey} in ${bookName}`
+    : `the relabel of ${requests.length} elements in ${bookName}`;
   const inPlace = path.resolve(inputPath) === path.resolve(outputPath);
 
-  if (!BLOCK_CATEGORY_IDS.includes(categoryId)) {
+  if (requests.length === 0) {
     throw new Error(
-      `"${categoryId}" is not a block category BookForge knows, so it cannot be written into `
-      + `${bookName} as what ${elementKey} is. The palette is shared/ocr/block-categories.ts: `
-      + `${BLOCK_CATEGORY_IDS.join(', ')}. Nothing was written.`
+      `A relabel of ${bookName} named no element at all. A caller that cannot say what it is `
+      + 'labelling has nothing to ask for here. Nothing was written.'
     );
   }
 
-  const target = parseNarrationElementKey(elementKey);
-  if (target.kind === 'doc') {
-    throw new Error(
-      `${elementKey} names a whole document, and a category is what one ELEMENT is. A document is `
-      + 'not labelled; the things in it are. Nothing was written.'
-    );
-  }
-  if (target.kind === 'image') {
-    throw new Error(
-      `${elementKey} names a picture, and a picture's category is what it is — every reading of `
-      + 'every book calls it `image` because the block IS the plate, not because anything guessed. '
-      + 'To keep a picture out of the audiobook, strike it instead. Nothing was written.'
-    );
-  }
-  const file = target.file;
+  // ── Every refusal, for every element, before one byte ─────────────────────
+  const targets: Array<{
+    elementKey: NarrationElementKey; categoryId: string; file: string; index: number;
+  }> = [];
+  const named = new Set<string>();
+  for (const request of requests) {
+    const { elementKey, categoryId } = request;
+    if (!BLOCK_CATEGORY_IDS.includes(categoryId)) {
+      throw new Error(
+        `"${categoryId}" is not a block category BookForge knows, so it cannot be written into `
+        + `${bookName} as what ${elementKey} is. The palette is shared/ocr/block-categories.ts: `
+        + `${BLOCK_CATEGORY_IDS.join(', ')}. Nothing was written.`
+      );
+    }
 
-  // ── What the book says about it NOW ───────────────────────────────────────
+    const target = parseNarrationElementKey(elementKey);
+    if (target.kind === 'doc') {
+      throw new Error(
+        `${elementKey} names a whole document, and a category is what one ELEMENT is. A document is `
+        + 'not labelled; the things in it are. Nothing was written.'
+      );
+    }
+    if (target.kind === 'image') {
+      throw new Error(
+        `${elementKey} names a picture, and a picture's category is what it is — every reading of `
+        + 'every book calls it `image` because the block IS the plate, not because anything guessed. '
+        + 'To keep a picture out of the audiobook, strike it instead. Nothing was written.'
+      );
+    }
+    // Twice in one batch is a contradiction the caller has to resolve, not one
+    // this function resolves by taking the last one it happened to read.
+    if (named.has(elementKey)) {
+      throw new Error(
+        `${elementKey} is named twice in the same relabel, so this gesture says two things about `
+        + 'one element. Which of them the book should end up saying is not something that can be '
+        + 'decided here. Nothing was written.'
+      );
+    }
+    named.add(elementKey);
+    targets.push({ elementKey, categoryId, file: target.file, index: target.index });
+  }
+
+  // ── What the book says about them NOW ─────────────────────────────────────
   //
   // Through the ONE reader the analysis uses, so "the book already says this"
   // means the same thing here as it means on screen — and so a book that would
   // read the new category out of its own markup anyway is not rewritten for
   // nothing (the idempotence the naming pass keeps, for the same reasons: the
   // bytes carry the narration strikes' stamp and the analysis cache key).
+  //
+  // ONCE for the whole batch: this walks every spine document, and it is the
+  // single most expensive thing here (~125 ms on Nuremberg's 20 documents).
   const reading = await readEpubElementCategories(inputPath);
-  const fact = reading.elements.find((e) => e.key === elementKey);
-  if (fact === undefined) {
-    const inFile = reading.elements.filter((e) => e.file === file && e.kind === 'text').length;
-    throw new Error(
-      inFile === 0
-        ? `${bookName} has no document ${file}, so ${elementKey} names no element in this book. `
-          + 'Nothing was written.'
-        : `${file} holds ${inFile} text element(s), so ${elementKey} names nothing in it. The book `
-          + 'has been rewritten since these blocks were laid out; re-open it and relabel again. '
-          + 'Nothing was written.'
-    );
-  }
-  const stated = reading.categoryByElement.get(elementKey);
-  const categoryBefore = stated === undefined ? null : stated;
+  const factOfKey = new Map(reading.elements.map((e) => [e.key, e]));
+  const facts = targets.map((target) => {
+    const fact = factOfKey.get(target.elementKey);
+    if (fact === undefined) {
+      const inFile = reading.elements.filter(
+        (e) => e.file === target.file && e.kind === 'text').length;
+      throw new Error(
+        inFile === 0
+          ? `${bookName} has no document ${target.file}, so ${target.elementKey} names no element `
+            + 'in this book. Nothing was written.'
+          : `${target.file} holds ${inFile} text element(s), so ${target.elementKey} names nothing `
+            + 'in it. The book has been rewritten since these blocks were laid out; re-open it and '
+            + 'relabel again. Nothing was written.'
+      );
+    }
+    const stated = reading.categoryByElement.get(target.elementKey);
+    return { ...target, tag: fact.tag, categoryBefore: stated === undefined ? null : stated };
+  });
 
-  // ── The one document, enumerated EXACTLY as the narration writer does ─────
+  // ── The touched documents, enumerated EXACTLY as the narration writer does ─
+  //
+  // One parse per DOCUMENT however many of its elements the batch names — a run
+  // of blocks the user dragged over is usually all in one chapter, and parsing
+  // it once per block was most of what a batch used to cost.
+  const touched = [...new Set(facts.map((f) => f.file))];
+  const documents = new Map<string, {
+    doc: any; units: any[]; imagesBefore: number;
+  }>();
   const processor = new EpubProcessor();
-  let doc: any;
-  let body: any;
-  let el: any = null;
-  let unitsBefore = 0;
-  let imagesBefore = 0;
   try {
     const structure = await processor.open(inputPath);
     const spine = new Set(
       structure.chapters.map((c) => normalizeZipEntryName(processor.resolvePath(c.href))));
-    if (!spine.has(file)) {
-      throw new Error(
-        `${bookName} has no spine document ${file}, so ${elementKey} names no element in this book. `
-        + 'Nothing was written.'
-      );
+    for (const file of touched) {
+      if (!spine.has(file)) {
+        const first = facts.find((f) => f.file === file)!;
+        throw new Error(
+          `${bookName} has no spine document ${file}, so ${first.elementKey} names no element in `
+          + 'this book. Nothing was written.'
+        );
+      }
+      const parsed = parseXhtmlBody(await processor.readFile(file), file);
+      documents.set(file, {
+        doc: parsed.doc,
+        units: [...collectExportUnits(parsed.doc, parsed.body, whatFor)].map((c) => c.el),
+        imagesBefore: collectImageElements(parsed.body).length,
+      });
     }
-    const parsed = parseXhtmlBody(await processor.readFile(file), file);
-    doc = parsed.doc;
-    body = parsed.body;
-    for (const c of collectExportUnits(doc, body, whatFor)) {
-      if (unitsBefore === target.index) el = c.el;
-      unitsBefore++;
-    }
-    imagesBefore = collectImageElements(body).length;
   } finally {
     processor.close();
   }
-  if (el === null) {
-    throw new Error(
-      `${file} holds ${unitsBefore} text element(s), so ${elementKey} names nothing in it. The book `
-      + 'has been rewritten since these blocks were laid out; re-open it and relabel again. Nothing '
-      + 'was written.'
-    );
+
+  // ── What each element is, and which of them actually move a byte ──────────
+  const results: BookElementCategoryResult[] = [];
+  const elements: Array<{ el: any; categoryId: string }> = [];
+  const rewritten = new Set<string>();
+  for (const fact of facts) {
+    const document = documents.get(fact.file)!;
+    const el = document.units[fact.index];
+    if (el === undefined) {
+      throw new Error(
+        `${fact.file} holds ${document.units.length} text element(s), so ${fact.elementKey} names `
+        + 'nothing in it. The book has been rewritten since these blocks were laid out; re-open it '
+        + 'and relabel again. Nothing was written.'
+      );
+    }
+
+    const edit: BookElementCategoryEdit = {
+      file: fact.file,
+      elementKey: fact.elementKey,
+      tag: fact.tag,
+      categoryBefore: fact.categoryBefore,
+      categoryAfter: fact.categoryId,
+      excerpt: collapsedUnitText(el).slice(0, 120),
+    };
+
+    // The book already answers with this, and no override is needed to make it —
+    // so nothing is written, exactly as a book whose openings already read their
+    // names is not copied. The user's screen already showed this category.
+    const override = userCategoryOf(el, whatFor);
+    if ((fact.categoryBefore === fact.categoryId && override === null)
+      || override === fact.categoryId) {
+      results.push({ written: false, edit });
+      continue;
+    }
+    elements.push({ el, categoryId: fact.categoryId });
+    rewritten.add(fact.file);
+    results.push({ written: true, edit });
   }
 
-  const edit: BookElementCategoryEdit = {
-    file,
-    elementKey,
-    tag: fact.tag,
-    categoryBefore,
-    categoryAfter: categoryId,
-    excerpt: collapsedUnitText(el).slice(0, 120),
-  };
+  // Every element in the batch was already labelled this way. No document is
+  // rewritten, so — staged or in place — not one byte of the book moves, and the
+  // caller is told so element by element.
+  if (elements.length === 0) return results;
 
-  // The book already answers with this, and no override is needed to make it —
-  // so nothing is written, exactly as a book whose openings already read their
-  // names is not copied. The user's screen already showed this category.
-  if (categoryBefore === categoryId && userCategoryOf(el, whatFor) === null) {
-    return { written: false, edit };
+  // What the touched documents hold RIGHT NOW, as BYTES, kept only for the
+  // in-place write's failure arm — read from the book rather than re-encoded
+  // from the strings the parse started with, because "put them back exactly" is
+  // the whole point and a re-encode is a claim about each file's encoding rather
+  // than a copy of it. Nothing is read for the staged form: there the undo is
+  // deleting the staged book.
+  const originalEntries = new Map<string, Buffer>();
+  if (inPlace) {
+    for (const file of rewritten) originalEntries.set(file, await readOneEpubEntry(inputPath, file));
   }
-  if (userCategoryOf(el, whatFor) === categoryId) return { written: false, edit };
 
-  // What the document holds RIGHT NOW, as BYTES, kept only for the in-place
-  // write's failure arm — read from the book rather than re-encoded from the
-  // string the parse started with, because "put it back exactly" is the whole
-  // point and a re-encode is a claim about this file's encoding rather than a
-  // copy of it. Nothing is read for the staged form: there the undo is deleting
-  // the staged book.
-  const originalEntryBytes = inPlace ? await readOneEpubEntry(inputPath, file) : null;
-
-  el.setAttribute(USER_CATEGORY_ATTR, categoryId);
-  await writeBookWithReplacedEntries(
-    inputPath, outputPath, new Map([[file, serializeEditedDocument(doc)]]));
+  for (const { el, categoryId } of elements) el.setAttribute(USER_CATEGORY_ATTR, categoryId);
+  const replacements = new Map<string, Buffer>();
+  for (const file of rewritten) {
+    replacements.set(file, serializeEditedDocument(documents.get(file)!.doc));
+  }
+  await writeBookWithReplacedEntries(inputPath, outputPath, replacements);
 
   // ── The promise, kept or the file destroyed ───────────────────────────────
   //
@@ -8802,6 +8903,11 @@ export async function setElementCategoryInBookFile(
   // without migrating a key. And that the book now READS the new category
   // through the same reader the analysis uses — the claim that matters, because
   // an attribute no reader honours is the invisible overlay this replaces.
+  //
+  // Both are asked of EVERY element in the batch, including the ones that were
+  // already labelled: their documents may have been rewritten around them, and
+  // a reading that changed for a block nobody edited is exactly the kind of
+  // damage this check exists to catch.
   try {
     // Through the factory, which gives its handle back when the open FAILS. A
     // bare `new ZipReader(p)` + `open()` takes an fs descriptor before it parses
@@ -8811,52 +8917,82 @@ export async function setElementCategoryInBookFile(
     // makes impossible. The refusal would then say "Nothing was written" over a
     // book that was still sitting there.
     const check = await openEpubSource(outputPath);
-    let unitsAfter = 0;
-    let imagesAfter = 0;
+    const after = new Map<string, { units: number; images: number }>();
     try {
-      const written = parseXhtmlBody((await check.readEntry(file)).toString('utf8'), file);
-      unitsAfter = collectExportUnits(written.doc, written.body, whatFor).length;
-      imagesAfter = collectImageElements(written.body).length;
+      for (const file of rewritten) {
+        const written = parseXhtmlBody((await check.readEntry(file)).toString('utf8'), file);
+        after.set(file, {
+          units: collectExportUnits(written.doc, written.body, whatFor).length,
+          images: collectImageElements(written.body).length,
+        });
+      }
     } finally {
       check.close();
     }
-    if (unitsAfter !== unitsBefore) {
-      throw new Error(
-        `${file} held ${unitsBefore} text element(s) and the rewritten file holds ${unitsAfter}. `
-        + 'Relabelling an element removes nothing, so every narration strike recorded against this '
-        + 'book would now name the wrong element. Nothing was written.'
-      );
+    for (const file of rewritten) {
+      const document = documents.get(file)!;
+      const counts = after.get(file)!;
+      if (counts.units !== document.units.length) {
+        throw new Error(
+          `${file} held ${document.units.length} text element(s) and the rewritten file holds `
+          + `${counts.units}. Relabelling an element removes nothing, so every narration strike `
+          + 'recorded against this book would now name the wrong element. Nothing was written.'
+        );
+      }
+      if (counts.images !== document.imagesBefore) {
+        throw new Error(
+          `${file} held ${document.imagesBefore} picture(s) and the rewritten file holds `
+          + `${counts.images}. Relabelling an element moves no picture. Nothing was written.`
+        );
+      }
     }
-    if (imagesAfter !== imagesBefore) {
-      throw new Error(
-        `${file} held ${imagesBefore} picture(s) and the rewritten file holds ${imagesAfter}. `
-        + 'Relabelling an element moves no picture. Nothing was written.'
-      );
-    }
-    const after = (await readEpubElementCategories(outputPath)).categoryByElement.get(elementKey);
-    if (after !== categoryId) {
-      throw new Error(
-        `${elementKey} was written as "${categoryId}" and ${bookName} reads it back as `
-        + `${after === undefined ? 'nothing at all' : `"${after}"`}. A label the book does not `
-        + 'answer with is the invisible correction this edit exists to end. Nothing was written.'
-      );
+    const readBack = (await readEpubElementCategories(outputPath)).categoryByElement;
+    for (const fact of facts) {
+      const said = readBack.get(fact.elementKey);
+      if (said !== fact.categoryId) {
+        throw new Error(
+          `${fact.elementKey} was written as "${fact.categoryId}" and ${bookName} reads it back as `
+          + `${said === undefined ? 'nothing at all' : `"${said}"`}. A label the book does not `
+          + 'answer with is the invisible correction this edit exists to end. Nothing was written.'
+        );
+      }
     }
   } catch (err) {
-    if (originalEntryBytes === null) {
+    if (!inPlace) {
       await removeEpubContainer(outputPath);
     } else {
       // In place, so there is no staged book to destroy — destroying `outputPath`
-      // here would take the user's book with it. The edit was ONE document and
-      // its bytes from before it are held above, so putting those back restores
-      // exactly the book this function was handed. Through the same writer, so
-      // the undo lands the same atomic way the edit did.
-      await writeBookWithReplacedEntries(
-        inputPath, outputPath, new Map([[file, originalEntryBytes]]));
+      // here would take the user's book with it. The edit touched these documents
+      // and no others, and their bytes from before it are held above, so putting
+      // ALL of them back restores exactly the book this function was handed.
+      // Through the same writer, and in ONE write, so the undo lands the same
+      // atomic way the edit did rather than one document at a time.
+      await writeBookWithReplacedEntries(inputPath, outputPath, originalEntries);
     }
     throw err;
   }
 
-  return { written: true, edit };
+  return results;
+}
+
+/**
+ * One element's category, written into the book.
+ *
+ * The batch of one. Kept as its own name because most callers relabel one block
+ * and because a `BookElementCategoryResult` rather than an array of them is what
+ * they mean; every rule, refusal and sentence is
+ * `setElementCategoriesInBookFile`'s, so there is one derivation and not two
+ * that drift.
+ */
+export async function setElementCategoryInBookFile(
+  inputPath: string,
+  outputPath: string,
+  elementKey: NarrationElementKey,
+  categoryId: string,
+): Promise<BookElementCategoryResult> {
+  const [result] = await setElementCategoriesInBookFile(
+    inputPath, outputPath, [{ elementKey, categoryId }]);
+  return result;
 }
 
 /**

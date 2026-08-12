@@ -71,10 +71,14 @@ process.env.BOOKFORGE_USERDATA_DIR = path.join(ROOT, 'userdata');
 const {
   ZipReader, ZipWriter,
   setElementCategoryInBookFile,
+  setElementCategoriesInBookFile,
   readEpubElementCategories,
   nameChapterOpeningsInBookFile,
   USER_CATEGORY_ATTR,
 } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+// The container seam, held so one test can make the verification's read of the
+// WRITTEN book fail — the only way in from outside to reach the restore arm.
+const epubContainer = require(path.join(DIST, 'electron', 'epub-container.js'));
 
 let failures = 0;
 const results = [];
@@ -533,6 +537,267 @@ async function run() {
     await refuses(
       readEpubElementCategories(forged),
       `${USER_CATEGORY_ATTR}="chapter-opening", which is not a block category BookForge knows`);
+  });
+
+  // ── The BATCH ──────────────────────────────────────────────────────────
+  //
+  // A person relabels a RUN of blocks, and the picker used to send them one at
+  // a time: every block re-paid the whole-book read, the write and the reading
+  // that verifies it (~500 ms each on a 20-document book, measured 2026-08-11).
+  // `setElementCategoriesInBookFile` does all of that once for the whole run.
+  //
+  // What is worth a test is not the speed — it is that a batch keeps every
+  // promise the singular made, and that it keeps them ACROSS elements: all or
+  // nothing before the first byte, an idempotent element beside a real one, and
+  // a failure after the write that puts back EVERY document it touched.
+
+  await check('a batch relabels several elements across several documents, in one write', async () => {
+    const book = await convertedBook();
+    const out = path.join(ROOT, 'batch-multi.epub');
+    const written = await setElementCategoriesInBookFile(book, out, [
+      { elementKey: CONVERTED_OPENER, categoryId: 'chapter' },
+      { elementKey: 'OEBPS/c0001.xhtml#0', categoryId: 'quote' },
+      { elementKey: 'OEBPS/c0000.xhtml#1', categoryId: 'caption' },
+    ]);
+
+    assert.strictEqual(written.length, 3, 'the batch did not answer once per element');
+    assert.deepStrictEqual(written.map((w) => w.written), [true, true, true]);
+    // In the order asked, so the caller can put each answer against its block.
+    assert.deepStrictEqual(
+      written.map((w) => w.edit.elementKey),
+      [CONVERTED_OPENER, 'OEBPS/c0001.xhtml#0', 'OEBPS/c0000.xhtml#1'],
+      'the answers came back in a different order from the questions');
+    assert.strictEqual(written[0].edit.categoryBefore, 'title');
+    assert.strictEqual(written[1].edit.categoryBefore, 'body');
+
+    const reading = await readEpubElementCategories(out);
+    assert.strictEqual(reading.categoryByElement.get(CONVERTED_OPENER), 'chapter');
+    assert.strictEqual(reading.categoryByElement.get('OEBPS/c0001.xhtml#0'), 'quote');
+    assert.strictEqual(reading.categoryByElement.get('OEBPS/c0000.xhtml#1'), 'caption');
+
+    // Exactly the two documents the batch named, and nothing else in the book.
+    const before = await entriesOf(book);
+    const after = await entriesOf(out);
+    const changed = [...before.keys()].filter((e) => !before.get(e).equals(after.get(e)));
+    assert.deepStrictEqual(changed.sort(), ['OEBPS/c0000.xhtml', 'OEBPS/c0001.xhtml'],
+      `the batch moved entries it did not name: ${changed.join(', ')}`);
+
+    // And the enumeration every narration strike is keyed by is unmoved.
+    const beforeKeys = (await readEpubElementCategories(book)).elements.map((e) => e.key);
+    assert.deepStrictEqual(reading.elements.map((e) => e.key), beforeKeys,
+      'the element enumeration moved under a batch');
+  });
+
+  await check('an idempotent element rides along beside a real one', async () => {
+    const book = await convertedBook();
+    const out = path.join(ROOT, 'batch-mixed.epub');
+    const written = await setElementCategoriesInBookFile(book, out, [
+      // c0000#0 is ALREADY `chapter` — the book says so in its own markup.
+      { elementKey: 'OEBPS/c0000.xhtml#0', categoryId: 'chapter' },
+      { elementKey: CONVERTED_OPENER, categoryId: 'chapter' },
+    ]);
+    assert.deepStrictEqual(written.map((w) => w.written), [false, true],
+      'the already-labelled element was not reported as writing nothing');
+    assert.strictEqual(written[0].edit.categoryBefore, 'chapter');
+
+    // The one that had something to say landed; the one that did not left no
+    // mark on its own document.
+    const reading = await readEpubElementCategories(out);
+    assert.strictEqual(reading.categoryByElement.get(CONVERTED_OPENER), 'chapter');
+    const untouched = await documentText(out, 'OEBPS/c0000.xhtml');
+    assert.ok(!untouched.includes(USER_CATEGORY_ATTR),
+      'an element the book already labelled was stamped anyway');
+
+    const before = await entriesOf(book);
+    const after = await entriesOf(out);
+    const changed = [...before.keys()].filter((e) => !before.get(e).equals(after.get(e)));
+    assert.deepStrictEqual(changed, ['OEBPS/c0001.xhtml'],
+      `a document holding only idempotent elements was rewritten: ${changed.join(', ')}`);
+  });
+
+  await check('a batch of nothing but idempotent elements writes no book at all', async () => {
+    const book = await convertedBook();
+    const out = path.join(ROOT, 'batch-all-noop.epub');
+    const written = await setElementCategoriesInBookFile(book, out, [
+      { elementKey: 'OEBPS/c0000.xhtml#0', categoryId: 'chapter' },
+      { elementKey: 'OEBPS/c0000.xhtml#1', categoryId: 'body' },
+    ]);
+    assert.deepStrictEqual(written.map((w) => w.written), [false, false]);
+    assert.strictEqual(fs.existsSync(out), false, 'a book was written anyway');
+  });
+
+  await check('one bad element refuses the WHOLE batch, before any byte', async () => {
+    const book = await convertedBook();
+    const before = await entriesOf(book);
+
+    // A category outside the palette, in the middle of good ones.
+    const out = path.join(ROOT, 'batch-bad-category.epub');
+    await refuses(
+      setElementCategoriesInBookFile(book, out, [
+        { elementKey: CONVERTED_OPENER, categoryId: 'chapter' },
+        { elementKey: 'OEBPS/c0001.xhtml#0', categoryId: 'chapter-opening' },
+        { elementKey: 'OEBPS/c0000.xhtml#1', categoryId: 'caption' },
+      ]),
+      '"chapter-opening" is not a block category BookForge knows',
+      'Nothing was written.');
+    assert.strictEqual(fs.existsSync(out), false, 'a book was written for a refused batch');
+
+    // A key naming an element the book does not have.
+    const missing = path.join(ROOT, 'batch-missing-key.epub');
+    await refuses(
+      setElementCategoriesInBookFile(book, missing, [
+        { elementKey: CONVERTED_OPENER, categoryId: 'chapter' },
+        { elementKey: 'OEBPS/c0001.xhtml#99', categoryId: 'caption' },
+      ]),
+      'names nothing in it', 'Nothing was written.');
+    assert.strictEqual(fs.existsSync(missing), false);
+
+    // A key naming a picture, which is what it is and not a label.
+    const picture = path.join(ROOT, 'batch-picture-key.epub');
+    await refuses(
+      setElementCategoriesInBookFile(book, picture, [
+        { elementKey: CONVERTED_OPENER, categoryId: 'chapter' },
+        { elementKey: 'OEBPS/c0001.xhtml#img0', categoryId: 'caption' },
+      ]),
+      'names a picture', 'Nothing was written.');
+    assert.strictEqual(fs.existsSync(picture), false);
+
+    // The SOURCE book is untouched by every one of those refusals.
+    const after = await entriesOf(book);
+    const changed = [...before.keys()].filter((e) => !before.get(e).equals(after.get(e)));
+    assert.deepStrictEqual(changed, [],
+      `a refused batch changed the book it read: ${changed.join(', ')}`);
+  });
+
+  await check('one element named twice is refused — the batch says two things about it', async () => {
+    const book = await convertedBook();
+    const out = path.join(ROOT, 'batch-duplicate.epub');
+    await refuses(
+      setElementCategoriesInBookFile(book, out, [
+        { elementKey: CONVERTED_OPENER, categoryId: 'chapter' },
+        { elementKey: CONVERTED_OPENER, categoryId: 'heading' },
+      ]),
+      'is named twice in the same relabel',
+      'Nothing was written.');
+    assert.strictEqual(fs.existsSync(out), false);
+  });
+
+  await check('a batch that names no element at all is refused', async () => {
+    const book = await convertedBook();
+    await refuses(
+      setElementCategoriesInBookFile(book, path.join(ROOT, 'batch-empty.epub'), []),
+      'named no element at all',
+      'Nothing was written.');
+  });
+
+  // ── The failure arm, over N documents ──────────────────────────────────
+  //
+  // The in-place write has no staged book to destroy, so a verification that
+  // refuses has to put back every document it touched — and the batch made that
+  // "every", not "the one". Reached by making the verification's read of the
+  // written book fail, which is the seam a torn write would fail at anyway.
+  await check('an in-place batch that fails verification puts EVERY document back', async () => {
+    const book = await convertedBook();
+    const inPlace = path.join(ROOT, 'batch-restore.epub');
+    fs.copyFileSync(book, inPlace);
+    const before = await entriesOf(inPlace);
+
+    // Fired on the first open of a book that ALREADY carries the edit — which is
+    // precisely the verification's read, and never one of the reads before the
+    // write. One-shot, so the restore's own write can still open the book.
+    const real = epubContainer.openEpubSource;
+    let failedTheVerification = false;
+    epubContainer.openEpubSource = async (p) => {
+      if (!failedTheVerification && path.resolve(p) === path.resolve(inPlace)
+        && (await documentText(inPlace, 'OEBPS/c0001.xhtml')).includes(USER_CATEGORY_ATTR)) {
+        failedTheVerification = true;
+        throw new Error('the written book could not be read back');
+      }
+      return real(p);
+    };
+    let message = null;
+    try {
+      await setElementCategoriesInBookFile(inPlace, inPlace, [
+        { elementKey: CONVERTED_OPENER, categoryId: 'chapter' },
+        { elementKey: 'OEBPS/c0000.xhtml#1', categoryId: 'caption' },
+      ]);
+    } catch (err) {
+      message = err.message;
+    } finally {
+      epubContainer.openEpubSource = real;
+    }
+
+    assert.notStrictEqual(message, null, 'the batch did not refuse when its verification failed');
+    assert.ok(
+      message.includes('could not be read back'),
+      `the refusal is not the one the verification raised: ${message}`);
+    // The whole point: the edit HAD landed on disk, so the restore below is
+    // proving it was taken back and not merely that it never happened.
+    assert.strictEqual(failedTheVerification, true,
+      'the injected failure never saw a written book, so nothing was restored');
+
+    // The book is the book it was handed — BOTH documents, byte for byte.
+    const after = await entriesOf(inPlace);
+    assert.deepStrictEqual([...after.keys()].sort(), [...before.keys()].sort(),
+      'the restore changed which entries the book has');
+    const changed = [...before.keys()].filter((e) => !before.get(e).equals(after.get(e)));
+    assert.deepStrictEqual(changed, [],
+      `the restore left ${changed.length} document(s) edited: ${changed.join(', ')}`);
+    assert.ok(fs.existsSync(inPlace), 'the in-place failure destroyed the book');
+  });
+
+  await check('a staged batch that fails verification destroys the staged book only', async () => {
+    const book = await convertedBook();
+    const out = path.join(ROOT, 'batch-staged-fail.epub');
+    const before = await entriesOf(book);
+
+    const real = epubContainer.openEpubSource;
+    let failedTheVerification = false;
+    epubContainer.openEpubSource = async (p) => {
+      // Only ever the staged book, and only once it exists — so the write has
+      // certainly happened and there is a staged book to be destroyed.
+      if (path.resolve(p) === path.resolve(out) && fs.existsSync(out)) {
+        failedTheVerification = true;
+        throw new Error('the written book could not be read back');
+      }
+      return real(p);
+    };
+    let message = null;
+    try {
+      await setElementCategoriesInBookFile(book, out, [
+        { elementKey: CONVERTED_OPENER, categoryId: 'chapter' },
+        { elementKey: 'OEBPS/c0000.xhtml#1', categoryId: 'caption' },
+      ]);
+    } catch (err) {
+      message = err.message;
+    } finally {
+      epubContainer.openEpubSource = real;
+    }
+
+    assert.notStrictEqual(message, null, 'the staged batch did not refuse');
+    assert.strictEqual(failedTheVerification, true,
+      'the injected failure never saw a staged book, so nothing was destroyed');
+    assert.strictEqual(fs.existsSync(out), false, 'the staged book survived its own refusal');
+    const after = await entriesOf(book);
+    const changed = [...before.keys()].filter((e) => !before.get(e).equals(after.get(e)));
+    assert.deepStrictEqual(changed, [], 'a staged refusal changed the source book');
+  });
+
+  await check('the singular relabel is the batch of one, and answers the same', async () => {
+    const book = await convertedBook();
+    const one = path.join(ROOT, 'singular-vs-batch-one.epub');
+    const many = path.join(ROOT, 'singular-vs-batch-many.epub');
+    const singular = await setElementCategoryInBookFile(book, one, CONVERTED_OPENER, 'chapter');
+    const [batched] = await setElementCategoriesInBookFile(
+      book, many, [{ elementKey: CONVERTED_OPENER, categoryId: 'chapter' }]);
+    assert.deepStrictEqual(batched, singular, 'the batch of one answered differently');
+
+    const oneEntries = await entriesOf(one);
+    const manyEntries = await entriesOf(many);
+    for (const [entry, bytes] of oneEntries) {
+      assert.ok(bytes.equals(manyEntries.get(entry)),
+        `${entry} differs between the singular relabel and the batch of one`);
+    }
   });
 
   for (const [status, name, detail] of results) {

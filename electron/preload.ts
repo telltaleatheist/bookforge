@@ -1610,6 +1610,51 @@ export interface ElectronAPI {
     }>;
 
     /**
+     * Say what a RUN of the book's elements are, as ONE gesture.
+     *
+     * The plural of `setBlockCategory`, and what a palette click on a SELECTION
+     * should call. One block at a time re-paid the whole fixed cost of a relabel
+     * per block — the book read whole, written, verified, measured twice,
+     * recorded, and the chapter-naming pass behind each — which measured ~500 ms
+     * per block on a 20-document book; batched, a second block costs a few
+     * milliseconds.
+     *
+     * ALL OR NOTHING: a category outside the palette, a key naming a picture, a
+     * document or nothing at all, or one element named twice refuses the whole
+     * gesture before any byte is written. A block the book ALREADY labels this
+     * way is not a refusal — it answers `written: false` and the rest stands.
+     *
+     * `results` is one answer per element IN THE ORDER ASKED, each carrying the
+     * `openingUnnamed` / `needsChapterName` sentences a `chapter` promotion
+     * earns. `rewrittenEntries` is the deduped list of documents whose bytes
+     * moved — the relabelled ones and whatever the naming pass touched — which
+     * is what the window lays out again instead of re-opening the book.
+     *
+     * No `chapterName`: a name belongs to one chapter and a batch has no one
+     * name to give. Promote a single block through `setBlockCategory` when its
+     * document also needs listing.
+     */
+    setBlockCategories: (
+      projectDir: string,
+      edits: Array<{ elementKey: string; categoryId: string }>,
+      familyId?: string
+    ) => Promise<{
+      success: boolean;
+      results?: Array<{
+        file: string; elementKey: string;
+        categoryBefore: string | null; categoryAfter: string;
+        written: boolean; fromSha256: string; toSha256: string;
+        openingUnnamed: string | null;
+        needsChapterName: string | null;
+      }>;
+      fromSha256?: string;
+      toSha256?: string;
+      openingsNamed?: number;
+      rewrittenEntries?: string[];
+      error?: string;
+    }>;
+
+    /**
      * What one element of the book says right now, whole.
      *
      * What the text editor opens on. NOT the block's own text: a block is a
@@ -3498,6 +3543,33 @@ const electronAPI: ElectronAPI = {
       chapterName?: string) =>
       ipcRenderer.invoke(
         'book:set-block-category', projectDir, elementKey, categoryId, familyId, chapterName),
+
+    /**
+     * Say what a RUN of the book's elements are, as ONE gesture.
+     *
+     * What the palette should call when it labels a SELECTION. Sending the
+     * blocks one at a time re-paid the whole fixed cost of a relabel per block —
+     * the book read whole, written, verified, measured twice, recorded, and the
+     * chapter-naming pass behind each one; ~500 ms each on a 20-document book.
+     * Here all of that happens once and a second block costs a few milliseconds.
+     *
+     * Refuses the WHOLE batch, before any byte, on any bad element — a selection
+     * never lands half-applied. Blocks the book already labels this way come
+     * back `written: false` and do not refuse anything.
+     *
+     * Answers `results` in the order asked (one per element, each carrying the
+     * `openingUnnamed` / `needsChapterName` sentences a `chapter` promotion
+     * earns) plus the deduped `rewrittenEntries` for the relayout.
+     *
+     * No `chapterName` here: a name belongs to one chapter, and a batch has no
+     * one name to give. Promote a single block through `setBlockCategory` when
+     * the document also needs listing.
+     */
+    setBlockCategories: (
+      projectDir: string,
+      edits: Array<{ elementKey: string; categoryId: string }>,
+      familyId?: string) =>
+      ipcRenderer.invoke('book:set-block-categories', projectDir, edits, familyId),
 
     /** What one element says right now — what the text editor opens on. */
     readBlockText: (projectDir: string, elementKey: string, familyId?: string) =>

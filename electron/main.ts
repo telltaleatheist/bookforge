@@ -8565,6 +8565,139 @@ function setupIpcHandlers(): void {
   });
 
   /**
+   * A RUN of blocks, relabelled as one gesture.
+   *
+   * ── Why the plural exists ──────────────────────────────────────────────────
+   *
+   * The picker's palette labels a SELECTION, and it sent that selection one
+   * block at a time, awaiting each. Every one of those calls paid the same fixed
+   * cost — the book read whole to say what it currently calls its elements, the
+   * write, the reading that verifies it, the two measurements that bracket it,
+   * the manifest transaction, and behind all of that the chapter-naming pass.
+   * Measured on the migrated Nuremberg project 2026-08-11: ~500 ms per block, of
+   * which a second block in the same gesture would have added a few.
+   *
+   * Here the batch is one act: `setBookBlockCategories` reads, writes, measures
+   * and records once, and `nameChapterOpenings` runs once behind all of it
+   * rather than once per block.
+   *
+   * ── Refusals are about the WHOLE batch ────────────────────────────────────
+   *
+   * A category outside the palette, a key naming a picture or a document, a key
+   * naming nothing, one element named twice: all of them refuse the gesture
+   * before a byte is written, so a selection never lands half-applied. An
+   * element the book ALREADY calls what was asked is not a refusal — it comes
+   * back `written: false` and the rest of the batch stands.
+   *
+   * ── What is NOT here, and why ─────────────────────────────────────────────
+   *
+   * `chapterName`. The singular handler takes one because promoting a single
+   * block to `chapter` can also list its document in the table of contents, and
+   * a name belongs to ONE chapter. A batch has no one name to give, and the
+   * per-document sentences a promotion earns are reported per element below
+   * instead. A selection that includes chapter promotions gets them named the
+   * ordinary way — through the naming pass — and the blocks whose documents the
+   * contents does not list say so by name.
+   */
+  ipcMain.handle('book:set-block-categories', async (
+    _event,
+    projectDir: string,
+    edits: Array<{ elementKey: string; categoryId: string }>,
+    familyId?: string) => {
+    try {
+      const { readBookChapterTitles } = await import('./book-chapters.js');
+      const { setBookBlockCategories } = await import('./book-categories.js');
+
+      /** What the BOOK says about a document's entry, asked rather than assumed. */
+      const namedInContents = async (file: string): Promise<boolean> => {
+        const titles = await readBookChapterTitles(projectDir, familyId);
+        const row = titles?.chapters.find((c) => c.file === file);
+        return row !== undefined && row.navTitle.trim().length > 0;
+      };
+
+      const batch = await setBookBlockCategories(projectDir, edits, familyId);
+
+      // Every entry of the book this ONE gesture rewrote — the relabelled
+      // documents, and below them whatever the naming pass touched. The window
+      // lays exactly these out again instead of re-opening the book, so the list
+      // has to be the whole truth.
+      const rewrittenEntries = new Set<string>(batch.rewrittenEntries);
+
+      if (rewrittenEntries.size === 0) {
+        // The book already said all of it. No bytes moved, so there is nothing
+        // for the naming pass to find that it would not have found before, and
+        // nothing for any window to re-read.
+        return {
+          success: true, ...batch, openingsNamed: 0, rewrittenEntries: [],
+          results: batch.results.map((r) => ({
+            ...r, openingUnnamed: null, needsChapterName: null,
+          })),
+        };
+      }
+
+      let openingsNamed = 0;
+      let summary;
+      try {
+        const { nameChapterOpenings } = await import('./narration-export.js');
+        summary = await nameChapterOpenings(projectDir, familyId);
+        openingsNamed = summary.edited;
+        for (const edit of summary.named) rewrittenEntries.add(edit.file);
+      } catch (err) {
+        // A throw HERE is not a refusal that left the project as it found it: the
+        // category writes above landed, so the failure answer still says which
+        // entries moved and every window is still told the project changed —
+        // otherwise a half-applied gesture would leave the book relabelled and
+        // every view of it stale.
+        broadcastToAllWindows('project:files-changed', projectDir);
+        return {
+          success: false,
+          error:
+            `${rewrittenEntries.size} document(s) were relabelled in the book, but the pass that `
+            + `writes each chapter's name into its opening could not run afterwards: `
+            + `${(err as Error).message}`,
+          rewrittenEntries: [...rewrittenEntries],
+        };
+      }
+
+      // Per element, because the picker draws per element: a block promoted to
+      // `chapter` whose document the contents does not list has no stored name
+      // for its opening to print, and that is a different sentence from a pass
+      // that ran and fell short.
+      const results = await Promise.all(batch.results.map(async (result) => {
+        if (result.categoryAfter !== 'chapter' || !result.written) {
+          return { ...result, openingUnnamed: null, needsChapterName: null };
+        }
+        if (await namedInContents(result.file)) {
+          return {
+            ...result,
+            openingUnnamed: chapterOpeningRefusal(summary, result.file),
+            needsChapterName: null,
+          };
+        }
+        return {
+          ...result,
+          openingUnnamed:
+            `${result.file} is not listed under a name in this book's table of contents, so there `
+            + 'is no stored name for its opening to print. Give the chapter a name and it will be '
+            + 'listed under it.',
+          needsChapterName: result.file,
+        };
+      }));
+
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return {
+        success: true,
+        ...batch,
+        results,
+        openingsNamed,
+        rewrittenEntries: [...rewrittenEntries],
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
    * What one element of the book says right now — what the text editor opens on.
    *
    * A block is a PAGE'S WORTH of an element, so the editor cannot open on the
