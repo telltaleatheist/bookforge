@@ -50,6 +50,36 @@ export interface QuireOpenOptions {
    * fallback: if the strategy cannot paginate a book, the open fails naming why.
    */
   strategy?: QuireStrategy;
+
+  /**
+   * The spine documents' XHTML, handed in by the caller instead of read out of
+   * the book.
+   *
+   * quire does not mint ids — it answers "which page did that id land on" for
+   * documents that already carry `data-quire-id`. The caller therefore has to
+   * put the stamps somewhere quire will read them. Writing a whole STAMPED COPY
+   * of the book to disk was one way to do that, and it was the expensive way: a
+   * book is mostly pictures, and re-deflating twenty-five megabytes of unchanged
+   * JPEGs to alter one chapter's markup is the cost, not the layout.
+   *
+   * So the book is opened where it lives and the stamped markup is passed
+   * through here. Every other entry — the pictures, the stylesheets, the fonts —
+   * is read from the book itself, which is the point: they are the bulk and they
+   * never needed copying.
+   *
+   * `sources` must name EXACTLY the spine, no more and no less. Not a
+   * convenience check: a spine document with no stamps carries no ids at all, so
+   * every element in it would go unreported and the caller would be told its
+   * book has elements with no pages — a true statement about a situation with a
+   * completely different cause. A key that is not a spine document means the
+   * caller's idea of the book and this one's have diverged, which is worth
+   * knowing at the open rather than at the first page.
+   *
+   * The strings are the SOURCE, in the sense `relayoutDocument` uses the word:
+   * they are re-shelled on a geometry change and served to the `quire://`
+   * handler in place of the book's own bytes.
+   */
+  sources?: ReadonlyMap<string, string | Buffer>;
 }
 
 /**
@@ -254,6 +284,7 @@ export class QuireDocument {
     const doc = new QuireDocument(epubPath, options);
     try {
       await doc.archive.open();
+      if (options.sources !== undefined) doc.seedSources(options.sources);
       // A partition with no `persist:` prefix is in-memory: the book gets no
       // cookies, no cache and no storage that outlives it, and it shares none of
       // BookForge's own.
@@ -624,6 +655,45 @@ export class QuireDocument {
     this.buildPageIndex(pageOffset);
     this.report = this.buildReport(Date.now() - started);
     return this.report;
+  }
+
+  /**
+   * Take the caller's stamped spine documents, having checked they describe this
+   * book's spine and no other.
+   *
+   * Run after `archive.open()`, because the spine is what it is checked against,
+   * and before anything is laid out, because these bytes ARE the book as far as
+   * every later step is concerned. See {@link QuireOpenOptions.sources}.
+   */
+  private seedSources(sources: ReadonlyMap<string, string | Buffer>): void {
+    const spine = this.archive.spine.map((s) => s.entry);
+    const inSpine = new Set(spine);
+    const missing = spine.filter((entry) => !sources.has(entry));
+    const extra = [...sources.keys()].filter((entry) => !inSpine.has(entry));
+    if (missing.length > 0 || extra.length > 0) {
+      quireFail(
+        'SOURCES_NOT_THE_SPINE',
+        `${this.archive.epubPath} was opened with sources for `
+        + `${sources.size} document(s), but its spine is ${spine.length} document(s)`
+        + (missing.length > 0
+          ? `; no source was given for ${missing.slice(0, 5).join(', ')}`
+            + (missing.length > 5 ? ` (and ${missing.length - 5} more)` : '')
+          : '')
+        + (extra.length > 0
+          ? `; ${extra.slice(0, 5).join(', ')} `
+            + `${extra.length === 1 ? 'is' : 'are'} not in the spine`
+            + (extra.length > 5 ? ` (and ${extra.length - 5} more)` : '')
+          : '')
+        + '. The caller and this book disagree about which documents the book is '
+        + 'made of, and a page number measured under that disagreement would '
+        + 'describe neither.',
+      );
+    }
+    for (const entry of spine) {
+      const source = sources.get(entry) as string | Buffer;
+      this.sourceOverrides.set(
+        entry, typeof source === 'string' ? source : source.toString('utf8'));
+    }
   }
 
   /**

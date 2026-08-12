@@ -3,13 +3,19 @@
  *
  * The cache lives at ~/Documents/BookForge/cache (NOT inside the library
  * folder — the library is Syncthing-synced and render caches must stay
- * machine-local). Layout: {cacheDir}/{fileHash}/{preview|full}/page-N.jpg
- * plus analysis-vN.json files, all keyed by truncated SHA256 of the source.
+ * machine-local). Layout: {cacheDir}/{key}/{preview|full}/page-N.jpg plus
+ * analysis-vN.json, and — under a different key — quire's page maps.
  *
- * Eviction is age-based: a document's hash dir mtime is touched every time
- * the document is opened (see PDFAnalyzer.getOrOpenRenderDoc), so dirs whose
- * mtime is older than MAX_AGE_DAYS belong to documents not opened in that
- * window and are deleted on app startup.
+ * Two kinds of key live side by side here, deliberately. The ANALYZER's is the
+ * first 16 hex of the source file's SHA256, because an analysis payload
+ * describes bytes and must never be read back for different ones. quire's is
+ * `bookCacheKey`, the book's location, because a page map is a record about a
+ * book being edited and carries its own per-document freshness inside it.
+ *
+ * Eviction is age-based: a directory's mtime is touched every time the document
+ * is opened (PDFAnalyzer.getOrOpenRenderDoc) or its page map is read
+ * (loadCachedPageMap), so dirs whose mtime is older than MAX_AGE_DAYS belong to
+ * documents not opened in that window and are deleted on app startup.
  */
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
@@ -73,4 +79,62 @@ export async function evictStaleRenderCache(
   }
 
   return { evicted, freedBytes };
+}
+
+/**
+ * Delete the stamped copies of books that the cache no longer has any use for.
+ *
+ * quire used to be given a whole stamped COPY of every book it laid out —
+ * `quire-vN-stamped.epub`, the book again with `data-quire-id` on its elements,
+ * 25.7 MB for a book with pictures in it — because that was the only way to get
+ * the stamps in front of a paginator that reads from a file. It is not any more:
+ * the stamps are handed over in memory and the book is opened where it lives.
+ *
+ * So every one of these is dead weight, and there is one per book AND one per
+ * EDIT of a book, because the cache directory used to be named after the book's
+ * bytes. Age eviction would get to them in thirty days; a user who is short of
+ * disk today should not have to wait, and a file nothing will ever open again
+ * has no claim on a grace period.
+ *
+ * Reported rather than silent, and non-fatal: a stamped copy that cannot be
+ * deleted (a session still holding it, an antivirus scan) is left where it is
+ * and the next startup asks again.
+ */
+export async function removeRetiredStampedCopies(): Promise<{
+  removed: number; freedBytes: number;
+}> {
+  const baseDir = getRenderCacheBaseDir();
+  let removed = 0;
+  let freedBytes = 0;
+
+  let entries;
+  try {
+    entries = await fsPromises.readdir(baseDir, { withFileTypes: true });
+  } catch {
+    return { removed, freedBytes }; // no cache dir yet
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dirPath = path.join(baseDir, entry.name);
+    let files: string[];
+    try {
+      files = await fsPromises.readdir(dirPath);
+    } catch {
+      continue; // vanished mid-scan
+    }
+    for (const file of files) {
+      if (!/^quire-v\d+-stamped\.epub$/.test(file)) continue;
+      const at = path.join(dirPath, file);
+      try {
+        freedBytes += (await fsPromises.stat(at)).size;
+        await fsPromises.rm(at, { force: true });
+        removed++;
+      } catch (err) {
+        console.warn(`[render-cache] could not remove the retired stamped copy ${at}:`, err);
+      }
+    }
+  }
+
+  return { removed, freedBytes };
 }

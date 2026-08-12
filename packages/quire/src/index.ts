@@ -34,9 +34,16 @@ export const Quire = {
   registerScheme: registerQuireScheme,
 
   /**
-   * Open a stamped EPUB — either a zipped `.epub` or a working copy exploded
-   * into a directory, whichever is at the path. Call `await doc.layout(...)`
-   * before asking about pages.
+   * Open a book — either a zipped `.epub` or a working copy exploded into a
+   * directory, whichever is at the path. Call `await doc.layout(...)` before
+   * asking about pages.
+   *
+   * The book's spine documents have to carry `data-quire-id` stamps, since quire
+   * reports the caller's ids and mints none of its own. They can be stamped on
+   * disk — which is what a harness does, and what BookForge's
+   * `stampEpubForQuire` writes — or handed in as `options.sources` and left out
+   * of the file, which is what BookForge does with a working copy it has no
+   * reason to duplicate.
    */
   openDocument(epubPath: string, options: QuireOpenOptions = {}): Promise<QuireDocument> {
     return QuireDocument.open(epubPath, options);

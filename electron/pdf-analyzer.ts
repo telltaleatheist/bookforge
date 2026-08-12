@@ -1026,7 +1026,7 @@ export class PDFAnalyzer {
     // map already made.
     if (isEpub) {
       sendProgress('loading', 'Laying the book out…');
-      const geometry = await epubPageGeometryWithQuire(pdfPath, sourceSha256);
+      const geometry = await epubPageGeometryWithQuire(pdfPath);
       const pages = maxPages ? Math.min(geometry.pageCount, maxPages) : geometry.pageCount;
       this.pageDimensions = geometry.pageDimensions.slice(0, pages);
       return {
@@ -1296,7 +1296,7 @@ export class PDFAnalyzer {
     maxPages: number | undefined,
     sendProgress: (phase: string, message: string) => void,
   ): Promise<number> {
-    const analysis = await analyzeEpubWithQuire(pdfPath, sourceSha256, sendProgress);
+    const analysis = await analyzeEpubWithQuire(pdfPath, sendProgress);
     console.log(analysis.summary);
 
     const pageCount = maxPages ? Math.min(analysis.pageCount, maxPages) : analysis.pageCount;
@@ -5808,7 +5808,7 @@ export class PDFAnalyzer {
     // displays; and since analyzeQuick no longer runs that reflow, mupdf here
     // holds an EPUB it never laid out at all.
     if (this.pdfPath && getMimeType(this.pdfPath) === 'application/epub+zip') {
-      return epubOutlineFromQuire(this.pdfPath, await this.computeSourceSha256(this.pdfPath));
+      return epubOutlineFromQuire(this.pdfPath);
     }
 
     // loadOutline/resolveLink touch the WASM heap — serialize with other ops

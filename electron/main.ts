@@ -12557,12 +12557,23 @@ app.whenReady().then(async () => {
   setTimeout(() => {
     void (async () => {
       try {
-        const { evictStaleRenderCache } = await import('./render-cache.js');
+        const { evictStaleRenderCache, removeRetiredStampedCopies } =
+          await import('./render-cache.js');
         const { evicted, freedBytes } = await evictStaleRenderCache();
         if (evicted > 0) {
           logger.info('Evicted stale render caches', {
             documents: evicted,
             freedMB: Math.round(freedBytes / 1024 / 1024),
+          });
+        }
+        // quire no longer keeps a stamped copy of every book it lays out, and
+        // there is one of those per book AND per edit of a book. They are dead
+        // the moment this build runs, so they go now rather than in thirty days.
+        const stamped = await removeRetiredStampedCopies();
+        if (stamped.removed > 0) {
+          logger.info('Removed retired quire stamped copies', {
+            files: stamped.removed,
+            freedMB: Math.round(stamped.freedBytes / 1024 / 1024),
           });
         }
       } catch (err) {
