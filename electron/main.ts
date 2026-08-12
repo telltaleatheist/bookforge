@@ -43,6 +43,7 @@ import type { WorkingCopyRemint } from '../shared/document/working-copy-remint';
 // `manifestService.requireFamily` instead and gets the refusal sentence.
 import { soleFamily } from '../shared/document/book-families';
 import { samePath } from '../shared/document/same-path';
+import { isBookPath } from '../shared/document/book-path';
 // The one rule that turns the chapter-opening naming pass's per-chapter outcome
 // into the sentence the picker owes the user after a rename.
 import { chapterOpeningRefusal } from '../shared/document/chapter-opening-report';
@@ -11747,7 +11748,15 @@ function setupIpcHandlers(): void {
             language,
             modifiedAt: stats.mtime.toISOString(),
             fileSize: stats.size,
-            editable: editable && (ext === 'epub' || ext === 'pdf'),
+            // A row is editable when the caller says so AND the thing is one of
+            // the two the editor can open. The second half is asked through
+            // `isBookPath` and not through `ext`, because a migrated project's
+            // working copy is `source/<stem>.working` and `path.extname` on that
+            // is `working` — so the user's OWN editable book came back
+            // `editable: false` and the versions page then swallowed every click
+            // on it (`rowIsClickable`/`onDocRowClick` read this field). Fixed at
+            // the source so the renderer needs no `.working` special case.
+            editable: editable && (isBookPath(resolvedFilePath) || ext === 'pdf'),
             icon,
             diffRecordPath,
             diffOriginalPath,

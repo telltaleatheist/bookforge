@@ -2,6 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { PdfService, Category } from './pdf.service';
 import { Chapter, ElectronService, EpubPreservingEdits } from '../../../core/services/electron.service';
 import { DeletedBlockExample } from '../../queue/models/queue.types';
+import { WORKING_COPY_SUFFIX } from '@shared/document/book-path';
 
 export interface ExportableBlock {
   id: string;
@@ -685,10 +686,31 @@ export class ExportService {
   // Private helpers
   // ─────────────────────────────────────────────────────────────────────────────
 
+  /**
+   * The name of the file this export downloads as, from the name of the document
+   * it came out of.
+   *
+   * The suffix strip has to know about `.working`. A migrated project's document
+   * is the exploded working copy `<stem>.working`, and the `(pdf|epub)` strip is
+   * a no-op on it — so `.working` survived into the next line, where the
+   * non-alphanumeric squash laundered the dot into an underscore and shipped the
+   * user `Nuremberg__Persico__Joseph_E___1994__working_cleaned_2026-08-11.txt`.
+   * A container detail ended up in the middle of a filename as if it were part of
+   * the book's title.
+   *
+   * Stripped as a KNOWN suffix — `WORKING_COPY_SUFFIX`, the app's one spelling of
+   * it — and never as "whatever follows the last dot": real book names carry dots
+   * of their own ("Nuremberg. Persico, Joseph E. (1994)"), and a blind
+   * `\.[^.]+$` would eat "(1994)" off a plain `.epub` that had already been
+   * stripped. It runs AFTER the format strip so the zipped family members
+   * (`<stem>.working.epub`) lose both halves.
+   */
   private generateFilename(pdfName: string, extension: string): string {
-    const baseName = pdfName
-      .replace(/\.(pdf|epub)$/i, '')
-      .replace(/[^a-zA-Z0-9_-]/g, '_');
+    const withoutFormat = pdfName.replace(/\.(pdf|epub)$/i, '');
+    const withoutWorking = withoutFormat.toLowerCase().endsWith(WORKING_COPY_SUFFIX)
+      ? withoutFormat.slice(0, -WORKING_COPY_SUFFIX.length)
+      : withoutFormat;
+    const baseName = withoutWorking.replace(/[^a-zA-Z0-9_-]/g, '_');
     const timestamp = new Date().toISOString().slice(0, 10);
     return `${baseName}_cleaned_${timestamp}.${extension}`;
   }

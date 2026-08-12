@@ -36,6 +36,7 @@ import { NarrationHandoffService } from '../../core/services/narration-handoff.s
 import { NoticeService } from '../../core/services/notice.service';
 import { looseMatch } from '../../shared/search';
 import { samePath } from '@shared/document/same-path';
+import { isBookPath } from '@shared/document/book-path';
 
 /**
  * StudioComponent - Unified workspace for books and articles
@@ -2552,13 +2553,23 @@ export class StudioComponent implements OnInit, OnDestroy {
    * The branch lives here rather than in two callers so there is still exactly
    * one Export in the app. Before this, an Export on a PDF row would have been
    * handed to the EPUB packer, which opens it as a zip.
+   *
+   * "What the file IS" is asked through `isBookPath`, never through the `.epub`
+   * extension. The Source row of a migrated project is the exploded working copy
+   * `source/<stem>.working`, a DIRECTORY, and an extension test called that a
+   * PDF: Export took the save-a-copy branch, `fs.copyFile` hit EISDIR, and the
+   * user got "Export failed" on the one row Export exists for — while the
+   * re-packaging that applies the project's title, author and cover was never
+   * reached. The packer itself is container-agnostic (`exportEpubAsBook` opens
+   * through `openEpubSource`, which reads a tree or a zip, and always WRITES a
+   * zip to the path the save dialog returned), so an exploded book needs nothing
+   * from this branch but permission to enter it.
    */
   async exportDocument(selectedPath: string): Promise<void> {
     this.epubPickerVisible.set(false);
     if (!selectedPath) return;
 
-    const isEpub = selectedPath.toLowerCase().endsWith('.epub');
-    if (!isEpub) {
+    if (!isBookPath(selectedPath)) {
       const name = selectedPath.split(/[\\/]/).pop();
       if (!name) {
         this.exportStatus.set('Export failed: that path names no file');

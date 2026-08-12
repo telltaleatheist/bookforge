@@ -17,6 +17,7 @@ import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-ta
 import type { PassDiffEntry } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
 import { samePath } from '@shared/document/same-path';
+import { isExplodedBookPath } from '@shared/document/book-path';
 import { describeWorkingCopyRemint } from '@shared/document/working-copy-remint';
 import {
   describeLedgerDeletion,
@@ -2570,7 +2571,18 @@ export class StudioVersionsComponent {
     if (kind === 'working-changes') return '';
     // The snapshot is an EPUB — the book exactly as the pass left it.
     if (kind === 'ledger') return entry === null ? '' : 'epub';
-    return v?.extension ?? '';
+    if (v === null) return '';
+    // An exploded working copy says `epub`, not `working`.
+    //
+    // Main derives this field with `path.extname`, and on `source/<stem>.working`
+    // that is literally "working" — so the book's own line read "…(1994).working"
+    // in a column where every sibling reads ".epub", presenting a container
+    // detail as if it were a FILE FORMAT the user had somehow ended up with.
+    // `.working` is not a format: it is how the book is kept while it is being
+    // edited (a folder of its parts instead of a zip of them, so a chapter edit
+    // writes one file). The book is an EPUB, it opens as one, and every export of
+    // it is one — so the line says what the book IS.
+    return isExplodedBookPath(v.path) ? 'epub' : v.extension;
   }
 
   /** The glyph. The two virtual kinds have their own, so the chain reads down. */

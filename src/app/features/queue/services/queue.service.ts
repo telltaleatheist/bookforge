@@ -45,6 +45,7 @@ import {
   type VlmConvertJobConfig,
 } from '../jobs/vlm-convert-job';
 import { samePath } from '@shared/document/same-path';
+import { isExplodedBookPath, WORKING_COPY_SUFFIX } from '@shared/document/book-path';
 import { AIProvider } from '../../../core/models/ai-config.types';
 import { collapseFilenameDots } from '../../../core/utils/filename-utils';
 import { StudioService } from '../../studio/services/studio.service';
@@ -1749,12 +1750,35 @@ export class QueueService {
   }
 
   /**
+   * The file a queue row NAMES, as the user knows that file.
+   *
+   * A run's rows are built from `plan.bookEpubPath`, which is the project's own
+   * working copy — `source/<stem>.working`, an exploded directory. Taking the
+   * basename of it verbatim put ".working" in front of the user wherever
+   * `epubFilename` is read: the row labels in "this reset is blocked by…" named
+   * a file with an extension nobody has ever exported or opened, and the
+   * container the book happens to be kept in read as its format.
+   *
+   * So an exploded copy is named as the book it holds. This is a LABEL and only
+   * a label — nothing resolves a path from it (every job carries its own
+   * `epubPath`), which is why renaming it here cannot point work at a file that
+   * is not there.
+   */
+  private jobFileLabel(documentPath: string): string {
+    const parts = documentPath.replace(/\\/g, '/').split('/');
+    const name = parts[parts.length - 1];
+    return isExplodedBookPath(name)
+      ? `${name.slice(0, -WORKING_COPY_SUFFIX.length)}.epub`
+      : name;
+  }
+
+  /**
    * Add a new job to the queue
    * Automatically starts processing if queue is idle
    */
   async addJob(request: CreateJobRequest): Promise<QueueJob> {
     // Determine filename based on job type
-    let filename = request.epubPath?.replace(/\\/g, '/').split('/').pop();
+    let filename = request.epubPath ? this.jobFileLabel(request.epubPath) : undefined;
     if (!filename) {
       if (request.type === 'bilingual-assembly') {
         filename = 'Bilingual Assembly';
