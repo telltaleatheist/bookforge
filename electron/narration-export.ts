@@ -1329,7 +1329,9 @@ export async function nameChapterOpenings(
   // The book as it stands, measured BEFORE anything is written: it is what says
   // whether the strike record was describing this book a moment ago, and what
   // the edit log records this pass as having started from.
-  const { digest: fromSha256, hex: fromHex } = await bookDigest(book.absPath);
+  // The HEX is not taken any more: it named the staging file this pass used to
+  // write, and the pass now edits the book in place.
+  const { digest: fromSha256 } = await bookDigest(book.absPath);
 
   // ── The names ─────────────────────────────────────────────────────────────
   //
@@ -1350,29 +1352,39 @@ export async function nameChapterOpenings(
   const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
   const stale = narrationDeletionsStaleReason(recorded, fromSha256);
 
-  await fs.promises.mkdir(STAGING_DIR, { recursive: true });
-  const staged = path.join(STAGING_DIR, `name-openers-${fromHex.slice(0, 16)}.epub`);
-  const named = await nameChapterOpeningsInBookFile(book.absPath, staged, namesByFile);
+  // ── Written INTO the book, not staged and landed on it ────────────────────
+  //
+  // This ran behind every relabel that promotes a block to `chapter`, and it
+  // used to write the whole named book into `%TEMP%\bookforge-staging` and land
+  // it with `moveIntoPlace`. Against an exploded working copy that re-creates
+  // every entry — on the migrated Nuremberg project, 84 entries and 32.5 MB of
+  // page images copied twice to rewrite one heading — and leaves all of them
+  // with a new inode and mtime, so the `bookDigest` below then re-hashed the
+  // whole 32.5 MB as well. Measured 2026-08-11: ~1.3 s of that click.
+  //
+  // The ORDERING that staging bought is kept exactly, through `beforeWriting`:
+  // the staleness judgement below is made in the one window where this pass
+  // knows what it would write and has not written it. That is why it cannot
+  // simply move above the call — a book with NOTHING to name must still open
+  // when its strikes are void, and this runs at every project open.
+  const named = await nameChapterOpeningsInBookFile(
+    book.absPath, book.absPath, namesByFile,
+    (edits) => {
+      if (stale === null) return;
+      throw new Error(
+        `${edits.length} chapter opening(s) in ${path.basename(book.absPath)} still print `
+        + 'something other than their stored name, and they were NOT rewritten, because the '
+        + `narration strikes recorded against this book cannot be carried onto the edit.\n\n${stale}`
+      );
+    });
 
   if (named.edits.length === 0) {
     // The book already says what it says. Idempotence is the contract, so the
-    // working copy is not replaced by bytes that would differ only in their zip
-    // timestamps — and the file op did not even write a staged copy to have to
-    // move. The `rm` is for the case where it did and something below refused.
-    await fs.promises.rm(staged, { force: true });
+    // working copy is not rewritten by bytes that would differ only in their
+    // zip timestamps — and nothing was written to have to take back.
     return { edited: 0, named: [], skipped: named.skipped };
   }
 
-  if (stale !== null) {
-    await fs.promises.rm(staged, { force: true });
-    throw new Error(
-      `${named.edits.length} chapter opening(s) in ${path.basename(book.absPath)} still print `
-      + 'something other than their stored name, and they were NOT rewritten, because the '
-      + `narration strikes recorded against this book cannot be carried onto the edit.\n\n${stale}`
-    );
-  }
-
-  await moveIntoPlace(staged, book.absPath);
   const { digest: toSha256 } = await bookDigest(book.absPath);
   const at = new Date().toISOString();
 

@@ -800,6 +800,197 @@ async function run() {
     }
   });
 
+  // ── The naming pass, IN PLACE ──────────────────────────────────────────
+  //
+  // It runs behind every promotion to `chapter`, and while it staged its result
+  // and landed it with `moveIntoPlace` that click re-created every entry of the
+  // book (~1.3 s of it on the migrated Nuremberg project, measured 2026-08-11).
+  // In place it rewrites only the chapters it named — which puts the same three
+  // obligations on it that the batch relabel has: touch nothing else, take back
+  // EVERY document it touched when its own verification refuses, and write
+  // nothing at all for a book that already reads right.
+
+  /** The fixture with c0001's opener promoted, so both documents can be named. */
+  async function bookWithTwoNameableOpenings(name) {
+    const book = await convertedBook();
+    const promoted = path.join(ROOT, name);
+    await setElementCategoryInBookFile(book, promoted, CONVERTED_OPENER, 'chapter');
+    return promoted;
+  }
+
+  const TWO_NAMES = new Map([
+    // c0000 prints "The Nazi Revolution" already, so it is only nameable under a
+    // DIFFERENT stored name — which is what makes this a two-document edit.
+    ['OEBPS/c0000.xhtml', 'Chapter 1: The Nazi Revolution'],
+    ['OEBPS/c0001.xhtml', 'Working Towards the Führer'],
+  ]);
+
+  await check('the naming pass writes several chapters in place, and nothing else', async () => {
+    const book = await bookWithTwoNameableOpenings('named-in-place.epub');
+    const before = await entriesOf(book);
+
+    const named = await nameChapterOpeningsInBookFile(book, book, TWO_NAMES);
+    assert.strictEqual(named.edits.length, 2,
+      `the pass named ${named.edits.length} opening(s): ${JSON.stringify(named.skipped)}`);
+    assert.deepStrictEqual(named.edits.map((e) => e.file).sort(),
+      ['OEBPS/c0000.xhtml', 'OEBPS/c0001.xhtml']);
+
+    // Both pages print their stored names, read off the book itself.
+    assert.ok((await documentText(book, 'OEBPS/c0000.xhtml'))
+      .includes('>Chapter 1: The Nazi Revolution</h1>'), 'c0000 does not print its name');
+    assert.ok((await documentText(book, 'OEBPS/c0001.xhtml'))
+      .includes('>Working Towards the Führer</h1>'), 'c0001 does not print its name');
+
+    // Exactly those two entries moved — the images and the package did not.
+    const after = await entriesOf(book);
+    assert.deepStrictEqual([...after.keys()].sort(), [...before.keys()].sort(),
+      'the in-place naming changed which entries the book has');
+    const changed = [...before.keys()].filter((e) => !before.get(e).equals(after.get(e)));
+    assert.deepStrictEqual(changed.sort(), ['OEBPS/c0000.xhtml', 'OEBPS/c0001.xhtml'],
+      `the naming pass moved entries it did not name: ${changed.join(', ')}`);
+
+    // And the enumeration every narration strike is keyed by is unmoved, which
+    // is what lets the caller re-stamp the record rather than migrate it.
+    const beforeKeys = (await readEpubElementCategories(
+      await bookWithTwoNameableOpenings('named-in-place-ref.epub'))).elements.map((e) => e.key);
+    const afterKeys = (await readEpubElementCategories(book)).elements.map((e) => e.key);
+    assert.deepStrictEqual(afterKeys, beforeKeys, 'the element enumeration moved under the naming');
+  });
+
+  await check('a book that already reads right is not rewritten in place', async () => {
+    const book = await bookWithTwoNameableOpenings('named-idempotent.epub');
+    await nameChapterOpeningsInBookFile(book, book, TWO_NAMES);
+    const settled = await entriesOf(book);
+
+    // Second run: the openings already say it, so there is nothing to write.
+    const again = await nameChapterOpeningsInBookFile(book, book, TWO_NAMES);
+    assert.strictEqual(again.edits.length, 0, 'it named something that already read right');
+    assert.deepStrictEqual(again.skipped.map((s) => s.kind).sort(),
+      ['already-named', 'already-named']);
+
+    const after = await entriesOf(book);
+    const changed = [...settled.keys()].filter((e) => !settled.get(e).equals(after.get(e)));
+    assert.deepStrictEqual(changed, [],
+      `an idempotent naming pass rewrote ${changed.join(', ')}`);
+  });
+
+  await check('beforeWriting is asked only when there is something to write', async () => {
+    const book = await bookWithTwoNameableOpenings('named-hook.epub');
+    const before = await entriesOf(book);
+
+    // Refusing from the hook leaves the book exactly as it was found — the
+    // window `nameChapterOpenings` makes its staleness judgement in.
+    let asked = null;
+    await refuses(
+      nameChapterOpeningsInBookFile(book, book, TWO_NAMES, (edits) => {
+        asked = edits.map((e) => e.file).sort();
+        throw new Error('the strikes cannot be carried onto this edit');
+      }),
+      'the strikes cannot be carried onto this edit');
+    assert.deepStrictEqual(asked, ['OEBPS/c0000.xhtml', 'OEBPS/c0001.xhtml'],
+      'the hook was not told what the pass was about to write');
+    const afterRefusal = await entriesOf(book);
+    const changed = [...before.keys()].filter((e) => !before.get(e).equals(afterRefusal.get(e)));
+    assert.deepStrictEqual(changed, [],
+      `a refusal from beforeWriting still wrote ${changed.join(', ')}`);
+
+    // Name it for real, then run again: a book with nothing to do must never
+    // ask, which is what lets a project whose strikes are void still open.
+    await nameChapterOpeningsInBookFile(book, book, TWO_NAMES);
+    let askedAgain = false;
+    const quiet = await nameChapterOpeningsInBookFile(book, book, TWO_NAMES, () => {
+      askedAgain = true;
+      throw new Error('this must never be reached');
+    });
+    assert.strictEqual(askedAgain, false,
+      'a book with nothing to name asked permission to write nothing');
+    assert.strictEqual(quiet.edits.length, 0);
+  });
+
+  await check('an in-place naming that fails verification puts EVERY chapter back', async () => {
+    const book = await bookWithTwoNameableOpenings('named-restore.epub');
+    const before = await entriesOf(book);
+
+    // Fired on the first open of a book that ALREADY carries the naming — which
+    // is precisely the verification's read, and never one of the reads before
+    // the write. One-shot, so the restore's own write can still open the book.
+    //
+    // The mark is the NAMED HEADING and not the name anywhere in the file: the
+    // document's `<title>` has said "Working Towards the Führer" since the
+    // fixture was built, so a looser test fires on the pass's very first read,
+    // nothing is ever written, and the restore this is here to check never runs
+    // — a test that passes over an unwritten book. (It did, until a mutation of
+    // the restore failed to break it.)
+    const NAMED_HEADING = '>Working Towards the Führer</h1>';
+    assert.ok(!(await documentText(book, 'OEBPS/c0001.xhtml')).includes(NAMED_HEADING),
+      'the fixture already prints the name, so this test could not tell a write from a read');
+    const real = epubContainer.openEpubSource;
+    let failedTheVerification = false;
+    epubContainer.openEpubSource = async (p) => {
+      if (!failedTheVerification && path.resolve(p) === path.resolve(book)
+        && (await documentText(book, 'OEBPS/c0001.xhtml')).includes(NAMED_HEADING)) {
+        failedTheVerification = true;
+        throw new Error('the written book could not be read back');
+      }
+      return real(p);
+    };
+    let message = null;
+    try {
+      await nameChapterOpeningsInBookFile(book, book, TWO_NAMES);
+    } catch (err) {
+      message = err.message;
+    } finally {
+      epubContainer.openEpubSource = real;
+    }
+
+    assert.notStrictEqual(message, null, 'the pass did not refuse when its verification failed');
+    assert.ok(message.includes('could not be read back'),
+      `the refusal is not the one the verification raised: ${message}`);
+    assert.strictEqual(failedTheVerification, true,
+      'the injected failure never saw a written book, so nothing was restored');
+
+    // BOTH chapters are back, byte for byte, and the book still exists.
+    const after = await entriesOf(book);
+    assert.deepStrictEqual([...after.keys()].sort(), [...before.keys()].sort(),
+      'the restore changed which entries the book has');
+    const changed = [...before.keys()].filter((e) => !before.get(e).equals(after.get(e)));
+    assert.deepStrictEqual(changed, [],
+      `the restore left ${changed.length} chapter(s) named: ${changed.join(', ')}`);
+    assert.ok(fs.existsSync(book), 'the in-place failure destroyed the book');
+  });
+
+  await check('a staged naming that fails verification destroys the staged book only', async () => {
+    const book = await bookWithTwoNameableOpenings('named-staged-fail.epub');
+    const out = path.join(ROOT, 'named-staged-fail-out.epub');
+    const before = await entriesOf(book);
+
+    const real = epubContainer.openEpubSource;
+    let failedTheVerification = false;
+    epubContainer.openEpubSource = async (p) => {
+      if (path.resolve(p) === path.resolve(out) && fs.existsSync(out)) {
+        failedTheVerification = true;
+        throw new Error('the written book could not be read back');
+      }
+      return real(p);
+    };
+    let message = null;
+    try {
+      await nameChapterOpeningsInBookFile(book, out, TWO_NAMES);
+    } catch (err) {
+      message = err.message;
+    } finally {
+      epubContainer.openEpubSource = real;
+    }
+
+    assert.notStrictEqual(message, null, 'the staged naming did not refuse');
+    assert.strictEqual(failedTheVerification, true,
+      'the injected failure never saw a staged book, so nothing was destroyed');
+    assert.strictEqual(fs.existsSync(out), false, 'the staged book survived its own refusal');
+    const after = await entriesOf(book);
+    const changed = [...before.keys()].filter((e) => !before.get(e).equals(after.get(e)));
+    assert.deepStrictEqual(changed, [], 'a staged refusal changed the source book');
+  });
+
   for (const [status, name, detail] of results) {
     console.log(`${status === 'ok' ? 'ok  ' : 'FAIL'}  ${name}${detail ? `\n      ${detail}` : ''}`);
   }

@@ -8071,13 +8071,51 @@ export interface ChapterOpeningNamingResult {
  * document with no entry keeps its printed text: its print IS its name.
  *
  * A book that already reads right is NOT copied to `outputPath` — see below.
+ *
+ * ── `outputPath` may BE `inputPath` ────────────────────────────────────────
+ *
+ * And for the working copy it is. This pass runs behind every relabel that
+ * promotes a block to `chapter`, and while it staged its result and landed it
+ * with `moveIntoPlace` that click re-created every entry of the book: on the
+ * migrated Nuremberg project, 84 entries and 32.5 MB of page images copied
+ * twice to rewrite one heading, which then also forced the `bookDigest` after
+ * it to re-hash all 32.5 MB because every entry had a new inode and mtime.
+ * Measured 2026-08-11: ~1.3 s of a promote-to-chapter click was that.
+ *
+ * In place, `DirectoryEpubSink` writes only the documents whose bytes moved.
+ * The staged form is kept, because the tests use it and because a caller may
+ * genuinely want the named book beside the original; the only difference is the
+ * FAILURE arm. Staged, a verification that refuses deletes the staged book and
+ * the original was never touched. In place there is nothing to delete but the
+ * book, so EVERY document this pass rewrote is put back — all of them, in one
+ * write — and "Nothing was written" stays true of the book the caller holds.
+ *
+ * ── `beforeWriting`, and the ordering it exists for ───────────────────────
+ *
+ * Asked once, after the pass knows exactly what it would write and before one
+ * byte of it is written. Throwing from it is a refusal that leaves the book
+ * untouched.
+ *
+ * It exists because `nameChapterOpenings` (electron/narration-export.ts) has a
+ * judgement it can only make in that window: a book whose narration strikes no
+ * longer describe it must not be rewritten, but a book with NOTHING TO NAME
+ * must still open even when those strikes are void — this pass runs at every
+ * project open. While the result was staged that ordering came for free, since
+ * the caller could look at `edits` and then decline to land the staged copy.
+ * Writing in place removes that window, so the caller is handed it here rather
+ * than being made to walk the whole book twice to get it back.
+ *
+ * Absent means nobody wants to be asked, which is every caller that has already
+ * decided.
  */
 export async function nameChapterOpeningsInBookFile(
   inputPath: string,
   outputPath: string,
   namesByFile: ReadonlyMap<string, string>,
+  beforeWriting?: (edits: readonly NamedChapterOpening[]) => void | Promise<void>,
 ): Promise<ChapterOpeningNamingResult> {
   const bookName = path.basename(inputPath);
+  const inPlace = path.resolve(inputPath) === path.resolve(outputPath);
 
   const wanted = new Map<string, string>();
   for (const [file, raw] of namesByFile) {
@@ -8201,8 +8239,26 @@ export async function nameChapterOpeningsInBookFile(
   // and writing a byte-for-byte duplicate of a fifty-megabyte book to disk to
   // discover that it was a duplicate is work nobody asked for. An empty `edits`
   // therefore means `outputPath` was never created — which is exactly what the
-  // caller does with it either way.
+  // caller does with it either way. It also means `beforeWriting` is never
+  // asked: there is nothing for it to decide about.
   if (replacements.size === 0) return { edits, skipped };
+
+  // The last moment at which nothing has happened. A throw from here is a
+  // refusal with the book exactly as it was found, in place or staged alike.
+  if (beforeWriting !== undefined) await beforeWriting(edits);
+
+  // What the documents this pass is about to rewrite hold RIGHT NOW, as BYTES,
+  // kept only for the in-place write's failure arm — read from the book rather
+  // than re-encoded from the strings the parse started with, because "put them
+  // back exactly" is the whole point and a re-encode is a claim about each
+  // file's encoding rather than a copy of it. Nothing is read for the staged
+  // form: there the undo is deleting the staged book.
+  const originalEntries = new Map<string, Buffer>();
+  if (inPlace) {
+    for (const file of replacements.keys()) {
+      originalEntries.set(file, await readOneEpubEntry(inputPath, file));
+    }
+  }
 
   await writeBookWithReplacedEntries(inputPath, outputPath, replacements);
 
@@ -8255,7 +8311,17 @@ export async function nameChapterOpeningsInBookFile(
       check.close();
     }
   } catch (err) {
-    await removeEpubContainer(outputPath);
+    if (!inPlace) {
+      await removeEpubContainer(outputPath);
+    } else {
+      // In place, so there is no staged book to destroy — destroying `outputPath`
+      // here would take the user's book with it. This pass rewrote these
+      // documents and no others, and their bytes from before it are held above,
+      // so putting ALL of them back restores exactly the book it was handed.
+      // Through the same writer, and in ONE write, so the undo lands the same
+      // atomic way the naming did rather than one chapter at a time.
+      await writeBookWithReplacedEntries(inputPath, outputPath, originalEntries);
+    }
     throw err;
   }
 
