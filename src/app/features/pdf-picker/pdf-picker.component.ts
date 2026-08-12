@@ -7298,18 +7298,22 @@ export class PdfPickerComponent implements OnInit {
     //
     // Owen, 2026-08-12: "i need some way to actually edit element block text
     // inline". The book is on screen as its own DOM, so the editor belongs on
-    // the words rather than in a modal over them.
+    // the words rather than in a modal over them — and it IS those words: the
+    // viewer makes the book's own element editable, in the book's own font, so
+    // there is no second box in a second typography to read.
     //
     // The text handed down is the ELEMENT's, read from the book a few lines
     // above — never the block's. A block is one page's worth of an element, so
     // editing a paragraph that breaks across a page turn from what is visible
     // would save its first half as the whole and drop the rest.
     //
-    // The dialog is kept for the case the viewer reports it cannot place an
-    // editor: the element's document is not mounted and laid out, so there is
-    // no rect to sit on. That is a real state — scroll far enough and a band is
-    // evicted — and it is a reason to use the other editor, not to refuse.
-    if (this.epubViewer?.beginInlineEdit(event, answer.data.text)) {
+    // The dialog is kept for every case the viewer reports it cannot edit in
+    // place: the element's document is not mounted and laid out (scroll far
+    // enough and a band is evicted), the paginator split the element across a
+    // page turn so no one node on screen holds all of it, or the frame and the
+    // book disagree about what the element says. Each is a real state, and a
+    // reason to use the other editor rather than to refuse.
+    if (await this.epubViewer?.beginInlineEdit(event, answer.data.text)) {
       this.editingBlockElement.set(element);
       this.editedTextOriginal.set(answer.data.text);
       return;
@@ -7330,6 +7334,12 @@ export class PdfPickerComponent implements OnInit {
    * does. `saveBookBlockText` writes the element, re-fingerprints a strike that
    * described the old words, and lays out ONLY the documents main says it
    * rewrote — no re-open, no re-pagination of the book.
+   *
+   * `onPage` is what makes this different from the dialog's save, and it is not
+   * a preference: the user typed into the book's own node, so the change is
+   * ALREADY drawn. That means the write must be able to take it back off the
+   * screen if the book refuses it, and the relayout must not blank the chapter
+   * to redraw words that are already there.
    */
   protected async onInlineBlockTextCommitted(
     event: { block: LaidOutBlock; text: string },
@@ -7342,7 +7352,7 @@ export class PdfPickerComponent implements OnInit {
       console.error('[picker] an inline text edit came back with no element to write onto');
       return;
     }
-    await this.saveBookBlockText(element, event.text);
+    await this.saveBookBlockText(element, event.text, { onPage: true });
   }
 
   cancelTextEdit(): void {
@@ -7392,28 +7402,78 @@ export class PdfPickerComponent implements OnInit {
    * REAL layout, unlike a relabel: words changed, so the lines move and the
    * document that holds them is measured again — one document, in the book the
    * window already has open, not a re-open.
+   *
+   * ── `onPage`: the correction is already drawn ─────────────────────────────
+   *
+   * The inline editor is the book's own element, so by the time this runs the
+   * user is looking at their new words. Two things follow, and both are the
+   * point of the flag rather than decoration on it:
+   *
+   *  - A REFUSED write must take those words back off the screen. Pixels that
+   *    claim something the book does not say is the "it apparently didnt
+   *    actually change it to chapter, just visually?" failure, and it is worse
+   *    than an error, because the user has no reason to doubt the page.
+   *  - The relayout must not remount the document to show a change that is on
+   *    screen already. Dropping the frame blanks the chapter for seconds and the
+   *    user watches their own sentence disappear and come back.
+   *
+   * Answers whether the book now says `newText`, so the caller can tell.
    */
-  private async saveBookBlockText(elementKey: string, newText: string): Promise<void> {
+  private async saveBookBlockText(
+    elementKey: string, newText: string, options?: { onPage: boolean },
+  ): Promise<boolean> {
+    const onPage = options?.onPage === true;
     const dir = this.projectPath();
-    if (!dir) return;
+    if (!dir) {
+      // There is nowhere to write. Silence here would leave the page showing
+      // words nothing on disk has — see `onPage` above — so the words come off
+      // the page and the user is told, rather than the method just returning.
+      if (onPage) {
+        const page = await this.epubViewer?.finishInlineEdit(elementKey, false);
+        this.showAlert({
+          title: 'This document does not belong to a project',
+          message: 'A correction is written into the project\'s book, and there is no project to '
+            + 'write into, so nothing was saved.'
+            + (page === 'restored'
+              ? ' The words on the page have been put back.'
+              : ' BookForge could not confirm that the page was put back, so what is on screen may '
+                + 'not be what the book says.'),
+          type: 'warning',
+        });
+      }
+      return false;
+    }
     this.cancelTextEdit();
 
     const answer = await this.electronService.setBookBlockText(
       dir, elementKey, newText, this.workingChainId());
     if (!answer.success || !answer.result) {
+      // The page is put back BEFORE the user is told, so the sentence they read
+      // is true of what they are looking at while they read it.
+      const page = onPage ? await this.epubViewer?.finishInlineEdit(elementKey, false) : undefined;
       this.showAlert({
         title: 'The text was not corrected',
-        message: answer.error
+        message: (answer.error
           ?? 'The correction came back without a result and without a reason, which is a fault in '
-            + 'BookForge rather than anything about this book. Nothing was written.',
+            + 'BookForge rather than anything about this book. Nothing was written.')
+          + (page === 'restored'
+            ? '\n\nThe words on the page have been put back to what the book still says.'
+            : page === undefined
+              ? ''
+              : '\n\nBookForge could not confirm that the page was put back, so what is on screen '
+                + 'may not be what the book says. Close and re-open the book before trusting it.'),
         type: 'error',
       });
-      return;
+      return false;
     }
+    // The book has taken it, so what the user typed stands and the guest's undo
+    // stash is released. Said for BOTH written outcomes: "already read that way"
+    // is the book agreeing with the page, not a refusal.
+    if (onPage) await this.epubViewer?.finishInlineEdit(elementKey, true);
     if (!answer.result.written) {
       // The book already read that way — a retype that changed only whitespace
       // nobody can see. Nothing moved, so nothing is laid out again.
-      return;
+      return true;
     }
     if (answer.result.refingerprinted) {
       this.showAlert({
@@ -7424,7 +7484,9 @@ export class PdfPickerComponent implements OnInit {
         type: 'info',
       });
     }
-    await this.relayoutBookAfterEdit(answer.rewrittenEntries ?? [], elementKey);
+    await this.relayoutBookAfterEdit(
+      answer.rewrittenEntries ?? [], elementKey, onPage ? elementKey : undefined);
+    return true;
   }
 
   // Alert modal methods
@@ -14967,10 +15029,17 @@ export class PdfPickerComponent implements OnInit {
    * Where it lands afterwards is read off the new blocks rather than computed
    * from the page delta: the element knows its page, and arithmetic over a
    * document that may itself have moved does not.
+   *
+   * `alreadyOnPage` names an element whose new words the frame is ALREADY
+   * showing, because the user typed them into the book's own node. Its document
+   * is then not remounted when the relayout proves its pagination unchanged —
+   * see the remount block at the foot of this method for why that is a proof and
+   * not an optimism.
    */
   private async relayoutBookAfterEdit(
     entries: string[],
     anchorElement: string | undefined,
+    alreadyOnPage?: string,
   ): Promise<void> {
     const handle = this.epubViewerHandle;
     const bookPath = this.editorState.effectivePath();
@@ -15019,6 +15088,10 @@ export class PdfPickerComponent implements OnInit {
 
     // ── One turn, no await between: see the header ─────────────────────────
     const previousSource = this.epubViewerSource();
+    // Read BEFORE the store is updated: the remount decision below compares the
+    // pagination the frames on screen were built for against the one that just
+    // came back, and a moment later there is no way to ask what it was.
+    const previousBlocks = this.blocks();
     this.editorState.updateTextData({
       blocks: text.blocks as TextBlock[],
       categories: text.categories as Record<string, Category>,
@@ -15051,12 +15124,43 @@ export class PdfPickerComponent implements OnInit {
     relaid.documents.forEach((mount, index) => {
       if (relaid.relaid.includes(mount.document)) relaidIndices.push(index);
     });
-    if (relaidIndices.length > 0) this.epubViewer?.remountDocuments(relaidIndices);
+
+    // ── The one document that is remounted for nothing ──────────────────────
+    //
+    // A frame is remounted because it is showing markup the book has replaced.
+    // The document the user just TYPED INTO is the exception: their words went
+    // into the book's own node, so the frame is showing the edit, and dropping
+    // it would blank the chapter for seconds to draw what is on the screen
+    // already — the user watching their own sentence vanish and come back.
+    //
+    // It is only skipped on a proof, never on a hope. `unchangedDocumentIndex`
+    // holds the document's re-paginated page count and every element's page
+    // within it against what the frame was built for; identical means the
+    // re-fragmentation put the same elements on the same pages, which is exactly
+    // the case in which Chromium's live reflow of the typed node and the book's
+    // own re-layout agree. A word that pushed a line onto the next page changes
+    // that map, and then the frame IS stale and is remounted like any other.
+    //
+    // The rectangles inside a page still move by a line, so the frame is
+    // re-measured — a script against the frame it already has, not a mount.
+    const kept = alreadyOnPage === undefined || previousSource === null
+      ? -1
+      : this.unchangedDocumentIndex(
+        alreadyOnPage, previousBlocks, text.blocks as TextBlock[],
+        previousSource.documents, relaid.documents);
+    const toRemount = relaidIndices.filter(index => index !== kept);
+    if (toRemount.length > 0) this.epubViewer?.remountDocuments(toRemount);
+    if (kept >= 0 && relaidIndices.includes(kept)) void this.epubViewer?.remeasureDocument(kept);
 
     // Where the user was, by IDENTITY. An element absent from the new blocks is
     // not scrolled to and nothing is guessed in its place — the view simply
     // stays where it is, which is the honest answer to "that thing is gone".
-    if (anchorElement !== undefined) {
+    //
+    // Not when the edited chapter kept its frame: nothing moved under the user,
+    // they are looking straight at the words they typed, and scrolling their own
+    // page to the top of its row would be the jolt this whole branch exists to
+    // avoid.
+    if (anchorElement !== undefined && kept < 0) {
       const landed = (text.blocks as TextBlock[]).find(b => b.bf_element === anchorElement);
       if (landed !== undefined) this.scrollToPage(landed.page);
     }
@@ -15068,7 +15172,80 @@ export class PdfPickerComponent implements OnInit {
           + `(${relaid.restated.join(', ')})`
         : '')
       + ` in ${relaid.relayoutMs} ms (${relaid.totalMs} ms in all); the book is now `
-      + `${relaid.pageCount} page(s), ${relaid.pageDelta >= 0 ? '+' : ''}${relaid.pageDelta}.`);
+      + `${relaid.pageCount} page(s), ${relaid.pageDelta >= 0 ? '+' : ''}${relaid.pageDelta}.`
+      + (kept >= 0
+        ? ` ${relaid.documents[kept].document} kept its frame: the edit was typed into it and its `
+          + 'pagination came back identical.'
+        : ''));
+  }
+
+  /**
+   * Where this element's document sits in the spine IF the relayout left its
+   * pagination exactly as the frames on screen were built for — otherwise -1.
+   *
+   * The question this answers is narrow and it is asked for one purpose: may the
+   * frame the user typed into be kept instead of remounted. So the check is the
+   * whole of what "the frame is still right" means:
+   *
+   *  - the document has the same number of pages as it had, and
+   *  - every element of it that the analysis reports lands on the same page
+   *    WITHIN the document, in the same number of fragments.
+   *
+   * Local page numbers, not global ones: another chapter gaining a page shifts
+   * every number after it without moving anything inside this document, and
+   * remounting a chapter because a different one grew would be the fallback this
+   * refuses to be. The fragment count matters as much as the page — an element
+   * that used to sit on one page and now straddles two has been re-fragmented,
+   * and the frame on screen does not show that.
+   *
+   * Anything it cannot establish is -1, and -1 means the ordinary remount. There
+   * is no "probably fine" branch here: the cost of being wrong is a chapter whose
+   * marks sit beside the words they belong to.
+   */
+  private unchangedDocumentIndex(
+    elementKey: string,
+    before: readonly TextBlock[],
+    after: readonly TextBlock[],
+    beforeMounts: EpubViewerSource['documents'],
+    afterMounts: EpubViewerSource['documents'],
+  ): number {
+    const file = parseNarrationElementKey(elementKey).file;
+    const wasIndex = beforeMounts.findIndex(mount => mount.document === file);
+    const nowIndex = afterMounts.findIndex(mount => mount.document === file);
+    if (wasIndex < 0 || nowIndex < 0) return -1;
+    if (beforeMounts[wasIndex].documentPageCount !== afterMounts[nowIndex].documentPageCount) {
+      return -1;
+    }
+
+    // A document's first page is the sum of everything before it in the spine —
+    // the same arithmetic the viewer's bands are laid out by.
+    const firstPageOf = (mounts: EpubViewerSource['documents'], index: number): number =>
+      mounts.slice(0, index).reduce((pages, mount) => pages + mount.documentPageCount, 0);
+    // Element key → its first page inside this document and how many fragments
+    // it was laid out as. Both, in one string, so one comparison decides.
+    const placesIn = (blocks: readonly TextBlock[], firstPage: number): Map<string, string> => {
+      const firstPages = new Map<string, number>();
+      const fragments = new Map<string, number>();
+      for (const block of blocks) {
+        const key = block.bf_element;
+        if (key === undefined) continue;
+        if (parseNarrationElementKey(key).file !== file) continue;
+        const local = block.page - firstPage;
+        const earliest = firstPages.get(key);
+        firstPages.set(key, earliest === undefined ? local : Math.min(earliest, local));
+        const counted = fragments.get(key);
+        fragments.set(key, counted === undefined ? 1 : counted + 1);
+      }
+      const places = new Map<string, string>();
+      for (const [key, page] of firstPages) places.set(key, `${page}/${fragments.get(key)}`);
+      return places;
+    };
+
+    const was = placesIn(before, firstPageOf(beforeMounts, wasIndex));
+    const now = placesIn(after, firstPageOf(afterMounts, nowIndex));
+    if (was.size !== now.size) return -1;
+    for (const [key, place] of was) if (now.get(key) !== place) return -1;
+    return nowIndex;
   }
 
   /**

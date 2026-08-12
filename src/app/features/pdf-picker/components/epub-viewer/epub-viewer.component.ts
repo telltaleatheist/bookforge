@@ -63,7 +63,9 @@ import { blockCategoryColor } from '@shared/ocr/block-categories';
 // build's `include`, and `mount.ts` is written to be importable from a renderer
 // (it imports nothing — see its header).
 import { mountQuirePage, type MountedQuirePage } from '../../../../../../packages/quire/src/mount';
-import { QUIRE_PAGE_MARGIN, type QuirePageMount } from '../../../../../../packages/quire/src/types';
+import {
+  QUIRE_ID_ATTRIBUTE, QUIRE_ID_SEPARATOR, QUIRE_PAGE_MARGIN, type QuirePageMount,
+} from '../../../../../../packages/quire/src/types';
 import {
   applyMarksScript, arrangeScript, flowArrangeScript, flowZoomScript, zoomScript,
   type QuireFlowArrangement, type QuireFrameArrangement, type QuireFrameElement,
@@ -156,6 +158,7 @@ const GRID_BASE_WIDTH = 200;
           @for (band of bands(); track band.index) {
             <div
               class="band"
+              [class.editing]="editingBand() === band.index"
               [attr.data-band]="band.index"
               [style.width.px]="band.width"
               [style.height.px]="band.height"
@@ -246,43 +249,13 @@ const GRID_BASE_WIDTH = 200;
                   }
                 }
                 <!--
-                  The text editor, ON the words it edits.
-
-                  A textarea rather than a contenteditable on the book's own
-                  element, and that is not a compromise: the book is a stranger's
-                  markup behind quire's CSP in its own session, and this
-                  component's one invariant is that no markup crosses the
-                  boundary in either direction. What the user types is TEXT, it
-                  goes into the book through the book's own writer, and the
-                  document is then restated in place. Editing the guest's DOM
-                  directly would put the change on screen without putting it in
-                  the book — the exact "it apparently didnt actually change it,
-                  just visually?" failure this pipeline already fixed once.
-
-                  It is laid over the element's own rect at the current scale, so
-                  it covers the text it replaces. stopPropagation on the mouse
-                  handlers keeps the overlay underneath from reading a click in
-                  the editor as a selection or the start of a marquee.
+                  There is no editor element here, and that absence is the
+                  design. The text is edited ON the book's own node inside the
+                  frame — see "Editing the text, IN the book's own page" below.
+                  Nothing the app can put in this overlay inherits the book's
+                  typography, because nothing in this overlay is in the book's
+                  document.
                 -->
-                @if (inlineEdit(); as edit) {
-                  @if (edit.band === band.index) {
-                    <textarea
-                      #inlineEditor
-                      class="inline-editor"
-                      [style.left.px]="edit.rect.x * scale()"
-                      [style.top.px]="edit.rect.y * scale()"
-                      [style.width.px]="edit.rect.w * scale()"
-                      [style.minHeight.px]="edit.rect.h * scale()"
-                      [value]="edit.text"
-                      (mousedown)="$event.stopPropagation()"
-                      (mousemove)="$event.stopPropagation()"
-                      (mouseup)="$event.stopPropagation()"
-                      (contextmenu)="$event.stopPropagation()"
-                      (keydown)="onInlineEditorKeydown($event)"
-                      (blur)="commitInlineEdit($event)"
-                    ></textarea>
-                  }
-                }
               </div>
             </div>
           }
@@ -555,28 +528,20 @@ const GRID_BASE_WIDTH = 200;
     }
 
     /*
-      Sits over the element it edits, opaque enough to hide the words underneath
-      so the user is reading what they are typing rather than two layers of text.
-      It takes pointer events, unlike the overlay decorations around it which
-      set none — this one is the exception, it is the thing being used.
+      While an element in this band is being edited, the POINTER belongs to the
+      book. Every other moment the overlay takes every event and the frame takes
+      none (.frame-host above), which is what makes a click a selection instead
+      of a caret — but a caret is exactly what an edit needs, and the user has to
+      be able to click into their own words to place it. So for the one band
+      holding the editable element the two swap: the frame takes the mouse, the
+      overlay stops taking it, and the guest's own stylesheet (beginGuestEditScript)
+      narrows that to the edited element alone so a click anywhere else in the
+      chapter lands on nothing, follows no link, and simply blurs the edit shut.
     */
-    .inline-editor {
-      position: absolute;
-      pointer-events: auto;
-      z-index: 5;
-      margin: 0;
-      padding: 2px 4px;
-      resize: none;
-      overflow: hidden;
-      font: inherit;
-      line-height: 1.4;
-      color: var(--text-primary);
-      background: var(--bg-elevated);
-      border: 2px solid var(--accent);
-      border-radius: 3px;
-      box-shadow: 0 2px 10px rgb(0 0 0 / 25%);
+    .band.editing {
+      .frame-host { pointer-events: auto; }
+      .band-overlay { pointer-events: none; }
     }
-    .inline-editor:focus { outline: none; }
 
     .context-backdrop {
       position: fixed;
@@ -1090,6 +1055,9 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   ngOnDestroy(): void {
     this.observer?.disconnect();
     this.resizeObserver?.disconnect();
+    // The open edit's listeners are on `document`, which outlives this
+    // component; the frame they were about is destroyed two lines down.
+    if (this.activeEdit !== null) this.endActiveEdit(this.activeEdit.nonce);
     for (const frame of this.mounted.values()) frame.destroy();
     this.mounted.clear();
   }
@@ -1346,6 +1314,17 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
    * than inheriting the verdict on the old ones.
    */
   private unmountBand(index: number): void {
+    // An edit lives in a frame. Destroying that frame destroys the caret, the
+    // element and the guest's undo stash all at once, so the edit ends here
+    // rather than waiting forever for a message from a frame that no longer
+    // exists — which would leave this band unable to point at anything.
+    const editing = this.activeEdit;
+    if (editing !== null && editing.band === index) {
+      console.warn(
+        `[epub-viewer] band ${index} was dropped while ${editing.elementId} was being edited, so `
+        + 'what was typed into it is gone. The book was not changed.');
+      this.endActiveEdit(editing.nonce);
+    }
     const frame = this.mounted.get(index);
     if (frame) {
       frame.destroy();
@@ -1796,112 +1775,397 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   protected closeContextMenu(): void { this.contextMenu.set(null); }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Editing the text, on the page, without leaving it
+  // Editing the text, IN the book's own page
   //
   // Owen, 2026-08-12: "i need some way to actually edit element block text
-  // inline". The modal this replaces was reachable and correct, but a dialog to
-  // change three words in a heading is the reload-shaped experience the whole
-  // exploded working copy exists to end.
+  // inline"; and of the first attempt at it: "the inline edits have a black
+  // background and are compeltely different text type than the one we're working
+  // with… isnt it possible to edit the text directly?"
   //
-  // WHAT IS EDITED IS THE ELEMENT, not this block. A block is one page's worth
-  // of an element, so a paragraph broken across a page turn would otherwise be
-  // offered as its first half and saved as the whole — silently deleting the
-  // rest. The caller reads the element's full text out of the book and hands it
-  // in; this component never derives it from what is on screen.
+  // It is, and this is that. What stood here was a <textarea> of the APP'S,
+  // floated over the element's measured rect: the app's font, the app's colours,
+  // the app's line height, laid on top of the publisher's typesetting and hiding
+  // it. No element of the app's document can inherit the book's typography,
+  // because it is not in the book's document — that was not a styling bug to
+  // chase, it was the wrong document.
+  //
+  // So the editor IS the element. `contentEditable` goes on the book's own node
+  // inside the guest and the user types on the real page, in the real font, at
+  // the real size, with the real line breaks. There is one set of words on
+  // screen instead of two.
+  //
+  // ── The markup invariant still holds, and never forbade this ───────────────
+  //
+  // Ids, numbers, rectangles and TEXT cross this boundary; markup does not, in
+  // either direction. What comes back from an edit is `textContent`. The
+  // element's original innerHTML — needed to undo an Escape or a refused write —
+  // is stashed on the GUEST'S OWN window and restored there; it never crosses.
+  // The old comment here reasoned from that invariant to a textarea, which was
+  // the wrong conclusion from a rule that is still right.
+  //
+  // ── What is edited is the ELEMENT, not this block ──────────────────────────
+  //
+  // A block is one page's worth of an element, so a paragraph broken across a
+  // page turn would otherwise be offered as its first half and saved as the
+  // whole — silently deleting the rest. The caller reads the element's full text
+  // out of the book and hands it in; this component never derives it from what
+  // is on screen, and refuses to edit inline at all when the frame holds the
+  // element more than once (a Paged.js split), because then no single node on
+  // screen holds the whole of it.
   // ───────────────────────────────────────────────────────────────────────────
 
-  /** The element being edited, its band, and its rect in unscaled units. */
-  protected readonly inlineEdit = signal<
-    { band: number; rect: { x: number; y: number; w: number; h: number };
-      block: LaidOutBlock; text: string } | null>(null);
+  /**
+   * The band whose frame currently holds an editable element.
+   *
+   * Drives one CSS class and nothing else: while it is set, that band's frame
+   * takes the mouse and its overlay stops taking it, so the user can click into
+   * their own words to place a caret.
+   */
+  protected readonly editingBand = signal<number | null>(null);
 
-  private readonly inlineEditorRef = viewChild<ElementRef<HTMLTextAreaElement>>('inlineEditor');
+  /**
+   * The edit the user is typing RIGHT NOW.
+   *
+   * `original` is the book's text as the caller read it, kept so an edit that
+   * changed nothing costs no write; `stop` detaches both host-side listeners at
+   * once so there is no way to remove one and leave the other.
+   */
+  private activeEdit: {
+    nonce: string;
+    band: number;
+    frame: MountedQuirePage;
+    block: LaidOutBlock;
+    elementId: string;
+    original: string;
+    stop(): void;
+  } | null = null;
+
+  /**
+   * An edit whose text has been emitted and whose fate the BOOK has not stated
+   * yet.
+   *
+   * It exists so a refused write can put the page back. The user changed real
+   * pixels by typing them, and if the book would not take the change those
+   * pixels are a lie — "it apparently didnt actually change it to chapter, just
+   * visually?" is the failure that costs a user their trust in every other thing
+   * on screen. {@link finishInlineEdit} is how the caller says which happened,
+   * and it must be called for BOTH outcomes.
+   */
+  private unsettledEdit: {
+    frame: MountedQuirePage; elementId: string; nonce: string;
+  } | null = null;
 
   /**
    * The corrected text, once the user is done with it.
    *
    * Carries the block so the caller knows which ELEMENT to write onto, and the
    * text as typed. Nothing is written from inside this component: the book is
-   * the store, and the caller owns the round trip to it.
+   * the store, and the caller owns the round trip to it — and owes this
+   * component a {@link finishInlineEdit} when that round trip answers.
    */
   readonly commitBlockText = output<{ block: LaidOutBlock; text: string }>();
 
   /**
-   * Put an editor over this block's element, holding `text`.
+   * Make this block's element editable in the frame it is drawn in, and put the
+   * caret in it.
    *
-   * Answers whether it could: a block whose element is not in a mounted,
-   * laid-out band has no rect to sit on, and saying so lets the caller fall
-   * back to its dialog rather than silently doing nothing. Scrolling a
-   * document out of view while editing is the ordinary way this happens.
+   * Answers whether it could. Every `false` is a real state with a named reason,
+   * and the caller's dialog is the right editor for all of them:
+   *
+   *  - the element's document is not mounted and laid out (scroll far enough and
+   *    a band is evicted — the ordinary case);
+   *  - the frame holds the element more than once, because Paged.js split it
+   *    across a page break, so no one node on screen holds the whole element;
+   *  - the node's text and the book's text for that element disagree, which
+   *    means the frame is showing bytes the book has since been rewritten from.
+   *    Typing into that would save the frame's reading of an element the book
+   *    describes differently.
    */
-  beginInlineEdit(block: LaidOutBlock, text: string): boolean {
+  async beginInlineEdit(block: LaidOutBlock, text: string): Promise<boolean> {
     const elementId = block.bf_element;
     if (elementId === undefined) return false;
+    if (this.activeEdit !== null) {
+      // Two editable elements at once is two carets, two blurs and two commits
+      // racing down one path. The edit in flight is left alone.
+      console.warn(
+        `[epub-viewer] ${this.activeEdit.elementId} is still being edited, so ${elementId} was not `
+        + 'opened on the page.');
+      return false;
+    }
+
     for (const band of this.bands()) {
       const state = this.bandState(band.index);
       if (state.kind !== 'ready') continue;
-      const element = state.arrangement.elements.find((el) => el.id === elementId);
-      if (element === undefined) continue;
+      if (!state.arrangement.elements.some((el) => el.id === elementId)) continue;
+      const frame = this.mounted.get(band.index);
+      if (frame === undefined) {
+        console.error(
+          `[epub-viewer] band ${band.index} is ready and has no frame, so ${elementId} cannot be `
+          + 'edited on the page. This is a fault in the viewer, not in the book.');
+        return false;
+      }
+
+      // Nonce per edit, so a message from an edit that has already been settled
+      // — the user pressed Enter twice, or a stale frame speaks late — is
+      // recognised as being about something else and dropped.
+      const nonce = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+      // Listening, and the record, BEFORE the guest can speak: the user can end
+      // an edit (Escape, alt-tab) between the script installing its handlers and
+      // this promise resolving here, and a signal that arrives with nothing to
+      // match it against would leave the page editable forever.
+      this.activeEdit = {
+        nonce, band: band.index, frame, block, elementId, original: text,
+        stop: this.listenForGuestEdit(frame, nonce),
+      };
+      this.editingBand.set(band.index);
+
+      let began: { ok: boolean; why?: string };
+      try {
+        began = await this.evaluate<{ ok: boolean; why?: string }>(
+          frame, beginGuestEditScript(elementId, text, nonce));
+      } catch (err) {
+        this.endActiveEdit(nonce);
+        console.error(
+          `[epub-viewer] the frame refused to open ${elementId} for editing: `
+          + `${String((err as Error).message)}`);
+        return false;
+      }
+
+      // Already over: the user finished before this answer came back, and the
+      // signal handler has done the whole commit path. It began, so say so.
+      if (this.activeEdit?.nonce !== nonce) return true;
+
+      if (!began.ok) {
+        this.endActiveEdit(nonce);
+        console.warn(`[epub-viewer] ${elementId} cannot be edited on the page: ${began.why}`);
+        return false;
+      }
+
       this.closeContextMenu();
-      this.inlineEdit.set({
-        band: band.index,
-        rect: { x: element.x, y: element.y, w: element.w, h: element.h },
-        block,
-        text,
-      });
-      // After the textarea exists. Selecting nothing and placing the caret at
-      // the end is the "correct a word" case; select-all would make the first
-      // keystroke destroy text the user meant to amend.
-      setTimeout(() => {
-        const el = this.inlineEditorRef()?.nativeElement;
-        if (!el) return;
-        el.focus();
-        el.setSelectionRange(el.value.length, el.value.length);
-        this.growInlineEditor(el);
-      });
+      this.focusGuest(frame);
       return true;
     }
     return false;
   }
 
-  protected onInlineEditorKeydown(event: KeyboardEvent): void {
-    const el = event.target as HTMLTextAreaElement;
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      // Thrown away deliberately, and `blur` must not then save it.
-      this.inlineEdit.set(null);
-      return;
+  /**
+   * Say what the book did with the text this component last emitted.
+   *
+   * Two outcomes, and the second is why this method exists. `written` means the
+   * book now says what the page says and the stash the guest is holding can go.
+   * NOT written means the page is showing words the book does not have, so the
+   * element's original markup is put back — from the guest's own stash, in the
+   * guest — and the caller can tell the user what happened knowing the pixels
+   * already agree with the sentence.
+   *
+   * Returns what actually happened to the page: `restored` if the words were put
+   * back, `lost` if the frame that held them is gone (the band was evicted or
+   * remounted while the write was in flight), so the caller's message can be
+   * true rather than hopeful.
+   */
+  async finishInlineEdit(elementKey: string, written: boolean): Promise<'kept' | 'restored' | 'lost'> {
+    const edit = this.unsettledEdit;
+    if (edit === null || edit.elementId !== elementKey) {
+      // Nothing of this component's is on screen for that element, so there is
+      // nothing to keep or put back.
+      return 'lost';
     }
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      event.stopPropagation();
-      el.blur();  // one commit path, below
-      return;
+    this.unsettledEdit = null;
+    if (this.mounted.get(this.bandOfFrame(edit.frame)) !== edit.frame) return 'lost';
+    try {
+      await this.evaluate<{ ok: boolean }>(edit.frame, settleGuestEditScript(edit.nonce, written));
+      return written ? 'kept' : 'restored';
+    } catch (err) {
+      console.error(
+        `[epub-viewer] the page could not be put back to what the book says for ${elementKey}: `
+        + `${String((err as Error).message)}`);
+      return 'lost';
     }
-    // Shift+Enter is a real newline in the text, so the box grows with it.
-    setTimeout(() => this.growInlineEditor(el));
   }
 
   /**
-   * Commit on blur — the ONE path out, so Enter, clicking away and losing focus
-   * all mean the same thing and cannot disagree about what was saved.
+   * Hand the KEYBOARD to a frame.
+   *
+   * The guest focusing its own element decides where the caret goes inside the
+   * guest document; it decides nothing about where this window's keystrokes are
+   * delivered, and those go to whatever the HOST has focused — the Angular
+   * window. Without this the element sits outlined and editable and takes not
+   * one letter.
+   *
+   * The focusable node is the `<iframe>` inside the `<webview>`'s shadow root,
+   * not the `<webview>` element: that element is a custom element with no
+   * tabindex, so focusing it is a no-op, while the iframe is what actually hosts
+   * the guest — the same node `syncGuestViewport` has to reach for to make the
+   * guest follow its own size. A frame whose shadow root has no iframe is
+   * something this component has never seen and would not know how to type into,
+   * so it says so rather than leaving the user pressing keys at nothing.
    */
-  protected commitInlineEdit(event: FocusEvent): void {
-    const edit = this.inlineEdit();
-    if (edit === null) return;  // Escape already cancelled it
-    const typed = (event.target as HTMLTextAreaElement).value;
-    this.inlineEdit.set(null);
-    // Unchanged text is not an edit. Said here so the caller never opens a
-    // write, a re-fingerprint and a relayout for a click that changed nothing.
-    if (typed === edit.text) return;
-    this.commitBlockText.emit({ block: edit.block, text: typed });
+  private focusGuest(frame: MountedQuirePage): void {
+    const shadow = (frame.element as unknown as { shadowRoot: ShadowRoot | null }).shadowRoot;
+    const inner = shadow?.querySelector('iframe');
+    if (inner === null || inner === undefined) {
+      console.error(
+        '[epub-viewer] this frame has no inner iframe to focus, so the keyboard cannot be handed '
+        + 'to the page. Click the outlined text to type into it.');
+      return;
+    }
+    inner.focus();
   }
 
-  /** Keep the box as tall as what is in it, so nothing is typed out of sight. */
-  private growInlineEditor(el: HTMLTextAreaElement): void {
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
+  /** Which band a frame is mounted in, or -1 — the map is small and the answer exact. */
+  private bandOfFrame(frame: MountedQuirePage): number {
+    for (const [index, mounted] of this.mounted) if (mounted === frame) return index;
+    return -1;
+  }
+
+  /**
+   * Listen for the one message this edit will send, and for the click that ends
+   * it from outside the book.
+   *
+   * ── Why `console-message` ──────────────────────────────────────────────────
+   *
+   * Because it is the only host-side channel a quire guest HAS. `mount.ts` gives
+   * the frame no `preload`, and its stated preferences are `sandbox=yes,
+   * contextIsolation=yes, nodeIntegration=no` — so there is no `ipcRenderer` in
+   * there to `sendToHost` with, and adding one would widen quire's sandbox for
+   * the sake of a text editor. `console-message` is a documented `<webview>`
+   * event, it is an EVENT (nothing here polls, and a poll would be a timer
+   * racing the user's own typing), and the book cannot forge one: it is served
+   * under `script-src 'none'` and has no script to log with. The tag carries a
+   * fixed random suffix and the edit's own nonce, so nothing else that ever logs
+   * in that frame can be mistaken for it.
+   *
+   * The message is a SIGNAL and carries no text. The words come back through
+   * `executeJavaScript`, the same channel that already returns arrangements of
+   * thousands of rectangles, so their capacity is proven; the console channel's
+   * is not, and a silently truncated paragraph would be saved as a truncated
+   * paragraph.
+   *
+   * The mousedown listener is the other end: a click anywhere in the APP means
+   * the user has left the page, which is a commit. It is not a duplicate commit
+   * path — it asks the GUEST to finish, and the guest finishes once.
+   */
+  private listenForGuestEdit(frame: MountedQuirePage, nonce: string): () => void {
+    const element = frame.element as HTMLElement & {
+      addEventListener(type: string, listener: (e: never) => void): void;
+      removeEventListener(type: string, listener: (e: never) => void): void;
+    };
+    const prefix = `${INLINE_EDIT_TAG} ${nonce} `;
+    const onConsole = (event: { message?: unknown }): void => {
+      // Not a string message is not this component's message.
+      if (typeof event.message !== 'string' || !event.message.startsWith(prefix)) return;
+      void this.onGuestEditFinished(nonce, event.message.slice(prefix.length).trim() === 'cancel');
+    };
+    const onOutside = (): void => {
+      // The host only sees mousedowns that landed on the APP: a click inside the
+      // frame is the guest's own event and never surfaces here. So any of these
+      // is the user leaving their words, which commits them.
+      void this.evaluate<{ ok: boolean }>(frame, finishGuestEditScript(nonce))
+        .catch((err: unknown) => console.error(
+          `[epub-viewer] a click outside the page could not close the open edit: `
+          + `${String((err as Error).message)}`));
+    };
+    element.addEventListener('console-message', onConsole as (e: never) => void);
+    document.addEventListener('mousedown', onOutside, true);
+    return (): void => {
+      element.removeEventListener('console-message', onConsole as (e: never) => void);
+      document.removeEventListener('mousedown', onOutside, true);
+    };
+  }
+
+  /** Stop listening and put the band back to ordinary pointing. */
+  private endActiveEdit(nonce: string): void {
+    const edit = this.activeEdit;
+    if (edit === null || edit.nonce !== nonce) return;
+    edit.stop();
+    this.activeEdit = null;
+    this.editingBand.set(null);
+  }
+
+  /**
+   * The user is done: read what they left and hand it on.
+   *
+   * The ONE commit path, whichever gesture ended the edit — Enter, Escape, a
+   * click elsewhere in the chapter, a click in the app — because all four end
+   * the same way inside the guest and the guest speaks once.
+   */
+  private async onGuestEditFinished(nonce: string, cancelled: boolean): Promise<void> {
+    const edit = this.activeEdit;
+    if (edit === null || edit.nonce !== nonce) return; // about an edit already settled
+    this.endActiveEdit(nonce);
+    // Escape put the element's own markup back inside the guest before it spoke.
+    // There is nothing on screen to reconcile and nothing to save.
+    if (cancelled) return;
+
+    let answer: { text: string };
+    try {
+      answer = await this.evaluate<{ text: string }>(edit.frame, readGuestEditScript(nonce));
+    } catch (err) {
+      console.error(
+        `[epub-viewer] the words typed into ${edit.elementId} could not be read back out of the `
+        + `frame, so nothing was saved: ${String((err as Error).message)}`);
+      return;
+    }
+
+    // Unchanged is not an edit. Compared the way the book itself reads an
+    // element (electron/book-text.ts: textContent, whitespace collapsed,
+    // trimmed), so a retype that only moved a space costs no write, no
+    // re-fingerprint of a strike and no relayout.
+    if (answer.text === edit.original) return;
+
+    this.unsettledEdit = { frame: edit.frame, elementId: edit.elementId, nonce };
+    this.commitBlockText.emit({ block: edit.block, text: answer.text });
+  }
+
+  /**
+   * Re-measure a frame that is ALREADY showing the right words.
+   *
+   * The counterpart of {@link remountDocuments}, for the one case a remount
+   * would be a lie about what changed: the user typed into the book's own node,
+   * so the frame is not showing stale bytes — it is showing the edit — and
+   * dropping it would blank the chapter for seconds to redraw what is on screen.
+   * The caller may only ask for this after proving the document's pagination
+   * came back unchanged; the rectangles still shift by a line inside a page, and
+   * this is what makes the overlay agree with them again.
+   */
+  async remeasureDocument(index: number): Promise<void> {
+    const frame = this.mounted.get(index);
+    const state = this.bandState(index);
+    const band = this.bands()[index];
+    if (frame === undefined || state.kind !== 'ready' || band === undefined) return;
+    try {
+      if (this.layout() === 'flow') {
+        const src = this.source();
+        const flowed = await this.evaluate<QuireFlowArrangement>(
+          frame, flowArrangeScript(src.pageWidth, QUIRE_PAGE_MARGIN, src.fontSize, this.scale()));
+        this.flowHeights.update((m) => new Map(m).set(index, flowed.height));
+        this.setState(index, {
+          kind: 'ready',
+          arrangement: { pages: [], elements: flowed.elements, nodes: flowed.nodes, orphans: 0 },
+          columns: 1,
+        });
+        return;
+      }
+      const arrangement = await this.evaluate<QuireFrameArrangement>(
+        frame, arrangeScript(band.columns, PAGE_GAP, this.scale()));
+      if (arrangement.pages.length !== band.pageCount) {
+        throw new Error(
+          `the frame now lays out ${arrangement.pages.length} page(s) where the book says `
+          + `${band.pageCount}`);
+      }
+      this.setState(index, { kind: 'ready', arrangement, columns: band.columns });
+    } catch (err) {
+      // The frame and the book disagree about this chapter after all, so the
+      // frame goes and is built from the bytes the book now serves. Loud,
+      // because the caller asked for this on the strength of a check that was
+      // supposed to make it impossible.
+      console.error(
+        `[epub-viewer] band ${index} (${band.mount.document}) could not be re-measured after an `
+        + `edit and is being mounted again: ${String((err as Error).message)}`);
+      this.unmountBand(index);
+      this.queueReconcile();
+      this.reconcileVisibility();
+    }
   }
 
   protected onMergeSelection(): void {
@@ -2010,4 +2274,240 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
     event.preventDefault();
     this.zoomChange.emit(-event.deltaY * 0.15);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The editor, as the guest runs it
+//
+// These four scripts live here rather than beside the measuring scripts in
+// `quire-frame-scripts.ts` because they are the only ones that WRITE to the
+// book's live DOM instead of reading it, and because they are one mechanism with
+// one lifetime: a record on the guest's window that begin creates, finish
+// closes, read empties and settle disposes of. Splitting that across two files
+// would let half of it be changed without the other half.
+//
+// Nothing here parses or produces markup on the app's side. `innerHTML` is
+// touched only inside the guest, to put the element back exactly as the book
+// served it; what crosses back is text, a boolean and a nonce.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The tag on the guest's one message per edit.
+ *
+ * The suffix is a fixed random string so no other line ever logged in that frame
+ * can be read as this signal, and the edit's own nonce follows it. The book
+ * itself cannot forge one — quire serves it under `script-src 'none'`, so the
+ * book has no script with which to reach a console at all.
+ */
+const INLINE_EDIT_TAG = 'bf-inline-edit-4d7a19c2';
+
+/**
+ * Wrap a body so it always answers with a JSON string — the same convention
+ * quire's prelude and present scripts and `quire-frame-scripts.ts` use, so an
+ * error inside the frame arrives at {@link EpubViewerComponent.evaluate} as a
+ * named message rather than as an undefined value.
+ */
+function guestEvaluable(body: string): string {
+  return `(function(){try{${body}}catch(e){`
+    + 'return JSON.stringify({error:String((e&&e.message)||e),stack:String((e&&e.stack)||"")});'
+    + '}})()';
+}
+
+/**
+ * Make the stamped element editable, and put the caret at the end of its words.
+ *
+ * Refuses — with `ok:false` and a sentence — rather than editing something that
+ * is not what the caller thinks it is:
+ *
+ *  - no node carries the stamp: this frame is not showing that element;
+ *  - several do: Paged.js split the element across a page break, so each node
+ *    holds part of the text and typing into one and saving `textContent` would
+ *    save a fragment as the whole element;
+ *  - the node's words and the book's words for that element differ: the frame is
+ *    showing bytes the book has since been rewritten from, and what the user
+ *    corrected would not be what the book had.
+ *
+ * The comparison is the book's own reading of an element — `textContent` with
+ * whitespace collapsed and trimmed, `readBookBlockText` in electron/book-text.ts
+ * — so the two sides are normalised identically and only real differences show.
+ *
+ * The caret goes at the END and nothing is selected: this is "correct a word",
+ * and a select-all would make the first keystroke destroy a paragraph the user
+ * meant to amend.
+ */
+function beginGuestEditScript(elementId: string, expectedText: string, nonce: string): string {
+  const cfg = JSON.stringify({
+    id: elementId, expected: expectedText, nonce,
+    attr: QUIRE_ID_ATTRIBUTE, sep: QUIRE_ID_SEPARATOR, tag: INLINE_EDIT_TAG,
+  });
+  return guestEvaluable(`
+    var cfg = ${cfg};
+    var norm = function (s) { return String(s).replace(/\\s+/g, ' ').trim(); };
+
+    var stamped = document.querySelectorAll('[' + cfg.attr + ']');
+    var found = [];
+    for (var i = 0; i < stamped.length; i++) {
+      var ids = String(stamped[i].getAttribute(cfg.attr) || '').split(cfg.sep);
+      for (var k = 0; k < ids.length; k++) {
+        if (ids[k] === cfg.id) { found.push(stamped[i]); break; }
+      }
+    }
+    if (found.length === 0) {
+      return JSON.stringify({ok: false, why: 'no node in this frame carries that stamp'});
+    }
+    if (found.length > 1) {
+      return JSON.stringify({ok: false, why: found.length + ' nodes in this frame carry that '
+        + 'stamp, so the paginator split the element across a page break and no one of them holds '
+        + 'the whole of its text'});
+    }
+
+    var el = found[0];
+    var says = norm(el.textContent);
+    if (says !== norm(cfg.expected)) {
+      return JSON.stringify({ok: false, why: 'the page reads "' + says.slice(0, 60) + '" where '
+        + 'the book says "' + norm(cfg.expected).slice(0, 60) + '"'});
+    }
+
+    // Only the edited element takes the mouse, and the page under it. Everything
+    // between them stops taking it, so a click elsewhere in the chapter follows
+    // no internal link — which would navigate the frame away from the document
+    // the app has measured every rectangle of — and instead lands on the page
+    // itself, moving focus and blurring the edit shut. The element's own
+    // descendants are exempt too, or a click on an <em> inside the paragraph
+    // would have nothing to place a caret in.
+    var sheet = document.createElement('style');
+    sheet.id = 'bf-inline-edit-style-' + cfg.nonce;
+    sheet.textContent = '*{pointer-events:none !important}'
+      + 'html,body,[contenteditable="true"],[contenteditable="true"] *'
+      + '{pointer-events:auto !important;}'
+      + '[contenteditable="true"]{outline:2px solid #06b6d4 !important;outline-offset:2px !important;}';
+    document.head.appendChild(sheet);
+
+    // On the guest's own window, which persists between executeJavaScript calls
+    // in this frame — the same place and the same reason applyMarksScript keeps
+    // __bfQuireView. The nonce keys it, so a late message from a settled edit
+    // finds nothing to act on.
+    var store = window.__bfInlineEdit || (window.__bfInlineEdit = {});
+    // The undo lives HERE, in the guest, and is the element's own markup: an
+    // Escape or a write the book refuses puts back italics, links and entities
+    // exactly as served. It never crosses to the app, which reads text only.
+    var rec = {el: el, html: el.innerHTML, text: says, cancelled: false, done: false, finish: null};
+    store[cfg.nonce] = rec;
+
+    var onKey = function (e) {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); rec.finish(true); return; }
+      // Enter ends the edit WITH SHIFT TOO. A line break inside one narration
+      // element is a thing this editor cannot show truthfully — a <br> carries
+      // no character into textContent and a newline in the source renders as a
+      // space — so it is not offered here at all; the dialog edits multi-line
+      // text.
+      if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); rec.finish(false); return; }
+    };
+    var onBlur = function () { rec.finish(false); };
+    // Paste arrives as markup unless it is stopped: a paragraph pasted from a
+    // browser brings its fonts, colours and links into the BOOK'S DOM. Only its
+    // text is wanted, and only the text would be saved, so only the text goes in
+    // — otherwise the page would show a styling the book will never have.
+    var onPaste = function (e) {
+      e.preventDefault();
+      var text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+      document.execCommand('insertText', false, norm(text));
+    };
+
+    rec.finish = function (cancelled) {
+      if (rec.done) return;
+      rec.done = true;
+      rec.cancelled = cancelled;
+      if (cancelled) el.innerHTML = rec.html;
+      rec.text = norm(el.textContent);
+      el.removeAttribute('contenteditable');
+      el.removeAttribute('spellcheck');
+      el.removeEventListener('keydown', onKey, true);
+      el.removeEventListener('blur', onBlur, true);
+      el.removeEventListener('paste', onPaste, true);
+      if (sheet.parentNode) sheet.parentNode.removeChild(sheet);
+      el.blur();
+      console.log(cfg.tag + ' ' + cfg.nonce + ' ' + (cancelled ? 'cancel' : 'commit'));
+    };
+
+    el.setAttribute('contenteditable', 'true');
+    // The book's own words are not misspelled because a dictionary says so, and
+    // red squiggles under a typeset page read as damage.
+    el.setAttribute('spellcheck', 'false');
+    el.addEventListener('keydown', onKey, true);
+    el.addEventListener('blur', onBlur, true);
+    el.addEventListener('paste', onPaste, true);
+
+    // preventScroll, and then the origin restated anyway: every rectangle the
+    // app holds for this frame was measured from the frame's origin, so a frame
+    // that scrolled to reveal the caret would put every mark and every hit test
+    // in the wrong place.
+    el.focus({preventScroll: true});
+    var range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    var selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    window.scrollTo(0, 0);
+
+    return JSON.stringify({ok: true});
+  `);
+}
+
+/**
+ * End an edit from OUTSIDE the guest, as a commit.
+ *
+ * The user clicked in the app rather than on the page. It is not a second commit
+ * path: it asks the guest's own `finish` to run, which is the same one Enter and
+ * blur call and which runs once. An edit that has already ended is not an error
+ * here — the click that ended it and this call race by design.
+ */
+function finishGuestEditScript(nonce: string): string {
+  return guestEvaluable(`
+    var store = window.__bfInlineEdit;
+    var rec = store ? store[${JSON.stringify(nonce)}] : undefined;
+    if (!rec || rec.done) return JSON.stringify({ok: true, already: true});
+    rec.finish(false);
+    return JSON.stringify({ok: true, already: false});
+  `);
+}
+
+/**
+ * The words the user left, once the edit is closed.
+ *
+ * Read from the record rather than from the element, so it is the text AT THE
+ * MOMENT THE EDIT ENDED and cannot be affected by anything that happens to the
+ * page between the guest's signal and this call. Normalised there the way the
+ * book reads an element.
+ */
+function readGuestEditScript(nonce: string): string {
+  return guestEvaluable(`
+    var store = window.__bfInlineEdit;
+    var rec = store ? store[${JSON.stringify(nonce)}] : undefined;
+    if (!rec) return JSON.stringify({error: 'this frame is holding no record of that edit'});
+    if (!rec.done) return JSON.stringify({error: 'that edit has not been closed yet'});
+    return JSON.stringify({text: rec.text, cancelled: rec.cancelled});
+  `);
+}
+
+/**
+ * Keep what the user typed, or put the book's own markup back.
+ *
+ * `written` is the BOOK's answer, not the app's intention. False means the write
+ * was refused and the words on the page are words the book does not have, so the
+ * element is restored from the markup stashed when the edit began. Either way
+ * the record goes, so nothing can restore stale markup later.
+ */
+function settleGuestEditScript(nonce: string, written: boolean): string {
+  return guestEvaluable(`
+    var store = window.__bfInlineEdit;
+    var key = ${JSON.stringify(nonce)};
+    var written = ${written ? 'true' : 'false'};
+    var rec = store ? store[key] : undefined;
+    if (!rec) return JSON.stringify({error: 'this frame is holding no record of that edit'});
+    if (!written) rec.el.innerHTML = rec.html;
+    delete store[key];
+    return JSON.stringify({ok: true});
+  `);
 }
