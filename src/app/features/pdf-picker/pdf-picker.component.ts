@@ -869,6 +869,22 @@ const PDF_HAS_NO_BOOK_MESSAGE =
                  itself never refuses, it only occasionally asks a question
                  first (finishEditing()'s unsaved-background-tabs prompt). -->
             <div class="done-bar">
+              <!-- The commit state of the book's writes: saving / saved /
+                   FAILED. The pixel changes before the write lands, so the
+                   in-between is a MONITORED state with a name, not an
+                   invisible hope. Success is barely visible and fades;
+                   FAILED stays (its gesture's own alert already said what
+                   happened, louder). -->
+              @if (bookSaveState() !== 'idle') {
+                <span
+                  class="book-save-indicator"
+                  [class.failed]="bookSaveState() === 'failed'"
+                >{{ bookSaveState() === 'saving'
+                    ? 'Saving…'
+                    : bookSaveState() === 'saved'
+                      ? 'Saved'
+                      : 'Save FAILED — the page shows what the book still says' }}</span>
+              }
               <!-- The narration copy went stale under an edit. A standing fact,
                    not news, so it is a quiet persistent badge here rather than
                    a modal per rename (Owen, 2026-08-11: "everything should be
@@ -1879,6 +1895,20 @@ const PDF_HAS_NO_BOOK_MESSAGE =
       padding: var(--ui-spacing-md) var(--ui-spacing-lg);
       background: var(--bg-elevated);
       border-top: 1px solid var(--border-subtle);
+    }
+
+    /* The write indicator: muted while saving and saved (success is barely
+       visible), unmistakable when a write failed. */
+    .book-save-indicator {
+      font-size: $font-size-sm;
+      color: var(--text-secondary);
+      opacity: 0.7;
+      white-space: nowrap;
+    }
+    .book-save-indicator.failed {
+      color: var(--error);
+      opacity: 1;
+      font-weight: 700;
     }
 
     /* Quiet on purpose: a standing fact beside the Done button, legible when
@@ -4281,6 +4311,62 @@ export class PdfPickerComponent implements OnInit {
     const dir = this.projectPath();
     if (dir === null) return;
     this.narrationCopyStaleFor.set(dir);
+  }
+
+  // ── Book writes: one queue, one visible commit state ──────────────────────
+  //
+  // The instant-editor contract (the plan Owen ratified 2026-08-12): the pixel
+  // changes NOW, the write lands behind it, and the in-between is a monitored
+  // state with a name — saving / saved / FAILED — not an invisible hope.
+  // Failure is loud (the gesture's own alert says what happened and the page
+  // is put back); success is barely visible (a small "Saved" that fades).
+
+  /**
+   * Every write into the book goes through here, ONE AT A TIME.
+   *
+   * Two writes racing — a quick second relabel, an undo replay chasing the
+   * gesture it undoes — would each measure the book, write, and re-stamp the
+   * strike record, and the loser's stale-check would refuse against the
+   * winner's stamp. Serializing on this side keeps every write's before-digest
+   * true. The chain never rejects: a failed write settles its own gesture, and
+   * the next one runs regardless.
+   */
+  private bookWriteQueue: Promise<unknown> = Promise.resolve();
+
+  private enqueueBookWrite<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.bookWriteQueue.then(work, work);
+    this.bookWriteQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Writes in flight right now (a queue depth, not a boolean — edits overlap). */
+  private readonly bookWritesInFlight = signal(0);
+  /** What the LAST settled write did, once nothing is in flight. */
+  private readonly bookWriteOutcome = signal<'idle' | 'saved' | 'failed'>('idle');
+  private bookSavedFadeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** The indicator by the Done button: saving / saved / FAILED, or idle. */
+  readonly bookSaveState = computed<'idle' | 'saving' | 'saved' | 'failed'>(() =>
+    this.bookWritesInFlight() > 0 ? 'saving' : this.bookWriteOutcome());
+
+  private beginBookWrite(): void {
+    this.bookWritesInFlight.update(n => n + 1);
+  }
+
+  private endBookWrite(ok: boolean): void {
+    this.bookWritesInFlight.update(n => n - 1);
+    if (this.bookSavedFadeTimer !== null) {
+      clearTimeout(this.bookSavedFadeTimer);
+      this.bookSavedFadeTimer = null;
+    }
+    this.bookWriteOutcome.set(ok ? 'saved' : 'failed');
+    if (ok) {
+      // "Saved" earns two seconds and goes away; FAILED stays until the next
+      // write (whose own alert has already said everything louder than this).
+      this.bookSavedFadeTimer = setTimeout(() => {
+        if (this.bookWriteOutcome() === 'saved') this.bookWriteOutcome.set('idle');
+      }, 2000);
+    }
   }
 
   // ── Deleting ON the TTS copy ───────────────────────────────────────────────
@@ -7488,9 +7574,13 @@ export class PdfPickerComponent implements OnInit {
    * Answers whether the book now says `newText`, so the caller can tell.
    */
   private async saveBookBlockText(
-    elementKey: string, newText: string, options?: { onPage: boolean },
+    elementKey: string, newText: string,
+    options?: { onPage?: boolean; recordHistory?: boolean },
   ): Promise<boolean> {
     const onPage = options?.onPage === true;
+    // False only for undo/redo REPLAYS: the stacks are already being walked,
+    // and recording the replay would push what it replays.
+    const recordHistory = options?.recordHistory !== false;
     const dir = this.projectPath();
     if (!dir) {
       // There is nowhere to write. Silence here would leave the page showing
@@ -7527,11 +7617,19 @@ export class PdfPickerComponent implements OnInit {
     // surfaces cannot disagree about what the chapter is called.
     const opening = this.blocks().find(b => b.bf_element === elementKey);
     if (opening !== undefined && isChapterOpening(opening)) {
-      return this.renameChapterFromOpeningEdit(dir, elementKey, newText, onPage);
+      // The old title, for the undo recipe: the opening's printed text IS the
+      // stored name once the naming pass has run, and the rename replays
+      // through this same routing, which re-syncs both either way.
+      return this.renameChapterFromOpeningEdit(dir, elementKey, newText, onPage, {
+        recordHistory,
+        titleBefore: opening.text.replace(/\s+/g, ' ').trim(),
+      });
     }
 
-    const answer = await this.electronService.setBookBlockText(
-      dir, elementKey, newText, this.workingChainId());
+    this.beginBookWrite();
+    const answer = await this.enqueueBookWrite(() => this.electronService.setBookBlockText(
+      dir, elementKey, newText, this.workingChainId()));
+    this.endBookWrite(answer.success && answer.result !== undefined);
     if (!answer.success || !answer.result) {
       // The page is put back BEFORE the user is told, so the sentence they read
       // is true of what they are looking at while they read it.
@@ -7557,8 +7655,26 @@ export class PdfPickerComponent implements OnInit {
     if (onPage) await this.epubViewer?.finishInlineEdit(elementKey, true);
     if (!answer.result.written) {
       // The book already read that way — a retype that changed only whitespace
-      // nobody can see. Nothing moved, so nothing is laid out again.
+      // nobody can see. Nothing moved, so nothing is laid out again — and
+      // nothing goes on the undo stack, because there is nothing to take back.
       return true;
+    }
+    if (recordHistory) {
+      // What the book had and what it has now, in main's own words — the undo
+      // recipe. Replayed through this same save path, so Ctrl+Z on a text edit
+      // is the same verified write the edit was.
+      const selection = [...this.selectedBlockIds()];
+      this.editorState.recordBookAction({
+        type: 'bookText',
+        blockIds: this.blocks().filter(b => b.bf_element === elementKey).map(b => b.id),
+        selectionBefore: selection,
+        selectionAfter: selection,
+        bookTextEdit: {
+          elementKey,
+          before: answer.result.textBefore,
+          after: answer.result.textAfter,
+        },
+      });
     }
     if (answer.result.refingerprinted) {
       this.showAlert({
@@ -7589,9 +7705,12 @@ export class PdfPickerComponent implements OnInit {
    */
   private async renameChapterFromOpeningEdit(
     dir: string, elementKey: string, title: string, onPage: boolean,
+    options?: { recordHistory?: boolean; titleBefore?: string },
   ): Promise<boolean> {
-    const answer = await this.electronService.renameBookChapter(
-      dir, parseNarrationElementKey(elementKey).file, title, this.workingChainId());
+    this.beginBookWrite();
+    const answer = await this.enqueueBookWrite(() => this.electronService.renameBookChapter(
+      dir, parseNarrationElementKey(elementKey).file, title, this.workingChainId()));
+    this.endBookWrite(answer.success === true && answer.result !== undefined);
     if (!answer.success || !answer.result) {
       // The page is put back BEFORE the user is told, so the sentence they
       // read is true of what they are looking at while they read it.
@@ -7610,6 +7729,23 @@ export class PdfPickerComponent implements OnInit {
         type: 'error',
       });
       return false;
+    }
+
+    // The rename is in the book (whatever the naming pass did about the
+    // heading below), so Ctrl+Z should know it. Replayed through the same save
+    // path, which routes back here — an undone rename is a rename. Skipped
+    // when the caller could not say what the chapter WAS called: an undo that
+    // guesses a title would rename the chapter to the guess.
+    if (options?.recordHistory !== false && typeof options?.titleBefore === 'string'
+      && options.titleBefore !== title) {
+      const selection = [...this.selectedBlockIds()];
+      this.editorState.recordBookAction({
+        type: 'bookText',
+        blockIds: this.blocks().filter(b => b.bf_element === elementKey).map(b => b.id),
+        selectionBefore: selection,
+        selectionAfter: selection,
+        bookTextEdit: { elementKey, before: options.titleBefore, after: title },
+      });
     }
 
     if (typeof answer.openingUnnamed === 'string') {
@@ -9154,6 +9290,18 @@ export class PdfPickerComponent implements OnInit {
     this.reconcileDeletionsWithDocument();
     this.landNarrationHistory(struckBefore, pagesBefore);
 
+    // ── Book actions: the view just inverted; now the BOOK must follow ──────
+    //
+    // The service inverted the pixels (for a relabel) and nothing else — a book
+    // action's stack entry is a recipe, and this is where it is cooked: the
+    // inverse write goes down the same IPC the gesture used. A replay the book
+    // refuses re-stacks the action and re-paints to match the book, so undo can
+    // never leave pixels the file does not back.
+    if (action.type === 'bookCategory' || action.type === 'bookText') {
+      await this.replayBookAction(action, 'before');
+      return;
+    }
+
     // Handle visual changes based on action type
     if (action.type === 'toggleBackgrounds') {
       await this.applyRemoveBackgrounds(action.backgroundsBefore ?? false);
@@ -9179,6 +9327,12 @@ export class PdfPickerComponent implements OnInit {
     this.reconcileDeletionsWithDocument();
     this.landNarrationHistory(struckBefore, pagesBefore);
 
+    // Book actions replay their forward write — the mirror of undo's arm.
+    if (action.type === 'bookCategory' || action.type === 'bookText') {
+      await this.replayBookAction(action, 'after');
+      return;
+    }
+
     // Handle visual changes based on action type
     if (action.type === 'toggleBackgrounds') {
       await this.applyRemoveBackgrounds(action.backgroundsAfter ?? false);
@@ -9194,6 +9348,92 @@ export class PdfPickerComponent implements OnInit {
       }
     }
     // Page deletion/restoration/reorder are handled by signals automatically
+  }
+
+  /**
+   * Undo or redo a BOOK action: replay the named side's write down the same
+   * IPC the gesture used.
+   *
+   * The service has already inverted the view's half and moved the action
+   * between the stacks. What happens here decides whether that sticks:
+   *
+   *  - The write lands → the changed documents are laid out again and the
+   *    world agrees (file, pixels, stacks).
+   *  - The write is REFUSED → the action is put back on the stack it came from
+   *    (via the service's own inverse, which also re-paints the view), so the
+   *    pixels match the book and the stacks match reality: the undo did not
+   *    happen. The refusal is said in main's own words.
+   *
+   * A `bookText` replay goes through `saveBookBlockText`, which routes a
+   * chapter opening's text to the rename — so undoing a rename renames back,
+   * TOC and heading together, exactly as the gesture did.
+   */
+  private async replayBookAction(action: HistoryAction, side: 'before' | 'after'): Promise<void> {
+    const undoing = side === 'before';
+    // The action came OFF a stack; this puts it back and re-applies the other
+    // side's view — the whole "it did not happen" arm.
+    const restack = (): void => {
+      if (undoing) this.editorState.redo(); else this.editorState.undo();
+    };
+
+    const dir = this.projectPath();
+    if (dir === null) {
+      restack();
+      this.showAlert({
+        title: undoing ? 'That could not be undone' : 'That could not be redone',
+        message: 'This document does not belong to a project any more, so there is no book to '
+          + 'write the change back into.',
+        type: 'error',
+      });
+      return;
+    }
+
+    if (action.type === 'bookText') {
+      const edit = action.bookTextEdit;
+      if (edit === undefined) {
+        console.error('[picker] a bookText history entry carries no edit, so nothing was replayed');
+        restack();
+        return;
+      }
+      const ok = await this.saveBookBlockText(
+        edit.elementKey, undoing ? edit.before : edit.after, { recordHistory: false });
+      // saveBookBlockText said why in its own alert; here only the stack is
+      // put back so redo/undo still describe the book.
+      if (!ok) restack();
+      return;
+    }
+
+    const edits = action.bookCategoryEdits ?? [];
+    if (edits.length === 0) {
+      console.error('[picker] a bookCategory history entry names no edits, so nothing was replayed');
+      restack();
+      return;
+    }
+    this.beginBookWrite();
+    const answer = await this.enqueueBookWrite(() =>
+      this.electronService.setBookBlockCategories(
+        dir,
+        edits.map(e => ({ elementKey: e.elementKey, categoryId: undoing ? e.before : e.after })),
+        this.workingChainId()));
+    const ok = answer.success && answer.results !== undefined
+      && Array.isArray(answer.rewrittenEntries);
+    this.endBookWrite(ok);
+    if (!ok) {
+      restack();
+      this.showAlert({
+        title: undoing ? 'That relabel could not be undone' : 'That relabel could not be redone',
+        message: (answer.error
+          ?? 'The write came back without a result and without a reason, which is a fault in '
+            + 'BookForge rather than anything about this book.')
+          + '\n\nThe page still shows what the book says.',
+        type: 'error',
+      });
+      return;
+    }
+    if (answer.rewrittenEntries!.length > 0) {
+      await this.relayoutBookAfterEdit(answer.rewrittenEntries!, edits[0].elementKey);
+    }
+    await this.refreshBookEpub();
   }
 
   // Click a category: select its blocks (custom: toggle highlight visibility).
@@ -14987,8 +15227,15 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    const answer = await this.electronService.renameBookChapter(
-      dir, parseNarrationElementKey(element).file, title, this.workingChainId());
+    // What the chapter is called NOW, before the rename — the undo recipe's
+    // `before`. From the chapter list this window derives from the book's own
+    // contents, so it is the book's answer, not a cache of this window's.
+    const titleBefore = this.chapters().find(c => c.id === blockId)?.title;
+
+    this.beginBookWrite();
+    const answer = await this.enqueueBookWrite(() => this.electronService.renameBookChapter(
+      dir, parseNarrationElementKey(element).file, title, this.workingChainId()));
+    this.endBookWrite(answer.success === true && answer.result !== undefined);
     if (!answer.success || !answer.result) {
       // Main's own sentence, verbatim: it names the file, the project or the
       // table of contents that was missing, and this is the only place it is
@@ -15001,6 +15248,21 @@ export class PdfPickerComponent implements OnInit {
         type: 'error',
       });
       return;
+    }
+
+    // Ctrl+Z knows this rename — same recipe the inline opener edit records,
+    // so undoing either surface's rename is the same replayed write. Skipped
+    // when the list could not say what the chapter was called (an unlisted row
+    // being named for the first time has no `before` to go back to).
+    if (typeof titleBefore === 'string' && titleBefore !== title) {
+      const selection = [...this.selectedBlockIds()];
+      this.editorState.recordBookAction({
+        type: 'bookText',
+        blockIds: [blockId],
+        selectionBefore: selection,
+        selectionAfter: selection,
+        bookTextEdit: { elementKey: element, before: titleBefore, after: title },
+      });
     }
 
     // Re-read the book: the nav is the store, so this is both "show the new
@@ -15461,48 +15723,66 @@ export class PdfPickerComponent implements OnInit {
       if (byElement.size === 0) return;
     }
 
-    const repaint: string[] = [];
-    // Every entry of the book these writes between them rewrote — main's own
-    // list, per call, unioned. A window with this book paginated lays exactly
-    // these out again, and an EMPTY set is the real answer "nothing on disk
-    // moved", which is a reason to redraw nothing at all.
+    // ── The pixel changes NOW; the write lands behind it ────────────────────
+    //
+    // The instant-editor ordering (the plan, 2026-08-12): a relabel is
+    // layout-neutral, so nothing about painting it needs the disk. The blocks
+    // repaint on this very turn, the batched write goes down the queue behind
+    // the paint, and a refused write puts the pixels back and raises the
+    // refusal — the reverse of the old shape, where the click waited on the
+    // book before the palette showed anything.
+    //
+    // `before` per element is the category the block was PAINTED as — the
+    // effective category, always a palette id — which is also what an undo
+    // writes back (see the bookCategoryEdits doc in
+    // shared/document/editor-history.ts for the one way that is not byte-exact).
+    const blocksNow = this.blocks();
+    const edits = [...byElement.entries()].map(([elementKey, blockIds]) => ({
+      elementKey,
+      blockIds,
+      before: blocksNow.find(b => b.id === blockIds[0])!.category_id,
+      after: categoryId,
+    }));
+    const allBlockIds = [...byElement.values()].flat();
+    this.editorState.setBookCategories(allBlockIds, categoryId);
+
     const rewrittenEntries = new Set<string>();
     let openingUnnamed: string | null = null;
     let refusal: string | null = null;
+    // Painted pixels the DISK does not back, after the answer: refusal-with-
+    // nothing-landed reverts them; anything else keeps them.
+    let revertPaint = false;
     // The first document that came back with no entry in the table of contents,
     // and the block the user pointed at when it did — the prompt below is
     // pre-filled from that block's own printed heading.
     let unnamed: { file: string; blockId: string; reason: string } | null = null;
 
-    // ── ONE call for the whole selection ────────────────────────────────────
+    // ── ONE call for the whole selection, queued behind other book writes ──
     //
     // This was a loop — one `book:set-block-category` per element, awaited in
-    // turn, each paying the whole fixed cost of a write (the spine read, the
-    // write, the verification, two digests, a manifest transaction, and the
-    // naming pass behind all of it). Measured 2026-08-11 on the migrated
-    // Nuremberg project: ~500 ms per element, ~6.5 s for a 12-block selection.
-    // The batch pays the cost once (~520 ms for the same selection), and it is
-    // also the only shape under which a refusal is whole: main validates every
+    // turn, each paying the whole fixed cost of a write. Measured 2026-08-11
+    // on the migrated Nuremberg project: ~500 ms per element, ~6.5 s for a
+    // 12-block selection; the batch pays the cost once (~520 ms). It is also
+    // the only shape under which a refusal is whole: main validates every
     // element before the first byte, so a selection can no longer land
     // half-applied with the refusal naming only the element it stopped at.
-    const answer = await this.electronService.setBookBlockCategories(
-      dir,
-      [...byElement.keys()].map(elementKey => ({ elementKey, categoryId })),
-      this.workingChainId());
+    this.beginBookWrite();
+    const answer = await this.enqueueBookWrite(() =>
+      this.electronService.setBookBlockCategories(
+        dir,
+        edits.map(e => ({ elementKey: e.elementKey, categoryId })),
+        this.workingChainId()));
     if (!answer.success || answer.results === undefined) {
       // Main's own sentence, verbatim: it names the element, the category or
       // the project that was missing. A failure answer CAN still name rewritten
       // entries — a batch whose categories landed and whose naming pass then
-      // failed moved bytes before it stopped — and those feed the redraw below
-      // so the screen follows what is actually on disk.
-      if (Array.isArray(answer.rewrittenEntries)) {
-        for (const entry of answer.rewrittenEntries) rewrittenEntries.add(entry);
-        if (rewrittenEntries.size > 0) {
-          // The category writes landed even though the gesture as a whole
-          // failed, so the blocks repaint: pixels that still show the old
-          // label would claim a book the disk no longer holds.
-          repaint.push(...[...byElement.values()].flat());
-        }
+      // failed moved bytes before it stopped — and those keep the paint and
+      // feed the redraw, so the screen follows what is actually on disk.
+      const landed = Array.isArray(answer.rewrittenEntries) && answer.rewrittenEntries.length > 0;
+      if (landed) {
+        for (const entry of answer.rewrittenEntries!) rewrittenEntries.add(entry);
+      } else {
+        revertPaint = true;
       }
       refusal = answer.error === undefined
         ? 'The relabel came back without a result and without a reason, which is a fault in '
@@ -15511,7 +15791,8 @@ export class PdfPickerComponent implements OnInit {
     } else if (answer.rewrittenEntries === undefined) {
       // A success that does not say which entries it rewrote cannot be
       // followed by a redraw of the right documents — and main always says,
-      // so this is a fault in BookForge, not a book state.
+      // so this is a fault in BookForge, not a book state. The writes landed,
+      // so the paint stands.
       refusal = 'The relabel landed but main did not say which of the book\'s documents it '
         + 'rewrote, so the pages on screen cannot be laid out again. Close and re-open the '
         + 'book to see the change.';
@@ -15520,7 +15801,6 @@ export class PdfPickerComponent implements OnInit {
       for (const result of answer.results) {
         const sharing = byElement.get(result.elementKey);
         if (sharing === undefined) continue;  // main answered about an element nobody asked after
-        repaint.push(...sharing);
         if (openingUnnamed === null && typeof result.openingUnnamed === 'string') {
           openingUnnamed = result.openingUnnamed;
         }
@@ -15532,14 +15812,32 @@ export class PdfPickerComponent implements OnInit {
         }
       }
     }
+    this.endBookWrite(refusal === null);
 
-    // The view follows the file, for everything that landed — including when a
-    // later element was refused, because the earlier writes are in the book.
-    this.editorState.setBookCategories(repaint, categoryId);
-
-    if (repaint.length > 0) {
+    if (revertPaint) {
+      // The book kept its state, so the pixels go back to it — through the
+      // same application the undo path uses, before the refusal is shown, so
+      // the sentence is true of the screen while it is being read.
+      this.editorState.applyBookCategoryState(
+        { type: 'bookCategory', blockIds: allBlockIds, selectionBefore: [], selectionAfter: [],
+          bookCategoryEdits: edits },
+        'before');
+    } else {
+      // The book took it (wholly, or the category half of it): the gesture is
+      // a fact and Ctrl+Z should know it. Undo replays the inverse write down
+      // the same IPC — the stacks hold a recipe, never a second record of what
+      // a block is.
+      const selection = [...this.selectedBlockIds()];
+      this.editorState.recordBookAction({
+        type: 'bookCategory',
+        blockIds: allBlockIds,
+        selectionBefore: selection,
+        selectionAfter: selection,
+        bookCategoryEdits: edits,
+      });
       // Re-read the book: it has new bytes, so the narration record main
       // re-stamped and the chapter titles the tab shows are both asked again.
+      // After the paint and the record — nothing visible waits on it.
       await this.refreshBookEpub();
     }
 
@@ -15582,7 +15880,7 @@ export class PdfPickerComponent implements OnInit {
     // An empty list means no byte moved — the book already said what it was
     // asked to say — and then nothing is redrawn at all.
     if (rewrittenEntries.size > 0) {
-      const anchor = this.blocks().find(b => b.id === repaint[0]);
+      const anchor = this.blocks().find(b => b.id === allBlockIds[0]);
       await this.relayoutBookAfterEdit([...rewrittenEntries], anchor?.bf_element);
     }
 

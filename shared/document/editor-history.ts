@@ -112,7 +112,7 @@ export interface MergeDefinition {
 }
 
 export interface HistoryAction {
-  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds' | 'move' | 'resize' | 'deletePage' | 'restorePage' | 'reorderPages' | 'selection' | 'paragraphBreak' | 'categoryCorrection' | 'splitBlock' | 'mergeBlocks' | 'cropApply' | 'cropClear';
+  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds' | 'move' | 'resize' | 'deletePage' | 'restorePage' | 'reorderPages' | 'selection' | 'paragraphBreak' | 'categoryCorrection' | 'splitBlock' | 'mergeBlocks' | 'cropApply' | 'cropClear' | 'bookCategory' | 'bookText';
   blockIds: string[];
   selectionBefore: string[];
   selectionAfter: string[];
@@ -160,6 +160,41 @@ export interface HistoryAction {
   // newly deleted (apply/redo add them, undo restores them). On cropClear these
   // were restored (apply/redo restore them, undo re-deletes them).
   cropBlockIdsToggled?: string[];
+
+  // ── Book actions: the BOOK is the store, so undo/redo REPLAYS the write ──
+  //
+  // Every action above inverts state this window owns. A book edit is a fact
+  // about the FILE — the working copy's own markup — so undoing it by
+  // repainting alone would put pixels on screen that the book does not back,
+  // which is the one forbidden failure (Owen, 2026-08-10: "it apparently didnt
+  // actually change it to chapter, just visually?"). The picker therefore
+  // treats these two as: invert the view, then replay the inverse write down
+  // the SAME IPC the gesture used — and if the book refuses the replay, the
+  // view is put back to match the book and the refusal is said out loud.
+
+  /**
+   * For bookCategory actions — one relabel gesture over a run of elements.
+   *
+   * `before` is the category the block was PAINTED as before the gesture — the
+   * effective category, always a palette id. When the markup stated none (the
+   * category was derived rather than stamped), undo cannot un-state an
+   * attribute; it stamps the previously-effective value instead, which is
+   * value-identical to what the reader derived and differs only in being
+   * explicit. Said here because it is the one place undo is not byte-exact.
+   */
+  bookCategoryEdits?: Array<{
+    elementKey: string;
+    blockIds: string[];
+    before: string;
+    after: string;
+  }>;
+
+  /**
+   * For bookText actions — one element's text, as the book had it and as the
+   * user left it. Replayed through the picker's own save path, so an element
+   * that is a chapter OPENING is undone as the chapter rename it was.
+   */
+  bookTextEdit?: { elementKey: string; before: string; after: string };
 }
 
 /** The block table as it is written to (and read from) a project file. */

@@ -900,6 +900,12 @@ export class PdfEditorStateService {
         );
       }
       this.updateCategoryStats();
+    } else if (action.type === 'bookCategory') {
+      // The VIEW's half only. The book is the store, and the picker replays the
+      // inverse write down the same IPC after this returns — see the action's
+      // doc in shared/document/editor-history.ts. If the book refuses, the
+      // picker re-applies the after-state so the pixels never outrun the file.
+      this.applyBookCategoryState(action, 'before');
     } else if (action.type === 'splitBlock' && action.splitDefinition) {
       const def = action.splitDefinition;
       // Remove child blocks from blocks array
@@ -1029,6 +1035,10 @@ export class PdfEditorStateService {
         );
       }
       this.updateCategoryStats();
+    } else if (action.type === 'bookCategory') {
+      // The VIEW's half only — the picker replays the forward write to the
+      // book after this returns. Mirror of undo's arm.
+      this.applyBookCategoryState(action, 'after');
     } else if (action.type === 'splitBlock' && action.splitDefinition) {
       const def = action.splitDefinition;
       // Re-add child blocks, resolved from the block table
@@ -1618,6 +1628,39 @@ export class PdfEditorStateService {
       this.markChanged();
     }
 
+    this.updateCategoryStats();
+  }
+
+  /**
+   * Put a BOOK edit on the history stacks.
+   *
+   * The comment above `setBookCategories` still holds — the book is the store
+   * and this window keeps no second record of what a block IS. What the stacks
+   * hold for a book action is a RECIPE, not a record: which write to replay,
+   * forward or inverse, when the user asks for it. `undo()`/`redo()` invert
+   * only the view's half; the picker owns the replay and the loud re-revert
+   * when the book refuses it.
+   */
+  recordBookAction(action: HistoryAction): void {
+    this.pushHistory(action);
+  }
+
+  /**
+   * The view's half of undoing/redoing a `bookCategory` action: the blocks
+   * repaint to the named side. Shared by `undo`, `redo`, and the picker's
+   * put-it-back path when a replayed write is refused.
+   */
+  applyBookCategoryState(action: HistoryAction, side: 'before' | 'after'): void {
+    const edits = action.bookCategoryEdits;
+    if (edits === undefined || edits.length === 0) return;
+    const byBlock = new Map<string, string>();
+    for (const edit of edits) {
+      const category = side === 'before' ? edit.before : edit.after;
+      for (const id of edit.blockIds) byBlock.set(id, category);
+    }
+    this.blocks.update(blocks =>
+      blocks.map(b => byBlock.has(b.id) ? { ...b, category_id: byBlock.get(b.id)! } : b)
+    );
     this.updateCategoryStats();
   }
 
