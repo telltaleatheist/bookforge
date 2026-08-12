@@ -29,6 +29,7 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -701,6 +702,79 @@ export async function partitionEpubEntries(source: EpubSource): Promise<EpubEntr
     directoryMarkers.push(name);
   }
   return { content, directoryMarkers };
+}
+
+/**
+ * A book as ARCHIVE BYTES, whichever container it is actually in.
+ *
+ * The exact inverse of `writeEpubFromArchiveBytes` below, and it exists for the
+ * same reason in reverse: two consumers of a book cannot be handed entries, they
+ * can only be handed a zip. mupdf is the one that matters — it parses OCF out of
+ * a byte array, has no notion of a directory, and `fs.readFile` on an exploded
+ * working copy is `EISDIR: illegal operation on a directory, read`.
+ *
+ * ── The fast path is the point ──────────────────────────────────────────────
+ *
+ * A book that IS a zip gets its own bytes back, read straight off disk. Not
+ * "re-written entry for entry, which is the same book" — that is the right
+ * ruling for a WRITE, where one code path is worth a re-deflate, and the wrong
+ * one here: this is a read, callers are on the opening path, and re-zipping
+ * every publisher EPUB to hand mupdf a book it could already have been handed is
+ * a cost paid by every book to fix the one that is a tree. It is also not
+ * obviously identity-preserving — a caller that hashes what comes back would
+ * hash our deflate settings rather than the book.
+ *
+ * The branch is on the container MEASURED at the path, never on the name: this
+ * takes a real on-disk path, and `isExplodedBookPath` answers about a naming
+ * convention, which is a different question and the wrong one here.
+ *
+ * ── For a tree, the entries are packed, in OCF order ────────────────────────
+ *
+ * `orderEpubEntryNames` puts `mimetype` first and `ZipWriter` stores it
+ * uncompressed (both re-assert it; neither trusts the caller), because a
+ * deflated or misplaced mimetype is a book strict readers refuse — and mupdf
+ * sniffing an EPUB as something else is exactly the silent-wrong failure that is
+ * hardest to read at the far end.
+ *
+ * A refusal is a throw naming the book. Never an empty buffer, never a zero-entry
+ * zip: the caller on the other side of this is a MIGRATION reading a book's old
+ * layout, and an empty book there reads as "this book has no blocks", which
+ * would silently discard a user's page and block deletions rather than fail.
+ */
+export async function readEpubAsArchiveBytes(bookPath: string): Promise<Buffer> {
+  const abs = path.resolve(bookPath);
+  const kind = await epubContainerKindAt(abs);
+  if (kind === null) {
+    throw new Error(
+      `There is no book at ${abs}, so there are no archive bytes to read from it.`
+    );
+  }
+  if (kind === 'zip') return fs.promises.readFile(abs);
+
+  const source = await openEpubSource(abs);
+  const staged = path.join(
+    os.tmpdir(),
+    `bookforge-packed-${path.basename(abs)}-${Math.random().toString(36).slice(2, 10)}.epub`,
+  );
+  try {
+    const sink = await createEpubSink(staged, 'zip');
+    // Stated here rather than inherited: `DirectoryEpubSource.getEntries()` is
+    // already in this order, but the OCF invariant is what this function owes
+    // its caller, so it is asserted where it is owed.
+    for (const name of orderEpubEntryNames(source.getEntries())) {
+      if (name.endsWith('/')) continue; // a folder record is not a book entry
+      sink.addFile(name, await source.readEntry(name), name !== 'mimetype');
+    }
+    source.close();
+    await sink.write(staged);
+    return await fs.promises.readFile(staged);
+  } finally {
+    source.close();
+    // The staging file is the only thing on disk this function ever made, and it
+    // goes whether the pack finished or threw — a leftover in the temp directory
+    // named after the book is worse than useless, it is confusing.
+    await fs.promises.rm(staged, { force: true });
+  }
 }
 
 /**

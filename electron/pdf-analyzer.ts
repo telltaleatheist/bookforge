@@ -17,6 +17,10 @@ import type { BlockCategoryProvenance } from '../shared/ocr/text-block';
 import type { UnalignedBlock } from './epub-processor';
 import type { NarrationLaidOutBlock } from '../shared/vlm/narration-deletions';
 import { TEXT_LAYER_MIN_CHARS_PER_PAGE, type TextLayerReport } from '../shared/pdf/text-layer';
+// A LEAF (fs/path/os only, and it pulls epub-processor in lazily inside its
+// factories), so this import does not put the 9000-line EPUB processor back
+// into the analyzer's module graph — which Phase A deliberately took it out of.
+import { readEpubAsArchiveBytes } from './epub-container';
 import {
   analyzeEpubWithQuire, epubOutlineFromQuire, epubPageGeometryWithQuire,
 } from './epub-quire-analysis';
@@ -1424,13 +1428,39 @@ export class PDFAnalyzer {
    */
   async layOutEpubTheLegacyWay(epubPath: string): Promise<LegacyEpubLaidOutBlock[]> {
     const mupdfLib = await getMupdf();
-    const data = await fsPromises.readFile(epubPath);
     const mimeType = getMimeType(epubPath);
     if (mimeType !== 'application/epub+zip') {
       throw new Error(
         `${path.basename(epubPath)} is not an EPUB, and mupdf's reflow layout is the thing an `
         + 'EPUB\'s legacy page and block records were written against. There is nothing to '
         + 'reproduce for any other kind of file.',
+      );
+    }
+    // The book AS ARCHIVE BYTES, which is the only form mupdf can be handed —
+    // and the reason this line is not `fsPromises.readFile`. The input here is
+    // the project's WORKING COPY by construction (`legacy-epub-layout.bookOf` →
+    // `readExportEpub().absPath`), and a working copy is now an exploded
+    // DIRECTORY, `source/<stem>.working/`; `readFile` on one is `EISDIR:
+    // illegal operation on a directory, read`. `getMimeType` above was already
+    // right about a directory (612d0c90 made it stat) — it was just consulted
+    // one line too LATE to matter, because the bytes had already been read and
+    // thrown. So the read goes through the container seam, which gives a zip
+    // book its own bytes untouched and packs a tree's entries into an in-memory
+    // archive in OCF order.
+    //
+    // A failure is a throw, never an empty layout. This function's blocks are
+    // what `deriveNarrationStrikes` resolves a project's page and block
+    // deletions against; an empty list would be read as "this book has no
+    // blocks" and would silently DISCARD them — 613 deleted pages on one
+    // project, 962 struck blocks on another.
+    let data: Buffer;
+    try {
+      data = await readEpubAsArchiveBytes(epubPath);
+    } catch (err) {
+      throw new Error(
+        `${path.basename(epubPath)} could not be read as an EPUB archive, so the layout its page `
+        + `and block deletions were recorded against cannot be reproduced: ${(err as Error).message} `
+        + 'Nothing was resolved and no record was changed.',
       );
     }
 
