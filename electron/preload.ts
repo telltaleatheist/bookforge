@@ -1608,6 +1608,42 @@ export interface ElectronAPI {
       rewrittenEntries?: string[];
       error?: string;
     }>;
+
+    /**
+     * What one element of the book says right now, whole.
+     *
+     * What the text editor opens on. NOT the block's own text: a block is a
+     * page's worth of an element, so a paragraph that spans a page break would
+     * come back as its first half, and saving that would delete the second.
+     */
+    readBlockText: (projectDir: string, elementKey: string, familyId?: string) => Promise<{
+      success: boolean;
+      data?: { text: string; tag: string; file: string };
+      error?: string;
+    }>;
+
+    /**
+     * Make the book say what the reader typed, for one element.
+     *
+     * `newText` is the element's WHOLE text, collapsed the way it was shown.
+     * `written` comes back false when the book already read that way — a retype
+     * that changed only whitespace nobody can see — and then nothing moved and
+     * `rewrittenEntries` is empty. `refingerprinted` says a narration strike on
+     * this element was carried onto the new words.
+     */
+    setBlockText: (
+      projectDir: string, elementKey: string, newText: string, familyId?: string
+    ) => Promise<{
+      success: boolean;
+      result?: {
+        file: string; elementKey: string;
+        textBefore: string; textAfter: string;
+        written: boolean; refingerprinted: boolean;
+        fromSha256: string; toSha256: string;
+      };
+      rewrittenEntries?: string[];
+      error?: string;
+    }>;
   };
   window: {
     hide: () => Promise<{ success: boolean }>;
@@ -3462,6 +3498,14 @@ const electronAPI: ElectronAPI = {
       chapterName?: string) =>
       ipcRenderer.invoke(
         'book:set-block-category', projectDir, elementKey, categoryId, familyId, chapterName),
+
+    /** What one element says right now — what the text editor opens on. */
+    readBlockText: (projectDir: string, elementKey: string, familyId?: string) =>
+      ipcRenderer.invoke('book:read-block-text', projectDir, elementKey, familyId),
+
+    /** Make the book say what the reader typed, for one element. */
+    setBlockText: (projectDir: string, elementKey: string, newText: string, familyId?: string) =>
+      ipcRenderer.invoke('book:set-block-text', projectDir, elementKey, newText, familyId),
   },
   play: {
     startSession: () =>

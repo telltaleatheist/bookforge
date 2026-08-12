@@ -753,6 +753,7 @@ const PDF_HAS_NO_BOOK_MESSAGE =
                     (selectLikeThis)="selectLikeThis($event)"
                     (deleteLikeThis)="deleteLikeThis($event)"
                     (deleteBlock)="deleteBlock($event)"
+                    (editBlockText)="onEditBookBlockText($event)"
                     (marqueeSelect)="onMarqueeSelect($event)"
                     (mergeSelection)="mergeSelectedBlocks()"
                     (pageDeleteToggle)="togglePageDeleted($event)"
@@ -1034,7 +1035,7 @@ const PDF_HAS_NO_BOOK_MESSAGE =
       <div class="modal-overlay" (click)="cancelTextEdit()">
         <div class="text-editor-modal" (click)="$event.stopPropagation()">
           <div class="modal-header">
-            <h3>Edit Block Text</h3>
+            <h3>{{ editingBlockElement() ? 'Edit the book's text' : 'Edit Block Text' }}</h3>
             <div class="editor-meta">
               @if (editingBlock()) {
                 <span class="meta-item">Page {{ editingBlock()!.page + 1 }}</span>
@@ -1060,8 +1061,13 @@ const PDF_HAS_NO_BOOK_MESSAGE =
             ></textarea>
             <div class="char-count">
               {{ editedText().length }} characters
-              @if (editingBlock() && editedText() !== editingBlock()!.text) {
+              @if (textEditDirty()) {
                 <span class="modified-indicator">· Modified</span>
+              }
+              @if (editingBlockElement()) {
+                <!-- The block may be one page's worth of a paragraph; what is in
+                     the box is the whole element, which is what gets written. -->
+                <span class="meta-item">the whole element, as the book has it</span>
               }
             </div>
           </div>
@@ -1070,7 +1076,7 @@ const PDF_HAS_NO_BOOK_MESSAGE =
             <desktop-button variant="ghost" (click)="cancelTextEdit()">Cancel</desktop-button>
             <desktop-button
               variant="primary"
-              [disabled]="!editingBlock() || editedText() === editingBlock()!.text"
+              [disabled]="!textEditDirty()"
               (click)="saveTextEdit()"
             >
               Save Changes
@@ -4955,6 +4961,27 @@ export class PdfPickerComponent implements OnInit {
   // Legacy text editor modal state (kept for compatibility, may be removed later)
   readonly showTextEditor = signal(false);
   readonly editingBlock = signal<TextBlock | null>(null);
+  /**
+   * The ELEMENT the open editor is correcting, when it is correcting a book.
+   *
+   * Null for a working PDF, whose blocks are a reading of a raster and have no
+   * element to write onto — which is also what tells `saveTextEdit` which of the
+   * two stores the correction belongs in.
+   */
+  readonly editingBlockElement = signal<string | null>(null);
+  /**
+   * What the editor OPENED with, so "has the user changed anything" is asked
+   * against that and not against the block's own text.
+   *
+   * For a book those two differ by construction: the editor opens on the whole
+   * element and the block may be one page's worth of it, so comparing against
+   * the block would show a paragraph that spans a page turn as modified before
+   * the user has typed a character — and would then let them "save" it and lose
+   * the other half.
+   */
+  readonly editedTextOriginal = signal('');
+  readonly textEditDirty = computed(() =>
+    this.editingBlock() !== null && this.editedText() !== this.editedTextOriginal());
   readonly editedText = signal('');
 
   // Alert modal state
@@ -7202,29 +7229,144 @@ export class PdfPickerComponent implements OnInit {
   openTextEditor(block: TextBlock): void {
     this.editingBlock.set(block);
     this.editedText.set(block.text);
+    this.editedTextOriginal.set(block.text);
+    this.editingBlockElement.set(null);
+    this.showTextEditor.set(true);
+  }
+
+  /**
+   * Correct what the BOOK says at this block.
+   *
+   * Two things separate this from `openTextEditor`, and both matter enough that
+   * it is its own entry point rather than a flag on that one.
+   *
+   * It opens on the ELEMENT'S WHOLE TEXT, read from the book. quire reports an
+   * element that spans a page break once per page it touches, each carrying only
+   * the words on that page — so the block the user right-clicked may be half a
+   * paragraph. Opening the editor on that half and saving it would tell main the
+   * paragraph now reads as its first half, and the second would be gone.
+   *
+   * And it remembers the ELEMENT, not the block id. The save goes into the book
+   * against `bf_element` — the same identity a strike and a relabel use — where
+   * a block id would bind the fix to the pagination it was made under.
+   */
+  async onEditBookBlockText(event: LaidOutBlock): Promise<void> {
+    if (this.curationLocked()) return;
+    const dir = this.projectPath();
+    const element = event.bf_element;
+    if (!dir || element === undefined) {
+      this.showAlert({
+        title: 'This text cannot be corrected here',
+        message: dir
+          ? 'That block was not matched to an element of the book, so there is nothing to write '
+            + 'the correction onto. The warnings shown when this book opened name every block in '
+            + 'that state.'
+          : 'A correction is written into the project\'s book, and this document does not belong '
+            + 'to a project. Import it from Studio first.',
+        type: 'warning',
+      });
+      return;
+    }
+
+    const answer = await this.electronService.readBookBlockText(
+      dir, element, this.workingChainId());
+    if (!answer.success || answer.data === undefined) {
+      this.showAlert({
+        title: 'That block could not be read out of the book',
+        message: answer.error
+          ?? 'The book came back with no text for that element and with no reason.',
+        type: 'error',
+      });
+      return;
+    }
+
+    this.editingBlock.set(this.textBlockFor(event));
+    this.editingBlockElement.set(element);
+    this.editedText.set(answer.data.text);
+    this.editedTextOriginal.set(answer.data.text);
     this.showTextEditor.set(true);
   }
 
   cancelTextEdit(): void {
     this.showTextEditor.set(false);
     this.editingBlock.set(null);
+    this.editingBlockElement.set(null);
     this.editedText.set('');
+    this.editedTextOriginal.set('');
   }
 
   saveTextEdit(): void {
     const block = this.editingBlock();
     const newText = this.editedText();
+    const element = this.editingBlockElement();
 
-    if (!block || newText === block.text) {
+    if (!block) {
       this.cancelTextEdit();
       return;
     }
 
-    // Save as text correction instead of modifying block directly
-    this.editorState.setTextCorrection(block.id, newText);
+    // With the BOOK the text is a fact about the book, so it goes INTO the book
+    // — the same rule the category follows (`setBookBlockCategories`), said for
+    // the other thing a person can correct about a block. It used to go into
+    // `textCorrections` instead, which made it a fact about this window: the
+    // book kept saying what it always said, and the narration cut, the
+    // preserving export, the Chapter tab and the naming pass all went on reading
+    // the book. See electron/book-text.ts.
+    if (element !== null) {
+      void this.saveBookBlockText(element, newText);
+      return;
+    }
 
-    // Close modal
+    if (newText === this.editedTextOriginal()) {
+      this.cancelTextEdit();
+      return;
+    }
+    // A working PDF keeps its correction where it always did: a scan's blocks
+    // are the analyzer's reading of a raster, not markup with an element to
+    // write onto.
+    this.editorState.setTextCorrection(block.id, newText);
     this.cancelTextEdit();
+  }
+
+  /**
+   * Write the corrected text into the book, then make the pages agree with it.
+   *
+   * REAL layout, unlike a relabel: words changed, so the lines move and the
+   * document that holds them is measured again — one document, in the book the
+   * window already has open, not a re-open.
+   */
+  private async saveBookBlockText(elementKey: string, newText: string): Promise<void> {
+    const dir = this.projectPath();
+    if (!dir) return;
+    this.cancelTextEdit();
+
+    const answer = await this.electronService.setBookBlockText(
+      dir, elementKey, newText, this.workingChainId());
+    if (!answer.success || !answer.result) {
+      this.showAlert({
+        title: 'The text was not corrected',
+        message: answer.error
+          ?? 'The correction came back without a result and without a reason, which is a fault in '
+            + 'BookForge rather than anything about this book. Nothing was written.',
+        type: 'error',
+      });
+      return;
+    }
+    if (!answer.result.written) {
+      // The book already read that way — a retype that changed only whitespace
+      // nobody can see. Nothing moved, so nothing is laid out again.
+      return;
+    }
+    if (answer.result.refingerprinted) {
+      this.showAlert({
+        title: 'A strike on this block now describes different words',
+        message: `You had struck this block, and it is still struck. What it says has changed, so `
+          + `the record of what you struck was updated to match: it now remembers `
+          + `"${answer.result.textAfter.slice(0, 80)}".`,
+        type: 'info',
+      });
+    }
+    await this.relayoutBookAfterEdit(answer.rewrittenEntries ?? [], elementKey);
   }
 
   // Alert modal methods
