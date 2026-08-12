@@ -4298,8 +4298,17 @@ export class PdfPickerComponent implements OnInit {
    */
   private readonly narrationCopyStaleFor = signal<string | null>(null);
 
-  /** The badge: this project has a narration copy, and it is out of date. */
+  /**
+   * The badge: this project has a narration copy, and it is out of date.
+   *
+   * Two sources, oldest wins nothing: DISK TRUTH from `narration:state` (the
+   * copy's record names the book it was cut from, so the fact survives a
+   * window restart and goes away when the copy is exported again), OR the
+   * session mark a write's `already-stale` answer set a moment ago — the
+   * between-refreshes immediacy the disk read then confirms.
+   */
   readonly narrationCopyStale = computed<boolean>(() => {
+    if (this.narrationState()?.narrationCopyStale === true) return true;
     const dir = this.projectPath();
     return dir !== null
       && this.narrationCopyStaleFor() === dir
@@ -4523,6 +4532,13 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
     this.narrationAnswer.set({ dir, state: answer.state });
+    // The disk says the copy names the book on disk again — it was exported
+    // afresh, or a rename carried it along — so the session's stale mark is
+    // out of date and the badge follows the record, not the memory.
+    if (answer.state.narrationCopyStale === false && answer.state.narrationPath !== null
+      && this.narrationCopyStaleFor() === dir) {
+      this.narrationCopyStaleFor.set(null);
+    }
     // ── The book moved under the record, and NOTHING was thrown away ────────
     //
     // This used to say "Your narration deletions were cleared", because main

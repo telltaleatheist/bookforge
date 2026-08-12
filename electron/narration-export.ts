@@ -115,6 +115,7 @@ export async function readNarrationState(
       bookPath: null, bookRelPath: null, bookSha256: null, converted: false,
       deletions: null, staleReason: null, mismatched: [], unverifiable: [],
       narrationPath: null, narrationRelPath: null,
+      narrationCutFromSha256: null, narrationCopyStale: false,
     };
   }
 
@@ -134,6 +135,23 @@ export async function readNarrationState(
 
   const narration = await manifestService.readNarrationEpub(projectDir, familyId);
 
+  // The copy's WHOLE record, for the one fact the location cannot state: which
+  // book it was cut from. The comparison here is the durable form of the
+  // `already-stale` answer each write reports (electron/book-chapters.ts) — the
+  // picker's badge reads it on open, so an edit made in one session is still
+  // said in the next. Digests measured under DIFFERENT algorithms (the zip →
+  // exploded migration) are incomparable, not evidence of an edit, so they do
+  // not raise the badge — the same ruling `narrationDeletionsStaleReason`
+  // applies to strike stamps, for the same reason: "your copy is stale" must
+  // not be said about a migration that changed no words.
+  const copyRecord = narration === null
+    ? null
+    : await manifestService.readNarrationEpubRecord(projectDir, familyId);
+  const cutFrom = copyRecord?.fromEpubSha256 ?? null;
+  const narrationCopyStale = narration !== null && cutFrom !== null
+    && cutFrom !== sha256
+    && bookDigestAlgorithmChange(cutFrom, sha256) === null;
+
   return {
     bookPath: book.absPath,
     bookRelPath: book.relPath,
@@ -145,6 +163,8 @@ export async function readNarrationState(
     unverifiable,
     narrationPath: narration?.absPath ?? null,
     narrationRelPath: narration?.relPath ?? null,
+    narrationCutFromSha256: cutFrom,
+    narrationCopyStale,
   };
 }
 

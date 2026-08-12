@@ -1161,6 +1161,28 @@ export interface NarrationState {
   /** Where the narration copy is, when one has been exported. */
   narrationPath: string | null;
   narrationRelPath: string | null;
+  /**
+   * The sha256 of the book the narration copy was CUT FROM, or null when there
+   * is no copy (or a record too old to say — `fromEpubSha256` predates nothing,
+   * but a null here must never be read as "fresh").
+   */
+  narrationCutFromSha256: string | null;
+  /**
+   * True when the project HAS a narration copy and it was provably cut from a
+   * book other than the one on disk — the file an audiobook would be built
+   * from no longer says what the book says. This is the durable form of the
+   * `already-stale` answer each write reports at write time: the picker's
+   * badge reads it on open, so the fact survives a window restart instead of
+   * living only in the session that happened to make the edit.
+   *
+   * False when there is no copy, when the copy matches, and when the two
+   * digests were measured under DIFFERENT algorithms (the zip → exploded
+   * migration): incomparable is not evidence of an edit, and the sentence "your
+   * copy is stale, export again" must not be raised by a migration that
+   * changed no words. `narrationCutFromSha256` still travels for any caller
+   * that wants to show "cannot verify".
+   */
+  narrationCopyStale: boolean;
 }
 
 /**
