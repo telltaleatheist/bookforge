@@ -3544,6 +3544,55 @@ export class ElectronService {
   }
 
   /**
+   * Say, in the book itself, what a RUN of its elements ARE — one gesture,
+   * one IPC, one write.
+   *
+   * The palette labels a SELECTION, and sending it one element at a time made
+   * every element pay the whole fixed cost of a write (read the spine, write,
+   * verify, two digests, a manifest transaction, the naming pass) — measured
+   * 2026-08-11 at ~500 ms per element, so a dozen blocks was ~6.5 s of blocked
+   * UI. The batch pays it once: ~520 ms for the same dozen.
+   *
+   * Semantics are the singular's, spread over a list: the WHOLE batch is
+   * validated before the first byte, so a selection never lands half-applied;
+   * an element the book already labels this way is `written: false` in
+   * `results`, not a refusal. No `chapterName` — a name belongs to ONE chapter
+   * and a batch has no one name to give; promotions that need one come back
+   * with `needsChapterName` per element.
+   */
+  async setBookBlockCategories(
+    projectDir: string,
+    edits: ReadonlyArray<{ elementKey: string; categoryId: string }>,
+    familyId?: string,
+  ): Promise<{
+    success: boolean;
+    /** One per element asked about, in the order asked. */
+    results?: Array<{
+      file: string; elementKey: string;
+      categoryBefore: string | null; categoryAfter: string;
+      written: boolean; fromSha256: string; toSha256: string;
+      openingUnnamed: string | null; needsChapterName: string | null;
+    }>;
+    fromSha256?: string;
+    toSha256?: string;
+    openingsNamed?: number;
+    /**
+     * Every zip entry this gesture rewrote — the relabelled documents plus
+     * whatever the naming pass touched — deduped, main's own list. Present on
+     * SOME failures too: a naming pass that failed after the category writes
+     * landed still says which entries moved, so the window can redraw what is
+     * actually on disk.
+     */
+    rewrittenEntries?: string[];
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.setBlockCategories(projectDir, edits, familyId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
    * What one element of the book says right now, whole.
    *
    * What the text editor opens on, and deliberately NOT the block's own text: a

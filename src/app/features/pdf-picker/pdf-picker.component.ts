@@ -869,6 +869,18 @@ const PDF_HAS_NO_BOOK_MESSAGE =
                  itself never refuses, it only occasionally asks a question
                  first (finishEditing()'s unsaved-background-tabs prompt). -->
             <div class="done-bar">
+              <!-- The narration copy went stale under an edit. A standing fact,
+                   not news, so it is a quiet persistent badge here rather than
+                   a modal per rename (Owen, 2026-08-11: "everything should be
+                   instant" — the modal interrupted every gesture to repeat one
+                   sentence). It clears when the project changes; re-exporting
+                   the copy is done from the versions window. -->
+              @if (narrationCopyStale()) {
+                <span
+                  class="narration-stale-badge"
+                  title="This project's narration copy was cut from an older version of the book, so your latest edits are not in it. Export the TTS copy again from the versions window before making the audiobook."
+                >Narration copy is from an older version of this book — export it again</span>
+              }
               <desktop-button
                 variant="primary"
                 size="lg"
@@ -1862,10 +1874,24 @@ const PDF_HAS_NO_BOOK_MESSAGE =
       display: flex;
       align-items: center;
       justify-content: flex-end;
+      gap: var(--ui-spacing-lg);
       flex-shrink: 0;
       padding: var(--ui-spacing-md) var(--ui-spacing-lg);
       background: var(--bg-elevated);
       border-top: 1px solid var(--border-subtle);
+    }
+
+    /* Quiet on purpose: a standing fact beside the Done button, legible when
+       looked at and ignorable while editing — the whole reason it is not a
+       modal. Warning-tinted text, no fill, no border: it is a sentence, not a
+       control. */
+    .narration-stale-badge {
+      font-size: $font-size-sm;
+      color: var(--warning-text);
+      opacity: 0.85;
+      text-align: right;
+      max-width: 48ch;
+      line-height: 1.3;
     }
 
     /* Genuinely BIG (Owen's own word, 2026-08-10) and obviously terminal —
@@ -4214,6 +4240,48 @@ export class PdfPickerComponent implements OnInit {
    */
   readonly narrationCopyPath = computed<string | null>(() =>
     this.narrationState()?.narrationPath ?? null);
+
+  // ── The narration copy that no longer matches the book — a BADGE, not a modal
+  //
+  // Owen, 2026-08-11, after a rename raised "The narration copy still says the
+  // old title" as a modal: "everything should be instant" — and the plan he
+  // ratified demotes this warning by name: it "must NOT interrupt the gesture:
+  // it becomes a persistent, quiet badge". The fact is real (the copy the
+  // audiobook would be built from was cut from an older book) but it is the
+  // SAME fact after every rename, every relabel and every text edit until the
+  // copy is exported again; a modal per edit makes the user dismiss it N times
+  // to be told one thing, and each dismissal interrupts the very gesture the
+  // instant editor exists to make instant.
+
+  /**
+   * The project whose narration copy a write answered `already-stale` about,
+   * or null.
+   *
+   * Stamped with the project (the same discipline as `narrationAnswer`), so a
+   * window that moves to another book does not carry the badge across. Session
+   * truth, deliberately: main answers `narrationCopy: 'already-stale'` on each
+   * write, and the first such answer sets this for good — later ones change
+   * nothing, which is what makes it quiet. Once `narration:state` reports the
+   * copy's own cut-from digest this becomes disk truth that survives a window
+   * restart; until then a freshly-opened window shows no badge until its first
+   * edit answers.
+   */
+  private readonly narrationCopyStaleFor = signal<string | null>(null);
+
+  /** The badge: this project has a narration copy, and it is out of date. */
+  readonly narrationCopyStale = computed<boolean>(() => {
+    const dir = this.projectPath();
+    return dir !== null
+      && this.narrationCopyStaleFor() === dir
+      && this.narrationCopyPath() !== null;
+  });
+
+  /** A write just said the narration copy was cut from an older book. */
+  private noteNarrationCopyStale(): void {
+    const dir = this.projectPath();
+    if (dir === null) return;
+    this.narrationCopyStaleFor.set(dir);
+  }
 
   // ── Deleting ON the TTS copy ───────────────────────────────────────────────
   //
@@ -7445,6 +7513,23 @@ export class PdfPickerComponent implements OnInit {
     }
     this.cancelTextEdit();
 
+    // ── A chapter opening's text IS the chapter's name ──────────────────────
+    //
+    // Owen, 2026-08-11: "i changed a chapter opener to something else inline.
+    // it didnt change the chapter name as i expected". He expected right: the
+    // printed heading and the table-of-contents entry are ONE fact stated in
+    // two places — the naming pass derives the heading FROM the stored name —
+    // so an edit that reached only the heading's text would be overwritten by
+    // the next naming pass, the book putting the old words back over the
+    // user's. Editing the opening therefore IS the rename: one gesture, one
+    // write, the heading and every table of contents together. The Chapter
+    // tab's rename field and this edit converge on the same IPC, so the two
+    // surfaces cannot disagree about what the chapter is called.
+    const opening = this.blocks().find(b => b.bf_element === elementKey);
+    if (opening !== undefined && isChapterOpening(opening)) {
+      return this.renameChapterFromOpeningEdit(dir, elementKey, newText, onPage);
+    }
+
     const answer = await this.electronService.setBookBlockText(
       dir, elementKey, newText, this.workingChainId());
     if (!answer.success || !answer.result) {
@@ -7486,6 +7571,95 @@ export class PdfPickerComponent implements OnInit {
     }
     await this.relayoutBookAfterEdit(
       answer.rewrittenEntries ?? [], elementKey, onPage ? elementKey : undefined);
+    return true;
+  }
+
+  /**
+   * The text edit of a chapter OPENING, performed as the rename it is.
+   *
+   * `saveBookBlockText` routes here — see the branch there for why the two are
+   * one fact. The shape mirrors `retitleBookChapter` (the Chapter tab's path to
+   * the same IPC) with the one addition the inline editor needs: the typed
+   * words are ALREADY pixels, so every outcome must settle the page —
+   * `finishInlineEdit(…, true)` when the book took the name, `(…, false)` when
+   * it refused OR when the naming pass declined to rewrite this heading, since
+   * either way the page would be claiming words the book's page does not have.
+   *
+   * Answers whether the book now calls the chapter `title`, like its sibling.
+   */
+  private async renameChapterFromOpeningEdit(
+    dir: string, elementKey: string, title: string, onPage: boolean,
+  ): Promise<boolean> {
+    const answer = await this.electronService.renameBookChapter(
+      dir, parseNarrationElementKey(elementKey).file, title, this.workingChainId());
+    if (!answer.success || !answer.result) {
+      // The page is put back BEFORE the user is told, so the sentence they
+      // read is true of what they are looking at while they read it.
+      const page = onPage ? await this.epubViewer?.finishInlineEdit(elementKey, false) : undefined;
+      this.showAlert({
+        title: 'That chapter was not renamed',
+        message: (answer.error === undefined
+          ? 'The rename came back with no result and no reason. Nothing was written.'
+          : answer.error)
+          + (page === 'restored'
+            ? '\n\nThe words on the page have been put back to what the book still says.'
+            : page === undefined
+              ? ''
+              : '\n\nBookForge could not confirm that the page was put back, so what is on screen '
+                + 'may not be what the book says. Close and re-open the book before trusting it.'),
+        type: 'error',
+      });
+      return false;
+    }
+
+    if (typeof answer.openingUnnamed === 'string') {
+      // The rename landed in the tables of contents and the naming pass then
+      // declined to rewrite this document's heading — so the typed words are
+      // pixels the book's PAGE does not have, even though its contents now
+      // carry the name. The words come off before the explanation goes up.
+      const page = onPage ? await this.epubViewer?.finishInlineEdit(elementKey, false) : undefined;
+      this.showAlert({
+        title: 'The chapter was renamed; the page still prints the old heading',
+        message: `This chapter is now called "${title}" in the book's table of contents, and the `
+          + `heading on the page was not rewritten to match. ${answer.openingUnnamed}`
+          + (page === 'restored'
+            ? '\n\nThe heading on the page has been put back to what the book prints.'
+            : page === undefined
+              ? ''
+              : '\n\nBookForge could not confirm the page was put back — close and re-open the '
+                + 'book before trusting the heading on screen.'),
+        type: 'warning',
+      });
+    } else if (onPage) {
+      await this.epubViewer?.finishInlineEdit(elementKey, true);
+    }
+
+    const rewritten = answer.rewrittenEntries;
+    if (rewritten === undefined) {
+      this.showAlert({
+        title: 'This book may still show the old heading',
+        message: 'The rename landed in the book, but main did not say which of its documents it '
+          + 'rewrote, so the pages on screen were not laid out again. Close and re-open the book '
+          + 'to see the change.',
+        type: 'warning',
+      });
+    } else if (rewritten.length > 0) {
+      // `alreadyOnPage` only when the naming pass DID rewrite the heading: then
+      // the frame's typed words and the book's new heading agree, and the
+      // remount-skip's pagination proof decides the rest. When the pass
+      // declined, the frame was just restored to the OLD heading — which is
+      // what the book's page still prints, so the ordinary remount rules hold.
+      await this.relayoutBookAfterEdit(
+        rewritten, elementKey,
+        onPage && typeof answer.openingUnnamed !== 'string' ? elementKey : undefined);
+    }
+
+    if (answer.result.narrationCopy === 'already-stale') this.noteNarrationCopyStale();
+
+    // The chapter rail and the narration record catch up AFTER the pixels —
+    // measured at 9.1 ms (2026-08-12), so this is about ordering, not cost:
+    // nothing visible waits on it.
+    await this.refreshBookEpub();
     return true;
   }
 
@@ -14888,19 +15062,12 @@ export class PdfPickerComponent implements OnInit {
       await this.relayoutBookAfterEdit(rewritten, block.bf_element);
     }
 
-    if (answer.result.narrationCopy === 'already-stale') {
-      // The one case the rename could not keep in step, said out loud. A stale
-      // narration copy is the file the audiobook would actually be built from,
-      // so silence here would mean a chapter announced under its old name with
-      // nothing on screen explaining why.
-      this.showAlert({
-        title: 'The narration copy still says the old title',
-        message: 'This project has an exported narration copy that was cut from a different '
-          + 'version of the book, so the rename was not applied to it. Export the narration copy '
-          + 'again before making the audiobook, or it will announce the old chapter title.',
-        type: 'warning',
-      });
-    }
+    // The one case the rename could not keep in step. Not silence — a stale
+    // narration copy is the file the audiobook would be built from — but not a
+    // modal either: it is the same fact after every rename until the copy is
+    // exported again, and a modal per rename interrupts the gesture to repeat
+    // it. The badge by the Done button says it once and keeps saying it.
+    if (answer.result.narrationCopy === 'already-stale') this.noteNarrationCopyStale();
   }
 
   /**
@@ -14982,19 +15149,9 @@ export class PdfPickerComponent implements OnInit {
       await this.relayoutBookAfterEdit(rewritten, anchorElement);
     }
 
-    if (answer.result.narrationCopy === 'already-stale') {
-      // The one case the add could not keep in step, said out loud. A stale
-      // narration copy is the file the audiobook would actually be built from,
-      // so silence here would mean a chapter announced under no name at all with
-      // nothing on screen explaining why.
-      this.showAlert({
-        title: 'The narration copy does not list the new chapter',
-        message: 'This project has an exported narration copy that was cut from a different '
-          + 'version of the book, so the new chapter was not listed in it. Export the narration '
-          + 'copy again before making the audiobook, or it will not announce this chapter.',
-        type: 'warning',
-      });
-    }
+    // Same demotion as the rename's: the fact is standing, not news, so it is
+    // the badge's to keep saying rather than a modal's to repeat.
+    if (answer.result.narrationCopy === 'already-stale') this.noteNarrationCopyStale();
   }
 
   /**
@@ -15317,45 +15474,62 @@ export class PdfPickerComponent implements OnInit {
     // pre-filled from that block's own printed heading.
     let unnamed: { file: string; blockId: string; reason: string } | null = null;
 
-    for (const [element, sharing] of byElement) {
-      const answer = await this.electronService.setBookBlockCategory(
-        dir, element, categoryId, this.workingChainId());
-      if (!answer.success || !answer.result) {
-        // Main's own sentence, verbatim: it names the element, the category or
-        // the project that was missing. The first one stops the run — the rest
-        // would fail the same way, and a stack of identical alerts helps nobody.
-        // A failure answer CAN still name rewritten entries — a gesture that
-        // relabelled the block and then could not list its document moved bytes
-        // before it stopped — and those are unioned so the redraw below covers
-        // what actually landed.
-        if (Array.isArray(answer.rewrittenEntries)) {
-          for (const entry of answer.rewrittenEntries) rewrittenEntries.add(entry);
+    // ── ONE call for the whole selection ────────────────────────────────────
+    //
+    // This was a loop — one `book:set-block-category` per element, awaited in
+    // turn, each paying the whole fixed cost of a write (the spine read, the
+    // write, the verification, two digests, a manifest transaction, and the
+    // naming pass behind all of it). Measured 2026-08-11 on the migrated
+    // Nuremberg project: ~500 ms per element, ~6.5 s for a 12-block selection.
+    // The batch pays the cost once (~520 ms for the same selection), and it is
+    // also the only shape under which a refusal is whole: main validates every
+    // element before the first byte, so a selection can no longer land
+    // half-applied with the refusal naming only the element it stopped at.
+    const answer = await this.electronService.setBookBlockCategories(
+      dir,
+      [...byElement.keys()].map(elementKey => ({ elementKey, categoryId })),
+      this.workingChainId());
+    if (!answer.success || answer.results === undefined) {
+      // Main's own sentence, verbatim: it names the element, the category or
+      // the project that was missing. A failure answer CAN still name rewritten
+      // entries — a batch whose categories landed and whose naming pass then
+      // failed moved bytes before it stopped — and those feed the redraw below
+      // so the screen follows what is actually on disk.
+      if (Array.isArray(answer.rewrittenEntries)) {
+        for (const entry of answer.rewrittenEntries) rewrittenEntries.add(entry);
+        if (rewrittenEntries.size > 0) {
+          // The category writes landed even though the gesture as a whole
+          // failed, so the blocks repaint: pixels that still show the old
+          // label would claim a book the disk no longer holds.
+          repaint.push(...[...byElement.values()].flat());
         }
-        refusal = answer.error === undefined
-          ? 'The relabel came back without a result and without a reason, which is a fault in '
-            + 'BookForge rather than anything about this book. Nothing was written.'
-          : answer.error;
-        break;
       }
-      if (answer.rewrittenEntries === undefined) {
-        // A success that does not say which entries it rewrote cannot be
-        // followed by a redraw of the right documents — and main always says,
-        // so this is a fault in BookForge, not a book state.
-        refusal = 'The relabel landed but main did not say which of the book\'s documents it '
-          + 'rewrote, so the pages on screen cannot be laid out again. Close and re-open the '
-          + 'book to see the change.';
-        break;
-      }
-      repaint.push(...sharing);
+      refusal = answer.error === undefined
+        ? 'The relabel came back without a result and without a reason, which is a fault in '
+          + 'BookForge rather than anything about this book. Nothing was written.'
+        : answer.error;
+    } else if (answer.rewrittenEntries === undefined) {
+      // A success that does not say which entries it rewrote cannot be
+      // followed by a redraw of the right documents — and main always says,
+      // so this is a fault in BookForge, not a book state.
+      refusal = 'The relabel landed but main did not say which of the book\'s documents it '
+        + 'rewrote, so the pages on screen cannot be laid out again. Close and re-open the '
+        + 'book to see the change.';
+    } else {
       for (const entry of answer.rewrittenEntries) rewrittenEntries.add(entry);
-      if (openingUnnamed === null && typeof answer.openingUnnamed === 'string') {
-        openingUnnamed = answer.openingUnnamed;
-      }
-      if (unnamed === null && typeof answer.needsChapterName === 'string'
-        && typeof answer.openingUnnamed === 'string') {
-        unnamed = {
-          file: answer.needsChapterName, blockId: sharing[0], reason: answer.openingUnnamed,
-        };
+      for (const result of answer.results) {
+        const sharing = byElement.get(result.elementKey);
+        if (sharing === undefined) continue;  // main answered about an element nobody asked after
+        repaint.push(...sharing);
+        if (openingUnnamed === null && typeof result.openingUnnamed === 'string') {
+          openingUnnamed = result.openingUnnamed;
+        }
+        if (unnamed === null && typeof result.needsChapterName === 'string'
+          && typeof result.openingUnnamed === 'string') {
+          unnamed = {
+            file: result.needsChapterName, blockId: sharing[0], reason: result.openingUnnamed,
+          };
+        }
       }
     }
 
