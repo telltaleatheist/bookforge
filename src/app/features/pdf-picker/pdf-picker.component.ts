@@ -73,6 +73,7 @@ import {
   type ViewedArtifact,
 } from '@shared/document/rail-tasks';
 import { samePath } from '@shared/document/same-path';
+import { isBookPath } from '@shared/document/book-path';
 import { autosaveRetryDelay } from '@shared/document/autosave-retry';
 import { planArtifactOpen, type ArtifactOpenPlan } from '@shared/document/artifact-open';
 import {
@@ -3115,8 +3116,17 @@ export class PdfPickerComponent implements OnInit {
     // an earlier session edited. Opening a PDF variant of a project last
     // touched as an EPUB left pdfName ending .epub, which grayed out OCR on
     // an open PDF (and would have blocked the whole labelling pipeline).
+    //
+    // Through `isBookPath` and not the extension, because the working copy the
+    // user actually edits is an exploded DIRECTORY, `<stem>.working`, with no
+    // extension to read. Asking for `.epub` here answered "this is a PDF" for
+    // every migrated book in the library, and the whole EPUB branch below —
+    // the live-DOM viewer, the outline, markup-preserving export — was
+    // therefore never reached. What the user saw instead was mupdf's raster of
+    // their book, which is exactly the slow reload-per-edit path the exploded
+    // copy exists to replace.
     const loaded = this.editorState.effectivePath() || this.pdfName();
-    return loaded.toLowerCase().endsWith('.epub');
+    return isBookPath(loaded);
   });
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -6589,7 +6599,7 @@ export class PdfPickerComponent implements OnInit {
     // in this app, and it is logged as one instead of being shown as if the
     // book were at fault. PDFs are untouched: the aligner is still how a
     // reflowed PDF finds its markup, and it can still come up short.
-    if (analyzedPath.toLowerCase().endsWith('.epub')) {
+    if (isBookPath(analyzedPath)) {
       console.error(
         `[analysis] ${analyzedPath} came back with ${warnings.length} analysis warning(s), which `
         + 'the EPUB path is not supposed to be able to produce. Not shown to the user. '
@@ -6779,7 +6789,10 @@ export class PdfPickerComponent implements OnInit {
 
     // Check if file needs conversion (AZW3, MOBI, KFX, PRC, FB2, etc.)
     // EPUBs and PDFs are native formats - no conversion needed
-    if (!lowerPath.endsWith('.epub') && !lowerPath.endsWith('.pdf')) {
+    // A book or a PDF is native; anything else is offered to ebook-convert.
+    // `isBookPath` rather than the extension, or an exploded working copy —
+    // which has none — would be sent to ebook-convert as a foreign format.
+    if (!isBookPath(path) && !lowerPath.endsWith('.pdf')) {
       const formatInfo = await this.electronService.isEbookConvertible(path);
       if (formatInfo.convertible && !formatInfo.native) {
         // Check if ebook-convert is available
@@ -7003,7 +7016,7 @@ export class PdfPickerComponent implements OnInit {
 
       // Auto-extract chapters from EPUBs (they have nav.xhtml with TOC)
       // PDFs may or may not have outlines, so we only auto-load for EPUBs
-      if (libraryPath.toLowerCase().endsWith('.epub')) {
+      if (isBookPath(libraryPath)) {
         this.tryLoadOutline();
       }
 
@@ -7012,7 +7025,7 @@ export class PdfPickerComponent implements OnInit {
       // NOT for an EPUB: the rasters would be mupdf's OWN pagination of the
       // book — a different page count under the same page numbers — and the
       // quire viewer shows the live DOM, so nothing may display them.
-      if (!lightweight && !libraryPath.toLowerCase().endsWith('.epub')) {
+      if (!lightweight && !isBookPath(libraryPath)) {
         this.pageRenderService.startOnDemandRendering(quickResult.page_count);
       }
 
@@ -9531,7 +9544,7 @@ export class PdfPickerComponent implements OnInit {
   /** True when the analyzed file is an EPUB, so its markup can be preserved. */
   private analyzedSourceIsEpub(): boolean {
     const source = this.analyzedSourcePath();
-    return !!source && source.toLowerCase().endsWith('.epub');
+    return !!source && isBookPath(source);
   }
 
   /**
@@ -11485,7 +11498,7 @@ export class PdfPickerComponent implements OnInit {
         clearTimeout(this.autoSaveTimeout);
         this.autoSaveTimeout = null;
       }
-      if (this.chapters().length === 0 && docPath.toLowerCase().endsWith('.epub')) {
+      if (this.chapters().length === 0 && isBookPath(docPath)) {
         this.tryLoadOutline();
       }
       return;
@@ -11526,7 +11539,7 @@ export class PdfPickerComponent implements OnInit {
       // the file in front of the user, not the project's edits. loadPdf extracts
       // them for a freshly opened EPUB right after this returns; this covers the
       // mid-session binding, where nothing else will.
-      if (this.chapters().length === 0 && this.effectivePath()?.toLowerCase().endsWith('.epub')) {
+      if (this.chapters().length === 0 && isBookPath(this.effectivePath() ?? '')) {
         this.tryLoadOutline();
       }
 
@@ -11575,7 +11588,7 @@ export class PdfPickerComponent implements OnInit {
     if (project.chapters && project.chapters.length > 0) {
       this.chapters.set(project.chapters);
       this.chaptersSource.set(project.chapters_source || 'manual');
-    } else if (project.source_path?.toLowerCase().endsWith('.epub')) {
+    } else if (isBookPath(project.source_path ?? '')) {
       // No chapters in project, but it's an EPUB - try to extract from nav.xhtml
       this.tryLoadOutline();
     }
@@ -12592,7 +12605,7 @@ export class PdfPickerComponent implements OnInit {
       if (applySavedEdits && project.chapters && project.chapters.length > 0) {
         this.chapters.set(project.chapters);
         this.chaptersSource.set(project.chapters_source || 'manual');
-      } else if (pdfPathToLoad.toLowerCase().endsWith('.epub')) {
+      } else if (isBookPath(pdfPathToLoad)) {
         // Extract chapters from EPUB's nav.xhtml
         this.tryLoadOutline();
       }
@@ -12702,7 +12715,7 @@ export class PdfPickerComponent implements OnInit {
       // different page count under the same page numbers — and the quire
       // viewer shows the live DOM, so nothing may display them. (Background
       // removal is a raster treatment, so it goes with them.)
-      if (!lightweight && !renderPath.toLowerCase().endsWith('.epub')) {
+      if (!lightweight && !isBookPath(renderPath)) {
         // If background removal is enabled, apply it after initial pages load
         if (project.remove_backgrounds) {
           this.pageRenderService.startOnDemandRendering(quickResult.page_count).then(() => {

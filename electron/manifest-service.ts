@@ -66,6 +66,7 @@ import {
   formatBookDigest,
 } from '../shared/book-digest';
 import { passesAfterEpubEvent } from '../shared/document/pass-lifecycle';
+import { WORKING_COPY_SUFFIX } from '../shared/document/book-path';
 import {
   describeLedgerDeletion,
   ledgerAfterDeleting,
@@ -901,7 +902,7 @@ function sanitizeExportStem(raw: string): string {
  * carry the old name; `migrateWorkingCopyContainer` converts them, once, with
  * every entry proved before the archive is removed.
  */
-export const WORKING_COPY_SUFFIX = '.working';
+export { WORKING_COPY_SUFFIX };
 
 /**
  * The suffix the working copy had while it was a ZIP.

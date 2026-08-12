@@ -28,6 +28,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import * as manifestService from './manifest-service';
+import { isBookPath } from '../shared/document/book-path';
 import type { AppliedPassKind, ProjectManifest } from './manifest-types';
 import type {
   ChainPassRequest,
@@ -171,7 +172,11 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
   }
 
   const sourcePath = await resolveSource(request, projectDir, manifest);
-  if (path.extname(sourcePath).toLowerCase() !== '.epub') {
+  // `isBookPath`, not the extension: the project's own working copy is an
+  // exploded directory whose "extension" reads `.working`, so an extension test
+  // here refused every migrated project its own book and told the user to "pick
+  // the EPUB version" of the book they had already picked.
+  if (!isBookPath(sourcePath)) {
     throw new Error(
       `A processing run reads the project's book, and this one was pointed at `
       + `${path.basename(sourcePath)}. Pick the EPUB version of this book, or run `

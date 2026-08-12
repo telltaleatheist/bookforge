@@ -27,6 +27,7 @@ const SUITES = [
   'test-book-block-text',
   'test-element-text-edit',
   'test-layout-neutral-edit',
+  'test-book-path-routing',
   'test-book-chapter-titles',
   'test-book-chapter-add',
   'test-narration-carry',
