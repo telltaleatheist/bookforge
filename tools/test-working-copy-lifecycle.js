@@ -46,9 +46,35 @@ if (!fs.existsSync(MODULE)) {
   process.exit(1);
 }
 const manifestService = require(MODULE);
+const { ZipWriter } = require(path.join(REPO, 'dist', 'electron', 'epub-processor.js'));
+const { removeEpubContainer } = require(path.join(REPO, 'dist', 'electron', 'epub-container.js'));
+// A book's identity and its entries, read the way the app reads them: a working
+// copy is a FOLDER of the book's parts, so nothing here may readFileSync one.
+const {
+  bookDigestOf, bookEntryBytes, bookEntryNames, replaceBookEntry,
+} = require('./fixture-book');
 
-const sha256 = (file) =>
-  crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+// THE BOOK'S identity as the app records it — bare hex for an archive, tagged
+// for an exploded one (shared/book-digest.ts).
+const sha256 = (book) => bookDigestOf(book);
+
+/**
+ * Two books hold the same entries with the same bytes.
+ *
+ * "Byte-identical to the archive original" is what a minted working copy used to
+ * be, and it cannot be said that way any more: the archive is a file hashed over
+ * its compressed bytes and the copy is a folder hashed over its contents, so the
+ * two never share a digest however identical the book is. Same claim, proved the
+ * way `deriveWorkingCopy` proves it.
+ */
+async function sameBook(a, b, message) {
+  const [an, bn] = await Promise.all([bookEntryNames(a), bookEntryNames(b)]);
+  assert.deepStrictEqual([...an].sort(), [...bn].sort(), message);
+  for (const name of an) {
+    const [ab, bb] = await Promise.all([bookEntryBytes(a, name), bookEntryBytes(b, name)]);
+    assert.ok(ab.equals(bb), `${message} (${name})`);
+  }
+}
 
 const readManifest = (dir) =>
   JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf-8'));
@@ -72,14 +98,52 @@ const bookRecordOf = (dir) => {
   return families[0].epub;
 };
 
-/**
- * An EPUB, as far as everything under test is concerned: a file of bytes with a
- * sha256. Nothing here parses one — the working copy is proved by digest, and a
- * digest does not care whether the zip is valid.
- */
-function writeBook(file, body) {
+/** A file that is not a book: a PDF. Bytes, and nothing here reads them. */
+function writeRaw(file, body) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, body);
+}
+
+/**
+ * A REAL EPUB, minimal, whose one chapter says `marker`.
+ *
+ * It used to be enough to write a few bytes and call it a book: minting a
+ * working copy was a byte copy, and a byte copy does not care whether the zip is
+ * valid. It is not a copy any more — the working copy is a FOLDER of the book's
+ * parts, so a mint reads its source entry by entry and proves the result the
+ * same way. A book nothing can open is no longer a book, here or in the app.
+ */
+async function writeBook(file, marker) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const text = String(marker);
+  const id = crypto.createHash('sha256').update(text).digest('hex');
+  const opf = '<?xml version="1.0" encoding="utf-8"?>'
+    + '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="i">'
+    + '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+    + `<dc:identifier id="i">urn:uuid:${id}</dc:identifier>`
+    + '<dc:title>A Book</dc:title><dc:language>en</dc:language></metadata>'
+    + '<manifest><item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>'
+    + '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
+    + '</manifest><spine><itemref idref="c1"/></spine></package>';
+  const container = '<?xml version="1.0" encoding="utf-8"?>'
+    + '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+    + '<rootfiles><rootfile full-path="OEBPS/content.opf" '
+    + 'media-type="application/oebps-package+xml"/></rootfiles></container>';
+  const nav = '<?xml version="1.0" encoding="utf-8"?>'
+    + '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">'
+    + '<head><title>nav</title></head><body><nav epub:type="toc"><ol>'
+    + '<li><a href="ch1.xhtml">One</a></li></ol></nav></body></html>';
+  const chapter = '<?xml version="1.0" encoding="utf-8"?>'
+    + '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>One</title></head><body>'
+    + `<p>${text}</p></body></html>`;
+  const zip = new ZipWriter();
+  zip.addFile('mimetype', Buffer.from('application/epub+zip', 'utf8'), false);
+  zip.addFile('META-INF/container.xml', Buffer.from(container, 'utf8'));
+  zip.addFile('OEBPS/content.opf', Buffer.from(opf, 'utf8'));
+  zip.addFile('OEBPS/nav.xhtml', Buffer.from(nav, 'utf8'));
+  zip.addFile('OEBPS/ch1.xhtml', Buffer.from(chapter, 'utf8'));
+  await zip.write(file);
+  return file;
 }
 
 /** Everything a user's evening of work leaves in a manifest, all at once. */
@@ -147,7 +211,7 @@ function assertRecordsCleared(dir, label, sourceType) {
 async function erase(dir) {
   const before = await manifestService.readExportEpub(dir);
   assert.ok(before, 'erase: the project records no book, so there is nothing to erase');
-  fs.rmSync(before.absPath, { force: true });
+  await removeEpubContainer(before.absPath);
   return manifestService.ensureBookEpub(dir);
 }
 
@@ -165,13 +229,13 @@ const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-working-copy-'));
 manifestService.setLibraryBasePath(ROOT);
 const projectsDir = path.join(ROOT, 'projects');
 
-const ARCHIVE_BYTES = Buffer.from('PK the book exactly as it was handed over');
-const CAST_BYTES = Buffer.from('PK the book the page reader made of the pages');
+const ARCHIVE_BYTES = 'the book exactly as it was handed over';
+const CAST_BYTES = 'the book the page reader made of the pages';
 
 /** A project imported AS an EPUB: archive original, no generated book, no copy. */
-function makeEpubProject(id) {
+async function makeEpubProject(id) {
   const dir = path.join(projectsDir, id);
-  writeBook(path.join(dir, 'archive', 'Killing America.epub'), ARCHIVE_BYTES);
+  await writeBook(path.join(dir, 'archive', 'Killing America.epub'), ARCHIVE_BYTES);
   fs.mkdirSync(path.join(dir, 'source'), { recursive: true });
   writeManifest(dir, {
     manifestVersion: 2,
@@ -190,10 +254,10 @@ function makeEpubProject(id) {
  * A PDF project as it existed BEFORE generated books were kept: the cast landed
  * straight on `outputs.epub`, so the file the user edits IS the hour of GPU.
  */
-function makePdfProjectPreMigration(id) {
+async function makePdfProjectPreMigration(id) {
   const dir = path.join(projectsDir, id);
-  writeBook(path.join(dir, 'archive', 'Deathstalker.pdf'), Buffer.from('%PDF-1.7 pages'));
-  writeBook(path.join(dir, 'source', 'Deathstalker.working.epub'), CAST_BYTES);
+  writeRaw(path.join(dir, 'archive', 'Deathstalker.pdf'), Buffer.from('%PDF-1.7 pages'));
+  await writeBook(path.join(dir, 'source', 'Deathstalker.working.epub'), CAST_BYTES);
   writeManifest(dir, {
     manifestVersion: 2,
     projectId: id,
@@ -216,42 +280,41 @@ function makePdfProjectPreMigration(id) {
 // ── EPUB-native ──────────────────────────────────────────────────────────────
 
 test('an EPUB project mints its working copy as the archive\'s exact bytes', async () => {
-  const dir = makeEpubProject('epub-mint');
+  const dir = await makeEpubProject('epub-mint');
   const book = await manifestService.ensureBookEpub(dir);
 
-  assert.strictEqual(book.relPath, 'source/Killing America.working.epub');
+  assert.strictEqual(book.relPath, 'source/Killing America.working');
   assert.strictEqual(book.remint, null, 'a FIRST copy is not a re-mint and must not be announced');
-  assert.strictEqual(
-    sha256(book.absPath), sha256(path.join(dir, 'archive', 'Killing America.epub')),
-    'the working copy is not byte-identical to the archive original');
+  await sameBook(book.absPath, path.join(dir, 'archive', 'Killing America.epub'),
+    'the working copy does not hold the archive original\'s entries');
 });
 
 test('erasing changes clears every record and restores the archive\'s bytes', async () => {
-  const dir = makeEpubProject('epub-erase');
+  const dir = await makeEpubProject('epub-erase');
   const minted = await manifestService.ensureBookEpub(dir);
   populateRecords(dir);
   // The user's evening: the file itself is edited too, so "byte-identical" is a
   // claim about the copy that comes BACK rather than one nothing disturbed.
-  fs.appendFileSync(minted.absPath, ' — and a chapter opening the user folded');
+  await replaceBookEntry(minted.absPath, 'OEBPS/ch1.xhtml',
+    '<html>and a chapter opening the user folded</html>');
   const archive = path.join(dir, 'archive', 'Killing America.epub');
-  const archiveDigest = sha256(archive);
+  const archiveDigest = await sha256(archive);
 
   const after = await erase(dir);
 
   assert.ok(after.remint, 'erasing changes must produce a receipt');
-  assert.strictEqual(after.remint.relPath, 'source/Killing America.working.epub');
+  assert.strictEqual(after.remint.relPath, 'source/Killing America.working');
   assert.strictEqual(after.remint.deletedBlockIds, 3);
   assert.strictEqual(after.remint.deletedPages, 2);
   assert.strictEqual(after.remint.narrationStrikes, 2);
   assertRecordsCleared(dir, 'epub-erase', 'epub');
-  assert.strictEqual(
-    sha256(after.absPath), archiveDigest,
-    'the fresh copy is not byte-identical to the archive original');
-  assert.strictEqual(sha256(archive), archiveDigest, 'the archive original was written to');
+  await sameBook(after.absPath, archive,
+    'the fresh copy does not hold the archive original\'s entries');
+  assert.strictEqual(await sha256(archive), archiveDigest, 'the archive original was written to');
 });
 
 test('a project with no archive original refuses by name', async () => {
-  const dir = makeEpubProject('epub-no-original');
+  const dir = await makeEpubProject('epub-no-original');
   fs.rmSync(path.join(dir, 'archive', 'Killing America.epub'), { force: true });
   await assert.rejects(
     () => manifestService.requireWorkingCopySource(dir),
@@ -262,8 +325,8 @@ test('a project with no archive original refuses by name', async () => {
 // ── PDF-origin ───────────────────────────────────────────────────────────────
 
 test('a PDF project made before generated books adopts its working copy as one', async () => {
-  const dir = makePdfProjectPreMigration('pdf-adopt');
-  const castDigest = sha256(path.join(dir, 'source', 'Deathstalker.working.epub'));
+  const dir = await makePdfProjectPreMigration('pdf-adopt');
+  const castDigest = await sha256(path.join(dir, 'source', 'Deathstalker.working.epub'));
 
   const adoption = await manifestService.ensureGeneratedEpub(dir);
 
@@ -272,21 +335,21 @@ test('a PDF project made before generated books adopts its working copy as one',
   assert.strictEqual(adoption.adopted.relPath, 'source/Deathstalker.generated.epub');
   assert.strictEqual(adoption.adopted.origin, 'adopted', 'these bytes are not a fresh cast');
   assert.strictEqual(
-    sha256(adoption.adopted.absPath), castDigest,
+    await sha256(adoption.adopted.absPath), castDigest,
     'the generated book is not byte-identical to the working copy it was adopted from');
   // Adopting must not disturb the file the user is editing.
   assert.strictEqual(
-    sha256(path.join(dir, 'source', 'Deathstalker.working.epub')), castDigest,
+    await sha256(path.join(dir, 'source', 'Deathstalker.working.epub')), castDigest,
     'the working copy was changed by the migration');
 });
 
 test('the migration is idempotent — a second run changes nothing', async () => {
-  const dir = makePdfProjectPreMigration('pdf-idempotent');
+  const dir = await makePdfProjectPreMigration('pdf-idempotent');
   const first = await manifestService.ensureGeneratedEpub(dir);
   assert.ok(first.adopted, 'the first run did not adopt anything');
   const recordAfterFirst = JSON.stringify(readManifest(dir).outputs.generatedEpub);
   const filesAfterFirst = fs.readdirSync(path.join(dir, 'source')).sort().join('|');
-  const digestAfterFirst = sha256(first.adopted.absPath);
+  const digestAfterFirst = await sha256(first.adopted.absPath);
 
   const second = await manifestService.ensureGeneratedEpub(dir);
 
@@ -299,19 +362,20 @@ test('the migration is idempotent — a second run changes nothing', async () =>
     fs.readdirSync(path.join(dir, 'source')).sort().join('|'), filesAfterFirst,
     'the second run left a file behind');
   assert.strictEqual(
-    sha256(first.adopted.absPath), digestAfterFirst, 'the second run rewrote the generated book');
+    await sha256(first.adopted.absPath), digestAfterFirst, 'the second run rewrote the generated book');
 });
 
 test('erasing a PDF book\'s changes keeps the cast — that is the whole payoff', async () => {
-  const dir = makePdfProjectPreMigration('pdf-erase');
+  const dir = await makePdfProjectPreMigration('pdf-erase');
   await manifestService.ensureGeneratedEpub(dir);
   populateRecords(dir);
   const working = path.join(dir, 'source', 'Deathstalker.working.epub');
-  fs.appendFileSync(working, ' — and everything the user did to it');
+  await replaceBookEntry(working, 'OEBPS/ch1.xhtml',
+    '<html>and everything the user did to it</html>');
   const generated = path.join(dir, 'source', 'Deathstalker.generated.epub');
-  const castDigest = sha256(generated);
+  const castDigest = await sha256(generated);
   const castMtime = fs.statSync(generated).mtimeMs;
-  assert.notStrictEqual(sha256(working), castDigest, 'the fixture did not actually edit the book');
+  assert.notStrictEqual(await sha256(working), castDigest, 'the fixture did not actually edit the book');
 
   const after = await erase(dir);
 
@@ -320,18 +384,17 @@ test('erasing a PDF book\'s changes keeps the cast — that is the whole payoff'
   assert.strictEqual(after.remint.deletedPages, 2);
   assert.strictEqual(after.remint.narrationStrikes, 2);
   assertRecordsCleared(dir, 'pdf-erase', 'pdf');
-  assert.strictEqual(
-    sha256(after.absPath), castDigest,
-    'the fresh copy is not byte-identical to the book cast from the pages');
+  await sameBook(after.absPath, generated,
+    'the fresh copy does not hold the cast book\'s entries');
   assert.ok(fs.existsSync(generated), 'the cast book was deleted — an hour of GPU with it');
-  assert.strictEqual(sha256(generated), castDigest, 'the cast book was written to');
+  assert.strictEqual(await sha256(generated), castDigest, 'the cast book was written to');
   assert.strictEqual(
     fs.statSync(generated).mtimeMs, castMtime, 'the cast book was rewritten with its own bytes');
 });
 
 test('a PDF whose pages have never been read refuses, naming Convert to EPUB', async () => {
   const dir = path.join(projectsDir, 'pdf-unread');
-  writeBook(path.join(dir, 'archive', 'Unread.pdf'), Buffer.from('%PDF-1.7'));
+  writeRaw(path.join(dir, 'archive', 'Unread.pdf'), Buffer.from('%PDF-1.7'));
   fs.mkdirSync(path.join(dir, 'source'), { recursive: true });
   writeManifest(dir, {
     manifestVersion: 2,
@@ -360,12 +423,13 @@ test('a PDF whose pages have never been read refuses, naming Convert to EPUB', a
 });
 
 test('a recorded generated book that is gone is reported, never re-adopted', async () => {
-  const dir = makePdfProjectPreMigration('pdf-cast-missing');
+  const dir = await makePdfProjectPreMigration('pdf-cast-missing');
   const adoption = await manifestService.ensureGeneratedEpub(dir);
   fs.rmSync(adoption.adopted.absPath, { force: true });
   // The working copy has moved on since the cast — which is exactly why it must
   // not quietly become the thing erasing changes goes back to.
-  fs.appendFileSync(path.join(dir, 'source', 'Deathstalker.working.epub'), ' edited since');
+  await replaceBookEntry(path.join(dir, 'source', 'Deathstalker.working.epub'),
+    'OEBPS/ch1.xhtml', '<html>edited since</html>');
 
   const again = await manifestService.ensureGeneratedEpub(dir);
 
@@ -388,13 +452,16 @@ test('a mint that would land on an archive-grade book is refused, and it survive
   // pointing at the working copy's own path. Nothing writes that today — it is
   // the shape a hand-edited or half-synced manifest takes — and it is exactly
   // the shape in which a mint would overwrite the file it is a copy of.
-  const dir = makePdfProjectPreMigration('pdf-target-guard');
+  const dir = await makePdfProjectPreMigration('pdf-target-guard');
   await manifestService.ensureGeneratedEpub(dir);
+  // The book this project's mints land on: `source/<stem>.working`, a folder of
+  // the book's parts. It is made first, because the damaged record below has to
+  // name a file that is really there for the guard to be about anything.
+  const victim = (await manifestService.ensureBookEpub(dir)).absPath;
   const manifest = readManifest(dir);
-  manifest.outputs.generatedEpub.path = 'source/Deathstalker.working.epub';
+  manifest.outputs.generatedEpub.path = 'source/Deathstalker.working';
   writeManifest(dir, manifest);
-  const victim = path.join(dir, 'source', 'Deathstalker.working.epub');
-  const victimDigest = sha256(victim);
+  const victimDigest = await sha256(victim);
 
   await assert.rejects(
     () => manifestService.mintWorkingCopyFrom(
@@ -402,7 +469,7 @@ test('a mint that would land on an archive-grade book is refused, and it survive
     (err) => /would be written over/.test(err.message),
     'minting onto an archive-grade book must be refused');
   assert.strictEqual(
-    sha256(victim), victimDigest, 'the refused mint wrote to the file anyway');
+    await sha256(victim), victimDigest, 'the refused mint wrote to the file anyway');
 });
 
 (async () => {

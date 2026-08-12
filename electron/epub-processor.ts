@@ -24,6 +24,8 @@ import {
   openEpubSource,
   removeEpubContainer,
   rewriteEpubEntries,
+  stagedContainerKindFor,
+  type EpubContainerKind,
 } from './epub-container';
 import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
 import { blockCategoryForVlm } from '../shared/vlm/conversion';
@@ -1575,7 +1577,7 @@ export async function embedCoverInEpub(epubPath: string, coverImagePath: string)
   await rewriteEpubEntries({
     from: epubPath,
     to: epubPath,
-    toKind: 'zip',
+    toKind: await stagedContainerKindFor(epubPath),
     build: async (source, sink) => {
       for (const entryName of source.getEntries()) {
         // Replace existing cover image data
@@ -1673,7 +1675,7 @@ export async function updateEpubCoverAndMetadata(
   await rewriteEpubEntries({
     from: epubPath,
     to: epubPath,
-    toKind: 'zip',
+    toKind: await stagedContainerKindFor(epubPath),
     build: async (source, sink) => {
       for (const entryName of source.getEntries()) {
         // Replace an existing cover image's bytes.
@@ -1799,7 +1801,7 @@ export async function updateEpubMetadataStandalone(
   await rewriteEpubEntries({
     from: epubPath,
     to: epubPath,
-    toKind: 'zip',
+    toKind: await stagedContainerKindFor(epubPath),
     build: async (source, sink) => {
       for (const entryName of source.getEntries()) {
         if (entryName === opfPath) {
@@ -2309,7 +2311,7 @@ export async function editEpubText(
     await rewriteEpubEntries({
       from: epubPath,
       to: epubPath,
-      toKind: 'zip',
+      toKind: await stagedContainerKindFor(epubPath),
       build: async (source, sink) => {
         for (const entryName of source.getEntries()) {
           if (entryName === href) {
@@ -2544,7 +2546,7 @@ export async function replaceTextInEpub(
     await rewriteEpubEntries({
       from: epubPath,
       to: epubPath,
-      toKind: 'zip',
+      toKind: await stagedContainerKindFor(epubPath),
       build: async (source, sink) => {
         for (const entryName of source.getEntries()) {
           if (entryName === replacedHref) {
@@ -2824,13 +2826,35 @@ function applyTextRemovals(xhtml: string, removals: TextRemovalEntry[]): string 
 }
 
 /**
- * Copy an EPUB file to a new location
+ * Copy an EPUB FILE to a new location — bytes, verbatim.
+ *
+ * ── Why this stayed a byte copy when the working copy became a tree ─────────
+ *
+ * It has exactly one caller, `epub:copy-file` in main.ts, and that channel has
+ * no caller at all: `epubApi.copyFile` is declared in preload.ts and invoked
+ * nowhere in the renderer (grepped across `src/`, 2026-08-11). So nothing hands
+ * it an exploded book today, and giving it a tree form would be inventing a
+ * second, untested copy path beside `copyBookProvingEveryEntry` — the one this
+ * app actually copies books with, which proves the result entry by entry.
+ *
+ * What it will NOT do is discover that by accident. A directory reaches
+ * `fs.readFile` as a bare `EISDIR`, which says nothing about books, so it is
+ * named and refused here instead. If a caller ever does need to copy an exploded
+ * book, the answer is the seam, not a second `readFile`.
  */
 export async function copyEpubFile(
   inputPath: string,
   outputPath: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    if ((await fs.stat(inputPath)).isDirectory()) {
+      return {
+        success: false,
+        error: `${inputPath} is an exploded book — a folder of its parts — and this copies a book `
+          + 'that is one file. Nothing was written. An exploded book is copied through the container '
+          + 'seam (electron/epub-container.ts), which proves the copy entry by entry.',
+      };
+    }
     const data = await fs.readFile(inputPath);
     await fs.writeFile(outputPath, data);
     return { success: true };
@@ -3653,6 +3677,12 @@ export async function copyEpubReplaceBodies(
     await rewriteEpubEntries({
       from: inputPath,
       to: outputPath,
+      // ── ZIP, stated, because this is a DISTINCT ARTIFACT ──────────────────
+      //
+      // The result is a stage EPUB the language pipeline reads next
+      // (stages/02-translate/<lang>.epub), not a staged replacement for the book
+      // it was read from. So its container is its own: those files are archives
+      // and stay archives however the book is stored.
       toKind: 'zip',
       build: async (source, sink) => {
         for (const file of source.getEntries()) {
@@ -3758,6 +3788,12 @@ export async function replaceChapterTextsInEpub(
     await rewriteEpubEntries({
       from: inputPath,
       to: outputPath,
+      // ── ZIP, stated, because this is a DISTINCT ARTIFACT ──────────────────
+      //
+      // The result is the cleanup stage's own book
+      // (stages/01-cleanup/cleaned.epub, electron/ll-jobs.ts), not a staged
+      // replacement for the book it was read from. Its only caller writes it
+      // beside the book, never onto it.
       toKind: 'zip',
       build: async (source, sink) => {
         for (const file of source.getEntries()) {
@@ -7238,6 +7274,12 @@ export async function writeNarrationEpub(
   await rewriteEpubEntries({
     from: inputPath,
     to: outputPath,
+    // ── ZIP, stated, because the narration copy is one of the two BOUNDARIES ──
+    //
+    // `<stem>.tts.epub` is handed to ebook2audiobook, which is third-party
+    // Python with its own ebook parser and cannot be given a folder. It is not a
+    // staged replacement for the book either — it is a second, smaller book — so
+    // its container is its own and does not follow the working copy's.
     toKind: 'zip',
     build: async (zipReader, zipWriter) => {
     // ── The book's own account of itself, brought in line ──────────────────
@@ -7619,7 +7661,7 @@ async function writeBookWithReplacedEntries(
   await rewriteEpubEntries({
     from: inputPath,
     to: outputPath,
-    toKind: 'zip',
+    toKind: await stagedContainerKindFor(inputPath),
     build: async (source, sink) => {
       for (const entry of replacements.keys()) {
         if (!source.hasEntry(entry)) {
@@ -8859,6 +8901,15 @@ export async function exportEpubPreservingMarkup(
   epubSourcePath: string,
   outputPath: string,
   edits: EpubPreservingEdits,
+  /**
+   * The container the result is written as — STATED by the caller, because the
+   * two callers mean different things. The project's own export lands on the
+   * working copy, which is a folder of the book's parts; a Save As lands on a
+   * path the user picked in a file dialog, which is a file they will hand to
+   * somebody. Inferring it from `outputPath` would guess, and the extension is
+   * exactly the thing that stops being informative here.
+   */
+  outputKind: EpubContainerKind,
 ): Promise<{ chapterCount: number; blockCount: number; unalignedUntouched: number; warnings: string[] }> {
   const { blocks, effectiveTexts, chapters, metadata } = edits;
   const warnings: string[] = [];
@@ -9308,7 +9359,7 @@ ${headingHtml}${section.content.join('\n')}
     }
   }
 
-  const zipWriter = await createEpubSink(outputPath, 'zip');
+  const zipWriter = await createEpubSink(outputPath, outputKind);
   zipWriter.addFile('mimetype', Buffer.from('application/epub+zip', 'utf8'), false);
   zipWriter.addFile('META-INF/container.xml', Buffer.from(containerXml, 'utf8'));
   zipWriter.addFile('OEBPS/content.opf', Buffer.from(contentOpf, 'utf8'));

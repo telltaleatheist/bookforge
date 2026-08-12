@@ -44,6 +44,26 @@ import type {
   SetBlockCategoryEdit,
   SourceType,
 } from './manifest-types.js';
+// The container seam. A book is a set of named entries, and whether those
+// entries live in a ZIP or in a directory is a fact about the path rather than
+// about the code that reads it (electron/epub-container.ts). This module makes
+// the working copy a directory, so it is the module that has to say so.
+import {
+  epubContainerKindAt,
+  openEpubSource,
+  partitionEpubEntries,
+  removeEpubContainer,
+  resolveEpubEntryPath,
+  rewriteEpubEntries,
+  type EpubContainerKind,
+} from './epub-container';
+import { bookDigest } from './sidecar-binding';
+import {
+  bookDigestAlgorithm,
+  bookDigestAlgorithmChange,
+  bookDigestHex,
+  formatBookDigest,
+} from '../shared/book-digest';
 import { passesAfterEpubEvent } from '../shared/document/pass-lifecycle';
 import {
   describeLedgerDeletion,
@@ -863,8 +883,32 @@ function sanitizeExportStem(raw: string): string {
   );
 }
 
-/** The suffix that makes a file in `source/` the one file the user edits. */
-export const WORKING_EPUB_SUFFIX = '.working.epub';
+/**
+ * The suffix that makes something in `source/` the one book the user edits.
+ *
+ * It names a DIRECTORY. The working copy is an exploded EPUB — its entries as
+ * real files at their archive-relative paths (`mimetype`,
+ * `META-INF/container.xml`, `EPUB/text/c0001.xhtml`, …) — because editing one
+ * chapter label should write one 84 KB file rather than re-deflate a 25.7 MB
+ * archive so its bytes can be re-hashed into a brand-new cache identity.
+ *
+ * The extension is GONE on purpose. A directory called `<stem>.working.epub`
+ * would have kept every recorded path working untouched, but it leaves a
+ * directory masquerading as a file for anyone browsing the project — and this
+ * whole change is about not pretending a book is a single blob. Projects on disk
+ * carry the old name; `migrateWorkingCopyContainer` converts them, once, with
+ * every entry proved before the archive is removed.
+ */
+export const WORKING_COPY_SUFFIX = '.working';
+
+/**
+ * The suffix the working copy had while it was a ZIP.
+ *
+ * Only two things read this: the naming migration, which must not rename a zip
+ * onto a directory's name, and the container migration, which reads a project's
+ * archived working copy in order to explode it. Nothing MINTS one any more.
+ */
+export const ARCHIVED_WORKING_COPY_SUFFIX = '.working.epub';
 
 /**
  * The suffix that marks the book a page reader cast out of a PDF.
@@ -1018,13 +1062,13 @@ function requireLegalComponent(component: string, manifest: ProjectManifest): st
     `${manifest.projectId || '(no id)'}'s working copy would be called "${component}", which is `
     + `${component.length} characters — a filename may be at most 255 on this filesystem, and a `
     + 'longer one fails as a missing-folder error rather than a naming one. Rename the file in '
-    + `archive/ to something shorter (at most ${255 - WORKING_EPUB_SUFFIX.length} characters before `
+    + `archive/ to something shorter (at most ${255 - ARCHIVED_WORKING_COPY_SUFFIX.length} characters before `
     + 'its extension) and open the book again.'
   );
 }
 
 /**
- * Where the project's working copy lives: `source/<archive basename>.working.epub`.
+ * Where the project's working copy lives: `source/<archive basename>.working/`.
  *
  * ONE derivation, and every writer of the book goes through it — the EPUB
  * projects that copy their original, `foundry vlm-convert` writing a PDF's pages
@@ -1034,12 +1078,12 @@ function requireLegalComponent(component: string, manifest: ProjectManifest): st
  */
 export function exportEpubRelPath(manifest: ProjectManifest): string {
   const component = requireLegalComponent(
-    `${workingEpubStem(manifest)}${WORKING_EPUB_SUFFIX}`, manifest);
+    `${workingEpubStem(manifest)}${WORKING_COPY_SUFFIX}`, manifest);
   return `source/${component}`;
 }
 
 /**
- * Where a FAMILY's working copy lives: `source/<family stem>.working.epub`.
+ * Where a FAMILY's working copy lives: `source/<family stem>.working/`.
  *
  * The per-chain form of `exportEpubRelPath` above, and the one every mint uses
  * now. The stem comes from the family's own SOURCE rather than from the
@@ -1053,7 +1097,25 @@ export function exportEpubRelPath(manifest: ProjectManifest): string {
  */
 export function familyEpubRelPath(family: BookFamily, manifest: ProjectManifest): string {
   const component = requireLegalComponent(
-    `${familyStem(family.source)}${WORKING_EPUB_SUFFIX}`, manifest);
+    `${familyStem(family.source)}${WORKING_COPY_SUFFIX}`, manifest);
+  return `source/${component}`;
+}
+
+/**
+ * Where a family's working copy lived while it was a ZIP.
+ *
+ * The migration's input and nothing else. It is derived rather than read off the
+ * record for the same reason `familyEpubRelPath` is: a project whose book still
+ * carries a name from before the working-copy convention has BOTH problems at
+ * once, and the naming migration settles the stem before the container migration
+ * looks for an archive to explode.
+ */
+export function familyArchivedEpubRelPath(
+  family: BookFamily,
+  manifest: ProjectManifest
+): string {
+  const component = requireLegalComponent(
+    `${familyStem(family.source)}${ARCHIVED_WORKING_COPY_SUFFIX}`, manifest);
   return `source/${component}`;
 }
 
@@ -1467,6 +1529,17 @@ export interface WorkingEpubRenameSummary {
  * says so. And it never renames a file it cannot find — a record pointing at a
  * deleted book is left exactly as it is, because that is `ensureBookEpub`'s
  * problem and it has its own sentence for it.
+ *
+ * ── It renames. It does NOT re-container ────────────────────────────────────
+ *
+ * The working copy is an exploded directory now, so the name this derives ends
+ * in `.working` with no extension. A book still stored as a ZIP renamed onto
+ * that name would be a zip file wearing a directory's name — precisely the
+ * masquerade the extensionless name exists to prevent, and the next reader would
+ * open it expecting a tree. So the target's suffix is chosen from what the book
+ * MEASURABLY IS on disk, and converting one to the other is a different act with
+ * its own proof (`migrateWorkingCopyContainer`) that runs immediately after this
+ * one.
  */
 export async function migrateWorkingEpubNaming(
   projectDir: string,
@@ -1477,12 +1550,20 @@ export async function migrateWorkingEpubNaming(
 
   const recorded = family.epub?.path;
   if (!recorded) return nothing;
-  const targetRel = familyEpubRelPath(family, manifest);
+
+  // Measured BEFORE the target name is derived, and the existence check comes
+  // with it: a record pointing at a book that is not there names no container,
+  // and this migration has nothing to move either way.
+  const fromAbs = toAbs(projectDir, recorded);
+  const container = await epubContainerKindAt(fromAbs);
+  if (container === null) return nothing;
+
+  const targetRel = container === 'directory'
+    ? familyEpubRelPath(family, manifest)
+    : familyArchivedEpubRelPath(family, manifest);
   if (recorded === targetRel) return nothing;
 
-  const fromAbs = toAbs(projectDir, recorded);
   const toAbsPath = toAbs(projectDir, targetRel);
-  if (!fs.existsSync(fromAbs)) return nothing;
   if (fs.existsSync(toAbsPath)) {
     throw new Error(
       `${path.basename(projectDir)} has both ${recorded} and ${targetRel} on disk. The second is `
@@ -1536,6 +1617,368 @@ export async function migrateWorkingEpubNaming(
     to: targetRel,
     ttsFrom: ttsMoved ? ttsRecorded : null,
     ttsTo: ttsMoved ? ttsTargetRel : null,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The container migration — one project's archived working copy, exploded
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** What one project's container migration found, and what it did or would do. */
+export interface WorkingCopyContainerMigration {
+  projectDir: string;
+  /** The chain whose working copy this is about, or null for one with none yet. */
+  familyId: string | null;
+  /** The book's title-ish name, so a sweep's report is readable. */
+  projectName: string;
+  /**
+   * WHAT HAPPENED, in one word:
+   *  - `no-chain`          the project has no working chain to migrate
+   *  - `no-working-copy`   the chain records no book, or records one that is gone
+   *  - `already-exploded`  the book is already a folder of its parts
+   *  - `would-explode`     a DRY RUN: this is what it would do, and it wrote nothing
+   *  - `exploded`          done: verified entry for entry, then the archive removed
+   */
+  outcome: 'no-chain' | 'no-working-copy' | 'already-exploded' | 'would-explode' | 'exploded';
+  /** The archived book, project-relative, when there is one. */
+  fromRelPath: string | null;
+  /** The exploded book, project-relative, when there is one. */
+  toRelPath: string | null;
+  /** Content entries in the book — the number that must be proved. */
+  entries: number;
+  /** Their total size, so a sweep can say what it is about to write. */
+  bytes: number;
+  /** Zero-length `EPUB/` folder records the archive carried and a tree cannot. */
+  directoryMarkersDropped: string[];
+  /** Which recorded digests were re-stamped onto the exploded book's identity. */
+  restamped: string[];
+  /**
+   * Records whose stamp did NOT match the archive, and so were LEFT ALONE. A
+   * record that was already stale before the migration must stay stale — the
+   * whole point of re-stamping is to keep a comparison honest, and refreshing a
+   * stamp that was wrong would tell the user their strikes still describe the
+   * book when they do not.
+   */
+  leftStale: string[];
+}
+
+/** Where a project records its working copy, and where the convention puts it. */
+interface RecordedWorkingCopy {
+  manifest: ProjectManifest;
+  /** The chain that owns it, or null for a project that predates chains. */
+  familyId: string | null;
+  /** Project-relative, exactly as the manifest holds it. Null when it has none. */
+  recordedRel: string | null;
+  /**
+   * Where an exploded working copy belongs for this project — derived ONLY when
+   * there is one to place. A project with no book has no naming question to
+   * answer, and deriving anyway would refuse a perfectly ordinary bare-PDF
+   * project for having no archive original to name a copy after.
+   */
+  targetRel: string | null;
+}
+
+/**
+ * Read where this project's working copy IS, writing nothing.
+ *
+ * The migration's dry run needs the same answer `requireFamily` would give
+ * without the two writes `requireFamily` performs on the way to giving it —
+ * minting a chain for a project that predates them, and adopting a PDF project's
+ * cast. Both are correct at an app door and both are out of the question in a
+ * report that promises to touch nothing.
+ *
+ * So a project that HAS chains is read through `resolveFamily`, exactly as
+ * `requireFamily` reads it; a project that has none is read at the legacy
+ * `outputs.epub`, which is where its book has been all along and which
+ * `ensureBookFamilies` will move under a chain without moving a single file.
+ * The target is derived the project-level way for that case — for a project's
+ * FIRST family the two derivations agree by construction (see
+ * `familyEpubRelPath`), which is the same fact that makes the chain migration
+ * rename nothing.
+ */
+async function recordedWorkingCopy(
+  projectDir: string,
+  familyId?: string
+): Promise<RecordedWorkingCopy> {
+  const manifest = await readManifestAt(projectDir);
+  const families = manifest.families ?? [];
+  if (families.length > 0 || familyId !== undefined) {
+    const answer = resolveFamily(families, familyId, path.basename(projectDir));
+    if (answer.refusal !== null) throw new Error(answer.refusal);
+    const recordedRel = answer.family.epub?.path ?? null;
+    return {
+      manifest,
+      familyId: answer.family.id,
+      recordedRel,
+      targetRel: recordedRel === null ? null : familyEpubRelPath(answer.family, manifest),
+    };
+  }
+  const recordedRel = manifest.outputs?.epub?.path ?? null;
+  return {
+    manifest,
+    familyId: null,
+    recordedRel,
+    targetRel: recordedRel === null ? null : exportEpubRelPath(manifest),
+  };
+}
+
+/**
+ * Turn one project's ARCHIVED working copy into an exploded one, once.
+ *
+ * ── The property that governs every line below ──────────────────────────────
+ *
+ * The working copy carries the user's edits and is NOT re-derivable from
+ * `archive/`. So nothing is removed before its replacement has been proved:
+ * explode, compare entry for entry (names AND bytes), re-stamp the records that
+ * name the book's identity, repoint the manifest — and only then delete the
+ * archive. A mismatch anywhere leaves BOTH artifacts on disk and refuses out
+ * loud, naming the entry.
+ *
+ * ── `apply` is false by default, and that is not a nicety ───────────────────
+ *
+ * A dry run reads the archive, counts and measures its entries, checks every
+ * entry name against the filesystem's 255-character component cap, and reports
+ * what it WOULD write. It opens nothing for writing. A sweep across the library
+ * is expected to be run that way first, read, and only then repeated with
+ * `apply: true`.
+ *
+ * ── Where it sits in the sequence ───────────────────────────────────────────
+ *
+ * Exactly where `migrateWorkingEpubNaming` sits, and for the same reason: it
+ * goes through `requireFamily`, so a project that predates chains is given its
+ * chain first and family reconciliation can never be racing this. The naming
+ * migration then runs BEFORE the container one, because the stem has to be
+ * settled before there is one right answer to "where does the exploded book go".
+ *
+ * ── `archive/` is not touched, read or written ──────────────────────────────
+ *
+ * The only file this reads is the working copy. The archive original is
+ * immutable and is not part of this act.
+ */
+export async function migrateWorkingCopyContainer(
+  projectDir: string,
+  options?: { apply?: boolean; familyId?: string }
+): Promise<WorkingCopyContainerMigration> {
+  const apply = options?.apply === true;
+  const projectName = path.basename(projectDir);
+
+  // ── Read first, and reconcile ONLY for a project there is work to do in ───
+  //
+  // `requireFamily` mints a chain for a project that predates them, and
+  // `migrateWorkingEpubNaming` renames a book — both writes, both correct, and
+  // both things a dry run has no business doing. So the state is read the way
+  // `requireFamily` reads it and WITHOUT its two writes, and the answers that
+  // need no migration (no chain, no book, a book that is already a folder of its
+  // parts) come back before anything is reconciled. A bare PDF nobody has
+  // converted is an ordinary project and this leaves it exactly as it found it,
+  // in either mode.
+  const blankFor = (state: RecordedWorkingCopy): WorkingCopyContainerMigration => ({
+    projectDir,
+    familyId: state.familyId,
+    projectName,
+    outcome: state.familyId === null && state.recordedRel === null ? 'no-chain' : 'no-working-copy',
+    fromRelPath: null,
+    toRelPath: null,
+    entries: 0,
+    bytes: 0,
+    directoryMarkersDropped: [],
+    restamped: [],
+    leftStale: [],
+  });
+
+  const found = await recordedWorkingCopy(projectDir, options?.familyId);
+  if (found.recordedRel === null) return blankFor(found);
+  const foundKind = await epubContainerKindAt(toAbs(projectDir, found.recordedRel));
+  if (foundKind === null) return { ...blankFor(found), fromRelPath: found.recordedRel };
+  if (foundKind === 'directory') {
+    return {
+      ...blankFor(found),
+      outcome: 'already-exploded',
+      fromRelPath: found.recordedRel,
+      toRelPath: found.recordedRel,
+    };
+  }
+
+  // Past here there IS an archived working copy to unpack, so the reconciliation
+  // this migration sits behind is worth doing: the chain first, then the stem
+  // (a project carrying BOTH problems would otherwise have two right answers for
+  // where its exploded book goes).
+  if (apply) {
+    const resolved = await requireFamily(projectDir, options?.familyId);
+    await migrateWorkingEpubNaming(projectDir, resolved.family.id);
+  }
+  const state = await recordedWorkingCopy(projectDir, options?.familyId);
+  const blank = blankFor(state);
+
+  const recorded = state.recordedRel;
+  if (recorded === null) return blank;
+  const fromAbs = toAbs(projectDir, recorded);
+  const container = await epubContainerKindAt(fromAbs);
+  if (container === null) return { ...blank, fromRelPath: recorded };
+  if (container === 'directory') {
+    return { ...blank, outcome: 'already-exploded', fromRelPath: recorded, toRelPath: recorded };
+  }
+
+  const toRel = state.targetRel;
+  if (toRel === null) {
+    throw new Error(
+      `${projectName} records a book at ${recorded} and no place to put an exploded one. This is a `
+      + 'bug: the target is derived from the same record the book was found in.'
+    );
+  }
+  const toAbsPath = toAbs(projectDir, toRel);
+  if (toRel === recorded) {
+    throw new Error(
+      `${projectName}'s book is recorded at ${recorded}, which is the name an EXPLODED working copy `
+      + 'has, and the thing at that path is an archive file. Nothing was done. A project cannot be '
+      + 'migrated while its book is a file wearing a folder\'s name — rename it back to '
+      + `"${path.basename(recorded)}${ARCHIVED_WORKING_COPY_SUFFIX.slice(WORKING_COPY_SUFFIX.length)}" `
+      + 'and open the book again.'
+    );
+  }
+  const alreadyThere = await epubContainerKindAt(toAbsPath);
+  if (alreadyThere !== null) {
+    throw new Error(
+      `${projectName} has both ${recorded} and ${toRel} on disk. Nothing was migrated and nothing `
+      + 'was removed: the second is where the exploded book goes, and writing over it would destroy '
+      + 'whatever is already there — which, if this migration was interrupted, is half of this same '
+      + 'book. Look at both, delete the one you do not want, and run this again.'
+    );
+  }
+
+  // ── What is in the archive, and can every entry become a file? ─────────────
+  //
+  // An exploded book adds a level of path depth over the zip it came from, and a
+  // component over 255 characters fails as ENOENT — which reads as "the folder
+  // is missing" and sends whoever hits it looking in the wrong place. So every
+  // entry name is checked against the target root BEFORE anything is written,
+  // and a book that cannot be exploded says which entry stops it.
+  const source = await openEpubSource(fromAbs);
+  let entries: string[];
+  let directoryMarkersDropped: string[];
+  let bytes = 0;
+  try {
+    const partition = await partitionEpubEntries(source);
+    entries = partition.content;
+    directoryMarkersDropped = partition.directoryMarkers;
+    for (const name of entries) {
+      resolveEpubEntryPath(toAbsPath, name);
+      bytes += (await source.readEntry(name)).length;
+    }
+  } finally {
+    source.close();
+  }
+
+  const survey: WorkingCopyContainerMigration = {
+    ...blank,
+    outcome: 'would-explode',
+    fromRelPath: recorded,
+    toRelPath: toRel,
+    entries: entries.length,
+    bytes,
+    directoryMarkersDropped,
+  };
+  if (!apply) return survey;
+
+  // ── The explosion, proved entry for entry ─────────────────────────────────
+  //
+  // A failure here removes the half-written tree and leaves the archive exactly
+  // as it was, so a refused migration costs nothing.
+  const archived = (await bookDigest(fromAbs)).digest;
+  const copy = await copyBookProvingEveryEntry(
+    fromAbs,
+    toAbsPath,
+    'directory',
+    (problem) =>
+      `${projectName}'s working copy could not be unpacked into ${toRel}: ${problem}. Nothing of the `
+      + `unpacked book was left on disk and ${recorded} was NOT removed, so the book and every edit `
+      + 'in it are exactly where they were.',
+  );
+
+  // ── The records, re-stamped in ONE transaction with the repoint ────────────
+  //
+  // Every stamp below was taken of the ARCHIVE. Read after the migration they
+  // would be compared against the TREE's identity, computed a different way, and
+  // every one of those comparisons would go false at once — telling the user
+  // their strikes no longer describe the book, or re-cutting the narration copy
+  // library-wide. So a stamp that MATCHED the archive is re-stamped onto the
+  // tree, and a stamp that did not is left exactly as stale as it already was.
+  const restamped: string[] = [];
+  const leftStale: string[] = [];
+  const familyId = state.familyId;
+  if (familyId === null) {
+    await removeEpubContainer(toAbsPath);
+    throw new Error(
+      `${projectName}'s book was unpacked into ${toRel}, but the project has no working chain to `
+      + `record it against. The unpacked copy has been removed and ${recorded} is untouched. This `
+      + 'is a bug: an apply run reconciles the project\'s chains before it reads its book.'
+    );
+  }
+  const projectId = requireLibraryProjectId(projectDir, state.manifest);
+  const saved = await modifyManifest(projectId, (m) => {
+    restamped.length = 0;
+    leftStale.length = 0;
+    const target = familyIn(m, familyId);
+    if (target.epub) target.epub.path = toRel;
+
+    const deletions = target.epub?.narrationDeletions;
+    if (deletions) {
+      if (deletions.epubSha256 === archived) {
+        deletions.epubSha256 = copy.digest;
+        restamped.push('narrationDeletions.epubSha256');
+      } else {
+        leftStale.push('narrationDeletions.epubSha256');
+      }
+    }
+    if (target.ttsEpub) {
+      if (target.ttsEpub.fromEpubSha256 === archived) {
+        target.ttsEpub.fromEpubSha256 = copy.digest;
+        restamped.push('ttsEpub.fromEpubSha256');
+      } else {
+        leftStale.push('ttsEpub.fromEpubSha256');
+      }
+    }
+    // A ledger snapshot is a SEPARATE artifact in `stages/ledger/`, and this
+    // migration does not touch it — so its digest still describes exactly what
+    // it describes. What is checked is that the recorded value is one this build
+    // can classify: a stamp that parses as neither algorithm would be read by
+    // `deriveWorkingCopy` as a snapshot that has changed, and the honest answer
+    // to that is to say so here rather than to discover it at a restore.
+    for (const entry of target.epub?.ledger ?? []) {
+      const normalized = formatBookDigest(
+        bookDigestAlgorithm(entry.snapshotSha256), bookDigestHex(entry.snapshotSha256));
+      if (normalized !== entry.snapshotSha256) {
+        entry.snapshotSha256 = normalized;
+        restamped.push(`ledger ${entry.id} snapshotSha256`);
+      }
+    }
+  });
+  if (!saved.success) {
+    await removeEpubContainer(toAbsPath);
+    throw new Error(
+      `${projectName}'s book was unpacked into ${toRel}, but the manifest could not be repointed at `
+      + `it: ${saved.error}. The unpacked copy has been removed and ${recorded} is untouched, so `
+      + 'nothing is lost. Fix the manifest and run this again.'
+    );
+  }
+
+  // ── LAST. The archive goes only once its replacement is recorded ───────────
+  await removeEpubContainer(fromAbs);
+
+  console.log(
+    `[manifest-service] ${projectName}: ${recorded} -> ${toRel} — ${copy.entries} entr(y/ies) `
+    + `proved name and bytes (${bookDigestHex(copy.digest).slice(0, 12)})`
+    + (restamped.length > 0 ? `, re-stamped ${restamped.join(', ')}` : '')
+    + (leftStale.length > 0 ? `, left ${leftStale.join(', ')} as stale as they already were` : '')
+    + '.'
+  );
+  return {
+    ...survey,
+    outcome: 'exploded',
+    entries: copy.entries,
+    directoryMarkersDropped: copy.directoryMarkersDropped,
+    restamped,
+    leftStale,
   };
 }
 
@@ -2118,7 +2561,7 @@ export async function addBookFamily(
       throw new Error(
         `${path.basename(projectDir)} already has a chain whose files are named after "${stem}" `
         + `(${existing.source.path}). ${relPath} has the same name, so both chains would write to `
-        + `source/${stem}${WORKING_EPUB_SUFFIX} and the second would destroy the first. Rename one `
+        + `source/${stem}${WORKING_COPY_SUFFIX} and the second would destroy the first. Rename one `
         + 'of the two books and add it again.'
       );
     }
@@ -2309,6 +2752,202 @@ export async function mintWorkingCopyFrom(
     projectDir, { from: 'base', base: source, keepRecords: false }, familyId);
 }
 
+/** A book copied entry by entry, and what came out. */
+export interface ProvedBookCopy {
+  /**
+   * The copy's identity as it is RECORDED — self-describing, so a reader can
+   * tell a tree's digest from an archive's rather than reading a re-measurement
+   * as a changed book (shared/book-digest.ts).
+   */
+  digest: string;
+  /** Content entries copied and then proved, name and bytes. */
+  entries: number;
+  /**
+   * Zero-length `EPUB/` folder records the source archive carried and the copy
+   * does not. Reported, never silent — see `partitionEpubEntries`.
+   */
+  directoryMarkersDropped: string[];
+}
+
+/**
+ * Copy a book into another container and PROVE the copy, entry by entry.
+ *
+ * ── Why the proof changed shape ─────────────────────────────────────────────
+ *
+ * This used to be `atomicCopyFile` followed by "hash both, compare". That
+ * comparison was only ever available because the two artifacts were the same
+ * KIND of thing: two zips, two streams of bytes, one digest each. The working
+ * copy is an exploded directory now, so the source of a mint is an archive and
+ * its result is a tree — measured by different algorithms, with no value they
+ * could ever be expected to share. Comparing the digests would fail on every
+ * single mint, and comparing them "loosely" would prove nothing at all.
+ *
+ * So the proof is the thing the digest was only ever standing in for: THE SAME
+ * ENTRIES, WITH THE SAME BYTES. Names first (a missing or extra entry is named),
+ * then every entry's contents. It is a stronger statement than the old one — it
+ * says WHICH entry is wrong rather than that some byte somewhere is — and it is
+ * the only one that survives the container change.
+ *
+ * ── What a failure leaves behind ────────────────────────────────────────────
+ *
+ * Nothing. Every arm below removes the copy through `removeEpubContainer`,
+ * because a non-recursive `rm` cannot take away a tree and would leave a
+ * half-written book on disk under a sentence that says none was written.
+ *
+ * The ONE thing it will not remove is a target whose container disagrees with
+ * the one asked for: that is a project whose working copy is still an archive
+ * from before the flip, and deleting it to make room would destroy the user's
+ * edits. It is named and refused with both artifacts untouched — the migration
+ * (`migrateWorkingCopyContainer`) is what converts it, having proved it first.
+ */
+async function copyBookProvingEveryEntry(
+  fromAbs: string,
+  toAbs: string,
+  toKind: EpubContainerKind,
+  /** The caller's own sentence for a copy that came out wrong. */
+  refuse: (problem: string) => string,
+): Promise<ProvedBookCopy> {
+  const existing = await epubContainerKindAt(toAbs);
+  if (existing !== null && existing !== toKind) {
+    throw new Error(refuse(
+      `${toAbs} is already ${existing === 'directory' ? 'an exploded folder of a book\'s parts' : 'an archived book file'}`
+      + `, and this copy would be ${toKind === 'directory' ? 'an exploded folder' : 'an archive'}. `
+      + 'Nothing was written and nothing was removed — a book does not change container by being '
+      + 'copied over, and taking the old one away to make room would destroy whatever it carries'
+    ));
+  }
+
+  // An archive copied to an archive is still a BYTE copy. Re-deflating it would
+  // produce a different file that holds the same book, and the app has recorded
+  // digests of some of those files (`outputs.generatedEpub.sha256`,
+  // `families[].source.sha256`) — so the cheap, exact move stays the move, and
+  // only the proof below is stronger than it used to be.
+  const fromKind = await epubContainerKindAt(fromAbs);
+  if (fromKind === null) {
+    throw new Error(refuse(`there is no book at ${fromAbs} to copy`));
+  }
+  let dropped: string[] = [];
+  try {
+    if (fromKind === 'zip' && toKind === 'zip') {
+      await atomicCopyFile(fromAbs, toAbs);
+      const source = await openEpubSource(fromAbs);
+      try {
+        dropped = (await partitionEpubEntries(source)).directoryMarkers;
+      } finally {
+        source.close();
+      }
+    } else {
+      await rewriteEpubEntries({
+        from: fromAbs,
+        to: toAbs,
+        toKind,
+        build: async (source, sink) => {
+          const { content, directoryMarkers } = await partitionEpubEntries(source);
+          dropped = directoryMarkers;
+          for (const name of content) {
+            // `mimetype` is stored, never deflated — OCF requires it, and a tree
+            // ignores the flag because bytes are bytes either way.
+            sink.addFile(name, await source.readEntry(name), name !== 'mimetype');
+          }
+        },
+      });
+    }
+  } catch (err) {
+    await removeEpubContainer(toAbs);
+    throw new Error(refuse((err as Error).message));
+  }
+
+  // ── The proof, read back off disk through the same door every reader uses ──
+  let entries: number;
+  try {
+    entries = await proveCopiedEntries(fromAbs, toAbs);
+  } catch (err) {
+    await removeEpubContainer(toAbs);
+    throw new Error(refuse((err as Error).message));
+  }
+  return { digest: (await bookDigest(toAbs)).digest, entries, directoryMarkersDropped: dropped };
+}
+
+/**
+ * The same book, in a different container, proved entry by entry.
+ *
+ * The one caller is `replaceBookEpub` (electron/processing-passes.ts), which
+ * lands a pass's output on the working copy: Simplify writes an ARCHIVE out of
+ * an hour of model time and the working copy is a FOLDER of its parts, so the
+ * two do not match and a `moveIntoPlace` between them would leave a file
+ * standing where the tree belongs. That conversion goes through the same proof
+ * every other copy in this file goes through, which is why it lives here rather
+ * than being a second copy written beside its caller.
+ *
+ * `to` must be a STAGING path, never the book itself: a refusal here removes
+ * whatever it had written, and aiming that at the book would take the user's
+ * copy away in the course of failing to replace it. The caller lands the result
+ * with `moveIntoPlace`, so the book is only ever replaced by something already
+ * proved.
+ */
+export async function copyBookIntoContainer(
+  fromAbsPath: string,
+  toAbsPath: string,
+  toKind: EpubContainerKind,
+  whatFor: string,
+): Promise<ProvedBookCopy> {
+  return copyBookProvingEveryEntry(
+    fromAbsPath,
+    toAbsPath,
+    toKind,
+    (problem) =>
+      `${whatFor} could not be written as ${toKind === 'directory' ? 'a folder of its parts' : 'an archive'}: `
+      + `${problem}. Nothing of it was left at ${toAbsPath}.`,
+  );
+}
+
+/**
+ * Every content entry of `fromAbs` is in `toAbs`, with the same bytes, and there
+ * is nothing else there. Throws naming the first entry that says otherwise.
+ */
+async function proveCopiedEntries(fromAbs: string, toAbs: string): Promise<number> {
+  const source = await openEpubSource(fromAbs);
+  let copy;
+  try {
+    copy = await openEpubSource(toAbs);
+  } catch (err) {
+    source.close();
+    throw err;
+  }
+  try {
+    const wanted = (await partitionEpubEntries(source)).content;
+    const got = (await partitionEpubEntries(copy)).content;
+    const gotSet = new Set(got);
+    const missing = wanted.filter((name) => !gotSet.has(name));
+    if (missing.length > 0) {
+      throw new Error(
+        `the copy is missing ${missing.length} of the book's ${wanted.length} entries, starting `
+        + `with "${missing[0]}"`
+      );
+    }
+    const wantedSet = new Set(wanted);
+    const extra = got.filter((name) => !wantedSet.has(name));
+    if (extra.length > 0) {
+      throw new Error(
+        `the copy holds ${extra.length} entr(y/ies) the book does not, starting with "${extra[0]}"`
+      );
+    }
+    for (const name of wanted) {
+      const [a, b] = await Promise.all([source.readEntry(name), copy.readEntry(name)]);
+      if (!a.equals(b)) {
+        throw new Error(
+          `the copy's "${name}" is not the book's: ${a.length} byte(s) in the book, ${b.length} in `
+          + 'the copy'
+        );
+      }
+    }
+    return wanted.length;
+  } finally {
+    source.close();
+    copy.close();
+  }
+}
+
 /**
  * WHERE the working copy is being derived from — the archive-grade base, or a
  * point in the book's ledger.
@@ -2435,32 +3074,48 @@ export async function deriveWorkingCopy(
         + 'entry to go back to what came before it.'
       );
     }
-    const onDisk = await sha256Of(sourceAbs);
+    // The snapshot is measured however it is STORED — a snapshot of an exploded
+    // book is a folder of its parts, and `book-ledger.ts` recorded its identity
+    // the same self-describing way this reads it back.
+    const onDisk = (await bookDigest(sourceAbs)).digest;
     if (onDisk !== entry.snapshotSha256) {
+      const crossed = bookDigestAlgorithmChange(entry.snapshotSha256, onDisk);
       throw new Error(
         `${path.basename(projectDir)}'s ledger snapshot for ${entry.label} (${entry.snapshot}) is `
-        + `not the book it was recorded as (${entry.snapshotSha256.slice(0, 12)} vs `
-        + `${onDisk.slice(0, 12)}). Nothing was copied. A snapshot that has changed since it was `
-        + 'taken is not what that pass produced, and deriving a working copy from it would put text '
-        + 'nobody recorded under a record that names text somebody did.'
+        + `not the book it was recorded as (${bookDigestHex(entry.snapshotSha256).slice(0, 12)} vs `
+        + `${bookDigestHex(onDisk).slice(0, 12)}). Nothing was copied. A snapshot that has changed `
+        + 'since it was taken is not what that pass produced, and deriving a working copy from it '
+        + 'would put text nobody recorded under a record that names text somebody did.'
+        + (crossed === null ? '' : ` ${crossed}`)
       );
     }
   }
 
-  await atomicCopyFile(sourceAbs, target.absPath);
-
-  const [sourceDigest, copyDigest] = await Promise.all([
-    sha256Of(sourceAbs),
-    sha256Of(target.absPath),
-  ]);
-  if (sourceDigest !== copyDigest) {
-    await fs.promises.rm(target.absPath, { force: true });
-    throw new Error(
-      `${path.basename(projectDir)}'s working copy did not come out identical to the book it was `
-      + `copied from (${sourceDigest.slice(0, 12)} vs ${copyDigest.slice(0, 12)}). The copy has been `
-      + 'removed. A working copy that is not those bytes is not this book, and every stamp written '
-      + 'against it afterwards would name paragraphs that are not where they say. Try opening the '
-      + 'book again; if it keeps happening, the disk is the place to look.'
+  // ── The copy, proved entry by entry ─────────────────────────────────────────
+  //
+  // The working copy is an exploded DIRECTORY, so this is no longer a file copy
+  // and the proof is no longer a digest comparison: the source is an archive and
+  // the result is a tree, measured by different algorithms with no value they
+  // could share. `copyBookProvingEveryEntry` proves the thing the digest was
+  // standing in for — the same entries, with the same bytes — and names the
+  // entry that disagrees.
+  const copy = await copyBookProvingEveryEntry(
+    sourceAbs,
+    target.absPath,
+    'directory',
+    (problem) =>
+      `${path.basename(projectDir)}'s working copy did not come out as the book it was copied from: `
+      + `${problem}. Nothing of it was left on disk. A working copy that is not those entries is not `
+      + 'this book, and every stamp written against it afterwards would name paragraphs that are not '
+      + 'where they say. Try opening the book again; if it keeps happening, the disk is the place to '
+      + 'look.',
+  );
+  const copyDigest = copy.digest;
+  if (copy.directoryMarkersDropped.length > 0) {
+    console.log(
+      `[manifest-service] ${path.basename(projectDir)}: ${copy.directoryMarkersDropped.length} `
+      + `folder record(s) in the archive (${copy.directoryMarkersDropped.join(', ')}) are not `
+      + 'entries of the book and were not carried into the working copy.'
     );
   }
 
@@ -2496,7 +3151,7 @@ export async function deriveWorkingCopy(
     : `the ledger snapshot ${listLedgerLabels(derivation.keep)} left`;
   console.log(
     `[manifest-service] ${path.basename(projectDir)}: minted ${target.relPath} from ${fromWhat}, `
-    + `byte-identical (${copyDigest.slice(0, 12)}).`
+    + `${copy.entries} entr(y/ies) proved name and bytes (${bookDigestHex(copyDigest).slice(0, 12)}).`
   );
   return target;
 }
@@ -2593,26 +3248,34 @@ export async function ensureGeneratedEpub(projectDir: string): Promise<Generated
       + 'manifest records a book under a name nothing here produces.'
     );
   }
-  await atomicCopyFile(book.absPath, target.absPath);
-
-  const [bookDigest, copyDigest] = await Promise.all([
-    sha256Of(book.absPath),
-    sha256Of(target.absPath),
-  ]);
-  if (bookDigest !== copyDigest) {
-    await fs.promises.rm(target.absPath, { force: true });
-    throw new Error(
-      `${path.basename(projectDir)}'s generated book did not come out identical to the working copy `
-      + `it was adopted from (${bookDigest.slice(0, 12)} vs ${copyDigest.slice(0, 12)}). The copy has `
-      + 'been removed and nothing was recorded, because a generated book that is not those bytes '
-      + 'would put a different book behind every future erase.'
-    );
-  }
+  // ── Proved entry by entry, and it stays an ARCHIVE ──────────────────────────
+  //
+  // `<stem>.generated.epub` is archive-grade: nothing edits it, and the only
+  // things that read it are this app's own reader and the mint that copies it.
+  // It stays a ZIP for the same reason `archive/` does — it is not the artifact
+  // the exploded container exists to make cheap to edit.
+  //
+  // The proof is entry-for-entry rather than a digest comparison because the
+  // book being adopted may be either container: a project that predates
+  // generated books has an archived working copy, and one whose copy has been
+  // exploded has a tree. Two containers of the same book have no digest in
+  // common, and the entries are what "the same book" has always meant.
+  const copy = await copyBookProvingEveryEntry(
+    book.absPath,
+    target.absPath,
+    'zip',
+    (problem) =>
+      `${path.basename(projectDir)}'s generated book did not come out as the working copy it was `
+      + `adopted from: ${problem}. Nothing of it was left on disk and nothing was recorded, because `
+      + 'a generated book that is not those entries would put a different book behind every future '
+      + 'erase.',
+  );
 
   const adopted = await registerGeneratedEpub(projectDir, target.absPath, 'adopted');
   console.log(
     `[manifest-service] ${path.basename(projectDir)}: adopted ${book.relPath} as its generated book `
-    + `${adopted.relPath} (${copyDigest.slice(0, 12)}). Erasing this book's changes now costs a file `
+    + `${adopted.relPath} (${copy.entries} entr(y/ies), `
+    + `${bookDigestHex(copy.digest).slice(0, 12)}). Erasing this book's changes now costs a file `
     + 'copy instead of an hour of page reading.'
   );
   return { adopted, missing: null };

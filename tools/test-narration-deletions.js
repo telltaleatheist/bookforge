@@ -465,7 +465,9 @@ function illustratedLayout() {
   });
 
   await check('a book that is not an EPUB has no narration copy to name', () => {
-    assert.throws(() => narrationEpubRelPath('source/original.pdf'), /which is not an EPUB/);
+    assert.throws(
+      () => narrationEpubRelPath('source/original.pdf'),
+      /neither an EPUB archive .* nor an exploded working copy/);
   });
 
   // The three files of one project are SIBLINGS, all three named after the
@@ -486,6 +488,15 @@ function illustratedLayout() {
     assert.strictEqual(
       narrationEpubRelPath('source/Still Working.working.epub'),
       'source/Still Working.tts.epub');
+    // And the shape every project's book has now: an exploded working copy, with
+    // no extension at all. The narration copy is named after the ARCHIVE FILE,
+    // not after whichever container the book it was cut from happens to be in,
+    // so the answer is the same one.
+    assert.strictEqual(
+      narrationEpubRelPath('source/Killing America. Bailey, Gene.working'),
+      'source/Killing America. Bailey, Gene.tts.epub');
+    assert.strictEqual(
+      narrationEpubRelPath('source/Still Working.working'), 'source/Still Working.tts.epub');
   });
 
   // ── deriving the record from the editor ───────────────────────────────────

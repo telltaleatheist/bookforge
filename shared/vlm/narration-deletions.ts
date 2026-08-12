@@ -882,12 +882,32 @@ export function narrationBlocksOnSourcePage(
  * through `migrateWorkingEpubNaming`) keeps its whole stem. That is not a
  * fallback: `.working` is a marker that is either present or absent, and absent
  * means there is nothing to take off.
+ *
+ * ── TWO shapes the book is recorded in, and neither is a guess ───────────────
+ *
+ * The working copy is an exploded DIRECTORY — `source/<stem>.working`, no
+ * extension, because a directory wearing `.epub` is a masquerade. It is still
+ * an EPUB; it is just not an archive. So there are exactly two forms this
+ * accepts, both named:
+ *
+ *   `source/X.working`       the exploded working copy      → `source/X.tts.epub`
+ *   `source/X.working.epub`  a book still stored as a ZIP   → `source/X.tts.epub`
+ *
+ * and both give the same answer, because the narration copy is named after the
+ * ARCHIVE FILE and not after whichever container the book it was cut from
+ * happens to be in. Anything else is refused by name rather than turned into a
+ * `.tts.epub` beside a book nobody can find.
  */
 export function narrationEpubRelPath(bookRelPath: string): string {
-  if (!bookRelPath.toLowerCase().endsWith('.epub')) {
+  const lower = bookRelPath.toLowerCase();
+  if (lower.endsWith('.working')) {
+    return `${bookRelPath.slice(0, -'.working'.length)}.tts.epub`;
+  }
+  if (!lower.endsWith('.epub')) {
     throw new Error(
-      `The project's book is recorded as "${bookRelPath}", which is not an EPUB. The narration copy `
-      + 'is cut from the book, so there is nothing to cut.'
+      `The project's book is recorded as "${bookRelPath}", which is neither an EPUB archive `
+      + '(".epub") nor an exploded working copy (".working"). The narration copy is cut from the '
+      + 'book, so there is nothing to cut.'
     );
   }
   const withoutExt = bookRelPath.slice(0, -'.epub'.length);

@@ -61,6 +61,11 @@ import { getGpuMemMB } from './gpu-arbiter';
 import { loadConfig as loadToolPathsConfig } from './tool-paths';
 import { getRenderCacheBaseDir } from './render-cache';
 import { mergeEpubParagraphs } from './epub-paragraph-merger';
+// A book is a set of named entries; whether they live in a ZIP or in a folder is
+// a fact about the path. The working copy is a folder now, so every handler here
+// that removes or writes a book goes through the seam rather than through
+// `unlink`/`writeFile`, which quietly mean "file" (electron/epub-container.ts).
+import { removeEpubContainer, writeEpubFromArchiveBytes } from './epub-container';
 import { componentManager, runInstaller as runExternalInstaller, listInstallableIds, installerNote } from './components/component-manager';
 import { systemProbe } from './components/system-probe';
 import { listManagedComponents, checkComponentUpdates, installComponent } from './update/component-updater';
@@ -4394,11 +4399,23 @@ function setupIpcHandlers(): void {
 
       await fs.mkdir(path.dirname(epubPath), { recursive: true });
 
+      // ── WHICH container, said here because only here knows ──────────────────
+      //
+      // A Save As writes a file the user picked in a dialog and is going to hand
+      // to somebody — an archive. The project's own export lands on the working
+      // copy, which is a folder of the book's parts, so that editing one chapter
+      // later writes one file. Nothing about `epubPath` says which of the two
+      // this is; `savePathOverride` says it exactly.
       const { exportEpubPreservingMarkup } = await import('./epub-processor.js');
-      const summary = await exportEpubPreservingMarkup(epubSourcePath, epubPath, edits);
+      const summary = await exportEpubPreservingMarkup(
+        epubSourcePath, epubPath, edits, savePathOverride ? 'zip' : 'directory');
 
-      const stat = await fs.stat(epubPath);
-      console.log(`[epub:export-preserving-markup] Wrote EPUB: ${stat.size} bytes to ${epubPath} `
+      // Measured through `bookDigest`, which is the one thing in this app that
+      // knows how to size and identify a book in either container: a `fs.stat`
+      // on a folder reports the folder's own entry, not the book's bytes.
+      const { bookDigest } = await import('./sidecar-binding.js');
+      const exported = await bookDigest(epubPath);
+      console.log(`[epub:export-preserving-markup] Wrote EPUB: ${exported.size} bytes to ${epubPath} `
         + `(${summary.chapterCount} chapters, ${summary.blockCount} blocks, `
         + `${summary.unalignedUntouched} unaligned untouched)`);
 
@@ -4413,10 +4430,14 @@ function setupIpcHandlers(): void {
         // Provenance: bind the produced EPUB to the file the edits were aligned
         // against, by hash on both sides (the audiobookAnalyses discipline). Both
         // digests are streamed — these are whole books.
+        // Both sides through `bookDigest` rather than `computeFileHash`: either
+        // of them can now be a folder of a book's parts, and a digest that says
+        // HOW it was taken is what keeps a later comparison from reading a
+        // re-measurement as a changed book (shared/book-digest.ts).
         const provenance: ExportProvenance = {
-          sourceSha256: await computeFileHash(epubSourcePath),
+          sourceSha256: (await bookDigest(epubSourcePath)).digest,
           sourceRelPath,
-          exportedSha256: await computeFileHash(epubPath),
+          exportedSha256: exported.digest,
           exportedAt: new Date().toISOString(),
         };
 
@@ -6352,15 +6373,20 @@ function setupIpcHandlers(): void {
           epubPath = (await manifestService.exportEpubTarget(projectDir, familyId)).absPath;
           await fs.mkdir(path.dirname(epubPath), { recursive: true });
         }
+        // Archive bytes from the renderer, landed as whichever container this
+        // destination is: a `savePath` is a file the user named in a dialog, and
+        // the project's own export is the working copy, which is a folder of the
+        // book's parts. Same reasoning, same words, as `editor:save-epub`.
         const epubBuffer = Buffer.from(epubData);
-        await fs.writeFile(epubPath, epubBuffer);
+        await writeEpubFromArchiveBytes(epubBuffer, epubPath, savePath ? 'zip' : 'directory');
 
         // Merge fragmented paragraphs (line-level PDF blocks → sentence-aligned paragraphs)
         await mergeEpubParagraphs(epubPath);
 
-        // Verify the file was written
-        const stat = await fs.stat(epubPath);
-        console.log(`[audiobook:export-from-project] Wrote EPUB: ${stat.size} bytes to ${epubPath}`);
+        // Verify the book was written
+        const { bookDigest } = await import('./sidecar-binding.js');
+        const written = await bookDigest(epubPath);
+        console.log(`[audiobook:export-from-project] Wrote EPUB: ${written.size} bytes to ${epubPath}`);
 
         // Save deleted block examples if provided (next to the saved EPUB)
         if (deletedBlockExamples && deletedBlockExamples.length > 0) {
@@ -6810,10 +6836,9 @@ function setupIpcHandlers(): void {
       // Their records died in the transaction above; the files are this side of
       // the write, per the same ordering.
       for (const chain of removedChains) {
+        // Same two artifacts, same one remover — see book:delete-generated-epub.
         for (const strayPath of [chain.epubAbsPath, chain.ttsAbsPath]) {
-          if (strayPath !== null && fsSync.existsSync(strayPath)) {
-            try { await fs.unlink(strayPath); } catch { /* already gone */ }
-          }
+          if (strayPath !== null) await removeEpubContainer(strayPath);
         }
       }
       broadcastToAllWindows('project:files-changed', projectDirForDelete);
@@ -7831,9 +7856,11 @@ function setupIpcHandlers(): void {
           removedPaths: [],
         };
 
-      if (fsSync.existsSync(existing.absPath)) {
-        await fs.unlink(existing.absPath);
-      }
+      // Whichever container this book is in. A working copy is a FOLDER of the
+      // book's parts now, and `unlink` cannot take one away — the erase would
+      // fail here, or worse succeed at nothing and let the re-mint below decide
+      // the copy was still there.
+      await removeEpubContainer(existing.absPath);
 
       const book = await manifestService.ensureBookEpub(projectDir, familyId);
       if (book.remint === null) {
@@ -7983,7 +8010,11 @@ function setupIpcHandlers(): void {
         const forgotten = await manifestService.forgetEpubExport(projectDir, familyId);
         droppedPasses = forgotten.droppedPasses;
         narrationStray = forgotten.ttsAbsPath;
-        if (fsSync.existsSync(forgotten.absPath)) await fs.unlink(forgotten.absPath);
+        // The book through `removeEpubContainer` — it is a folder of its parts —
+        // and the narration copy through `unlink`, because a `.tts.epub` is an
+        // archive and stays one (it is handed to ebook2audiobook, which parses a
+        // zip).
+        await removeEpubContainer(forgotten.absPath);
         if (narrationStray !== null && fsSync.existsSync(narrationStray)) {
           await fs.unlink(narrationStray);
         }
@@ -7998,8 +8029,10 @@ function setupIpcHandlers(): void {
       // `forgetEpubExport` above already took the working copy.
       const removedChains = await manifestService.removeGeneratedBookFamilies(projectDir);
       for (const chain of removedChains) {
+        // The chain's working copy is a folder of the book's parts; its narration
+        // copy is an archive. `removeEpubContainer` is honest about both.
         for (const strayPath of [chain.epubAbsPath, chain.ttsAbsPath]) {
-          if (strayPath !== null && fsSync.existsSync(strayPath)) await fs.unlink(strayPath);
+          if (strayPath !== null) await removeEpubContainer(strayPath);
         }
       }
 
@@ -11138,12 +11171,29 @@ function setupIpcHandlers(): void {
   // M4Bs play directly; EPUBs stream via live TTS. The renderer derives the
   // player from what the user picks, so there is no separate play/stream mode.
   ipcMain.handle('listen:list-sources', async (_event, projectPath: string) => {
+    // ── "When was this book last written", for either container ──────────────
+    //
+    // A FILE answers with its own mtime. A FOLDER of a book's parts does NOT: a
+    // directory's mtime moves when an entry is added, removed or renamed and
+    // stays exactly where it was when an entry's CONTENTS are rewritten — which
+    // is what every edit to the working copy does, and the only thing this
+    // number is used to notice. So a tree is asked its entries' latest mtime,
+    // which is the answer a file gives for the same question.
     const statMtime = async (p: string): Promise<number | null> => {
+      let stat;
       try {
-        return (await fs.stat(p)).mtimeMs;
+        stat = await fs.stat(p);
       } catch {
         return null;
       }
+      if (!stat.isDirectory()) return stat.mtimeMs;
+      const { listEpubTreeEntries, resolveEpubEntryPath } = await import('./epub-container.js');
+      let latest = stat.mtimeMs;
+      for (const name of await listEpubTreeEntries(p)) {
+        const entry = await fs.stat(resolveEpubEntryPath(p, name));
+        if (entry.mtimeMs > latest) latest = entry.mtimeMs;
+      }
+      return latest;
     };
 
     const epubs: Array<{ kind: string; lang?: string; path: string; mtimeMs: number }> = [];
@@ -12313,14 +12363,26 @@ function setupIpcHandlers(): void {
       const epubDir = path.dirname(epubPath);
       await fs.mkdir(epubDir, { recursive: true });
 
-      // Write the EPUB data to the file
+      // ── The editor hands over an ARCHIVE; the book may not be one ───────────
+      //
+      // A renderer can build a zip and cannot build a folder, so what arrives
+      // here is always archive bytes. `fs.writeFile(epubPath, buffer)` was right
+      // while every book was a file and is wrong the moment one is a working
+      // copy: it would be an EISDIR, or — if the tree had been removed first — a
+      // zip left standing where a folder of the book's parts belongs. So the
+      // bytes are landed as whichever container is already there, and a path
+      // with nothing at it takes the working-copy shape when it IS one.
       const buffer = Buffer.from(epubData);
-      await fs.writeFile(epubPath, buffer);
+      const { epubContainerKindAt } = await import('./epub-container.js');
+      const existingKind = await epubContainerKindAt(epubPath);
+      const kind = existingKind ?? (familyOfTarget !== null ? 'directory' : 'zip');
+      await writeEpubFromArchiveBytes(buffer, epubPath, kind);
 
       // Merge fragmented paragraphs (line-level PDF blocks → sentence-aligned paragraphs)
       await mergeEpubParagraphs(epubPath);
 
-      console.log(`[EDITOR:SAVE-EPUB] Saved EPUB to ${epubPath} (${buffer.length} bytes)`);
+      console.log(`[EDITOR:SAVE-EPUB] Saved EPUB to ${epubPath} (${buffer.length} bytes as `
+        + `${kind === 'directory' ? 'a folder of its parts' : 'an archive'})`);
 
       // The record follows the bytes. `registerEpubExport` re-stamps
       // `family.epub`, drops the narration copy that was cut from the book just
