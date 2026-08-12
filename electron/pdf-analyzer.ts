@@ -484,6 +484,13 @@ const FOOTNOTE_MARKER_PATTERNS = [
  * Get MIME type from file extension
  */
 function getMimeType(filePath: string): string {
+  // A DIRECTORY is a book exploded into its parts, which is what a working copy
+  // is now (`source/<stem>.working/`). There is no extension to read — the last
+  // dot in that name lands on `.working`, or on nothing at all — and no
+  // directory was ever a PDF, so the container answers the question the name
+  // cannot. Checked FIRST, and by one `stat`, because getting this wrong sends a
+  // whole book down the PDF path.
+  if (isExplodedBook(filePath)) return 'application/epub+zip';
   const ext = path.extname(filePath).toLowerCase();
   switch (ext) {
     case '.pdf': return 'application/pdf';
@@ -492,6 +499,26 @@ function getMimeType(filePath: string): string {
     case '.mobi': return 'application/x-mobipocket-ebook';
     case '.fb2': return 'application/x-fictionbook+xml';
     default: return ''; // Let mupdf auto-detect
+  }
+}
+
+/**
+ * Is this book an exploded directory rather than a file?
+ *
+ * The one question that decides whether mupdf can be given this book at all: it
+ * takes BYTES, and there are no bytes to give it for a tree. Everything the
+ * analyzer needs from an EPUB comes from quire, which reads either container —
+ * so a tree is not a lesser book here, it is a book mupdf simply has no part in.
+ *
+ * A path that cannot be examined is `false` rather than a throw: the caller is
+ * about to open it and will refuse by name, which is a better sentence than one
+ * from a container check.
+ */
+function isExplodedBook(filePath: string): boolean {
+  try {
+    return fs.statSync(filePath).isDirectory();
+  } catch {
+    return false;
   }
 }
 
@@ -542,26 +569,38 @@ export class PDFAnalyzer {
   }
 
   /**
-   * Full SHA-256 of a file (streaming, no full-file buffer).
+   * Which book this is, in both the forms the analyzer needs.
    *
-   * ONE authority for "which file is this": the cache key is a truncation of
-   * this digest (see analysisCacheKey), and the same digest is handed back to
-   * callers as AnalyzeResult.sourceSha256 so an edit set can be bound to the
-   * exact bytes it was made against.
+   * ONE authority, and it has to answer for both containers: a working copy is a
+   * DIRECTORY of the book's parts, and a read stream over one is an EISDIR — the
+   * failure a user saw as "Failed to Load Source … illegal operation on a
+   * directory". `bookDigest` is the entry point that knows how to take a book's
+   * identity either way (electron/sidecar-binding.ts).
+   *
+   * Two values, because they answer two different questions and confusing them
+   * is a real bug rather than a tidiness point:
+   *
+   *  - `digest` is what is RECORDED and handed back as
+   *    {@link AnalyzeResult.sourceSha256}, so an edit set can be bound to the
+   *    exact book it was made against. For a file it is the bare 64 hex it has
+   *    always been — no cache entry and no manifest moves because of this. For a
+   *    tree it carries an algorithm tag, so a reader can tell a re-measurement
+   *    from a changed book.
+   *  - `hex` is what NAMES things. Slicing the tagged form would prefix every
+   *    exploded book `bookforge-epub-t` and give every book in the library the
+   *    same cache directory.
    */
-  private computeSourceSha256(filePath: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const hash = crypto.createHash('sha256');
-      const stream = fs.createReadStream(filePath);
-      stream.on('data', (chunk) => hash.update(chunk));
-      stream.on('end', () => resolve(hash.digest('hex')));
-      stream.on('error', reject);
-    });
+  private async computeSourceIdentity(
+    filePath: string,
+  ): Promise<{ digest: string; hex: string }> {
+    const { bookDigest } = await import('./sidecar-binding.js');
+    const { digest, hex } = await bookDigest(filePath);
+    return { digest, hex };
   }
 
-  /** Cache directory name for a source file: the first 16 hex of its digest. */
-  private analysisCacheKey(sourceSha256: string): string {
-    return sourceSha256.substring(0, 16);
+  /** Cache directory name for a source: the first 16 hex of its digest's HEX. */
+  private analysisCacheKey(sourceHex: string): string {
+    return sourceHex.substring(0, 16);
   }
 
   /**
@@ -647,8 +686,8 @@ export class PDFAnalyzer {
     }
 
     const mupdfLib = await getMupdf();
-    const sourceSha256 = await this.computeSourceSha256(pdfPath);
-    const fileHash = this.analysisCacheKey(sourceSha256);
+    const { digest: sourceSha256, hex: sourceHex } = await this.computeSourceIdentity(pdfPath);
+    const fileHash = this.analysisCacheKey(sourceHex);
 
     // Check for cached analysis (only if no maxPages limit or limit matches)
     if (!maxPages) {
@@ -665,17 +704,23 @@ export class PDFAnalyzer {
         // Fix up spans from older caches that lack block_id
         this.assignBlockIdsToSpans();
 
-        // Still need to open the document for rendering (under WASM lock)
-        const data = await fsPromises.readFile(pdfPath);
-        const mimeType = getMimeType(pdfPath);
-        this.doc = await this.withWasmLock(async () => {
-          const d = await openDocumentWithRetry(mupdfLib, data, mimeType);
-          // Layout reflowable documents (EPUBs) so page numbers are meaningful
-          if (mimeType === 'application/epub+zip') {
-            d.layout(600, 900, 18);
-          }
-          return d;
-        });
+        // Still need to open the document for rendering (under WASM lock) —
+        // unless the book is EXPLODED, which mupdf cannot be given at all: it
+        // takes bytes and a directory has none. Nothing on the EPUB path asks it
+        // for anything, so `this.doc` stays null and quire answers as it already
+        // does.
+        if (!isExplodedBook(pdfPath)) {
+          const data = await fsPromises.readFile(pdfPath);
+          const mimeType = getMimeType(pdfPath);
+          this.doc = await this.withWasmLock(async () => {
+            const d = await openDocumentWithRetry(mupdfLib, data, mimeType);
+            // Layout reflowable documents (EPUBs) so page numbers are meaningful
+            if (mimeType === 'application/epub+zip') {
+              d.layout(600, 900, 18);
+            }
+            return d;
+          });
+        }
 
         requireUnalignedFacts(cached, pdfPath);
         return {
@@ -698,34 +743,37 @@ export class PDFAnalyzer {
 
     // Read document file asynchronously to avoid blocking the main thread
     sendProgress('loading', 'Reading document file...');
-    const data = await fsPromises.readFile(pdfPath);
     const mimeType = getMimeType(pdfPath);
 
     const isEpub = mimeType === 'application/epub+zip';
 
     // Opening the document is a WASM operation, so it holds the lock — but only
     // it does. An EPUB's pages are read afterwards, from quire, which does not
-    // touch WASM at all.
-    await this.withWasmLock(async () => {
-      // Open document with error handling for WebAssembly issues
-      try {
-        this.doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        if (errorMsg.includes('memory') || errorMsg.includes('out of bounds') || errorMsg.includes('malloc')) {
-          throw new Error(`Document is too large to load. Try closing other documents first, or restart the app to free memory.`);
+    // touch WASM at all. An EXPLODED book is not opened: mupdf takes bytes and a
+    // directory has none, and every EPUB answer below comes from quire anyway.
+    if (!isExplodedBook(pdfPath)) {
+      const data = await fsPromises.readFile(pdfPath);
+      await this.withWasmLock(async () => {
+        // Open document with error handling for WebAssembly issues
+        try {
+          this.doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          if (errorMsg.includes('memory') || errorMsg.includes('out of bounds') || errorMsg.includes('malloc')) {
+            throw new Error(`Document is too large to load. Try closing other documents first, or restart the app to free memory.`);
+          }
+          throw err;
         }
-        throw err;
-      }
 
-      // An EPUB is still laid out here, but ONLY so the raster page view has
-      // something to render: its blocks, its page count and its page geometry
-      // all come from quire now.
-      //
-      // Note: doc.isReflowable() has a bug in mupdf.js (missing return statement),
-      // so we use mimeType check instead, consistent with all other call sites.
-      if (isEpub) this.doc.layout(600, 900, 18);
-    });
+        // An EPUB is still laid out here, but ONLY so the raster page view has
+        // something to render: its blocks, its page count and its page geometry
+        // all come from quire now.
+        //
+        // Note: doc.isReflowable() has a bug in mupdf.js (missing return statement),
+        // so we use mimeType check instead, consistent with all other call sites.
+        if (isEpub) this.doc.layout(600, 900, 18);
+      });
+    }
 
     // ── The EPUB half, which is one call ─────────────────────────────────────
     if (isEpub) {
@@ -940,8 +988,8 @@ export class PDFAnalyzer {
     }
 
     const mupdfLib = await getMupdf();
-    const sourceSha256 = await this.computeSourceSha256(pdfPath);
-    const fileHash = this.analysisCacheKey(sourceSha256);
+    const { digest: sourceSha256, hex: sourceHex } = await this.computeSourceIdentity(pdfPath);
+    const fileHash = this.analysisCacheKey(sourceHex);
 
     // Check for cached analysis (full data available immediately)
     if (!maxPages) {
@@ -964,9 +1012,17 @@ export class PDFAnalyzer {
         // from the quire map (`extractOutline`), and whose raster view the
         // picker refuses to show (pdf-picker.component.ts, the two
         // startOnDemandRendering gates).
-        const data = await fsPromises.readFile(pdfPath);
-        const mimeType = getMimeType(pdfPath);
-        this.doc = await this.withWasmLock(() => openDocumentWithRetry(mupdfLib, data, mimeType));
+        //
+        // An EXPLODED book is not opened at all: mupdf takes bytes and there are
+        // none to give it for a directory. Nothing on the EPUB path wants it —
+        // see the three reasons above, all of which hold whichever container the
+        // book is in — so `this.doc` stays null and every EPUB answer comes from
+        // quire, as it already did.
+        if (!isExplodedBook(pdfPath)) {
+          const data = await fsPromises.readFile(pdfPath);
+          const mimeType = getMimeType(pdfPath);
+          this.doc = await this.withWasmLock(() => openDocumentWithRetry(mupdfLib, data, mimeType));
+        }
 
         requireUnalignedFacts(cached, pdfPath);
         return {
@@ -999,26 +1055,32 @@ export class PDFAnalyzer {
     this.categoryProvenance = heuristicProvenance();
 
     sendProgress('loading', 'Reading document file...');
-    const data = await fsPromises.readFile(pdfPath);
     const mimeType = getMimeType(pdfPath);
     const isEpub = mimeType === 'application/epub+zip';
+    const exploded = isExplodedBook(pdfPath);
 
-    await this.withWasmLock(async () => {
-      try {
-        this.doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        if (errorMsg.includes('memory') || errorMsg.includes('out of bounds') || errorMsg.includes('malloc')) {
-          throw new Error(`Document is too large to load. Try closing other documents first, or restart the app to free memory.`);
+    // An exploded book has no bytes to hand mupdf, and nothing below asks it for
+    // anything: an EPUB's pages come from quire a few lines down, its outline
+    // from the quire map, and its raster view is refused by the picker.
+    if (!exploded) {
+      const data = await fsPromises.readFile(pdfPath);
+      await this.withWasmLock(async () => {
+        try {
+          this.doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          if (errorMsg.includes('memory') || errorMsg.includes('out of bounds') || errorMsg.includes('malloc')) {
+            throw new Error(`Document is too large to load. Try closing other documents first, or restart the app to free memory.`);
+          }
+          throw err;
         }
-        throw err;
-      }
 
-      // An EPUB is NOT laid out here. The reflow of the whole book was minutes
-      // of work whose products nothing reads any more: the page numbers below
-      // are quire's, the outline is read from the quire map (`extractOutline`),
-      // and the picker refuses mupdf's raster view of an EPUB outright.
-    });
+        // An EPUB is NOT laid out here. The reflow of the whole book was minutes
+        // of work whose products nothing reads any more: the page numbers below
+        // are quire's, the outline is read from the quire map (`extractOutline`),
+        // and the picker refuses mupdf's raster view of an EPUB outright.
+      });
+    }
 
     // An EPUB's page COUNT is its pagination: there is no cheaper way to know
     // it than to lay the book out, so the first open of a book pays for that and
@@ -1101,10 +1163,6 @@ export class PDFAnalyzer {
   ): Promise<AnalyzeTextResult> {
     const sendProgress = onProgress || (() => {});
 
-    if (!this.doc) {
-      throw new Error('analyzeText() requires analyzeQuick() to be called first (no open document)');
-    }
-
     this.analysisWarnings = [];
     this.unalignedBlocks = [];
     this.unalignedStated = false;
@@ -1129,10 +1187,11 @@ export class PDFAnalyzer {
     // It does not need `this.doc`: quire read the book itself. The open document
     // is still there for the raster page view, and untouched by any of this.
     if (mimeType === 'application/epub+zip') {
-      const sourceSha256 = await this.computeSourceSha256(pdfPath);
+      const { digest: sourceSha256, hex: sourceHex } =
+        await this.computeSourceIdentity(pdfPath);
       const pages = await this.extractEpubBlocks(pdfPath, sourceSha256, maxPages, sendProgress);
       if (!maxPages) {
-        await this.saveAnalysisToCache(this.analysisCacheKey(sourceSha256), {
+        await this.saveAnalysisToCache(this.analysisCacheKey(sourceHex), {
           blocks: this.blocks,
           categories: this.categories,
           page_count: pages,
@@ -1151,6 +1210,17 @@ export class PDFAnalyzer {
         categoryProvenance: this.categoryProvenance,
         ...presentedWarnings(this.analysisWarnings, [], false),
       };
+    }
+
+    // ── Everything below is the PDF half, and it reads the open document ────
+    //
+    // The check lives HERE rather than at the top of the method, where it used
+    // to be. A book has no open document to require: mupdf is not given an
+    // exploded EPUB at all, and the EPUB branch above never wanted one — it
+    // said so in as many words and then threw before reaching itself.
+    if (!this.doc) {
+      throw new Error(
+        'analyzeText() requires analyzeQuick() to be called first (no open document)');
     }
 
     const pageCount = maxPages
@@ -1246,7 +1316,7 @@ export class PDFAnalyzer {
     // Identity of the file the blocks just came out of — returned to the caller
     // whether or not the result is cacheable, so an edit set can always be bound
     // to it (see AnalyzeResult.sourceSha256).
-    const sourceSha256 = await this.computeSourceSha256(pdfPath);
+    const { digest: sourceSha256, hex: sourceHex } = await this.computeSourceIdentity(pdfPath);
 
     // Cache as a full analysis payload
     if (!maxPages) {
@@ -1263,7 +1333,7 @@ export class PDFAnalyzer {
           ? { unaligned: this.unalignedBlocks, unalignedStated: this.unalignedStated }
           : {}),
       };
-      await this.saveAnalysisToCache(this.analysisCacheKey(sourceSha256), cacheable);
+      await this.saveAnalysisToCache(this.analysisCacheKey(sourceHex), cacheable);
     }
 
     return {
@@ -3103,6 +3173,19 @@ export class PDFAnalyzer {
     // full-res render pass (renderPages on the same document follows
     // renderAllPagesWithPreviews in the normal flow).
     this.destroyRenderDocHandle();
+
+    // A raster is a picture of a PAGE, and an EPUB's pages are quire's live DOM
+    // — the picker refuses this view for a book outright (its two
+    // startOnDemandRendering gates). An exploded book cannot even be handed to
+    // mupdf, so a request that got here is a caller that ignored those gates,
+    // and it is told so rather than told EISDIR.
+    if (isExplodedBook(pdfPath)) {
+      throw new Error(
+        `${path.basename(pdfPath)} is a book exploded into a directory, and mupdf renders bytes. `
+        + 'An EPUB has no raster page view in BookForge — its pages are shown as live DOM by '
+        + 'quire — so nothing should be asking this document for one.',
+      );
+    }
 
     const mupdfLib = await getMupdf();
     const fileHash = await this.computeFileHash(pdfPath);
@@ -5798,17 +5881,23 @@ export class PDFAnalyzer {
    * Returns hierarchical outline items that can be converted to chapters.
    */
   async extractOutline(): Promise<OutlineItem[]> {
-    if (!this.doc) {
-      throw new Error('No document loaded');
-    }
-
     // An EPUB's outline comes from its own navigation, resolved against the
     // QUIRE page map — the pages the picker shows. mupdf resolved the same
     // targets against its own reflow of the book, a pagination nothing
     // displays; and since analyzeQuick no longer runs that reflow, mupdf here
-    // holds an EPUB it never laid out at all.
+    // holds an EPUB it never laid out at all — or, for an exploded book, holds
+    // nothing, because mupdf takes bytes and a directory has none.
+    //
+    // ASKED FIRST, before the open-document check below. The check is about the
+    // mupdf half and a book has no business satisfying it: an exploded book
+    // reaching it answered "No document loaded" for a question mupdf was never
+    // going to be asked.
     if (this.pdfPath && getMimeType(this.pdfPath) === 'application/epub+zip') {
       return epubOutlineFromQuire(this.pdfPath);
+    }
+
+    if (!this.doc) {
+      throw new Error('No document loaded');
     }
 
     // loadOutline/resolveLink touch the WASM heap — serialize with other ops
