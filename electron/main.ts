@@ -8109,6 +8109,18 @@ function setupIpcHandlers(): void {
     try {
       const projectDir = normalizeFsPath(rawProjectDir);
       const forgotten = await manifestService.forgetNarrationEpub(projectDir, familyId);
+      // The copy may be ON SCREEN — deleting it is offered right beside
+      // previewing it. An unlink under this process's own open zip reader
+      // leaves the name in Windows delete-pending limbo, where even `stat`
+      // answers EPERM until the app exits (Owen hit exactly that on
+      // 2026-08-12: delete mid-preview, then every re-export refused). The
+      // writer closes the reader first.
+      const { closeViewerDocumentsFor } = await import('./quire-viewer-bridge.js');
+      const closed = await closeViewerDocumentsFor(forgotten.absPath);
+      if (closed > 0) {
+        console.log(`[delete-tts] closed ${closed} viewer document(s) holding `
+          + `${forgotten.relPath} before deleting it.`);
+      }
       let fileRemoved = false;
       if (fsSync.existsSync(forgotten.absPath)) {
         await fs.unlink(forgotten.absPath);

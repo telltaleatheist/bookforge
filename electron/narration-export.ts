@@ -612,6 +612,17 @@ export async function exportNarrationEpub(
       ...(Object.keys(chapterSpeech).length > 0 ? { textOverrides: chapterSpeech } : {}),
       ...(verifyStrikes === undefined ? {} : { verifyStrikes }),
     });
+  // A viewer previewing the old copy holds its zip open, and on Windows that
+  // hold makes the landing rename EPERM out past its retries. The writer closes
+  // the reader (see closeViewerDocumentsFor); the window re-opens the fresh
+  // file through its ordinary unknown-handle refusal. Lazy import: this module
+  // also loads where BrowserWindow does not exist.
+  const viewer = await import('./quire-viewer-bridge.js');
+  const closed = await viewer.closeViewerDocumentsFor(target.absPath);
+  if (closed > 0) {
+    console.log(`[narration] closed ${closed} viewer document(s) holding ${target.relPath} so the `
+      + 'new copy can land.');
+  }
   await moveIntoPlace(staged, target.absPath);
 
   await manifestService.registerNarrationEpub(projectDir, {

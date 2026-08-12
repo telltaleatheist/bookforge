@@ -683,6 +683,31 @@ export async function closeBookForViewer(handle: string): Promise<void> {
   await entry.doc.close();
 }
 
+/**
+ * Close every open viewer document reading `bookPath`, and say how many.
+ *
+ * For the writers that REPLACE or DELETE a file a viewer may be showing —
+ * the narration copy above all: previewing the `.tts.epub` holds its zip open
+ * in this process, and on Windows that hold makes the export's landing rename
+ * EPERM out after its retries, while a delete leaves the name in delete-pending
+ * limbo where even `stat` answers EPERM (Owen, 2026-08-12: deleted the copy
+ * mid-preview, and every regenerate after that hit "EPERM: operation not
+ * permitted, stat ... .tts.epub" until restart). The writer owns closing the
+ * reader: the handle dies here, and the window holding it learns the ordinary
+ * way — its next call answers "unknown handle" by name and it re-opens the
+ * fresh file.
+ */
+export async function closeViewerDocumentsFor(bookPath: string): Promise<number> {
+  const resolved = path.resolve(bookPath).toLowerCase();
+  let closed = 0;
+  for (const [handle, entry] of [...open]) {
+    if (path.resolve(entry.bookPath).toLowerCase() !== resolved) continue;
+    await closeBookForViewer(handle);
+    closed++;
+  }
+  return closed;
+}
+
 export async function closeAllBooksForViewer(): Promise<void> {
   for (const handle of [...open.keys()]) await closeBookForViewer(handle);
 }

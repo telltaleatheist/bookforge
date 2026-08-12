@@ -233,7 +233,21 @@ async function statOrNull(absPath: string): Promise<fs.Stats | null> {
   try {
     return await fs.promises.stat(absPath);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return null;
+    // Windows only: a file whose LAST unlink ran while some process still held
+    // it open is in delete-pending limbo — the name exists, and every stat on
+    // it answers EPERM until that holder exits. Raw "EPERM: operation not
+    // permitted, stat ..." names the syscall and not the state (Owen hit it
+    // 2026-08-12, deleting the narration copy mid-preview), so the state is
+    // named instead, with the way out.
+    if (process.platform === 'win32' && (code === 'EPERM' || code === 'EBUSY')) {
+      throw new Error(
+        `${absPath} is stuck half-deleted or exclusively held: Windows answers ${code} even to `
+        + 'measuring it. Something still holds it open — a viewer window showing it, or a scanner '
+        + 'mid-file. Close whatever is showing it (or restart BookForge) and try again.'
+      );
+    }
     throw err;
   }
 }
