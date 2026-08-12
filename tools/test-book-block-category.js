@@ -223,6 +223,83 @@ function publisherBook() {
   });
 }
 
+/**
+ * A reflow of ours over TWO documents, stamped in the FIRST one only.
+ *
+ * The shape the narrowing rule turns on: asked about `r0102` alone, a reader
+ * that decided the branch from what it walked would resolve no stamp there and
+ * drop this book onto the markup reader — a different reading of a book that
+ * did not change.
+ */
+function reflowedBookOfTwo() {
+  return writeEpub('reflowed-two.epub', {
+    'OEBPS/content.opf': OPF3(['r0101', 'r0102']),
+    'OEBPS/nav.xhtml': NAV([
+      ['r0101.xhtml', 'Nuremberg, October 1946'],
+      ['r0102.xhtml', 'The Corridor'],
+    ]),
+    'OEBPS/r0101.xhtml': PAGE('Nuremberg, October 1946', [
+      '<p data-bf-category="body" data-bf-group="p0001" data-bf-blocks="p0001b001">The court rose '
+      + 'at four, and the corridor outside was already full.</p>',
+      '<h1 data-bf-category="title" data-bf-group="p0002" data-bf-blocks="p0002b001">ONE</h1>',
+    ].join('\n')),
+    'OEBPS/r0102.xhtml': PAGE('The Corridor', [
+      '<p>Nothing in this document carries a stamp of ours at all.</p>',
+      '<blockquote>Not one of the three attributes appears in it.</blockquote>',
+    ].join('\n')),
+  });
+}
+
+/**
+ * A PUBLISHER's book whose notes live in their OWN document.
+ *
+ * The measured shape: of the library's three publisher working copies, two
+ * carry note references across documents, and a per-document reading turns 591
+ * of Balkans' elements into `body` and 3509 of Heinrich Himmler's into `quote`
+ * (swept 2026-08-11). `q0202#0` below is a footnote for exactly one reason —
+ * something in `q0201` points at it — so a reader that walked `q0202` alone
+ * would call it body text and never say so.
+ */
+function publisherBookWithEndnotes() {
+  return writeEpub('publisher-notes.epub', {
+    'OEBPS/content.opf': OPF3(['q0201', 'q0202']),
+    'OEBPS/nav.xhtml': NAV([
+      ['q0201.xhtml', 'Chapter 1: Killing America'],
+      ['q0202.xhtml', 'Notes'],
+    ]),
+    'OEBPS/q0201.xhtml': PAGE('Chapter 1', [
+      '<p class="cn">Chapter 1</p>',
+      '<p class="ct">Killing America</p>',
+      '<p>The country had been arguing<sup><a href="q0202.xhtml#n1">1</a></sup> about the same '
+      + 'four things for thirty years.</p>',
+    ].join('\n')),
+    'OEBPS/q0202.xhtml': PAGE('Notes', [
+      '<h1>Notes</h1>',
+      '<p id="n1">See the hearings of 1971, which nobody read.</p>',
+    ].join('\n')),
+  });
+}
+
+/** Everything a reading says about every one of its elements, as plain data. */
+function factsOf(reading) {
+  return reading.elements.map((e) => ({
+    ...e,
+    category: reading.categoryByElement.has(e.key)
+      ? reading.categoryByElement.get(e.key) : '(none)',
+    provenance: reading.provenanceByElement.has(e.key)
+      ? reading.provenanceByElement.get(e.key) : null,
+    conversion: reading.conversionByElement.has(e.key)
+      ? reading.conversionByElement.get(e.key) : null,
+  }));
+}
+
+/** The distinct spine documents a reading covers, in its own order. */
+function documentsOf(reading) {
+  const seen = [];
+  for (const e of reading.elements) if (!seen.includes(e.file)) seen.push(e.file);
+  return seen;
+}
+
 /** Every zip entry of a book, as bytes, for a surgical-edit diff. */
 async function entriesOf(bookPath) {
   const reader = new ZipReader(bookPath);
@@ -989,6 +1066,150 @@ async function run() {
     const after = await entriesOf(book);
     const changed = [...before.keys()].filter((e) => !before.get(e).equals(after.get(e)));
     assert.deepStrictEqual(changed, [], 'a staged refusal changed the source book');
+  });
+
+  // ── Narrowing the categories walk ──────────────────────────────────────
+  //
+  // A relabel asks `readEpubElementCategories` twice about one document, and
+  // both calls parsed all 20 of Nuremberg's spine documents to answer: 127 ms a
+  // call, 106 ms of it the parse. `only` narrows that — but only where what the
+  // book says about an element is a function of that element's own document,
+  // which is true of the two stamped readings and NOT of the markup one.
+  //
+  // What is worth pinning is not the speed. It is that the narrowed answer is
+  // the SAME answer, element for element; that the branch a book gets cannot be
+  // changed by which documents were asked about; and that the markup reading
+  // refuses to be narrowed at all, because that is the one where narrowing is
+  // silently wrong.
+
+  await check('a narrowed reading equals the full one, element for element', async () => {
+    for (const [what, make] of [
+      ['a converted book', convertedBook],
+      ['a reflow of ours', reflowedBookOfTwo],
+      ['a publisher book', publisherBookWithEndnotes],
+    ]) {
+      const book = await make();
+      const full = await readEpubElementCategories(book);
+      assert.strictEqual(full.describes, null, `${what}: an unasked reading claimed to be narrowed`);
+      const fullFacts = factsOf(full);
+      const documents = documentsOf(full);
+      assert.ok(documents.length >= 2, `${what}: the fixture has only one document`);
+
+      // EVERY document on its own, and every element of it compared WHOLE —
+      // key, file, kind, tag, imageOnly, textLength, category and both stamps.
+      // The claim is not that the reading is smaller; it is that what it says
+      // about the document asked about is what the whole book says about it.
+      // A reading that declined to narrow is a superset and passes this too,
+      // which is exactly the contract `only` carries.
+      for (const file of documents) {
+        const narrow = await readEpubElementCategories(book, new Set([file]));
+        assert.strictEqual(narrow.source, full.source, `${what}: ${file} changed the reading class`);
+        assert.deepStrictEqual(
+          factsOf(narrow).filter((f) => f.file === file),
+          fullFacts.filter((f) => f.file === file),
+          `${what}: reading ${file} alone said something different about it`);
+        if (narrow.describes !== null) {
+          assert.deepStrictEqual(narrow.describes, [file],
+            `${what}: it narrowed to something other than what was asked for`);
+          assert.deepStrictEqual(factsOf(narrow), fullFacts.filter((f) => f.file === file),
+            `${what}: a narrowed reading carried elements of documents nobody asked about`);
+        }
+      }
+
+      // And asking for all of them is asking for the book.
+      const all = await readEpubElementCategories(book, new Set(documents));
+      assert.deepStrictEqual(factsOf(all), fullFacts, `${what}: the whole book, asked for by name`);
+    }
+  });
+
+  await check('only the readings that MAY narrow do, and each for its own reason', async () => {
+    // The rule is not "narrow when asked" — it is "narrow where the derivation
+    // is per-document AND settling the branch did not already cost the walk".
+    const converted = await convertedBook();
+    const narrowed = await readEpubElementCategories(converted, new Set(['OEBPS/c0001.xhtml']));
+    assert.deepStrictEqual(narrowed.describes, ['OEBPS/c0001.xhtml'],
+      'a conversion-stamped book did not narrow — the whole point of the exercise');
+    assert.ok(narrowed.elements.every((e) => e.file === 'OEBPS/c0001.xhtml'),
+      'the narrowed reading parsed a document nobody asked about');
+
+    // A reflow: deciding the branch means asking whether ANY element of the
+    // book resolves a stamp, which is the whole walk — so there is nothing left
+    // to save and the reading is the whole book. Correct, not narrowed.
+    const reflowed = await reflowedBookOfTwo();
+    const reflowNarrow = await readEpubElementCategories(reflowed, new Set(['OEBPS/r0101.xhtml']));
+    assert.strictEqual(reflowNarrow.describes, null,
+      'a reflow narrowed, which would settle its branch from a slice of the book');
+    assert.strictEqual(reflowNarrow.source, 'document');
+
+    // A publisher's book: narrowing is silently WRONG here, so it never happens.
+    const publisher = await publisherBookWithEndnotes();
+    const pubNarrow = await readEpubElementCategories(publisher, new Set(['OEBPS/q0202.xhtml']));
+    assert.strictEqual(pubNarrow.describes, null, 'the markup reading narrowed');
+  });
+
+  await check('a publisher book ignores `only` — its notes live in another document', async () => {
+    const book = await publisherBookWithEndnotes();
+    const full = await readEpubElementCategories(book);
+    assert.strictEqual(full.source, 'markup');
+    // The note is a note because the CHAPTER points at it.
+    assert.strictEqual(full.categoryByElement.get('OEBPS/q0202.xhtml#1'), 'footnote',
+      `the endnote was not read as one: ${JSON.stringify([...full.categoryByElement])}`);
+    assert.strictEqual(full.noterefs, 1);
+
+    // Asked about the notes document alone, the reader takes the whole book
+    // anyway and says so — and the note is STILL a note.
+    const narrow = await readEpubElementCategories(book, new Set(['OEBPS/q0202.xhtml']));
+    assert.strictEqual(narrow.describes, null, '`only` was honoured on the markup reading');
+    assert.deepStrictEqual(factsOf(narrow), factsOf(full),
+      'the markup reading changed when a caller asked for less of it');
+    assert.strictEqual(narrow.categoryByElement.get('OEBPS/q0202.xhtml#1'), 'footnote');
+  });
+
+  await check('the branch a book gets cannot be changed by which documents are asked about', async () => {
+    // The reflow with its stamps in ONE document is the case that decides this:
+    // a reader that settled the branch from the documents it walked would find
+    // no stamp in `r0102` and read the whole book as a publisher's.
+    const reflowed = await reflowedBookOfTwo();
+    const fullReflow = await readEpubElementCategories(reflowed);
+    assert.strictEqual(fullReflow.source, 'document');
+    assert.ok(fullReflow.provenanceByElement.size > 0, 'the fixture resolved no reflow stamp');
+
+    const unstampedOnly = await readEpubElementCategories(reflowed, new Set(['OEBPS/r0102.xhtml']));
+    assert.strictEqual(unstampedOnly.source, 'document',
+      'a document with no stamp in it dropped a stamped book onto the markup reader');
+    assert.strictEqual(unstampedOnly.chapterOpenings, 0);
+    assert.strictEqual(unstampedOnly.noterefs, 0);
+    assert.deepStrictEqual(
+      factsOf(unstampedOnly).filter((f) => f.file === 'OEBPS/r0102.xhtml'),
+      factsOf(fullReflow).filter((f) => f.file === 'OEBPS/r0102.xhtml'),
+      'the unstamped document read differently when asked about on its own');
+
+    // Every book, every subset — including none of its documents and a document
+    // it does not have — answers with the class it answered with unasked.
+    for (const [what, make] of [
+      ['converted', convertedBook],
+      ['reflowed', reflowedBookOfTwo],
+      ['publisher', publisherBookWithEndnotes],
+    ]) {
+      const book = await make();
+      const full = await readEpubElementCategories(book);
+      const documents = documentsOf(full);
+      const subsets = [
+        new Set(),
+        new Set(['OEBPS/not-a-document.xhtml']),
+        ...documents.map((f) => new Set([f])),
+        new Set(documents),
+      ];
+      for (const subset of subsets) {
+        const reading = await readEpubElementCategories(book, subset);
+        assert.strictEqual(reading.source, full.source,
+          `${what}: asking about ${[...subset].join(', ') || 'nothing'} changed the reading class`);
+        // And the stamp maps stay the ones this class fills.
+        assert.strictEqual(reading.provenanceByElement.size > 0,
+          full.provenanceByElement.size > 0 && reading.elements.length > 0,
+          `${what}: the provenance map changed shape under a narrowing`);
+      }
+    }
   });
 
   for (const [status, name, detail] of results) {

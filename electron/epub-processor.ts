@@ -4569,7 +4569,15 @@ export function normalizeZipEntryName(name: string): string {
 export interface EpubElementWalk {
   units: ExportUnit[];
   imageUnits: ImageUnit[];
-  /** Zip entry → its position in the spine, which is the order walked. */
+  /**
+   * Zip entry → its position in the SPINE, for the documents this walk parsed.
+   *
+   * The keys are the parsed documents in spine order; the values are the
+   * document's true spine index whether or not every document before it was
+   * parsed. A narrowed walk (`only`) therefore reports the same index for a
+   * document that a whole-book walk does — the position is a fact about the
+   * book, not about how much of it was read.
+   */
   docIndexOfFile: Map<string, number>;
   /**
    * The normalized forms of the labels mupdf lays out in place of an image it
@@ -4580,7 +4588,37 @@ export interface EpubElementWalk {
   imgAltNorms: Set<string>;
 }
 
-export async function walkEpubElements(epubSourcePath: string): Promise<EpubElementWalk> {
+/**
+ * `only` narrows the walk to some of the book's documents.
+ *
+ * Sound because an element's key is `<zip entry>#<index within that entry>`:
+ * the index restarts at every document and the picture ordinals with it, so what
+ * a document's elements are called is a function of that document alone and of
+ * nothing before or after it. Skipping documents therefore changes no key of the
+ * ones that are walked — the same argument `enumerateNarrationElements` makes
+ * for its own `only` (electron/quire-stamp.ts), and the same one that lets the
+ * spine INDEX still be reported truthfully for a document read out of a book
+ * most of which was not.
+ *
+ * It narrows the PARSE, which is the whole cost: the spine itself is read from
+ * the package document either way, and a document that is skipped is never
+ * `readFile`d and never handed to `parseXhtmlBody`. Measured on the migrated
+ * Nuremberg project, 2026-08-11: 106 ms of `readEpubElementCategories`'s 127 ms
+ * was this walk over 20 documents.
+ *
+ * A document named in `only` that the book's spine does not list simply does not
+ * appear in the result, exactly as it would not appear in a whole-book walk of a
+ * book that does not have it. The callers that care refuse on the empty
+ * enumeration, in their own words, naming the document.
+ *
+ * NOT every caller may narrow. What a book says about an element is not always a
+ * function of that element's own document — see `readEpubElementCategories`,
+ * which decides that question and is the only place it is decided.
+ */
+export async function walkEpubElements(
+  epubSourcePath: string,
+  only?: ReadonlySet<string>,
+): Promise<EpubElementWalk> {
   const processor = new EpubProcessor();
   const units: ExportUnit[] = [];
   const imageUnits: ImageUnit[] = [];
@@ -4588,8 +4626,17 @@ export async function walkEpubElements(epubSourcePath: string): Promise<EpubElem
   // image itself — that text exists in no DOM text node, so blocks matching a
   // known alt form are image furniture, not unalignable content.
   const imgAltNorms = new Set<string>();
-  /** Zip entry → its position in the spine, which is the order walked here. */
+  /** Zip entry → its position in the spine, for the documents parsed here. */
   const docIndexOfFile = new Map<string, number>();
+  /**
+   * Every distinct spine document SEEN, parsed or not.
+   *
+   * Apart from `docIndexOfFile` because the two answer different questions once
+   * a walk may be narrowed: this one dedupes the spine and numbers it, and that
+   * numbering has to count the documents this walk skipped or a narrowed walk
+   * would report a different spine position for the same document.
+   */
+  const spineIndexOf = new Map<string, number>();
 
   try {
     const structure = await processor.open(epubSourcePath);
@@ -4598,8 +4645,10 @@ export async function walkEpubElements(epubSourcePath: string): Promise<EpubElem
       const entryName = normalizeZipEntryName(processor.resolvePath(chapter.href));
       // A spine document listed twice is ONE file: it is read, numbered and
       // enumerated once, exactly as the narration writer treats it.
-      if (docIndexOfFile.has(entryName)) continue;
-      const docIndex = docIndexOfFile.size;
+      if (spineIndexOf.has(entryName)) continue;
+      const docIndex = spineIndexOf.size;
+      spineIndexOf.set(entryName, docIndex);
+      if (only !== undefined && !only.has(entryName)) continue;
       docIndexOfFile.set(entryName, docIndex);
       const xhtml = await processor.readFile(entryName);
       const { doc, body } = parseXhtmlBody(xhtml, entryName);
@@ -6207,7 +6256,16 @@ export interface EpubElementReading {
    * states its structure somewhere, even when it carries none of our stamps.
    */
   source: 'document' | 'markup';
-  /** Every element of the book, in the enumeration order the stamper walks. */
+  /**
+   * The spine documents this reading describes, or null for the whole book.
+   *
+   * Non-null only when a caller asked for less with `only` AND the book's
+   * reading is one that may be narrowed — see `readEpubElementCategories`, where
+   * that is decided. A caller that asked and got null was not refused: it got a
+   * superset, which answers by element key exactly what the subset would have.
+   */
+  describes: string[] | null;
+  /** Every element of the reading, in the enumeration order the stamper walks. */
   elements: EpubElementFact[];
   /** Element key → the category this book states or implies for it. */
   categoryByElement: Map<NarrationElementKey, string>;
@@ -6225,6 +6283,58 @@ export interface EpubElementReading {
   noterefs: number;
 }
 
+/** Which of the three readings a book gets. Decided WHOLE-BOOK, always. */
+type CategoriesBranch = 'provenance' | 'conversion' | 'markup';
+
+/**
+ * Which reading this book gets — and the whole-book walk, when deciding needed
+ * one.
+ *
+ * ── Why this is its own step ───────────────────────────────────────────────
+ *
+ * Because `readEpubElementCategories` may now be asked about SOME of a book's
+ * documents, and a book must never change branch because of which documents
+ * were touched. Two of the three answers are whole-book facts and are asked as
+ * such here, before any narrowing exists:
+ *
+ *  - `epubCarriesProvenance` / `epubCarriesConversionStamps` scan the entire
+ *    spine (they short-circuit on the first document that carries the stamp,
+ *    which is why they cost 12 ms and 2 ms on Nuremberg against 106 ms to parse
+ *    it). They are never given `only`.
+ *  - The provenance branch's own fallthrough — the attribute is in the bytes but
+ *    no element RESOLVES a stamp, so the book is not a reflow of ours in any
+ *    usable sense — is a question about every element of the book. Asked here,
+ *    over a whole-book walk, and never inferred from a narrowed one: a document
+ *    that happens to carry no stamped element would otherwise flip a stamped
+ *    book onto the markup reader, which reads it differently.
+ *
+ * The walk that decision needed is handed back rather than thrown away, so a
+ * book whose branch cost a walk is still walked exactly once.
+ */
+async function categoriesBranchOf(epubSourcePath: string, whatFor: string): Promise<{
+  branch: CategoriesBranch;
+  /** The WHOLE-book walk, when deciding required one. Null when it did not. */
+  walked: EpubElementWalk | null;
+}> {
+  if (await epubCarriesProvenance(epubSourcePath)) {
+    const walked = await walkEpubElements(epubSourcePath);
+    for (const u of walked.units) {
+      if (provenanceOnOrAbove(u.el, whatFor) !== null) return { branch: 'provenance', walked };
+    }
+    // Nothing resolved. The next question is asked — and the walk travels with
+    // it, because it is a whole-book walk of the same book and re-taking it
+    // would be the same 100 ms for the same answer.
+    if (await epubCarriesConversionStamps(epubSourcePath)) {
+      return { branch: 'conversion', walked };
+    }
+    return { branch: 'markup', walked };
+  }
+  if (await epubCarriesConversionStamps(epubSourcePath)) {
+    return { branch: 'conversion', walked: null };
+  }
+  return { branch: 'markup', walked: null };
+}
+
 /**
  * Everything a book says about its own elements, keyed by the element key.
  *
@@ -6232,12 +6342,51 @@ export interface EpubElementReading {
  * for the same reason: a book carries at most one of the two stamps, so this is
  * questions asked in turn rather than a precedence rule. A PDF never reaches
  * here — it has no markup at all — which is why `source` has no `heuristic`.
+ *
+ * ── `only`, and why it is a HINT rather than an instruction ────────────────
+ *
+ * A relabel touches one document and asks this twice — once to learn what the
+ * book currently calls the element, once to verify what it now calls it — and
+ * both walked all 20 of Nuremberg's spine documents to answer about one.
+ * Measured 2026-08-11: 127 ms a call, 106 ms of it the parse.
+ *
+ * Whether that walk MAY be narrowed depends on which reading the book gets, and
+ * the three differ:
+ *
+ *  - `provenance` and `conversion` — a book WE wrote. The category of an element
+ *    is `userCategoryOf(el)` over `provenanceOnOrAbove(el)` /
+ *    `conversionStampOnOrAbove(el)`, and both of those walk from the element up
+ *    through its ancestors, which cannot leave its own document. Narrowing is
+ *    exact.
+ *  - `markup` — a publisher's book, read by `markupCategoriesForUnits`. That
+ *    reading is NOT per-document: `collectNoteReferenceTargets` resolves note
+ *    references across the whole book, and an element is a footnote because
+ *    something ELSEWHERE points at it. Narrowing silently turns endnotes into
+ *    body text — measured over the library, 2026-08-11: of three publisher
+ *    working copies two would be misread, 591 elements of Balkans as `body` and
+ *    3509 of Heinrich Himmler as `quote`. So `only` is IGNORED on this branch.
+ *
+ * Ignored, not refused, because the answer stays correct either way: a reading
+ * of the whole book contains every element a narrowed one would have, with the
+ * same category. `only` asks for less work, never for a different answer, and
+ * `describes` says which it got. Every caller reaches this map by element key,
+ * so a superset answers every question a subset would.
  */
 export async function readEpubElementCategories(
   epubSourcePath: string,
+  only?: ReadonlySet<string>,
 ): Promise<EpubElementReading> {
   const whatFor = `the elements of ${path.basename(epubSourcePath)}`;
-  const walk = await walkEpubElements(epubSourcePath);
+  // WHOLE-BOOK, and before the walk that may be narrowed. See `categoriesBranchOf`.
+  const decided = await categoriesBranchOf(epubSourcePath, whatFor);
+  // Honoured only where the derivation is per-document — and only where the
+  // branch decision did not already pay for the whole book, in which case the
+  // wider reading is simply the one that is already in hand.
+  const narrowTo = decided.branch === 'markup' || decided.walked !== null ? undefined : only;
+  const walk = decided.walked !== null
+    ? decided.walked
+    : await walkEpubElements(epubSourcePath, narrowTo);
+  const describes = narrowTo === undefined ? null : [...walk.docIndexOfFile.keys()];
   const { units, imageUnits } = walk;
 
   // The enumeration order the stamper walks and the narration writer applies:
@@ -6273,7 +6422,11 @@ export async function readEpubElementCategories(
   const conversionByElement = new Map<NarrationElementKey, EpubConversionStamp>();
 
   // ── 1. A book our reflow wrote ────────────────────────────────────────────
-  if (await epubCarriesProvenance(epubSourcePath)) {
+  //
+  // Which branch this is was settled whole-book above, so the questions below
+  // are no longer asked of the book a second time and — this is the part that
+  // matters — cannot be answered differently by a narrowed walk.
+  if (decided.branch === 'provenance') {
     const legal = new Set<string>(BLOCK_CATEGORY_IDS);
     let unstamped = 0;
     for (const u of units) {
@@ -6299,23 +6452,25 @@ export async function readEpubElementCategories(
       provenanceByElement.set(u.key, stamp);
       categoryByElement.set(u.key, said === null ? stamp.category : said);
     }
-    if (provenanceByElement.size > 0) {
-      // Pictures take no category from the stamp — the block IS a picture, which
-      // is what the block-keyed reader says too.
-      return {
-        source: 'document', elements, categoryByElement, provenanceByElement,
-        conversionByElement, unstampedElements: unstamped,
-        tocTargets: 0, chapterOpenings: 0, noterefs: 0,
-      };
-    }
-    // The attribute is in the bytes but no element resolved a stamp. The book is
-    // then not a reflow of ours in any usable sense, and the next question is
-    // asked — the same thing `assignCategories` does when `reflowed.size === 0`.
-    categoryByElement.clear();
+    // Pictures take no category from the stamp — the block IS a picture, which
+    // is what the block-keyed reader says too.
+    //
+    // The `provenanceByElement.size > 0` gate that used to stand here — the
+    // attribute is in the bytes but no element resolves a stamp, so the book is
+    // not a reflow of ours in any usable sense — has moved into
+    // `categoriesBranchOf`, whole-book, where it belongs: asked here it would be
+    // a question about whichever documents this call happened to walk, and a
+    // narrowed walk that resolved no stamp would drop a stamped book onto the
+    // markup reader.
+    return {
+      source: 'document', describes, elements, categoryByElement, provenanceByElement,
+      conversionByElement, unstampedElements: unstamped,
+      tocTargets: 0, chapterOpenings: 0, noterefs: 0,
+    };
   }
 
   // ── 2. A book a document vision model wrote ───────────────────────────────
-  if (await epubCarriesConversionStamps(epubSourcePath)) {
+  if (decided.branch === 'conversion') {
     let unstamped = 0;
     const readOnto = (el: any, key: NarrationElementKey): void => {
       // The USER's own label outranks the model's, for the same reason it
@@ -6334,13 +6489,17 @@ export async function readEpubElementCategories(
     for (const u of units) readOnto(u.el, u.key);
     for (const i of imageUnits) readOnto(i.el, i.key);
     return {
-      source: 'document', elements, categoryByElement, provenanceByElement,
+      source: 'document', describes, elements, categoryByElement, provenanceByElement,
       conversionByElement, unstampedElements: unstamped,
       tocTargets: 0, chapterOpenings: 0, noterefs: 0,
     };
   }
 
   // ── 3. A publisher's book, which states its structure in its own markup ───
+  //
+  // `units` is the WHOLE book here and `describes` is null, because `narrowTo`
+  // was withheld on this branch: what this reading calls an element is not a
+  // function of that element's own document. See the header for the measurement.
   const targets = await readEpubTocTargets(epubSourcePath);
   const { categoryByKey, noteTargets, chapterOpenings } = markupCategoriesForUnits(units, targets);
   // The reading is already keyed the way this reader answers, so it is taken as
@@ -6349,8 +6508,8 @@ export async function readEpubElementCategories(
   // Pictures are `image` by construction here too, and that is the block's own
   // flag rather than a reading of the markup — so nothing is written for them.
   return {
-    source: 'markup', elements, categoryByElement, provenanceByElement, conversionByElement,
-    unstampedElements: 0,
+    source: 'markup', describes, elements, categoryByElement, provenanceByElement,
+    conversionByElement, unstampedElements: 0,
     tocTargets: targets.length, chapterOpenings, noterefs: noteTargets.size,
   };
 }
@@ -8846,9 +9005,14 @@ export async function setElementCategoriesInBookFile(
   // nothing (the idempotence the naming pass keeps, for the same reasons: the
   // bytes carry the narration strikes' stamp and the analysis cache key).
   //
-  // ONCE for the whole batch: this walks every spine document, and it is the
-  // single most expensive thing here (~125 ms on Nuremberg's 20 documents).
-  const reading = await readEpubElementCategories(inputPath);
+  // ONCE for the whole batch, and only over the documents the batch NAMES: this
+  // used to walk every spine document and was the single most expensive thing
+  // here (~125 ms on Nuremberg's 20, of which 106 ms was the parse). `only` is a
+  // hint — a book whose reading is not per-document ignores it and answers about
+  // the whole book, which is a superset and answers the same by key. See
+  // `readEpubElementCategories`.
+  const namedDocuments = new Set(targets.map((t) => t.file));
+  const reading = await readEpubElementCategories(inputPath, namedDocuments);
   const factOfKey = new Map(reading.elements.map((e) => [e.key, e]));
   const facts = targets.map((target) => {
     const fact = factOfKey.get(target.elementKey);
@@ -9012,7 +9176,10 @@ export async function setElementCategoriesInBookFile(
         );
       }
     }
-    const readBack = (await readEpubElementCategories(outputPath)).categoryByElement;
+    // The same documents the batch named — every element it is about lives in
+    // one of them, so a wider reading would answer the identical questions.
+    const readBack = (
+      await readEpubElementCategories(outputPath, namedDocuments)).categoryByElement;
     for (const fact of facts) {
       const said = readBack.get(fact.elementKey);
       if (said !== fact.categoryId) {
