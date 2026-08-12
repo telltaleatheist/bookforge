@@ -112,7 +112,7 @@ export interface MergeDefinition {
 }
 
 export interface HistoryAction {
-  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds' | 'move' | 'resize' | 'deletePage' | 'restorePage' | 'reorderPages' | 'selection' | 'paragraphBreak' | 'categoryCorrection' | 'splitBlock' | 'mergeBlocks' | 'cropApply' | 'cropClear' | 'bookCategory' | 'bookText';
+  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds' | 'move' | 'resize' | 'deletePage' | 'restorePage' | 'reorderPages' | 'selection' | 'paragraphBreak' | 'categoryCorrection' | 'splitBlock' | 'mergeBlocks' | 'cropApply' | 'cropClear' | 'bookCategory' | 'bookText' | 'bookInsertHeading';
   blockIds: string[];
   selectionBefore: string[];
   selectionAfter: string[];
@@ -195,6 +195,32 @@ export interface HistoryAction {
    * that is a chapter OPENING is undone as the chapter rename it was.
    */
   bookTextEdit?: { elementKey: string; before: string; after: string };
+
+  /**
+   * For bookInsertHeading actions — the chapter heading the book GAINED.
+   *
+   * Owen, 2026-08-12: "theres a book that lost the chapter headers but kept the
+   * body text." The insert writes a new `<h1>` into the book immediately before
+   * an element, so it is not a state this window can invert by repainting: the
+   * book has an element it did not have, and every element after it in that
+   * document moved one index on (identity is positional, `<entry>#<index>`).
+   *
+   * A REPLAY RECIPE, like its two siblings above, and the one whose two
+   * directions are different IPCs rather than two sides of one field. Undo
+   * removes the heading through the dedicated inverse — `removeInsertedHeading`,
+   * which refuses anything that is not the shape the insert wrote, so an undo
+   * can never become a general delete-element. Redo inserts before the SAME key
+   * again, which is exact for the same reason the remove is: the remove shifted
+   * every later element back by one, so the key the heading was inserted before
+   * is once more the key it must go before.
+   *
+   * `elementKey` is therefore the INSERTED heading's own key — which is also the
+   * anchor's old position, since the heading takes it and the anchor moves on —
+   * and it addresses both directions. A refused replay is re-stacked and said
+   * out loud, exactly as for a refused relabel: the stacks describe the book or
+   * they describe nothing.
+   */
+  bookHeadingInsert?: { elementKey: string; file: string; title: string };
 }
 
 /** The block table as it is written to (and read from) a project file. */

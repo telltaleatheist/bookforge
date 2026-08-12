@@ -84,6 +84,21 @@ export interface ChapterRow {
    */
   blockId: string | null;
   /**
+   * EVERY block this row stands for, `blockId` first.
+   *
+   * One row can be several chapter-opening elements: a book that states two
+   * chapter headings back to back states ONE chapter opening in two pieces, and
+   * the shell groups them (Owen, 2026-08-12: "they should be one category block
+   * if theyre next to each other and both chapter headers"). It can also be
+   * several BLOCKS of one element, when the paginator split a heading across a
+   * page turn.
+   *
+   * So this is what a gesture ON THE ROW acts on, and `blockId` is only the
+   * anchor a rename is addressed by. Empty exactly when `blockId` is null — a
+   * row read out of the book's navigation, with nothing on any page behind it.
+   */
+  groupBlockIds: string[];
+  /**
    * Why this row's title cannot be retyped, in the user's words, or null when it
    * can be.
    *
@@ -674,14 +689,20 @@ export class DocumentNavComponent {
     blockId: string | null; unlistedFile: string | null; title: string;
   }>();
   /**
-   * A chapter row was dismissed: this block is not a chapter opening.
+   * A chapter row was dismissed: this is not a chapter opening.
    *
-   * Says only WHICH block, not what to make it. The class that means "ordinary
-   * prose" is the palette's answer and the shell's to name — see
+   * Every block of the row's GROUP, not just its anchor — one gesture on one row
+   * is one relabel of everything the row stands for. A row that showed two
+   * headings and demoted only the first would leave the second still a chapter
+   * opening, which is the shape of the 2026-08-12 bug (see `bookChapterRows` in
+   * the shell): the × has to mean what the row shows.
+   *
+   * Says only WHICH blocks, not what to make them. The class that means
+   * "ordinary prose" is the palette's answer and the shell's to name — see
    * `BODY_CATEGORY` — and this component draws rows, it does not hold opinions
    * about the thirteen.
    */
-  readonly demote = output<{ blockId: string }>();
+  readonly demote = output<{ blockIds: string[] }>();
   readonly resetTo = output<ResetTarget>();
   readonly tabChange = output<DocumentNavTab>();
 
@@ -843,10 +864,14 @@ export class DocumentNavComponent {
    * range: a selection is a set of block ids, and a range that quietly stopped at
    * the first navigation-only row would select a different span than the one the
    * user dragged over.
+   *
+   * A row selects EVERYTHING it stands for — its whole group, not just the
+   * anchor a rename is addressed by. A row that showed two headings and
+   * highlighted one on the page would be showing the user something other than
+   * what it says it is; the same rule the × follows.
    */
   onRowClick(row: ChapterRow, event: MouseEvent): void {
     if (row.blockId === null) return;
-    const blockId = row.blockId;
     const additive = event.metaKey || event.ctrlKey;
     if (event.shiftKey && this.rangeAnchor !== null) {
       const list = this.chapterRows();
@@ -858,16 +883,14 @@ export class DocumentNavComponent {
       if (from >= 0 && to >= 0) {
         const [lo, hi] = from <= to ? [from, to] : [to, from];
         this.chapterClick.emit({
-          blockIds: list.slice(lo, hi + 1)
-            .map(r => r.blockId)
-            .filter((id): id is string => id !== null),
+          blockIds: list.slice(lo, hi + 1).flatMap(r => r.groupBlockIds),
           additive: false,
         });
         return;
       }
     }
     if (!event.shiftKey) this.rangeAnchor = row.id;
-    this.chapterClick.emit({ blockIds: [blockId], additive });
+    this.chapterClick.emit({ blockIds: row.groupBlockIds, additive });
   }
 
   /**
@@ -880,7 +903,8 @@ export class DocumentNavComponent {
   demoteRow(row: ChapterRow): void {
     if (row.blockId === null) return;
     if (this.editing() === row.id) this.editing.set(null);
-    this.demote.emit({ blockId: row.blockId });
+    // The whole group, which by the row's own contract holds `blockId` first.
+    this.demote.emit({ blockIds: row.groupBlockIds });
   }
 
   startEditing(row: ChapterRow): void {

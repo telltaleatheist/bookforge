@@ -3645,6 +3645,85 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /**
+   * Put a NEW chapter heading into the book, immediately above one of its
+   * elements.
+   *
+   * Owen, 2026-08-12: "theres a book that lost the chapter headers but kept the
+   * body text. i have ot insert chapter headers in where they belong." Nothing
+   * else in the picker ADDS an element — a relabel says what an element is and a
+   * text edit says what it reads — so this is the one write that moves the
+   * identities around it: the heading takes `beforeElementKey`'s position
+   * (`insertedKey` answers with it) and every element after it in that document
+   * is one index further on. Main carries the narration strike record `+1` in
+   * the same transaction and refuses the whole insert if a strike cannot be
+   * carried, so this side only has to lay the rewritten entries out again.
+   *
+   * The chapter-naming pass runs behind it exactly as behind a promotion to
+   * `chapter`, which is why the answer carries the same three fields: a listed
+   * document's heading is rewritten to its STORED name, and an unlisted one
+   * comes back with `needsChapterName` so the name can be asked for.
+   */
+  async insertBookChapterHeading(
+    projectDir: string,
+    beforeElementKey: string,
+    title: string,
+    familyId?: string,
+  ): Promise<{
+    success: boolean;
+    result?: {
+      file: string; beforeElementKey: string; insertedKey: string; title: string;
+      renumberedStrikes: number; rewrittenEntries: string[];
+      fromSha256: string; toSha256: string;
+    };
+    openingsNamed?: number;
+    openingUnnamed?: string | null;
+    needsChapterName?: string | null;
+    /** Every zip entry main rewrote — the document, and whatever the naming pass touched. */
+    rewrittenEntries?: string[];
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.insertChapterHeading(
+        projectDir, beforeElementKey, title, familyId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Take an inserted chapter heading back out — the insert's exact inverse, and
+   * what an undo of one replays.
+   *
+   * Deliberately NOT a general delete-element: main refuses anything that is not
+   * the shape the insert wrote, and refuses by name when a narration strike sits
+   * on the heading itself ("Unstrike the heading first"), because a strike is a
+   * record about words that would otherwise be silently thrown away with them.
+   * The strike record is carried `-1` in the same transaction, which is what
+   * makes a redo land on the same key again.
+   */
+  async removeBookInsertedHeading(
+    projectDir: string,
+    elementKey: string,
+    familyId?: string,
+  ): Promise<{
+    success: boolean;
+    result?: {
+      file: string; elementKey: string; textBefore: string;
+      renumberedStrikes: number; rewrittenEntries: string[];
+      fromSha256: string; toSha256: string;
+    };
+    openingsNamed?: number;
+    openingUnnamed?: string | null;
+    needsChapterName?: string | null;
+    rewrittenEntries?: string[];
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.vlm.removeInsertedHeading(projectDir, elementKey, familyId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   async precomputeDiffPair(originalPath: string, targetPath: string): Promise<{ success: boolean; cached?: boolean; chapters?: number; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.diff.precomputePair(originalPath, targetPath);

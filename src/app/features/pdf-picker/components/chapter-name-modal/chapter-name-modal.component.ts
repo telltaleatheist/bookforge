@@ -51,7 +51,7 @@ export interface ChapterNamePrompt {
   template: `
     <div class="modal-overlay" (click)="dismiss.emit()">
       <div class="prompt" (click)="$event.stopPropagation()">
-        <h3 class="prompt-title">Name this chapter</h3>
+        <h3 class="prompt-title">{{ heading() }}</h3>
         <p class="prompt-reason">{{ prompt().reason }}</p>
         <input
           #nameInput
@@ -65,13 +65,13 @@ export interface ChapterNamePrompt {
         />
         <div class="prompt-actions">
           <desktop-button variant="ghost" (click)="dismiss.emit()">
-            Leave it unlisted
+            {{ dismissLabel() }}
           </desktop-button>
           <desktop-button
             variant="primary"
             [disabled]="draft().trim().length === 0"
             (click)="confirm()"
-          >List it</desktop-button>
+          >{{ confirmLabel() }}</desktop-button>
         </div>
       </div>
     </div>
@@ -142,6 +142,26 @@ export class ChapterNameModalComponent {
    * type, and the empty string when the book states nothing to pre-fill from.
    */
   readonly initialName = input.required<string>();
+
+  // ── The two questions this box asks ───────────────────────────────────────
+  //
+  // One box, because both are "type what this chapter is called over a page the
+  // user is looking at", with the same Backspace hazard (see `focusEditor`) and
+  // the same caret discipline. What differs is only the words on it, so the
+  // words are inputs and the defaults are the original question — the naming
+  // prompt's call site says nothing and is unchanged.
+  //
+  // The second question is the INSERT (Owen, 2026-08-12: "give me the ability to
+  // insert a chapter header"), where dismissing is a plain cancel: nothing has
+  // been written yet, so "leave it unlisted" would describe a state that does
+  // not exist.
+
+  /** The question at the top of the box. */
+  readonly heading = input('Name this chapter');
+  /** What the primary button says — the act being confirmed, in its own verb. */
+  readonly confirmLabel = input('List it');
+  /** What the ghost button says: what NOT doing this leaves behind. */
+  readonly dismissLabel = input('Leave it unlisted');
 
   /** A name was given. The shell owns the write; this only says what was typed. */
   readonly name = output<string>();

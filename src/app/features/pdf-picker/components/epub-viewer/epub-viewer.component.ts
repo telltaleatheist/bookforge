@@ -278,6 +278,16 @@ const GRID_BASE_WIDTH = 200;
               turn would otherwise be shown as its first half.
             -->
             <button type="button" (click)="fire('editBlockText', menu.block)">Edit text…</button>
+            <!--
+              The only item in this menu that gives the book an element it did
+              not have. For the book that lost its chapter headers and kept the
+              body text (Owen, 2026-08-12) — the heading goes in ABOVE this
+              block, so the item is named for where it lands rather than for
+              what it is.
+            -->
+            <button type="button" (click)="fire('insertHeadingAbove', menu.block)">
+              Insert chapter heading above…
+            </button>
             <div class="sep"></div>
           }
           <button type="button" (click)="onSelectAllOnPage(menu.page)">Select all on page {{ menu.page + 1 }}</button>
@@ -636,6 +646,15 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
    * rewrites the book's own words rather than recording something about them.
    */
   readonly editBlockText = output<LaidOutBlock>();
+  /**
+   * Put a chapter heading into the book immediately ABOVE this block.
+   *
+   * The block is the ANCHOR, not the thing being changed: the heading is a new
+   * element taking this one's position, and this one — with everything after it
+   * — moves down to make room. The picker asks for the title and owns the
+   * write; this only says which block the user pointed at.
+   */
+  readonly insertHeadingAbove = output<LaidOutBlock>();
   readonly deleteBlock = output<string>();
   readonly marqueeSelect = output<{ blockIds: string[]; additive: boolean }>();
   readonly pageDeleteToggle = output<number>();
@@ -2182,7 +2201,7 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
    * silently dead menu entry.
    */
   protected fire(
-    which: 'selectLikeThis' | 'deleteLikeThis' | 'editBlockText',
+    which: 'selectLikeThis' | 'deleteLikeThis' | 'editBlockText' | 'insertHeadingAbove',
     block: LaidOutBlock,
   ): void {
     this[which].emit(block);

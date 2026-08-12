@@ -93,6 +93,7 @@ import {
   type NarrationElementKey,
   type NarrationLaidOutBlock,
   type NarrationState,
+  type ParsedNarrationElementKey,
 } from '@shared/vlm/narration-deletions';
 import type { BookChapterTitles } from '@shared/vlm/chapter-titles';
 import { parsePageRange } from './shared/page-range.util';
@@ -437,6 +438,59 @@ const CATEGORY_SHORTCUTS: Record<string, string> = {
 // shortcut is the easiest way to put one back by accident.
 // See autoDetectedCategoryList.
 
+/**
+ * ONE chapter opening of a book, as the book states it — which may be several
+ * elements and several blocks.
+ *
+ * See `bookChapterOpeningGroups` for why a run of adjacent chapter elements is
+ * one opening and not several. This is the shape the Chapter tab's rows are
+ * derived from, and nothing else: the book's markup is not edited to match it,
+ * because a grouping is a reading of what the book says.
+ */
+interface ChapterOpeningGroup {
+  /**
+   * Every block of the group, in element order and then reading order within an
+   * element. STRUCK BLOCKS INCLUDED — a strike is a record about the narration,
+   * not an edit to the book, so it cannot change what the book states a chapter
+   * opening is.
+   */
+  blocks: TextBlock[];
+  /**
+   * The chapter document these elements live in, or null when the group's block
+   * was never matched to the markup it was laid out from.
+   */
+  file: string | null;
+  /**
+   * True when this group holds its document's FIRST chapter element — the one
+   * the book's navigation entry belongs to.
+   *
+   * Read from ALL of that document's chapter blocks, strikes and all, which is
+   * the whole point: ownership is a fact about the book, and a row that inherits
+   * it because the opening above it was struck is the 2026-08-12 bug.
+   */
+  holdsFirstElement: boolean;
+}
+
+/**
+ * The element key `delta` positions from this one in the same document, or null
+ * when there is no such position.
+ *
+ * Only a TEXT unit has a neighbour to be adjacent TO. A picture key (`#img0`)
+ * counts in its own index space and a whole-document key (`#doc`) names no
+ * position at all, so neither is ever next to anything: adjacency here means
+ * adjacency in the markup's own element sequence, and inventing it across kinds
+ * would join two chapter openings the book states apart.
+ */
+function adjacentElementKey(
+  parsed: ParsedNarrationElementKey,
+  delta: number,
+): NarrationElementKey | null {
+  if (parsed.kind !== 'unit') return null;
+  const index = parsed.index + delta;
+  if (index < 0) return null;
+  return `${parsed.file}#${index}`;
+}
+
 // Alert modal
 interface AlertModal {
   title: string;
@@ -755,6 +809,7 @@ const PDF_HAS_NO_BOOK_MESSAGE =
                     (deleteLikeThis)="deleteLikeThis($event)"
                     (deleteBlock)="deleteBlock($event)"
                     (editBlockText)="onEditBookBlockText($event)"
+                    (insertHeadingAbove)="onInsertHeadingAbove($event)"
                     (commitBlockText)="onInlineBlockTextCommitted($event)"
                     (marqueeSelect)="onMarqueeSelect($event)"
                     (mergeSelection)="mergeSelectedBlocks()"
@@ -1203,6 +1258,23 @@ const PDF_HAS_NO_BOOK_MESSAGE =
         [initialName]="chapterNameDraft()"
         (name)="confirmChapterName($event)"
         (dismiss)="cancelChapterName()"
+      />
+    }
+
+    <!--
+      Insert-a-chapter-heading prompt: the SAME box, asking the other question
+      it can ask — see the two-questions note in chapter-name-modal.component.ts.
+      Dismissing is a plain cancel here because nothing has been written yet.
+    -->
+    @if (insertHeadingPrompt(); as prompt) {
+      <app-chapter-name-modal
+        [prompt]="prompt"
+        [initialName]="insertHeadingDraft()"
+        heading="Insert chapter heading"
+        confirmLabel="Insert"
+        dismissLabel="Cancel"
+        (name)="confirmInsertHeading($event)"
+        (dismiss)="cancelInsertHeading()"
       />
     }
 
@@ -4839,11 +4911,11 @@ export class PdfPickerComponent implements OnInit {
    * ARE the list, because the nav rows describe the same chapters — listing both
    * would show every chapter of the book twice.
    *
-   * 1 and 2 list only what survives the strikes (`visibleBlocks`,
-   * `bookChapterOpeningBlocks`); 3 is not filtered by them, because those rows
-   * are the book's own table of contents rather than markers on any page, and
-   * striking a page out of the narration does not edit what the book says about
-   * itself.
+   * 1 lists only what survives the strikes (`visibleBlocks`). 2 and 3 do NOT:
+   * both are statements the BOOK makes about itself — a `chapter` stamp in its
+   * markup, an entry in its contents — and striking a block out of the narration
+   * is a record about the reading, not an edit to the book. See
+   * `bookChapterOpeningGroups`, where a struck opening still owns its document.
    */
   readonly curationChapterRows = computed<readonly ChapterRow[]>(() => {
     if (this.documentLayerLive()) {
@@ -4851,14 +4923,14 @@ export class PdfPickerComponent implements OnInit {
       // `chapterOpeningsAfterDeletions`, which the service derives them by.
       return this.documentBlocks.chapterBlocks()
         .map(b => ({
-          id: b.id, title: b.text.trim(), page: b.page, blockId: b.id,
+          id: b.id, title: b.text.trim(), page: b.page, blockId: b.id, groupBlockIds: [b.id],
           readOnlyReason: null, unlistedFile: null,
         }));
     }
 
-    const openings = this.bookChapterOpeningBlocks();
-    const listed: ChapterRow[] = openings.length > 0
-      ? this.bookChapterRows(openings)
+    const groups = this.bookChapterOpeningGroups();
+    const listed: ChapterRow[] = groups.length > 0
+      ? this.bookChapterRows(groups)
       // `blockId: null` even for a chapter record that carries one. Those records
       // are the legacy PDF chapter-marker path, whose blockId points into a
       // document that is not live here; a row claiming to be backed by it would
@@ -4868,6 +4940,7 @@ export class PdfPickerComponent implements OnInit {
         title: c.title,
         page: c.page,
         blockId: null,
+        groupBlockIds: [],
         readOnlyReason: 'read from this book\'s own table of contents, with no block on any page '
           + 'behind it. Label the heading a chapter opening to edit it here.',
         unlistedFile: null,
@@ -4912,47 +4985,170 @@ export class PdfPickerComponent implements OnInit {
         title: '',
         page: null,
         blockId: null,
+        groupBlockIds: [],
         readOnlyReason: null,
         unlistedFile: file,
       }));
   }
 
   /**
-   * The chapter-opening blocks of the book on screen, as rows.
+   * The chapter openings of the book on screen, GROUPED the way the book states
+   * them: a run of chapter elements that sit next to each other in one document
+   * is ONE opening.
+   *
+   * ── What went wrong, measured ────────────────────────────────────────────
+   *
+   * "For the Soul of the People", 2026-08-12. Its VLM reading produced two
+   * chapter elements back to back in one document: `4>` — a decorative glyph
+   * read as text — immediately followed by `The Early Divisions within the
+   * Church Opposition`. The Chapter tab drew two rows: the first wore the
+   * document's nav title (the first opening owned the document), the second
+   * showed its own print. Owen struck the `4>` block on the page. The rows were
+   * derived from the SURVIVING openings, so the text element became the first
+   * survivor, INHERITED the document's nav entry, and drew itself wearing the
+   * title `4>`. Its × then demoted that text element while the row displayed the
+   * garbage's name: "its deleting the wrong thing."
+   *
+   * Two separate faults, and both are answered here:
+   *
+   *  - **Ownership came from strike survivorship.** It is now read from ALL of a
+   *    document's chapter elements — `this.blocks()`, unfiltered by deletions —
+   *    so a struck opening still anchors its document and nothing below it can
+   *    inherit the title. A strike is a record about what gets narrated; it is
+   *    not an edit to the book, and only the book decides what its chapters are.
+   *  - **Two adjacent headings were two chapters.** Owen, 2026-08-12: "there are
+   *    a couple of chapter markers right next to each other - one after another.
+   *    if that happens in the epub, they should be merged into one unit and the
+   *    complete text of both should make up the chapter text… they should be one
+   *    category block if theyre next to each other and both chapter headers."
+   *    So they are one row, wearing one title, and the × demotes both.
+   *
+   * ── This does not touch the book ─────────────────────────────────────────
+   *
+   * The grouping is a VIEW of what the book says, derived on every read. No
+   * markup is rewritten to record it — there is nothing here to save, and
+   * nothing that can fall out of step with the file.
+   *
+   * ── What is deliberately NOT solved here ─────────────────────────────────
+   *
+   * The naming pass and the narration are still PER-ELEMENT, in main: a chapter's
+   * stored name is written onto its document's first chapter element, so a
+   * two-element opening has its first element rewritten to the stored name while
+   * the second keeps its own printed words, and the narration speaks both. That
+   * is a real open question about what a multi-element opening's heading SAYS —
+   * named here rather than papered over, because pretending the group is one
+   * element on this side would only move the disagreement somewhere quieter.
+   */
+  private readonly bookChapterOpeningGroups = computed<ChapterOpeningGroup[]>(() => {
+    // Every chapter opening the book states, in reading order, strikes included.
+    const openings = this.blocks()
+      .filter(isChapterOpening)
+      .sort((a, b) => a.page - b.page || a.y - b.y);
+    if (openings.length === 0) return [];
+
+    // Element key → the blocks laid out from it. SEVERAL BLOCKS SHARE ONE KEY
+    // when the paginator split a heading across a page turn, and they are one
+    // member of the group, not several — the same dedupe by element that
+    // `setBookBlockCategories` does before it writes.
+    const byElement = new Map<string, TextBlock[]>();
+    // Each document's first chapter element in reading order — the one its nav
+    // entry belongs to. Reading order rather than the lowest index, so that an
+    // opening keyed as a picture (`#img0`, its own index space) can own a
+    // document too.
+    const firstOfFile = new Map<string, string>();
+    // The blocks that were never matched to the markup they were laid out from.
+    // Nothing to be adjacent TO, so each is its own group and the row says why
+    // it cannot be renamed.
+    const untraceable: TextBlock[] = [];
+
+    for (const block of openings) {
+      const key = block.bf_element;
+      if (key === undefined) { untraceable.push(block); continue; }
+      const sharing = byElement.get(key);
+      if (sharing !== undefined) { sharing.push(block); continue; }
+      byElement.set(key, [block]);
+      const file = parseNarrationElementKey(key).file;
+      if (!firstOfFile.has(file)) firstOfFile.set(file, key);
+    }
+
+    const groups: ChapterOpeningGroup[] = [];
+    for (const key of byElement.keys()) {
+      const parsed = parseNarrationElementKey(key);
+      // A run is emitted once, at its START — the element with no chapter
+      // element immediately before it. Walking in reading order alone would not
+      // guarantee that: a heading's block can sit above its predecessor's on a
+      // page the paginator laid out in two columns.
+      const previous = adjacentElementKey(parsed, -1);
+      if (previous !== null && byElement.has(previous)) continue;
+      const members = [key];
+      for (
+        let next = adjacentElementKey(parsed, 1);
+        next !== null && byElement.has(next);
+        next = adjacentElementKey(parseNarrationElementKey(next), 1)
+      ) {
+        members.push(next);
+      }
+      const first = firstOfFile.get(parsed.file);
+      groups.push({
+        blocks: members.flatMap(member => byElement.get(member)!),
+        file: parsed.file,
+        holdsFirstElement: members.some(member => member === first),
+      });
+    }
+    for (const block of untraceable) {
+      groups.push({ blocks: [block], file: null, holdsFirstElement: false });
+    }
+
+    // Reading order of the group's earliest block, so the list reads down the
+    // book exactly as it did when every opening was its own row. Measured once
+    // per group rather than inside the comparison: a group's blocks can run
+    // element-order while the page reads otherwise, and the earliest is the
+    // question either way.
+    return groups
+      .map(group => ({
+        group,
+        at: group.blocks.reduce((earliest, b) =>
+          b.page < earliest.page || (b.page === earliest.page && b.y < earliest.y) ? b : earliest),
+      }))
+      .sort((a, b) => a.at.page - b.at.page || a.at.y - b.at.y)
+      .map(entry => entry.group);
+  });
+
+  /**
+   * The book's chapter openings, as rows.
    *
    * ── Which row carries the book's title ──────────────────────────────────
    *
    * A nav entry names a DOCUMENT, and a converted book is one document per
-   * chapter, so the title belongs to the block that OPENS that document — the
-   * first chapter-opening block in it, in reading order. That is the same
-   * decision foundry made when it split the book there, read back off the file.
+   * chapter, so the title belongs to the group that OPENS that document — the
+   * one holding its first chapter element. That is the same decision foundry
+   * made when it split the book there, read back off the file, and it is read
+   * from the book's own blocks rather than from whichever opening survived the
+   * strikes (see `bookChapterOpeningGroups` for the night that rule cost).
    *
-   * A later chapter-opening block in the same document is a split point the book
-   * does not have YET: the user has just labelled a heading mid-chapter to say
-   * "the next build should break here". It shows its own printed text and is not
-   * renameable, because the alternative — showing the document's one nav title on
-   * two rows and letting either overwrite it — would let a user rename a chapter
-   * from a row that is not that chapter.
+   * A later group in the same document is a split point the book does not have
+   * YET: the user has labelled a heading mid-chapter to say "the next build
+   * should break here". It shows its own printed text and is not renameable,
+   * because the alternative — showing the document's one nav title on two rows
+   * and letting either overwrite it — would let a user rename a chapter from a
+   * row that is not that chapter.
    *
    * Every refusal is answered HERE and travels ON the row, so the pencil and the
    * refusal cannot disagree and no affordance is offered that would be refused
    * after the fact.
    */
-  private bookChapterRows(openings: readonly TextBlock[]): ChapterRow[] {
+  private bookChapterRows(groups: readonly ChapterOpeningGroup[]): ChapterRow[] {
     const navTitles = this.bookChapterTitleByFile();
     const unlisted = this.bookUnlistedDocuments();
     const isBook = this.viewingBook();
-    const claimed = new Set<string>();
+    // What the strikes DO reach: which page the row points at. They do not reach
+    // the row's existence, its title or its ownership — see the group header.
+    const surviving = new Set(this.bookChapterOpeningBlocks().map(b => b.id));
 
-    return openings.map(block => {
-      const element = block.bf_element;
-      const file = element === undefined ? null : parseNarrationElementKey(element).file;
-      // The FIRST opening in a document owns that document's entry — the one
-      // the book names it by, or the one it would gain. A later one is a split
-      // point the book does not have yet, and owns neither.
+    return groups.map(group => {
+      const file = group.file;
       const opensDocument = file !== null && (navTitles.has(file) || unlisted.has(file))
-        && !claimed.has(file);
-      if (file !== null) claimed.add(file);
+        && group.holdsFirstElement;
 
       // The nav entry when this row owns it; the print otherwise. The book's
       // OWN chapter names are the authority (Owen, 2026-08-09: "the chapter
@@ -4962,15 +5158,28 @@ export class PdfPickerComponent implements OnInit {
       //
       // A document the book does not name has no entry to read, so the row
       // shows the PRINT — which is also what the name box opens on, and very
-      // nearly always the name the user is about to list it under.
+      // nearly always the name the user is about to list it under. For a group
+      // of several elements the print is all of them, in element order: "the
+      // complete text of both should make up the chapter text".
       const listed = file !== null && navTitles.has(file);
-      const title = opensDocument && listed ? navTitles.get(file)! : block.text.trim();
+      const print = group.blocks
+        .map(b => b.text.trim()).filter(text => text.length > 0).join(' ');
+      const title = opensDocument && listed ? navTitles.get(file)! : print;
+
+      // The anchor is the group's first member: what a rename is addressed by,
+      // and the row's identity. The PAGE is the first member the strikes left,
+      // so the rail lands on something the reader can see — and a group struck
+      // whole keeps its row, pointing at the first member, because the book
+      // still says these are chapter openings.
+      const anchor = group.blocks[0];
+      const visible = group.blocks.find(b => surviving.has(b.id));
 
       return {
-        id: block.id,
+        id: anchor.id,
         title,
-        page: block.page,
-        blockId: block.id,
+        page: visible === undefined ? anchor.page : visible.page,
+        blockId: anchor.id,
+        groupBlockIds: group.blocks.map(b => b.id),
         readOnlyReason: this.bookRetitleRefusal(isBook, file, navTitles, unlisted, opensDocument),
         // Only the row that owns the document offers to list it: two boxes for
         // one entry would let the second overwrite what the first inserted.
@@ -5185,6 +5394,26 @@ export class PdfPickerComponent implements OnInit {
     signal<(ChapterNamePrompt & { blockId: string | null }) | null>(null);
   /** What the prompt's box opens on: the heading printed on the page. */
   readonly chapterNameDraft = signal('');
+
+  /**
+   * The block a new chapter heading is going in ABOVE, while the title is being
+   * typed, or null.
+   *
+   * `element` is the anchor's key — what the insert is addressed by, and what
+   * the new heading's own key will be once it takes that position. `file` (from
+   * {@link ChapterNamePrompt}) is that element's document, so the box's own
+   * sentence can say which chapter document is about to gain a heading; the
+   * modal is the naming prompt's, asking its other question.
+   */
+  readonly insertHeadingPrompt =
+    signal<(ChapterNamePrompt & { element: string }) | null>(null);
+  /**
+   * What the insert box opens on: nothing.
+   *
+   * The naming prompt pre-fills from the heading printed on the page, and there
+   * is no such heading here — that is the whole reason this gesture exists.
+   */
+  readonly insertHeadingDraft = signal('');
 
   // Split block popover state
   readonly splitPopoverBlock = signal<TextBlock | null>(null);
@@ -7815,6 +8044,151 @@ export class PdfPickerComponent implements OnInit {
     return true;
   }
 
+  /**
+   * Write a new chapter heading into the book, above one of its elements.
+   *
+   * Owen, 2026-08-12: "give me the ability to insert a chapter header… theres a
+   * book that lost the chapter headers but kept the body text." This is the one
+   * write in the picker that gives the book an ELEMENT it did not have, and that
+   * is what makes it different from every other one: element identity is
+   * positional (`<entry>#<index>`), so the heading takes the anchor's index and
+   * every element after it in that document moves one on. Main owns that
+   * arithmetic — it carries the narration strike record `+1` in the same
+   * transaction and refuses the whole insert before a byte if a strike cannot be
+   * carried — so all that is owed here is to lay out what main says it rewrote.
+   *
+   * `recordHistory` is false for undo/redo REPLAYS only: the stacks are already
+   * being walked, and recording a replay would push what it replays.
+   *
+   * Answers whether the book now carries the heading.
+   */
+  private async insertChapterHeading(
+    beforeElementKey: string,
+    title: string,
+    opts?: { recordHistory?: boolean },
+  ): Promise<boolean> {
+    const dir = this.projectPath();
+    if (!dir) {
+      this.showAlert({
+        title: 'This book is not in a project',
+        message: 'A chapter heading is written into the project\'s book EPUB, and this document '
+          + 'does not belong to a project. Import it from Studio first.',
+        type: 'warning',
+      });
+      return false;
+    }
+
+    this.beginBookWrite();
+    const answer = await this.enqueueBookWrite(() =>
+      this.electronService.insertBookChapterHeading(
+        dir, beforeElementKey, title, this.workingChainId()));
+    const result = answer.result;
+    this.endBookWrite(answer.success && result !== undefined);
+    if (!answer.success || result === undefined) {
+      // Main's own sentence, verbatim: it names the element, the book or the
+      // strike that could not be carried. Nothing landed — the insert validates
+      // the whole shift before it writes — so there is nothing to redraw.
+      this.showAlert({
+        title: 'The heading was not inserted',
+        message: answer.error === undefined
+          ? 'The insert came back without a result and without a reason, which is a fault in '
+            + 'BookForge rather than anything about this book. Nothing was written.'
+          : answer.error,
+        type: 'error',
+      });
+      return false;
+    }
+
+    if (opts?.recordHistory !== false) {
+      // The recipe, addressed by the INSERTED key — which is the anchor's old
+      // position, and the key both directions of the replay use. `blockIds` is
+      // empty on purpose: the action is about an element the book has only just
+      // gained, and no block of the layout it was made against IS it.
+      const selection = [...this.selectedBlockIds()];
+      this.editorState.recordBookAction({
+        type: 'bookInsertHeading',
+        blockIds: [],
+        selectionBefore: selection,
+        selectionAfter: selection,
+        bookHeadingInsert: {
+          elementKey: result.insertedKey, file: result.file, title: result.title,
+        },
+      });
+    }
+
+    // The documents main rewrote are laid out again, and only those — the same
+    // discipline as a rename's. A heading is new words on a page, so this is
+    // REAL layout: the document is longer than it was and every page after the
+    // insertion point in it has moved.
+    const rewritten = answer.rewrittenEntries;
+    if (rewritten === undefined) {
+      this.showAlert({
+        title: 'This book may not show the new heading yet',
+        message: 'The heading was inserted, but main did not say which of the book\'s documents it '
+          + 'rewrote, so the pages on screen were not laid out again. Close and re-open the book '
+          + 'to see it.',
+        type: 'warning',
+      });
+    } else if (rewritten.length > 0) {
+      await this.relayoutBookAfterEdit(rewritten, result.insertedKey);
+    }
+    await this.refreshBookEpub();
+
+    // ── Whose words the heading ends up printing ────────────────────────────
+    //
+    // A chapter opening prints its chapter's STORED name — the naming pass
+    // derives the heading from the table of contents, book-wide and unasked —
+    // and the heading just inserted is its document's opening now. So the words
+    // the user typed are, on their own, temporary: the next naming pass would
+    // rewrite them to whatever the contents already says this document is
+    // called. There is one authority, and the user just used it, so the typed
+    // title has to reach the contents too. Three cases, and each is answered
+    // where the gesture was made:
+    if (typeof answer.needsChapterName === 'string') {
+      // The book does not list this document at all, so there is nothing to
+      // rename — the missing operation is LISTING it, which the naming prompt
+      // performs. Pre-filled with what was typed: the user has already said
+      // what this chapter is called and should not have to say it twice.
+      const heading = this.blocks().find(b => b.bf_element === result.insertedKey);
+      this.chapterNameDraft.set(title);
+      this.chapterNamePrompt.set({
+        file: answer.needsChapterName,
+        // Null when the relayout has not put a block on screen for the new
+        // element — the reader then stays where they are rather than jumping to
+        // a block that is not there.
+        blockId: heading === undefined ? null : heading.id,
+        reason: typeof answer.openingUnnamed === 'string'
+          ? answer.openingUnnamed
+          // Main says this itself whenever it has a sentence for it; when it
+          // does not, the prompt still has to say why it is asking.
+          : 'This book\'s table of contents does not list the document this heading was inserted '
+            + 'into, so the chapter has no stored name for the page to print.',
+      });
+    } else if (typeof answer.openingUnnamed === 'string') {
+      // The pass declined to rewrite this heading and said why. Not followed by
+      // a rename: the pass has already refused to touch the page, and renaming
+      // the chapter would put the typed name in the contents while the page went
+      // on printing something else.
+      this.showAlert({
+        title: 'The heading was inserted; the page may not print what you typed',
+        message: `The heading is in the book, and the chapter-naming pass did not rewrite it to `
+          + `the chapter's stored name. ${answer.openingUnnamed}`,
+        type: 'warning',
+      });
+    } else {
+      // The document IS listed, so the naming pass has already rewritten the new
+      // heading to the STORED name — undoing the user's words in the very
+      // gesture that typed them. The user typed what this chapter is called, so
+      // the rename follows the insert: one authority, and the contents is it.
+      // `recordHistory: false` because this is part of the insert, not a second
+      // undoable gesture — Ctrl+Z takes the whole heading back out.
+      await this.renameChapterFromOpeningEdit(
+        dir, result.insertedKey, title, false, { recordHistory: false });
+    }
+
+    return true;
+  }
+
   // Alert modal methods
   showAlert(options: Partial<AlertModal> & { title: string; message: string }): void {
     this.alertModal.set({
@@ -7871,6 +8245,66 @@ export class PdfPickerComponent implements OnInit {
   cancelChapterName(): void {
     this.chapterNamePrompt.set(null);
     this.chapterNameDraft.set('');
+  }
+
+  /**
+   * "Insert chapter heading above…" — ask what the chapter is called.
+   *
+   * Owen, 2026-08-12: "theres a book that lost the chapter headers but kept the
+   * body text." The block the user right-clicked is the ANCHOR: the heading is
+   * written immediately above it, takes its position, and pushes it (and
+   * everything after it in that document) down one — "maybe shift everything
+   * down to make room for it".
+   *
+   * Nothing is written from here. A heading with no words is not a chapter
+   * heading, so the title is asked for first and the write is the prompt's
+   * answer.
+   */
+  onInsertHeadingAbove(block: LaidOutBlock): void {
+    if (this.curationLocked()) return;  // the artifact on screen is not curated here
+    const dir = this.projectPath();
+    const element = block.bf_element;
+    if (!dir || element === undefined) {
+      this.showAlert({
+        title: 'A heading cannot be inserted here',
+        message: dir
+          ? 'That block was not matched to an element of the book, so there is nowhere in the '
+            + 'markup to put a heading above it. The warnings shown when this book opened name '
+            + 'every block in that state.'
+          : 'A heading is written into the project\'s book, and this document does not belong to a '
+            + 'project. Import it from Studio first.',
+        type: 'warning',
+      });
+      return;
+    }
+    this.insertHeadingDraft.set('');
+    this.insertHeadingPrompt.set({
+      element,
+      file: parseNarrationElementKey(element).file,
+      reason: 'The heading is written into the book immediately above the block you clicked, at '
+        + 'the size a chapter heading is printed at, and everything below it shifts down to make '
+        + 'room. Nothing on the page is replaced.',
+    });
+  }
+
+  /** A title was typed for the new heading — write it into the book. */
+  confirmInsertHeading(title: string): void {
+    const prompt = this.insertHeadingPrompt();
+    if (prompt === null) return;
+    this.insertHeadingPrompt.set(null);
+    this.insertHeadingDraft.set('');
+    void this.insertChapterHeading(prompt.element, title);
+  }
+
+  /**
+   * Leave the book as it is.
+   *
+   * A plain cancel, unlike the naming prompt's dismiss: nothing has been written
+   * yet, so there is no state left behind to describe.
+   */
+  cancelInsertHeading(): void {
+    this.insertHeadingPrompt.set(null);
+    this.insertHeadingDraft.set('');
   }
 
   onBlockHover(_block: LaidOutBlock | null): void {
@@ -9313,7 +9747,8 @@ export class PdfPickerComponent implements OnInit {
     // inverse write goes down the same IPC the gesture used. A replay the book
     // refuses re-stacks the action and re-paints to match the book, so undo can
     // never leave pixels the file does not back.
-    if (action.type === 'bookCategory' || action.type === 'bookText') {
+    if (action.type === 'bookCategory' || action.type === 'bookText'
+      || action.type === 'bookInsertHeading') {
       await this.replayBookAction(action, 'before');
       return;
     }
@@ -9344,7 +9779,8 @@ export class PdfPickerComponent implements OnInit {
     this.landNarrationHistory(struckBefore, pagesBefore);
 
     // Book actions replay their forward write — the mirror of undo's arm.
-    if (action.type === 'bookCategory' || action.type === 'bookText') {
+    if (action.type === 'bookCategory' || action.type === 'bookText'
+      || action.type === 'bookInsertHeading') {
       await this.replayBookAction(action, 'after');
       return;
     }
@@ -9416,6 +9852,62 @@ export class PdfPickerComponent implements OnInit {
       // saveBookBlockText said why in its own alert; here only the stack is
       // put back so redo/undo still describe the book.
       if (!ok) restack();
+      return;
+    }
+
+    if (action.type === 'bookInsertHeading') {
+      const edit = action.bookHeadingInsert;
+      if (edit === undefined) {
+        console.error(
+          '[picker] a bookInsertHeading history entry carries no insert, so nothing was replayed');
+        restack();
+        return;
+      }
+      // The two directions are two IPCs rather than two sides of one field —
+      // see the action's doc in shared/document/editor-history.ts. Both address
+      // the SAME key: the remove shifts every later element back by one, so the
+      // position the heading held is once more the position it must go before.
+      //
+      // The two answers differ in what their `result` holds — the insert says
+      // which key it took, the remove says what text it took away — and nothing
+      // here reads either: the replay's whole question is "did the book take
+      // it", and the entries to redraw are on the envelope. So the closure is
+      // annotated with just that much, which is what lets one queued call carry
+      // both directions.
+      this.beginBookWrite();
+      const replay = (): Promise<{
+        success: boolean; result?: unknown; rewrittenEntries?: string[]; error?: string;
+      }> => undoing
+        ? this.electronService.removeBookInsertedHeading(
+          dir, edit.elementKey, this.workingChainId())
+        : this.electronService.insertBookChapterHeading(
+          dir, edit.elementKey, edit.title, this.workingChainId());
+      const answer = await this.enqueueBookWrite(replay);
+      const landed = answer.success && answer.result !== undefined
+        && Array.isArray(answer.rewrittenEntries);
+      this.endBookWrite(landed);
+      if (!landed) {
+        restack();
+        // Main's own sentence, verbatim — and it is the one that matters most
+        // here: a strike sitting ON the heading refuses the remove with the way
+        // out named ("Unstrike the heading first"), which no wording invented
+        // on this side could tell the user.
+        this.showAlert({
+          title: undoing
+            ? 'That heading could not be taken back out'
+            : 'That heading could not be put back',
+          message: (answer.error
+            ?? 'The write came back without a result and without a reason, which is a fault in '
+              + 'BookForge rather than anything about this book.')
+            + '\n\nThe book is as it was, and the page still shows what it says.',
+          type: 'error',
+        });
+        return;
+      }
+      if (answer.rewrittenEntries!.length > 0) {
+        await this.relayoutBookAfterEdit(answer.rewrittenEntries!, edit.elementKey);
+      }
+      await this.refreshBookEpub();
       return;
     }
 
@@ -15163,9 +15655,23 @@ export class PdfPickerComponent implements OnInit {
    * `body` rather than nothing at all: the user is saying what this block is
    * NOT, and a printed heading is still words on the page that the audiobook
    * has to read. Deleting it is a separate gesture, already on the page.
+   *
+   * EVERY block the row stands for, in one batched relabel: a row can be a
+   * whole group of adjacent chapter elements (see `bookChapterOpeningGroups`),
+   * and demoting only its anchor would leave the rest of what the user was
+   * looking at still labelled a chapter opening. Struck members go with them —
+   * a struck heading demoted to body is a strike on a body element, which is
+   * exactly what both gestures said.
    */
-  demoteChapterBlock(event: { blockId: string }): void {
-    this.onSetBlockCategory({ blockIds: [event.blockId], categoryId: BODY_CATEGORY });
+  demoteChapterBlock(event: { blockIds: string[] }): void {
+    if (event.blockIds.length === 0) {
+      // A row that offers the × always carries its blocks — see `ChapterRow`.
+      // Said out loud rather than sent on as an empty relabel, which main would
+      // have to refuse for a reason that describes nothing the user did.
+      console.error('[picker] a chapter row was dismissed without naming any block');
+      return;
+    }
+    this.onSetBlockCategory({ blockIds: event.blockIds, categoryId: BODY_CATEGORY });
   }
 
   /**
