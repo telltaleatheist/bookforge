@@ -574,9 +574,45 @@ test('a fold made since the pass refuses the deletion, rather than mis-placing s
 
   await assert.rejects(
     () => manifestService.deleteLedgerEntry(dir, entry.id),
-    (err) => /chapter opening\(s\) folded/.test(err.message)
+    (err) => /structural edit\(s\)/.test(err.message)
+      && /chapter openings folded, or chapter headings inserted or removed/.test(err.message)
       && /Erase this book's working changes first/.test(err.message),
-    'the refusal must name the fold and the way out');
+    'the refusal must name the structural edit and the way out');
+  assert.strictEqual(
+    await sha256((await manifestService.readExportEpub(dir)).absPath), bookDigest,
+    'the refused deletion rewrote the book anyway');
+  assert.strictEqual(ledgerOf(dir).length, 1, 'the refused deletion dropped the entry anyway');
+});
+
+test('a heading INSERT made since the pass refuses the deletion the same way', async () => {
+  const dir = await makeProject('ledger-insert-since');
+  const { entry } = await runPass(dir, {
+    kind: 'simplify', label: 'Simplify', chapters: [undigit(CHAPTER_ONE), undigit(CHAPTER_TWO)],
+  });
+  populateRecords(dir);
+  // A chapter-heading insert ADDS an element — the fold's problem run the other
+  // way. The strike record was carried +1 in the insert's own transaction, so
+  // going back past it would take the heading out of the bytes while the
+  // carried record still describes the inserted book.
+  const manifest = readManifest(dir);
+  manifest.families[0].epub.bookEdits = [{
+    kind: 'insert-chapter-heading',
+    at: new Date(Date.parse(entry.createdAt) + 1000).toISOString(),
+    file: 'OEBPS/ch1.xhtml',
+    beforeElementKey: 'OEBPS/ch1.xhtml#0',
+    insertedKey: 'OEBPS/ch1.xhtml#0',
+    title: 'Chapter One',
+    sourcePage: 1,
+    fromSha256: 'a', toSha256: 'b',
+  }];
+  writeManifest(dir, manifest);
+  const bookDigest = await sha256((await manifestService.readExportEpub(dir)).absPath);
+
+  await assert.rejects(
+    () => manifestService.deleteLedgerEntry(dir, entry.id),
+    (err) => /structural edit\(s\)/.test(err.message)
+      && /Erase this book's working changes first/.test(err.message),
+    'the refusal must name the structural edit and the way out');
   assert.strictEqual(
     await sha256((await manifestService.readExportEpub(dir)).absPath), bookDigest,
     'the refused deletion rewrote the book anyway');

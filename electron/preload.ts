@@ -1689,6 +1689,61 @@ export interface ElectronAPI {
       rewrittenEntries?: string[];
       error?: string;
     }>;
+
+    /**
+     * Put a NEW chapter heading into the book, immediately before one of its
+     * elements — for the book that lost its chapter headers but kept the body
+     * text (Owen, 2026-08-12). Conversion-stamped books only: a publisher's
+     * book states its structure in its own markup, and an invented `<h1>`
+     * would be a guess about conventions BookForge did not write.
+     *
+     * The heading takes over `beforeElementKey`'s position (`insertedKey`
+     * answers with it) and every element after it is one index further on;
+     * the narration strike record is carried `+1` in the same manifest
+     * transaction, and a strike that cannot be carried refuses the whole
+     * insert before any byte. The chapter-naming pass runs behind it exactly
+     * as behind a promotion to `chapter`, so a listed document's new heading
+     * is rewritten to its stored name and an unlisted one comes back with
+     * `needsChapterName`.
+     */
+    insertChapterHeading: (
+      projectDir: string, beforeElementKey: string, title: string, familyId?: string
+    ) => Promise<{
+      success: boolean;
+      result?: {
+        file: string; beforeElementKey: string; insertedKey: string; title: string;
+        renumberedStrikes: number; rewrittenEntries: string[];
+        fromSha256: string; toSha256: string;
+      };
+      openingsNamed?: number;
+      openingUnnamed?: string | null;
+      needsChapterName?: string | null;
+      rewrittenEntries?: string[];
+      error?: string;
+    }>;
+
+    /**
+     * Remove an inserted chapter heading — the insert's exact inverse, for
+     * undo. Refuses anything that is not the shape the insert writes (it is
+     * deliberately not a general delete-element), and refuses by name when a
+     * narration strike sits on the heading itself: unstrike first. The strike
+     * record is carried `-1` in the same transaction.
+     */
+    removeInsertedHeading: (
+      projectDir: string, elementKey: string, familyId?: string
+    ) => Promise<{
+      success: boolean;
+      result?: {
+        file: string; elementKey: string; textBefore: string;
+        renumberedStrikes: number; rewrittenEntries: string[];
+        fromSha256: string; toSha256: string;
+      };
+      openingsNamed?: number;
+      openingUnnamed?: string | null;
+      needsChapterName?: string | null;
+      rewrittenEntries?: string[];
+      error?: string;
+    }>;
   };
   window: {
     hide: () => Promise<{ success: boolean }>;
@@ -3578,6 +3633,25 @@ const electronAPI: ElectronAPI = {
     /** Make the book say what the reader typed, for one element. */
     setBlockText: (projectDir: string, elementKey: string, newText: string, familyId?: string) =>
       ipcRenderer.invoke('book:set-block-text', projectDir, elementKey, newText, familyId),
+
+    /**
+     * Put a NEW chapter heading into the book, before `beforeElementKey` — for
+     * the book that lost its chapter headers but kept the body text. The
+     * strike record is carried `+1` in the same transaction, and the naming
+     * pass runs behind it exactly as behind a promotion to `chapter`.
+     */
+    insertChapterHeading: (
+      projectDir: string, beforeElementKey: string, title: string, familyId?: string) =>
+      ipcRenderer.invoke(
+        'book:insert-chapter-heading', projectDir, beforeElementKey, title, familyId),
+
+    /**
+     * Remove an inserted chapter heading — the insert's exact inverse, for
+     * undo. Not a general delete-element; refuses everything that is not the
+     * shape the insert writes.
+     */
+    removeInsertedHeading: (projectDir: string, elementKey: string, familyId?: string) =>
+      ipcRenderer.invoke('book:remove-inserted-heading', projectDir, elementKey, familyId),
   },
   play: {
     startSession: () =>

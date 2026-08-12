@@ -8724,6 +8724,143 @@ function setupIpcHandlers(): void {
   });
 
   /**
+   * Insert a chapter heading INTO the book, immediately before one of its
+   * elements.
+   *
+   * Owen, 2026-08-12: "theres a book that lost the chapter headers but kept
+   * the body text. i have ot insert chapter headers in where they belong for
+   * this book." No relabel can answer that — there is no element to promote —
+   * so this ADDS one: an `<h1>` stamped `chapter`, written into the working
+   * copy, with the narration strike record carried `+1` past it in the same
+   * manifest transaction (electron/book-headings.ts). The archive original is
+   * never opened.
+   *
+   * THE NAMING PASS RUNS AFTER, exactly as it runs behind a promotion to
+   * `chapter` and for the same reason: the insert makes a new element the
+   * opening of its document, so the same open-time rule runs again over the
+   * book that changed, with no insert-specific logic at all. A document the
+   * table of contents does not list comes back with `needsChapterName` — the
+   * window's cue to offer the listing — and its heading keeps the title the
+   * user typed; a listed document's heading is rewritten to its stored name,
+   * because the table of contents is where a chapter's name lives and the only
+   * place it lives.
+   */
+  ipcMain.handle('book:insert-chapter-heading', async (
+    _event, projectDir: string, beforeElementKey: string, title: string, familyId?: string) => {
+    try {
+      const { readBookChapterTitles } = await import('./book-chapters.js');
+      const { insertBookChapterHeading } = await import('./book-headings.js');
+
+      /** What the BOOK says about this document's entry, asked rather than assumed. */
+      const namedInContents = async (file: string): Promise<boolean> => {
+        const titles = await readBookChapterTitles(projectDir, familyId);
+        const row = titles?.chapters.find((c) => c.file === file);
+        return row !== undefined && row.navTitle.trim().length > 0;
+      };
+
+      const result = await insertBookChapterHeading(
+        projectDir, beforeElementKey, title, familyId);
+
+      // Every entry of the book this ONE gesture rewrote — the inserted-into
+      // document, and below it whatever the naming pass touched. The window
+      // lays exactly these out again instead of re-opening the book.
+      const rewrittenEntries = new Set<string>(result.rewrittenEntries);
+
+      let openingsNamed = 0;
+      let openingUnnamed: string | null = null;
+      let needsChapterName: string | null = null;
+      try {
+        const { nameChapterOpenings } = await import('./narration-export.js');
+        const summary = await nameChapterOpenings(projectDir, familyId);
+        openingsNamed = summary.edited;
+        for (const edit of summary.named) rewrittenEntries.add(edit.file);
+        // The same per-document sentences a `chapter` promotion earns: a
+        // document the contents does not name has no stored name for the new
+        // opening to print, which is a different sentence from a pass that ran
+        // and fell short.
+        if (await namedInContents(result.file)) {
+          openingUnnamed = chapterOpeningRefusal(summary, result.file);
+        } else {
+          needsChapterName = result.file;
+          openingUnnamed =
+            `${result.file} is not listed under a name in this book's table of contents, so `
+            + 'there is no stored name for its opening to print. Give the chapter a name and it '
+            + 'will be listed under it.';
+        }
+      } catch (err) {
+        // A throw HERE is not a refusal that left the project as it found it:
+        // the insert above landed, so the failure answer still says which
+        // entries moved and every window is still told the project changed.
+        broadcastToAllWindows('project:files-changed', projectDir);
+        return {
+          success: false,
+          error:
+            `The heading "${result.title}" is now in the book, but the pass that writes each `
+            + `chapter's name into its opening could not run afterwards: ${(err as Error).message}`,
+          rewrittenEntries: [...rewrittenEntries],
+        };
+      }
+
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return {
+        success: true, result, openingsNamed, openingUnnamed, needsChapterName,
+        rewrittenEntries: [...rewrittenEntries],
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Remove an inserted chapter heading — the insert's exact inverse, for undo.
+   *
+   * It removes ONLY what the insert writes (a heading the book reads as
+   * `chapter`, holding no picture, in a conversion-stamped book) and carries
+   * the strike record `-1` in the same transaction; a strike on the heading
+   * itself refuses the removal by name. It is deliberately NOT a general
+   * delete-element — that is blocked until keys stop being positional.
+   *
+   * The naming pass still runs behind it — the book changed and the open-time
+   * rule re-runs, exactly as after a demotion — but `openingUnnamed` stays
+   * null: "this document marks no chapter opening" is precisely what removing
+   * the heading asked for, and saying it back would be noise.
+   */
+  ipcMain.handle('book:remove-inserted-heading', async (
+    _event, projectDir: string, elementKey: string, familyId?: string) => {
+    try {
+      const { removeBookInsertedHeading } = await import('./book-headings.js');
+
+      const result = await removeBookInsertedHeading(projectDir, elementKey, familyId);
+      const rewrittenEntries = new Set<string>(result.rewrittenEntries);
+
+      let openingsNamed = 0;
+      try {
+        const { nameChapterOpenings } = await import('./narration-export.js');
+        const summary = await nameChapterOpenings(projectDir, familyId);
+        openingsNamed = summary.edited;
+        for (const edit of summary.named) rewrittenEntries.add(edit.file);
+      } catch (err) {
+        broadcastToAllWindows('project:files-changed', projectDir);
+        return {
+          success: false,
+          error:
+            'The heading is now out of the book, but the pass that writes each chapter\'s name '
+            + `into its opening could not run afterwards: ${(err as Error).message}`,
+          rewrittenEntries: [...rewrittenEntries],
+        };
+      }
+
+      broadcastToAllWindows('project:files-changed', projectDir);
+      return {
+        success: true, result, openingsNamed, openingUnnamed: null, needsChapterName: null,
+        rewrittenEntries: [...rewrittenEntries],
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
    * What one element of the book says right now — what the text editor opens on.
    *
    * A block is a PAGE'S WORTH of an element, so the editor cannot open on the

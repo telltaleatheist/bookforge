@@ -43,6 +43,8 @@ import type {
   AddChapterEdit,
   SetBlockCategoryEdit,
   SetBlockTextEdit,
+  InsertChapterHeadingEdit,
+  RemoveInsertedHeadingEdit,
   SourceType,
 } from './manifest-types.js';
 // The container seam. A book is a set of named entries, and whether those
@@ -105,6 +107,8 @@ import {
 } from './editor-state-store.js';
 import {
   migrateNarrationDeletionsForFold,
+  migrateNarrationDeletionsForHeadingInsert,
+  migrateNarrationDeletionsForHeadingRemoval,
   narrationDeletionsStaleReason,
   narrationEpubRelPath,
   narrationFingerprint,
@@ -3034,35 +3038,42 @@ export async function deriveWorkingCopy(
 
   const priorEpub = family.epub;
 
-  // ── The one edit that cannot be carried across, named before anything moves ─
+  // ── The edits that cannot be carried across, named before anything moves ──
   //
-  // A chapter-opening FOLD removes elements from the book, which re-keys every
-  // strike after it — and the strike record was migrated to match in the same
-  // transaction (`recordChapterOpeningFold`). Deriving back past that fold undoes
-  // it in the bytes while the migrated record still describes the folded book, so
-  // every strike after a fold would land an element out. It only matters when the
+  // A chapter-opening FOLD removes elements from the book, and a chapter-heading
+  // INSERT (or its undo) adds or removes one — each re-keys every strike after
+  // it in its file, and the strike record was migrated to match in the same
+  // transaction (`recordChapterOpeningFold`, `recordChapterHeadingInsert`,
+  // `recordInsertedHeadingRemoval`). Deriving back past one undoes it in the
+  // bytes while the migrated record still describes the edited book, so every
+  // strike after the edit would land an element out. It only matters when the
   // records are being kept: a derivation that clears them has nothing to
   // mis-apply.
   //
-  // A fold made BEFORE a pass ran cannot reach here — `registerLedgerPass`
-  // compares the snapshot's enumeration to the base's and refuses the entry when
-  // they differ — so the comparison is against the point being returned to.
+  // A structural edit made BEFORE a pass ran cannot reach here —
+  // `registerLedgerPass` compares the snapshot's enumeration to the base's and
+  // refuses the entry when they differ — so the comparison is against the point
+  // being returned to.
   if (derivation.keepRecords) {
     const returningTo = derivation.from === 'ledger'
       ? derivation.keep[derivation.keep.length - 1].createdAt
       : '';
-    const foldedSince = (priorEpub?.bookEdits ?? []).filter(
-      (edit) => edit.kind === 'merge-chapter-opening' && edit.at > returningTo);
-    if (foldedSince.length > 0) {
+    const structuralSince = (priorEpub?.bookEdits ?? []).filter(
+      (edit) => (edit.kind === 'merge-chapter-opening'
+        || edit.kind === 'insert-chapter-heading'
+        || edit.kind === 'remove-inserted-heading') && edit.at > returningTo);
+    if (structuralSince.length > 0) {
       const target = derivation.from === 'ledger'
         ? `the snapshot ${derivation.keep[derivation.keep.length - 1].label} left`
         : 'the archive-grade original';
       throw new Error(
-        `${path.basename(projectDir)}'s book has had ${foldedSince.length} chapter opening(s) folded `
-        + `since ${target} was written, and a fold REMOVES elements from the book. Going back to it `
-        + 'would put those elements back while your strikes still describe the folded book, so every '
-        + 'strike after a fold would name the wrong paragraph. Erase this book\'s working changes '
-        + 'first (that clears the folds with everything else), then delete the ledger entry.'
+        `${path.basename(projectDir)}'s book has had ${structuralSince.length} structural edit(s) — `
+        + 'chapter openings folded, or chapter headings inserted or removed — since '
+        + `${target} was written, and each one MOVES elements of the book's enumeration. Going back `
+        + 'to it would undo those edits in the bytes while your strikes still describe the edited '
+        + 'book, so every strike after such an edit would name the wrong paragraph. Erase this '
+        + 'book\'s working changes first (that clears these edits with everything else), then '
+        + 'delete the ledger entry.'
       );
     }
   }
@@ -4464,6 +4475,154 @@ export async function recordChapterOpeningFold(
     );
   }
   return { droppedStrikes, renumberedStrikes };
+}
+
+/** What carrying the strikes across a heading insert or removal did. */
+export interface ChapterHeadingCarryRecord {
+  /** Strike keys that name the same element under a new index. */
+  renumberedStrikes: number;
+}
+
+/**
+ * Record a chapter-heading INSERT: carry the strikes `+1`, touch the book, log
+ * the edit — one transaction, for the same reason the fold's is one.
+ *
+ * The insert ADDS a text unit where the fold removes them, so the migration
+ * runs the other way: every unit key in the touched file at or after the
+ * insertion point is renumbered `+1` and its fingerprint travels with it
+ * (shared/vlm/narration-deletions.ts, `migrateNarrationDeletionsForHeadingInsert`).
+ * Nothing is ever dropped — no struck element left the book — and a key the
+ * migration cannot carry THROWS here, inside the transaction, exactly as the
+ * caller already checked before writing a byte: the guard that lives beside
+ * the write is the guard a future second caller cannot skip.
+ *
+ * The record's stamp is CHECKED against `fromSha256` rather than overwritten,
+ * exactly as the fold checks it — a record edited while the insert ran cannot
+ * be carried on the strength of arithmetic about a different record.
+ *
+ * `insertIndex` and `unitsInFileBefore` are the writer's own measurements of
+ * the book BEFORE the edit (`insertChapterHeadingInBookFile`), never re-derived
+ * here: the book on disk already holds the heading, and a re-walk would count
+ * it.
+ */
+export async function recordChapterHeadingInsert(
+  projectDir: string,
+  edit: InsertChapterHeadingEdit,
+  insertIndex: number,
+  unitsInFileBefore: number,
+  familyId?: string,
+): Promise<ChapterHeadingCarryRecord> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  let renumberedStrikes = 0;
+
+  const saved = await modifyManifest(projectId, (m) => {
+    const epub = familyIn(m, family.id).epub;
+    if (!epub) {
+      throw new Error(
+        `Cannot record the chapter-heading insert in ${projectDir}: its ${family.id} chain records `
+        + 'no book, so there is nothing to have been inserted into.'
+      );
+    }
+
+    const recorded = epub.narrationDeletions;
+    if (recorded !== undefined) {
+      if (recorded.epubSha256 !== edit.fromSha256) {
+        throw new Error(
+          `${path.basename(projectDir)}'s narration strikes are stamped with a different book than `
+          + 'the one the heading was just inserted into, so they name positions in a file nobody '
+          + 'has and cannot be carried across the insert. The book has been edited; strike what '
+          + 'you want left out of the narration again.'
+        );
+      }
+      const carried = migrateNarrationDeletionsForHeadingInsert(
+        recorded, edit.file, insertIndex, unitsInFileBefore);
+      renumberedStrikes = carried.renumbered;
+      epub.narrationDeletions = {
+        epubSha256: edit.toSha256,
+        elements: carried.elements,
+        updatedAt: edit.at,
+        ...(carried.fingerprints !== undefined ? { fingerprints: carried.fingerprints } : {}),
+      };
+    }
+
+    epub.modifiedAt = edit.at;
+    (epub.bookEdits ??= []).push(edit);
+  });
+  if (!saved.success) {
+    throw new Error(
+      `The heading was inserted, but recording that in ${projectDir}'s manifest failed: `
+      + `${saved.error}`
+    );
+  }
+  return { renumberedStrikes };
+}
+
+/**
+ * Record the REMOVAL of an inserted heading: carry the strikes `-1`, touch the
+ * book, log the edit — the insert's transaction, run the other way.
+ *
+ * A strike ON the removed heading REFUSES here (and in the caller's own check
+ * before any byte moved) rather than being dropped — see
+ * `migrateNarrationDeletionsForHeadingRemoval` for why an undo must never eat
+ * a strike where the fold may.
+ *
+ * `unitsInFileBefore` counts the file's text units BEFORE the removal — the
+ * book that still held the heading — measured by the writer itself.
+ */
+export async function recordInsertedHeadingRemoval(
+  projectDir: string,
+  edit: RemoveInsertedHeadingEdit,
+  removedIndex: number,
+  unitsInFileBefore: number,
+  familyId?: string,
+): Promise<ChapterHeadingCarryRecord> {
+  const { manifest, family } = await requireFamily(projectDir, familyId);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+
+  let renumberedStrikes = 0;
+
+  const saved = await modifyManifest(projectId, (m) => {
+    const epub = familyIn(m, family.id).epub;
+    if (!epub) {
+      throw new Error(
+        `Cannot record the heading removal in ${projectDir}: its ${family.id} chain records no `
+        + 'book, so there is nothing to have been removed from.'
+      );
+    }
+
+    const recorded = epub.narrationDeletions;
+    if (recorded !== undefined) {
+      if (recorded.epubSha256 !== edit.fromSha256) {
+        throw new Error(
+          `${path.basename(projectDir)}'s narration strikes are stamped with a different book than `
+          + 'the one the heading was just removed from, so they name positions in a file nobody '
+          + 'has and cannot be carried across the removal. The book has been edited; strike what '
+          + 'you want left out of the narration again.'
+        );
+      }
+      const carried = migrateNarrationDeletionsForHeadingRemoval(
+        recorded, edit.file, removedIndex, unitsInFileBefore);
+      renumberedStrikes = carried.renumbered;
+      epub.narrationDeletions = {
+        epubSha256: edit.toSha256,
+        elements: carried.elements,
+        updatedAt: edit.at,
+        ...(carried.fingerprints !== undefined ? { fingerprints: carried.fingerprints } : {}),
+      };
+    }
+
+    epub.modifiedAt = edit.at;
+    (epub.bookEdits ??= []).push(edit);
+  });
+  if (!saved.success) {
+    throw new Error(
+      `The heading was removed, but recording that in ${projectDir}'s manifest failed: `
+      + `${saved.error}`
+    );
+  }
+  return { renumberedStrikes };
 }
 
 /**

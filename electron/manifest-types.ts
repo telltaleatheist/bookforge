@@ -790,6 +790,74 @@ export interface AddChapterEdit {
 }
 
 /**
+ * A HEADING INSERT: a new chapter heading, written into the book where the
+ * pages never had one.
+ *
+ * Owen, 2026-08-12: "theres a book that lost the chapter headers but kept the
+ * body text. i have ot insert chapter headers in where they belong for this
+ * book." No relabel can answer that — there is no element to promote — so the
+ * element is ADDED: an `<h1>` carrying the conversion stamp and the user
+ * category for `chapter`, immediately before the element the user pointed at
+ * (electron/epub-processor.ts, `insertChapterHeadingInBookFile`).
+ *
+ * STRUCTURE-BEARING, like the fold and unlike every text edit here: the walk
+ * of the touched document gains one text unit, so every narration key at or
+ * after the insertion point in that file names the element one further on. The
+ * strike record is carried `+1` — fingerprints travelling with their keys — in
+ * the same manifest transaction that appends this entry
+ * (shared/vlm/narration-deletions.ts, `migrateNarrationDeletionsForHeadingInsert`).
+ * `beforeElementKey` names a position in the book BEFORE this edit;
+ * `insertedKey` is the heading's own key in the book after it, which is also
+ * the position `beforeElementKey` used to name.
+ *
+ * One entry per INSERTED HEADING, because that is the act.
+ */
+export interface InsertChapterHeadingEdit {
+  kind: 'insert-chapter-heading';
+  at: string;
+  /** The zip entry the heading was inserted into. */
+  file: string;
+  /** `<zip entry>#<index>` — the element the heading sits before, counted before this edit. */
+  beforeElementKey: string;
+  /** The heading's own key in the book after the edit: the position it took over. */
+  insertedKey: string;
+  /** What the heading says. */
+  title: string;
+  /** The PDF page the heading was stamped with — its neighbour's own stamp. */
+  sourcePage: number;
+  /** The book's sha256 before the edit and after it. */
+  fromSha256: string;
+  toSha256: string;
+}
+
+/**
+ * The heading insert's exact inverse: an inserted chapter heading, taken back
+ * out of the book.
+ *
+ * Its own kind and not a deletion, because deleting an arbitrary element is
+ * deliberately not a thing the pipeline can record (blocked until keys stop
+ * being positional): the remover refuses everything that is not the shape the
+ * insert writes. STRUCTURE-BEARING the other way — the strike record is
+ * carried `-1` in the same transaction, and a strike ON the heading refuses
+ * the removal rather than being dropped
+ * (`migrateNarrationDeletionsForHeadingRemoval`). `elementKey` names the
+ * heading's position in the book BEFORE this edit.
+ */
+export interface RemoveInsertedHeadingEdit {
+  kind: 'remove-inserted-heading';
+  at: string;
+  /** The zip entry the heading was removed from. */
+  file: string;
+  /** `<zip entry>#<index>` — the heading, counted before this edit. */
+  elementKey: string;
+  /** What the heading said when it was removed. */
+  textBefore: string;
+  /** The book's sha256 before the edit and after it. */
+  fromSha256: string;
+  toSha256: string;
+}
+
+/**
  * One edit to a book's markup. A union on purpose: every edit gets its own
  * `kind` and its own before/after fields rather than a shared "details" bag
  * nothing can read.
@@ -842,7 +910,9 @@ export type BookEdit =
   | SetBlockTextEdit
   | StampElementIdsEdit
   | RenameChapterEdit
-  | AddChapterEdit;
+  | AddChapterEdit
+  | InsertChapterHeadingEdit
+  | RemoveInsertedHeadingEdit;
 
 /**
  * What has ever been done to a book — the things that can be done to one now,

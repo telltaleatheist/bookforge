@@ -415,6 +415,146 @@ export function migrateNarrationDeletionsForFold(
   return { elements: [...new Set(kept)].sort(), dropped, renumbered };
 }
 
+/** What carrying a strike record across a heading insert (or its undo) did to it. */
+export interface NarrationDeletionsShiftMigration {
+  /** The record's keys as they name the book AFTER the edit, sorted. */
+  elements: NarrationElementKey[];
+  /**
+   * The fingerprints, re-keyed so each still travels with its strike. Absent
+   * exactly when the record carried none — a record from before fingerprints
+   * existed stays that way, because inventing prints for it would claim
+   * evidence nobody took (see `NarrationDeletions.fingerprints`).
+   */
+  fingerprints?: Record<NarrationElementKey, string>;
+  /** How many keys named the same element under a NEW index. */
+  renumbered: number;
+}
+
+/**
+ * Re-key one record's strikes and fingerprints through one index mapping.
+ *
+ * The shared arithmetic of the two heading migrations below. `mapIndex` may
+ * THROW, and that throw is the whole refusal contract: a key the mapping cannot
+ * carry stops the caller before any byte of the book is written — never a
+ * dropped strike, which is the difference from the fold's migration above.
+ *
+ * The three namespaces are the three separate things they are, exactly as in
+ * `migrateNarrationDeletionsForFold`: only TEXT units of the edited file move
+ * (a heading holds no `<img>`, so no picture ordinal shifts), `#img<N>` and
+ * `#doc` keys mean the same thing after, and every other file is untouched.
+ */
+function shiftNarrationDeletionKeys(
+  record: Pick<NarrationDeletions, 'elements' | 'fingerprints'>,
+  file: string,
+  mapIndex: (index: number, key: NarrationElementKey) => number,
+): NarrationDeletionsShiftMigration {
+  const carryKey = (key: NarrationElementKey): NarrationElementKey => {
+    const parsed = parseNarrationElementKey(key);
+    if (parsed.file !== file || parsed.kind !== 'unit') return key;
+    const index = mapIndex(parsed.index, key);
+    return index === parsed.index ? key : narrationElementKey(file, index);
+  };
+
+  // Counted over the STRIKES alone: a strike's fingerprint moving with it is
+  // the same renumbering, not a second one.
+  let renumbered = 0;
+  const elements = [...new Set(record.elements.map((key) => {
+    const carried = carryKey(key);
+    if (carried !== key) renumbered++;
+    return carried;
+  }))].sort();
+  let fingerprints: Record<NarrationElementKey, string> | undefined;
+  if (record.fingerprints !== undefined) {
+    fingerprints = {};
+    for (const [key, print] of Object.entries(record.fingerprints)) {
+      fingerprints[carryKey(key)] = print;
+    }
+  }
+  return { elements, ...(fingerprints !== undefined ? { fingerprints } : {}), renumbered };
+}
+
+/**
+ * Carry a strike record across a chapter-heading INSERT: one new text unit,
+ * put into `file` immediately before the unit at `insertIndex`.
+ *
+ * The insert ADDS an element where the fold removes them, so every unit key in
+ * that file at `insertIndex` or beyond names the element one further on and is
+ * carried `+1`; nothing is ever dropped, because no struck element left the
+ * book. The fingerprints travel with their keys — each one still describes the
+ * words of the element its strike named, which is what lets the carried record
+ * verify against the inserted book strike for strike.
+ *
+ * A key that CANNOT be carried refuses the whole insert instead: a unit key at
+ * or past `unitsInFile` named nothing even in the book before the edit — a
+ * record already damaged — and carrying it forward would re-stamp a record
+ * about a book it never described (`narrationCarryRefusal` catches the same
+ * thing for passes, and for the same reason).
+ */
+export function migrateNarrationDeletionsForHeadingInsert(
+  record: Pick<NarrationDeletions, 'elements' | 'fingerprints'>,
+  file: string,
+  insertIndex: number,
+  unitsInFile: number,
+): NarrationDeletionsShiftMigration {
+  if (!Number.isInteger(insertIndex) || insertIndex < 0 || insertIndex >= unitsInFile) {
+    throw new Error(
+      `A chapter heading cannot be inserted before element ${insertIndex} of ${file}, which holds `
+      + `${unitsInFile} text element(s). Nothing was written.`
+    );
+  }
+  return shiftNarrationDeletionKeys(record, file, (index, key) => {
+    if (index >= unitsInFile) {
+      throw new Error(
+        `${key} is struck for narration but ${file} holds only ${unitsInFile} text element(s), so `
+        + 'that strike names nothing in this book and cannot be carried across the insert. The '
+        + 'record does not describe this book; re-open it and strike again. Nothing was written.'
+      );
+    }
+    return index >= insertIndex ? index + 1 : index;
+  });
+}
+
+/**
+ * Carry a strike record across the REMOVAL of an inserted heading — the
+ * insert's exact inverse: every unit key in `file` past `removedIndex` is
+ * carried `-1`, fingerprints travelling with their keys.
+ *
+ * A strike ON the heading itself REFUSES rather than being dropped. The fold
+ * drops keys whose elements it removed because a person asked for that one
+ * merge with the page in front of them; this is an UNDO, and an undo that
+ * quietly ate a strike would trade one user decision for another. The refusal
+ * says the way out by name: unstrike the heading, then remove it.
+ */
+export function migrateNarrationDeletionsForHeadingRemoval(
+  record: Pick<NarrationDeletions, 'elements' | 'fingerprints'>,
+  file: string,
+  removedIndex: number,
+  unitsInFile: number,
+): NarrationDeletionsShiftMigration {
+  if (!Number.isInteger(removedIndex) || removedIndex < 0 || removedIndex >= unitsInFile) {
+    throw new Error(
+      `${file} holds ${unitsInFile} text element(s), so there is no element ${removedIndex} to `
+      + 'remove. Nothing was written.'
+    );
+  }
+  return shiftNarrationDeletionKeys(record, file, (index, key) => {
+    if (index === removedIndex) {
+      throw new Error(
+        `${key} is struck for narration, and removing it would silently drop that strike. `
+        + 'Unstrike the heading first, then remove it. Nothing was written.'
+      );
+    }
+    if (index >= unitsInFile) {
+      throw new Error(
+        `${key} is struck for narration but ${file} holds only ${unitsInFile} text element(s), so `
+        + 'that strike names nothing in this book and cannot be carried across the removal. The '
+        + 'record does not describe this book; re-open it and strike again. Nothing was written.'
+      );
+    }
+    return index > removedIndex ? index - 1 : index;
+  });
+}
+
 /**
  * A block of the book as laid out in the picker, as much of it as this module
  * needs: its id, and the element of the official EPUB it was laid out FROM.

@@ -9253,6 +9253,481 @@ export async function setElementCategoryInBookFile(
   return result;
 }
 
+/** What inserting a chapter heading did to one book file, in the terms an edit log records. */
+export interface ChapterHeadingInsertResult {
+  /** The zip entry the heading was inserted into. */
+  file: string;
+  /** The element it was inserted before — a position in the book BEFORE this edit. */
+  beforeElementKey: NarrationElementKey;
+  /** The heading's own key in the written book: the position it took over. */
+  insertedKey: NarrationElementKey;
+  /** What the heading says, whitespace collapsed to one line. */
+  title: string;
+  /** The PDF page stamped onto the heading — its neighbour's, because they share a page. */
+  sourcePage: number;
+  /** How many text units the file held before the insert, and after. */
+  unitsBefore: number;
+  unitsAfter: number;
+}
+
+/**
+ * Insert a NEW chapter heading into the book, immediately before one of its
+ * elements.
+ *
+ * ── The book this exists for (Owen, 2026-08-12) ────────────────────────────
+ *
+ * "theres a book that lost the chapter headers but kept the body text. i have
+ * ot insert chapter headers in where they belong for this book." The model
+ * read the pages and the pages had no headings to read, so no relabel can fix
+ * it — there is no element to promote. The heading has to be ADDED, which
+ * makes this the one edit in this file that changes the enumeration: every
+ * text unit after the insertion point is one index further on in the walk, and
+ * the caller must carry the strike record `+1` in the same transaction that
+ * logs the edit (shared/vlm/narration-deletions.ts,
+ * `migrateNarrationDeletionsForHeadingInsert`). That carry is why this
+ * function reports `unitsBefore` and the inserted position so precisely.
+ *
+ * ── What the new element carries, and why BOTH stamps ──────────────────────
+ *
+ * `<h1 data-bf-cat="chapter" data-bf-page="N" data-bf-user-cat="chapter">`.
+ * The conversion stamp is what every reader of a converted book actually
+ * reads: `markChapterOpenings` finds split points through it, and the
+ * narration planner (`readEpubConversionUnits`) reads NOTHING else — an
+ * element without one would be a heading the audiobook cut cannot see. Writing
+ * it on a NEW element is not the laundering the relabel comments warn about:
+ * nothing the model said is being overwritten, because the model never saw
+ * this element at all. The user attribute is written beside it all the same,
+ * because the element IS a user statement and `data-bf-user-cat` is where user
+ * statements live — one authority, same as every relabel. The page number is
+ * the neighbour's, read off its own stamp: the heading belongs where its body
+ * text is, and that is the page the body text came from.
+ *
+ * ── What it refuses ────────────────────────────────────────────────────────
+ *
+ * A book that is NOT conversion-stamped, above all. A publisher's book derives
+ * its categories from its own markup — heading tags, `epub:type`, the nav —
+ * and an `<h1>` invented here would be a guess about that publisher's
+ * conventions dropped into markup we did not write. Refused by name; the book
+ * can still be edited by hand. Also: an empty title, a key naming a picture or
+ * a whole document, a document the spine does not have, a key naming no
+ * element in it, and an anchor element carrying no conversion stamp (there is
+ * then no page to stamp the heading with, and inventing one is a fallback).
+ *
+ * ── `outputPath` may BE `inputPath`, same failure arm as its siblings ──────
+ *
+ * The touched document's original bytes are read before the write and put back
+ * before any throw after it, through the same writer, so "Nothing was written"
+ * stays true of the book the caller still has. Staged, the failure arm deletes
+ * the staged book and the input was never touched.
+ */
+export async function insertChapterHeadingInBookFile(
+  inputPath: string,
+  outputPath: string,
+  beforeElementKey: NarrationElementKey,
+  title: string,
+): Promise<ChapterHeadingInsertResult> {
+  const bookName = path.basename(inputPath);
+  const whatFor = `the chapter-heading insert in ${bookName}`;
+  const inPlace = path.resolve(inputPath) === path.resolve(outputPath);
+
+  const spoken = title.replace(/\s+/g, ' ').trim();
+  if (spoken.length === 0) {
+    throw new Error(
+      'A chapter heading cannot be inserted with an empty title — an element with no text is not '
+      + 'even enumerated, so there would be nothing in the book to point at. Nothing was written.'
+    );
+  }
+
+  const target = parseNarrationElementKey(beforeElementKey);
+  if (target.kind !== 'unit') {
+    throw new Error(
+      `${beforeElementKey} names ${target.kind === 'image' ? 'a picture' : 'a whole document'}, `
+      + 'and a chapter heading is inserted before a TEXT element — the walk that keys every '
+      + 'strike enumerates text units, and the new heading takes a position in that walk. '
+      + 'Nothing was written.'
+    );
+  }
+  const file = target.file;
+
+  if (!(await epubCarriesConversionStamps(inputPath))) {
+    throw new Error(
+      `${bookName} carries no conversion stamps, so a chapter heading cannot be invented for it. `
+      + 'This book states its structure in its own markup, and an <h1> written by BookForge would '
+      + 'be a guess about conventions BookForge did not write. The book can still be edited by '
+      + 'hand — its documents are ordinary XHTML. Nothing was written.'
+    );
+  }
+
+  // ── The one document, enumerated EXACTLY as the narration writer does ─────
+  //
+  // Same walk, same order, same minting as the fold and the relabel:
+  // `collectExportUnits` then `collectImageElements`. That is what makes the
+  // key the picker recorded and the key resolved here the same element.
+  const processor = new EpubProcessor();
+  let doc: any;
+  let body: any;
+  let units: any[] = [];
+  let imagesBefore = 0;
+  try {
+    const structure = await processor.open(inputPath);
+    const spine = new Set(
+      structure.chapters.map((c) => normalizeZipEntryName(processor.resolvePath(c.href))));
+    if (!spine.has(file)) {
+      throw new Error(
+        `${bookName} has no spine document ${file}, so ${beforeElementKey} names no element in `
+        + 'this book. Nothing was written.'
+      );
+    }
+    const parsed = parseXhtmlBody(await processor.readFile(file), file);
+    doc = parsed.doc;
+    body = parsed.body;
+    units = [...collectExportUnits(doc, body, whatFor)].map((c) => c.el);
+    imagesBefore = collectImageElements(body).length;
+  } finally {
+    processor.close();
+  }
+
+  const anchor = units[target.index];
+  if (anchor === undefined) {
+    throw new Error(
+      `${file} holds ${units.length} text element(s), so ${beforeElementKey} names nothing in it. `
+      + 'The book has been rewritten since these blocks were laid out; re-open it and insert '
+      + 'again. Nothing was written.'
+    );
+  }
+
+  // The page the heading belongs to is the page its body text came from — the
+  // anchor's own stamp says which. An anchor with none is refused rather than
+  // given an invented page: `conversionStampOnOrAbove` THROWS on a category
+  // with no page, so a partial stamp here would poison every later reading of
+  // this document.
+  const anchorStamp = conversionStampOnOrAbove(anchor, whatFor);
+  if (anchorStamp === null) {
+    throw new Error(
+      `${beforeElementKey} carries no conversion stamp, so there is no page number to stamp the `
+      + 'new heading with — foundry writes the category and the page in one expression, and a '
+      + 'heading missing either would read as a book written by something else. Insert before a '
+      + 'stamped element instead. Nothing was written.'
+    );
+  }
+
+  const textsBefore = units.map((el) => collapsedUnitText(el));
+  const tagsBefore = units.map((el) => String(el.tagName || '').toLowerCase());
+
+  // What the document holds RIGHT NOW, as BYTES, for the in-place failure arm —
+  // same contract as the relabel's: put back exactly what was there, never a
+  // re-encode of the string the parse started with.
+  const originalEntries = new Map<string, Buffer>();
+  if (inPlace) originalEntries.set(file, await readOneEpubEntry(inputPath, file));
+
+  // ── The edit ──────────────────────────────────────────────────────────────
+  //
+  // A sibling immediately before the anchor, at whatever level the walk found
+  // the anchor at. Units never nest (`collectExportUnits` skips an element
+  // covered by a collected one), so no ancestor of the anchor is itself a unit
+  // and the heading's text cannot land inside another unit's — which is what
+  // makes "the walk shifted by exactly one" provable below. The text goes in
+  // through the DOM (`createTextNode`), so the serializer escapes it.
+  const heading = doc.createElement('h1');
+  heading.setAttribute(CONVERSION_CATEGORY_ATTR, 'chapter');
+  heading.setAttribute(CONVERSION_PAGE_ATTR, String(anchorStamp.sourcePage));
+  heading.setAttribute(USER_CATEGORY_ATTR, 'chapter');
+  heading.appendChild(doc.createTextNode(spoken));
+  anchor.parentNode.insertBefore(heading, anchor);
+
+  await writeBookWithReplacedEntries(
+    inputPath, outputPath, new Map([[file, serializeEditedDocument(doc)]]));
+
+  // ── The promise, kept or the edit taken back ──────────────────────────────
+  //
+  // The written file is re-walked with the same enumerations that mint the
+  // keys, because the arithmetic the caller is about to carry the strike
+  // record by is exactly this: the heading sits at the anchor's old index,
+  // EVERY element that was at or after it is at index+1 with its text and tag
+  // unchanged, everything before is untouched, and no picture moved. And the
+  // book must READ the new element as `chapter` through the same reader the
+  // analysis uses — an element no reader honours would be invisible to the
+  // naming pass this insert exists to feed.
+  const insertedKey = narrationElementKey(file, target.index);
+  try {
+    // Through the factory, which gives its handle back when the open FAILS —
+    // see the relabel's verification for why a held descriptor here would make
+    // the failure arm's own write impossible on Windows.
+    const check = await openEpubSource(outputPath);
+    let afterEls: any[] = [];
+    let imagesAfter = 0;
+    try {
+      const written = parseXhtmlBody((await check.readEntry(file)).toString('utf8'), file);
+      afterEls = [...collectExportUnits(written.doc, written.body, whatFor)].map((c) => c.el);
+      imagesAfter = collectImageElements(written.body).length;
+    } finally {
+      check.close();
+    }
+    if (afterEls.length !== units.length + 1) {
+      throw new Error(
+        `${file} held ${units.length} text element(s), one heading was inserted, and the `
+        + `rewritten file holds ${afterEls.length} rather than ${units.length + 1}. Nothing was `
+        + 'written.'
+      );
+    }
+    if (imagesAfter !== imagesBefore) {
+      throw new Error(
+        `${file} held ${imagesBefore} picture(s) and the rewritten file holds ${imagesAfter}. `
+        + 'Inserting a heading moves no picture, so the strikes recorded against them would now '
+        + 'name the wrong ones. Nothing was written.'
+      );
+    }
+    const headingTag = String(afterEls[target.index].tagName || '').toLowerCase();
+    const headingText = collapsedUnitText(afterEls[target.index]);
+    if (headingTag !== 'h1' || headingText !== spoken) {
+      throw new Error(
+        `${insertedKey} should be the inserted <h1> reading "${spoken}" and is a <${headingTag}> `
+        + `reading "${headingText}". Nothing was written.`
+      );
+    }
+    for (let i = 0; i < units.length; i++) {
+      const at = i < target.index ? i : i + 1;
+      const text = collapsedUnitText(afterEls[at]);
+      const tag = String(afterEls[at].tagName || '').toLowerCase();
+      if (text !== textsBefore[i] || tag !== tagsBefore[i]) {
+        throw new Error(
+          `${narrationElementKey(file, i)} (<${tagsBefore[i]}> "${textsBefore[i].slice(0, 60)}") `
+          + `should sit at index ${at} after the insert and that position is a <${tag}> reading `
+          + `"${text.slice(0, 60)}". The walk did not shift by exactly one, so every narration `
+          + 'strike after the insertion point would name the wrong element. Nothing was written.'
+        );
+      }
+    }
+    const readBack = (
+      await readEpubElementCategories(outputPath, new Set([file]))).categoryByElement;
+    if (readBack.get(insertedKey) !== 'chapter') {
+      const said = readBack.get(insertedKey);
+      throw new Error(
+        `${insertedKey} was inserted as a chapter heading and ${bookName} reads it back as `
+        + `${said === undefined ? 'nothing at all' : `"${said}"`}. A heading the book does not `
+        + 'answer with is invisible to the naming pass this insert exists to feed. Nothing was '
+        + 'written.'
+      );
+    }
+  } catch (err) {
+    if (!inPlace) {
+      await removeEpubContainer(outputPath);
+    } else {
+      // In place, so there is no staged book to destroy. The edit touched this
+      // one document and its bytes from before it are held above, so putting
+      // them back restores exactly the book this function was handed.
+      await writeBookWithReplacedEntries(inputPath, outputPath, originalEntries);
+    }
+    throw err;
+  }
+
+  return {
+    file,
+    beforeElementKey,
+    insertedKey,
+    title: spoken,
+    sourcePage: anchorStamp.sourcePage,
+    unitsBefore: units.length,
+    unitsAfter: units.length + 1,
+  };
+}
+
+/** What removing an inserted heading did to one book file. */
+export interface InsertedHeadingRemovalResult {
+  /** The zip entry the heading was removed from. */
+  file: string;
+  /** The heading's key — a position in the book BEFORE this edit. */
+  elementKey: NarrationElementKey;
+  /** What the heading said when it was removed, whitespace collapsed. */
+  textBefore: string;
+  /** How many text units the file held before the removal, and after. */
+  unitsBefore: number;
+  unitsAfter: number;
+}
+
+/**
+ * Remove a chapter heading from the book — the insert's exact inverse, for
+ * undo.
+ *
+ * ── This is NOT a general delete-element, on purpose ───────────────────────
+ *
+ * Deleting an arbitrary block of the book is deliberately blocked until keys
+ * stop being positional (memory: element-uid-identity-refactor — "delete-block
+ * BLOCKED on stable uids"), and an undo must not become the back door. So this
+ * removes an element ONLY when it is what the insert writes: a heading tag
+ * whose category the book reads as `chapter`, holding no picture, in a
+ * conversion-stamped book. Anything else is refused naming what was found.
+ * The markup cannot say whether a chapter heading was INSERTED or read off the
+ * page — that provenance is the edit log's to answer — so a caller undoing an
+ * insert points at the key the insert answered with.
+ *
+ * The caller carries the strike record `-1` in the same transaction that logs
+ * the edit (`migrateNarrationDeletionsForHeadingRemoval`), which REFUSES when
+ * a strike names the heading itself — unstrike first, never a dropped strike.
+ *
+ * Same in-place failure arm as the insert: the touched document's original
+ * bytes are put back before any throw after the write.
+ */
+export async function removeInsertedHeadingFromBookFile(
+  inputPath: string,
+  outputPath: string,
+  elementKey: NarrationElementKey,
+): Promise<InsertedHeadingRemovalResult> {
+  const bookName = path.basename(inputPath);
+  const whatFor = `the chapter-heading removal in ${bookName}`;
+  const inPlace = path.resolve(inputPath) === path.resolve(outputPath);
+
+  const target = parseNarrationElementKey(elementKey);
+  if (target.kind !== 'unit') {
+    throw new Error(
+      `${elementKey} names ${target.kind === 'image' ? 'a picture' : 'a whole document'}, and an `
+      + 'inserted chapter heading is a text element. Nothing was written.'
+    );
+  }
+  const file = target.file;
+
+  if (!(await epubCarriesConversionStamps(inputPath))) {
+    throw new Error(
+      `${bookName} carries no conversion stamps, and an inserted chapter heading can only exist `
+      + 'in a conversion-stamped book — the insert refuses everything else. Whatever this element '
+      + 'is, it is the book\'s own markup, and removing it is not an undo. Nothing was written.'
+    );
+  }
+
+  // What the book CALLS the element, through the one reader the analysis uses,
+  // asked before the document is even parsed for editing: the category is the
+  // gate, and the gate has to read the way the screen reads.
+  const reading = await readEpubElementCategories(inputPath, new Set([file]));
+  const fact = reading.elements.find((e) => e.key === elementKey);
+  if (fact === undefined) {
+    const inFile = reading.elements.filter((e) => e.file === file && e.kind === 'text').length;
+    throw new Error(
+      inFile === 0
+        ? `${bookName} has no document ${file}, so ${elementKey} names no element in this book. `
+          + 'Nothing was written.'
+        : `${file} holds ${inFile} text element(s), so ${elementKey} names nothing in it. The `
+          + 'book has been rewritten since these blocks were laid out; re-open it and try again. '
+          + 'Nothing was written.'
+    );
+  }
+  const category = reading.categoryByElement.get(elementKey);
+  if (!MARKUP_HEADING_TAGS.has(fact.tag) || category !== 'chapter') {
+    throw new Error(
+      `${elementKey} is a <${fact.tag}> the book calls `
+      + `${category === undefined ? 'nothing' : `"${category}"`}, not a chapter heading. This `
+      + 'removes only what the heading insert writes — deleting any other element of the book is '
+      + 'deliberately not a thing this can do. Nothing was written.'
+    );
+  }
+
+  // ── The one document, enumerated EXACTLY as the narration writer does ─────
+  const processor = new EpubProcessor();
+  let doc: any;
+  let body: any;
+  let units: any[] = [];
+  let imagesBefore = 0;
+  try {
+    await processor.open(inputPath);
+    const parsed = parseXhtmlBody(await processor.readFile(file), file);
+    doc = parsed.doc;
+    body = parsed.body;
+    units = [...collectExportUnits(doc, body, whatFor)].map((c) => c.el);
+    imagesBefore = collectImageElements(body).length;
+  } finally {
+    processor.close();
+  }
+  const heading = units[target.index];
+  if (heading === undefined) {
+    throw new Error(
+      `${file} holds ${units.length} text element(s), so ${elementKey} names nothing in it. `
+      + 'Nothing was written.'
+    );
+  }
+  if (elementHoldsImage(heading)) {
+    throw new Error(
+      `${elementKey} holds a picture, and removing it would take that picture out of the book and `
+      + 'renumber the image walk under every #img strike on record. The heading insert never '
+      + 'writes one, so this is not an inserted heading. Nothing was written.'
+    );
+  }
+
+  const textBefore = collapsedUnitText(heading);
+  const textsBefore = units.map((el) => collapsedUnitText(el));
+  const tagsBefore = units.map((el) => String(el.tagName || '').toLowerCase());
+
+  const originalEntries = new Map<string, Buffer>();
+  if (inPlace) originalEntries.set(file, await readOneEpubEntry(inputPath, file));
+
+  heading.parentNode.removeChild(heading);
+  if (isStillInBody(heading, body)) {
+    throw new Error(
+      `${elementKey} is still in ${file} after it was removed. Nothing was written.`);
+  }
+
+  await writeBookWithReplacedEntries(
+    inputPath, outputPath, new Map([[file, serializeEditedDocument(doc)]]));
+
+  // ── The promise, kept or the edit taken back ──────────────────────────────
+  //
+  // The inverse of the insert's check: N units became N − 1, every element
+  // after the removed one slid back exactly one with its text and tag intact,
+  // everything before is untouched, and no picture moved.
+  try {
+    const check = await openEpubSource(outputPath);
+    let afterEls: any[] = [];
+    let imagesAfter = 0;
+    try {
+      const written = parseXhtmlBody((await check.readEntry(file)).toString('utf8'), file);
+      afterEls = [...collectExportUnits(written.doc, written.body, whatFor)].map((c) => c.el);
+      imagesAfter = collectImageElements(written.body).length;
+    } finally {
+      check.close();
+    }
+    if (afterEls.length !== units.length - 1) {
+      throw new Error(
+        `${file} held ${units.length} text element(s), one heading was removed, and the rewritten `
+        + `file holds ${afterEls.length} rather than ${units.length - 1}. Nothing was written.`
+      );
+    }
+    if (imagesAfter !== imagesBefore) {
+      throw new Error(
+        `${file} held ${imagesBefore} picture(s) and the rewritten file holds ${imagesAfter}. `
+        + 'Removing a heading moves no picture. Nothing was written.'
+      );
+    }
+    for (let i = 0; i < units.length; i++) {
+      if (i === target.index) continue;
+      const at = i < target.index ? i : i - 1;
+      const text = collapsedUnitText(afterEls[at]);
+      const tag = String(afterEls[at].tagName || '').toLowerCase();
+      if (text !== textsBefore[i] || tag !== tagsBefore[i]) {
+        throw new Error(
+          `${narrationElementKey(file, i)} (<${tagsBefore[i]}> "${textsBefore[i].slice(0, 60)}") `
+          + `should sit at index ${at} after the removal and that position is a <${tag}> reading `
+          + `"${text.slice(0, 60)}". The walk did not shift back by exactly one, so every `
+          + 'narration strike after the removed heading would name the wrong element. Nothing '
+          + 'was written.'
+        );
+      }
+    }
+  } catch (err) {
+    if (!inPlace) {
+      await removeEpubContainer(outputPath);
+    } else {
+      await writeBookWithReplacedEntries(inputPath, outputPath, originalEntries);
+    }
+    throw err;
+  }
+
+  return {
+    file,
+    elementKey,
+    textBefore,
+    unitsBefore: units.length,
+    unitsAfter: units.length - 1,
+  };
+}
+
 /**
  * Sanitize text for rebuilt elements. Ported from the picker's
  * export.service.ts sanitizeText (kept byte-identical in behavior — the
