@@ -272,6 +272,31 @@ test('editing ONE chapter writes ONE file — measured, not asserted', async () 
   assert.match(await bookEntryText(book.absPath, 'OEBPS/ch1.xhtml'), /<p>one<\/p>/);
 });
 
+test('the narration copy cut from an exploded book is still an ARCHIVE', async () => {
+  // ── One of the two boundaries that stay zips ───────────────────────────────
+  //
+  // `<stem>.tts.epub` is handed to ebook2audiobook, which is third-party Python
+  // with its own ebook parser and cannot be given a folder. The book it is cut
+  // FROM is a folder of its parts, so "the same container as the book" is
+  // exactly the wrong rule here and the writer states `zip` instead.
+  const dir = await makeProject('boundary-tts');
+  const book = await manifestService.ensureBookEpub(dir);
+  assert.strictEqual(await epubContainerKindAt(book.absPath), 'directory',
+    'the fixture book is not exploded, so this proves nothing');
+
+  const narrationExport = require(path.join(DIST, 'electron', 'narration-export.js'));
+  const answer = await narrationExport.ensureNarrationEpub(dir);
+
+  assert.ok(answer.relPath.endsWith('.tts.epub'), `unexpected narration path: ${answer.relPath}`);
+  const ttsAbs = path.join(dir, ...answer.relPath.split('/'));
+  assert.strictEqual(await epubContainerKindAt(ttsAbs), 'zip',
+    'the narration copy came out as a folder, which ebook2audiobook cannot read');
+  // And it is a book: mimetype first, and the entries the strike-free cut keeps.
+  const names = await bookEntryNames(ttsAbs);
+  assert.strictEqual(names[0], 'mimetype');
+  assert.ok(names.includes('OEBPS/ch1.xhtml'), 'the narration copy lost the book\'s chapters');
+});
+
 // ── 2. The entry-for-entry proof ─────────────────────────────────────────────
 
 test('a copy that loses an entry is refused BY NAME, and nothing is left of it', async () => {

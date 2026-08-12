@@ -3677,7 +3677,13 @@ export async function copyEpubReplaceBodies(
     await rewriteEpubEntries({
       from: inputPath,
       to: outputPath,
-      toKind: await stagedContainerKindFor(inputPath),
+      // ── ZIP, stated, because this is a DISTINCT ARTIFACT ──────────────────
+      //
+      // The result is a stage EPUB the language pipeline reads next
+      // (stages/02-translate/<lang>.epub), not a staged replacement for the book
+      // it was read from. So its container is its own: those files are archives
+      // and stay archives however the book is stored.
+      toKind: 'zip',
       build: async (source, sink) => {
         for (const file of source.getEntries()) {
           const replacement = replacementByPath.get(file);
@@ -3782,7 +3788,13 @@ export async function replaceChapterTextsInEpub(
     await rewriteEpubEntries({
       from: inputPath,
       to: outputPath,
-      toKind: await stagedContainerKindFor(inputPath),
+      // ── ZIP, stated, because this is a DISTINCT ARTIFACT ──────────────────
+      //
+      // The result is the cleanup stage's own book
+      // (stages/01-cleanup/cleaned.epub, electron/ll-jobs.ts), not a staged
+      // replacement for the book it was read from. Its only caller writes it
+      // beside the book, never onto it.
+      toKind: 'zip',
       build: async (source, sink) => {
         for (const file of source.getEntries()) {
           // Check if this file needs text replacement
@@ -7262,7 +7274,13 @@ export async function writeNarrationEpub(
   await rewriteEpubEntries({
     from: inputPath,
     to: outputPath,
-    toKind: await stagedContainerKindFor(inputPath),
+    // ── ZIP, stated, because the narration copy is one of the two BOUNDARIES ──
+    //
+    // `<stem>.tts.epub` is handed to ebook2audiobook, which is third-party
+    // Python with its own ebook parser and cannot be given a folder. It is not a
+    // staged replacement for the book either — it is a second, smaller book — so
+    // its container is its own and does not follow the working copy's.
+    toKind: 'zip',
     build: async (zipReader, zipWriter) => {
     // ── The book's own account of itself, brought in line ──────────────────
     //
