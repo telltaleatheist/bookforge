@@ -697,6 +697,157 @@ export class QuireDocument {
   }
 
   /**
+   * What a spine document is currently laid out FROM.
+   *
+   * Exported so a caller holding the document's new bytes can ask what the old
+   * ones were and decide whether the difference can possibly have moved a page.
+   * Only meaningful once the document has a source of its own — every document
+   * does, from the moment it is opened with `sources` or relaid — and a request
+   * for one that has not is a refusal rather than a read of the archive, because
+   * "the archive's bytes" is precisely the answer that would be wrong.
+   */
+  sourceOf(entry: string): string {
+    const source = this.sourceOverrides.get(entry);
+    if (source === undefined) {
+      quireFail(
+        'NO_SOURCE_HELD',
+        `${entry} has no source of its own in ${this.epubPath}, so there is nothing to compare `
+        + 'new bytes against. Either it is not a spine document, or this document was opened '
+        + 'without stamped sources and has never been relaid.',
+      );
+    }
+    return source;
+  }
+
+  /**
+   * Change what a document IS without changing where its pages break.
+   *
+   * ── Why this exists ───────────────────────────────────────────────────────
+   *
+   * Labelling a block writes one attribute onto one element — `data-bf-user-cat`
+   * — and an attribute nothing selects on cannot move a line, let alone a page.
+   * But the document's bytes DID change, so the bytes quire serves and the bytes
+   * it would re-shell from on the next geometry change have to change with them,
+   * or the label would hold until the reader resized and then vanish. Before
+   * this, the only way to say that was `relayoutDocument`, which re-measures the
+   * whole chapter — up to four seconds on a long one, to change a data
+   * attribute.
+   *
+   * ── What is checked, and by whom ─────────────────────────────────────────
+   *
+   * The caller names the attributes it believes are the only difference. That is
+   * a claim, and it is not taken on trust:
+   *
+   *  1. The new SHELL — the actual bytes the renderer would load, the book's
+   *     markup with the script stripped, the CSP meta and this strategy's layout
+   *     CSS in it — must equal the shell being served once those attributes are
+   *     stripped from both. So nothing else moved: not a word, not a tag, not
+   *     another attribute, not the CSS quire injects.
+   *  2. No rule anywhere in that shell may SELECT one of those attributes —
+   *     neither this strategy's layout CSS nor a `<style>` the book carries. An
+   *     attribute a stylesheet matches on is a layout input, whatever it is
+   *     called.
+   *
+   * What quire cannot see is the book's own EXTERNAL stylesheets, which it
+   * serves but never parses. Checking those is the caller's half of the bargain
+   * and it is stated here so that nobody assumes this call covered them.
+   *
+   * Nothing about the layout is touched: not the per-document layouts, the page
+   * index, or the report. A refusal changes nothing at all, and
+   * `relayoutDocument` remains available for the same bytes.
+   */
+  async restateDocumentSource(
+    entry: string,
+    newSourceXhtml: string,
+    layoutNeutralAttributes: readonly string[],
+  ): Promise<void> {
+    this.assertLaidOut();
+    const geometry = this.geometry as QuireGeometry;
+
+    if (typeof newSourceXhtml !== 'string' || newSourceXhtml.trim().length === 0) {
+      quireFail(
+        'EMPTY_RESTATED_SOURCE',
+        `restateDocumentSource(${entry}) was given no source.`,
+      );
+    }
+    if (this.layouts.findIndex((l) => l.entry === entry) < 0) {
+      quireFail(
+        'NOT_LAID_OUT',
+        `${entry} carries no layout in ${this.epubPath}, so there are no pages for it to keep. `
+        + `The spine is: ${this.archive.spine.map((s) => s.entry).join(', ')}.`,
+      );
+    }
+    if (layoutNeutralAttributes.length === 0) {
+      quireFail(
+        'NO_NEUTRAL_ATTRIBUTES',
+        `restateDocumentSource(${entry}) named no attributes as the difference. A rewrite with no `
+        + 'stated difference cannot be shown to leave the pages alone; use relayoutDocument().',
+      );
+    }
+    for (const name of layoutNeutralAttributes) {
+      if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(name)) {
+        quireFail(
+          'BAD_ATTRIBUTE_NAME',
+          `"${name}" is not an attribute name, and this call has to find it in the bytes exactly. `
+          + 'Nothing was restated.',
+        );
+      }
+    }
+
+    const held = this.overrides.get(entry);
+    if (held === undefined) {
+      quireFail(
+        'NOT_LAID_OUT',
+        `${entry} has no served shell in ${this.epubPath}, so there is nothing to compare a new `
+        + 'one against.',
+      );
+    }
+    const shell = buildPaginationShell(newSourceXhtml, entry, this.strategy.layoutCss(geometry));
+
+    const before = stripAttributes(held.body.toString('utf8'), layoutNeutralAttributes);
+    const after = stripAttributes(shell.xhtml, layoutNeutralAttributes);
+    if (before !== after) {
+      let at = 0;
+      while (at < before.length && at < after.length && before[at] === after[at]) at++;
+      quireFail(
+        'RESTATE_CHANGED_MORE_THAN_ATTRIBUTES',
+        `${entry} was offered as a rewrite of nothing but ${layoutNeutralAttributes.join(', ')}, `
+        + `but with those removed the two documents differ at character ${at}: it had `
+        + `…${before.slice(Math.max(0, at - 70), at + 70)}… and it now has `
+        + `…${after.slice(Math.max(0, at - 70), at + 70)}…. A rewrite that changed anything else `
+        + 'may have moved a page, so it is not restated. Lay it out again instead.',
+      );
+    }
+
+    for (const css of styleTexts(shell.xhtml).concat(this.strategy.layoutCss(geometry))) {
+      for (const name of layoutNeutralAttributes) {
+        if (css.includes(name)) {
+          quireFail(
+            'NEUTRAL_ATTRIBUTE_IS_STYLED',
+            `${entry} carries a stylesheet that mentions "${name}", so a rule may select on it and `
+            + 'the attribute is a layout input rather than a label. It is not restated; lay the '
+            + 'document out again.',
+          );
+        }
+      }
+    }
+
+    // ── Commit ────────────────────────────────────────────────────────────
+    this.overrides.set(entry, {
+      body: Buffer.from(shell.xhtml, 'utf8'),
+      contentType: 'application/xhtml+xml',
+    });
+    this.sourceOverrides.set(entry, newSourceXhtml);
+    // Whatever either surface has loaded is the document as it was written a
+    // moment ago. Nothing about the PAGES changed, so nothing has to be redrawn
+    // — but the next thing that reads the DOM (a relayout, a thumbnail) must
+    // read the new bytes rather than the frame it happens to be sitting on.
+    if (this.loadedDocument >= 0 && this.archive.spine[this.loadedDocument]?.entry === entry) {
+      this.loadedDocument = -1;
+    }
+  }
+
+  /**
    * A spine document's source: what it was relaid out from, or the archive's.
    *
    * One reader, so a relaid document cannot come back from the file under a
@@ -965,4 +1116,35 @@ export class QuireDocument {
     this.overrides.clear();
     this.sourceOverrides.clear();
   }
+}
+
+/**
+ * The same markup with the named attributes taken out, so two documents can be
+ * compared for everything EXCEPT them.
+ *
+ * Deliberately a string operation on the serialized shell rather than a DOM
+ * walk: what is being compared is the bytes the renderer would load, and a
+ * re-serialization of a re-parse would compare something else. Attribute values
+ * in a serialized XHTML document cannot contain a bare `"` — the serializer
+ * escapes it — so the value pattern is exact rather than approximate.
+ */
+function stripAttributes(xhtml: string, names: readonly string[]): string {
+  let out = xhtml;
+  for (const name of names) {
+    // `\\s` — a single backslash here would be `\s` in a template literal, which
+    // JavaScript reads as a plain `s`, and the pattern would then look for
+    // `sdata-bf-user-cat="…"` and find nothing. It would strip NOTHING and every
+    // restate would be refused: safe, and silently useless.
+    out = out.replace(new RegExp(`\\s${name}="[^"]*"`, 'g'), '');
+  }
+  return out;
+}
+
+/** The text of every `<style>` element in a serialized document. */
+function styleTexts(xhtml: string): string[] {
+  const out: string[] = [];
+  const re = /<style\b[^>]*>([\s\S]*?)<\/style>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xhtml)) !== null) out.push(m[1]);
+  return out;
 }

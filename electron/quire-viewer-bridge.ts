@@ -24,6 +24,9 @@ import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import { ipcMain } from 'electron';
 import { Quire, type QuireDocument } from '../packages/quire/src';
+import {
+  layoutNeutralRewrite, stylesheetsMentioning,
+} from '../shared/document/layout-neutral-edit';
 import type { QuirePageMount, QuireReport } from '../packages/quire/src/types';
 import {
   enumerateNarrationElements, stampSpineDocuments, verifyStampedSources,
@@ -34,6 +37,7 @@ import {
 import {
   markupCategoriesForUnits, readEpubTocTargets, type MarkupUnit,
 } from './epub-processor';
+import { openEpubSource } from './epub-container';
 import {
   bookCacheKey, loadCachedPageMap, pageMapPath, saveCachedPageMap, staleDocuments,
   type QuirePageMap,
@@ -390,6 +394,12 @@ export interface QuireRelayoutResult {
   /** Spine documents that were measured again, in the order they were done. */
   relaid: string[];
   /**
+   * Spine documents whose new bytes were taken WITHOUT measuring, because the
+   * only thing that changed in them was a `data-bf-*` attribute and no
+   * stylesheet selects on one. Their pages are the pages they already had.
+   */
+  restated: string[];
+  /**
    * Rewritten entries that are NOT in the spine — a navigation document, an NCX.
    * They have no pages, so nothing was measured for them, and since the stamps
    * no longer live in a copy of the book there is nothing to re-derive for them
@@ -506,35 +516,55 @@ export async function relayoutBookEntries(
       restamped.documents, restamped.stamped, path.basename(bookPath));
   }
 
-  // ── The layout ──────────────────────────────────────────────────────────
+  // ── The layout, for the documents that need one ─────────────────────────
+  // A rewrite that only labelled something — one `data-bf-*` attribute, on one
+  // element — cannot have moved a page, and proving that costs a string compare
+  // where measuring it again costs up to four seconds of browser. Each document
+  // is asked the question separately, because one gesture can rewrite a chapter
+  // AND the table of contents that lists it.
+  // Read at most once, and only if some document turns out to be a candidate —
+  // an edit that rewrote real prose never asks, and most do.
+  let stylesheets: Promise<Map<string, string>> | null = null;
+  const stylesheetsOnce = (): Promise<Map<string, string>> => {
+    if (stylesheets === null) stylesheets = bookStylesheets(bookPath);
+    return stylesheets;
+  };
   const relayoutStartedAt = Date.now();
   const pagesBefore = doc.countPages();
   const relaid: string[] = [];
+  const restated: string[] = [];
   for (const entry of relaidEntries) {
     const bytes = restamped.documents.get(entry);
     if (bytes === undefined) {
       throw new Error(
         `${path.basename(bookPath)}: ${entry} is in the spine but the stamper produced no bytes `
         + 'for it, so there is nothing to lay it out from.'
-        + partialSentence(relaid, bookPath),
+        + partialSentence([...relaid, ...restated], bookPath),
       );
     }
+    const after = bytes.toString('utf8');
     try {
-      await doc.relayoutDocument(entry, bytes.toString('utf8'));
+      if (await restateWithoutMeasuring(doc, entry, after, stylesheetsOnce, bookPath)) {
+        restated.push(entry);
+        continue;
+      }
+      await doc.relayoutDocument(entry, after);
     } catch (err) {
-      throw new Error(`${(err as Error).message}${partialSentence(relaid, bookPath)}`);
+      throw new Error(
+        `${(err as Error).message}${partialSentence([...relaid, ...restated], bookPath)}`);
     }
     relaid.push(entry);
   }
   const relayoutMs = Date.now() - relayoutStartedAt;
 
   // ── The page map, in place, under the key this book has always had ──────
-  // The relaid documents get the hashes of the bytes the book now holds for
+  // The rewritten documents get the hashes of the bytes the book now holds for
   // them; every other document keeps the hash it was laid out under. That is
   // what makes the saved map say, per document, exactly which bytes it
   // describes — so the next open of this book stands straight up from it and
-  // measures nothing.
-  for (const [entry, hash] of await spineDocumentHashes(bookPath, relaid)) {
+  // measures nothing. A RESTATED document counts here exactly as a relaid one
+  // does: its bytes moved, its pages did not, and the map has to say both.
+  for (const [entry, hash] of await spineDocumentHashes(bookPath, [...relaid, ...restated])) {
     hashes.set(entry, hash);
   }
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -546,6 +576,7 @@ export async function relayoutBookEntries(
   return {
     cacheKey,
     relaid,
+    restated,
     restampedOnly,
     documents: report.documentPageOffsets.map((firstPage) => doc.getPageMount(firstPage)),
     pageCount,
@@ -556,6 +587,72 @@ export async function relayoutBookEntries(
     relayoutMs,
     totalMs: Date.now() - startedAt,
   };
+}
+
+/**
+ * Tell the open document what a spine document now says, without measuring it —
+ * when, and only when, that can be shown to leave every page where it is.
+ *
+ * `true` when it was restated, `false` when the caller must lay it out. Never a
+ * refusal of the gesture: "this needs measuring" is an ordinary answer, and it
+ * is the answer every rewrite used to get.
+ *
+ * The proof is in two halves and both are here because they are asked of two
+ * different things. BookForge's half: nothing but `data-bf-*` attributes
+ * changed, and none of the book's own stylesheets mentions one of them — quire
+ * serves those stylesheets but never parses them, so it cannot answer for them.
+ * quire's half, inside `restateDocumentSource`: the SHELL it would serve is
+ * identical once those attributes come out, and nothing it injects selects on
+ * them either.
+ */
+async function restateWithoutMeasuring(
+  doc: QuireDocument,
+  entry: string,
+  after: string,
+  stylesheets: () => Promise<ReadonlyMap<string, string>>,
+  bookPath: string,
+): Promise<boolean> {
+  const verdict = layoutNeutralRewrite(doc.sourceOf(entry), after, entry);
+  if (!verdict.neutral) return false;
+
+  const styled = stylesheetsMentioning(await stylesheets(), verdict.attributes);
+  if (styled.length > 0) {
+    console.log(
+      `[quire-viewer] ${path.basename(bookPath)}: ${entry} changed only `
+      + `${verdict.attributes.join(', ')}, but ${styled[0].entry} mentions `
+      + `"${styled[0].attribute}" — a rule may select on it, so the document is laid out again `
+      + 'rather than assumed unmoved.',
+    );
+    return false;
+  }
+
+  await doc.restateDocumentSource(entry, after, verdict.attributes);
+  console.log(
+    `[quire-viewer] ${path.basename(bookPath)}: ${entry} restated without measuring — the edit `
+    + `changed ${verdict.attributes.join(', ')} and nothing else, so no page moved.`);
+  return true;
+}
+
+/**
+ * Every stylesheet in the book, entry name → its text.
+ *
+ * Read whole because the question asked of them is "does this name appear
+ * anywhere in you", and a book's stylesheets are a few files of a few kilobytes
+ * against a relayout that costs seconds. Read from the BOOK rather than from
+ * quire, which serves them without ever parsing them and so cannot say.
+ */
+async function bookStylesheets(bookPath: string): Promise<Map<string, string>> {
+  const source = await openEpubSource(bookPath);
+  try {
+    const out = new Map<string, string>();
+    for (const entry of source.getEntries()) {
+      if (!/\.css$/i.test(entry)) continue;
+      out.set(entry, (await source.readEntry(entry)).toString('utf8'));
+    }
+    return out;
+  } finally {
+    source.close();
+  }
 }
 
 /** The half-done state, said out loud, for a refusal that arrives after one landed. */

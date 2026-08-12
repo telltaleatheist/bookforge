@@ -42,10 +42,17 @@ import type { QuirePageMount } from '../../../../packages/quire/src/types';
  * first page has changed even though its markup has not.
  */
 export interface QuireRelayoutAnswer {
-  /** The digest the edited book is now cached under. */
-  fileHash: string;
+  /** Where this book's page map lives. The same value before and after an edit. */
+  cacheKey: string;
   /** Spine documents measured again. */
   relaid: string[];
+  /**
+   * Spine documents whose new bytes were taken WITHOUT measuring — the edit
+   * changed a `data-bf-*` attribute and nothing else, and main proved no
+   * stylesheet selects on it, so every page is where it was. Their frames are
+   * deliberately not remounted.
+   */
+  restated: string[];
   /** Rewritten entries with no pages — a nav document, an NCX — that were only re-stamped. */
   restampedOnly: string[];
   documents: QuirePageMount[];
