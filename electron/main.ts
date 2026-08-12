@@ -12024,17 +12024,9 @@ function setupIpcHandlers(): void {
       const workingCopyOpenPath = exportRecord && fsSync.existsSync(exportRecord.absPath)
         ? exportRecord.absPath
         : undefined;
-      // WHICH of this project's PDFs the working copy belongs to. A project can
-      // hold several — a second scan, a different edition — and exactly one of
-      // them is the archive original the copy was minted after
-      // (`workingEpubStem` names it from that entry). Pointing every PDF row at
-      // the one working copy would put a book behind a document it is not a
-      // copy of.
       const archiveOriginal = await manifestService.readArchiveOriginal(projectDir);
 
       for (const pdf of projectPdfs) {
-        const isTheOriginal = archiveOriginal !== null
-          && archiveOriginal.relPath.toLowerCase() === pdf.relPath.toLowerCase();
         await addVersion(
           `archive:${pdf.relPath}`,
           'archive',
@@ -12044,21 +12036,26 @@ function setupIpcHandlers(): void {
           '📕',
           // NOT editable, and that is a fact about the file rather than about
           // the button: nothing may ever write to the archive original. It is
-          // OPENABLE all the same, as of 2026-08-09 — the row used to render a
-          // disabled Open explaining that opening a book lands on its working
-          // copy, which was true and was still a button that refused to do the
-          // thing it described. It now does it (Owen: "instead of prompting the
-          // user to open the working copy, lets just open the working copy"),
-          // landing on the working copy when this PDF is the one that copy was
-          // made after, and on the PDF itself otherwise — where the picker
-          // offers to read its pages. Export and Delete still act on this file
-          // directly.
+          // OPENABLE all the same, and it opens ITSELF — the pages, read-only.
+          //
+          // This row redirected to the working copy from 2026-08-09 to
+          // 2026-08-12, borrowing the ruling made for archive-grade BOOKS
+          // ("instead of prompting the user to open the working copy, lets
+          // just open the working copy"). For a PDF that borrowing was wrong,
+          // and the shared plan always said so: `planArtifactOpen` sends a
+          // book-type archive to the copy and lets PAGES open as themselves
+          // ("i would like to be able to scan through them", 2026-08-10) —
+          // and on 2026-08-12 Owen hit the contradiction: "opening the pdf
+          // archive file just opens the epub working file. i want ot be able
+          // to look at the pdf as well." A user clicking a file that is
+          // visibly a PDF wants the pages; their book has rows of its own.
+          // No openPath, so the row hands over its own file and the picker's
+          // redirect (the safety net) agrees with it.
           false,
           undefined,
           {
             variantId: pdf.id,
             primaryPath: pdf.absPath,
-            openPath: isTheOriginal ? workingCopyOpenPath : undefined,
           }
         );
 

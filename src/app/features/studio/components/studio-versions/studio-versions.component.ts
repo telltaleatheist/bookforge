@@ -1770,12 +1770,13 @@ export class StudioVersionsComponent {
    * Is there a book behind this project's archive — a working copy, or the cast
    * one could be minted from?
    *
-   * The one fact the archive row's Open turns on, and it is the same fact
-   * `planArtifactOpen` turns on in the picker: with a book, opening the archive
-   * lands on the working copy; with none, it offers to read the pages, because
-   * reading them is the only way to get a book and it costs an hour of GPU.
-   * Measured off the rows for the same reason everything else here is — a row
-   * exists because a file does.
+   * Only the archive row's TOOLTIP turns on this now: with a book, the words
+   * point at the working copy's own row for editing; with none, they say a book
+   * will be read out of these pages. The OPEN itself no longer turns on it —
+   * the archive PDF opens its own pages either way (Owen, 2026-08-12: "i want
+   * ot be able to look at the pdf as well"), and only an archive-grade BOOK is
+   * redirected to the copy (`planArtifactOpen`). Measured off the rows for the
+   * same reason everything else here is — a row exists because a file does.
    */
   private readonly bookBehindArchive = computed(() =>
     this.documents().some(v => v.type === 'exported' || v.type === 'generated'));
@@ -2668,12 +2669,17 @@ export class StudioVersionsComponent {
   openTitle(v: VersionRow): string {
     if (v.type === 'working') return 'Open this book in the picker, on your working copy';
     if (v.type === 'archive') {
+      // The pages themselves, read-only — always. This used to promise the
+      // working copy when a book existed, and Owen hit exactly that promise
+      // (2026-08-12): "opening the pdf archive file just opens the epub
+      // working file. i want ot be able to look at the pdf as well." A user
+      // clicking a file that is visibly a PDF wants the pages; the book has
+      // rows of its own.
       return this.bookBehindArchive()
-        ? 'Opens your working copy of this book, with your changes applied. The file on this row is '
-          + 'kept exactly as you imported it and nothing ever writes to it, so your copy is where '
-          + 'reading and editing happen.'
-        : 'Opens these pages and offers to read them into a book. Nothing ever writes to this file, '
-          + 'so a book is read out of it — and that book is what you then edit.';
+        ? 'Look at the pages exactly as you imported them. Nothing ever writes to this file — '
+          + 'editing happens on your working copy, on its own row.'
+        : 'Opens these pages. Nothing ever writes to this file, so a book is read out of it — '
+          + 'and that book is what you then edit.';
     }
     if (v.type === 'narration') {
       return 'Look at what narration will actually read. It is re-cut from your working copy every '

@@ -39,6 +39,7 @@ import {
 } from './epub-processor';
 import { openEpubSource } from './epub-container';
 import {
+  QUIRE_ANALYSIS_GEOMETRY,
   bookCacheKey, loadCachedPageMap, pageMapPath, saveCachedPageMap, staleDocuments,
   type QuirePageMap,
 } from './quire-page-map';
@@ -79,7 +80,17 @@ export interface QuireViewerOpening {
   };
 }
 
-const DEFAULT_GEOMETRY: QuireViewerGeometry = { width: 600, height: 900, fontSize: 18 };
+// THE ONE GEOMETRY, imported and never copied. This was a literal
+// `{ width: 600, … }` of its own until 2026-08-12, when the analysis width
+// moved 600 → 900 and the copy did not: the analyzer said 523 pages, this
+// bridge laid the same book out at the old width and said 725, and the
+// picker's page-count guard refused the book — correctly, which is the
+// guard's whole job, but the disagreement itself was this duplicate. The
+// analyzer and the viewer must lay books out IDENTICALLY or every recorded
+// page number means two different places; that is a fact with one owner
+// (`QUIRE_ANALYSIS_GEOMETRY`), and a second literal of it is how two
+// surfaces come to disagree about one book.
+const DEFAULT_GEOMETRY: QuireViewerGeometry = QUIRE_ANALYSIS_GEOMETRY;
 
 const open = new Map<string, {
   doc: QuireDocument;
