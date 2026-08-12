@@ -7681,6 +7681,29 @@ async function writeBookWithReplacedEntries(
   });
 }
 
+/**
+ * One entry's bytes, exactly as the book holds them.
+ *
+ * For the callers that have to be able to put a document BACK — an in-place
+ * edit whose own verification refuses it. Bytes rather than the decoded string
+ * the edit parsed: restoring means restoring, and re-encoding a string is a
+ * claim about this file's encoding rather than a copy of its contents. The
+ * refusal names the entry, because a caller asking for a document the book does
+ * not have is a bug in the caller and not a missing file.
+ */
+async function readOneEpubEntry(bookPath: string, entry: string): Promise<Buffer> {
+  const source = await openEpubSource(bookPath);
+  try {
+    if (!source.hasEntry(entry)) {
+      throw new Error(
+        `${path.basename(bookPath)} has no entry ${entry}, so its current bytes cannot be read.`);
+    }
+    return await source.readEntry(entry);
+  } finally {
+    source.close();
+  }
+}
+
 /** One element the fold took out, and what it said before it went. */
 export interface FoldedChapterElement {
   key: NarrationElementKey;
@@ -8630,6 +8653,25 @@ export interface BookElementCategoryResult {
  * whatever the reading calls `chapter` — and rewriting a publisher's `<p
  * class="ct">` into a heading would restyle their page to make a category
  * legible to a reader that now reads the category directly.
+ *
+ * ── `outputPath` may BE `inputPath`, and for the working copy it is ────────
+ *
+ * `rewriteEpubEntries` has always taken `from === to` (electron/epub-container.ts),
+ * and for an exploded book that is what makes the "editing one chapter writes
+ * one file" promise true: `DirectoryEpubSink` writes only the entries whose
+ * bytes actually moved. Writing somewhere else and landing the result with
+ * `moveIntoPlace` re-creates all 84 of Nuremberg's entries — 32 MB of page
+ * images copied twice, for one attribute — and, worse, leaves every entry with a
+ * new inode and a new mtime, so the two `bookDigest` calls that bracket the edit
+ * have to hash all 32 MB again as well. Measured 2026-08-11: 1500 ms for one
+ * click, ~1050 ms of it that copying and the re-hashing it forced.
+ *
+ * The staged form is kept — the tests use it, and so does anything that wants
+ * the edited book beside the original — so the difference is only in the FAILURE
+ * arm. Staged, a verification that fails deletes the staged book and the book
+ * itself was never touched. In place there is nothing to delete but the book, so
+ * the one document's original bytes are put back instead, and "Nothing was
+ * written" stays true of the book the caller still has.
  */
 export async function setElementCategoryInBookFile(
   inputPath: string,
@@ -8639,6 +8681,7 @@ export async function setElementCategoryInBookFile(
 ): Promise<BookElementCategoryResult> {
   const bookName = path.basename(inputPath);
   const whatFor = `the relabel of ${elementKey} in ${bookName}`;
+  const inPlace = path.resolve(inputPath) === path.resolve(outputPath);
 
   if (!BLOCK_CATEGORY_IDS.includes(categoryId)) {
     throw new Error(
@@ -8740,6 +8783,14 @@ export async function setElementCategoryInBookFile(
   }
   if (userCategoryOf(el, whatFor) === categoryId) return { written: false, edit };
 
+  // What the document holds RIGHT NOW, as BYTES, kept only for the in-place
+  // write's failure arm — read from the book rather than re-encoded from the
+  // string the parse started with, because "put it back exactly" is the whole
+  // point and a re-encode is a claim about this file's encoding rather than a
+  // copy of it. Nothing is read for the staged form: there the undo is deleting
+  // the staged book.
+  const originalEntryBytes = inPlace ? await readOneEpubEntry(inputPath, file) : null;
+
   el.setAttribute(USER_CATEGORY_ATTR, categoryId);
   await writeBookWithReplacedEntries(
     inputPath, outputPath, new Map([[file, serializeEditedDocument(doc)]]));
@@ -8791,7 +8842,17 @@ export async function setElementCategoryInBookFile(
       );
     }
   } catch (err) {
-    await removeEpubContainer(outputPath);
+    if (originalEntryBytes === null) {
+      await removeEpubContainer(outputPath);
+    } else {
+      // In place, so there is no staged book to destroy — destroying `outputPath`
+      // here would take the user's book with it. The edit was ONE document and
+      // its bytes from before it are held above, so putting those back restores
+      // exactly the book this function was handed. Through the same writer, so
+      // the undo lands the same atomic way the edit did.
+      await writeBookWithReplacedEntries(
+        inputPath, outputPath, new Map([[file, originalEntryBytes]]));
+    }
     throw err;
   }
 

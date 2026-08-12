@@ -46,19 +46,15 @@
  */
 
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 
 import { setElementCategoryInBookFile } from './epub-processor';
-import { moveIntoPlace } from './processing-passes';
 import { bookDigest } from './sidecar-binding';
 import * as manifestService from './manifest-service';
 import {
   narrationDeletionsStaleReason,
   type NarrationElementKey,
 } from '../shared/vlm/narration-deletions';
-
-const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
 
 /** What a relabel did, in the terms the picker says out loud. */
 export interface BookBlockCategoryResult {
@@ -121,7 +117,7 @@ export async function setBookBlockCategory(
   // The book as it stands, measured BEFORE anything is written: it is what says
   // whether the strike record was describing this book a moment ago, and what
   // the edit log records this relabel as having started from.
-  const { digest: fromSha256, hex: fromHex } = await bookDigest(book.absPath);
+  const { digest: fromSha256 } = await bookDigest(book.absPath);
   const recorded = await manifestService.readNarrationDeletions(projectDir, familyId);
   const stale = narrationDeletionsStaleReason(recorded, fromSha256);
   if (stale !== null) {
@@ -133,18 +129,33 @@ export async function setBookBlockCategory(
     );
   }
 
-  await fs.promises.mkdir(STAGING_DIR, { recursive: true });
-  // Named from the HEX, not from the recorded digest: an exploded book's digest
-  // carries an algorithm tag, and slicing that would give every book in the
-  // project the same staging name (shared/book-digest.ts, `bookDigestHex`).
-  const staged = path.join(STAGING_DIR, `relabel-${fromHex.slice(0, 16)}.epub`);
+  // ── Written INTO the book, not staged and landed on it ────────────────────
+  //
+  // This used to write the edited book into `%TEMP%\bookforge-staging` and land
+  // it with `moveIntoPlace`. That shape came from the days when a book was one
+  // zip file, where landing it was a single rename; against an exploded working
+  // copy it means the whole tree is written out and then copied back — 84
+  // entries and 32.5 MB of page images for one attribute on one `<p>`.
+  //
+  // The cost was not only the copying. `moveIntoPlace` lands a tree by copying
+  // it beside the destination and renaming, so EVERY entry came back with a new
+  // inode and a new mtime, and the `bookDigest` on the next line then had to
+  // SHA-256 all 32.5 MB again — as did the one at the top of the next relabel,
+  // and the one inside the naming pass that runs behind this one. Measured on
+  // the migrated Nuremberg project, 2026-08-11: 1500 ms for one click on the
+  // palette, of which ~1050 ms was that copy and the re-hashing it forced.
+  //
+  // In place, `DirectoryEpubSink` writes only the entries whose bytes moved —
+  // one document — so every other entry keeps the identity the digest cache
+  // knows it by (electron/sidecar-binding.ts, `treeEntrySha256`). Nothing about
+  // the refusals changes: `setElementCategoryInBookFile` verifies the written
+  // book exactly as it did, and an in-place verification that fails puts the one
+  // document's original bytes back before it throws.
   const { written, edit } = await setElementCategoryInBookFile(
-    book.absPath, staged, elementKey, categoryId);
+    book.absPath, book.absPath, elementKey, categoryId);
 
   if (!written) {
-    // The book already says this. Nothing was staged, and the `rm` is for the
-    // case where something below the write refused after one had been.
-    await fs.promises.rm(staged, { force: true });
+    // The book already says this, and not one byte of it was touched.
     return {
       file: edit.file,
       elementKey: edit.elementKey,
@@ -156,7 +167,6 @@ export async function setBookBlockCategory(
     };
   }
 
-  await moveIntoPlace(staged, book.absPath);
   const { digest: toSha256 } = await bookDigest(book.absPath);
   const at = new Date().toISOString();
 

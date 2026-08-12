@@ -106,6 +106,101 @@ export {
   type BookDigestAlgorithm,
 } from '../shared/book-digest';
 
+// ── The exploded book's entry hashes, remembered ────────────────────────────
+//
+// ── The measurement that made this necessary ────────────────────────────────
+//
+// Owen, 2026-08-11: "switching labels still takes forever." Measured on the
+// migrated Nuremberg project (84 entries, 32.5 MB, of which 31 MB is 64 page
+// images), one click on the category palette cost 1500 ms, and 740 ms of it was
+// two `bookDigest` calls — `setBookBlockCategory` measures the book before its
+// edit and again after it, and `nameChapterOpenings` runs behind every written
+// relabel and measures it a third time. While the working copy was a single
+// zip that was one 32 MB stream each; exploded it is the same 32 MB, and it is
+// SHA-256 over all 64 page images to record that one `<p>` is now a heading.
+//
+// The images are not read, not parsed and not changed by any text edit. Hashing
+// them is only ever asking "are these still the bytes I hashed a moment ago",
+// and the filesystem already answers that.
+//
+// ── The rule, and why it is sound ───────────────────────────────────────────
+//
+// A remembered hash is used ONLY when all five of the entry's `stat` fields are
+// bit-identical to the reading it was recorded under: device, inode, size,
+// mtime and ctime, taken at NANOSECOND resolution (`{ bigint: true }` — the
+// millisecond fields cannot see two writes inside one tick). Anything else —
+// any field moved, no record at all — is hashed.
+//
+// That rule holds against both kinds of writer:
+//
+//  - THIS APP. Every byte that reaches a book entry goes through
+//    `writeFileAtomically` (electron/epub-container.ts): bytes to a temp file,
+//    rename onto the entry. The rename installs the temp file's own NTFS record,
+//    so the INODE moves on every write we make — measured on E:, 2026-08-11:
+//    two same-length atomic writes gave ino …855844 then …855845. A stale hit is
+//    not merely unlikely there, it is unreachable.
+//  - ANYTHING ELSE, rewriting an entry in place. Then the inode stays and the
+//    timestamps are what tell: 200 same-length in-place rewrites in a tight loop
+//    produced 197 distinct `mtimeNs` values, i.e. NTFS is stamping at ~1 µs, not
+//    at the 15.6 ms scheduler tick. A foreign process would have to rewrite an
+//    entry to the SAME byte length inside the same microsecond as our own
+//    reading to be missed.
+//
+// The cache is recorded only when the entry's ns identity is UNCHANGED across
+// the hash — if it moved, the value is still returned (`sha256File` owns that
+// judgement and has always owned it) but nothing is written down, because we
+// cannot say which bytes the hash describes. Nothing is refused that was not
+// refused before; this adds no new way for a relabel to fail.
+//
+// This is the same tier the delivery-identity cache below already is, for the
+// same reason and with a stricter key.
+const treeEntryHashCache = new Map<string, { identity: string; sha256: string; size: number }>();
+
+/**
+ * How many entries are remembered before the map is emptied and refilled.
+ *
+ * A book has of the order of a hundred entries and the library has 43 books, so
+ * this is roughly ten libraries' worth — the bound exists so a session that
+ * walks every project on disk cannot grow the map without end, not because any
+ * ordinary use approaches it. Cleared whole rather than evicted one at a time:
+ * a miss costs one file hash, so the cheapest correct policy is the simplest.
+ */
+const TREE_ENTRY_CACHE_LIMIT = 20_000;
+
+/** The five fields that decide whether an entry is still the file we hashed. */
+function entryStatIdentity(st: fs.BigIntStats): string {
+  return `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
+}
+
+/**
+ * One tree entry's SHA-256 — measured, or remembered from when it was measured.
+ *
+ * `sha256File` with a memory. See the block above for the invalidation rule and
+ * for the measurements it rests on.
+ */
+async function treeEntrySha256(abs: string): Promise<{ sha256: string; size: number }> {
+  const before = await fs.promises.stat(abs, { bigint: true });
+  const identity = entryStatIdentity(before);
+  const remembered = treeEntryHashCache.get(abs);
+  if (remembered !== undefined && remembered.identity === identity) {
+    return { sha256: remembered.sha256, size: remembered.size };
+  }
+
+  const measured = await sha256File(abs);
+  const after = await fs.promises.stat(abs, { bigint: true });
+  if (entryStatIdentity(after) !== identity) {
+    // The file moved under the hash at a resolution `sha256File`'s own guard
+    // cannot see. Its verdict on the VALUE stands; what does not stand is any
+    // claim about which reading this hash belongs to, so it is not recorded and
+    // whatever was recorded before is dropped.
+    treeEntryHashCache.delete(abs);
+    return measured;
+  }
+  if (treeEntryHashCache.size >= TREE_ENTRY_CACHE_LIMIT) treeEntryHashCache.clear();
+  treeEntryHashCache.set(abs, { identity, sha256: measured.sha256, size: measured.size });
+  return measured;
+}
+
 /**
  * `sha256File`'s directory sibling — the content identity of an EXPLODED EPUB.
  *
@@ -128,6 +223,10 @@ export {
  * tree is re-listed afterwards, so an entry appearing or disappearing WHILE the
  * hash was being taken is a refusal too. A tree hash that quietly described a
  * book that no longer exists is precisely the thing this is here to prevent.
+ *
+ * The entry hashes come through `treeEntrySha256`, which remembers them — see
+ * its header for the measurement that made that necessary and for the rule that
+ * decides when a remembered one may be used.
  */
 export async function epubTreeSha256(
   dirPath: string
@@ -142,7 +241,7 @@ export async function epubTreeSha256(
   const lines: string[] = [];
   let size = 0;
   for (const name of names) {
-    const entry = await sha256File(resolveEpubEntryPath(abs, name));
+    const entry = await treeEntrySha256(resolveEpubEntryPath(abs, name));
     lines.push(`${name}\0${entry.sha256}\n`);
     size += entry.size;
   }
