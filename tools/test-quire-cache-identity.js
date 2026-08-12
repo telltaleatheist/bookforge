@@ -413,6 +413,143 @@ async function testAMapWithNoFreshnessRecordIsRefused() {
     'a page map with no per-document hashes');
 }
 
+// ── 6. Restating a document without measuring it ───────────────────────────
+
+/** A book whose first document carries a labellable element, laid out and open. */
+async function openLabelled(name, extraHead = '') {
+  const book = path.join(scratch, `${name}.epub`);
+  await buildEpub(book, [
+    {
+      name: 'a.xhtml',
+      xhtml: `<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>A</title>${extraHead}</head><body>`
+        + `<h1 data-bf-user-cat="title">A Chapter</h1>${prose('a', 4)}</body></html>`,
+    },
+    THREE_DOCUMENTS[1],
+  ]);
+  const doc = await Quire.openDocument(book, { sources: await sourcesFor(book) });
+  await doc.layout(GEOMETRY);
+  return { book, doc };
+}
+
+/** The same document with the label changed — what a relabel actually writes. */
+function relabelled(source, from, to) {
+  const out = source.replace(`data-bf-user-cat="${from}"`, `data-bf-user-cat="${to}"`);
+  if (out === source) throw new Error(`the fixture does not carry data-bf-user-cat="${from}"`);
+  return out;
+}
+
+/**
+ * The claim: every page, every block and every box is exactly what it was, and
+ * the document now serves the new bytes. If the pages moved at all, a page
+ * number the user is about to strike a paragraph by is wrong.
+ */
+async function testRestateKeepsEveryPage() {
+  const { doc } = await openLabelled('restate');
+  try {
+    const before = snapshotOf(doc);
+    const source = doc.sourceOf('OEBPS/a.xhtml');
+    await doc.restateDocumentSource(
+      'OEBPS/a.xhtml', relabelled(source, 'title', 'chapter'), ['data-bf-user-cat']);
+    assertSame(snapshotOf(doc), before, 'a restated document');
+    assert(
+      doc.sourceOf('OEBPS/a.xhtml').includes('data-bf-user-cat="chapter"'),
+      'the document did not take the new bytes');
+  } finally { await doc.close(); }
+}
+
+/**
+ * And it holds through a geometry change — which is the whole reason the source
+ * has to move at all. A label that survived until the reader resized and then
+ * vanished would be worse than one that never landed.
+ */
+async function testRestateSurvivesARelayoutAtAnotherGeometry() {
+  const { doc } = await openLabelled('restate-resize');
+  try {
+    const source = doc.sourceOf('OEBPS/a.xhtml');
+    await doc.restateDocumentSource(
+      'OEBPS/a.xhtml', relabelled(source, 'title', 'chapter'), ['data-bf-user-cat']);
+    await doc.layout({ width: 500, height: 800, fontSize: 18 });
+    assert(
+      doc.sourceOf('OEBPS/a.xhtml').includes('data-bf-user-cat="chapter"'),
+      'the label was lost when the book was laid out at another page box');
+  } finally { await doc.close(); }
+}
+
+/** Anything else in the bytes and it is not restated — it is measured. */
+async function testRestateRefusesARealEdit() {
+  const { doc } = await openLabelled('restate-refuse');
+  try {
+    const source = doc.sourceOf('OEBPS/a.xhtml');
+    const before = snapshotOf(doc);
+    await refuses(
+      () => doc.restateDocumentSource(
+        'OEBPS/a.xhtml',
+        relabelled(source, 'title', 'chapter').replace('A Chapter', 'A Much Longer Chapter Name'),
+        ['data-bf-user-cat']),
+      ['RESTATE_CHANGED_MORE_THAN_ATTRIBUTES', 'differ at character'],
+      'a rewrite that changed a word');
+    assertSame(snapshotOf(doc), before, 'the document after a refused restate');
+    assert(
+      doc.sourceOf('OEBPS/a.xhtml') === source,
+      'a refused restate took the new bytes anyway');
+  } finally { await doc.close(); }
+}
+
+/**
+ * An attribute a stylesheet can select on is a layout input, whatever it is
+ * called. quire answers for the styles IT can see — its own injected CSS and the
+ * document's inline `<style>` — and says so rather than assuming.
+ */
+async function testRestateRefusesAStyledAttribute() {
+  const { doc } = await openLabelled(
+    'restate-styled',
+    '<style type="text/css">h1[data-bf-user-cat="chapter"] { margin-top: 20em }</style>');
+  try {
+    const source = doc.sourceOf('OEBPS/a.xhtml');
+    await refuses(
+      () => doc.restateDocumentSource(
+        'OEBPS/a.xhtml', relabelled(source, 'title', 'chapter'), ['data-bf-user-cat']),
+      ['NEUTRAL_ATTRIBUTE_IS_STYLED', 'data-bf-user-cat'],
+      'a document whose own stylesheet selects the attribute');
+  } finally { await doc.close(); }
+}
+
+/** The refusals that stop this being used for something it cannot prove. */
+async function testRestateRefusesTheAskItselfWhenItCannot() {
+  const { doc } = await openLabelled('restate-guards');
+  try {
+    const source = doc.sourceOf('OEBPS/a.xhtml');
+    await refuses(
+      () => doc.restateDocumentSource('OEBPS/nowhere.xhtml', source, ['data-bf-user-cat']),
+      ['NOT_LAID_OUT', 'OEBPS/nowhere.xhtml'],
+      'a document the book does not have');
+    await refuses(
+      () => doc.restateDocumentSource('OEBPS/a.xhtml', source, []),
+      ['NO_NEUTRAL_ATTRIBUTES'],
+      'a restate that named no difference');
+    await refuses(
+      () => doc.restateDocumentSource('OEBPS/a.xhtml', source, ['data-bf-[a-z]+']),
+      ['BAD_ATTRIBUTE_NAME'],
+      'a pattern offered where an attribute name belongs');
+    await refuses(
+      () => doc.restateDocumentSource('OEBPS/a.xhtml', '   ', ['data-bf-user-cat']),
+      ['EMPTY_RESTATED_SOURCE'],
+      'a restate with no source');
+  } finally { await doc.close(); }
+}
+
+/** `sourceOf` answers about the book, never about the archive behind it. */
+async function testSourceOfRefusesWhatItDoesNotHold() {
+  const { doc } = await openLabelled('source-of');
+  try {
+    await refuses(
+      async () => doc.sourceOf('OEBPS/nav.xhtml'),
+      ['NO_SOURCE_HELD', 'OEBPS/nav.xhtml'],
+      'a document with no source of its own');
+  } finally { await doc.close(); }
+}
+
 // ── Run ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -438,6 +575,20 @@ async function main() {
     console.log('the cache');
     await check('the cache directory holds the page map and nothing else', testTheCacheHoldsOnlyTheMap);
     await check('a map with no per-document hashes is refused', testAMapWithNoFreshnessRecordIsRefused);
+
+    console.log('restating a document without measuring it');
+    await check('a relabel keeps every page, every block and every box',
+      testRestateKeepsEveryPage);
+    await check('a restated label survives the book being laid out at another page box',
+      testRestateSurvivesARelayoutAtAnotherGeometry);
+    await check('a rewrite that changed a word is refused, and changes nothing',
+      testRestateRefusesARealEdit);
+    await check('an attribute the document\'s own stylesheet selects on is refused',
+      testRestateRefusesAStyledAttribute);
+    await check('a restate it cannot prove is refused, each way by name',
+      testRestateRefusesTheAskItselfWhenItCannot);
+    await check('sourceOf refuses a document it holds no source for',
+      testSourceOfRefusesWhatItDoesNotHold);
   } finally {
     try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* windows holds files */ }
   }

@@ -14841,6 +14841,12 @@ export class PdfPickerComponent implements OnInit {
     // `quire://` address, so the ones whose documents changed are dropped and
     // built again. The rest keep their frames — that is the whole difference
     // from a re-open.
+    //
+    // A RESTATED document is deliberately not among them. Its bytes changed by
+    // one `data-bf-*` attribute, which main proved nothing renders and nothing
+    // selects on before it agreed to skip the measurement — so the frame on
+    // screen is already showing the right thing, and remounting it would be a
+    // flicker to redraw identical pixels.
     const relaidIndices: number[] = [];
     relaid.documents.forEach((mount, index) => {
       if (relaid.relaid.includes(mount.document)) relaidIndices.push(index);
@@ -14856,8 +14862,12 @@ export class PdfPickerComponent implements OnInit {
     }
 
     console.log(
-      `[epub-viewer] relaid ${relaid.relaid.length} document(s) of ${bookPath} in `
-      + `${relaid.relayoutMs} ms (${relaid.totalMs} ms in all); the book is now `
+      `[epub-viewer] relaid ${relaid.relaid.length} document(s) of ${bookPath}`
+      + (relaid.restated.length > 0
+        ? ` and took ${relaid.restated.length} more without measuring `
+          + `(${relaid.restated.join(', ')})`
+        : '')
+      + ` in ${relaid.relayoutMs} ms (${relaid.totalMs} ms in all); the book is now `
       + `${relaid.pageCount} page(s), ${relaid.pageDelta >= 0 ? '+' : ''}${relaid.pageDelta}.`);
   }
 
