@@ -11,9 +11,12 @@
  *    text passes moved to the versions page's own modal
  *    (shared/processing/book-passes.ts) on 2026-08-10, and the picker's job for
  *    a book is reading it. `ViewedArtifact` is the measured answer to "which
- *    kind of file is in the viewer", and it is measured from the file's own
- *    extension: a `.epub` is a book, anything else is a source document.
- *    Nothing else is consulted, because nothing else can change what a file IS.
+ *    kind of file is in the viewer", and it is measured from the file's NAME
+ *    through `isBookPath`: a book is a book, whether it is a `.epub` zip or the
+ *    exploded `.working` directory the user actually edits, and anything else is
+ *    a source document. Nothing else is consulted, because nothing else can
+ *    change what a file IS. (It read the raw extension until 2026-08-12, which
+ *    made it answer "source" for every migrated book — see `viewedArtifactOf`.)
  *  - **Whether an entry is ALLOWED is a separate question**, answered by the
  *    picker with its own sentence per entry (curation is refused on the archive
  *    original). The two must not be conflated: hiding the rail answered the
@@ -24,6 +27,8 @@
  * every site that switches on one (see `deriveTaskStatus`'s `assertNever` in
  * the picker's task.model.ts).
  */
+
+import { isBookPath } from './book-path';
 
 import { samePath } from './same-path';
 
@@ -39,20 +44,39 @@ import { samePath } from './same-path';
 export type ViewedArtifact = 'source' | 'book';
 
 /**
- * Which artifact the viewer is showing — measured from the file's extension, and
- * nothing else.
+ * Which artifact the viewer is showing — measured from the file's NAME, through
+ * the one rule that knows what a book is called.
  *
- * An EPUB is a book. There is no case in which the picker holds an EPUB that is
- * not one: a project's export, a project's EPUB original and a loose ebook are
- * all read the same way and offer the same tools. Everything else is a source
+ * A book is a book. There is no case in which the picker holds one that is not:
+ * a project's working copy, a project's EPUB original and a loose ebook are all
+ * read the same way and offer the same tools. Everything else is a source
  * document.
+ *
+ * ── This was `/\.epub$/` and it was quietly catastrophic ────────────────────
+ *
+ * The working copy became an exploded directory, `<stem>.working`, and this
+ * test went on reading the extension — so for the very book the user was
+ * editing it answered `source`. `viewingBook()` was false while the book was on
+ * screen, which is a contradiction the app acts on in three ways:
+ *
+ *   - DESTRUCTIVE. `scheduleAutoSave`/`performAutoSave` return early when
+ *     `viewingBook()`. With that guard silently disarmed, an autosave writes
+ *     the book's own blocks over the SOURCE's edit set, or rebinds and pulls
+ *     the source's deletions onto the book. Both arms of that actually
+ *     happened once (Working Towards The Führer, 2 Aug 2026) and the guard is
+ *     the fix; an extension test is not a guard once books stopped having one.
+ *   - Chapter rename refused every time, with `bookRetitleRefusal` telling the
+ *     user "what is on screen is not the book. Open the book to rename its
+ *     chapters" — while they were looking at the book.
+ *   - A pass that rewrote the book in place did not reload the window, so the
+ *     picker kept rendering the pre-pass bytes.
  *
  * Empty is `source`, and that is not a fallback — a window with nothing loaded
  * renders no rail at all, and `source` is what it will be showing the instant it
  * does have a file, since a book is only ever reached by opening one.
  */
 export function viewedArtifactOf(displayedPath: string): ViewedArtifact {
-  return /\.epub$/i.test(displayedPath) ? 'book' : 'source';
+  return isBookPath(displayedPath) ? 'book' : 'source';
 }
 
 /**

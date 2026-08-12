@@ -130,6 +130,8 @@
  * longer be drawn.
  */
 
+import { EPUB_SUFFIX, WORKING_COPY_SUFFIX } from './book-path';
+
 /** The kinds of line the page draws, in the order they can appear. */
 export type ChainLineKind =
   /** The archive PDF, top level. Nothing writes to it; it can be converted. */
@@ -194,6 +196,26 @@ export type ChainLineKind =
    * `source/original.*`. Top level, after the chain, buttons unchanged.
    */
   | 'loose';
+
+/**
+ * Is this row a BOOK — whatever container the book happens to be in?
+ *
+ * `extension` is main's `path.extname(...)` with the dot removed, so a working
+ * copy that used to be `<stem>.working.epub` reported `epub` and now reports
+ * `working`. Three buttons on the chain's book line were gated on `=== 'epub'`,
+ * so the moment the copy exploded into a directory the book line lost Generate
+ * analysis, Process and Export TTS copy — for every EPUB-native project, which
+ * is the common case, and only for those (a PDF-origin project's book row is
+ * `<stem>.generated.epub`, a real zip, so it kept its buttons). That is why it
+ * read as "some books lost their buttons" rather than as a broken page.
+ *
+ * Asked here rather than with `isBookPath` because a `ChainRow` carries no
+ * path — but it is the same rule and the same constant, so the two cannot drift.
+ */
+function isBookRow(row: ChainRow): boolean {
+  return `.${row.extension}` === EPUB_SUFFIX
+    || `.${row.extension}` === WORKING_COPY_SUFFIX;
+}
 
 /** As much of a `editor:get-versions` row as the arrangement needs. */
 export interface ChainRow {
@@ -579,14 +601,14 @@ export function bookChain(input: BookChainInput): ChainLine[] {
       buttons: {
         ...NO_BUTTONS,
         // Owen: analysis on EPUBs, "not on PDFs. its easier that way."
-        analysis: bookRow.extension === 'epub',
+        analysis: isBookRow(bookRow),
         // The passes are done TO the book, so they are offered from the book —
         // and only when it is a book. A chain whose top-level line is somehow
         // not an EPUB has nothing for simplify or translate to rewrite.
-        passes: bookRow.extension === 'epub',
+        passes: isBookRow(bookRow),
         // Cutting the narration copy, from the book it is cut FROM. Same gate as
         // the passes and for the same reason — see ChainButtons.ttsExport.
-        ttsExport: bookRow.extension === 'epub',
+        ttsExport: isBookRow(bookRow),
         // Wherever there is a working copy there are changes to erase, and the
         // act lives HERE, as a special, whichever row this line is standing on.
         eraseEverything: exportedRow !== null,

@@ -245,6 +245,44 @@ const GRID_BASE_WIDTH = 200;
                     ></div>
                   }
                 }
+                <!--
+                  The text editor, ON the words it edits.
+
+                  A textarea rather than a contenteditable on the book's own
+                  element, and that is not a compromise: the book is a stranger's
+                  markup behind quire's CSP in its own session, and this
+                  component's one invariant is that no markup crosses the
+                  boundary in either direction. What the user types is TEXT, it
+                  goes into the book through the book's own writer, and the
+                  document is then restated in place. Editing the guest's DOM
+                  directly would put the change on screen without putting it in
+                  the book — the exact "it apparently didnt actually change it,
+                  just visually?" failure this pipeline already fixed once.
+
+                  It is laid over the element's own rect at the current scale, so
+                  it covers the text it replaces. stopPropagation on the mouse
+                  handlers keeps the overlay underneath from reading a click in
+                  the editor as a selection or the start of a marquee.
+                -->
+                @if (inlineEdit(); as edit) {
+                  @if (edit.band === band.index) {
+                    <textarea
+                      #inlineEditor
+                      class="inline-editor"
+                      [style.left.px]="edit.rect.x * scale()"
+                      [style.top.px]="edit.rect.y * scale()"
+                      [style.width.px]="edit.rect.w * scale()"
+                      [style.minHeight.px]="edit.rect.h * scale()"
+                      [value]="edit.text"
+                      (mousedown)="$event.stopPropagation()"
+                      (mousemove)="$event.stopPropagation()"
+                      (mouseup)="$event.stopPropagation()"
+                      (contextmenu)="$event.stopPropagation()"
+                      (keydown)="onInlineEditorKeydown($event)"
+                      (blur)="commitInlineEdit($event)"
+                    ></textarea>
+                  }
+                }
               </div>
             </div>
           }
@@ -515,6 +553,30 @@ const GRID_BASE_WIDTH = 200;
       background: var(--accent-subtle);
       border: 2px solid var(--accent);
     }
+
+    /*
+      Sits over the element it edits, opaque enough to hide the words underneath
+      so the user is reading what they are typing rather than two layers of text.
+      It takes pointer events, unlike the overlay decorations around it which
+      set none — this one is the exception, it is the thing being used.
+    */
+    .inline-editor {
+      position: absolute;
+      pointer-events: auto;
+      z-index: 5;
+      margin: 0;
+      padding: 2px 4px;
+      resize: none;
+      overflow: hidden;
+      font: inherit;
+      line-height: 1.4;
+      color: var(--text-primary);
+      background: var(--bg-elevated);
+      border: 2px solid var(--accent);
+      border-radius: 3px;
+      box-shadow: 0 2px 10px rgb(0 0 0 / 25%);
+    }
+    .inline-editor:focus { outline: none; }
 
     .context-backdrop {
       position: fixed;
@@ -1732,6 +1794,115 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   protected closeContextMenu(): void { this.contextMenu.set(null); }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Editing the text, on the page, without leaving it
+  //
+  // Owen, 2026-08-12: "i need some way to actually edit element block text
+  // inline". The modal this replaces was reachable and correct, but a dialog to
+  // change three words in a heading is the reload-shaped experience the whole
+  // exploded working copy exists to end.
+  //
+  // WHAT IS EDITED IS THE ELEMENT, not this block. A block is one page's worth
+  // of an element, so a paragraph broken across a page turn would otherwise be
+  // offered as its first half and saved as the whole — silently deleting the
+  // rest. The caller reads the element's full text out of the book and hands it
+  // in; this component never derives it from what is on screen.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** The element being edited, its band, and its rect in unscaled units. */
+  protected readonly inlineEdit = signal<
+    { band: number; rect: { x: number; y: number; w: number; h: number };
+      block: LaidOutBlock; text: string } | null>(null);
+
+  private readonly inlineEditorRef = viewChild<ElementRef<HTMLTextAreaElement>>('inlineEditor');
+
+  /**
+   * The corrected text, once the user is done with it.
+   *
+   * Carries the block so the caller knows which ELEMENT to write onto, and the
+   * text as typed. Nothing is written from inside this component: the book is
+   * the store, and the caller owns the round trip to it.
+   */
+  readonly commitBlockText = output<{ block: LaidOutBlock; text: string }>();
+
+  /**
+   * Put an editor over this block's element, holding `text`.
+   *
+   * Answers whether it could: a block whose element is not in a mounted,
+   * laid-out band has no rect to sit on, and saying so lets the caller fall
+   * back to its dialog rather than silently doing nothing. Scrolling a
+   * document out of view while editing is the ordinary way this happens.
+   */
+  beginInlineEdit(block: LaidOutBlock, text: string): boolean {
+    const elementId = block.bf_element;
+    if (elementId === undefined) return false;
+    for (const band of this.bands()) {
+      const state = this.bandState(band.index);
+      if (state.kind !== 'ready') continue;
+      const element = state.arrangement.elements.find((el) => el.id === elementId);
+      if (element === undefined) continue;
+      this.closeContextMenu();
+      this.inlineEdit.set({
+        band: band.index,
+        rect: { x: element.x, y: element.y, w: element.w, h: element.h },
+        block,
+        text,
+      });
+      // After the textarea exists. Selecting nothing and placing the caret at
+      // the end is the "correct a word" case; select-all would make the first
+      // keystroke destroy text the user meant to amend.
+      setTimeout(() => {
+        const el = this.inlineEditorRef()?.nativeElement;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+        this.growInlineEditor(el);
+      });
+      return true;
+    }
+    return false;
+  }
+
+  protected onInlineEditorKeydown(event: KeyboardEvent): void {
+    const el = event.target as HTMLTextAreaElement;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      // Thrown away deliberately, and `blur` must not then save it.
+      this.inlineEdit.set(null);
+      return;
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      el.blur();  // one commit path, below
+      return;
+    }
+    // Shift+Enter is a real newline in the text, so the box grows with it.
+    setTimeout(() => this.growInlineEditor(el));
+  }
+
+  /**
+   * Commit on blur — the ONE path out, so Enter, clicking away and losing focus
+   * all mean the same thing and cannot disagree about what was saved.
+   */
+  protected commitInlineEdit(event: FocusEvent): void {
+    const edit = this.inlineEdit();
+    if (edit === null) return;  // Escape already cancelled it
+    const typed = (event.target as HTMLTextAreaElement).value;
+    this.inlineEdit.set(null);
+    // Unchanged text is not an edit. Said here so the caller never opens a
+    // write, a re-fingerprint and a relayout for a click that changed nothing.
+    if (typed === edit.text) return;
+    this.commitBlockText.emit({ block: edit.block, text: typed });
+  }
+
+  /** Keep the box as tall as what is in it, so nothing is typed out of sight. */
+  private growInlineEditor(el: HTMLTextAreaElement): void {
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }
 
   protected onMergeSelection(): void {
     this.mergeSelection.emit();

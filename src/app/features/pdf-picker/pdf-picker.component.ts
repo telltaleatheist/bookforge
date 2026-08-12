@@ -755,6 +755,7 @@ const PDF_HAS_NO_BOOK_MESSAGE =
                     (deleteLikeThis)="deleteLikeThis($event)"
                     (deleteBlock)="deleteBlock($event)"
                     (editBlockText)="onEditBookBlockText($event)"
+                    (commitBlockText)="onInlineBlockTextCommitted($event)"
                     (marqueeSelect)="onMarqueeSelect($event)"
                     (mergeSelection)="mergeSelectedBlocks()"
                     (pageDeleteToggle)="togglePageDeleted($event)"
@@ -7293,11 +7294,55 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
+    // ── On the page first; the dialog only when the page cannot hold it ──────
+    //
+    // Owen, 2026-08-12: "i need some way to actually edit element block text
+    // inline". The book is on screen as its own DOM, so the editor belongs on
+    // the words rather than in a modal over them.
+    //
+    // The text handed down is the ELEMENT's, read from the book a few lines
+    // above — never the block's. A block is one page's worth of an element, so
+    // editing a paragraph that breaks across a page turn from what is visible
+    // would save its first half as the whole and drop the rest.
+    //
+    // The dialog is kept for the case the viewer reports it cannot place an
+    // editor: the element's document is not mounted and laid out, so there is
+    // no rect to sit on. That is a real state — scroll far enough and a band is
+    // evicted — and it is a reason to use the other editor, not to refuse.
+    if (this.epubViewer?.beginInlineEdit(event, answer.data.text)) {
+      this.editingBlockElement.set(element);
+      this.editedTextOriginal.set(answer.data.text);
+      return;
+    }
+
     this.editingBlock.set(this.textBlockFor(event));
     this.editingBlockElement.set(element);
     this.editedText.set(answer.data.text);
     this.editedTextOriginal.set(answer.data.text);
     this.showTextEditor.set(true);
+  }
+
+  /**
+   * The inline editor was closed on a change — write it into the book.
+   *
+   * The same act as the dialog's Save, and deliberately the same code: one
+   * writer, so the two editors cannot come to disagree about what a correction
+   * does. `saveBookBlockText` writes the element, re-fingerprints a strike that
+   * described the old words, and lays out ONLY the documents main says it
+   * rewrote — no re-open, no re-pagination of the book.
+   */
+  protected async onInlineBlockTextCommitted(
+    event: { block: LaidOutBlock; text: string },
+  ): Promise<void> {
+    const element = event.block.bf_element;
+    if (element === undefined) {
+      // Unreachable by construction — the viewer will not open an editor on a
+      // block with no element — and said out loud rather than dropped, because
+      // silence here would look exactly like a save that worked.
+      console.error('[picker] an inline text edit came back with no element to write onto');
+      return;
+    }
+    await this.saveBookBlockText(element, event.text);
   }
 
   cancelTextEdit(): void {

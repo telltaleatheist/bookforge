@@ -63,7 +63,7 @@ export const EPUB_SUFFIX = '.epub';
  * False for `<Original>.working.pdf`, which is a PDF; see the header.
  */
 export function isBookPath(documentPath: string): boolean {
-  const lower = documentPath.toLowerCase();
+  const lower = withoutTrailingSeparator(documentPath).toLowerCase();
   return lower.endsWith(EPUB_SUFFIX) || lower.endsWith(WORKING_COPY_SUFFIX);
 }
 
@@ -75,5 +75,27 @@ export function isBookPath(documentPath: string): boolean {
  * answer must be true of the bytes on disk rather than of the name, stat it.
  */
 export function isExplodedBookPath(documentPath: string): boolean {
-  return documentPath.toLowerCase().endsWith(WORKING_COPY_SUFFIX);
+  return withoutTrailingSeparator(documentPath).toLowerCase()
+    .endsWith(WORKING_COPY_SUFFIX);
+}
+
+/**
+ * The path without a trailing `/` or `\`.
+ *
+ * An exploded book is a DIRECTORY, and a directory is the one thing people and
+ * APIs habitually write with a trailing separator — Explorer's address bar
+ * copies one, and any `dir + path.sep` concatenation produces one. Nothing
+ * BookForge mints has one, because every mint goes through `path.join`; but
+ * "nothing inside this app produces it" is exactly the reasoning that let the
+ * extension checks survive, and a trailing slash silently turning a book back
+ * into a PDF is the same silent-wrong failure this file exists to end.
+ *
+ * Only ONE separator comes off. A path ending in several is malformed, and
+ * quietly repairing it would be guessing at what the caller meant.
+ */
+function withoutTrailingSeparator(documentPath: string): string {
+  const last = documentPath.charAt(documentPath.length - 1);
+  return last === '/' || last === '\\'
+    ? documentPath.slice(0, -1)
+    : documentPath;
 }
