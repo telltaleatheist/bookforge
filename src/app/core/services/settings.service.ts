@@ -4,7 +4,6 @@ import {
   AIConfig,
   AIProvider,
   DEFAULT_AI_CONFIG,
-  OLLAMA_MODELS,
   CLAUDE_MODELS,
   OPENAI_MODELS
 } from '../models/ai-config.types';
