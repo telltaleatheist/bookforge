@@ -61,6 +61,32 @@ export class QuireZipReader implements QuireEntrySource {
     return Array.from(this.entries.keys());
   }
 
+  /**
+   * Read exactly `length` bytes, or refuse naming what fell short.
+   *
+   * `readSync`'s return value is the byte count and it was being IGNORED — a
+   * read past a truncated or shrunk file quietly leaves the tail of the
+   * `Buffer.alloc` ZEROS, and a STORED entry then comes back NUL-padded. That
+   * is not a hypothetical: a run of NULs parses as nothing, so the book died
+   * later, in the paginator, as `DOCUMENT_UNPARSEABLE` with no detail —
+   * blaming the XHTML for what was a torn read of the archive. A file only
+   * comes up short when it has been truncated or replaced UNDER this open
+   * reader, which is exactly the state a reader must refuse, not paper over.
+   */
+  private readExactly(
+    fd: number, buffer: Buffer, length: number, position: number, what: string,
+  ): void {
+    const got = fsSync.readSync(fd, buffer, 0, length, position);
+    if (got !== length) {
+      quireFail(
+        'ZIP_SHORT_READ',
+        `${this.sourcePath}: ${what} needed ${length} byte(s) at offset ${position} and the file `
+        + `returned ${got} — the archive has been truncated or rewritten under this reader. `
+        + 'Close and re-open the book.',
+      );
+    }
+  }
+
   async readEntry(name: string): Promise<Buffer> {
     const entry = this.entries.get(name);
     if (!entry) {
@@ -71,7 +97,8 @@ export class QuireZipReader implements QuireEntrySource {
     }
 
     const localHeader = Buffer.alloc(30);
-    fsSync.readSync(this.fd, localHeader, 0, 30, entry.localHeaderOffset);
+    this.readExactly(this.fd, localHeader, 30, entry.localHeaderOffset,
+      `entry "${name}"'s local header`);
     if (localHeader.readUInt32LE(0) !== 0x04034b50) {
       quireFail('ZIP_BAD_HEADER', `entry "${name}" has an invalid local file header`);
     }
@@ -80,7 +107,8 @@ export class QuireZipReader implements QuireEntrySource {
     const dataOffset = entry.localHeaderOffset + 30 + nameLen + extraLen;
 
     const compressed = Buffer.alloc(entry.compressedSize);
-    fsSync.readSync(this.fd, compressed, 0, entry.compressedSize, dataOffset);
+    this.readExactly(this.fd, compressed, entry.compressedSize, dataOffset,
+      `entry "${name}"'s data`);
 
     if (entry.compressionMethod === 0) return compressed;
     if (entry.compressionMethod === 8) return (await inflateRaw(compressed)) as Buffer;
@@ -100,7 +128,8 @@ export class QuireZipReader implements QuireEntrySource {
 
     const searchSize = Math.min(65557, size);
     const search = Buffer.alloc(searchSize);
-    fsSync.readSync(this.fd, search, 0, searchSize, size - searchSize);
+    this.readExactly(this.fd, search, searchSize, size - searchSize,
+      'the end-of-central-directory search window');
 
     let eocd = -1;
     for (let i = searchSize - 22; i >= 0; i--) {
@@ -111,13 +140,13 @@ export class QuireZipReader implements QuireEntrySource {
     }
 
     const rec = Buffer.alloc(22);
-    fsSync.readSync(this.fd, rec, 0, 22, eocd);
+    this.readExactly(this.fd, rec, 22, eocd, 'the end-of-central-directory record');
     const dirOffset = rec.readUInt32LE(16);
     const dirSize = rec.readUInt32LE(12);
     const count = rec.readUInt16LE(10);
 
     const dir = Buffer.alloc(dirSize);
-    fsSync.readSync(this.fd, dir, 0, dirSize, dirOffset);
+    this.readExactly(this.fd, dir, dirSize, dirOffset, 'the central directory');
 
     let off = 0;
     for (let i = 0; i < count; i++) {

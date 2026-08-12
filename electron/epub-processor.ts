@@ -138,6 +138,27 @@ export class ZipReader implements EpubSource {
     return this.entries.has(name);
   }
 
+  /**
+   * Read exactly `length` bytes, or refuse naming what fell short.
+   *
+   * `readSync` answers with the byte count and it was being IGNORED: a read
+   * past a truncated or shrunk file leaves the tail of the `Buffer.alloc`
+   * ZEROS, so a STORED entry comes back NUL-padded and the failure surfaces
+   * far away — as a parse error blaming the XHTML for what was a torn read.
+   * A file only comes up short when it has been truncated or replaced UNDER
+   * this open reader, which is a state to refuse by name, never to pad.
+   * (quire's own reader, packages/quire/src/epub/zip-reader.ts, keeps the
+   * same promise for the same reason.)
+   */
+  private readExactly(fd: number, buffer: Buffer, length: number, position: number, what: string): void {
+    const got = fsSync.readSync(fd, buffer, 0, length, position);
+    if (got !== length) {
+      throw new Error(
+        `${this.filePath}: ${what} needed ${length} byte(s) at offset ${position} and the file `
+        + `returned ${got} — the archive has been truncated or rewritten under this reader.`);
+    }
+  }
+
   async readEntry(name: string): Promise<Buffer> {
     const entry = this.entries.get(name);
     if (!entry) {
@@ -150,7 +171,8 @@ export class ZipReader implements EpubSource {
 
     // Read local file header
     const localHeader = Buffer.alloc(30);
-    fsSync.readSync(this.fd, localHeader, 0, 30, entry.localHeaderOffset);
+    this.readExactly(this.fd, localHeader, 30, entry.localHeaderOffset,
+      `entry "${name}"'s local header`);
 
     // Verify signature
     if (localHeader.readUInt32LE(0) !== 0x04034b50) {
@@ -163,7 +185,8 @@ export class ZipReader implements EpubSource {
 
     // Read compressed data
     const compressedData = Buffer.alloc(entry.compressedSize);
-    fsSync.readSync(this.fd, compressedData, 0, entry.compressedSize, dataOffset);
+    this.readExactly(this.fd, compressedData, entry.compressedSize, dataOffset,
+      `entry "${name}"'s data`);
 
     // Decompress if needed
     if (entry.compressionMethod === 0) {
@@ -188,7 +211,8 @@ export class ZipReader implements EpubSource {
     // Find End of Central Directory record (search from end)
     const searchSize = Math.min(65557, fileSize);
     const searchBuffer = Buffer.alloc(searchSize);
-    fsSync.readSync(this.fd, searchBuffer, 0, searchSize, fileSize - searchSize);
+    this.readExactly(this.fd, searchBuffer, searchSize, fileSize - searchSize,
+      'the end-of-central-directory search window');
 
     let eocdOffset = -1;
     for (let i = searchSize - 22; i >= 0; i--) {
@@ -204,7 +228,7 @@ export class ZipReader implements EpubSource {
 
     // Read EOCD
     const eocd = Buffer.alloc(22);
-    fsSync.readSync(this.fd, eocd, 0, 22, eocdOffset);
+    this.readExactly(this.fd, eocd, 22, eocdOffset, 'the end-of-central-directory record');
 
     const centralDirOffset = eocd.readUInt32LE(16);
     const centralDirSize = eocd.readUInt32LE(12);
@@ -212,7 +236,8 @@ export class ZipReader implements EpubSource {
 
     // Read central directory
     const centralDir = Buffer.alloc(centralDirSize);
-    fsSync.readSync(this.fd, centralDir, 0, centralDirSize, centralDirOffset);
+    this.readExactly(this.fd, centralDir, centralDirSize, centralDirOffset,
+      'the central directory');
 
     // Parse entries
     let offset = 0;

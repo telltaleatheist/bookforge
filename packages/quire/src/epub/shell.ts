@@ -58,9 +58,20 @@ export function buildPaginationShell(
   }).parseFromString(sourceXhtml, 'application/xhtml+xml');
 
   if (!doc || !doc.documentElement) {
+    // The parser can decline without reporting anything — whitespace-only,
+    // NUL-padded and declaration-only inputs all come back with no document
+    // element and an EMPTY errors list. Measured 2026-08-12: a torn zip read
+    // produced exactly that, and the error blamed the XHTML with no evidence
+    // to say otherwise. So the refusal DESCRIBES THE INPUT: its length and
+    // its first bytes, which is the difference between "the book is broken"
+    // and "the reader was handed nothing".
     quireFail(
       'DOCUMENT_UNPARSEABLE',
-      `${entry} could not be parsed as XHTML${errors.length ? `: ${errors[0]}` : ''}`,
+      `${entry} could not be parsed as XHTML${errors.length ? `: ${errors[0]}` : ''}`
+      + ` — the source is ${sourceXhtml.length} character(s)`
+      + (sourceXhtml.length > 0
+        ? ` beginning ${JSON.stringify(sourceXhtml.slice(0, 60))}`
+        : ''),
     );
   }
 
