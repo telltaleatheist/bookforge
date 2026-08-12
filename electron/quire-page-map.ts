@@ -82,12 +82,15 @@ import type {
  * is now fragmented instead of being pushed off the page whole. Any book with
  * one breaks in different places than it did under v2 — and the v2 maps for
  * those books are maps of a layout with blank pages in it.
+ * v4: the page box widened 600 → 900 (Owen, 2026-08-12: "can we expand the
+ * page width about 50%"). Wider lines fit more words, so every book holds
+ * fewer pages and every v3 page number names a different page.
  *
  * The move to per-document freshness did NOT bump this, and did not need to: it
  * changed no pagination, and every map written before it is unreachable anyway
  * because the cache key stopped being the book's content hash.
  */
-export const QUIRE_ANALYSIS_VERSION = 3;
+export const QUIRE_ANALYSIS_VERSION = 4;
 
 export interface QuireAnalysisGeometry {
   width: number;
@@ -98,16 +101,17 @@ export interface QuireAnalysisGeometry {
 /**
  * The page box every EPUB is analyzed at.
  *
- * The same three numbers mupdf was given (`layout(600, 900, 18)`), so a book's
- * pages stay roughly the size they have always been, and the geometry quire's
- * own test battery measures. The page MARGIN is not a fourth number here: it is
- * a constant of the Paged strategy itself (`PAGE_MARGIN`, 48px since v2 —
- * before that, zero), because every consumer of quire's page numbers must lay
- * books out identically. Changing it changes pagination, which is a
- * `QUIRE_ANALYSIS_VERSION` bump by definition.
+ * 600 wide was mupdf's number (`layout(600, 900, 18)`), inherited so pages
+ * stayed the size they had always been; 900 is Owen's (2026-08-12: "can we
+ * expand the page width about 50%"). The page MARGIN is not a fourth number
+ * here: it is a constant of the Paged strategy itself (`PAGE_MARGIN`, 48px
+ * since v2 — before that, zero), because every consumer of quire's page
+ * numbers must lay books out identically. Changing ANY of these numbers
+ * changes pagination, which is a `QUIRE_ANALYSIS_VERSION` bump by definition —
+ * the width change was v4.
  */
 export const QUIRE_ANALYSIS_GEOMETRY: QuireAnalysisGeometry = {
-  width: 600, height: 900, fontSize: 18,
+  width: 900, height: 900, fontSize: 18,
 };
 
 /** A whole book's pagination, as plain data that can cross a thread boundary. */
