@@ -138,7 +138,7 @@ function spawn(label: string, onExit: (w: Worker) => void): Worker {
     if (msg.type === 'quire-request') {
       const { paginateInThisProcess } = require('./quire-service.js') as
         typeof import('./quire-service');
-      paginateInThisProcess(msg.stampedPath, msg.geometry)
+      paginateInThisProcess(msg.bookPath, msg.spine, msg.geometry, msg.reuse)
         .then((result) => w.postMessage({ type: 'quire-response', quireId: msg.quireId, result }))
         .catch((err: unknown) => w.postMessage({
           type: 'quire-response',

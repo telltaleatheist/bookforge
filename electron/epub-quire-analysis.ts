@@ -34,8 +34,6 @@
  * and that has to stop the analysis rather than quietly degrade it.
  */
 import * as crypto from 'crypto';
-import * as fsSync from 'fs';
-import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 // The ANALYZER's own block declaration, not `shared/ocr/text-block`'s. The two
 // describe the same thing and the shared one is what the picker and the manifest
@@ -50,10 +48,13 @@ import {
   type EpubElementFact,
   type EpubElementReading,
 } from './epub-processor';
-import { stampEpubForQuire } from './quire-stamp';
 import {
-  loadCachedPageMap, paginateStampedEpub, saveCachedPageMap, stampedEpubPath,
-  QUIRE_ANALYSIS_GEOMETRY, type QuirePageMap,
+  enumerateNarrationElements, stampWalkedDocuments, verifyStampedSources,
+} from './quire-stamp';
+import { openEpubSource } from './epub-container';
+import {
+  bookCacheKey, loadCachedPageMap, paginateBook, saveCachedPageMap, staleDocuments,
+  QUIRE_ANALYSIS_GEOMETRY, type QuirePageMap, type StampedSpine,
 } from './quire-page-map';
 
 /**
@@ -85,106 +86,134 @@ export function blockId(elementKey: string, page: number): string {
 }
 
 /**
- * The stamped copy of this book, made if it is not already there.
+ * The book's spine documents, stamped, each beside the hash of the bytes it was
+ * stamped FROM.
  *
- * Kept beside the analysis payload, keyed by the book's own sha, and NEVER the
- * book itself: `archive/` is immutable and `[archive].working.epub` is the sole
- * editable artifact. A stamp is an analysis detail with the lifetime of a cache
- * entry.
+ * There is no stamped copy on disk any more. Stamps are markup, they are a
+ * deterministic function of the book, and quire will take them as `sources` —
+ * so they are made here, checked here, and handed straight over. What used to
+ * happen instead was that a 25.7 MB zip of the same book was written into the
+ * cache so that a few hundred kilobytes of `data-quire-id` could be read back
+ * out of it, and then written AGAIN, whole, every time one chapter was edited.
+ *
+ * The hashes are taken with {@link spineDocumentHashes}, the same function that
+ * later asks whether a cached map is still fresh. One function on both sides is
+ * the point: hashing the decoded markup here and the raw bytes there would put
+ * every document permanently out of date.
  */
-async function stampedCopy(epubPath: string, fileHash: string): Promise<string> {
-  const at = stampedEpubPath(fileHash);
-  try {
-    await fsPromises.access(at);
-    return at;
-  } catch { /* not stamped yet */ }
-  await stampEpubForQuire(epubPath, at, path.basename(epubPath));
-  return at;
+export async function stampSpineOf(epubPath: string): Promise<StampedSpine> {
+  const whatFor = path.basename(epubPath);
+  const walked = await enumerateNarrationElements(epubPath, whatFor);
+  return stampedSpineFromWalk(epubPath, walked, whatFor);
 }
 
 /**
- * The cache key a book is kept under: its sha256, to the same 16 hex characters
- * the analyzer truncates to (`PDFAnalyzer.analysisCacheKey`).
+ * The same thing, for a caller that has ALREADY walked the book.
  *
- * One derivation, so the viewer, the stamped copy, the page map and the
- * analysis payload all name the same directory for the same bytes.
+ * The viewer walks the book for its categories before it lays anything out, and
+ * a walk is a parse of every document in it. Handing that walk back rather than
+ * doing a second one is the difference between opening a book once and opening
+ * it twice.
  */
-export async function bookFileHash(epubPath: string): Promise<string> {
-  // Measured through `bookDigest`, the one entry point that knows how to take a
-  // book's identity in either container: the working copy is a FOLDER of the
-  // book's parts, and a read stream over one is an EISDIR. The 16 hex characters
-  // are the digest's own — `hex`, never `digest`, because the tagged form would
-  // give every exploded book the same cache directory (`bookforge-epub-t`).
-  //
-  // An archive still hashes to exactly the value it always did, so no book's
-  // cache directory moves because of this line. An exploded book's key is its
-  // CONTENT hash, which does move whenever any entry is edited — that is the
-  // whole-book invalidation phase 3 replaces with a stable book key and
-  // per-document hashes. It is not made worse here; it is carried unchanged
-  // across the container change.
-  const { bookDigest } = await import('./sidecar-binding.js');
-  return (await bookDigest(epubPath)).hex.substring(0, 16);
-}
-
-/**
- * This book's stamped copy, made if it is not there, for a caller that has no
- * digest of its own.
- *
- * The analysis path already knows the book's sha256 — the analyzer computed it
- * for its own cache key and passes it down. The VIEWER does not: it is handed a
- * path by a picker that is about to show it. So the digest is computed here,
- * the same way and to the same 16 hex characters, and the SAME stamped file is
- * reached.
- *
- * One stamp per book, keyed by the book's own bytes, is the point rather than a
- * saving. Keyed by anything else — a path, a session — the same book gets two
- * stamped copies, and on Windows the second open of a book the first still has
- * open fails outright: `stampEpubForQuire` writes a temp file and renames it
- * over the target, and a rename over a file another quire session holds is
- * EPERM. Reusing the existing stamp never writes it twice, so that cannot
- * happen (measured: tools/phasec-gesture-matrix.js, which opens a book twice).
- */
-export async function stampedCopyForViewer(
+export async function stampedSpineFromWalk(
   epubPath: string,
-): Promise<{ stampedPath: string; fileHash: string; reused: boolean }> {
-  const fileHash = await bookFileHash(epubPath);
-  const at = stampedEpubPath(fileHash);
-  let reused = true;
-  try {
-    await fsPromises.access(at);
-  } catch {
-    reused = false;
-  }
-  return { stampedPath: await stampedCopy(epubPath, fileHash), fileHash, reused };
-}
+  walked: Awaited<ReturnType<typeof enumerateNarrationElements>>,
+  whatFor = path.basename(epubPath),
+): Promise<StampedSpine> {
+  const { replacements, stamped } = stampWalkedDocuments(walked, whatFor);
+  // The same promise `stampEpubForQuire` keeps about the copy it writes: every
+  // key survived serialization, on exactly one element, in the document it
+  // belongs to. Bytes that stay in memory are not exempt from it.
+  await verifyStampedSources(replacements, stamped, whatFor);
 
-/** This book's page map — cached if it is there for this paginator and geometry. */
-async function pageMapFor(epubPath: string, fileHash: string): Promise<QuirePageMap> {
-  const stamped = await stampedCopy(epubPath, fileHash);
-  const fresh = await paginateStampedEpub(stamped, QUIRE_ANALYSIS_GEOMETRY);
-  // Read back through the same door a cache hit comes through, so a map that
-  // would be rejected on the next open is rejected on this one.
-  await saveCachedPageMap(fileHash, fresh);
-  return fresh;
+  const hashes = await spineDocumentHashes(epubPath, [...replacements.keys()]);
+  const spine = new Map<string, { stamped: Buffer; hash: string }>();
+  for (const [entry, markup] of replacements) {
+    const hash = hashes.get(entry);
+    if (hash === undefined) {
+      throw new Error(
+        `${whatFor}: ${entry} was walked and stamped, but the book has no entry by that name to `
+        + 'hash. The walk and the container disagree about what this book contains.',
+      );
+    }
+    spine.set(entry, { stamped: markup, hash });
+  }
+  return spine;
 }
 
 /**
- * The cached map for this book, or a fresh one.
+ * sha256 of each named entry's bytes AS THE BOOK HOLDS THEM.
+ *
+ * The one authority for "has this document changed": used when a map is written,
+ * to record what each document was laid out from, and used on every open after
+ * that, to ask which of them moved. Raw bytes, so nothing about parsing,
+ * encoding or serialization can make a document look edited when it is not.
+ *
+ * An entry the book does not have is ABSENT from the result rather than a
+ * refusal. That is not leniency — the caller asking is comparing against a map
+ * that may name a document the book has since lost, and "the book no longer has
+ * it" is the answer it needs, not an exception.
+ */
+export async function spineDocumentHashes(
+  bookPath: string,
+  entries: readonly string[],
+): Promise<Map<string, string>> {
+  const source = await openEpubSource(bookPath);
+  try {
+    const out = new Map<string, string>();
+    for (const entry of entries) {
+      if (!source.hasEntry(entry)) continue;
+      const bytes = await source.readEntry(entry);
+      out.set(entry, crypto.createHash('sha256').update(bytes).digest('hex'));
+    }
+    return out;
+  } finally {
+    source.close();
+  }
+}
+
+/**
+ * The cached map for this book, or as much of one as still holds.
  *
  * The cache is keyed by the paginator's own name — which carries its version —
  * so a build with a different fragmenter never reads a map it did not make. It
  * cannot be consulted before the paginator is known, and the paginator is only
  * known once a document is open; so the lookup is by the ONE strategy this app
  * analyzes with, named here, and a map made by anything else is a miss.
+ *
+ * Three outcomes, and the middle one is the whole reason this phase exists:
+ *
+ *  - **Nothing moved.** Every document still hashes to what the map recorded.
+ *    The map IS the answer; no book is opened and no page is measured.
+ *  - **Some documents moved.** The book is stamped and laid out again FROM the
+ *    cached map, measuring only those documents. Renaming a chapter costs the
+ *    chapter.
+ *  - **No map at all.** The book is stamped and laid out in full.
  */
 async function pageMap(
   epubPath: string,
-  fileHash: string,
+  cacheKey: string,
   strategyName: string,
 ): Promise<{ map: QuirePageMap; cached: boolean }> {
-  const hit = await loadCachedPageMap(fileHash, strategyName, QUIRE_ANALYSIS_GEOMETRY);
-  if (hit) return { map: hit, cached: true };
-  return { map: await pageMapFor(epubPath, fileHash), cached: false };
+  const hit = await loadCachedPageMap(cacheKey, strategyName, QUIRE_ANALYSIS_GEOMETRY);
+  let reuse: { map: QuirePageMap; stale: string[] } | null = null;
+  if (hit !== null) {
+    const stale = staleDocuments(hit, await spineDocumentHashes(epubPath, hit.documents));
+    if (stale.length === 0) return { map: hit, cached: true };
+    console.log(
+      `[quire] ${path.basename(epubPath)}: ${stale.length} of ${hit.documents.length} document(s) `
+      + `have been edited since the cached page map was made — ${stale.slice(0, 3).join(', ')}`
+      + `${stale.length > 3 ? `, +${stale.length - 3} more` : ''}. Laying out those and keeping `
+      + 'the rest.',
+    );
+    reuse = { map: hit, stale };
+  }
+  const fresh = await paginateBook(
+    epubPath, await stampSpineOf(epubPath), QUIRE_ANALYSIS_GEOMETRY, reuse);
+  // Read back through the same door a cache hit comes through, so a map that
+  // would be rejected on the next open is rejected on this one.
+  await saveCachedPageMap(cacheKey, fresh);
+  return { map: fresh, cached: false };
 }
 
 /**
@@ -215,9 +244,8 @@ function analysisStrategyName(): string {
  */
 export async function epubPageGeometryWithQuire(
   epubPath: string,
-  sourceSha256: string,
 ): Promise<{ pageCount: number; pageDimensions: PageDimension[] }> {
-  const { map } = await pageMap(epubPath, sourceSha256.substring(0, 16), analysisStrategyName());
+  const { map } = await pageMap(epubPath, bookCacheKey(epubPath), analysisStrategyName());
   return { pageCount: map.pageCount, pageDimensions: pageDimensionsOf(map) };
 }
 
@@ -241,10 +269,8 @@ export async function epubPageGeometryWithQuire(
  */
 export async function epubOutlineFromQuire(
   epubPath: string,
-  sourceSha256: string,
 ): Promise<OutlineItem[]> {
-  const fileHash = sourceSha256.substring(0, 16);
-  const { map } = await pageMap(epubPath, fileHash, analysisStrategyName());
+  const { map } = await pageMap(epubPath, bookCacheKey(epubPath), analysisStrategyName());
   const startPageOf = new Map<string, number>();
   map.documents.forEach((entry, at) => startPageOf.set(entry, map.documentPageOffsets[at]));
 
@@ -270,20 +296,20 @@ function pageDimensionsOf(map: QuirePageMap): PageDimension[] {
 /**
  * Lay an EPUB out with quire and turn its pages into the blocks the picker edits.
  *
- * `sourceSha256` is the digest the analyzer already computed for its own cache
- * key; it is passed in rather than recomputed so that one file has one identity
- * across the whole analysis.
+ * The analyzer's own cache key is not used here. Its payload is keyed by the
+ * book's CONTENT, because an analysis describes bytes and must never be read
+ * back for different ones; a page map is keyed by which BOOK it is, because a
+ * book being edited is one book and its map carries its own per-document
+ * freshness. Two questions, two keys — see `bookCacheKey`.
  */
 export async function analyzeEpubWithQuire(
   epubPath: string,
-  sourceSha256: string,
   onProgress: (phase: string, message: string) => void = () => {},
 ): Promise<EpubQuireAnalysis> {
-  const fileHash = sourceSha256.substring(0, 16);
   const book = path.basename(epubPath);
 
   onProgress('extracting', 'Laying the book out…');
-  const { map, cached } = await pageMap(epubPath, fileHash, analysisStrategyName());
+  const { map, cached } = await pageMap(epubPath, bookCacheKey(epubPath), analysisStrategyName());
 
   onProgress('processing', `Reading the markup of ${map.documents.length} document(s)…`);
   const reading = await readEpubElementCategories(epubPath);

@@ -23,6 +23,17 @@
  * compares the stamps against a reference walk, and `stampEpubForQuire` verifies
  * the file it wrote before it lets anyone have it.
  *
+ * ── Where the stamps go ───────────────────────────────────────────────────
+ *
+ * Into markup, never into the book. {@link stampEpubForQuire} writes a whole
+ * stamped COPY of a book and is what a harness uses, because a harness wants a
+ * file it can open twice and compare. The app does not: it holds the stamped
+ * documents in memory and hands them to `Quire.openDocument(book, { sources })`,
+ * so the book on disk is read for its pictures and stylesheets and nothing is
+ * duplicated. Both routes go through {@link stampWalkedDocuments}, so a document
+ * stamped either way is stamped identically, and both verify what they produced
+ * before anything is allowed to use it.
+ *
  * ── The one extension to quire's contract ─────────────────────────────────
  *
  * One element can be BOTH a text unit and an image element — a bare `<img>`
@@ -245,10 +256,11 @@ export async function stampEpubForQuire(
   // as an element with no page, which is the failure this package exists to make
   // impossible, so it is caught here where it can still be named.
   try {
-    await verifyStamps(outputPath, stamped, whatFor);
+    await verifyStampedDocuments(outputPath, stamped, whatFor);
   } catch (err) {
     await removeEpubContainer(outputPath);
-    throw err;
+    throw new Error(
+      `${(err as Error).message} The stamped copy at ${outputPath} has been deleted.`);
   }
 
   return {
@@ -262,7 +274,7 @@ export async function stampEpubForQuire(
 }
 
 /** What one pass of the stamper produced, before it is written anywhere. */
-interface StampedDocuments {
+export interface StampedDocuments {
   /** Walked document → its XHTML with the keys on it, ready to replace the entry. */
   replacements: Map<string, Buffer>;
   stamped: StampedElement[];
@@ -275,12 +287,20 @@ interface StampedDocuments {
  * Write each walked element's key onto the element, and serialize its document.
  *
  * The whole of the stamp, held apart from the zip it is written into, because
- * two callers need it over different sets of documents: {@link stampEpubForQuire}
- * over the book, and {@link stampSpineDocuments} over the handful an edit
- * rewrote. One description of the stamp, so a re-stamped chapter cannot be
- * stamped differently from the book it goes back into.
+ * three callers need it over different sets of documents:
+ * {@link stampEpubForQuire} over the book, {@link stampSpineDocuments} over the
+ * handful an edit rewrote, and — exported for the viewer — a caller that has
+ * ALREADY walked the book for its own reasons and would otherwise parse every
+ * document a second time to stamp it. One description of the stamp, so a
+ * re-stamped chapter cannot be stamped differently from the book it goes back
+ * into.
+ *
+ * Note that this MUTATES the walked DOM: the key is set on the element the walk
+ * returned, which is the whole reason identity here is correct by construction
+ * rather than by agreement. A caller that goes on using the walk afterwards is
+ * using a tree with `data-quire-id` on it.
  */
-function stampWalkedDocuments(
+export function stampWalkedDocuments(
   walked: Array<{ file: string; docs: { doc: any; body: any }; entries: NarrationWalkEntry[] }>,
   whatFor: string,
 ): StampedDocuments {
@@ -377,12 +397,45 @@ export async function verifyStampedDocuments(
   expected: StampedElement[],
   whatFor: string,
 ): Promise<void> {
-  return verifyStamps(stampedEpubPath, expected, whatFor);
+  const zipReader = await openEpubSource(stampedEpubPath);
+  try {
+    await verifyStamps(
+      async (file) => (await zipReader.readEntry(file)).toString('utf8'), expected, whatFor);
+  } finally {
+    zipReader.close();
+  }
 }
 
-/** Confirm the written copy really carries every key, exactly once. */
+/**
+ * Confirm stamped bytes that were never written anywhere really carry every key,
+ * exactly once.
+ *
+ * The same promise {@link stampEpubForQuire} keeps about the file it wrote, kept
+ * about markup that is handed straight to quire instead. A stamp that did not
+ * survive serialization is the failure this whole subsystem exists to make
+ * impossible, and it is no less possible for the bytes having stayed in memory —
+ * the serializer is the same serializer.
+ */
+export async function verifyStampedSources(
+  documents: ReadonlyMap<string, Buffer>,
+  expected: StampedElement[],
+  whatFor: string,
+): Promise<void> {
+  return verifyStamps(async (file) => {
+    const bytes = documents.get(file);
+    if (bytes === undefined) {
+      throw new Error(
+        `[quire-stamp] ${whatFor}: ${file} carries stamped elements but the stamper produced no `
+        + 'bytes for it, so there is nothing to check them against.',
+      );
+    }
+    return bytes.toString('utf8');
+  }, expected, whatFor);
+}
+
+/** Confirm the stamped markup really carries every key, exactly once. */
 async function verifyStamps(
-  stampedEpubPath: string,
+  readDocument: (file: string) => Promise<string>,
   expected: StampedElement[],
   whatFor: string,
 ): Promise<void> {
@@ -392,33 +445,28 @@ async function verifyStamps(
     if (list) list.push(s.key); else byFile.set(s.file, [s.key]);
   }
 
-  const zipReader = await openEpubSource(stampedEpubPath);
-  try {
-    for (const [file, keys] of byFile) {
-      const xhtml = (await zipReader.readEntry(file)).toString('utf8');
-      const found = new Set<string>();
-      const re = new RegExp(`${QUIRE_ID_ATTRIBUTE}="([^"]*)"`, 'g');
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(xhtml)) !== null) {
-        for (const id of m[1].split(QUIRE_ID_SEPARATOR)) found.add(id);
-      }
-      const missing = keys.filter((k) => !found.has(k));
-      if (missing.length > 0) {
-        throw new Error(
-          `[quire-stamp] ${whatFor}: ${missing.length} of ${keys.length} keys did not survive `
-          + `into ${file} — e.g. ${missing.slice(0, 5).join(', ')}. The stamped copy has been `
-          + 'deleted; nothing downstream may use a book whose identity is incomplete.',
-        );
-      }
-      const extra = [...found].filter((id) => !keys.includes(id));
-      if (extra.length > 0) {
-        throw new Error(
-          `[quire-stamp] ${whatFor}: ${file} carries ${extra.length} stamp(s) no walk produced `
-          + `— e.g. ${extra.slice(0, 5).join(', ')}. The stamped copy has been deleted.`,
-        );
-      }
+  for (const [file, keys] of byFile) {
+    const xhtml = await readDocument(file);
+    const found = new Set<string>();
+    const re = new RegExp(`${QUIRE_ID_ATTRIBUTE}="([^"]*)"`, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(xhtml)) !== null) {
+      for (const id of m[1].split(QUIRE_ID_SEPARATOR)) found.add(id);
     }
-  } finally {
-    zipReader.close();
+    const missing = keys.filter((k) => !found.has(k));
+    if (missing.length > 0) {
+      throw new Error(
+        `[quire-stamp] ${whatFor}: ${missing.length} of ${keys.length} keys did not survive `
+        + `into ${file} — e.g. ${missing.slice(0, 5).join(', ')}. Nothing downstream may use a `
+        + 'book whose identity is incomplete.',
+      );
+    }
+    const extra = [...found].filter((id) => !keys.includes(id));
+    if (extra.length > 0) {
+      throw new Error(
+        `[quire-stamp] ${whatFor}: ${file} carries ${extra.length} stamp(s) no walk produced `
+        + `— e.g. ${extra.slice(0, 5).join(', ')}.`,
+      );
+    }
   }
 }
