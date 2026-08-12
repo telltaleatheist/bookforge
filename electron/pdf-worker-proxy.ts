@@ -138,7 +138,27 @@ function spawn(label: string, onExit: (w: Worker) => void): Worker {
     if (msg.type === 'quire-request') {
       const { paginateInThisProcess } = require('./quire-service.js') as
         typeof import('./quire-service');
-      paginateInThisProcess(msg.bookPath, msg.spine, msg.geometry, msg.reuse)
+      // ── The port strips Buffer down to Uint8Array, and this puts it back ──
+      //
+      // worker_threads' structured clone delivers a Node Buffer as a plain
+      // Uint8Array on the receiving side. `StampedSpineDocument.stamped` is
+      // TYPED Buffer, and everything downstream believed the type:
+      // `.toString('utf8')` on a Uint8Array ignores its argument (it is
+      // Array.prototype.toString) and comma-joins the BYTE VALUES — so the
+      // paginator was handed "60,63,120,…" where the book said `<?xml` and
+      // every fresh-stamped layout through the worker died as
+      // DOCUMENT_UNPARSEABLE blaming the XHTML (Owen's tts.epub, 2026-08-12;
+      // any book without a page-map cache takes this path). Re-buffering at
+      // the boundary makes the type true again for BOTH consumers — the
+      // layout's sources and the reuse path's relayoutDocument.
+      const spine = new Map<string, { stamped: Buffer; hash: string }>();
+      for (const [entry, doc] of (msg.spine as Map<string, { stamped: Uint8Array; hash: string }>)) {
+        spine.set(entry, {
+          stamped: Buffer.isBuffer(doc.stamped) ? doc.stamped : Buffer.from(doc.stamped),
+          hash: doc.hash,
+        });
+      }
+      paginateInThisProcess(msg.bookPath, spine, msg.geometry, msg.reuse)
         .then((result) => w.postMessage({ type: 'quire-response', quireId: msg.quireId, result }))
         .catch((err: unknown) => w.postMessage({
           type: 'quire-response',

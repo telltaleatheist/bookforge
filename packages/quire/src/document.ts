@@ -79,7 +79,7 @@ export interface QuireOpenOptions {
    * they are re-shelled on a geometry change and served to the `quire://`
    * handler in place of the book's own bytes.
    */
-  sources?: ReadonlyMap<string, string | Buffer>;
+  sources?: ReadonlyMap<string, string | Buffer | Uint8Array>;
 }
 
 /**
@@ -665,7 +665,7 @@ export class QuireDocument {
    * and before anything is laid out, because these bytes ARE the book as far as
    * every later step is concerned. See {@link QuireOpenOptions.sources}.
    */
-  private seedSources(sources: ReadonlyMap<string, string | Buffer>): void {
+  private seedSources(sources: ReadonlyMap<string, string | Buffer | Uint8Array>): void {
     const spine = this.archive.spine.map((s) => s.entry);
     const inSpine = new Set(spine);
     const missing = spine.filter((entry) => !sources.has(entry));
@@ -690,9 +690,29 @@ export class QuireDocument {
       );
     }
     for (const entry of spine) {
-      const source = sources.get(entry) as string | Buffer;
-      this.sourceOverrides.set(
-        entry, typeof source === 'string' ? source : source.toString('utf8'));
+      const source = sources.get(entry) as string | Buffer | Uint8Array;
+      // The three shapes bytes legitimately arrive in, each decoded as itself.
+      // A plain Uint8Array is what a Buffer becomes when it crosses a
+      // worker_threads port, and it must NOT fall into `.toString('utf8')`:
+      // TypedArrays inherit Array.prototype.toString, which ignores the
+      // argument and comma-joins the BYTE VALUES — "60,63,120,…" for `<?xml`
+      // — handing the paginator a number list where the book's markup should
+      // be. Anything else is refused by name: decoding a shape this code does
+      // not recognise would be a guess about what the caller meant by it.
+      if (typeof source === 'string') {
+        this.sourceOverrides.set(entry, source);
+      } else if (Buffer.isBuffer(source)) {
+        this.sourceOverrides.set(entry, source.toString('utf8'));
+      } else if (source instanceof Uint8Array) {
+        this.sourceOverrides.set(entry, Buffer.from(source).toString('utf8'));
+      } else {
+        quireFail(
+          'SOURCE_NOT_BYTES',
+          `${this.archive.epubPath}: the source given for ${entry} is `
+          + `${Object.prototype.toString.call(source)}, not a string, Buffer or Uint8Array. `
+          + 'quire will not guess what those bytes were meant to be.',
+        );
+      }
     }
   }
 
