@@ -7,7 +7,7 @@ import { ComponentService } from '../../../core/services/component.service';
 import { selectableEngines, type TtsEngineCaps } from '../../language-learning/models/tts-engine-registry';
 import {
   AIProvider,
-  OLLAMA_MODELS,
+  DEFAULT_AI_CONFIG,
   CLAUDE_MODELS,
   OPENAI_MODELS,
 } from '../../../core/models/ai-config.types';
@@ -44,9 +44,15 @@ interface Opt { value: string; label: string; }
                 [ngModel]="providerOf(role.key)" (ngModelChange)="setProvider(role.key, $event)"></desktop-select>
               <desktop-select class="pd-select" [options]="modelOptionsFor(role.key)"
                 [ngModel]="modelOf(role.key)" (ngModelChange)="setModel(role.key, $event)"
-                [disabled]="modelsFor(providerOf(role.key)).length === 0"></desktop-select>
+                [disabled]="providerOf(role.key) === 'local' || modelOptionsFor(role.key).length === 0"></desktop-select>
             </div>
           </div>
+        }
+        @if (usesOllama() && ollamaProbe() === 'unreachable') {
+          <span class="pd-hint">
+            Can’t reach Ollama at {{ ollamaBaseUrl }} — start it (or fix the address in
+            Settings → AI) to pick from the models you’ve pulled.
+          </span>
         }
       </section>
 
@@ -237,7 +243,38 @@ export class PipelineDefaultsPanelComponent {
 
   constructor() {
     void this.loadXttsVoices();
+    void this.loadOllamaModels();
     void this.components.ensureLoaded();
+  }
+
+  /** Where this machine's Ollama lives — the same address the passes will use. */
+  readonly ollamaBaseUrl =
+    this.settings.getAIConfig().ollama.baseUrl || DEFAULT_AI_CONFIG.ollama.baseUrl;
+
+  /** Models Ollama is actually serving. Never a hardcoded list — see ai-config.types. */
+  readonly ollamaModels = signal<Opt[]>([]);
+  readonly ollamaProbe = signal<'loading' | 'ok' | 'unreachable'>('loading');
+
+  /** Any role pointed at Ollama, so the unreachable hint is worth showing. */
+  readonly usesOllama = computed(() =>
+    this.aiRoles.some((r) => this.d()[`${r.key}Provider`] === 'ollama'),
+  );
+
+  /** Ask Ollama what it has pulled; sorted so a long list stays findable. */
+  private async loadOllamaModels(): Promise<void> {
+    try {
+      const res = await fetch(`${this.ollamaBaseUrl.replace(/\/+$/, '')}/api/tags`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const models: Opt[] = (data?.models ?? [])
+        .map((m: { name: string }) => ({ value: m.name, label: m.name }))
+        .sort((a: Opt, b: Opt) => a.label.localeCompare(b.label));
+      this.ollamaModels.set(models);
+      this.ollamaProbe.set('ok');
+    } catch {
+      this.ollamaModels.set([]);
+      this.ollamaProbe.set('unreachable');
+    }
   }
 
   /** Load installed audiobook voices into the default-voice picker. */
@@ -264,11 +301,22 @@ export class PipelineDefaultsPanelComponent {
   /** Provider options for the desktop-select (same source as the old <option>s). */
   readonly providerOptions: DesktopSelectItems = this.providers.map((p) => ({ value: p.value, label: p.label }));
 
-  /** Model options for a role's current provider; falls back to a bundled-local entry. */
+  /** Model options for a role's current provider; the bundled-local model has no picker. */
   modelOptionsFor(role: 'cleanup' | 'simplify' | 'translate'): DesktopSelectItems {
-    const models = this.modelsFor(this.providerOf(role));
-    if (models.length === 0) return [{ value: '', label: 'Bundled local model' }];
-    return models.map((m) => ({ value: m.value, label: m.label }));
+    const provider = this.providerOf(role);
+    if (provider === 'local') return [{ value: '', label: 'Bundled local model' }];
+
+    const models = this.modelsFor(provider);
+    const current = this.modelOf(role);
+    const opts = models.map((m) => ({ value: m.value, label: m.label }));
+
+    // Never drop the saved choice. If Ollama is down, or the model was removed,
+    // the default still has to show itself — otherwise opening this panel would
+    // quietly rewrite a default the user never touched.
+    if (current && !models.some((m) => m.value === current)) {
+      opts.unshift({ value: current, label: `${current} (not installed)` });
+    }
+    return opts;
   }
 
   readonly aiRoles: { key: 'cleanup' | 'simplify' | 'translate'; label: string }[] = [
@@ -297,7 +345,7 @@ export class PipelineDefaultsPanelComponent {
 
   modelsFor(provider: AIProvider): Opt[] {
     switch (provider) {
-      case 'ollama': return OLLAMA_MODELS;
+      case 'ollama': return this.ollamaModels();  // live from the daemon
       case 'claude': return CLAUDE_MODELS;
       case 'openai': return OPENAI_MODELS;
       default: return [];  // 'local' uses the bundled model — no model picker
@@ -313,9 +361,14 @@ export class PipelineDefaultsPanelComponent {
   }
 
   setProvider(role: 'cleanup' | 'simplify' | 'translate', provider: AIProvider): void {
-    // Reset the model to the new provider's first option (or '' for local).
-    const first = this.modelsFor(provider)[0]?.value ?? '';
-    this.d.update((v) => ({ ...v, [`${role}Provider`]: provider, [`${role}Model`]: first }) as PipelineDefaults);
+    // Reset the model to the provider's preferred one (or '' for local).
+    const models = this.modelsFor(provider);
+    const preferred =
+      provider === 'ollama'
+        ? models.find((m) => m.value === DEFAULT_AI_CONFIG.ollama.model)?.value
+        : undefined;
+    const model = preferred ?? models[0]?.value ?? '';
+    this.d.update((v) => ({ ...v, [`${role}Provider`]: provider, [`${role}Model`]: model }) as PipelineDefaults);
   }
 
   setModel(role: 'cleanup' | 'simplify' | 'translate', model: string): void {

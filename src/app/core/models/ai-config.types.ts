@@ -54,17 +54,12 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
   }
 };
 
-// Available models per provider
-export const OLLAMA_MODELS = [
-  { value: 'cogito:14b', label: 'Cogito 14B' },
-  { value: 'llama3.2', label: 'Llama 3.2' },
-  { value: 'llama3.1', label: 'Llama 3.1' },
-  { value: 'llama3', label: 'Llama 3' },
-  { value: 'mistral', label: 'Mistral' },
-  { value: 'gemma2', label: 'Gemma 2' },
-  { value: 'phi3', label: 'Phi-3' }
-];
-
+// Available models per provider.
+//
+// There is deliberately NO Ollama list here: Ollama's models are whatever the
+// user has pulled, so every picker asks the daemon (`GET {baseUrl}/api/tags`).
+// A hardcoded list drifts the moment someone pulls a model — it hid cogito:32b
+// and cogito:70b from Settings → Pipeline defaults until Aug 2026.
 export const CLAUDE_MODELS = [
   { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
   { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' },
