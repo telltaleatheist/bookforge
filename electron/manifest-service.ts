@@ -3753,6 +3753,31 @@ function sha256Of(filePath: string): Promise<string> {
  * things, and the record outliving the file is the ordinary way a half-finished
  * delete or a half-synced folder shows up.
  */
+/**
+ * How this process closes a book a viewer is reading, when one is registered.
+ *
+ * ── Why a hook and not an import ────────────────────────────────────────────
+ *
+ * `closeViewerDocumentsUnder` lives in electron/quire-viewer-bridge.ts, which
+ * reaches `ipcMain` and quire's offscreen host. This module is also loaded by
+ * the CLI and by tools/test-*.js in plain node, where none of that exists —
+ * `tools/test-ledger-lifecycle.js` deletes ledger entries for a living. So the
+ * app REGISTERS its closer at startup and everything else runs with none, which
+ * is exactly right: a process with no windows has no viewer holding anything.
+ */
+type ViewerReaderCloser = (dirPath: string) => Promise<number>;
+let closeViewerReadersUnder: ViewerReaderCloser | null = null;
+
+/**
+ * Tell this module how to close viewer documents reading inside a directory.
+ *
+ * Called once by the main process (electron/main.ts). Idempotent by nature —
+ * the last registration wins and there is only ever one.
+ */
+export function useViewerReaderCloser(closer: ViewerReaderCloser): void {
+  closeViewerReadersUnder = closer;
+}
+
 async function removeSupersededArtifacts(
   projectDir: string,
   relPaths: readonly string[]
@@ -3769,6 +3794,20 @@ async function removeSupersededArtifacts(
       );
     }
     if (!fs.existsSync(abs)) continue;
+    // The writer closes the reader. A ledger entry's directory holds the book
+    // that pass left, and the studio's pass compare reads exactly that file —
+    // on Windows an open zip inside this tree makes the remove EPERM out and
+    // leaves the folder in delete-pending limbo until the app exits. The window
+    // holding it learns the ordinary way: its next call answers "unknown
+    // handle" by name. (See `closeViewerDocumentsUnder`, and the same rule
+    // stated for single files in narration-export.)
+    if (closeViewerReadersUnder !== null) {
+      const closed = await closeViewerReadersUnder(abs);
+      if (closed > 0) {
+        console.log(`[manifest-service] closed ${closed} viewer document(s) reading inside `
+          + `${relPath} before removing it.`);
+      }
+    }
     await fs.promises.rm(abs, { recursive: true, force: true });
     removed.push(relPath);
   }
@@ -4349,6 +4388,156 @@ export async function deleteLedgerEntry(
     removedPaths,
     book,
     message,
+  };
+}
+
+/** One side of a pass comparison: a book on this disk, and what it IS. */
+export interface ComparedBook {
+  /** Where to read it. Zipped or exploded — the viewer opens either. */
+  absPath: string;
+  /** The same file, project-relative with forward slashes, as records name it. */
+  relPath: string;
+  /**
+   * What this book is, for the pane's own heading — "the book cast from your
+   * pages", "Simplify". Written here rather than in the renderer because the
+   * distinction between a snapshot and an archive-grade source is a fact about
+   * the record, and a UI that reconstructed it would be a second derivation of
+   * the thing this function exists to state.
+   */
+  label: string;
+}
+
+/** What a pass did to the book, as the two books it did it between. */
+export interface PassComparison {
+  entryId: string;
+  /** The pass's own label — "Simplify", "Translate". */
+  passLabel: string;
+  createdAt: string;
+  /** The book the pass RAN ON. */
+  before: ComparedBook;
+  /** The book the pass LEFT. */
+  after: ComparedBook;
+}
+
+/**
+ * The two books a ledger entry sits between, for a side-by-side review of it.
+ *
+ * ── A READ, and deliberately nothing else ───────────────────────────────────
+ *
+ * It resolves two paths and proves they are on disk. It mints nothing, registers
+ * nothing, derives nothing and writes no record — the counterpart of
+ * `deleteLedgerEntry` in what it is ABOUT and its exact opposite in what it
+ * costs. That is load-bearing rather than incidental: a ledger line's Open was
+ * removed because opening a snapshot bound the project to a document whose edits
+ * the picker could not vouch for and destroyed an evening of working changes
+ * (see the ledger line's comment in shared/document/book-chain.ts). A surface
+ * that only READS the same file is safe for exactly the reason that one was not,
+ * and it stays safe only while this function refuses to do anything else.
+ *
+ * ── WHICH two books, proved from the derivation ─────────────────────────────
+ *
+ * An entry's snapshot is the book AFTER its pass ran. `deriveWorkingCopy` is
+ * where that is settled: `{ from: 'ledger', keep }` copies
+ * `keep[keep.length - 1].snapshot` and the carry it writes records those entries
+ * as APPLIED. `deleteLedgerEntry` says the same thing from the other end — to
+ * take entry N back it derives from `deletion.kept`, which is every entry BEFORE
+ * N, and from the archive-grade base when nothing stands.
+ *
+ * So the book pass N ran on is entry N-1's snapshot, and the chain's own source
+ * for the first entry. Never the working copy: that file carries every edit the
+ * user has made since, so pairing it against a snapshot would show this pass's
+ * work mixed with theirs under this pass's name.
+ *
+ * Every missing file is named as itself. The two sides refuse differently
+ * because they are different losses, which is the same distinction
+ * `CompareAffordance` draws for the button that leads here.
+ */
+export async function comparePassBooks(
+  projectDir: string,
+  entryId: string,
+  familyId?: string
+): Promise<PassComparison> {
+  const { family } = await requireFamily(projectDir, familyId);
+  const entries = await readBookLedger(projectDir, family.id);
+  const index = entries.findIndex((e) => e.id === entryId);
+  if (index === -1) {
+    throw new Error(
+      `${path.basename(projectDir)}'s ${family.id} chain has no ledger entry ${entryId}, so there `
+      + `is no pass to compare. It records ${entries.length === 0
+        ? 'no passes at all'
+        : listLedgerLabels(entries)}.`
+    );
+  }
+  const entry = entries[index];
+
+  // NOT the working copy, even for the latest entry. That file carries every
+  // edit the user has made since, so pairing it against a snapshot would show
+  // their work mixed with this pass's, under this pass's name. The snapshot is
+  // what the pass produced, exactly, and the labels say so.
+  const after = snapshotOf(projectDir, entry, 'this pass');
+  // The first pass ran on the archive-grade book itself — the same file
+  // `deleteLedgerEntry` derives from when nothing is left standing.
+  const before = index === 0
+    ? familySourceAsComparedBook(projectDir, family)
+    : snapshotOf(projectDir, entries[index - 1], 'that pass');
+
+  return {
+    entryId: entry.id,
+    passLabel: entry.label,
+    createdAt: entry.createdAt,
+    before,
+    after,
+  };
+}
+
+/**
+ * An entry's snapshot as a side of a comparison, proved to be on disk.
+ *
+ * `whose` is how the label reads it back — "this pass" for the entry being
+ * reviewed, "that pass" for the one before it, so a pane says what it is
+ * showing without the surface having to work out which side it is drawing.
+ */
+function snapshotOf(
+  projectDir: string,
+  entry: LedgerEntry,
+  whose: 'this pass' | 'that pass'
+): ComparedBook {
+  const absPath = toAbs(projectDir, entry.snapshot);
+  if (!fs.existsSync(absPath)) {
+    throw new Error(
+      `${path.basename(projectDir)}'s ledger records ${entry.label} with a snapshot at `
+      + `${entry.snapshot}, and that file is not there, so the book as that pass left it cannot be `
+      + 'shown. Nothing was rebuilt to stand in for it — a book nobody kept is not a book to '
+      + 'review.'
+    );
+  }
+  return {
+    absPath,
+    relPath: entry.snapshot,
+    label: `${entry.label} — the book as ${whose} left it`,
+  };
+}
+
+/** The chain's archive-grade source as a side of a comparison. */
+function familySourceAsComparedBook(projectDir: string, family: BookFamily): ComparedBook {
+  const absPath = toAbs(projectDir, family.source.path);
+  if (!fs.existsSync(absPath)) {
+    throw new Error(
+      `${path.basename(projectDir)}'s ${family.id} chain hangs off ${family.source.path}, and that `
+      + 'file is not there. The first pass ran on it, so without it there is no "before" to show — '
+      + `${family.source.kind === 'archive-epub'
+        ? 'restore it from your backup or re-import the book.'
+        : 'only a fresh Convert to EPUB can make one.'}`
+    );
+  }
+  return {
+    absPath,
+    relPath: family.source.path,
+    // Named as WHAT IT IS, the same two sentences every surface that talks
+    // about going back to it uses (`deriveWorkingCopy`'s `fromWhat`).
+    label: family.source.kind === 'archive-epub'
+      ? `${path.basename(family.source.path)} — your EPUB original`
+      : `${path.basename(family.source.path)} — the book cast from your pages`,
   };
 }
 

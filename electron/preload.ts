@@ -1417,6 +1417,29 @@ export interface ElectronAPI {
       error?: string;
     }>;
     /**
+     * The two books a ledger entry sits between — for LOOKING at, side by side.
+     *
+     * `before` is the book the pass ran on (the previous entry's snapshot, or
+     * the chain's archive-grade source for the first pass) and `after` is the
+     * book it left, which is that entry's own snapshot. Read straight off
+     * `deriveWorkingCopy`'s contract; the argument is in manifest-service.
+     *
+     * A pure READ. It mints nothing, binds no project to either file and writes
+     * no record — which is the difference between this and the Open that was
+     * taken off ledger lines for destroying an evening of working changes.
+     */
+    comparePass: (projectDir: string, entryId: string, familyId?: string) => Promise<{
+      success: boolean;
+      comparison?: {
+        entryId: string;
+        passLabel: string;
+        createdAt: string;
+        before: { absPath: string; relPath: string; label: string };
+        after: { absPath: string; relPath: string; label: string };
+      };
+      error?: string;
+    }>;
+    /**
      * Delete the book cast from this project's pages, and the working copy that
      * could only have been minted from it. The heavy act: a re-cast is an hour
      * of GPU, where erasing changes is a file copy.
@@ -3532,6 +3555,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('book:erase-changes', projectDir, scope, familyId),
     deleteLedgerEntry: (projectDir: string, entryId: string, familyId?: string) =>
       ipcRenderer.invoke('book:delete-ledger-entry', projectDir, entryId, familyId),
+    comparePass: (projectDir: string, entryId: string, familyId?: string) =>
+      ipcRenderer.invoke('book:compare-pass', projectDir, entryId, familyId),
     deleteGeneratedEpub: (projectDir: string, familyId?: string) =>
       ipcRenderer.invoke('book:delete-generated-epub', projectDir, familyId),
     deleteTtsCopy: (projectDir: string, familyId?: string) =>

@@ -13,7 +13,9 @@ import { importEpubProject } from './import-epub-project';
 import { initializeLoggers, getMainLogger, getTTSLogger, closeLoggers } from './rolling-logger';
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import { Quire } from '../packages/quire/src';
-import { setupQuireViewerIpc, closeAllBooksForViewer } from './quire-viewer-bridge';
+import {
+  setupQuireViewerIpc, closeAllBooksForViewer, closeViewerDocumentsUnder,
+} from './quire-viewer-bridge';
 import { registerClipforgeIpc } from './clipforge-bridge';
 import { registerDocumentIpc } from './document-ipc';
 // A project's files belong to no one window: the picker is its own BrowserWindow
@@ -7994,6 +7996,39 @@ function setupIpcHandlers(): void {
   });
 
   /**
+   * The two books a pass sits between, so the user can look at what it did.
+   *
+   * ── A READ, and the reason that is the whole design ─────────────────────────
+   *
+   * `manifestService.comparePassBooks` resolves two paths and proves they are on
+   * disk. Nothing is minted, nothing is registered, no editor window is
+   * destroyed and no project is bound to anything — deliberately unlike every
+   * neighbour in this file, which is why this handler is three lines long. A
+   * ledger line's Open was REMOVED because opening a snapshot bound the project
+   * to a document the picker could not vouch for and destroyed an evening of
+   * working changes; a surface that only reads those bytes is safe for exactly
+   * the reason that one was not, and it stays safe only while both halves —
+   * this handler and the window it feeds — go on writing nothing.
+   *
+   * WHICH two books is `deriveWorkingCopy`'s contract, argued where it can be
+   * read beside the derivation itself (electron/manifest-service.ts).
+   */
+  ipcMain.handle('book:compare-pass', async (
+    _event,
+    rawProjectDir: string,
+    entryId: string,
+    familyId?: string
+  ) => {
+    try {
+      const comparison = await manifestService.comparePassBooks(
+        normalizeFsPath(rawProjectDir), entryId, familyId);
+      return { success: true, comparison };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
    * Delete the book cast from this project's pages — the heavy act.
    *
    * Not the same act as erasing changes, and the whole point of separating the
@@ -11959,6 +11994,9 @@ function setupIpcHandlers(): void {
           // asks — a `receiptPath` that names a file which is not there would be
           // a disabled button with no reason to give.
           snapshotPath: string;
+          /** Whether that snapshot is on disk. Drives Compare, as `hasReceipt`
+           *  drives Review changes — a different file, a different question. */
+          hasSnapshot: boolean;
           receiptPath: string | null;
         }>;
         // Present only on the synthetic 'analysis' entry:
@@ -12003,6 +12041,8 @@ function setupIpcHandlers(): void {
             hasReceipt: boolean;
             /** The book as this pass left it, absolute — the line opens it. */
             snapshotPath: string;
+            /** Whether that book is where the record says. Drives Compare. */
+            hasSnapshot: boolean;
             /** The frozen diff, absolute, or null when the pass recorded none. */
             receiptPath: string | null;
           }>;
@@ -12410,6 +12450,8 @@ function setupIpcHandlers(): void {
               const receiptPath = entry.receipt === null
                 ? null
                 : path.resolve(projectDir, entry.receipt.split('/').join(path.sep));
+              const snapshotPath =
+                path.resolve(projectDir, entry.snapshot.split('/').join(path.sep));
               return {
                 id: entry.id,
                 kind: entry.kind,
@@ -12423,7 +12465,13 @@ function setupIpcHandlers(): void {
                 // Review changes that opened a viewer with nothing in it. Asked
                 // of the disk, the line is drawn disabled with its sentence.
                 hasReceipt: receiptPath !== null && fsSync.existsSync(receiptPath),
-                snapshotPath: path.resolve(projectDir, entry.snapshot.split('/').join(path.sep)),
+                snapshotPath,
+                // Asked of the DISK, exactly as `hasReceipt` is and for the
+                // same reason: the compare shows this book, and a record
+                // naming a snapshot that is not there would draw an enabled
+                // button onto an empty pane. A separate question from the
+                // receipt — one is the diff, this is the book.
+                hasSnapshot: fsSync.existsSync(snapshotPath),
                 receiptPath,
               };
             }),
@@ -12639,6 +12687,13 @@ function setupIpcHandlers(): void {
         // changed between the two reads — false draws less, and the change that
         // raced us will broadcast its own refresh.
         hasWorkingChanges: erasableByFamily[chain.id] === true,
+        // Whether this chain's archive-grade book is where the record says. It
+        // is the "before" of the FIRST pass and of no other, so it gates that
+        // one line's Compare — measured with the same `existsSync`
+        // `requireFamilySource` refuses on, so the button and the act that
+        // follows it cannot disagree about whether the file is there.
+        hasSource: fsSync.existsSync(
+          path.resolve(projectDir, chain.source.path.split('/').join(path.sep))),
       }));
 
       return { success: true, versions, families: chains };
@@ -12867,6 +12922,12 @@ app.whenReady().then(async () => {
   // The live-DOM EPUB viewer's opening channel. The scheme it needs was
   // registered at module scope above; this is only the two handles.
   setupQuireViewerIpc();
+  // And the other direction: the record-keeper is told how to close a book a
+  // viewer is reading, so removing a ledger entry's directory does not race a
+  // pass compare that is showing its snapshot. Registered rather than imported,
+  // because manifest-service also runs in the CLI and in tools/test-*.js where
+  // there are no windows and nothing to close.
+  manifestService.useViewerReaderCloser(closeViewerDocumentsUnder);
   logger.info('BookForge starting', { version: app.getVersion(), platform: process.platform });
 
   // In development, point FOUNDRY_CLI_PATH at the locally-built binary unless

@@ -1630,12 +1630,48 @@ export class ElectronService {
        * working-changes line. See ChainFamily.hasWorkingChanges.
        */
       hasWorkingChanges: boolean;
+      /**
+       * Whether this chain's archive-grade book is on disk. It is the "before"
+       * of the chain's FIRST pass and of no other, so it decides whether that
+       * one ledger line can be compared. See ChainFamily.hasSource.
+       */
+      hasSource: boolean;
     }>;
   }> {
     if (this.isElectron) {
       return (window as any).electron.editor.getVersions(projectDir);
     }
     return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * The two books a pass sits between — the book it ran on and the book it left.
+   *
+   * For LOOKING at, side by side. A pure read on main's side: it resolves two
+   * paths and proves they are on disk, and binds the project to neither. That is
+   * the whole difference between this and the Open that was taken off ledger
+   * lines for destroying an evening of working changes.
+   *
+   * Which two books is `deriveWorkingCopy`'s contract — entry N's snapshot is
+   * the book AFTER pass N, so the before is entry N-1's snapshot, or the chain's
+   * own source for the first pass. The argument lives beside the derivation in
+   * electron/manifest-service.ts.
+   */
+  async comparePassBooks(projectDir: string, entryId: string, familyId?: string): Promise<{
+    success: boolean;
+    comparison?: {
+      entryId: string;
+      passLabel: string;
+      createdAt: string;
+      before: { absPath: string; relPath: string; label: string };
+      after: { absPath: string; relPath: string; label: string };
+    };
+    error?: string;
+  }> {
+    if (!this.isElectron) {
+      return { success: false, error: 'A pass can only be compared inside the desktop app.' };
+    }
+    return (window as any).electron.vlm.comparePass(projectDir, entryId, familyId);
   }
 
   async analysisListAudiobooks(projectId: string): Promise<{

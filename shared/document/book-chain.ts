@@ -243,6 +243,17 @@ export interface ChainLedgerEntry {
   readonly createdAt: string;
   /** Whether the entry's frozen diff is on disk. Drives Review changes. */
   readonly hasReceipt: boolean;
+  /**
+   * Whether the book this pass left — the entry's SNAPSHOT — is on disk.
+   *
+   * A separate question from `hasReceipt` and asked of a different file. The
+   * receipt is the word-diff a pass froze; the snapshot is the book itself, and
+   * it is what the side-by-side compare shows. Both are asked of the DISK by
+   * main rather than read off the manifest, for the reason `hasReceipt` learned
+   * the hard way: a record naming a file that is not there draws an enabled
+   * button onto an empty surface.
+   */
+  readonly hasSnapshot: boolean;
 }
 
 /**
@@ -286,6 +297,17 @@ export interface ChainFamily {
    * (Owen, 2026-08-10: "it blinked and reloaded, and it was still there").
    */
   readonly hasWorkingChanges: boolean;
+  /**
+   * Whether the archive-grade book this chain hangs off is on disk.
+   *
+   * The FIRST ledger entry's "before" is that file and nothing else — there is
+   * no earlier snapshot — so the compare affordance on the first pass depends on
+   * it exactly as every later pass depends on its predecessor's snapshot. Main
+   * measures it with the same `fs.existsSync` `requireFamilySource` refuses on,
+   * which is why a chain whose source has been moved away draws the button
+   * disabled saying so rather than opening a pane onto nothing.
+   */
+  readonly hasSource: boolean;
   /** This chain's ledger, in execution order. Empty is the ordinary case. */
   readonly ledger: readonly ChainLedgerEntry[];
   /**
@@ -320,6 +342,33 @@ export interface BookChainInput {
  * nothing.
  */
 export type ReviewAffordance = 'ready' | 'no-receipt' | 'none';
+
+/**
+ * Whether the side-by-side compare on a line is real, and if not, why not.
+ *
+ * ── WHICH TWO BOOKS A PASS IS COMPARED AS, PROVED FROM THE DERIVATION ───────
+ *
+ * A ledger entry's snapshot is the book AFTER its pass ran. That is not a
+ * reading of the field's name — it is what `deriveWorkingCopy` does with it
+ * (electron/manifest-service.ts): given `{ from: 'ledger', keep }` it copies
+ * `keep[keep.length - 1].snapshot` and the record it writes says those entries
+ * are APPLIED. `deleteLedgerEntry` is the same fact from the other side: to take
+ * entry N back it derives from `deletion.kept` — everything BEFORE N — and from
+ * the archive-grade base when nothing is left. So "the book without pass N" is
+ * entry N-1's snapshot, or the family's source for the first entry, and "the
+ * book with pass N" is entry N's own snapshot.
+ *
+ * Hence the two disabled states, which are different missing files and get
+ * different sentences:
+ *
+ *  - 'no-after' — this entry's own snapshot is gone. The pass's result is not on
+ *    this disk, so there is no "after" to show.
+ *  - 'no-before' — the file this pass ran ON is gone: the previous entry's
+ *    snapshot, or the chain's archive-grade source for the first pass.
+ *
+ * 'none' is a line that is not a pass at all.
+ */
+export type CompareAffordance = 'ready' | 'no-after' | 'no-before' | 'none';
 
 /**
  * Which buttons a line gets.
@@ -397,6 +446,20 @@ export interface ChainButtons {
    */
   readonly eraseEverything: boolean;
   readonly review: ReviewAffordance;
+  /**
+   * Compare — the book before this pass and the book after it, side by side, as
+   * real pages.
+   *
+   * A SECOND account of the same pass, beside `review`, and deliberately not a
+   * replacement for it: the receipt is a word-diff and this is the book, so a
+   * pass whose receipt was never written (translate records none, by design —
+   * a diff of a translation shares no words with what it replaced) still has a
+   * compare, and that is the first review affordance translate has ever had.
+   *
+   * It reads two files and opens neither as the session's document. See the
+   * ledger line's own comment for why that distinction is the whole point.
+   */
+  readonly compare: CompareAffordance;
   readonly open: boolean;
   readonly export: boolean;
   readonly delete: boolean;
@@ -449,6 +512,7 @@ const NO_BUTTONS: ChainButtons = {
   ttsExport: false,
   eraseEverything: false,
   review: 'none',
+  compare: 'none',
   open: false,
   export: false,
   delete: false,
@@ -651,7 +715,15 @@ export function bookChain(input: BookChainInput): ChainLine[] {
     // The passes the user committed to, in the order they ran. The ledger is
     // read off this chain's exported row, so a chain with no working copy on
     // screen draws none.
-    if (exportedRow !== null) for (const entry of family.ledger) {
+    if (exportedRow !== null) for (const [index, entry] of family.ledger.entries()) {
+      // The file this pass RAN ON: the snapshot the pass before it left, and the
+      // chain's archive-grade source for the first pass — which is precisely
+      // where `deleteLedgerEntry` sends the working copy back to when it takes
+      // this entry away. See CompareAffordance for the derivation this is read
+      // off; the layout does not decide it, it states it.
+      const beforeOnDisk = index === 0
+        ? family.hasSource
+        : family.ledger[index - 1].hasSnapshot;
       lines.push({
         // Keyed by the CHAIN as well as the entry: two chains mint their entry
         // ids from the same RNG and nothing forbids a collision, and two lines
@@ -676,6 +748,14 @@ export function bookChain(input: BookChainInput): ChainLine[] {
           // session writable, which is how an evening of working changes was
           // destroyed by pressing Open on this line.
           review: entry.hasReceipt ? 'ready' : 'no-receipt',
+          // The pages, rather than the words. Asked of BOTH books, because a
+          // compare with one pane is not a compare — and named separately so
+          // the button can say which of the two is missing. Neither file is
+          // opened as anything: the compare reads them where they lie, which is
+          // what makes offering a door onto a snapshot safe here and not above.
+          compare: !entry.hasSnapshot
+            ? 'no-after'
+            : beforeOnDisk ? 'ready' : 'no-before',
           open: false,
           export: false,
           delete: true,

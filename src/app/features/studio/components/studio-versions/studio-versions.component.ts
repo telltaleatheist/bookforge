@@ -54,6 +54,9 @@ import {
   type PassOptionsResult,
 } from '../../../pdf-picker/components/pass-options-modal/pass-options-modal.component';
 import { NarrationModalComponent } from '../narration-modal/narration-modal.component';
+import {
+  PassCompareComponent, type ComparedBookView,
+} from '../pass-compare/pass-compare.component';
 import type { ChainPassRequest, ProcessingPassKind } from '@shared/processing/pass-types';
 import { BOOK_PASS_OPTIONS, type BookPassOption } from '@shared/processing/book-passes';
 
@@ -121,6 +124,15 @@ interface LedgerRowEntry {
   hasReceipt: boolean;
   /** The book exactly as this pass left it — the entry opens and exports it. */
   snapshotPath: string;
+  /**
+   * Whether that book is where the record says it is.
+   *
+   * The same shape as `hasReceipt` and asked of a different file, because the
+   * two affordances read different things: Review changes reads the frozen
+   * word-diff, Compare reads the book itself. A pass can have one and not the
+   * other — translate freezes no diff at all, and its snapshot is right there.
+   */
+  hasSnapshot: boolean;
   receiptPath: string | null;
 }
 
@@ -268,6 +280,7 @@ const AUDIO_EXTS = new Set([
   imports: [
     CommonModule, FormsModule, DiffViewComponent, MetadataEditorComponent, DesktopSelectComponent,
     StudioConvertModalComponent, PassOptionsModalComponent, NarrationModalComponent,
+    PassCompareComponent,
   ],
   host: { '[class.comparing]': '!!comparing()' },
   template: `
@@ -290,6 +303,35 @@ const AUDIO_EXTS = new Set([
           <span class="compare-title">{{ cmp.labelA }} <span class="vs">vs</span> {{ cmp.labelB }}</span>
         </div>
         <app-diff-view [originalPath]="cmp.a" [cleanedPath]="cmp.b" />
+      </div>
+    } @else if (compareBooks(); as cmp) {
+      <!-- The two BOOKS a pass sits between, as real pages. A sibling of the
+           two diff surfaces above and hosted exactly like them, so leaving it
+           is the same gesture the user already knows. -->
+      <div class="compare-wrap">
+        <div class="compare-bar">
+          <button class="back" (click)="closeCompare()">← Back to versions</button>
+          <span class="compare-title">{{ cmp.title }}</span>
+          <span class="compare-when">{{ cmp.when }}</span>
+        </div>
+        <app-pass-compare [before]="cmp.before" [after]="cmp.after" />
+      </div>
+    } @else if (compareOpening(); as opening) {
+      <!-- Between the click and the answer. Main is resolving two paths and
+           proving both are on disk; a refusal replaces the versions list with
+           its sentence rather than dropping the gesture silently. -->
+      <div class="compare-wrap">
+        <div class="compare-bar">
+          <button class="back" (click)="closeCompare()">← Back to versions</button>
+          <span class="compare-title">{{ opening.title }}</span>
+        </div>
+        @if (opening.error === null) {
+          <div class="compare-opening">
+            Finding the book this pass ran on, and the book it left…
+          </div>
+        } @else {
+          <div class="compare-opening refused">{{ opening.error }}</div>
+        }
       </div>
     } @else {
       <div class="versions">
@@ -563,6 +605,17 @@ const AUDIO_EXTS = new Set([
                     <button class="act" [disabled]="row.line.buttons.review !== 'ready'"
                             [title]="reviewLineTitle(row)"
                             (click)="reviewLedgerLine(row)">Review changes</button>
+                  }
+                  <!-- The same pass, as the two BOOKS rather than as words: what
+                       it ran on beside what it left, in the picker's own viewer.
+                       Beside Review changes and not instead of it — one shows
+                       which words moved, the other shows the pages. Disabled
+                       with its reason when either book is missing, exactly as
+                       the receipt's button is. -->
+                  @if (row.line.buttons.compare !== 'none') {
+                    <button class="act" [disabled]="row.line.buttons.compare !== 'ready'"
+                            [title]="compareLineTitle(row)"
+                            (click)="compareLedgerLine(row)">Compare books</button>
                   }
                   @if (row.line.buttons.analysis && row.v && !docIsAnalysisTarget(row.v)) {
                     <button class="act" (click)="emitGenerateAnalysisDoc(row.v)"
@@ -1258,6 +1311,16 @@ const AUDIO_EXTS = new Set([
        .chapter-content never gets a bounded height and can't scroll. Let the
        component set its own display:flex; we only make it a fill flex item. */
     app-diff-view { flex: 1; min-height: 0; }
+    /* Same rule, same reason: the compare surface sets its own display:flex and
+       this only makes it a filling flex item. */
+    app-pass-compare { flex: 1; min-height: 0; }
+    .compare-opening {
+      margin: 8px 4px; padding: 14px 16px; border-radius: 8px;
+      border: 1px solid var(--border-default); background: var(--bg-elevated);
+      color: var(--text-secondary); font-size: 0.82rem; line-height: 1.5;
+      white-space: pre-wrap;
+    }
+    .compare-opening.refused { color: var(--text-primary); border-color: var(--color-danger); }
 
     /* Generate-sentences picker */
     .gs-backdrop {
@@ -1397,6 +1460,13 @@ export class StudioVersionsComponent {
     sourceName: string;
     archiveRowId: string | null;
     hasWorkingChanges: boolean;
+    /**
+     * Whether this chain's archive-grade book is on disk, as main measured it.
+     *
+     * The FIRST pass's before-book and nothing else's, so it gates that one
+     * line's Compare. See ChainFamily.hasSource.
+     */
+    hasSource: boolean;
   }>>([]);
   readonly loading = signal(false);
   readonly cache = signal<SentenceCacheInfo | null>(null);
@@ -1406,16 +1476,36 @@ export class StudioVersionsComponent {
   /**
    * What the tab is showing instead of the version list.
    *
-   * Two shapes, because there are two genuinely different comparisons. `paths`
+   * Four shapes, because there are genuinely different comparisons. `paths`
    * compares two FILES that both exist (the original against a derived EPUB).
    * `pass` opens ONE pass's recorded diff: the pass rewrote the book in place, so
    * neither side of it exists as a file any more and the diff carries both texts.
-   * Read through comparePaths()/comparePass() so each branch of the template gets
-   * the narrowed shape rather than the union.
+   *
+   * `books` is the same pass as `pass` and a different account of it: the two
+   * BOOKS it sits between, side by side as real pages. Both exist as files — the
+   * ledger keeps a snapshot per entry — which is exactly why the pages can be
+   * shown where the words alone had to do before. It is additive: a pass with a
+   * receipt offers both, and the user picks which question they are asking.
+   *
+   * `opening` is the moment between the click and main's answer, and it holds
+   * the refusal when there is one, because "which two books" can fail (a
+   * snapshot deleted by hand, a chain whose source has been moved) and a
+   * gesture that quietly does nothing is worse than a sentence.
+   *
+   * Read through comparePaths()/comparePass()/compareBooks()/compareOpening() so
+   * each branch of the template gets the narrowed shape rather than the union.
    */
   readonly comparing = signal<
     | { mode: 'paths'; a: string; b: string; labelA: string; labelB: string }
     | { mode: 'pass'; diffPath: string; reportPath: string; title: string; when: string }
+    | {
+      mode: 'books';
+      before: ComparedBookView;
+      after: ComparedBookView;
+      title: string;
+      when: string;
+    }
+    | { mode: 'opening'; title: string; error: string | null }
     | null
   >(null);
   readonly comparePaths = computed(() => {
@@ -1425,6 +1515,14 @@ export class StudioVersionsComponent {
   readonly comparePass = computed(() => {
     const c = this.comparing();
     return c && c.mode === 'pass' ? c : null;
+  });
+  readonly compareBooks = computed(() => {
+    const c = this.comparing();
+    return c && c.mode === 'books' ? c : null;
+  });
+  readonly compareOpening = computed(() => {
+    const c = this.comparing();
+    return c && c.mode === 'opening' ? c : null;
   });
 
   // Book variants (editions/languages/formats). Rows arrive with their file path
@@ -1618,6 +1716,7 @@ export class StudioVersionsComponent {
       sourceName: chain.sourceName,
       archiveRowId: chain.archiveRowId,
       hasWorkingChanges: chain.hasWorkingChanges,
+      hasSource: chain.hasSource,
       ledger: ledgerOf(chain.id),
     }));
 
@@ -2124,6 +2223,119 @@ export class StudioVersionsComponent {
     this.compareActive.emit(true);
     if (entry.kind === 'footnotes') {
       void this.loadPassReport(entry.receiptPath.replace(/receipt\.json$/, 'report.json'));
+    }
+  }
+
+  /**
+   * See what a ledger pass did to the BOOK — its two books, side by side.
+   *
+   * ── Additive, and a different question from Review changes ─────────────────
+   *
+   * The receipt says which words moved. This says what the book looks like now:
+   * the publisher's typesetting, the figures, the chapter openings, rendered as
+   * real pages through the picker's own viewer. Owen, 2026-08-12: "i wonder if
+   * review changes could pull up the epubs before/after in pdf picker
+   * side-by-side… leave everything in place for now, we'll just add the new
+   * feature." So both buttons stand on the line and neither replaces the other.
+   *
+   * ── It opens NOTHING as the session's document ─────────────────────────────
+   *
+   * Main resolves two paths and proves both are on disk; the surface reads them
+   * where they lie. No working copy is minted, no manifest record is written,
+   * no editor state is saved against either file and this project is bound to
+   * neither. That is the entire reason a door onto a snapshot is safe here when
+   * the ledger line's Open was not — it is the same file, read instead of
+   * adopted.
+   */
+  compareLedgerLine(row: ChainRowView): void {
+    const entry = row.entry;
+    if (!entry) {
+      console.error('[studio-versions] "Compare books" was pressed on a line that is not a ledger '
+        + 'entry. Only a pass has two books to sit between, and only those lines draw the button.');
+      return;
+    }
+    const at = new Date(entry.createdAt);
+    const when = isNaN(+at) ? 'date unknown' : at.toLocaleString();
+    const title = `${entry.label} — the book before and after`;
+    // The chain is named, exactly as it is for every other act taken from a
+    // line: a project with two versions must be asked about the one whose
+    // button was pressed.
+    const familyId = this.familyOfLine(row, 'Compare books');
+    if (familyId === null) return;
+
+    this.passReport.set(null);
+    this.comparing.set({ mode: 'opening', title, error: null });
+    this.compareActive.emit(true);
+    void this.resolveComparison(entry.id, familyId, title, when, ++this.compareRequest);
+  }
+
+  /**
+   * Which "which two books?" the answers coming back belong to.
+   *
+   * A counter and not the title: a book can be simplified twice, and then two
+   * ledger lines carry the SAME label and produce the same heading. Two clicks
+   * in a row would leave the second surface showing the first pass's books —
+   * silently, and looking exactly right.
+   */
+  private compareRequest = 0;
+
+  /**
+   * Ask main which two books this pass sits between, and show them.
+   *
+   * A refusal lands in the SAME surface the user is already looking at rather
+   * than in a console line: "which two books" can genuinely fail — a snapshot
+   * deleted by hand between the listing and the click, a chain whose source has
+   * been moved away — and main's sentence says which file is missing and what
+   * to do about it. Nothing is rebuilt to stand in for a book nobody kept.
+   */
+  private async resolveComparison(
+    entryId: string,
+    familyId: string,
+    title: string,
+    when: string,
+    request: number,
+  ): Promise<void> {
+    const res = await this.electron.comparePassBooks(this.projectDir(), entryId, familyId);
+    // The user may have left, or asked about another pass, while main was
+    // reading. Landing this answer would re-open a surface they closed, or —
+    // worse, because it looks right — show one pass's books under another's
+    // name.
+    if (request !== this.compareRequest) return;
+    const current = this.comparing();
+    if (current === null || current.mode !== 'opening') return;
+    if (!res.success || !res.comparison) {
+      this.comparing.set({
+        mode: 'opening',
+        title,
+        error: res.error
+          ?? 'The main process could not say which two books this pass sits between, and did not '
+            + 'say why.',
+      });
+      return;
+    }
+    this.comparing.set({
+      mode: 'books',
+      before: res.comparison.before,
+      after: res.comparison.after,
+      title,
+      when,
+    });
+  }
+
+  /** What Compare books says on hover: what it opens, or which book is gone. */
+  compareLineTitle(row: ChainRowView): string {
+    const label = row.entry?.label ?? 'This pass';
+    switch (row.line.buttons.compare) {
+      case 'no-after':
+        return `${label} recorded the book as it left it, and that snapshot is not on disk any `
+          + 'more. Without it there is no "after" to show.';
+      case 'no-before':
+        return `The book ${label} ran on is not on disk any more — the snapshot the pass before it `
+          + 'left, or this version\'s archive-grade original. Without it there is no "before" to '
+          + 'show.';
+      default:
+        return 'Open the book this pass ran on beside the book it left, as real pages. Read only — '
+          + 'nothing here changes either.';
     }
   }
 
@@ -4042,6 +4254,9 @@ export class StudioVersionsComponent {
   closeCompare(): void {
     this.comparing.set(null);
     this.passReport.set(null);
+    // A "which two books?" still in flight belongs to a surface that is gone.
+    // It answers into nothing rather than re-opening itself over the list.
+    this.compareRequest++;
     this.compareActive.emit(false);
   }
 
