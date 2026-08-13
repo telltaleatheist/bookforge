@@ -210,14 +210,19 @@ const GRID_BASE_WIDTH = 200;
                     [style.left.px]="page.x" [style.top.px]="page.y + page.h"
                     [style.width.px]="page.w"
                   >
-                    <button
-                      type="button"
-                      class="page-delete"
-                      [class.on]="deletedPages().has(page.globalPage)"
-                      [title]="deletedPages().has(page.globalPage)
-                        ? 'Bring this page back' : 'Exclude this page'"
-                      (click)="onPageDeleteClick($event, page.globalPage)"
-                    >{{ deletedPages().has(page.globalPage) ? '↺' : '✕' }}</button>
+                    <!-- Excluding a page is an act, so a read-only viewer does
+                         not draw its button. The page NUMBER stays: it is how
+                         the reader says where they are. -->
+                    @if (!readOnly()) {
+                      <button
+                        type="button"
+                        class="page-delete"
+                        [class.on]="deletedPages().has(page.globalPage)"
+                        [title]="deletedPages().has(page.globalPage)
+                          ? 'Bring this page back' : 'Exclude this page'"
+                        (click)="onPageDeleteClick($event, page.globalPage)"
+                      >{{ deletedPages().has(page.globalPage) ? '↺' : '✕' }}</button>
+                    }
                     <span
                       class="page-number"
                       (click)="onPageLabelClick($event, page.globalPage)"
@@ -622,6 +627,26 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   /** The picker's colour layer — every categorised block wears a wash of its
    *  category's colour, exactly as the raster viewer paints it. */
   readonly showCategoryColors = input<boolean>(false);
+  /**
+   * Show the book, and offer NOTHING that changes it.
+   *
+   * The picker mounts this component to point at a book and act on it; the pass
+   * compare (studio-versions) mounts two of them to LOOK at two books, one of
+   * which is a ledger snapshot — a record, not a document anybody may work in.
+   * A pane there that drew a "Strike this block" item would be offering an act
+   * with nowhere to record it, and on the snapshot side an act on a file the
+   * app must never write.
+   *
+   * So it is stated as a MODE rather than left to the host to not bind the
+   * outputs: an unbound output is a menu item that silently does nothing, which
+   * looks exactly like a bug and reads exactly like permission. With this on,
+   * the affordances are not drawn at all — no context menu, no marquee, no
+   * per-page exclude button. Scrolling, zoom, page numbers and hover stay:
+   * those are how you READ.
+   *
+   * Off by default, so the picker is untouched by its existence.
+   */
+  readonly readOnly = input<boolean>(false);
 
   // ── outputs: the same gestures, in LaidOutBlock terms ─────────────────────
 
@@ -1724,7 +1749,10 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
       });
       return;
     }
-    // Empty space starts a marquee, exactly as it does over a raster page.
+    // Empty space starts a marquee, exactly as it does over a raster page —
+    // unless this viewer is only being read, where a selection is an act with
+    // nothing to act on.
+    if (this.readOnly()) return;
     this.marqueeBand.set(band.index);
     this.marqueeOrigin = { x: point.x, y: point.y, additive: event.shiftKey || event.metaKey };
     this.marqueeRect.set({ x: point.x, y: point.y, w: 0, h: 0 });
@@ -1778,6 +1806,10 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
 
   protected onOverlayContextMenu(event: MouseEvent, band: DocumentBand): void {
     event.preventDefault();
+    // Every item in that menu changes something. A read-only viewer opens none
+    // of it — and still swallows the browser's own menu, so a right-click over
+    // a book behaves the same way in both modes.
+    if (this.readOnly()) return;
     const point = this.localPoint(event);
     const hit = this.hitTest(band.index, point.x, point.y);
     this.contextMenu.set({
