@@ -2259,6 +2259,14 @@ export async function getOpenAIModels(apiKey: string): Promise<{ success: boolea
 interface ActiveCleanupJob {
   controller: AbortController;
   provider: AIProvider;
+  /**
+   * The Ollama model this job loaded, when provider is 'ollama' — recorded so
+   * the shutdown release (releaseActiveAiJobsForShutdown) can evict exactly the
+   * model this app put on the GPU, and no other. keep_alive holds a model for
+   * 5 minutes after its last use, which is 5 minutes of a dead app's model
+   * squatting in VRAM if quit doesn't evict it.
+   */
+  ollamaModel?: string;
 }
 const activeCleanupJobs = new Map<string, ActiveCleanupJob>();
 
@@ -2287,6 +2295,49 @@ export function cancelCleanupJob(jobId: string): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * The app is quitting: bring down every model an active AI job is holding.
+ *
+ * A finished or cancelled job already releases its model (see
+ * releaseOllamaModelAfterJob and cancelCleanupJob). What those can never cover
+ * is the app dying MID-JOB: the in-flight generation is abandoned when our
+ * socket drops, but Ollama then holds the model for its keep_alive (5 minutes)
+ * — several GB of a dead app's model squatting in VRAM (Owen, 2026-08-12).
+ * This is the quit-path counterpart: abort the requests, then evict each
+ * job's model by name.
+ *
+ * Best-effort by design — every step is bounded and failure only means the
+ * keep_alive timer is the backstop, exactly as it is for a hard SIGKILL, which
+ * no in-process code can ever cover.
+ */
+export async function releaseActiveAiJobsForShutdown(): Promise<void> {
+  if (activeCleanupJobs.size === 0) return;
+  const jobs = [...activeCleanupJobs.entries()];
+  activeCleanupJobs.clear();
+
+  const releases: Promise<void>[] = [];
+  for (const [jobId, job] of jobs) {
+    console.log(`[AI-BRIDGE] Shutdown: aborting job ${jobId} and releasing its model`);
+    job.controller.abort();
+    if (job.provider === 'local') {
+      releases.push(
+        import('./llama-bridge.js')
+          .then(({ llamaBridge }) => llamaBridge.stop())
+          .catch((err) => console.warn(`[AI-BRIDGE] Shutdown: failed to stop local server: ${(err as Error).message}`))
+      );
+    } else if (job.provider === 'ollama' && job.ollamaModel) {
+      const model = job.ollamaModel;
+      releases.push(
+        import('./gpu-arbiter.js')
+          .then(({ unloadOllamaModel }) => unloadOllamaModel(model))
+          .then(() => console.log(`[AI-BRIDGE] Shutdown: released ${model} from VRAM`))
+          .catch((err) => console.warn(`[AI-BRIDGE] Shutdown: could not release ${model}: ${(err as Error).message}`))
+      );
+    }
+  }
+  await Promise.all(releases);
 }
 
 /**
@@ -3994,7 +4045,13 @@ export async function cleanupEpub(
   } catch {
     // Older Node versions may not support this - warning is harmless
   }
-  activeCleanupJobs.set(jobId, { controller: abortController, provider: config.provider });
+  activeCleanupJobs.set(jobId, {
+    controller: abortController,
+    provider: config.provider,
+    // Recorded so the quit path can evict this exact model — see
+    // releaseActiveAiJobsForShutdown.
+    ...(config.provider === 'ollama' && config.ollama?.model ? { ollamaModel: config.ollama.model } : {}),
+  });
   console.log(`[AI-BRIDGE] Job ${jobId} registered for cancellation support`);
 
   const sendProgress = (progress: EpubCleanupProgress) => {

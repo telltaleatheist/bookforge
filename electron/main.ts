@@ -13490,6 +13490,21 @@ app.on('before-quit', async (event) => {
     }
   });
 
+  // An AI job (cleanup/simplify) killed mid-flight leaves its model in VRAM for
+  // the whole keep_alive window — several GB held by an app that no longer
+  // exists (Owen, 2026-08-12). Abort the job's requests and evict its model by
+  // name. Finished/cancelled jobs already did this themselves; this covers only
+  // the ones the quit is interrupting. A hard SIGKILL still can't run this —
+  // there, Ollama's own keep_alive timer is the only backstop there is.
+  await quitStepWithDeadline('release AI models (Ollama/local)', 10_000, async () => {
+    try {
+      const { releaseActiveAiJobsForShutdown } = await import('./ai-bridge.js');
+      await releaseActiveAiJobsForShutdown();
+    } catch (err) {
+      console.warn('[MAIN] Releasing AI models on quit failed:', (err as Error).message);
+    }
+  });
+
   // Stop bookshelf server if running. An http server's close waits for every
   // open connection — a phone paused mid-audiobook holds a keep-alive socket,
   // and that is a quit held open by a listener nobody can see.
