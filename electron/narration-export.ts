@@ -527,7 +527,20 @@ export async function ensureNarrationEpub(
         : 'The book has changed since the narration copy was cut, so it was cut again from the '
           + 'working copy as it is now.';
 
-  const written = await exportNarrationEpub(projectDir, options, familyId);
+  // The re-cut keeps the choice the copy on record was cut under, unless this
+  // caller states one. `strippedSupMarkers` is the one thing about that file no
+  // other record describes, and a re-cut that quietly flipped it would make the
+  // copy Process narrates differ from the copy the Export TTS copy button
+  // writes — the same divergence `strikeInNarrationCopy` refuses by name when it
+  // re-cuts (it reads the record too, narration-export.ts ~879). A record from
+  // before the field existed leaves it undefined, which is the first-cut default
+  // and stays the first-cut default: strip.
+  const carried: NarrationExportOptions | undefined =
+    options !== undefined ? options
+      : record?.strippedSupMarkers === undefined ? undefined
+        : { stripSupMarkers: record.strippedSupMarkers };
+
+  const written = await exportNarrationEpub(projectDir, carried, familyId);
   return {
     epubPath: written.epubPath,
     relPath: written.relPath,
