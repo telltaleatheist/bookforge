@@ -37,7 +37,8 @@ function stopAIPowerBlock(): void {
 import {
   extractChapterAsText,
   splitTextIntoParagraphs,
-  extractBlockTextsWithTags
+  extractBlockTextsWithTags,
+  replaceBlockTextsExact
 } from './epub-processor.js';
 import {
   startDiffCache,
@@ -220,7 +221,14 @@ export interface CleanupResult {
 // chapters already had footnote markers + curly quotes processed in the single-pass
 // flow, so resuming one into the new two-pass flow would corrupt repaired.epub
 // (pass 1 must NOT touch those). A version mismatch is discarded loudly.
-const CLEANUP_CHECKPOINT_VERSION = 2;
+//
+// Bumped 2 → 3 for the simplify block-group pipeline: a v2 checkpoint's
+// `completedChunkCount` / `totalChunks` count 8,000-char PROSE CHUNKS, and the
+// block path counts BLOCK GROUPS — resuming a half-finished chunk-era simplify
+// under block mode would restore a chunk count as a group count and corrupt the
+// job's progress accounting (and its proportional fallback threshold) for the
+// rest of the run.
+const CLEANUP_CHECKPOINT_VERSION = 3;
 
 interface CleanupCheckpoint {
   version: number;
@@ -313,6 +321,14 @@ export interface CleanupJobState {
   repetitionFallbackCount: number; // Chunks that degenerated into a repetition loop even after a retry
   skippedChunks: SkippedChunk[];   // Detailed tracking of all skipped chunks
   editLog: EditLogEntry[];         // Per-edit disposition log for the edit-list cleanup pass
+  /**
+   * How many fallbacks abort the job. Starts at MAX_FALLBACK_COUNT for every
+   * path; the simplify block path raises it to a PROPORTION of the job after its
+   * pre-scan, because "10 units failed" means something very different for a
+   * 12-chunk job than for a 2,000-group one — an absolute 10 aborted a 308-unit
+   * book at ~3% failures.
+   */
+  maxFallbackCount: number;
 }
 
 /**
@@ -344,6 +360,7 @@ export function newCleanupJobState(): CleanupJobState {
     repetitionFallbackCount: 0,
     skippedChunks: [],
     editLog: [],
+    maxFallbackCount: MAX_FALLBACK_COUNT,
   };
 }
 const CHUNK_SEARCH_WINDOW = 1000; // characters to search for logical break point
@@ -450,12 +467,41 @@ function getTotalFallbackCount(state: CleanupJobState): number {
 /**
  * Check if we've exceeded the max fallback threshold
  * Throws an error to abort the job if too many chunks have failed
+ *
+ * The threshold is read from the JOB (state.maxFallbackCount), not the module
+ * constant, so a path that knows how many units it is about to process can scale
+ * it — see the simplify block path. Every other path leaves it at
+ * MAX_FALLBACK_COUNT and behaves exactly as before.
  */
-function checkFallbackThreshold(state: CleanupJobState): void {
+export function checkFallbackThreshold(state: CleanupJobState): void {
   const totalFallbacks = getTotalFallbackCount(state);
-  if (totalFallbacks >= MAX_FALLBACK_COUNT) {
-    throw new Error(`TOO_MANY_FALLBACKS: ${totalFallbacks} chunks fell back to original text (threshold: ${MAX_FALLBACK_COUNT}). Aborting cleanup to prevent poor quality output.`);
+  if (totalFallbacks >= state.maxFallbackCount) {
+    throw new Error(`TOO_MANY_FALLBACKS: ${totalFallbacks} chunks fell back to original text (threshold: ${state.maxFallbackCount}). Aborting cleanup to prevent poor quality output.`);
   }
+}
+
+/**
+ * Is this error message one that no amount of retrying, splitting or shrinking
+ * will get past — a dead API key, an exhausted quota, a model that isn't there?
+ * Those must stop the JOB, loudly, rather than be absorbed as N thousand
+ * "kept the original" fallbacks. Extracted verbatim from the sequential chunk
+ * loop so the block path fails fast on exactly the same list.
+ */
+function isUnrecoverableProviderError(errorMessage: string): boolean {
+  return (
+    errorMessage.includes('credit balance') ||
+    errorMessage.includes('insufficient_quota') ||
+    errorMessage.includes('rate_limit') ||
+    errorMessage.includes('invalid_api_key') ||
+    errorMessage.includes('authentication') ||
+    errorMessage.includes('unauthorized') ||
+    errorMessage.includes('403') ||
+    errorMessage.includes('401') ||
+    errorMessage.includes('billing') ||
+    errorMessage.includes('quota exceeded') ||
+    errorMessage.includes('model not found') ||
+    errorMessage.includes('does not exist')
+  );
 }
 
 // Markers that indicate the AI couldn't process the text
@@ -1493,6 +1539,253 @@ function simplifyRulesBody(promptText: string): string {
     .slice(idx)
     .replace(/\n?Output ONLY the [^\n]*$/, '')
     .trimEnd();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Simplify block groups
+//
+// The simplify-ONLY pass does not chunk prose. It sends the model small GROUPS
+// of consecutive body-text BLOCKS (paragraphs), tagged `<block id="N">`, and
+// writes each answer back onto the block it came from, 1:1. Nothing is
+// re-segmented, so the chapter's element enumeration, its headings and its
+// attributes (data-bf-uid …) survive the pass by construction.
+//
+// It replaces the 8,000-char chunk pipeline for this path because that pipeline
+// died on its own edges: a title-page line like "BLACK SUN" became a chunk whose
+// num_predict was `text.length * 2` (18 tokens) while the simplify prompt turns
+// the model's in-band reasoning ON — a guaranteed REASONING_OVERRUN, repeated
+// once per heading-shaped chunk until the absolute 10-fallback threshold aborted
+// a 308-unit book at ~3% failures.
+//
+// Everything in this section is a pure function over strings so it is testable
+// without a model (tools/test-simplify-blocks.js); the one model call sits behind
+// an injected `call` in simplifyBlockGroup, further down.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Below this many characters a block has nothing to simplify — a title line, a
+ * shouted interjection, a list stub. Those are the blocks that die
+ * deterministically when sent (see above), and sending them buys nothing, so
+ * they are never sent and never rewritten.
+ */
+export const MIN_SIMPLIFY_BLOCK_CHARS = 50;
+
+/** Most blocks in one group call. Small groups keep the model's thinking short. */
+export const MAX_BLOCKS_PER_GROUP = 3;
+
+/** Most characters of block text in one group call (a single longer block goes alone). */
+export const GROUP_CHAR_CAP = 4000;
+
+/**
+ * num_predict floor for a block call. The simplify prompt enables in-band
+ * reasoning, so the generation budget must cover thinking + the rewrite, not
+ * just the rewrite: the chunk-era `text.length * 2` starved short inputs of
+ * thinking budget and turned every one of them into a REASONING_OVERRUN.
+ */
+export const SIMPLIFY_BLOCK_NUM_PREDICT_FLOOR = 4096;
+
+/** A block's rewrite is rejected below this fraction of its input length. */
+const SIMPLIFY_BLOCK_ACCEPT_RATIO = 0.4;
+
+/** One block of a chapter, with its position in that chapter's block list. */
+export interface SimplifyBlockRef {
+  /** Index into the chapter's `extractBlockTextsWithTags` array — the writer's index. */
+  index: number;
+  text: string;
+}
+
+/** A run of consecutive sendable blocks that travel to the model in one call. */
+export interface SimplifyBlockGroup {
+  blocks: SimplifyBlockRef[];
+}
+
+/**
+ * Is this block worth sending to a simplify model?
+ *
+ * Headings are never sent: simplification has nothing to do to a chapter title,
+ * and leaving them out means they pass through the whole job byte-identical.
+ * Anything shorter than MIN_SIMPLIFY_BLOCK_CHARS is likewise left alone.
+ */
+export function isSendableSimplifyBlock(block: { text: string; tagName: string }): boolean {
+  if (/^h[1-6]$/.test(block.tagName.toLowerCase())) return false;
+  return block.text.length >= MIN_SIMPLIFY_BLOCK_CHARS;
+}
+
+/**
+ * Pack a chapter's blocks into groups.
+ *
+ * Groups are runs of CONSECUTIVE sendable blocks, greedily filled to
+ * MAX_BLOCKS_PER_GROUP blocks / GROUP_CHAR_CAP characters. A non-sendable block
+ * terminates the run, so a group never spans a heading and the model never sees
+ * two unrelated stretches of the chapter as one input.
+ *
+ * A single block longer than the cap forms a group by itself. Blocks are NEVER
+ * split: one block in, one block out is the entire contract that lets the answer
+ * be written back without guessing.
+ */
+export function groupSimplifyBlocks(
+  blocks: Array<{ text: string; tagName: string }>
+): SimplifyBlockGroup[] {
+  const groups: SimplifyBlockGroup[] = [];
+  let current: SimplifyBlockRef[] = [];
+  let currentChars = 0;
+
+  const flush = () => {
+    if (current.length > 0) groups.push({ blocks: current });
+    current = [];
+    currentChars = 0;
+  };
+
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+    if (!isSendableSimplifyBlock(block)) {
+      flush();
+      continue;
+    }
+    const wouldOverflow =
+      current.length >= MAX_BLOCKS_PER_GROUP ||
+      (current.length > 0 && currentChars + block.text.length > GROUP_CHAR_CAP);
+    if (wouldOverflow) flush();
+    current.push({ index: i, text: block.text });
+    currentChars += block.text.length;
+  }
+  flush();
+
+  return groups;
+}
+
+/**
+ * Serialize block texts as the model's user turn. Ids are 1-based WITHIN the
+ * call, not chapter-wide — the model never has to reason about a numbering it
+ * cannot see the start of, and a single-block degrade call is `id="1"` too.
+ */
+export function serializeBlocksForModel(texts: string[]): string {
+  return texts.map((t, i) => `<block id="${i + 1}">\n${t}\n</block>`).join('\n\n');
+}
+
+/**
+ * The output-format section appended to the simplify system prompt on the block
+ * path. Replaces the prose-era "write your complete rewritten text" contract —
+ * on this path the answer's SHAPE is the thing that makes it writable back.
+ */
+export function simplifyBlockOutputFormat(): string {
+  return (
+    'OUTPUT FORMAT (this overrides any earlier instruction about how to output): ' +
+    'The text is provided as numbered blocks, each written as <block id="N">…</block>. ' +
+    'Rewrite each block according to the rules above. First think through the rewrite. ' +
+    'Then output, inside a single <answer> ... </answer> block and nothing after it, one ' +
+    '<block id="N">rewritten text</block> for EVERY input block — the same ids, in the same ' +
+    'order, with no text of your own between or around them. Never merge two blocks into one, ' +
+    'never split a block into two, never add a block and never drop a block. If a block needs ' +
+    'no change, or cannot be improved, return it unchanged inside its own tags.'
+  );
+}
+
+/**
+ * Parse the model's answer into exactly `expectedCount` block texts.
+ *
+ * Every deviation THROWS `MALFORMED_BLOCK_ANSWER` — a missing id, a duplicate, an
+ * id that was never sent, or any non-whitespace prose outside the block tags.
+ * There is no partial credit and no repair: an answer whose shape we cannot trust
+ * cannot be aligned onto the source blocks, and guessing an alignment is exactly
+ * the class of bug this whole path exists to remove. The caller degrades to
+ * single-block calls, and finally to keeping the original text.
+ *
+ * `answer` is the text INSIDE <answer>…</answer> — run it through extractAnswer
+ * first so REASONING_OVERRUN keeps its meaning.
+ */
+export function parseBlockAnswer(answer: string, expectedCount: number): string[] {
+  const re = /<block\s+id\s*=\s*["']?(\d+)["']?\s*>([\s\S]*?)<\/block\s*>/gi;
+  const seen = new Map<number, string>();
+  let lastEnd = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = re.exec(answer)) !== null) {
+    // Anything but whitespace between the tags is the model narrating, which
+    // means it did not follow the contract — reject the whole answer.
+    if (answer.slice(lastEnd, match.index).trim().length > 0) {
+      throw new Error(
+        `MALFORMED_BLOCK_ANSWER: non-whitespace text outside the block tags ` +
+        `(before block ${match[1]})`
+      );
+    }
+    lastEnd = match.index + match[0].length;
+
+    const id = parseInt(match[1], 10);
+    if (seen.has(id)) {
+      throw new Error(`MALFORMED_BLOCK_ANSWER: duplicate block id ${id}`);
+    }
+    if (id < 1 || id > expectedCount) {
+      throw new Error(
+        `MALFORMED_BLOCK_ANSWER: block id ${id} was never sent (expected 1..${expectedCount})`
+      );
+    }
+    seen.set(id, match[2].trim());
+  }
+
+  if (answer.slice(lastEnd).trim().length > 0) {
+    throw new Error('MALFORMED_BLOCK_ANSWER: non-whitespace text after the last block tag');
+  }
+  if (seen.size !== expectedCount) {
+    const missing: number[] = [];
+    for (let id = 1; id <= expectedCount; id++) if (!seen.has(id)) missing.push(id);
+    throw new Error(
+      `MALFORMED_BLOCK_ANSWER: expected ${expectedCount} blocks, got ${seen.size}` +
+      (missing.length > 0 ? ` (missing id${missing.length > 1 ? 's' : ''} ${missing.join(', ')})` : '')
+    );
+  }
+
+  const texts: string[] = [];
+  for (let id = 1; id <= expectedCount; id++) texts.push(seen.get(id)!);
+  return texts;
+}
+
+/** What a per-block acceptance decision came to, and why. */
+export type BlockVerdict =
+  | { accept: true; text: string }
+  | { accept: false; reason: 'skip-marker' }
+  | { accept: false; reason: 'acceptance-gate'; detail: string }
+  | { accept: false; reason: 'repetition'; detail: string };
+
+/**
+ * Decide whether ONE returned block may replace its source block.
+ *
+ * Three ways to say no, all of which keep the original text:
+ *  - the model echoed `[SKIP]`, i.e. declined this block. That is an answer, not
+ *    a failure — it costs no fallback counter (matching how the prose path has
+ *    always treated a skip marker).
+ *  - catastrophic loss: under 40% of the input's length. Simplification
+ *    legitimately shortens and merges sentences, so the gate is loose; below it,
+ *    the block's content is simply gone. Counted toward the abort threshold.
+ *  - a repetition loop. A loop produces MORE text, so the length gate cannot see
+ *    it; shipping one puts a sentence in the book a hundred times. Content-
+ *    correlated, so like the group-level failures it is not re-rolled.
+ */
+export function judgeBlockRewrite(original: string, returned: string): BlockVerdict {
+  const trimmed = returned.trim();
+  if (trimmed === '[SKIP]') {
+    return { accept: false, reason: 'skip-marker' };
+  }
+  if (trimmed.length < original.length * SIMPLIFY_BLOCK_ACCEPT_RATIO) {
+    return {
+      accept: false,
+      reason: 'acceptance-gate',
+      detail: `${trimmed.length} chars vs ${original.length} input (<${Math.round(SIMPLIFY_BLOCK_ACCEPT_RATIO * 100)}%)`,
+    };
+  }
+  const rep = detectRepetition(trimmed);
+  if (rep.repeated) {
+    return { accept: false, reason: 'repetition', detail: rep.detail ?? 'repetition detected' };
+  }
+  return { accept: true, text: trimmed };
+}
+
+/**
+ * num_predict for one block call, from the serialized payload it will send.
+ * Floor first, then scale — see SIMPLIFY_BLOCK_NUM_PREDICT_FLOOR.
+ */
+export function simplifyBlockNumPredict(payload: string): number {
+  return Math.max(SIMPLIFY_BLOCK_NUM_PREDICT_FLOOR, payload.length * 2);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2924,6 +3217,280 @@ async function cleanChunkEditList(
   throw lastError || new Error('Failed to clean chunk (edit-list) after retries');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Simplify block groups — the model call and the degrade ladder
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One model call for the block path: system prompt + serialized blocks in, the
+ * extracted <answer> body out. Injected so simplifyBlockGroup is testable
+ * against scripted answers; in production it is bound to callProviderExtracted,
+ * NOT to cleanChunkWithProvider.
+ *
+ * (cleanChunkWithProvider's output safeguards are wrong for this path by
+ * construction: on a suspicious answer they cut the INPUT in half at a prose
+ * break point and re-send each half, which would slice a serialized
+ * `<block id="2">` down the middle. The block path's safeguards are the strict
+ * parse, the per-block verdict and the degrade-to-singles ladder below — the
+ * same shape the edit-list pass uses, and for the same reason.)
+ */
+export type SimplifyBlockCall = (payload: string, numPredict: number) => Promise<string>;
+
+/**
+ * Bind a SimplifyBlockCall to the configured provider.
+ *
+ * Only transport failures are retried, with the same backoff the edit-list pass
+ * uses (they are input-independent, so a re-roll is a real second chance). A
+ * REASONING_OVERRUN propagates untouched — the ladder in simplifyBlockGroup owns
+ * that decision.
+ */
+export function makeSimplifyBlockCall(
+  systemPrompt: string,
+  config: AIProviderConfig,
+  jobNumCtx: number,
+  jobTemperature: number,
+  maxRetries: number,
+  abortSignal: AbortSignal | undefined
+): SimplifyBlockCall {
+  return async (payload: string, numPredict: number): Promise<string> => {
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      if (abortSignal?.aborted) throw new Error('Job cancelled');
+      try {
+        return await callProviderExtracted(payload, systemPrompt, config, jobNumCtx, jobTemperature, numPredict, abortSignal);
+      } catch (error) {
+        if (abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+          throw new Error('Job cancelled');
+        }
+        const msg = error instanceof Error ? error.message : String(error);
+        const retryable = /fetch|network|ECONNREFUSED|ECONNRESET|socket|timeout/i.test(msg);
+        if (retryable && attempt < maxRetries) {
+          console.warn(`[AI-SIMPLIFY] block call attempt ${attempt} failed (${msg}), retrying in ${attempt * 2}s...`);
+          await new Promise(r => setTimeout(r, attempt * 2000));
+          lastError = error as Error;
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError || new Error('Failed to complete block call after retries');
+  };
+}
+
+/** Identifies a group inside the job, for skipped-chunk records. */
+export interface SimplifyGroupMeta {
+  chapterTitle: string;
+  /** 1-based job-wide group number — the "Chunk N/M" the UI shows. */
+  overallChunkNumber: number;
+  /** Total groups in the job. */
+  totalChunks: number;
+}
+
+/**
+ * Simplify ONE group of blocks, returning the final text for each member block —
+ * the model's rewrite where it was accepted, the ORIGINAL text where it was not.
+ * The return array is always exactly as long as `group.blocks`.
+ *
+ * The ladder, in order:
+ *
+ *  1. One call for the whole group. If it comes back well-formed, each block is
+ *     judged on its own (judgeBlockRewrite): one bad block costs one block, not
+ *     the group.
+ *  2. A REASONING_OVERRUN or a malformed answer is CONTENT-CORRELATED — re-rolling
+ *     the same call at the same settings just burns another 60-90s reproducing
+ *     it. So the group is not retried; it degrades to one call per block, which
+ *     is a genuinely different call (a shorter input thinks for less long).
+ *     A group of one has nowhere to degrade to, so it goes straight to step 3.
+ *  3. A single-block call that overruns, comes back malformed, fails its verdict
+ *     or errors out keeps the ORIGINAL block, records a skipped chunk with the
+ *     fitting reason, and increments the matching counter — once per failed
+ *     BLOCK, never once per group.
+ *
+ * Transport errors are retried with backoff inside the call (input-independent);
+ * this function never re-rolls for content.
+ */
+export async function simplifyBlockGroup(
+  group: SimplifyBlockGroup,
+  call: SimplifyBlockCall,
+  state: CleanupJobState,
+  meta: SimplifyGroupMeta
+): Promise<string[]> {
+  const originals = group.blocks.map(b => b.text);
+
+  const recordBlockKept = (
+    memberIdx: number,
+    reason: SkippedChunk['reason'],
+    aiResponse: string
+  ) => {
+    state.skippedChunks.push({
+      chapterTitle: meta.chapterTitle,
+      // The block's own index within its chapter — the thing a reader of
+      // skipped-chunks.json needs in order to find it in the book.
+      chunkIndex: group.blocks[memberIdx].index,
+      overallChunkNumber: meta.overallChunkNumber,
+      totalChunks: meta.totalChunks,
+      reason,
+      text: originals[memberIdx],
+      aiResponse: aiResponse.substring(0, 500),
+    });
+  };
+
+  /** Apply a well-formed answer's blocks to `into`, judging each one. */
+  const applyVerdicts = (returned: string[], memberIdxs: number[], into: string[]) => {
+    for (let k = 0; k < memberIdxs.length; k++) {
+      const memberIdx = memberIdxs[k];
+      const verdict = judgeBlockRewrite(originals[memberIdx], returned[k]);
+      if (verdict.accept) {
+        into[memberIdx] = verdict.text;
+        continue;
+      }
+      if (verdict.reason === 'skip-marker') {
+        // The model declined this block. An answer, not a failure — no counter.
+        console.log(`[AI-SIMPLIFY] Block ${group.blocks[memberIdx].index} returned [SKIP] — keeping original`);
+        continue;
+      }
+      if (verdict.reason === 'acceptance-gate') {
+        console.warn(`[AI-SIMPLIFY] Block ${group.blocks[memberIdx].index} acceptance-gate: ${verdict.detail} — keeping original`);
+        state.truncatedFallbackCount++;
+      } else {
+        console.warn(`[AI-SIMPLIFY] Block ${group.blocks[memberIdx].index} repetition: ${verdict.detail} — keeping original`);
+        state.repetitionFallbackCount++;
+      }
+      recordBlockKept(memberIdx, verdict.reason, returned[k]);
+    }
+  };
+
+  // Start from the originals: every slot already holds the answer we ship if the
+  // model gives us nothing usable for it. Nothing here can lose a block's text.
+  const finals = [...originals];
+
+  // ── Step 1: one call for the whole group ───────────────────────────────────
+  if (group.blocks.length > 1) {
+    const payload = serializeBlocksForModel(originals);
+    try {
+      const answer = await call(payload, simplifyBlockNumPredict(payload));
+      const returned = parseBlockAnswer(answer, originals.length);
+      applyVerdicts(returned, originals.map((_, i) => i), finals);
+      return finals;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      // Cancellation and dead-account errors are not something a smaller call
+      // survives — they must reach the driver, which stops the job.
+      if (msg === 'Job cancelled' || (error instanceof Error && error.name === 'AbortError')) throw error;
+      if (isUnrecoverableProviderError(msg)) throw error;
+      console.warn(
+        `[AI-SIMPLIFY] Group of ${group.blocks.length} failed (${msg.split('\n')[0]}) — degrading to single-block calls`
+      );
+    }
+  }
+
+  // ── Steps 2-3: one call per member block ───────────────────────────────────
+  for (let i = 0; i < group.blocks.length; i++) {
+    const payload = serializeBlocksForModel([originals[i]]);
+    try {
+      const answer = await call(payload, simplifyBlockNumPredict(payload));
+      const returned = parseBlockAnswer(answer, 1);
+      applyVerdicts(returned, [i], finals);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg === 'Job cancelled' || (error instanceof Error && error.name === 'AbortError')) throw error;
+      if (isUnrecoverableProviderError(msg)) throw error;
+      // Overrun, malformed answer, or a transport error the call already retried
+      // to exhaustion: keep this block, record it, count it. One block, one
+      // increment — never a whole group's worth.
+      const reason: SkippedChunk['reason'] = msg.includes('REASONING_OVERRUN') ? 'reasoning-overrun' : 'error';
+      console.warn(`[AI-SIMPLIFY] Block ${group.blocks[i].index} kept (${reason}): ${msg.split('\n')[0]}`);
+      state.errorFallbackCount++;
+      recordBlockKept(i, reason, msg);
+    }
+  }
+
+  return finals;
+}
+
+/** A chapter's blocks and the groups packed out of them. */
+export interface ChapterBlockPlan {
+  blocks: Array<{ text: string; tagName: string; attrs: Record<string, string> }>;
+  groups: SimplifyBlockGroup[];
+}
+
+/**
+ * Read a chapter's blocks and pack them into groups. The block list is THE
+ * source of both identity and ordering (extractBlockTextsWithTags), and the
+ * writer walks the same selector with the same filter, so `blocks[i]` and the
+ * writer's element i are the same element by construction.
+ */
+export function planChapterBlockGroups(xhtml: string): ChapterBlockPlan {
+  const blocks = extractBlockTextsWithTags(xhtml);
+  return { blocks, groups: groupSimplifyBlocks(blocks) };
+}
+
+/**
+ * Simplify one chapter, group by group, and return the rebuilt XHTML.
+ *
+ * The writer is handed one entry per block: `null` for every block this pass did
+ * not change — headings, blocks too short to send, groups test mode cut off, and
+ * blocks whose rewrite was rejected — and the rewritten string for the rest.
+ * `null` is not "the original text" written back; it is NOT WRITING, which is
+ * why a heading comes out of this pass byte-identical and an untouched paragraph
+ * keeps its inline <em>/<a>/<sup> markup.
+ *
+ * Progress and cancellation are the caller's: `beforeGroup` runs before each
+ * group (throw from it to cancel), `afterGroup` after each one (throw from it —
+ * as checkFallbackThreshold does — to abort the job).
+ */
+export async function simplifyChapterBlocks(opts: {
+  xhtml: string;
+  plan: ChapterBlockPlan;
+  /** Groups to process — a prefix of plan.groups (test mode trims it). */
+  groups: SimplifyBlockGroup[];
+  chapterTitle: string;
+  call: SimplifyBlockCall;
+  state: CleanupJobState;
+  /** 1-based job-wide number of this chapter's first group. */
+  firstGroupNumber: number;
+  totalGroupsInJob: number;
+  beforeGroup?: (groupNumber: number, charCount: number) => void | Promise<void>;
+  afterGroup?: (groupNumber: number, charCount: number) => void | Promise<void>;
+}): Promise<string> {
+  const { xhtml, plan, groups, chapterTitle, call, state, firstGroupNumber, totalGroupsInJob } = opts;
+
+  // One slot per block, all null: anything we never touch is never written.
+  const texts: Array<string | null> = new Array(plan.blocks.length).fill(null);
+
+  for (let g = 0; g < groups.length; g++) {
+    const group = groups[g];
+    const groupNumber = firstGroupNumber + g;
+    const charCount = group.blocks.reduce((n, b) => n + b.text.length, 0);
+
+    if (opts.beforeGroup) await opts.beforeGroup(groupNumber, charCount);
+
+    const finals = await simplifyBlockGroup(group, call, state, {
+      chapterTitle,
+      overallChunkNumber: groupNumber,
+      totalChunks: totalGroupsInJob,
+    });
+    if (finals.length !== group.blocks.length) {
+      // simplifyBlockGroup's contract, asserted rather than assumed: a short
+      // array here would silently shift every later block's text.
+      throw new Error(
+        `simplifyChapterBlocks: group ${groupNumber} returned ${finals.length} texts for ${group.blocks.length} blocks`
+      );
+    }
+    for (let k = 0; k < group.blocks.length; k++) {
+      const ref = group.blocks[k];
+      // A block whose rewrite was rejected comes back as its own original text;
+      // leaving it null writes nothing at all, which is the truer expression of
+      // "this pass did not change this block" (and keeps its inline markup).
+      texts[ref.index] = finals[k] === ref.text ? null : finals[k];
+    }
+
+    if (opts.afterGroup) await opts.afterGroup(groupNumber, charCount);
+  }
+
+  return replaceBlockTextsExact(xhtml, texts);
+}
+
 /**
  * Clean up text with streaming progress updates
  */
@@ -3478,6 +4045,15 @@ export async function cleanupEpub(
     // simplify-specific safeguards never depend on prompt text literals.
     const task: CleanupTask = simplifyForChildren ? 'simplify' : 'cleanup';
 
+    // SIMPLIFY-ONLY runs the block-group pipeline instead of prose chunking:
+    // groups of up to MAX_BLOCKS_PER_GROUP consecutive body blocks, tagged and
+    // validated per block, written back 1:1. The LEGACY combined cleanup+simplify
+    // mode keeps the chunk pipeline (its prompt does two jobs at once and its
+    // output is a rewritten chunk, not a block list), as do plain cleanup,
+    // translate and bilingual.
+    const simplifyBlockMode = simplifyForChildren && !enableAiCleanup;
+    if (simplifyBlockMode) console.log('[AI-BRIDGE] Simplify: BLOCK-GROUP mode (1:1 block rewrites, no prose chunking)');
+
     // Detailed cleanup (user-marked block deletions) needs a DELETING rewrite, which
     // the edit-list applier structurally forbids — so it keeps the legacy full-rewrite
     // path. Everything else in the pure-cleanup task uses the new edit-list pipeline.
@@ -3571,14 +4147,19 @@ export async function cleanupEpub(
     // it (and it overrides the files' plain "output only the text" contract). Cleanup's
     // edit-list prompt already carries its own thinking trigger + answer contract.
     if (task === 'simplify') {
+      // The block path asks for a tagged block list instead of a slab of prose —
+      // the answer's SHAPE is what makes it writable back onto the source
+      // elements without re-segmenting anything.
       systemPrompt =
         `${THINKING_TRIGGER}\n\n${systemPrompt}\n\n` +
-        'OUTPUT FORMAT (this overrides any earlier instruction about how to output): ' +
-        'First think through the rewrite. Then write your COMPLETE rewritten text — every ' +
-        'paragraph, start to finish — inside a single <answer> ... </answer> block, and put ' +
-        'nothing after </answer>. If the input is empty or unreadable, put exactly [SKIP] ' +
-        'inside the answer block.';
-      console.log('[AI-BRIDGE] Simplify: thinking enabled, output wrapped in <answer> tags');
+        (simplifyBlockMode
+          ? simplifyBlockOutputFormat()
+          : 'OUTPUT FORMAT (this overrides any earlier instruction about how to output): ' +
+            'First think through the rewrite. Then write your COMPLETE rewritten text — every ' +
+            'paragraph, start to finish — inside a single <answer> ... </answer> block, and put ' +
+            'nothing after </answer>. If the input is empty or unreadable, put exactly [SKIP] ' +
+            'inside the answer block.');
+      console.log(`[AI-BRIDGE] Simplify: thinking enabled, output wrapped in <answer> tags (${simplifyBlockMode ? 'block list' : 'prose'})`);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -4044,6 +4625,28 @@ export async function cleanupEpub(
       return { xhtml, chunks: chunkChapterProse(xhtml, jobChunkSize, preprocessFor?.(xhtml)) };
     };
 
+    /**
+     * Block-path counterpart of loadChapterChunks: the chapter's blocks plus the
+     * groups packed out of them. `jobChunkSize` is a chunk-era knob and has NO
+     * effect here — group size is MAX_BLOCKS_PER_GROUP / GROUP_CHAR_CAP, because
+     * a group is a whole number of blocks, never a character budget cut through
+     * one.
+     */
+    const loadChapterBlockGroups = async (
+      proc: InstanceType<typeof import('./epub-processor.js').EpubProcessor>,
+      href: string
+    ): Promise<{ xhtml: string; plan: ChapterBlockPlan } | null> => {
+      let xhtml: string;
+      try {
+        xhtml = await proc.readFile(href);
+      } catch {
+        return null;
+      }
+      const chapterText = extractChapterAsText(xhtml);
+      if (!chapterText.trim()) return null;
+      return { xhtml, plan: planChapterBlockGroups(xhtml) };
+    };
+
     sendProgress({ jobId, phase: 'analyzing', currentChapter: 0, totalChapters: chapters.length, currentChunk: 0, totalChunks: 0, percentage: 0, message: 'Scanning chapters…' });
     for (const chapter of chapters) {
       const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
@@ -4056,6 +4659,23 @@ export async function cleanupEpub(
 
       const chapterText = extractChapterAsText(xhtml);
       if (!chapterText.trim()) continue;
+
+      if (simplifyBlockMode) {
+        // Count GROUPS. Headings and sub-MIN_SIMPLIFY_BLOCK_CHARS blocks form no
+        // group at all, so a title-page chapter contributes zero units instead of
+        // one doomed chunk per line. The largest group's SERIALIZED payload is
+        // kept for num_ctx sizing — the tags are part of what the model reads.
+        const { groups } = planChapterBlockGroups(xhtml);
+        if (groups.length > 0) {
+          for (const group of groups) {
+            const payload = serializeBlocksForModel(group.blocks.map(b => b.text));
+            if (payload.length > longestChunkText.length) longestChunkText = payload;
+          }
+          chapterMetas.push({ chapter, chunkCount: groups.length, href });
+          totalChunksInJob += groups.length;
+        }
+        continue;
+      }
 
       // Split PROSE to count chunks (headings excluded — they are never chunked or
       // sent to the model). We also keep the single longest chunk's text so num_ctx
@@ -4074,7 +4694,7 @@ export async function cleanupEpub(
       // xhtml and chapterText go out of scope — not stored
     }
 
-    console.log(`[AI-CLEANUP] Total chunks in job: ${totalChunksInJob} across ${chapterMetas.length} non-empty chapters`);
+    console.log(`[AI-CLEANUP] Total ${simplifyBlockMode ? 'block groups' : 'chunks'} in job: ${totalChunksInJob} across ${chapterMetas.length} non-empty chapters`);
 
     // Pin num_ctx for the ENTIRE job, sized to the largest chunk. Ollama fully
     // reloads the model runner whenever num_ctx changes, so the old per-chunk
@@ -4092,11 +4712,18 @@ export async function cleanupEpub(
     // part of systemPrompt here). MUST use the same constant as the call itself.
     // Simplify keeps the rewrite estimate but at 3x: its output is input-sized AND
     // now carries in-band thinking on top.
+    // Block groups also generate against a FLOORED budget (thinking + the rewrite,
+    // never below SIMPLIFY_BLOCK_NUM_PREDICT_FLOOR), so they need the same
+    // budget-sized window as the edit-list path: sized to the LARGEST group's
+    // payload and ITS num_predict, so the window is never smaller than the budget
+    // it must hold.
     const EDITLIST_FEWSHOT_HEADROOM = ' '.repeat(2000);
     const jobNumCtx = useEditList
       ? estimateNumCtxForBudget(systemPrompt + EDITLIST_FEWSHOT_HEADROOM, longestChunkText, EDITLIST_NUM_PREDICT, cleanupModel)
-      : estimateNumCtx(systemPrompt, longestChunkText, task === 'simplify' ? 3 : 2, cleanupModel);
-    console.log(`[AI-CLEANUP] Pinned num_ctx=${jobNumCtx} for the job (largest chunk ${longestChunkText.length} chars) — model loads once, no per-chunk reloads`);
+      : simplifyBlockMode
+        ? estimateNumCtxForBudget(systemPrompt, longestChunkText, simplifyBlockNumPredict(longestChunkText), cleanupModel)
+        : estimateNumCtx(systemPrompt, longestChunkText, task === 'simplify' ? 3 : 2, cleanupModel);
+    console.log(`[AI-CLEANUP] Pinned num_ctx=${jobNumCtx} for the job (largest ${simplifyBlockMode ? 'group payload' : 'chunk'} ${longestChunkText.length} chars) — model loads once, no per-chunk reloads`);
 
     if (totalChunksInJob === 0) {
       processor.close();
@@ -4129,6 +4756,16 @@ export async function cleanupEpub(
       console.log(`[AI-CLEANUP] TEST MODE: Processing ${totalChunksInJob} chunks across ${chapterMetas.length} chapters`);
     }
 
+    // Scale the abort threshold to the job. An absolute 10 is a sane floor for a
+    // 20-chunk job and nonsense for a 300-group one: it aborted a 308-unit book
+    // at ~3% fallbacks. 5% (never below 10) still stops a job whose model has
+    // genuinely stopped working, without killing one that lost a few paragraphs.
+    // Every other path keeps the flat MAX_FALLBACK_COUNT it was written against.
+    if (simplifyBlockMode) {
+      jobState.maxFallbackCount = Math.max(MAX_FALLBACK_COUNT, Math.ceil(totalChunksInJob * 0.05));
+      console.log(`[AI-CLEANUP] Fallback abort threshold: ${jobState.maxFallbackCount} of ${totalChunksInJob} block groups (5%, floor ${MAX_FALLBACK_COUNT})`);
+    }
+
     // One entry point for cleaning a single chunk, so the parallel and sequential
     // loops share the branch: edit-list cleanup vs the legacy full-rewrite provider
     // path (simplify, custom prompt, detailed-cleanup deletions).
@@ -4137,11 +4774,20 @@ export async function cleanupEpub(
         ? cleanChunkEditList(text, editListPrompt, options?.customInstructions, config, jobState, jobNumCtx, jobTemperature, 3, abortController.signal, chunkMeta)
         : cleanChunkWithProvider(text, systemPrompt, task, config, jobState, jobNumCtx, jobTemperature, 3, abortController.signal, chunkMeta);
 
+    // The block path's single model seam (unused off that path). Bound once so
+    // every group and every degraded single-block call in the job shares the
+    // pinned window, the temperature and the abort signal.
+    const simplifyBlockCall = makeSimplifyBlockCall(systemPrompt, config, jobNumCtx, jobTemperature, 3, abortController.signal);
+
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 2: Process all chunks (parallel or sequential)
     // ─────────────────────────────────────────────────────────────────────────
     // Local (single llama-server) and Ollama are single-stream — never parallelize.
-    const useParallel = options?.useParallel && config.provider !== 'ollama' && config.provider !== 'local';
+    // The block path is sequential-only: the parallel loop is built on prose chunks
+    // and finishes chapters with rebuildChapterPreservingHeadings, so letting a
+    // cloud-provider simplify job in there would quietly put it back on the chunk
+    // pipeline. Parallel block mode is future work, not a silent fallback.
+    const useParallel = options?.useParallel && config.provider !== 'ollama' && config.provider !== 'local' && !simplifyBlockMode;
     const workerCount = Math.min(options?.parallelWorkers || 3, totalChunksInJob);
 
     if (useParallel && workerCount > 1) {
@@ -4458,6 +5104,43 @@ export async function cleanupEpub(
       // ─────────────────────────────────────────────────────────────────────────
       console.log('[AI-CLEANUP] Using SEQUENTIAL processing');
 
+      /**
+       * Persist everything a finished chapter owes: the output EPUB, the freed
+       * memory, and the resume checkpoint. Shared verbatim by the chunk path and
+       * the block path so a job resumed from either lands in the same state.
+       */
+      const saveChapterBoundary = async (chapterIndex: number, chapterId: string): Promise<void> => {
+        // Save at chapter boundary only
+        try {
+          await saveModifiedEpubLocal(processor!, modifiedChapters, outputPath, completedChapterIds);
+
+          // Free memory — chapter data is now on disk
+          modifiedChapters.delete(chapterId);
+          chapterXhtmlMap.delete(chapterId);
+
+          if (global.gc) global.gc();
+        } catch (saveError) {
+          console.error(`Failed to save after chapter ${chapterIndex + 1}:`, saveError);
+        }
+
+        // Save checkpoint (skip in test mode)
+        if (!testMode) {
+          await saveCheckpoint(epubDir, {
+            version: CLEANUP_CHECKPOINT_VERSION,
+            sourceEpubPath: epubPath,
+            outputFilename,
+            totalChapters: chapterMetas.length,
+            totalChunks: totalChunksInJob,
+            completedChapters: [...completedChapterIds],
+            completedChunkCount: chunksCompletedInJob,
+            provider: config.provider,
+            model: getProviderModel(config),
+            simplifyForChildren: !!options?.simplifyForChildren,
+            updatedAt: new Date().toISOString()
+          });
+        }
+      };
+
       for (let i = 0; i < chapterMetas.length; i++) {
         // Check for cancellation before each chapter
         if (abortController.signal.aborted) {
@@ -4470,6 +5153,116 @@ export async function cleanupEpub(
 
         // Skip already-completed chapters (from checkpoint resume)
         if (completedChapterIds.has(chapter.id)) {
+          continue;
+        }
+
+        // ── Block path: groups of blocks, written back 1:1 ───────────────────
+        if (simplifyBlockMode) {
+          const loadedBlocks = await loadChapterBlockGroups(processor, meta.href);
+          if (!loadedBlocks) continue;
+
+          // In test mode, chunkCount (= group count) may be limited. Groups the
+          // limit cuts off are simply never sent, and their blocks stay null in
+          // the writer — untouched, not "processed and unchanged".
+          const chapterGroups = loadedBlocks.plan.groups.slice(0, meta.chunkCount);
+          chapterXhtmlMap.set(chapter.id, loadedBlocks.xhtml);
+
+          let groupStartTime = 0;
+          let rebuiltXhtml: string;
+          try {
+            rebuiltXhtml = await simplifyChapterBlocks({
+              xhtml: loadedBlocks.xhtml,
+              plan: loadedBlocks.plan,
+              groups: chapterGroups,
+              chapterTitle: chapter.title,
+              call: simplifyBlockCall,
+              state: jobState,
+              firstGroupNumber: chunksCompletedInJob + 1,
+              totalGroupsInJob: totalChunksInJob,
+              beforeGroup: (groupNumber, charCount) => {
+                if (abortController.signal.aborted) {
+                  console.log(`[AI-CLEANUP] Job ${jobId} cancelled before group ${groupNumber} of chapter ${i + 1}`);
+                  throw new Error('Job cancelled');
+                }
+                groupStartTime = Date.now();
+                totalCharactersProcessed += charCount;
+                console.log(`[AI-CLEANUP] Starting group ${groupNumber}/${totalChunksInJob} - "${chapter.title}" (${charCount} chars)`);
+                sendProgress({
+                  jobId,
+                  phase: 'processing',
+                  currentChapter: i + 1,
+                  totalChapters: chapterMetas.length,
+                  currentChunk: groupNumber,
+                  totalChunks: totalChunksInJob,
+                  percentage: Math.round((chunksCompletedInJob / totalChunksInJob) * 90),
+                  message: `Processing chunk ${groupNumber}/${totalChunksInJob}: ${chapter.title}`,
+                  outputPath,
+                  chunksCompletedInJob,
+                  totalChunksInJob,
+                  completedInSession: chunksCompletedInSession
+                });
+              },
+              afterGroup: (groupNumber) => {
+                const groupDuration = ((Date.now() - groupStartTime) / 1000).toFixed(1);
+                console.log(`[AI-CLEANUP] Completed group ${groupNumber}/${totalChunksInJob} in ${groupDuration}s`);
+                chunksCompletedInJob++;
+                chunksCompletedInSession++;
+                // Throws TOO_MANY_FALLBACKS once the (proportional) threshold is hit.
+                checkFallbackThreshold(jobState);
+                if (firstChunkCompletedAt === null) firstChunkCompletedAt = Date.now();
+                sendProgress({
+                  jobId,
+                  phase: 'processing',
+                  currentChapter: i + 1,
+                  totalChapters: chapterMetas.length,
+                  currentChunk: chunksCompletedInJob,
+                  totalChunks: totalChunksInJob,
+                  percentage: Math.round((chunksCompletedInJob / totalChunksInJob) * 90),
+                  message: `Chunk ${chunksCompletedInJob}/${totalChunksInJob}${getRateDisplay()}`,
+                  outputPath,
+                  chunksCompletedInJob,
+                  totalChunksInJob,
+                  chunkCompletedAt: Date.now(),
+                  completedInSession: chunksCompletedInSession
+                });
+              },
+            });
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            // Per-BLOCK failures were already absorbed and recorded inside
+            // simplifyBlockGroup. Anything that reaches here is fatal by design —
+            // a dead account, a cancellation, the fallback threshold, or a
+            // block-count disagreement between extractor and writer — and none of
+            // those may degrade into "ship the chapter unchanged and carry on".
+            if (isUnrecoverableProviderError(errorMessage)) {
+              sendProgress({
+                jobId,
+                phase: 'error',
+                currentChapter: i + 1,
+                totalChapters: chapterMetas.length,
+                currentChunk: chunksCompletedInJob,
+                totalChunks: totalChunksInJob,
+                percentage: Math.round((chunksCompletedInJob / totalChunksInJob) * 90),
+                message: `AI cleanup stopped: ${errorMessage}`,
+                error: errorMessage,
+                outputPath
+              });
+              throw new Error(`AI cleanup stopped: ${errorMessage}`);
+            }
+            throw error;
+          }
+
+          modifiedChapters.set(chapter.id, rebuiltXhtml);
+
+          // Same diff-cache contract as the chunk path: diff what the EPUB will
+          // actually hold, not the raw model text.
+          const originalText = extractChapterAsText(loadedBlocks.xhtml);
+          const cleanedTextForDiff = extractChapterAsText(rebuiltXhtml);
+          await addChapterDiff(chapter.id, chapter.title, originalText, cleanedTextForDiff);
+
+          chaptersProcessed++;
+          completedChapterIds.add(chapter.id);
+          await saveChapterBoundary(i, chapter.id);
           continue;
         }
 
@@ -4562,19 +5355,7 @@ export async function cleanupEpub(
             console.error(`[AI-CLEANUP] Chunk ${currentChunkInJob} failed after ${chunkDuration}s:`, error);
 
             // Check for unrecoverable errors
-            const isUnrecoverableError =
-              errorMessage.includes('credit balance') ||
-              errorMessage.includes('insufficient_quota') ||
-              errorMessage.includes('rate_limit') ||
-              errorMessage.includes('invalid_api_key') ||
-              errorMessage.includes('authentication') ||
-              errorMessage.includes('unauthorized') ||
-              errorMessage.includes('403') ||
-              errorMessage.includes('401') ||
-              errorMessage.includes('billing') ||
-              errorMessage.includes('quota exceeded') ||
-              errorMessage.includes('model not found') ||
-              errorMessage.includes('does not exist');
+            const isUnrecoverableError = isUnrecoverableProviderError(errorMessage);
 
             if (isUnrecoverableError) {
               sendProgress({
@@ -4631,35 +5412,7 @@ export async function cleanupEpub(
         chaptersProcessed++;
         completedChapterIds.add(chapter.id);
 
-        // Save at chapter boundary only
-        try {
-          await saveModifiedEpubLocal(processor, modifiedChapters, outputPath, completedChapterIds);
-
-          // Free memory — chapter data is now on disk
-          modifiedChapters.delete(chapter.id);
-          chapterXhtmlMap.delete(chapter.id);
-
-          if (global.gc) global.gc();
-        } catch (saveError) {
-          console.error(`Failed to save after chapter ${i + 1}:`, saveError);
-        }
-
-        // Save checkpoint (skip in test mode)
-        if (!testMode) {
-          await saveCheckpoint(epubDir, {
-            version: CLEANUP_CHECKPOINT_VERSION,
-            sourceEpubPath: epubPath,
-            outputFilename,
-            totalChapters: chapterMetas.length,
-            totalChunks: totalChunksInJob,
-            completedChapters: [...completedChapterIds],
-            completedChunkCount: chunksCompletedInJob,
-            provider: config.provider,
-            model: getProviderModel(config),
-            simplifyForChildren: !!options?.simplifyForChildren,
-            updatedAt: new Date().toISOString()
-          });
-        }
+        await saveChapterBoundary(i, chapter.id);
       }
     } // End of else (sequential processing)
 
