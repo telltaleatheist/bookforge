@@ -4431,12 +4431,16 @@ export async function comparePassBooks(
   }
   const entry = entries[index];
 
-  const after = snapshotOf(projectDir, entry);
+  // NOT the working copy, even for the latest entry. That file carries every
+  // edit the user has made since, so pairing it against a snapshot would show
+  // their work mixed with this pass's, under this pass's name. The snapshot is
+  // what the pass produced, exactly, and the labels say so.
+  const after = snapshotOf(projectDir, entry, 'this pass');
   // The first pass ran on the archive-grade book itself — the same file
   // `deleteLedgerEntry` derives from when nothing is left standing.
   const before = index === 0
     ? familySourceAsComparedBook(projectDir, family)
-    : snapshotOf(projectDir, entries[index - 1]);
+    : snapshotOf(projectDir, entries[index - 1], 'that pass');
 
   return {
     entryId: entry.id,
@@ -4447,8 +4451,18 @@ export async function comparePassBooks(
   };
 }
 
-/** An entry's snapshot as a side of a comparison, proved to be on disk. */
-function snapshotOf(projectDir: string, entry: LedgerEntry): ComparedBook {
+/**
+ * An entry's snapshot as a side of a comparison, proved to be on disk.
+ *
+ * `whose` is how the label reads it back — "this pass" for the entry being
+ * reviewed, "that pass" for the one before it, so a pane says what it is
+ * showing without the surface having to work out which side it is drawing.
+ */
+function snapshotOf(
+  projectDir: string,
+  entry: LedgerEntry,
+  whose: 'this pass' | 'that pass'
+): ComparedBook {
   const absPath = toAbs(projectDir, entry.snapshot);
   if (!fs.existsSync(absPath)) {
     throw new Error(
@@ -4458,7 +4472,11 @@ function snapshotOf(projectDir: string, entry: LedgerEntry): ComparedBook {
       + 'review.'
     );
   }
-  return { absPath, relPath: entry.snapshot, label: entry.label };
+  return {
+    absPath,
+    relPath: entry.snapshot,
+    label: `${entry.label} — the book as ${whose} left it`,
+  };
 }
 
 /** The chain's archive-grade source as a side of a comparison. */

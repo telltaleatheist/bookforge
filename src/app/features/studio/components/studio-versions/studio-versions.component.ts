@@ -325,9 +325,13 @@ const AUDIO_EXTS = new Set([
           <button class="back" (click)="closeCompare()">← Back to versions</button>
           <span class="compare-title">{{ opening.title }}</span>
         </div>
-        <div class="compare-opening" [class.refused]="opening.error !== null">
-          {{ opening.error ?? 'Finding the book this pass ran on, and the book it left…' }}
-        </div>
+        @if (opening.error === null) {
+          <div class="compare-opening">
+            Finding the book this pass ran on, and the book it left…
+          </div>
+        } @else {
+          <div class="compare-opening refused">{{ opening.error }}</div>
+        }
       </div>
     } @else {
       <div class="versions">

@@ -87,7 +87,13 @@ type PaneState =
   template: `
     <div class="compare">
       <div class="controls">
-        <span class="hint">Read only — nothing here changes either book.</span>
+        <!-- Both halves said once: these are records, and this surface only
+             looks at them. The "after" pane is the book the pass PRODUCED, not
+             the copy being worked in now — which is why it cannot show the
+             edits made since, and should not. -->
+        <span class="hint">
+          Read only — these are the books the ledger kept, not the copy you are working in.
+        </span>
         <span class="spacer"></span>
         <label class="control">Show
           <select [value]="presentation()"
