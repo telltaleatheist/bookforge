@@ -77,6 +77,7 @@
     "test:epub-container": "npx tsc -p tsconfig.electron.json && node tools/test-epub-container.js",
     "test:exploded-working-copy": "npx tsc -p tsconfig.electron.json && node tools/test-exploded-working-copy.js",
     "test:artifact-movement": "npx tsc -p tsconfig.electron.json && node tools/test-artifact-movement.js",
+    "test:simplify-blocks": "npx tsc -p tsconfig.electron.json && node tools/test-simplify-blocks.js",
     "test:quire": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/test-quire.js",
     "quire:paginate": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/quire-paginate.js",
     "quire:probe-host": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/probe-quire-host.js",
