@@ -269,6 +269,22 @@ export interface QueueJob {
   orpheusMemoryLevel?: string;
   // Pre-computed ETA for master/workflow jobs (calculated in queue service from child job estimates)
   estimatedSecondsRemaining?: number;
+  /**
+   * What the finished job has to SAY, in whole sentences, when succeeding was not
+   * the whole story.
+   *
+   * A processing pass can succeed and still owe the user an explanation — most of
+   * all when it recorded no ledger row, so the book gains no "Review changes" /
+   * "Compare books" line and the absence reads as a bug. The pass writes that
+   * sentence (`PassJobResult.ledgerRefusal`, and beside it `summary` and
+   * `narrationCarryNote`); this is where it survives long enough to be read.
+   *
+   * Persisted with the row, so it outlives the completion event that carried it —
+   * the user who comes back to a finished queue an hour later is exactly the one
+   * who needs it. A row with these is NOT failed: it is complete, and it is
+   * rendered as complete.
+   */
+  completionNotes?: string[];
 }
 
 /**
@@ -740,6 +756,14 @@ export interface JobResult {
   success: boolean;
   outputPath?: string;
   error?: string;
+  /**
+   * Sentences a SUCCESSFUL job still owes the user — see QueueJob.completionNotes,
+   * which is where these land. Built by `passResultNotes`
+   * (shared/processing/pass-notes.ts) at every point a PassJobResult is consumed,
+   * including main's `queue:job-complete` broadcast, so the fallback completion
+   * signal carries them too.
+   */
+  completionNotes?: string[];
   // Copyright detection for AI cleanup
   copyrightIssuesDetected?: boolean;
   copyrightChunksAffected?: number;
