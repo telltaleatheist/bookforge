@@ -2391,14 +2391,61 @@ export class StudioVersionsComponent {
    * line that carries this button when the project has one — that is the file
    * narration reads — and the book's line when it does not, which is the same
    * file narration would have fallen back to.
+   *
+   * ── The copy is proved CURRENT before it travels ────────────────────────────
+   *
+   * The path on this row came out of the manifest when the versions list was
+   * built (`readNarrationEpub`, which returns a path and deliberately not the
+   * digest that says whether it still describes the book). So the row alone
+   * cannot know that a pass rewrote the book after the copy was cut — and on
+   * Killing America one did, by ONE MINUTE: the copy was cut at 21:55:41, the
+   * footnote-reference pass finished at 21:56:42, and the narration that started
+   * at 21:57 read all 322 markers the pass had just taken out of the book
+   * (measured 2026-08-13).
+   *
+   * `ensureNarrationEpub` is the answer that already existed for exactly this —
+   * it compares the record's `fromEpubSha256` against the book on disk and cuts
+   * the copy again when they disagree — and the old Process page called it. This
+   * one lost it when the press moved onto the line. It is asked here, on the
+   * narration line only: that is the one line whose file is DERIVED from another
+   * and can therefore go stale behind the user's back. Every other line names a
+   * file that is its own authority.
    */
-  processLine(row: ChainRowView): void {
+  async processLine(row: ChainRowView): Promise<void> {
     const path = row.v?.path;
     const familyId = this.familyOfLine(row, 'Process');
     if (!path || familyId === null) {
       if (!path) {
         console.error('[studio-versions] Process was pressed on a line with no file behind it. Only '
           + 'a line naming a document carries that button.');
+      }
+      return;
+    }
+    if (row.line.kind === 'narration') {
+      if (this.ensuringNarration()) return;
+      this.ensuringNarration.set(true);
+      try {
+        const answer = await this.electron.ensureNarrationEpub(this.projectDir()!, familyId);
+        if (!answer.success || !answer.narration) {
+          throw new Error(answer.error
+            || 'The narration copy could not be proved current and main gave no reason.');
+        }
+        // Said, not swallowed. A re-cut costs minutes and changes which file is
+        // about to be narrated; a user who pressed Process and waited is owed
+        // the reason, in main's own words.
+        if (answer.narration.cutReason !== null) {
+          this.notices.notify(answer.narration.cutReason);
+          await this.load();
+        }
+        this.narrationFile.set({ path: answer.narration.epubPath, familyId });
+      } catch (err) {
+        await this.electron.showMessageDialog({
+          title: 'The narration copy was not made current',
+          message: (err as Error).message,
+          type: 'error',
+        });
+      } finally {
+        this.ensuringNarration.set(false);
       }
       return;
     }
@@ -2422,6 +2469,15 @@ export class StudioVersionsComponent {
    * to do with it — the same ambiguity the per-chain buttons exist to remove.
    */
   readonly cuttingNarration = signal<string | null>(null);
+
+  /**
+   * Is a Process press waiting on the narration copy being proved current?
+   *
+   * A plain boolean, unlike `cuttingNarration`: this one guards the press, not a
+   * button's label. Only one narration modal can be open at a time, so a second
+   * press while the first is still asking has nothing different to do.
+   */
+  readonly ensuringNarration = signal(false);
 
   /** What Export TTS copy promises, named on the chain it would cut. */
   ttsExportTitle(row: ChainRowView): string {

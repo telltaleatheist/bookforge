@@ -324,7 +324,7 @@ async function main() {
 <h1 data-bf-page="1" data-bf-cat="title">The Paired Book</h1>
 <p data-bf-page="1" data-bf-cat="text">The first paragraph of the book, ordinary body prose and long enough to align.</p>
 <p data-bf-page="1" data-bf-cat="text">A repeated running head that appears twice in this chapter.</p>
-<p data-bf-page="2" data-bf-cat="text">A second paragraph on the following page, also ordinary and also long enough.</p>
+<p data-bf-page="2" data-bf-cat="text">A second paragraph on the following page, also ordinary and also long enough.<sup><a href="#fn2" id="fnref2">2</a></sup></p>
 <p data-bf-page="2" data-bf-cat="text">A repeated running head that appears twice in this chapter.</p>
 <p data-bf-page="3" data-bf-cat="footnote">1. The footnote nobody wants read aloud.</p>
 </body>
@@ -471,6 +471,60 @@ async function main() {
     // Nothing landed: the refusal is before the write, not after it.
     const onDisk = await manifestService.readNarrationDeletions(p.projectDir);
     assert.strictEqual(onDisk, null);
+  });
+
+  // ── ensureNarrationEpub: the re-cut a stale copy gets, and what it keeps ────
+  //
+  // Killing America, 2026-08-13: the copy was cut at 21:55:41, the
+  // footnote-reference pass rewrote the book at 21:56:42, and the narration that
+  // started at 21:57 read 322 markers that were no longer in the book. The copy
+  // was stale and provably so — `fromEpubSha256` said as much — and the only
+  // thing that ever compares it is `ensureNarrationEpub`, which the press had
+  // stopped going through. These two pin what it does when it is asked.
+
+  await check('a copy cut from an older book is CUT AGAIN, and says so', async () => {
+    const p = makeProject('recut');
+    fs.copyFileSync(await buildEpub('book7.epub'), p.bookAbs);
+    await narrationExport.exportNarrationEpub(p.projectDir, { stripSupMarkers: false });
+    const before = await manifestService.readNarrationEpubRecord(p.projectDir);
+
+    // The book is rewritten under the copy — what a pass does.
+    fs.writeFileSync(p.bookAbs, fs.readFileSync(await buildEpub('book7b.epub')));
+    fs.appendFileSync(p.bookAbs, Buffer.from([0]));
+
+    const answer = await narrationExport.ensureNarrationEpub(p.projectDir);
+    assert.ok(answer.cutReason !== null, 'a stale copy was returned as current');
+    assert.match(answer.cutReason, /book has changed/i);
+
+    const after = await manifestService.readNarrationEpubRecord(p.projectDir);
+    assert.notStrictEqual(after.fromEpubSha256, before.fromEpubSha256,
+      'the re-cut copy still claims the OLD book');
+  });
+
+  await check('the re-cut keeps the strip choice the copy was cut under', async () => {
+    const p = makeProject('recut-strip');
+    fs.copyFileSync(await buildEpub('book8.epub'), p.bookAbs);
+
+    // What Export TTS copy does: the markers stay, because the footnote PASS
+    // owns removing them. The re-cut must not quietly decide otherwise.
+    const first = await narrationExport.exportNarrationEpub(
+      p.projectDir, { stripSupMarkers: false });
+    assert.ok((await chapterOf(first.epubPath)).includes('>2</a>'),
+      'the fixture cut with stripSupMarkers:false has no marker to keep');
+
+    fs.writeFileSync(p.bookAbs, fs.readFileSync(await buildEpub('book8b.epub')));
+    fs.appendFileSync(p.bookAbs, Buffer.from([0]));
+
+    // No options: the caller has none to state, so the RECORD answers.
+    const answer = await narrationExport.ensureNarrationEpub(p.projectDir);
+    assert.ok(answer.cutReason !== null, 'the stale copy was not cut again');
+
+    const after = await manifestService.readNarrationEpubRecord(p.projectDir);
+    assert.strictEqual(after.strippedSupMarkers, false,
+      'the re-cut flipped the recorded strip choice');
+    const cut = await chapterOf(answer.epubPath);
+    assert.ok(cut.includes('>2</a>'),
+      'the re-cut stripped a marker the recorded choice said to keep');
   });
 
   await check('a project with no TTS copy at all refuses, naming the act that makes one', async () => {
