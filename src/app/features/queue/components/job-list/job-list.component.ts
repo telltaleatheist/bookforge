@@ -126,6 +126,18 @@ const EMPTY_STEPS: QueueJob[] = [];
                 &#9888; Translation failures: {{ job.translationFailedChunks }} chunks kept original (untranslated) text.
               </div>
             }
+            <!-- What a job that SUCCEEDED still has to say. A processing pass that
+                 could record no ledger row leaves the book with no "Review changes"
+                 line, and the sentence saying why is the only thing standing
+                 between a correct refusal and a bug report. Shown whole — the whole
+                 failure was that it was invisible — and never as a tooltip. -->
+            @if (job.status === 'complete' && job.completionNotes?.length) {
+              <div class="completion-notes">
+                @for (note of job.completionNotes; track note) {
+                  <div class="completion-note">&#9888; {{ note }}</div>
+                }
+              </div>
+            }
           </div>
 
           <div class="job-actions">
@@ -498,6 +510,28 @@ const EMPTY_STEPS: QueueJob[] = [];
       font-size: 0.75rem;
       color: var(--warning, #f59e0b);
       margin-top: 0.25rem;
+    }
+
+    /* A succeeded job's own words. Banded rather than bare so several sentences
+       read as one statement from the job, and wrapping rather than truncating
+       because these ARE the explanation — a clipped one explains nothing. */
+    .completion-notes {
+      margin-top: 0.375rem;
+      padding: 0.375rem 0.5rem;
+      border-left: 2px solid var(--warning);
+      background: var(--warning-bg);
+      border-radius: 0 4px 4px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .completion-note {
+      font-size: 0.75rem;
+      line-height: 1.45;
+      color: var(--warning-text);
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
 
     .job-actions {
