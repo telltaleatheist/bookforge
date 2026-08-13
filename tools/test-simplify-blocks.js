@@ -17,7 +17,11 @@
  * The replacement makes the answer's SHAPE the thing that has to be right, and
  * everything asserted here is that shape holding:
  *
- *  - a heading and a two-word line are never sent, so they cannot fail;
+ *  - a heading is never sent, so it cannot fail, and a group whose WHOLE text is
+ *    a title page's three short lines is kept verbatim without a call;
+ *  - a short block is NOT excluded on its own. `"No," she said.` is its own <p>
+ *    in fiction and has to be simplified alongside the paragraph it answers, so
+ *    it rides inside its group and the send decision is made per GROUP;
  *  - a group is a whole number of consecutive blocks, never a character budget
  *    cut through one, and never spans a heading;
  *  - an answer whose ids do not match what was sent is REJECTED WHOLE — no
@@ -25,9 +29,11 @@
  *    path exists to remove;
  *  - one bad block costs one block, not the three around it;
  *  - the writer replaces text in place, so element identity (`data-bf-uid`),
- *    heading bytes and inline markup on untouched blocks all survive by
- *    construction, and a count disagreement THROWS rather than writing as many
- *    as happen to fit.
+ *    headings and inline markup on untouched blocks all survive by construction,
+ *    and a count disagreement THROWS rather than writing as many as happen to
+ *    fit. (The XML serializer respells `"` as `&quot;` on the way out — the same
+ *    XML said differently; there is a test for exactly that, so the difference
+ *    stays a known one rather than a surprise.)
  *
  * No model is involved: the one call is injected, so every ladder branch is
  * driven by a scripted answer.
@@ -56,11 +62,12 @@ if (!fs.existsSync(PROMPTS)) {
 }
 
 const {
-  MIN_SIMPLIFY_BLOCK_CHARS,
   MAX_BLOCKS_PER_GROUP,
   GROUP_CHAR_CAP,
+  MIN_GROUP_SEND_CHARS,
+  GATE_MIN_INPUT_CHARS,
   SIMPLIFY_BLOCK_NUM_PREDICT_FLOOR,
-  isSendableSimplifyBlock,
+  isSimplifyHeadingBlock,
   groupSimplifyBlocks,
   serializeBlocksForModel,
   parseBlockAnswer,
@@ -107,19 +114,13 @@ const answerOf = (...blocks) =>
 
 // ── 1. Grouping ─────────────────────────────────────────────────────────────
 
-test('headings are never sendable, whatever their length', () => {
+test('headings are the ONE categorical exclusion', () => {
   for (const tag of ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']) {
-    assert.strictEqual(isSendableSimplifyBlock(block(prose(900), tag)), false, tag);
+    assert.strictEqual(isSimplifyHeadingBlock(block(prose(900), tag)), true, tag);
   }
-  assert.strictEqual(isSendableSimplifyBlock(block(prose(900), 'p')), true);
-});
-
-test('a block under MIN_SIMPLIFY_BLOCK_CHARS is never sent', () => {
-  assert.strictEqual(MIN_SIMPLIFY_BLOCK_CHARS, 50);
-  // "BLACK SUN" — the title-page line that used to become its own doomed chunk.
-  assert.strictEqual(isSendableSimplifyBlock(block('BLACK SUN', 'p')), false);
-  assert.strictEqual(isSendableSimplifyBlock(block('x'.repeat(49), 'p')), false);
-  assert.strictEqual(isSendableSimplifyBlock(block('x'.repeat(50), 'p')), true);
+  for (const tag of ['p', 'li', 'blockquote', 'figcaption']) {
+    assert.strictEqual(isSimplifyHeadingBlock(block('x', tag)), false, tag);
+  }
 });
 
 test('a heading terminates the run — a group never spans one', () => {
@@ -135,23 +136,42 @@ test('a heading terminates the run — a group never spans one', () => {
   assert.deepStrictEqual(groups[1].blocks.map(b => b.index), [3]);
 });
 
-test('a short block terminates the run just as a heading does', () => {
+test('a SHORT block rides along inside its group — it does NOT break the run', () => {
+  // The revision that matters: a line of dialogue is its own <p>, and it must be
+  // simplified WITH the paragraph it answers, not stranded and skipped.
   const blocks = [
     block(prose(200, 'a')),
-    block('HEIL HITLER!'),       // too short to send, so it breaks the run
+    block('"No," she said.'),
     block(prose(200, 'b')),
   ];
   const groups = groupSimplifyBlocks(blocks);
-  assert.strictEqual(groups.length, 2);
-  assert.deepStrictEqual(groups[0].blocks.map(b => b.index), [0]);
-  assert.deepStrictEqual(groups[1].blocks.map(b => b.index), [2]);
+  assert.strictEqual(groups.length, 1, 'one group, not three');
+  assert.deepStrictEqual(groups[0].blocks.map(b => b.index), [0, 1, 2]);
+  assert.strictEqual(groups[0].send, true);
+});
+
+test('a whole exchange of short dialogue lines packs into ONE group', () => {
+  const lines = [
+    '"No," she said, and would not look at him.',
+    '"Then say what you mean."',
+    '"Why not ask her yourself?"',
+    'He shrugged, and said nothing at all.',
+    '"Because she lies," he said.',
+  ];
+  const groups = groupSimplifyBlocks(lines.map(t => block(t)));
+  assert.strictEqual(groups.length, 1, 'five <p> elements, one call');
+  assert.deepStrictEqual(groups[0].blocks.map(b => b.text), lines);
+  assert.strictEqual(groups[0].send, true, 'together they clear MIN_GROUP_SEND_CHARS');
+  // Each line on its own would have been well under the threshold.
+  for (const line of lines) assert.ok(line.length < MIN_GROUP_SEND_CHARS);
 });
 
 test('groups cap at MAX_BLOCKS_PER_GROUP blocks', () => {
-  assert.strictEqual(MAX_BLOCKS_PER_GROUP, 3);
-  const blocks = Array.from({ length: 7 }, (_, i) => block(prose(100, String.fromCharCode(97 + i))));
+  assert.strictEqual(MAX_BLOCKS_PER_GROUP, 8);
+  const blocks = Array.from({ length: 17 }, (_, i) => block(prose(100, String.fromCharCode(97 + i))));
   const groups = groupSimplifyBlocks(blocks);
-  assert.deepStrictEqual(groups.map(g => g.blocks.map(b => b.index)), [[0, 1, 2], [3, 4, 5], [6]]);
+  assert.deepStrictEqual(groups.map(g => g.blocks.length), [8, 8, 1]);
+  assert.deepStrictEqual(groups[2].blocks.map(b => b.index), [16]);
 });
 
 test('groups cap at GROUP_CHAR_CAP characters', () => {
@@ -160,6 +180,7 @@ test('groups cap at GROUP_CHAR_CAP characters', () => {
   const blocks = [block(prose(2500, 'a')), block(prose(2500, 'b')), block(prose(300, 'c'))];
   const groups = groupSimplifyBlocks(blocks);
   assert.deepStrictEqual(groups.map(g => g.blocks.map(b => b.index)), [[0], [1, 2]]);
+  assert.deepStrictEqual(groups.map(g => g.chars), [2500, 2800]);
 });
 
 test('a block bigger than the cap forms a group ALONE — blocks are never split', () => {
@@ -169,13 +190,39 @@ test('a block bigger than the cap forms a group ALONE — blocks are never split
   assert.strictEqual(groups[1].blocks[0].text.length, 9000, 'the oversized block travels whole');
 });
 
-test('a chapter of nothing but headings and stubs produces NO groups at all', () => {
+test('an all-tiny group under MIN_GROUP_SEND_CHARS is NOT sent', () => {
+  assert.strictEqual(MIN_GROUP_SEND_CHARS, 120);
+  // A title page: the exact shape whose per-line chunks used to die one by one.
   const groups = groupSimplifyBlocks([
     block('BLACK SUN', 'h1'),
     block('A Novel'),
     block('by Someone'),
   ]);
-  assert.deepStrictEqual(groups, []);
+  assert.strictEqual(groups.length, 1, 'the two lines still form a group');
+  assert.deepStrictEqual(groups[0].blocks.map(b => b.index), [1, 2]);
+  assert.strictEqual(groups[0].send, false, 'but it is never sent');
+});
+
+test('a tiny orphan block stranded between two headings is NOT sent', () => {
+  const groups = groupSimplifyBlocks([
+    block('PART ONE', 'h1'),
+    block('1914'),
+    block('The Gathering Storm', 'h2'),
+  ]);
+  assert.strictEqual(groups.length, 1);
+  assert.deepStrictEqual(groups[0].blocks.map(b => b.index), [1]);
+  assert.strictEqual(groups[0].send, false);
+});
+
+test('planChapterBlockGroups separates every group from the WORK', () => {
+  const xhtml = `<html><body>
+    <h1>BLACK SUN</h1><p>A Novel</p>
+    <h2>One</h2><p>${prose(400, 'a')}</p>
+    </body></html>`;
+  const plan = planChapterBlockGroups(xhtml);
+  assert.strictEqual(plan.groups.length, 2, 'both runs are groups');
+  assert.strictEqual(plan.sendable.length, 1, 'only one is work');
+  assert.strictEqual(plan.sendable[0].blocks[0].index, 3);
 });
 
 // ── 2. Answer parsing ───────────────────────────────────────────────────────
@@ -257,6 +304,25 @@ test('under 40% of the input is catastrophic loss — rejected', () => {
   assert.strictEqual(judgeBlockRewrite(original, prose(401)).accept, true);
 });
 
+test('a block under GATE_MIN_INPUT_CHARS is not length-gated at all', () => {
+  assert.strictEqual(GATE_MIN_INPUT_CHARS, 50);
+  // 40% of `"No," she said.` is six characters — a threshold that measures
+  // nothing, and would reject a perfectly good three-word rewrite.
+  assert.strictEqual(judgeBlockRewrite('"No," she said.', '"No."').accept, true);
+  assert.strictEqual(judgeBlockRewrite('x'.repeat(49), 'ab').accept, true);
+  // One character over, and the gate applies again.
+  assert.strictEqual(judgeBlockRewrite('x'.repeat(50), 'ab').reason, 'acceptance-gate');
+});
+
+test('an empty SHORT block keeps the original and costs nothing', () => {
+  assert.strictEqual(judgeBlockRewrite('"No," she said.', '').reason, 'empty');
+  assert.strictEqual(judgeBlockRewrite('"No," she said.', '   \n ').reason, 'empty');
+});
+
+test('an empty LONG block is the most complete loss there is — it counts', () => {
+  assert.strictEqual(judgeBlockRewrite(prose(1000), '').reason, 'acceptance-gate');
+});
+
 test('a repetition loop is rejected even though it is LONGER than the input', () => {
   const original = prose(400);
   const loop = ('The room was very quiet indeed that evening. ').repeat(12);
@@ -287,7 +353,10 @@ function scriptedCall(answers) {
   return call;
 }
 
-const groupOf = (...texts) => ({ blocks: texts.map((text, i) => ({ index: i, text })) });
+const groupOf = (...texts) => {
+  const chars = texts.reduce((n, t) => n + t.length, 0);
+  return { blocks: texts.map((text, i) => ({ index: i, text })), chars, send: chars >= MIN_GROUP_SEND_CHARS };
+};
 
 test('a clean group answer rewrites all three blocks and costs nothing', async () => {
   const g = groupOf(prose(300, 'a'), prose(300, 'b'), prose(300, 'c'));
@@ -443,69 +512,114 @@ test('a raised threshold lets a big job survive what killed the 308-chunk run', 
 
 // ── 6. The writer ───────────────────────────────────────────────────────────
 
+/**
+ * A chapter shaped like the ones that broke: a title page whose only body line is
+ * two words, a heading mid-chapter, a line of dialogue between two paragraphs,
+ * and inline markup to lose or keep. Block indices 0-7.
+ */
 const CHAPTER = `<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml"><body>
 <h1 data-bf-uid="u-h1" class="chapter-title">BLACK SUN</h1>
-<p data-bf-uid="u-p1" data-bf-cat="body">${prose(150, 'a')}</p>
-<p data-bf-uid="u-p2" data-bf-cat="body">A <em>very</em> emphatic paragraph that is comfortably long enough to be sent.</p>
-<p data-bf-uid="u-p3">HEIL HITLER!</p>
-<p data-bf-uid="u-p4" data-bf-user-cat="body">${prose(150, 'b')}</p>
+<p data-bf-uid="u-p1">A Novel</p>
+<h2 data-bf-uid="u-h2">One</h2>
+<p data-bf-uid="u-p2" data-bf-cat="body">${prose(150, 'a')}</p>
+<p data-bf-uid="u-p3">"No," she said.</p>
+<p data-bf-uid="u-p4" data-bf-cat="body">A <em>very</em> emphatic paragraph that is comfortably long enough to be sent.</p>
+<h2 data-bf-uid="u-h3">Two</h2>
+<p data-bf-uid="u-p5" data-bf-user-cat="body">${prose(150, 'b')}</p>
 </body></html>`;
+
+const ALL_UIDS = ['u-h1', 'u-p1', 'u-h2', 'u-p2', 'u-p3', 'u-p4', 'u-h3', 'u-p5'];
+const nulls = () => new Array(8).fill(null);
+
+/**
+ * The chapter as this writer serializes it, with nothing written. Not quite the
+ * input string: cheerio's XML serializer respells `"` inside text as `&quot;`.
+ * That is the same XML said differently — it parses back to identical text — so
+ * "the pass wrote nothing" is asserted against THIS, and the fact that it parses
+ * back identical is asserted on its own below.
+ */
+const CHAPTER_SERIALIZED = replaceBlockTextsExact(CHAPTER, nulls());
 
 test('replaceBlockTextsExact writes in place: uids, classes and headings survive', () => {
   const blocks = extractBlockTextsWithTags(CHAPTER);
-  assert.strictEqual(blocks.length, 5);
-  const out = replaceBlockTextsExact(CHAPTER, [null, 'REWRITTEN ONE', null, null, 'REWRITTEN FOUR']);
+  assert.strictEqual(blocks.length, 8);
+  const texts = nulls();
+  texts[3] = 'REWRITTEN THREE';
+  texts[7] = 'REWRITTEN SEVEN';
+  const out = replaceBlockTextsExact(CHAPTER, texts);
 
   assert.ok(out.includes('<h1 data-bf-uid="u-h1" class="chapter-title">BLACK SUN</h1>'), 'the heading is byte-identical');
-  assert.ok(out.includes('<p data-bf-uid="u-p1" data-bf-cat="body">REWRITTEN ONE</p>'), 'rewrite kept every attribute');
-  assert.ok(out.includes('data-bf-user-cat="body">REWRITTEN FOUR</p>'), 'the user category survived');
-  for (const uid of ['u-h1', 'u-p1', 'u-p2', 'u-p3', 'u-p4']) {
+  assert.ok(out.includes('<p data-bf-uid="u-p2" data-bf-cat="body">REWRITTEN THREE</p>'), 'rewrite kept every attribute');
+  assert.ok(out.includes('data-bf-user-cat="body">REWRITTEN SEVEN</p>'), 'the user category survived');
+  for (const uid of ALL_UIDS) {
     assert.ok(out.includes(`data-bf-uid="${uid}"`), `${uid} still identifies its element`);
   }
 });
 
 test('a null entry is NOT WRITING — inline markup survives it', () => {
-  const out = replaceBlockTextsExact(CHAPTER, [null, null, null, null, null]);
+  const out = replaceBlockTextsExact(CHAPTER, nulls());
   assert.ok(out.includes('A <em>very</em> emphatic paragraph'), 'the <em> is untouched');
-  assert.strictEqual(out, replaceBlockTextsExact(CHAPTER, [null, null, null, null, null]), 'and it is stable');
+  assert.strictEqual(out, replaceBlockTextsExact(out, nulls()), 'and it is idempotent');
+});
+
+test('writing nothing loses nothing: same elements, attributes and TEXT', () => {
+  // The serializer respells `"` as `&quot;`; what must not change is what the
+  // document MEANS, which is what every downstream reader actually sees.
+  const before = extractBlockTextsWithTags(CHAPTER);
+  const after = extractBlockTextsWithTags(CHAPTER_SERIALIZED);
+  assert.deepStrictEqual(after, before, 'every block, tag, attribute and text is identical');
+  assert.ok(CHAPTER.includes('"No," she said.'));
+  assert.ok(CHAPTER_SERIALIZED.includes('&quot;No,&quot; she said.'), 'respelt, not rewritten');
+  assert.strictEqual(after[4].text, '"No," she said.', 'and it parses back to the same characters');
 });
 
 test('a rewrite flattens inline markup in ITS block only', () => {
-  const out = replaceBlockTextsExact(CHAPTER, [null, null, 'Plain now.', null, null]);
+  const texts = nulls();
+  texts[5] = 'Plain now.';
+  const out = replaceBlockTextsExact(CHAPTER, texts);
   assert.ok(!out.includes('<em>'), 'the rewritten block lost its <em> (as the old rebuild did to every block)');
-  assert.ok(out.includes('<p data-bf-uid="u-p2" data-bf-cat="body">Plain now.</p>'));
+  assert.ok(out.includes('<p data-bf-uid="u-p4" data-bf-cat="body">Plain now.</p>'));
 });
 
 test('the writer escapes text rather than injecting markup', () => {
-  const out = replaceBlockTextsExact(CHAPTER, [null, 'a < b & c', null, null, null]);
-  assert.ok(out.includes('a &lt; b &amp; c'));
+  const texts = nulls();
+  texts[3] = 'a < b & c';
+  assert.ok(replaceBlockTextsExact(CHAPTER, texts).includes('a &lt; b &amp; c'));
 });
 
 test('a count mismatch THROWS with both counts — it never writes as many as fit', () => {
   assert.throws(
     () => replaceBlockTextsExact(CHAPTER, [null, 'one', null]),
-    /block count mismatch — document has 5 non-empty block elements, caller supplied 3/
+    /block count mismatch — document has 8 non-empty block elements, caller supplied 3/
   );
-  assert.throws(() => replaceBlockTextsExact(CHAPTER, new Array(6).fill(null)), /supplied 6/);
+  assert.throws(() => replaceBlockTextsExact(CHAPTER, new Array(9).fill(null)), /supplied 9/);
 });
 
 // ── 7. End to end over a chapter ────────────────────────────────────────────
+
+/** Rewrites long enough to clear the gate on the fixture's 150-char paragraphs. */
+const R2 = 'The first paragraph again, rewritten so that a child can follow every word of it.';
+const R3 = '"No."';
+const R4 = 'A very emphatic paragraph, rewritten just as plainly as the one before it was.';
+const R5 = 'The last paragraph, rewritten to be shorter but still complete enough to keep.';
 
 test('a whole chapter: headings byte-identical, uids intact, rewrites in place', async () => {
   const plan = planChapterBlockGroups(CHAPTER);
   assert.deepStrictEqual(
     plan.blocks.map(b => b.tagName),
-    ['h1', 'p', 'p', 'p', 'p'],
+    ['h1', 'p', 'h2', 'p', 'p', 'p', 'h2', 'p'],
     'the block list is the chapter in document order'
   );
-  // h1 (never sent) | p1+p2 | "HEIL HITLER!" (too short) | p4
-  assert.deepStrictEqual(plan.groups.map(g => g.blocks.map(b => b.index)), [[1, 2], [4]]);
+  // "A Novel" is a run of its own between two headings, and too short to send.
+  // The dialogue line rides along with the paragraphs either side of it.
+  assert.deepStrictEqual(plan.groups.map(g => g.blocks.map(b => b.index)), [[1], [3, 4, 5], [7]]);
+  assert.deepStrictEqual(plan.groups.map(g => g.send), [false, true, true]);
+  assert.deepStrictEqual(plan.sendable.map(g => g.blocks.map(b => b.index)), [[3, 4, 5], [7]]);
 
   const call = scriptedCall([
-    answerOf([1, 'The first paragraph, rewritten so a child can follow it easily.'],
-             [2, 'A very emphatic paragraph, rewritten just as plainly as the first one was.']),
-    answerOf([1, 'The last paragraph, rewritten to be shorter but still complete enough.']),
+    answerOf([1, R2], [2, R3], [3, R4]),
+    answerOf([1, R5]),
   ]);
   const state = newCleanupJobState();
   const seen = [];
@@ -513,7 +627,7 @@ test('a whole chapter: headings byte-identical, uids intact, rewrites in place',
   const out = await simplifyChapterBlocks({
     xhtml: CHAPTER,
     plan,
-    groups: plan.groups,
+    groups: plan.sendable,
     chapterTitle: 'BLACK SUN',
     call,
     state,
@@ -524,60 +638,77 @@ test('a whole chapter: headings byte-identical, uids intact, rewrites in place',
   });
 
   assert.deepStrictEqual(seen, [
-    `start 1 (${plan.blocks[1].text.length + plan.blocks[2].text.length} chars)`,
+    `start 1 (${plan.sendable[0].chars} chars)`,
     'done 1',
-    `start 2 (${plan.blocks[4].text.length} chars)`,
+    `start 2 (${plan.sendable[1].chars} chars)`,
     'done 2',
-  ], 'progress fires once before and once after each group, in job-wide numbering');
+  ], 'progress fires once before and once after each SENT group, in job-wide numbering');
 
-  // The heading and the stub were never sent, so they come out untouched.
+  // Headings and the unsent title line come out untouched, byte for byte.
   assert.ok(out.includes('<h1 data-bf-uid="u-h1" class="chapter-title">BLACK SUN</h1>'));
-  assert.ok(out.includes('<p data-bf-uid="u-p3">HEIL HITLER!</p>'));
+  assert.ok(out.includes('<h2 data-bf-uid="u-h2">One</h2>'));
+  assert.ok(out.includes('<h2 data-bf-uid="u-h3">Two</h2>'));
+  assert.ok(out.includes('<p data-bf-uid="u-p1">A Novel</p>'), 'the unsent group was never written');
   // Element enumeration is unchanged — same count, same uids, same order.
   const after = extractBlockTextsWithTags(out);
   assert.strictEqual(after.length, plan.blocks.length);
-  assert.deepStrictEqual(after.map(b => b.attrs['data-bf-uid']), ['u-h1', 'u-p1', 'u-p2', 'u-p3', 'u-p4']);
-  assert.deepStrictEqual(after.map(b => b.tagName), ['h1', 'p', 'p', 'p', 'p']);
-  // And the rewrites landed on their own elements.
-  assert.strictEqual(after[1].text, 'The first paragraph, rewritten so a child can follow it easily.');
-  assert.strictEqual(after[2].text, 'A very emphatic paragraph, rewritten just as plainly as the first one was.');
-  assert.strictEqual(after[4].text, 'The last paragraph, rewritten to be shorter but still complete enough.');
+  assert.deepStrictEqual(after.map(b => b.attrs['data-bf-uid']), ALL_UIDS);
+  assert.deepStrictEqual(after.map(b => b.tagName), ['h1', 'p', 'h2', 'p', 'p', 'p', 'h2', 'p']);
+  // And the rewrites landed on their own elements — the short one included.
+  assert.strictEqual(after[3].text, R2);
+  assert.strictEqual(after[4].text, R3, 'the dialogue line was simplified WITH its context');
+  assert.strictEqual(after[5].text, R4);
+  assert.strictEqual(after[7].text, R5);
   assert.deepStrictEqual(state.skippedChunks, []);
 });
 
-test('a chapter whose model gives nothing usable comes back BYTE-IDENTICAL', async () => {
+test('a chapter whose model gives nothing usable comes back UNWRITTEN', async () => {
   const plan = planChapterBlockGroups(CHAPTER);
   const call = scriptedCall([
-    new Error('REASONING_OVERRUN: no answer'),   // group 1
-    new Error('REASONING_OVERRUN: no answer'),   // block 1 alone
-    new Error('REASONING_OVERRUN: no answer'),   // block 2 alone
-    new Error('REASONING_OVERRUN: no answer'),   // group 2 (a single, so one call)
+    new Error('REASONING_OVERRUN: no answer'),   // group 1 (3 blocks)
+    new Error('REASONING_OVERRUN: no answer'),   // …then each of its blocks alone
+    new Error('REASONING_OVERRUN: no answer'),
+    new Error('REASONING_OVERRUN: no answer'),
+    new Error('REASONING_OVERRUN: no answer'),   // group 2 is a single: one call
   ]);
   const state = newCleanupJobState();
   const out = await simplifyChapterBlocks({
-    xhtml: CHAPTER, plan, groups: plan.groups, chapterTitle: 'BLACK SUN',
+    xhtml: CHAPTER, plan, groups: plan.sendable, chapterTitle: 'BLACK SUN',
     call, state, firstGroupNumber: 1, totalGroupsInJob: 2,
   });
 
-  assert.strictEqual(out, CHAPTER, 'nothing was written, so nothing changed');
-  assert.strictEqual(state.errorFallbackCount, 3, 'one per failed BLOCK');
-  assert.deepStrictEqual(state.skippedChunks.map(s => s.chunkIndex), [1, 2, 4], 'recorded by block index');
+  assert.strictEqual(out, CHAPTER_SERIALIZED, 'nothing was written, so nothing changed');
+  assert.strictEqual(call.sent.length, 5);
+  assert.strictEqual(state.errorFallbackCount, 4, 'one per failed BLOCK');
+  assert.deepStrictEqual(state.skippedChunks.map(s => s.chunkIndex), [3, 4, 5, 7], 'recorded by block index');
 });
 
 test('groups test mode cut off leave their blocks untouched, not "processed"', async () => {
   const plan = planChapterBlockGroups(CHAPTER);
-  const call = scriptedCall([answerOf([1, 'Rewritten one, and comfortably long enough to clear the acceptance gate.'],
-                                      [2, 'Rewritten two, also comfortably long enough to clear the gate.'])]);
+  const call = scriptedCall([answerOf([1, R2], [2, R3], [3, R4])]);
   const state = newCleanupJobState();
   const out = await simplifyChapterBlocks({
     xhtml: CHAPTER, plan,
-    groups: plan.groups.slice(0, 1),   // testModeChunks = 1
+    groups: plan.sendable.slice(0, 1),   // testModeChunks = 1
     chapterTitle: 'BLACK SUN', call, state, firstGroupNumber: 1, totalGroupsInJob: 1,
   });
   const after = extractBlockTextsWithTags(out);
-  assert.strictEqual(after[1].text, 'Rewritten one, and comfortably long enough to clear the acceptance gate.');
-  assert.strictEqual(after[4].text, plan.blocks[4].text, 'the untouched group kept its original text');
+  assert.strictEqual(after[3].text, R2);
+  assert.strictEqual(after[7].text, plan.blocks[7].text, 'the group the limit cut off kept its original text');
   assert.strictEqual(call.sent.length, 1);
+});
+
+test('handing simplifyChapterBlocks an UNSENDABLE group is refused, not quietly sent', async () => {
+  const plan = planChapterBlockGroups(CHAPTER);
+  const state = newCleanupJobState();
+  await assert.rejects(
+    () => simplifyChapterBlocks({
+      xhtml: CHAPTER, plan, groups: plan.groups,   // includes the "A Novel" run
+      chapterTitle: 'BLACK SUN', call: scriptedCall([]), state,
+      firstGroupNumber: 1, totalGroupsInJob: 3,
+    }),
+    /was handed an unsendable group \(7 chars, under 120\)/
+  );
 });
 
 // ── Run ─────────────────────────────────────────────────────────────────────

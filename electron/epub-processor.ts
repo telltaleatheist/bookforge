@@ -3238,6 +3238,14 @@ export function extractBlockTextsWithTags(
  * The document is never re-emitted from scratch: element identity, every
  * attribute (`data-bf-uid` and friends), and the surrounding whitespace are
  * untouched because nothing but the replaced text nodes is written.
+ *
+ * One honest caveat: the result goes back out through cheerio's XML serializer,
+ * which spells entities its own way — a literal `"` inside text comes back as
+ * `&quot;`. That is a re-spelling of the same XML, not an edit (it parses back
+ * to the identical text, so extracted text, diffs and TTS all see no change),
+ * and it applies uniformly whether a block was rewritten or not. It cannot be
+ * switched off: dom-serializer's `encodeEntities: false` also stops escaping
+ * `&`, which would emit invalid XML.
  */
 export function replaceBlockTextsExact(xhtml: string, texts: Array<string | null>): string {
   const $ = cheerio.load(xhtml, { xmlMode: true });

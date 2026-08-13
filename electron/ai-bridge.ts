@@ -1563,18 +1563,31 @@ function simplifyRulesBody(promptText: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Below this many characters a block has nothing to simplify — a title line, a
- * shouted interjection, a list stub. Those are the blocks that die
- * deterministically when sent (see above), and sending them buys nothing, so
- * they are never sent and never rewritten.
+ * Most blocks in one group call. Big enough that a run of dialogue — where every
+ * `"No," she said.` is its own <p> — travels as one exchange the model can hear,
+ * small enough that the id set stays trivially checkable.
  */
-export const MIN_SIMPLIFY_BLOCK_CHARS = 50;
-
-/** Most blocks in one group call. Small groups keep the model's thinking short. */
-export const MAX_BLOCKS_PER_GROUP = 3;
+export const MAX_BLOCKS_PER_GROUP = 8;
 
 /** Most characters of block text in one group call (a single longer block goes alone). */
 export const GROUP_CHAR_CAP = 4000;
+
+/**
+ * A group is only worth a model call at this combined length. The decision is per
+ * GROUP, never per block: a short line inside a paragraph run must be simplified
+ * WITH its context, and only a group that is short in TOTAL — a title page's
+ * "BLACK SUN" + author + subtitle, an orphan line stranded between two headings —
+ * has nothing for the model to do. Those are kept verbatim, uncalled.
+ */
+export const MIN_GROUP_SEND_CHARS = 120;
+
+/**
+ * The 40% acceptance gate only means something above this input length. Forty
+ * percent of `"No," she said.` is six characters, so the gate on a tiny line
+ * measures nothing and would reject legitimate short rewrites; those blocks are
+ * validated structurally instead (the tag came back, with text in it).
+ */
+export const GATE_MIN_INPUT_CHARS = 50;
 
 /**
  * num_predict floor for a block call. The simplify prompt enables in-band
@@ -1594,34 +1607,37 @@ export interface SimplifyBlockRef {
   text: string;
 }
 
-/** A run of consecutive sendable blocks that travel to the model in one call. */
+/** A run of consecutive non-heading blocks, and whether it earns a model call. */
 export interface SimplifyBlockGroup {
   blocks: SimplifyBlockRef[];
+  /** Combined length of the member texts. */
+  chars: number;
+  /** chars >= MIN_GROUP_SEND_CHARS — an unsent group is kept verbatim. */
+  send: boolean;
 }
 
-/**
- * Is this block worth sending to a simplify model?
- *
- * Headings are never sent: simplification has nothing to do to a chapter title,
- * and leaving them out means they pass through the whole job byte-identical.
- * Anything shorter than MIN_SIMPLIFY_BLOCK_CHARS is likewise left alone.
- */
-export function isSendableSimplifyBlock(block: { text: string; tagName: string }): boolean {
-  if (/^h[1-6]$/.test(block.tagName.toLowerCase())) return false;
-  return block.text.length >= MIN_SIMPLIFY_BLOCK_CHARS;
+/** Headings are the one categorical exclusion: never sent, never rewritten. */
+export function isSimplifyHeadingBlock(block: { tagName: string }): boolean {
+  return /^h[1-6]$/.test(block.tagName.toLowerCase());
 }
 
 /**
  * Pack a chapter's blocks into groups.
  *
- * Groups are runs of CONSECUTIVE sendable blocks, greedily filled to
- * MAX_BLOCKS_PER_GROUP blocks / GROUP_CHAR_CAP characters. A non-sendable block
- * terminates the run, so a group never spans a heading and the model never sees
- * two unrelated stretches of the chapter as one input.
+ * Groups are runs of CONSECUTIVE non-heading blocks, greedily filled to
+ * MAX_BLOCKS_PER_GROUP blocks / GROUP_CHAR_CAP characters. A heading terminates
+ * the run, so a group never spans one and the model never sees two unrelated
+ * stretches of the chapter as a single input.
  *
- * A single block longer than the cap forms a group by itself. Blocks are NEVER
- * split: one block in, one block out is the entire contract that lets the answer
- * be written back without guessing.
+ * Short blocks are members like any other. A line of dialogue is its own <p> in
+ * fiction, and it has to be simplified alongside the paragraph it answers — a
+ * per-block length filter would have stranded exactly the lines that need their
+ * context most. What the length decides is only whether the GROUP is worth a
+ * call at all (`send`).
+ *
+ * A single block longer than the char cap forms a group by itself. Blocks are
+ * NEVER split: one block in, one block out is the entire contract that lets the
+ * answer be written back without guessing.
  */
 export function groupSimplifyBlocks(
   blocks: Array<{ text: string; tagName: string }>
@@ -1631,14 +1647,16 @@ export function groupSimplifyBlocks(
   let currentChars = 0;
 
   const flush = () => {
-    if (current.length > 0) groups.push({ blocks: current });
+    if (current.length > 0) {
+      groups.push({ blocks: current, chars: currentChars, send: currentChars >= MIN_GROUP_SEND_CHARS });
+    }
     current = [];
     currentChars = 0;
   };
 
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i];
-    if (!isSendableSimplifyBlock(block)) {
+    if (isSimplifyHeadingBlock(block)) {
       flush();
       continue;
     }
@@ -1744,21 +1762,32 @@ export function parseBlockAnswer(answer: string, expectedCount: number): string[
 export type BlockVerdict =
   | { accept: true; text: string }
   | { accept: false; reason: 'skip-marker' }
+  | { accept: false; reason: 'empty' }
   | { accept: false; reason: 'acceptance-gate'; detail: string }
   | { accept: false; reason: 'repetition'; detail: string };
 
 /**
- * Decide whether ONE returned block may replace its source block.
+ * Decide whether ONE returned block may replace its source block. Every "no"
+ * keeps the original text; they differ in whether they cost a fallback counter.
  *
- * Three ways to say no, all of which keep the original text:
- *  - the model echoed `[SKIP]`, i.e. declined this block. That is an answer, not
- *    a failure — it costs no fallback counter (matching how the prose path has
- *    always treated a skip marker).
- *  - catastrophic loss: under 40% of the input's length. Simplification
- *    legitimately shortens and merges sentences, so the gate is loose; below it,
- *    the block's content is simply gone. Counted toward the abort threshold.
- *  - a repetition loop. A loop produces MORE text, so the length gate cannot see
- *    it; shipping one puts a sentence in the book a hundred times. Content-
+ * Free (the model answered, the answer is just not a replacement):
+ *  - it echoed `[SKIP]`, i.e. declined this block — the same reading the prose
+ *    path has always given a skip marker;
+ *  - it returned a SHORT block's tag with nothing in it. Below
+ *    GATE_MIN_INPUT_CHARS that structural check is the only check there is, and
+ *    an empty answer for a line of dialogue is the model saying nothing rather
+ *    than losing something.
+ *
+ * Counted (the answer would damage the book):
+ *  - catastrophic loss on a block of GATE_MIN_INPUT_CHARS or more: under 40% of
+ *    the input's length (an empty answer included — for a real paragraph that is
+ *    the most complete loss there is). Simplification legitimately shortens and
+ *    merges sentences, so the gate is loose; below it the block's content is
+ *    gone. Blocks shorter than that are NOT length-gated at all — 40% of
+ *    `"No," she said.` is six characters, a threshold that measures nothing and
+ *    would reject perfectly good short rewrites;
+ *  - a repetition loop. A loop produces MORE text, so no length gate can see it,
+ *    and shipping one puts a sentence in the book a hundred times. Content-
  *    correlated, so like the group-level failures it is not re-rolled.
  */
 export function judgeBlockRewrite(original: string, returned: string): BlockVerdict {
@@ -1766,12 +1795,20 @@ export function judgeBlockRewrite(original: string, returned: string): BlockVerd
   if (trimmed === '[SKIP]') {
     return { accept: false, reason: 'skip-marker' };
   }
-  if (trimmed.length < original.length * SIMPLIFY_BLOCK_ACCEPT_RATIO) {
-    return {
-      accept: false,
-      reason: 'acceptance-gate',
-      detail: `${trimmed.length} chars vs ${original.length} input (<${Math.round(SIMPLIFY_BLOCK_ACCEPT_RATIO * 100)}%)`,
-    };
+  if (original.length >= GATE_MIN_INPUT_CHARS) {
+    // Long enough for the length gate to mean something. An EMPTY answer lands
+    // here too, and rightly counts: for a real paragraph it is the most complete
+    // loss there is.
+    if (trimmed.length < original.length * SIMPLIFY_BLOCK_ACCEPT_RATIO) {
+      return {
+        accept: false,
+        reason: 'acceptance-gate',
+        detail: `${trimmed.length} chars vs ${original.length} input (<${Math.round(SIMPLIFY_BLOCK_ACCEPT_RATIO * 100)}%)`,
+      };
+    }
+  } else if (trimmed.length === 0) {
+    // Structural validation only: the tag came back, but with nothing in it.
+    return { accept: false, reason: 'empty' };
   }
   const rep = detectRepetition(trimmed);
   if (rep.repeated) {
@@ -3344,9 +3381,10 @@ export async function simplifyBlockGroup(
         into[memberIdx] = verdict.text;
         continue;
       }
-      if (verdict.reason === 'skip-marker') {
-        // The model declined this block. An answer, not a failure — no counter.
-        console.log(`[AI-SIMPLIFY] Block ${group.blocks[memberIdx].index} returned [SKIP] — keeping original`);
+      if (verdict.reason === 'skip-marker' || verdict.reason === 'empty') {
+        // The model declined this block, or said nothing for it. An answer, not
+        // a failure — the original stands and no counter moves.
+        console.log(`[AI-SIMPLIFY] Block ${group.blocks[memberIdx].index} returned ${verdict.reason === 'empty' ? 'an empty block' : '[SKIP]'} — keeping original`);
         continue;
       }
       if (verdict.reason === 'acceptance-gate') {
@@ -3408,10 +3446,19 @@ export async function simplifyBlockGroup(
   return finals;
 }
 
-/** A chapter's blocks and the groups packed out of them. */
+/** A chapter's blocks, the groups packed out of them, and the ones worth a call. */
 export interface ChapterBlockPlan {
   blocks: Array<{ text: string; tagName: string; attrs: Record<string, string> }>;
+  /** Every group, sendable or not. */
   groups: SimplifyBlockGroup[];
+  /**
+   * The subset with `send` — the chapter's actual WORK, and therefore the unit
+   * the job counts, checkpoints, limits in test mode and shows as "Chunk N/M".
+   * A group under MIN_GROUP_SEND_CHARS is not a unit of work: nothing is sent,
+   * nothing is written, and counting it would make a title-page chapter look
+   * like progress.
+   */
+  sendable: SimplifyBlockGroup[];
 }
 
 /**
@@ -3422,18 +3469,19 @@ export interface ChapterBlockPlan {
  */
 export function planChapterBlockGroups(xhtml: string): ChapterBlockPlan {
   const blocks = extractBlockTextsWithTags(xhtml);
-  return { blocks, groups: groupSimplifyBlocks(blocks) };
+  const groups = groupSimplifyBlocks(blocks);
+  return { blocks, groups, sendable: groups.filter(g => g.send) };
 }
 
 /**
  * Simplify one chapter, group by group, and return the rebuilt XHTML.
  *
  * The writer is handed one entry per block: `null` for every block this pass did
- * not change — headings, blocks too short to send, groups test mode cut off, and
- * blocks whose rewrite was rejected — and the rewritten string for the rest.
- * `null` is not "the original text" written back; it is NOT WRITING, which is
- * why a heading comes out of this pass byte-identical and an untouched paragraph
- * keeps its inline <em>/<a>/<sup> markup.
+ * not change — headings, the members of a group too short to be worth a call,
+ * groups test mode cut off, and blocks whose rewrite was rejected — and the
+ * rewritten string for the rest. `null` is not "the original text" written back;
+ * it is NOT WRITING, which is why a heading comes out of this pass
+ * byte-identical and an untouched paragraph keeps its inline <em>/<a>/<sup>.
  *
  * Progress and cancellation are the caller's: `beforeGroup` runs before each
  * group (throw from it to cancel), `afterGroup` after each one (throw from it —
@@ -3442,7 +3490,11 @@ export function planChapterBlockGroups(xhtml: string): ChapterBlockPlan {
 export async function simplifyChapterBlocks(opts: {
   xhtml: string;
   plan: ChapterBlockPlan;
-  /** Groups to process — a prefix of plan.groups (test mode trims it). */
+  /**
+   * Groups to process — a prefix of `plan.sendable` (test mode trims it). Every
+   * one of them IS sent; an unsent group never reaches this function, so a
+   * progress tick here always means a model call happened.
+   */
   groups: SimplifyBlockGroup[];
   chapterTitle: string;
   call: SimplifyBlockCall;
@@ -3460,8 +3512,15 @@ export async function simplifyChapterBlocks(opts: {
 
   for (let g = 0; g < groups.length; g++) {
     const group = groups[g];
+    if (!group.send) {
+      // The caller filtered wrong. Sending it anyway would burn a call on three
+      // words AND make the job's unit count disagree with the pre-scan's.
+      throw new Error(
+        `simplifyChapterBlocks: was handed an unsendable group (${group.chars} chars, under ${MIN_GROUP_SEND_CHARS}) — pass plan.sendable`
+      );
+    }
     const groupNumber = firstGroupNumber + g;
-    const charCount = group.blocks.reduce((n, b) => n + b.text.length, 0);
+    const charCount = group.chars;
 
     if (opts.beforeGroup) await opts.beforeGroup(groupNumber, charCount);
 
@@ -4630,7 +4689,8 @@ export async function cleanupEpub(
      * groups packed out of them. `jobChunkSize` is a chunk-era knob and has NO
      * effect here — group size is MAX_BLOCKS_PER_GROUP / GROUP_CHAR_CAP, because
      * a group is a whole number of blocks, never a character budget cut through
-     * one.
+     * one. `plan.sendable` is the work; `plan.groups` is every run, including the
+     * short ones that are kept verbatim.
      */
     const loadChapterBlockGroups = async (
       proc: InstanceType<typeof import('./epub-processor.js').EpubProcessor>,
@@ -4661,18 +4721,19 @@ export async function cleanupEpub(
       if (!chapterText.trim()) continue;
 
       if (simplifyBlockMode) {
-        // Count GROUPS. Headings and sub-MIN_SIMPLIFY_BLOCK_CHARS blocks form no
-        // group at all, so a title-page chapter contributes zero units instead of
-        // one doomed chunk per line. The largest group's SERIALIZED payload is
-        // kept for num_ctx sizing — the tags are part of what the model reads.
-        const { groups } = planChapterBlockGroups(xhtml);
-        if (groups.length > 0) {
-          for (const group of groups) {
+        // Count SENDABLE groups. Headings form no group at all, and a group whose
+        // whole text is a title page's three short lines is kept verbatim without
+        // a call — so such a chapter contributes zero units, instead of one doomed
+        // chunk per line. The largest group's SERIALIZED payload is what sizes
+        // num_ctx: the tags are part of what the model has to read.
+        const { sendable } = planChapterBlockGroups(xhtml);
+        if (sendable.length > 0) {
+          for (const group of sendable) {
             const payload = serializeBlocksForModel(group.blocks.map(b => b.text));
             if (payload.length > longestChunkText.length) longestChunkText = payload;
           }
-          chapterMetas.push({ chapter, chunkCount: groups.length, href });
-          totalChunksInJob += groups.length;
+          chapterMetas.push({ chapter, chunkCount: sendable.length, href });
+          totalChunksInJob += sendable.length;
         }
         continue;
       }
@@ -5161,10 +5222,11 @@ export async function cleanupEpub(
           const loadedBlocks = await loadChapterBlockGroups(processor, meta.href);
           if (!loadedBlocks) continue;
 
-          // In test mode, chunkCount (= group count) may be limited. Groups the
-          // limit cuts off are simply never sent, and their blocks stay null in
-          // the writer — untouched, not "processed and unchanged".
-          const chapterGroups = loadedBlocks.plan.groups.slice(0, meta.chunkCount);
+          // In test mode, chunkCount (= sendable-group count) may be limited.
+          // Groups the limit cuts off — and the short ones that were never
+          // sendable — are simply never sent, and their blocks stay null in the
+          // writer: untouched, not "processed and unchanged".
+          const chapterGroups = loadedBlocks.plan.sendable.slice(0, meta.chunkCount);
           chapterXhtmlMap.set(chapter.id, loadedBlocks.xhtml);
 
           let groupStartTime = 0;
