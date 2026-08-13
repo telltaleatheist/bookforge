@@ -66,9 +66,12 @@ const row = (id, type, extension, familyId) => ({ id, type, extension, familyId:
  * TRUE here so every arrangement claim below keeps asserting the full chain;
  * the gate it drives has its own tests.
  */
-const family = (id, sourceKind, sourceName, ledger, archiveRowId, hasWorkingChanges) => ({
+const family = (id, sourceKind, sourceName, ledger, archiveRowId, hasWorkingChanges, hasSource) => ({
   id, sourceKind, sourceName, ledger: ledger ?? [], archiveRowId: archiveRowId ?? null,
   hasWorkingChanges: hasWorkingChanges ?? true,
+  // The ordinary state: a chain's archive-grade source is on disk. It gates the
+  // FIRST pass's compare only, and that gate has its own tests below.
+  hasSource: hasSource ?? true,
 });
 
 // ── The two fixtures every sole-chain claim is made against ──────────────────
@@ -94,8 +97,11 @@ const epubProject = [
 const epubChain = (ledger) =>
   family(EPUB_CHAIN, 'archive-epub', 'Killing America.epub', ledger, null);
 
-const entry = (id, kind, label, hasReceipt) => ({
+const entry = (id, kind, label, hasReceipt, hasSnapshot) => ({
   id, kind, label, createdAt: '2026-08-09T10:00:00.000Z', hasReceipt,
+  // An entry whose snapshot is gone is a real state and has its own tests; the
+  // ordinary one is a pass whose book is where the ledger says it is.
+  hasSnapshot: hasSnapshot ?? true,
 });
 
 const kindsOf = (lines) => lines.map((l) => l.kind);
@@ -424,6 +430,67 @@ test('Review changes is offered per ledger line, and says so when the diff is mi
   // button with a reason, never a silent gap.
   assert.strictEqual(without.buttons.review, 'no-receipt');
   assert.strictEqual(lines.find((l) => l.kind === 'book').buttons.review, 'none');
+});
+
+test('Compare is offered per ledger line, and needs BOTH books', () => {
+  // The side-by-side reads two files: the book this pass ran on and the book it
+  // left. Which two is `deriveWorkingCopy`'s contract, stated in
+  // CompareAffordance — entry N-1's snapshot (the chain's source, for the first
+  // pass) against entry N's own.
+  const lines = bookChain({
+    rows: pdfProject,
+    families: [pdfChain([
+      entry('01-simplify-aa', 'simplify', 'Simplify', true),
+      entry('02-translate-bb', 'translate', 'Translate', false),
+    ])],
+  });
+  const [first, second] = lines.filter((l) => l.kind === 'ledger');
+  assert.strictEqual(first.buttons.compare, 'ready');
+  // Translate deliberately freezes no diff, so its Review is disabled — and its
+  // compare is the ONLY account of it the user has ever been offered. The two
+  // affordances are independent by construction, which is the whole point.
+  assert.strictEqual(second.buttons.review, 'no-receipt');
+  assert.strictEqual(second.buttons.compare, 'ready');
+  assert.strictEqual(lines.find((l) => l.kind === 'book').buttons.compare, 'none');
+  assert.strictEqual(
+    lines.find((l) => l.kind === 'working-changes').buttons.compare, 'none',
+    'the standing records are not a pass, so there is no pair of books to show');
+});
+
+test('a pass whose own snapshot is gone compares as no-after', () => {
+  const lines = bookChain({
+    rows: pdfProject,
+    families: [pdfChain([entry('01-simplify-aa', 'simplify', 'Simplify', true, false)])],
+  });
+  assert.strictEqual(lines.find((l) => l.kind === 'ledger').buttons.compare, 'no-after');
+});
+
+test('the FIRST pass compares against the chain\'s source, and says so when it is gone', () => {
+  // Not a fallback to "compare it with itself": the first pass ran on the
+  // archive-grade book, exactly as `deleteLedgerEntry` derives from the base
+  // when nothing stands, and a chain whose source is missing has no before.
+  const withoutSource = family(
+    PDF_CHAIN, 'generated-epub', 'Deathstalker.generated.epub',
+    [entry('01-simplify-aa', 'simplify', 'Simplify', true)], PDF_ROW, true, false);
+  const lines = bookChain({ rows: pdfProject, families: [withoutSource] });
+  assert.strictEqual(lines.find((l) => l.kind === 'ledger').buttons.compare, 'no-before');
+});
+
+test('a LATER pass compares against the pass before it, not against the source', () => {
+  // The source is on disk and the first entry's snapshot is not. The first pass
+  // still compares; the second cannot, because the book IT ran on is the file
+  // that went missing. A compare that quietly reached past the gap to the base
+  // would show two passes' worth of change under one pass's name.
+  const lines = bookChain({
+    rows: pdfProject,
+    families: [pdfChain([
+      entry('01-simplify-aa', 'simplify', 'Simplify', true, false),
+      entry('02-translate-bb', 'translate', 'Translate', false, true),
+    ])],
+  });
+  const [first, second] = lines.filter((l) => l.kind === 'ledger');
+  assert.strictEqual(first.buttons.compare, 'no-after');
+  assert.strictEqual(second.buttons.compare, 'no-before');
 });
 
 test('Erase all changes is a SPECIAL on every book line, and never the delete', () => {
