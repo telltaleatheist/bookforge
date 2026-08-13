@@ -3216,6 +3216,59 @@ export function extractBlockTextsWithTags(
 }
 
 /**
+ * STRICT 1:1 block writer — the counterpart of `extractBlockTextsWithTags`.
+ *
+ * `texts[i]` belongs to the i-th block `extractBlockTextsWithTags` returned, and
+ * to no other. The same selector and the same non-empty-text filter are used
+ * here, so the indices line up BY CONSTRUCTION rather than by a heuristic:
+ *  - `texts[i] === null`  → element i is left completely untouched (headings,
+ *    blocks too short to be worth sending, blocks whose rewrite was rejected).
+ *    Its inline markup (`<em>`, `<a>`, `<sup>`) survives intact.
+ *  - `texts[i]` a string  → the element's children are replaced with that text
+ *    (cheerio escapes it). Inline markup inside a REWRITTEN block is flattened
+ *    to plain text — the same thing the old `rebuildChapterPreservingHeadings`
+ *    path did to every block, so not a regression; the `null` blocks keeping
+ *    theirs is the improvement.
+ *
+ * A count disagreement THROWS. It means the extractor and this writer saw
+ * different documents, which is a real bug that must never be papered over by
+ * writing as many as fit (that is exactly the overflow-absorb heuristic in
+ * `replaceBlockTexts` below, which this function deliberately does not share).
+ *
+ * The document is never re-emitted from scratch: element identity, every
+ * attribute (`data-bf-uid` and friends), and the surrounding whitespace are
+ * untouched because nothing but the replaced text nodes is written.
+ */
+export function replaceBlockTextsExact(xhtml: string, texts: Array<string | null>): string {
+  const $ = cheerio.load(xhtml, { xmlMode: true });
+
+  // Collect first, then write: counting and writing in one pass would mutate the
+  // text the filter reads while it is still deciding which elements qualify.
+  const targets: any[] = [];
+  $(BLOCK_SELECTORS).each((_, el) => {
+    // MUST match extractBlockTextsWithTags's filter exactly (soft-hyphen strip
+    // included) or the indices mean different elements.
+    const text = $(el).text().replace(/\u00AD\s*/g, '').trim();
+    if (text.length > 0) targets.push(el);
+  });
+
+  if (targets.length !== texts.length) {
+    throw new Error(
+      `replaceBlockTextsExact: block count mismatch — document has ${targets.length} non-empty block elements, ` +
+      `caller supplied ${texts.length} texts. Extract and write disagree; refusing to guess an alignment.`
+    );
+  }
+
+  for (let i = 0; i < targets.length; i++) {
+    const replacement = texts[i];
+    if (replacement === null) continue;
+    $(targets[i]).text(replacement);
+  }
+
+  return $.xml();
+}
+
+/**
  * Replace text in each block element in XHTML using cheerio.
  * Takes cleaned texts in the same order as extractBlockTexts returned them.
  * Returns the modified XHTML.
