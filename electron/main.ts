@@ -11656,15 +11656,16 @@ function setupIpcHandlers(): void {
       ? path.join(__dirname, '..', '..', 'bookforge-icon.png')
       : path.join(codeRoot, 'bookforge-icon.png');
 
-    // STARTS phone-shaped (≈9:19.5, iPhone Pro Max points) so it opens looking like
-    // the mobile app — but it's freely resizable (no locked aspect ratio), so the
-    // user can widen it into the player's landscape two-column layout or make it
-    // any size they like.
-    const PHONE_W = 430;
-    const PHONE_H = 932;
+    // STARTS tablet-shaped — the same height as before, widened to an iPad's
+    // portrait proportion (820:1180 points) instead of an iPhone's. Sentences are
+    // now paragraph-sized chunks, and a phone-width column turned each one into a
+    // tower too tall to read without scrolling. Freely resizable as before (no
+    // locked aspect ratio).
+    const TABLET_H = 932;
+    const TABLET_W = Math.round((TABLET_H * 820) / 1180);  // 648
     const listenWindow = new BrowserWindow({
-      width: PHONE_W,
-      height: PHONE_H,
+      width: TABLET_W,
+      height: TABLET_H,
       minWidth: 360,
       minHeight: 480,
       icon: iconPath,

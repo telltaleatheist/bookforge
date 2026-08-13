@@ -11,6 +11,11 @@ export interface ChromeChapter { id: string; title: string; label: string; }
 /** A saved bookmark row. */
 export interface ChromeBookmark { id: string; title: string; sub: string; }
 
+/** Height of the transcript's top fade band (see .text-area's mask): text above
+ *  this line is dissolved into the surface, so nothing meant to be READ may land
+ *  there. Keep in sync with the mask's final stop. */
+const TOP_FADE_PX = 96;
+
 /**
  * PlayerChromeComponent — the shared "web player" surface used by BOTH desktop
  * players (finished-audiobook and live-TTS stream). It owns the entire visual
@@ -33,7 +38,7 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [IconComponent],
   template: `
-    <div class="player">
+    <div class="player" [style.--seg-size]="textSizePx()">
       <header class="topbar">
         <div class="topbar-slot left"><ng-content select="[player-topbar-left]" /></div>
         <div class="topbar-spacer"></div>
@@ -68,6 +73,17 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
             <button class="sleep-cancel" (click)="cancelSleep()">Cancel timer</button>
           </div>
         } @else if (showText()) {
+          <!-- Text size, right where the text is. A sentence is now a paragraph-sized
+               chunk, so how many lines it takes is the difference between reading the
+               whole thing and scrolling inside it — that control belongs on the
+               transcript, not buried in a sheet. It sits in the top fade band, where
+               the text is already dissolved to near-transparent. -->
+          <div class="fsz" role="group" aria-label="Text size">
+            <button class="fsz-btn sm" (click)="bumpTextSize(-1)" [disabled]="textSize() <= MIN_TEXT_SIZE"
+                    title="Smaller text" aria-label="Smaller text">A</button>
+            <button class="fsz-btn lg" (click)="bumpTextSize(1)" [disabled]="textSize() >= MAX_TEXT_SIZE"
+                    title="Larger text" aria-label="Larger text">A</button>
+          </div>
           <div class="text-area" #textArea [class.no-follow]="!followText()"
                (wheel)="onUserScroll()" (touchmove)="onUserScroll()">
             <!-- Half-viewport spacers top & bottom so the FIRST / current / LAST
@@ -328,12 +344,27 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
     .status-slot:empty, .above-list-slot:empty, .topbar-slot:empty { }
     .above-list-slot { flex-shrink: 0; }
 
-    .player-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    /* position: relative so the text-size stepper can pin to the transcript's
+       top-right corner without scrolling away with the text. */
+    .player-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+    .fsz { position: absolute; top: 4px; right: 8px; z-index: 2; display: flex; align-items: center; gap: 2px; opacity: 0.45; transition: opacity 0.2s ease; }
+    .fsz:hover, .fsz:focus-within { opacity: 1; }
+    .fsz-btn { width: 28px; height: 28px; padding: 0; border: none; border-radius: 50%; background: transparent;
+      color: var(--text-secondary); cursor: pointer; font-weight: 700; line-height: 1; }
+    .fsz-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+    .fsz-btn:disabled { opacity: 0.3; cursor: default; }
+    .fsz-btn.sm { font-size: 11px; }
+    .fsz-btn.lg { font-size: 17px; }
 
     /* Transcript scroll region. Top/bottom edges fade to transparent (revealing the
        seamless surface behind) so lines dissolve in/out instead of a hard cut. The
-       mask is fixed to the box, so rows scroll under it. */
-    .text-area { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 12px 22px; scroll-behavior: smooth;
+       mask is fixed to the box, so rows scroll under it.
+       The side padding grows once the window is wider than a comfortable measure, so
+       widening the player centers a readable column instead of stretching sentences
+       into one long line. */
+    .text-area { flex: 1; overflow-y: auto; overscroll-behavior: contain; scroll-behavior: smooth;
+      padding: 12px max(22px, calc((100% - 660px) / 2));
       -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.12) 24px, rgba(0,0,0,0.5) 56px, #000 96px, #000 calc(100% - 96px), rgba(0,0,0,0.5) calc(100% - 56px), rgba(0,0,0,0.12) calc(100% - 24px), transparent 100%);
       mask-image: linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.12) 24px, rgba(0,0,0,0.5) 56px, #000 96px, #000 calc(100% - 96px), rgba(0,0,0,0.5) calc(100% - 56px), rgba(0,0,0,0.12) calc(100% - 24px), transparent 100%); }
     /* Half the visible scroll height, so the first/last sentence can reach center. */
@@ -346,7 +377,7 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
     .segment.past { opacity: 0.4; }
     .segment.active { opacity: 1; border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface)); }
     .text-area.no-follow .segment { opacity: 1; }
-    .segment p { margin: 0; font-size: 16px; line-height: 1.6; color: var(--text-primary); }
+    .segment p { margin: 0; font-size: var(--seg-size, 15px); line-height: 1.6; color: var(--text-primary); }
 
     /* Cover view: locked to the visible area, NEVER scrolls (overflow hidden), and
        carries no fade mask — the artwork stays crisp and fills the space. */
@@ -576,6 +607,30 @@ export class PlayerChromeComponent implements OnDestroy {
   readonly customMinutes = signal(45);
   readonly presets = [5, 10, 15, 30, 45, 60];
 
+  // ── Transcript text size ────────────────────────────────────────────────
+  // Sentences are paragraph-sized chunks now, so the reader has to be able to
+  // trade size for how much of a chunk is on screen at once. Persisted per
+  // machine (not per book) — it's a comfort setting, like speed.
+  static readonly TEXT_SIZE_KEY = 'bookforge-player-text-size';
+  readonly MIN_TEXT_SIZE = 12;
+  readonly MAX_TEXT_SIZE = 24;
+  readonly textSize = signal(PlayerChromeComponent.loadTextSize());
+  /** Bound to --seg-size as a complete CSS length (custom properties take no unit suffix). */
+  readonly textSizePx = computed(() => `${this.textSize()}px`);
+
+  private static loadTextSize(): number {
+    const raw = Number(localStorage.getItem(PlayerChromeComponent.TEXT_SIZE_KEY));
+    return Number.isFinite(raw) && raw >= 12 && raw <= 24 ? raw : 15;
+  }
+
+  bumpTextSize(delta: number): void {
+    const next = Math.min(this.MAX_TEXT_SIZE, Math.max(this.MIN_TEXT_SIZE, this.textSize() + delta));
+    this.textSize.set(next);
+    localStorage.setItem(PlayerChromeComponent.TEXT_SIZE_KEY, String(next));
+    // Resizing reflows every segment, so the line the reader is on has moved.
+    if (this.followText() && this.showText()) requestAnimationFrame(() => this.scrollToActive(this.activeIndex()));
+  }
+
   // Progressive transcript reveal: a full audiobook is thousands of cues, and
   // building them all in one synchronous pass freezes the window on open. We
   // render a small first window (controls are usable instantly) and grow it over
@@ -702,6 +757,16 @@ export class PlayerChromeComponent implements OnDestroy {
     // Native center-in-scrollport: the browser measures it, so the active line
     // lands in the MIDDLE of the transcript (clear of the top/bottom fade) rather
     // than drifting low from stale manual scrollTop/rect math during playback.
+    //
+    // A chunk taller than the transcript can't be centered AND read — centering it
+    // hides its opening above the top edge, which is exactly where you start
+    // reading. Those are scrolled so their FIRST line sits just clear of the top
+    // fade band instead, and you read down through the rest.
+    if (el.offsetHeight > container.clientHeight * 0.85) {
+      const top = el.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+      container.scrollTo({ top: Math.max(0, top - TOP_FADE_PX), behavior: 'smooth' });
+      return;
+    }
     el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
   }
 
