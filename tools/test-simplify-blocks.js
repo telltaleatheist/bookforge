@@ -298,6 +298,17 @@ test('[SKIP] keeps the original and is NOT a failure', () => {
   assert.strictEqual(v.reason, 'skip-marker');
 });
 
+test('a skip marker with narration after it is still a skip, never book text', () => {
+  // Prefix match, like checkAIOutput on the prose path: an equality check would
+  // have accepted "[SKIP] nothing to do" as the block's text and written it in.
+  const v = judgeBlockRewrite(prose(30), '[SKIP] nothing to do here');
+  assert.strictEqual(v.accept, false);
+  assert.strictEqual(v.reason, 'skip-marker');
+  const v2 = judgeBlockRewrite(prose(300), '[NO READABLE TEXT]');
+  assert.strictEqual(v2.accept, false);
+  assert.strictEqual(v2.reason, 'skip-marker');
+});
+
 test('under 40% of the input is catastrophic loss — rejected', () => {
   const original = prose(1000);
   assert.strictEqual(judgeBlockRewrite(original, prose(399)).reason, 'acceptance-gate');

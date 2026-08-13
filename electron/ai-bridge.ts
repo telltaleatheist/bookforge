@@ -1792,7 +1792,11 @@ export type BlockVerdict =
  */
 export function judgeBlockRewrite(original: string, returned: string): BlockVerdict {
   const trimmed = returned.trim();
-  if (trimmed === '[SKIP]') {
+  // Prefix match against ALL the skip markers, exactly like checkAIOutput on the
+  // prose path: a model that writes "[SKIP] nothing to do" is still declining,
+  // and an equality check would have let that string through the gate and INTO
+  // the book as the block's text.
+  if (SKIP_MARKERS.some(m => trimmed === m || trimmed.startsWith(m))) {
     return { accept: false, reason: 'skip-marker' };
   }
   if (original.length >= GATE_MIN_INPUT_CHARS) {
