@@ -28,6 +28,22 @@ export class FocusSelectDirective implements AfterViewInit {
   }
 }
 
+/** Height of the transcript's top fade band (see the viewport's mask): text above
+ *  this line is dissolved into the surface, so nothing meant to be READ may land
+ *  there. Keep in sync with the mask's final stop. */
+const TOP_FADE_PX = 96;
+
+/** Transcript text size — persisted per device, like playback speed. */
+const TEXT_SIZE_KEY = 'bookshelf-player-text-size';
+const MIN_TEXT_SIZE = 12;
+const MAX_TEXT_SIZE = 24;
+const DEFAULT_TEXT_SIZE = 16;
+
+function readTextSize(): number {
+  const raw = Number(localStorage.getItem(TEXT_SIZE_KEY));
+  return Number.isFinite(raw) && raw >= MIN_TEXT_SIZE && raw <= MAX_TEXT_SIZE ? raw : DEFAULT_TEXT_SIZE;
+}
+
 /** One row of the virtualized transcript: a chapter header or a sentence cue. */
 type TranscriptRow =
   | { type: 'header'; title: string; key: string }
@@ -51,6 +67,7 @@ type TranscriptRow =
     <div class="player" [class.dragging]="isDragging() || p.expandDragging()"
          [class.analysis-open]="analysisOpen()"
          [style.transform]="panelTransform()"
+         [style.--seg-size]="textSizePx()"
          (touchstart)="onDragStart($event)" (touchmove)="onDragMove($event)"
          (touchend)="onDragEnd()" (touchcancel)="onDragEnd()">
       <header class="topbar">
@@ -137,6 +154,17 @@ type TranscriptRow =
           </div>
         } @else {
         @if (showText()) {
+          <!-- Text size, right where the text is. A sentence is now a paragraph-sized
+               chunk, so how many lines it takes is the difference between reading the
+               whole thing and scrolling inside it — that control belongs on the
+               transcript, not buried in a sheet. It sits in the top fade band, where
+               the text is already dissolved to near-transparent. -->
+          <div class="fsz" role="group" aria-label="Text size">
+            <button class="fsz-btn sm" (click)="bumpTextSize(-1)" [disabled]="textSize() <= MIN_TEXT_SIZE"
+                    title="Smaller text" aria-label="Smaller text">A</button>
+            <button class="fsz-btn lg" (click)="bumpTextSize(1)" [disabled]="textSize() >= MAX_TEXT_SIZE"
+                    title="Larger text" aria-label="Larger text">A</button>
+          </div>
           <!-- Virtualized transcript: only the on-screen rows exist in the DOM,
                so a 15k-sentence book scrolls smoothly. Rows are VARIABLE height
                (a cue is 1–6 lines), so we drive CDK with a per-row height estimate
@@ -514,7 +542,17 @@ type TranscriptRow =
        the LEFT (narrower), transcript on the RIGHT (wider), ~2:3. */
     .player-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
     .playback-column { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-    .base-content { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+    /* position: relative so the text-size stepper can pin to the transcript's
+       top-right corner without scrolling away with the text. */
+    .base-content { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+    .fsz { position: absolute; top: 2px; right: 6px; z-index: 2; display: flex; align-items: center; gap: 2px; opacity: 0.45; transition: opacity 0.2s ease; }
+    .fsz:hover, .fsz:focus-within, .fsz:active { opacity: 1; }
+    .fsz-btn { width: 32px; height: 32px; padding: 0; border: none; border-radius: 50%; background: transparent;
+      color: var(--text-secondary); cursor: pointer; font-weight: 700; line-height: 1; }
+    .fsz-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+    .fsz-btn:disabled { opacity: 0.3; cursor: default; }
+    .fsz-btn.sm { font-size: 11px; }
+    .fsz-btn.lg { font-size: 17px; }
     .analysis-area { display: none; min-width: 0; min-height: 0; flex-direction: column; background: var(--bg-surface); border-left: 1px solid var(--border-subtle); }
     @media (orientation: landscape) and (max-height: 600px) {
       /* row-reverse puts .controls (2nd in DOM) on the left, .text-area on the right.
@@ -557,7 +595,10 @@ type TranscriptRow =
     }
 
     .text-area { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 12px 24px; scroll-behavior: smooth; }
-    .chapter-header { padding: 18px 6px 8px; font-size: 15px; font-weight: 700; color: var(--accent); border-bottom: 1px solid var(--border-subtle); margin: 0 20px 8px; }
+    /* Side margin grows once the column is wider than a comfortable measure, so a
+       desktop browser window centers a readable column instead of stretching a
+       sentence into one long line. charsPerLine() caps at the same 660px. */
+    .chapter-header { padding: 18px 6px 8px; font-size: 15px; font-weight: 700; color: var(--accent); border-bottom: 1px solid var(--border-subtle); margin: 0 max(20px, calc((100% - 660px) / 2)) 8px; }
     .chapter-header:first-child { padding-top: 4px; }
     /* CDK viewport owns the scroll; its content wrapper spans the full column.
        Fade the top/bottom edges to transparent so sentences dissolve into the
@@ -569,16 +610,16 @@ type TranscriptRow =
     .trow { display: block; } /* one virtualized row; no box of its own */
     .tpad { display: block; pointer-events: none; } /* top/bottom scroll spacer */
     /* .segment's padding+border+margin here MUST stay in sync with
-       estimateRowHeight() in the component (30px chrome + 27.2px/line), or the
-       scroll estimate drifts from the real layout. */
-    .segment { padding: 10px 12px; margin: 0 20px 6px; border-radius: 8px; background: var(--bg-surface); border: 2px solid transparent;
+       estimateRowHeight() in the component (30px chrome + 1.6 × the text size per
+       line), or the scroll estimate drifts from the real layout. */
+    .segment { padding: 10px 12px; margin: 0 max(20px, calc((100% - 660px) / 2)) 6px; border-radius: 8px; background: var(--bg-surface); border: 2px solid transparent;
       cursor: pointer; transition: opacity 0.7s ease, border-color 0.3s ease, background 0.3s ease; opacity: 0.62; }
     .segment.past { opacity: 0.4; }
     .segment.active { opacity: 1; border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface)); }
     /* When not following, dimming just hurts readability — light everything up
        (the current sentence keeps its accent outline for reference). */
     .text-area.no-follow .segment { opacity: 1; }
-    .segment p { margin: 0; font-size: 17px; line-height: 1.6; color: var(--text-primary); }
+    .segment p { margin: 0; font-size: var(--seg-size, 16px); line-height: 1.6; color: var(--text-primary); }
 
     /* Cover view is a plain div (NOT the cdk viewport), so it carries no fade mask —
        the artwork stays crisp edge-to-edge. It also NEVER scrolls: the cover is
@@ -987,6 +1028,24 @@ export class PlayerComponent implements OnInit, OnDestroy {
   // character count and feed those to a variable-size strategy (var-virtual-scroll.ts).
   // Rows still render at their true height; only positioning uses the estimate.
 
+  // Sentences are paragraph-sized chunks now, so the reader has to be able to
+  // trade size for how much of a chunk is on screen at once. Feeds both the CSS
+  // (--seg-size) and the row-height estimates, so the virtual scroll stays honest.
+  readonly MIN_TEXT_SIZE = MIN_TEXT_SIZE;
+  readonly MAX_TEXT_SIZE = MAX_TEXT_SIZE;
+  readonly textSize = signal(readTextSize());
+  /** Bound to --seg-size as a complete CSS length (custom properties take no unit suffix). */
+  readonly textSizePx = computed(() => `${this.textSize()}px`);
+
+  bumpTextSize(delta: number): void {
+    const next = Math.min(MAX_TEXT_SIZE, Math.max(MIN_TEXT_SIZE, this.textSize() + delta));
+    if (next === this.textSize()) return;
+    this.textSize.set(next);
+    localStorage.setItem(TEXT_SIZE_KEY, String(next));
+    // Every row just changed height, so the reader's place moved with it.
+    requestAnimationFrame(() => this.scrollCueIntoView(this.p.currentCueIndex()));
+  }
+
   /** Chapter headers + sentence cues, flattened into one render list, wrapped in
    *  half-viewport spacers top and bottom so the first / current / last line can
    *  scroll to the vertical center rather than hiding under the edge fade. */
@@ -1045,12 +1104,14 @@ export class PlayerComponent implements OnInit, OnDestroy {
 
   /** Chars that fit on one wrapped line inside a sentence, from the panel width. */
   private charsPerLine(): number {
-    // text width = panel − segment margin (20×2) − segment padding (12×2); a
-    // 17px proportional glyph averages ~8px wide. Floor at 20 for tiny screens.
+    // Segment outer width = panel − margin (20×2), capped at the 660px reading
+    // measure the CSS centers on; text width takes off the padding (12×2). A
+    // proportional glyph averages ~0.47em wide. Floor at 20 for tiny screens.
     // (The viewport's own padding doesn't offset the absolutely-positioned virtual
     // rows, so the visible inset comes entirely from the segment's margin/padding.)
-    const textWidth = this.contentWidth() - 40 - 24;
-    return Math.max(20, Math.floor(textWidth / 8));
+    const outer = Math.min(this.contentWidth() - 40, 660);
+    const textWidth = outer - 24;
+    return Math.max(20, Math.floor(textWidth / (this.textSize() * 0.47)));
   }
 
   /** Estimate a row's rendered height (approximate is fine — see the strategy). */
@@ -1059,10 +1120,11 @@ export class PlayerComponent implements OnInit, OnDestroy {
     const cpl = this.charsPerLine();
     if (row.type === 'header') {
       const lines = Math.max(1, Math.ceil(row.title.length / cpl));
-      return 35 + lines * 19; // padding 26 + border 1 + margin 8, ~19px/line
+      return 35 + lines * 19; // padding 26 + border 1 + margin 8, ~19px/line (header is a fixed 15px)
     }
     const lines = Math.max(1, Math.ceil(row.text.length / cpl));
-    return 30 + Math.ceil(lines * 27.2); // padding 20 + border 4 + margin 6, 27.2px/line
+    // padding 20 + border 4 + margin 6, then line-height 1.6 × the reader's size.
+    return 30 + Math.ceil(lines * this.textSize() * 1.6);
   }
 
   /** Stable identity for a transcript row (cdkVirtualFor trackBy). */
@@ -1692,7 +1754,14 @@ export class PlayerComponent implements OnInit, OnDestroy {
     if (rowIdx == null) return;
     const top = this.rowOffsets()[rowIdx];
     const size = this.rowSizes()[rowIdx];
-    const target = Math.max(0, top - vp.getViewportSize() / 2 + size / 2);
+    const height = vp.getViewportSize();
+    // A chunk taller than the viewport can't be centered AND read — centering it
+    // hides its opening above the top edge, which is exactly where you start
+    // reading. Those are scrolled so their FIRST line sits just clear of the top
+    // fade band instead, and you read down through the rest.
+    const target = size > height * 0.85
+      ? Math.max(0, top - TOP_FADE_PX)
+      : Math.max(0, top - height / 2 + size / 2);
     vp.scrollToOffset(target, 'smooth');
   }
 
