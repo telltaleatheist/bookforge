@@ -13,7 +13,9 @@ import { importEpubProject } from './import-epub-project';
 import { initializeLoggers, getMainLogger, getTTSLogger, closeLoggers } from './rolling-logger';
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import { Quire } from '../packages/quire/src';
-import { setupQuireViewerIpc, closeAllBooksForViewer } from './quire-viewer-bridge';
+import {
+  setupQuireViewerIpc, closeAllBooksForViewer, closeViewerDocumentsUnder,
+} from './quire-viewer-bridge';
 import { registerClipforgeIpc } from './clipforge-bridge';
 import { registerDocumentIpc } from './document-ipc';
 // A project's files belong to no one window: the picker is its own BrowserWindow
@@ -12920,6 +12922,12 @@ app.whenReady().then(async () => {
   // The live-DOM EPUB viewer's opening channel. The scheme it needs was
   // registered at module scope above; this is only the two handles.
   setupQuireViewerIpc();
+  // And the other direction: the record-keeper is told how to close a book a
+  // viewer is reading, so removing a ledger entry's directory does not race a
+  // pass compare that is showing its snapshot. Registered rather than imported,
+  // because manifest-service also runs in the CLI and in tools/test-*.js where
+  // there are no windows and nothing to close.
+  manifestService.useViewerReaderCloser(closeViewerDocumentsUnder);
   logger.info('BookForge starting', { version: app.getVersion(), platform: process.platform });
 
   // In development, point FOUNDRY_CLI_PATH at the locally-built binary unless

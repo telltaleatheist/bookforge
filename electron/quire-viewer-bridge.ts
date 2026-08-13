@@ -708,6 +708,33 @@ export async function closeViewerDocumentsFor(bookPath: string): Promise<number>
   return closed;
 }
 
+/**
+ * Close every open viewer document reading a book INSIDE `dirPath`, and say how
+ * many.
+ *
+ * The same rule as `closeViewerDocumentsFor` one level up, for the writers that
+ * remove a whole DIRECTORY of books rather than replace one file: a ledger
+ * entry's directory holds the snapshot the pass left, and the studio's pass
+ * compare reads exactly that file. Deleting a ledger entry — or clearing the
+ * ledger, or resetting the book — takes those directories off disk while a
+ * compare in another window may still be holding one open, and on Windows an
+ * open zip inside a directory makes the recursive remove EPERM out and leaves
+ * the folder in delete-pending limbo until the app exits.
+ *
+ * Matched by prefix on the RESOLVED, case-folded path with a separator on the
+ * end, so `source/ledger/01-simplify` never matches `source/ledger/01-simplify-2`.
+ */
+export async function closeViewerDocumentsUnder(dirPath: string): Promise<number> {
+  const root = path.resolve(dirPath).toLowerCase() + path.sep;
+  let closed = 0;
+  for (const [handle, entry] of [...open]) {
+    if (!(path.resolve(entry.bookPath).toLowerCase() + path.sep).startsWith(root)) continue;
+    await closeBookForViewer(handle);
+    closed++;
+  }
+  return closed;
+}
+
 export async function closeAllBooksForViewer(): Promise<void> {
   for (const handle of [...open.keys()]) await closeBookForViewer(handle);
 }

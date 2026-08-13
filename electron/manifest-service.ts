@@ -3753,6 +3753,31 @@ function sha256Of(filePath: string): Promise<string> {
  * things, and the record outliving the file is the ordinary way a half-finished
  * delete or a half-synced folder shows up.
  */
+/**
+ * How this process closes a book a viewer is reading, when one is registered.
+ *
+ * ── Why a hook and not an import ────────────────────────────────────────────
+ *
+ * `closeViewerDocumentsUnder` lives in electron/quire-viewer-bridge.ts, which
+ * reaches `ipcMain` and quire's offscreen host. This module is also loaded by
+ * the CLI and by tools/test-*.js in plain node, where none of that exists —
+ * `tools/test-ledger-lifecycle.js` deletes ledger entries for a living. So the
+ * app REGISTERS its closer at startup and everything else runs with none, which
+ * is exactly right: a process with no windows has no viewer holding anything.
+ */
+type ViewerReaderCloser = (dirPath: string) => Promise<number>;
+let closeViewerReadersUnder: ViewerReaderCloser | null = null;
+
+/**
+ * Tell this module how to close viewer documents reading inside a directory.
+ *
+ * Called once by the main process (electron/main.ts). Idempotent by nature —
+ * the last registration wins and there is only ever one.
+ */
+export function useViewerReaderCloser(closer: ViewerReaderCloser): void {
+  closeViewerReadersUnder = closer;
+}
+
 async function removeSupersededArtifacts(
   projectDir: string,
   relPaths: readonly string[]
@@ -3769,6 +3794,20 @@ async function removeSupersededArtifacts(
       );
     }
     if (!fs.existsSync(abs)) continue;
+    // The writer closes the reader. A ledger entry's directory holds the book
+    // that pass left, and the studio's pass compare reads exactly that file —
+    // on Windows an open zip inside this tree makes the remove EPERM out and
+    // leaves the folder in delete-pending limbo until the app exits. The window
+    // holding it learns the ordinary way: its next call answers "unknown
+    // handle" by name. (See `closeViewerDocumentsUnder`, and the same rule
+    // stated for single files in narration-export.)
+    if (closeViewerReadersUnder !== null) {
+      const closed = await closeViewerReadersUnder(abs);
+      if (closed > 0) {
+        console.log(`[manifest-service] closed ${closed} viewer document(s) reading inside `
+          + `${relPath} before removing it.`);
+      }
+    }
     await fs.promises.rm(abs, { recursive: true, force: true });
     removed.push(relPath);
   }
