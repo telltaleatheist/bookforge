@@ -490,6 +490,14 @@ async function runSimplifyPass(
     },
     {
       simplifyForChildren: true,
+      // Simplify ONLY. cleanupEpub defaults enableAiCleanup to true, so omitting
+      // this silently bolted the OCR-cleanup prompt onto the simplify prompt and
+      // put this pass on the legacy combined chunk pipeline — the pipeline has a
+      // SEPARATE cleanup pass for that work, and this one is not it. Stated
+      // explicitly, the pass takes the block-group path: groups of up to 3
+      // consecutive body blocks, validated and written back to their own
+      // elements 1:1 (see simplifyBlockMode in ai-bridge.ts).
+      enableAiCleanup: false,
       simplifyMode: params.mode,
       customInstructions: params.customInstructions,
       testMode: params.testMode,
