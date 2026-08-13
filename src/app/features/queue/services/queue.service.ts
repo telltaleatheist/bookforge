@@ -35,7 +35,8 @@ import {
   RETIRED_JOB_TYPES,
   RATE_WINDOW_MIN_SECONDS
 } from '../models/queue.types';
-import type { PassJobConfig, ProcessingChainPlan, ProcessingChainRequest } from '@shared/processing/pass-types';
+import type { PassJobConfig, PassJobResult, ProcessingChainPlan, ProcessingChainRequest } from '@shared/processing/pass-types';
+import { passResultNotes } from '@shared/processing/pass-notes';
 import { stagesFor } from '../models/job-stages';
 import { JobEtaService } from './job-eta.service';
 import {
@@ -115,7 +116,11 @@ declare global {
         onRemoteControl: (callback: (action: 'start' | 'pause') => void) => () => void;
       };
       processing?: {
-        runPass: (jobId: string, config: PassJobConfig) => Promise<{ success: boolean; data?: { success: boolean; outputPath?: string; error?: string }; error?: string }>;
+        // `data` is main's PassJobResult, WHOLE. It was re-declared here as three of
+        // its fields, which is how `ledgerRefusal` / `narrationCarryNote` / `summary`
+        // became unreachable from the renderer without anyone writing a line to drop
+        // them — the type simply did not admit they existed.
+        runPass: (jobId: string, config: PassJobConfig) => Promise<{ success: boolean; data?: PassJobResult; error?: string }>;
         onEnqueueChain: (callback: (plan: ProcessingChainPlan) => void) => () => void;
       };
       parallelTts?: {
@@ -294,6 +299,18 @@ export interface DirectPassRunResult {
   failure: { label: string; error: string } | null;
   /** A refusal from the PLANNER — nothing ran, and this says why. */
   error?: string;
+  /**
+   * What the passes that RAN had to say beyond succeeding, each already named by
+   * the pass that said it — a ledger refusal, a narration-carry note, a count of
+   * markers removed. Empty when they had nothing to add, which is the ordinary
+   * case.
+   *
+   * A run with no queue row has no row to put these on, so the modal that started
+   * it is where they have to be read. Collected even on the failure path: the
+   * passes before the failure really did rewrite the book, and their notes are
+   * about that book.
+   */
+  notes: string[];
 }
 
 @Injectable({
@@ -1205,6 +1222,11 @@ export class QueueService {
           // were still working — the "timer counting up but nothing happening" symptom.
           completedAt: new Date(),
           outputPath: result.outputPath || job.outputPath,
+          // Whatever this run had to say, verbatim. Assigned rather than merged with
+          // what the row already carried: a re-run's notes are about THIS run, and a
+          // re-run that recorded its ledger row properly must not keep showing the
+          // previous run's refusal.
+          completionNotes: result.completionNotes,
           // Copyright detection for AI cleanup jobs
           copyrightIssuesDetected: result.copyrightIssuesDetected,
           copyrightChunksAffected: result.copyrightChunksAffected,
@@ -1708,10 +1730,13 @@ export class QueueService {
 
     const planned = await this.electron.planProcessingChain(request);
     if (!planned.success || !planned.plan) {
-      return { success: false, ran: [], failure: null, error: planned.error };
+      return { success: false, ran: [], failure: null, notes: [], error: planned.error };
     }
 
     const ran: string[] = [];
+    // Named by pass, because a run is several of them and "the ledger has no row
+    // for this" means nothing without knowing WHICH pass has none.
+    const notes: string[] = [];
     for (const job of planned.plan.jobs) {
       // The id a queue row would have carried. `runProcessingPass` uses it only
       // to address its progress messages, and a run with no row has nowhere for
@@ -1720,10 +1745,14 @@ export class QueueService {
       const result = await electron.processing.runPass(jobId, job.config);
       const data = result?.data;
       const ok = data?.success ?? result?.success ?? false;
+      for (const note of passResultNotes(data)) {
+        notes.push(`${job.label}: ${note}`);
+      }
       if (!ok) {
         return {
           success: false,
           ran,
+          notes,
           failure: {
             label: job.label,
             error: data?.error || result?.error
@@ -1733,7 +1762,7 @@ export class QueueService {
       }
       ran.push(job.label);
     }
-    return { success: true, ran, failure: null };
+    return { success: true, ran, failure: null, notes };
   }
 
   /** Consume the staged follow-on jobs, if they belong to this chain's project. */
@@ -4537,11 +4566,17 @@ export class QueueService {
 
         const passResult = await electron.processing.runPass(job.id, config);
         const passData = passResult?.data;
+        // What the pass has to SAY carries onto the row, not just whether it
+        // worked. A pass that could record no ledger row succeeded and still owes
+        // the user that sentence — dropping it here is what made a correct refusal
+        // look like a missing button (shared/processing/pass-notes.ts).
+        const notes = passResultNotes(passData);
         await this.handleJobComplete({
           jobId: job.id,
           success: passData?.success ?? passResult?.success ?? false,
           outputPath: passData?.outputPath,
           error: passData?.error || passResult?.error,
+          ...(notes.length > 0 ? { completionNotes: notes } : {}),
         });
 
         if (job.parentJobId && job.workflowId) {

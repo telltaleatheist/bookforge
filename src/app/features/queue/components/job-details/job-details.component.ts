@@ -256,6 +256,15 @@ import { QueueService } from '../../services/queue.service';
             &#9888; {{ selectedJob.translationFailedChunks }} chunks kept original (untranslated) text.
           </div>
         }
+        <!-- What the job SAID for itself. A processing pass that recorded no
+             ledger row leaves the book with no "Review changes" line, and this is
+             the sentence that keeps that from reading as a bug. It sits with the
+             warnings, not with the error: the job succeeded. -->
+        @if (selectedJob.completionNotes?.length) {
+          @for (note of selectedJob.completionNotes; track note) {
+            <div class="warning">&#9888; {{ note }}</div>
+          }
+        }
 
         <!-- Error -->
         @if (selectedJob.status === 'error' && selectedJob.error) {

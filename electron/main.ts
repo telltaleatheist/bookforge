@@ -7578,12 +7578,19 @@ function setupIpcHandlers(): void {
     _event, jobId: string, config: import('./processing-passes.js').PassJobConfig) => {
     try {
       const { runProcessingPass } = await import('./processing-passes.js');
+      const { passResultNotes } = await import('../shared/processing/pass-notes.js');
       const result = await runProcessingPass(jobId, config, mainWindow);
+      // The broadcast is the FALLBACK completion signal — the renderer's awaited
+      // return value is the usual one — so it carries the pass's sentences too.
+      // A pass whose ledger refusal reached the user down one path and not the
+      // other would make the explanation depend on which signal won the race.
+      const notes = passResultNotes(result);
       mainWindow?.webContents.send('queue:job-complete', {
         jobId,
         success: result.success,
         outputPath: result.outputPath,
         error: result.error,
+        ...(notes.length > 0 ? { completionNotes: notes } : {}),
       });
       if (result.success) broadcastToAllWindows('project:files-changed', config.projectDir);
       return { success: result.success, data: result };

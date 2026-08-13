@@ -1005,8 +1005,20 @@ const AUDIO_EXTS = new Set([
             <div class="pass-running">{{ running }} — running now. This window is waiting for it.</div>
           }
           @if (passError(); as e) { <div class="pass-err">{{ e }}</div> }
+          <!-- The run SUCCEEDED and still has something to say. Shown whole and
+               held on screen until dismissed — the sentence that was invisible is
+               the entire bug this exists to fix. -->
+          @if (passNotes().length > 0) {
+            <div class="pass-notes">
+              @for (note of passNotes(); track note) {
+                <div class="pass-note">&#9888; {{ note }}</div>
+              }
+            </div>
+          }
           <div class="gs-actions">
-            <button class="act" [disabled]="passRunning() !== null" (click)="closePassesModal()">Cancel</button>
+            <button class="act" [disabled]="passRunning() !== null" (click)="closePassesModal()">
+              {{ passNotes().length > 0 ? 'Close' : 'Cancel' }}
+            </button>
           </div>
         </div>
       </div>
@@ -1080,6 +1092,27 @@ const AUDIO_EXTS = new Set([
     .pbadge .preview:hover { color: var(--text-primary); }
 
     .pass-err { margin: 6px 4px; font-size: 0.78rem; color: #ef4444; }
+
+    /* What a pass that SUCCEEDED had to say — a ledger refusal, a narration-carry
+       note, a count. Amber and banded so it is plainly not the red refusal above
+       it, and wrapping in full: these sentences ARE the explanation, and one
+       clipped to a line explains nothing. */
+    .pass-notes {
+      margin: 6px 4px;
+      padding: 7px 9px;
+      border-left: 2px solid var(--warning);
+      background: var(--warning-bg);
+      border-radius: 0 4px 4px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .pass-note {
+      font-size: 0.78rem;
+      line-height: 1.45;
+      color: var(--warning-text);
+      overflow-wrap: anywhere;
+    }
 
     /* A child of the archive original: the working copy, the book. Indented and
        given a rule back to the parent so the three read as one family. */
@@ -2522,6 +2555,19 @@ export class StudioVersionsComponent {
   /** Why the last submission was refused. Main's own sentence, shown verbatim. */
   readonly passError = signal<string | null>(null);
   /**
+   * What the passes that just ran HERE had to say, each named by its pass.
+   *
+   * Not errors — every one of these came off a pass that succeeded. A pass can
+   * rewrite the book correctly and still be unable to record a ledger row for
+   * itself, and then the book gains no line to review or take back; the sentence
+   * saying why is the only thing between that and a bug report (2026-08-12).
+   *
+   * These keep the modal OPEN. The banner would have been the tidier place and is
+   * the wrong one: it dismisses itself after eight seconds, and a run whose whole
+   * outcome needs explaining must not have its explanation time out.
+   */
+  readonly passNotes = signal<string[]>([]);
+  /**
    * WHEN the chosen pass runs — the queue, or here and now.
    *
    * Owen, 2026-08-10: "i ran footnote reference number removal on the working
@@ -2540,6 +2586,7 @@ export class StudioVersionsComponent {
 
   openPassesModal(): void {
     this.passError.set(null);
+    this.passNotes.set([]);
     this.passesModalOpen.set(true);
   }
 
@@ -2550,6 +2597,7 @@ export class StudioVersionsComponent {
     if (this.passRunning() !== null) return;
     this.passesModalOpen.set(false);
     this.passError.set(null);
+    this.passNotes.set([]);
   }
 
   /**
@@ -2618,6 +2666,9 @@ export class StudioVersionsComponent {
    * broke and this must not re-break.
    */
   private async submitPasses(passes: ChainPassRequest[], label: string): Promise<void> {
+    // A new submission clears the last one's notes: they were about a pass that
+    // has already happened, and leaving them under a fresh run would read as its.
+    this.passNotes.set([]);
     if (this.passRunMode() === 'now') {
       await this.runPassesNow(passes, label);
       return;
@@ -2641,6 +2692,7 @@ export class StudioVersionsComponent {
       return;
     }
     this.passError.set(null);
+    this.passNotes.set([]);
     this.passesModalOpen.set(true);
     // The name the user pressed, carried in rather than looked back up from the
     // kind: the button that was pressed is the only thing that knows it.
@@ -2663,11 +2715,25 @@ export class StudioVersionsComponent {
     }
     if (result.failure) {
       // Whatever ran BEFORE the failure really did rewrite the book, so the
-      // sentence says so — "nothing happened" would be false.
+      // sentence says so — "nothing happened" would be false. What those passes
+      // had to say goes beside it rather than into it: it is not part of the
+      // failure, it is about the rewrite that really happened.
       this.passError.set(result.ran.length === 0
         ? result.failure.error
         : `${result.ran.join(', ')} ran and ${result.failure.label} did not: `
           + result.failure.error);
+      this.passNotes.set(result.notes);
+      await this.load();
+      this.changed.emit();
+      return;
+    }
+
+    // A pass succeeded and still has something to say — most of all that it could
+    // record no ledger row, which is why the book below is about to gain no line
+    // to review. The modal stays open holding that sentence, because the banner
+    // dismisses itself and the reassurance below would contradict it.
+    if (result.notes.length > 0) {
+      this.passNotes.set(result.notes);
       await this.load();
       this.changed.emit();
       return;
