@@ -42,6 +42,7 @@ count, and subtype. Any OTHER file in <in_dir> is copied verbatim.
 NO FALLBACKS: a missing <in_dir>, or any read/write failure (named with the file),
 exits non-zero. Nothing is silently skipped.
 """
+import concurrent.futures
 import os
 import re
 import shutil
@@ -186,33 +187,64 @@ def main(argv):
 
     os.makedirs(out_dir, exist_ok=True)
 
-    processed = 0
-    copied = 0
-    trims = []
-    pads = []
+    sentence_jobs = []
+    passthrough = []
     for name in sorted(os.listdir(in_dir)):
         src = os.path.join(in_dir, name)
         if not os.path.isfile(src):
             continue
         dst = os.path.join(out_dir, name)
         if SENTENCE_RE.match(name):
-            try:
-                t, added = normalize_one(src, dst, gap_seconds, min_gap_seconds)
+            sentence_jobs.append((name, src, dst))
+        else:
+            passthrough.append((name, src, dst))
+
+    # Non-audio (e.g. a manifest) rides along verbatim so the output dir is a
+    # complete stand-in for the input dir.
+    copied = 0
+    for name, src, dst in passthrough:
+        try:
+            shutil.copy2(src, dst)
+        except Exception as e:  # noqa: BLE001
+            sys.stderr.write(f'failed to copy {name}: {e}\n')
+            return 1
+        copied += 1
+
+    # Each sentence is independent — read, trim, pad, write, no shared state — so
+    # this fans out across processes. It used to be one serial loop: 88 s for 2740
+    # sentences of a 20-hour book while 19 of 20 cores sat idle. Processes rather
+    # than threads because the work is numpy compute, not just file I/O.
+    cpu_count = os.cpu_count()
+    if cpu_count is None:
+        # Sizing the pool is not a guess to make silently — a wrong worker count
+        # either starves the machine or oversubscribes it.
+        sys.stderr.write('os.cpu_count() returned None; cannot size the worker pool\n')
+        return 1
+    workers = max(1, min(cpu_count, 16))
+
+    processed = 0
+    trims = []
+    pads = []
+    if sentence_jobs:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(normalize_one, src, dst, gap_seconds, min_gap_seconds): name
+                for name, src, dst in sentence_jobs
+            }
+            for fut in concurrent.futures.as_completed(futures):
+                name = futures[fut]
+                try:
+                    t, added = fut.result()
+                except Exception as e:  # noqa: BLE001 -- surface the file + reason, then fail
+                    sys.stderr.write(f'failed on {name}: {e}\n')
+                    # Do not let the remaining futures keep writing into out_dir
+                    # after we have decided the run failed.
+                    for f in futures:
+                        f.cancel()
+                    return 1
                 trims.append(t)
                 pads.append(added)
-            except Exception as e:  # noqa: BLE001 -- surface the file + reason, then fail
-                sys.stderr.write(f'failed on {name}: {e}\n')
-                return 1
-            processed += 1
-        else:
-            # Non-audio (e.g. a manifest) rides along verbatim so the output dir is a
-            # complete stand-in for the input dir.
-            try:
-                shutil.copy2(src, dst)
-            except Exception as e:  # noqa: BLE001
-                sys.stderr.write(f'failed to copy {name}: {e}\n')
-                return 1
-            copied += 1
+                processed += 1
 
     if processed == 0:
         sys.stderr.write(f'no sentence files (*.flac/*.wav) in {in_dir}\n')
