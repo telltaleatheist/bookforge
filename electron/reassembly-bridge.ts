@@ -18,6 +18,7 @@ import { getRvcVoiceById } from './rvc-models';
 import { sumFlacDurationsSeconds } from './flac-duration';
 import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
 import { regenerateBoundSidecars } from './sidecar-migration';
+import { resolveClosedSession } from './chapter-closer';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 import { StageTracker, type StageSpec, type JobStageProgress } from './job-stages';
 
@@ -1128,11 +1129,38 @@ export async function startReassembly(
   };
 
   let gapDir: string | null = null;
+  // Chapters the TTS job already normalized AND encoded while the GPU was busy (see
+  // chapter-closer). Accepting them skips this whole gap pass and, further down,
+  // hands e2a the finished chapters so it re-encodes nothing.
+  let encodedChaptersDir: string | null = null;
   if (resolvedGap !== undefined) {
     const srcSentences = path.join(config.processDir, 'chapters', 'sentences');
     if (!fs.existsSync(srcSentences)) {
       return { success: false, error: 'Sentence-gap normalization: cached sentences not found for this session.' };
     }
+    const minChunkGapForCloser = resolveOrpheusMinChunkGap(provenance?.voice) ?? 0;
+    const closed = await resolveClosedSession({
+      tmpRoot: getDefaultE2aTmpPath(),
+      sessionId: config.sessionId,
+      sentencesDir: srcSentences,
+      gapSeconds: resolvedGap,
+      minGapSeconds: minChunkGapForCloser,
+      // Every rejection is worth a line: it costs only the time the closer saved,
+      // but a rejection nobody sees looks exactly like the feature not working.
+      onReject: (reason) => reassemblyLog.info('Pre-closed chapters not used', { jobId, reason }),
+    });
+    if (closed) {
+      gapDir = closed.gapDir;
+      encodedChaptersDir = closed.encodedDir;
+      rvcSentencesDir = closed.gapDir;
+      reassemblyLog.info('Using pre-closed chapters from the TTS job', {
+        jobId, chapters: closed.chapters.length, gapDir: closed.gapDir, encodedDir: closed.encodedDir,
+      });
+      emitStage('gap', 100, 'Sentence gaps already normalized during rendering');
+    }
+  }
+  if (resolvedGap !== undefined && !gapDir) {
+    const srcSentences = path.join(config.processDir, 'chapters', 'sentences');
     gapDir = path.join(getDefaultE2aTmpPath(), `gap-${jobId}`);
     // Track for merge-and-delete NOW; a later stage that consumes it re-points the
     // tracker and deletes this dir itself (mirrors the denoise scratch handling).
@@ -1351,6 +1379,11 @@ export async function startReassembly(
       // When an RVC pass ran, assemble the ENHANCED sentence set from the tmp dir
       // instead of the cached XTTS sentences.
       ...(rvcSentencesDir ? ['--sentences_dir', rvcSentencesDir] : []),
+      // Chapters already encoded during the render. e2a skips both the sentence
+      // concat and the AAC encode for these and drops them straight into the final
+      // concat; it validates and errors on anything it cannot use, and ignores the
+      // flag entirely on the modes where pre-encoded chunks are not equivalent.
+      ...(encodedChaptersDir ? ['--encoded_chapters_dir', encodedChaptersDir] : []),
       // Per-voice post-render filter (Orpheus provenance only) — applied at e2a's
       // final encode. The native branch shell-escapes each arg (shellEscapeArgs) and
       // the WSL branch shell-quotes each (buildWslAssemblyCommand); both are safe for

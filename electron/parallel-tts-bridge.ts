@@ -140,7 +140,8 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
   }
 }
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
-import { resolveOrpheusModel, orpheusVoiceCapsForModel, OrpheusVoiceCaps } from './orpheus-models';
+import { resolveOrpheusModel, orpheusVoiceCapsForModel, OrpheusVoiceCaps, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
+import { startChapterCloser, stopChapterCloser } from './chapter-closer';
 import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB, orpheusMinFreeVramMB, DESKTOP_VRAM_MARGIN_MB, unloadOllamaModels, type OrpheusServeArtifact } from './gpu-arbiter';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 
@@ -2164,6 +2165,71 @@ function toReadablePath(p: string): string {
  * Throws if the sentences dir (when it should exist) or session-state.json is
  * unreadable — the caller must treat "can't verify" as a failure, not proceed.
  */
+/**
+ * Start closing chapters in the background, if this job's shape allows it.
+ *
+ * A chapter can only be finished early when nothing downstream is still going to
+ * rewrite its sentences, so this deliberately declines more often than it accepts:
+ *
+ *  - Orpheus only. The closer has to reproduce assembly's gap normalization exactly,
+ *    and the gap plus the min-chunk floor are per-voice Orpheus values; for other
+ *    engines assembly may not normalize at all, and guessing wrong changes the audio.
+ *  - No final-denoise and no RVC pass. Both re-render the WHOLE sentence set after
+ *    generation, which would make every pre-encoded chapter stale by definition.
+ *  - MP4-family output only, matching e2a's parallel-export gate — an m4a chunk's
+ *    edit list is what makes the concatenation gapless.
+ *
+ * Failing to start is never fatal: assembly just does the work itself, as today.
+ */
+function maybeStartChapterCloser(session: ConversionSession): void {
+  const { config, prepInfo } = session;
+  if (!prepInfo) return;
+  const settings = config.settings;
+  if (settings.ttsEngine?.toLowerCase() !== 'orpheus') return;
+  if (config.finalDenoise || config.rvcEnhancement?.enabled) return;
+  if (config.skipAssembly) return;
+  if (!prepInfo.chapters?.length) return;
+  // The output format is deliberately NOT checked here: BookForge never passes one,
+  // so e2a's own default governs, and e2a is the authority anyway — its
+  // parallel_export_supported() gate ignores the pre-encoded chapters outright on
+  // any mode where they are not equivalent (non-MP4 container, active pre-loudnorm
+  // filter, or a book short enough that loudnorm must measure it whole). Guessing
+  // that here would only add a second, less-informed copy of the same rule.
+
+  // The same per-voice values reassembly-bridge resolves from provenance. They are
+  // part of the AUDIO — a different floor means different trailing silence — so the
+  // closer records them and assembly refuses the output if they no longer match.
+  const voice = settings.fineTuned;
+  const gapSeconds = resolveOrpheusSentenceGap(voice) ?? DEFAULT_SENTENCE_GAP;
+  const minGapSeconds = resolveOrpheusMinChunkGap(voice) ?? 0;
+
+  startChapterCloser({
+    jobId: session.jobId,
+    sessionId: prepInfo.sessionId,
+    sentencesDir: toReadablePath(prepInfo.chaptersDirSentences),
+    chapters: prepInfo.chapters.map((c) => ({
+      chapterNum: c.chapterNum,
+      sentenceStart: c.sentenceStart,
+      sentenceEnd: c.sentenceEnd,
+    })),
+    tmpRoot: getDefaultE2aTmpPath(),
+    gapSeconds,
+    minGapSeconds,
+    // Mono, because e2a's default_output_channel is 'mono' and BookForge never
+    // overrides it — grep confirms no output_channel arg is passed from here. The
+    // chunks must match what export_audio_parallel would have produced; if that
+    // setting ever becomes configurable, this has to follow it.
+    outputChannels: 1,
+    onLog: (message) => {
+      writeWorkerLog(`[CLOSER] ${message}`);
+      logger.log('INFO', session.jobId, `Chapter closer: ${message}`).catch(() => {});
+    },
+  }).catch((err) => {
+    writeWorkerLog(`[CLOSER] failed to start: ${err}`);
+    logger.log('WARN', session.jobId, `Chapter closer failed to start: ${err}`).catch(() => {});
+  });
+}
+
 async function findMissingSentenceFiles(prepInfo: PrepInfo): Promise<number[]> {
   const sentencesDir = toReadablePath(prepInfo.chaptersDirSentences);
   const present = new Set<number>();
@@ -4042,6 +4108,19 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
         jobId: session.jobId,
         reason: session.config.bfpPath ? 'no session dir' : 'job config has no bfpPath',
         sessionDir: session.prepInfo?.sessionDir || null,
+      });
+    }
+
+    // Finish closing chapters BEFORE the session moves. The closer has been reading
+    // the sentences at their render-time location, and its last sweep picks up the
+    // chapters that only completed in the final minutes; running it here means the
+    // work happens once, on the paths it was already watching.
+    const closerManifest = await stopChapterCloser(session.jobId);
+    if (closerManifest) {
+      await logger.log('INFO', session.jobId, 'Chapter closer finished', {
+        complete: closerManifest.complete,
+        closed: closerManifest.closedChapters.length,
+        totalChapters: closerManifest.totalChapters,
       });
     }
 
@@ -6582,6 +6661,11 @@ export async function startParallelConversion(
   const isWindows = process.platform === 'win32';
   const WINDOWS_WORKER_STAGGER_MS = 2000; // 2 seconds between worker starts on Windows
 
+  // Chapters finish long before the render does; start closing them now so the gap
+  // normalization and the AAC encode happen on idle cores instead of after the GPU
+  // is done. Declines quietly when the job's shape makes it unsafe.
+  maybeStartChapterCloser(session);
+
   try {
     for (let i = 0; i < workers.length; i++) {
       const worker = workers[i];
@@ -6835,6 +6919,12 @@ export async function stopParallelConversion(jobId: string): Promise<boolean> {
   session.cancelled = true;
   stopWatchdog(session);
   stopRenderedPoller(session);
+  // The closer polls on a timer of its own; without this it would outlive the
+  // cancelled job and keep reading a session that is being torn down. Its partial
+  // output stays on disk and is simply never marked complete, so assembly ignores it.
+  stopChapterCloser(jobId).catch((err) => {
+    logger.log('WARN', jobId, `Chapter closer stop failed during cancel: ${err}`).catch(() => {});
+  });
   const ttsEngine = session.config?.settings?.ttsEngine;
 
   // Mark workers cancelled up front so the UI reflects the stop while the graceful
@@ -8362,6 +8452,11 @@ export async function resumeParallelConversion(
   // Start workers for missing ranges - stagger on Windows to avoid conda temp file race condition
   const isWindows = process.platform === 'win32';
   const WINDOWS_WORKER_STAGGER_MS = 2000; // 2 seconds between worker starts on Windows
+
+  // Same as the fresh path. On a resume the already-rendered chapters close almost
+  // immediately, and the ones being re-rendered close as their sentences land — the
+  // stamp is what keeps a re-rendered sentence from being served from an old close.
+  maybeStartChapterCloser(session);
 
   try {
     for (let i = 0; i < workers.length; i++) {
