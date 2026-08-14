@@ -413,6 +413,8 @@ const activeStagingDirs = new Map<string, string>();
 // Active RVC scratch directories (the merge-and-delete enhanced-sentence sets,
 // under [library]/tmp). Cleaned alongside the staging dir at every terminal point.
 const activeRvcDirs = new Map<string, string>();
+/** jobId → the `closed-<sessionId>` dir this assembly is consuming, for cleanup. */
+const activeClosedDirs = new Map<string, string>();
 
 /**
  * Remove a job's staging dir AND its RVC scratch dir (if any), and clear the map
@@ -444,6 +446,25 @@ function cleanupStagingDir(jobId: string): void {
       }
     } catch (err) {
       console.warn('[REASSEMBLY] Failed to clean up RVC scratch dir (non-fatal):', err);
+    }
+  }
+
+  // What the chapter closer produced for this session: a full normalized sentence
+  // set plus every encoded chapter, ~2.9 GB on a 20-hour book. It is consumed by
+  // exactly one assembly, so it goes when that assembly ends — on ANY terminal path,
+  // success or not. A retry re-does the work rather than inheriting a set nobody
+  // re-verified. Cleaning it here rather than at each exit means it cannot be missed
+  // by whichever return an error happens to take.
+  const closedDir = activeClosedDirs.get(jobId);
+  if (closedDir) {
+    activeClosedDirs.delete(jobId);
+    try {
+      if (fs.existsSync(closedDir)) {
+        fs.rmSync(closedDir, { recursive: true, force: true });
+        console.log(`[REASSEMBLY] Cleaned up pre-closed chapter dir: ${closedDir}`);
+      }
+    } catch (err) {
+      console.warn('[REASSEMBLY] Failed to clean up pre-closed chapter dir (non-fatal):', err);
     }
   }
 }
@@ -1153,6 +1174,7 @@ export async function startReassembly(
       gapDir = closed.gapDir;
       encodedChaptersDir = closed.encodedDir;
       rvcSentencesDir = closed.gapDir;
+      activeClosedDirs.set(jobId, path.dirname(closed.gapDir));
       reassemblyLog.info('Using pre-closed chapters from the TTS job', {
         jobId, chapters: closed.chapters.length, gapDir: closed.gapDir, encodedDir: closed.encodedDir,
       });
