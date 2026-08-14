@@ -21,7 +21,7 @@ import { getFfmpegPath, getFfprobePath } from './tool-paths';
 import type { ProjectManifest, ProjectVariant } from './manifest-types';
 import {
   SIDECAR_BINDING_VERSION, SIDECAR_VTT_DIGEST_ALGORITHM,
-  type SidecarBinding, type SidecarAssetRecord,
+  type SidecarBinding, type SidecarAssetRecord, type SidecarAssetSource,
   sha256File, vttDigest, sidecarPathsFor, sidecarBase, writeBinding, writeFileAtomic,
 } from './sidecar-binding';
 
@@ -31,11 +31,18 @@ export interface MigrationOptions {
   limit?: number;
   onlyProject?: string;
   onProgress?: (msg: string) => void;
+  /**
+   * A transcript the CALLER knows belongs to this exact m4b — the .vtt an
+   * assembly just wrote next to the audio it just built. Used only when the m4b
+   * carries no embedded track and the manifest records no sidecar. This is not a
+   * guess: nothing here scans for a plausible .vtt, the caller states the path.
+   */
+  externalVttPath?: string;
 }
 
 export interface AssetOutcome {
   action: 'written' | 'would-write' | 'skipped-none' | 'error';
-  source?: 'embedded' | 'metadata';
+  source?: SidecarAssetSource;
   rel?: string;          // project-relative sidecar path
   cueCount?: number;     // vtt only
   bytes?: number;
@@ -113,12 +120,26 @@ async function migrateVariant(
   const rel = (p: string) => path.relative(projectDir, p).split(path.sep).join('/');
   const assets: Partial<Record<'vtt' | 'cover', SidecarAssetRecord>> = {};
 
-  // 2. Transcript. Mono audiobooks carry it EMBEDDED; bilingual carry a sidecar
-  //    VTT recorded on the variant. Prefer the embedded track, fall back to the
-  //    recorded sidecar (bilingual). Absent → no transcript for this book.
+  // 2. Transcript, from the three places it can legitimately be, in order of how
+  //    strongly it is tied to THESE bytes:
+  //      embedded — the mov_text track inside this m4b (mono audiobooks);
+  //      external — a transcript the caller states belongs to this m4b, i.e. the
+  //                 .vtt the assembly that built this audio just wrote beside it;
+  //      metadata — the sidecar recorded on the variant (bilingual).
+  //
+  //    The `external` source exists because the embed can fail (a locked file on
+  //    a synced volume) while the transcript is sitting right there. Before it,
+  //    the binder consulted ONLY the embedded track and the manifest, so a failed
+  //    embed meant `skipped-none` — the safety net reported "this book has no
+  //    transcript" while its transcript lay next to the m4b (Nuremberg,
+  //    2026-08-14). Absent all three → this book really has no transcript.
   try {
     let vttText = await extractVttFromM4b(m4bAbs);
-    let vttSource: 'embedded' | 'metadata' = 'embedded';
+    let vttSource: SidecarAssetSource = 'embedded';
+    if (!vttText && opts.externalVttPath && fs.existsSync(opts.externalVttPath)) {
+      vttText = fs.readFileSync(opts.externalVttPath, 'utf8');
+      vttSource = 'external';
+    }
     if (!vttText && variant.vttPath) {
       const sidecarAbs = path.join(projectDir, variant.vttPath);
       if (fs.existsSync(sidecarAbs)) { vttText = fs.readFileSync(sidecarAbs, 'utf8'); vttSource = 'metadata'; }
@@ -208,8 +229,16 @@ const normRel = (p: string): string => (p || '').replace(/\\/g, '/').replace(/^\
  * forward, not just the one-time migration. Best-effort: returns null and NEVER
  * throws, so it can't break the audiobook pipeline. No-op for a path outside the
  * library's projects/ tree or a variant not found in the manifest.
+ *
+ * `opts.vttPath` names a transcript the caller KNOWS belongs to this m4b (the one
+ * its own assembly just produced). It is used only when the m4b carries no
+ * embedded track — which is exactly the case an embed failure leaves behind, and
+ * the case in which this used to bind nothing at all.
  */
-export async function regenerateBoundSidecars(m4bAbsPath: string): Promise<VariantOutcome | null> {
+export async function regenerateBoundSidecars(
+  m4bAbsPath: string,
+  opts?: { vttPath?: string },
+): Promise<VariantOutcome | null> {
   try {
     const projectsRoot = getProjectsPath();
     const abs = path.resolve(m4bAbsPath);
@@ -225,7 +254,7 @@ export async function regenerateBoundSidecars(m4bAbsPath: string): Promise<Varia
     const variant = variants.find(v => v.kind === 'audiobook' && normRel(v.path) === normRel(rel));
     if (!variant) return null;
     return await migrateVariant(projectDir, manifest.projectId || projectId, variant, manifest,
-      { libraryRoot: getLibraryBasePath(), dryRun: false });
+      { libraryRoot: getLibraryBasePath(), dryRun: false, externalVttPath: opts?.vttPath });
   } catch {
     return null;
   }

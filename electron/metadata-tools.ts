@@ -32,6 +32,20 @@ import * as fs from 'fs';
 import { app } from 'electron';
 import { getFfmpegPath, getFfprobePath } from './tool-paths';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv, toUnpackedPath } from './e2a-paths';
+import { renameWithRetry, unlinkWithRetry, LARGE_FILE_RETRY_DELAYS_MS } from './fs-retry';
+
+/**
+ * Name prefix of the scratch file {@link embedVttInM4b} muxes into before it
+ * replaces the audiobook. It is a full-size copy of the m4b, so anything that
+ * sweeps a directory (reassembly's staging→output promotion) must recognise it
+ * as scratch and delete it rather than treat it as an output.
+ */
+export const EMBED_TEMP_PREFIX = '.embed-';
+
+/** True for the scratch files {@link embedVttInM4b} writes (see {@link EMBED_TEMP_PREFIX}). */
+export function isEmbedTempFileName(name: string): boolean {
+  return name.startsWith(EMBED_TEMP_PREFIX) && name.toLowerCase().endsWith('.m4b');
+}
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -623,7 +637,7 @@ export async function embedVttInM4b(
   const lang = (opts?.language || 'und').slice(0, 3);
   // Write to a sibling temp file, then rename over the original — a same-directory
   // rename is atomic, so a crash mid-encode never corrupts the finished m4b.
-  const tmpOut = path.join(path.dirname(m4bPath), `.embed-${process.pid}-${Date.now()}.m4b`);
+  const tmpOut = path.join(path.dirname(m4bPath), `${EMBED_TEMP_PREFIX}${process.pid}-${Date.now()}.m4b`);
 
   const args = [
     '-v', 'error', '-y',
@@ -663,9 +677,26 @@ export async function embedVttInM4b(
     if ((await extractVttFromM4b(tmpOut, opts?.timeoutMs ?? 120_000)) === null) {
       throw new Error('Embedded transcript verification failed');
     }
-    fs.renameSync(tmpOut, m4bPath);
+    // Replace the original. This is the step that lost the Nuremberg transcript
+    // on 2026-08-14: a bare `renameSync` over a just-written 1.4 GB m4b on the
+    // Syncthing/OneDrive/Defender-watched library volume threw EBUSY, and the
+    // whole embed was reported as failed. A sharing violation there is transient
+    // — but a multi-gigabyte file can be held for a minute while a sync client
+    // hashes it, so this uses the LARGE-file schedule, not the short one.
+    await renameWithRetry(tmpOut, m4bPath, LARGE_FILE_RETRY_DELAYS_MS);
   } catch (err) {
-    try { if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut); } catch { /* non-critical */ }
+    // The temp is a FULL-SIZE copy of the audiobook. Swallowing the cleanup
+    // failure stranded two 1.4 GB files in the Nuremberg output folder, so the
+    // delete is retried and, if it still can't be done, said out loud with the
+    // path — never silently abandoned.
+    try {
+      await unlinkWithRetry(tmpOut, LARGE_FILE_RETRY_DELAYS_MS);
+    } catch (cleanupErr) {
+      console.error(
+        `[metadata-tools] Could not remove the transcript-embed temp file ${tmpOut} ` +
+        `(${(cleanupErr as Error).message}) — it is a full-size copy of the audiobook and must be deleted by hand.`
+      );
+    }
     throw err;
   }
 }

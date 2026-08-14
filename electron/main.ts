@@ -7189,22 +7189,56 @@ function setupIpcHandlers(): void {
       const relativePath = path.relative(projectDir, audioPath).replace(/\\/g, '/');
       console.log('[audiobook:link-audio] projectId:', projectId, 'relativePath:', relativePath);
 
-      // Embed-only: if a transcript sits next to the linked audio, SEAL it INTO the
-      // m4b (the single source of truth) and remove the sidecar — never register a
-      // sidecar vttPath. On embed failure the linked book simply has no synced text.
+      // If a transcript sits next to the linked audio, SEAL it INTO the m4b (the
+      // strongest link there is) and remove the loose copy — never register a
+      // sidecar vttPath.
+      //
+      // Two things this must NOT do, both learned the hard way on Nuremberg
+      // (2026-08-14):
+      //  • It must not re-do work the assembler already did. The renderer calls
+      //    this the moment a reassembly completes, so when reassembly had ALREADY
+      //    tried to embed and fallen back to a hash-bound sidecar, this fired a
+      //    SECOND full 1.4 GB remux of the same book seconds later, which failed
+      //    the same way and stranded another 1.4 GB temp. A book that already has
+      //    a transcript bound to these exact bytes is done; leave it alone.
+      //  • It must not GUESS which .vtt is the transcript. Picking "any .vtt in
+      //    the folder" is how a transcript ends up on the wrong audio. Only an
+      //    unambiguous match is used; anything else is refused out loud.
       const audioDir = path.dirname(audioPath);
-      if (audioPath.toLowerCase().endsWith('.m4b') && !(await extractVttFromM4b(audioPath))) {
-        try {
-          const dirFiles = await fs.readdir(audioDir);
-          const vttFile = dirFiles.find(f => f === 'subtitles.vtt')
-            || dirFiles.find(f => f.endsWith('.vtt') && !f.startsWith('._') && !f.startsWith('bilingual-'));
-          if (vttFile) {
-            const vttAbs = path.join(audioDir, vttFile);
-            const embedded = await embedAndVerifyVtt(audioPath, vttAbs).catch(() => false);
-            if (embedded) { deleteSidecarsForM4b(audioPath); console.log('[audiobook:link-audio] embedded sibling transcript into m4b:', audioPath); }
-            else console.error('[audiobook:link-audio] embed of sibling transcript failed — linked audiobook has NO transcript:', audioPath);
+      const { boundSidecarVtt } = await import('./sidecar-binding.js');
+      if (audioPath.toLowerCase().endsWith('.m4b')
+        && !(await extractVttFromM4b(audioPath))
+        && !(await boundSidecarVtt(audioPath))) {
+        const dirFiles = await fs.readdir(audioDir);
+        const stem = path.parse(audioPath).name;
+        const candidates = dirFiles.filter(f => f.toLowerCase().endsWith('.vtt')
+          && !f.startsWith('._') && !f.startsWith('bilingual-'));
+        const vttFile = candidates.find(f => path.parse(f).name === stem)
+          || candidates.find(f => f === 'subtitles.vtt')
+          || (candidates.length === 1 ? candidates[0] : undefined);
+        if (!vttFile && candidates.length > 1) {
+          console.error(
+            `[audiobook:link-audio] ${candidates.length} transcripts sit next to ${path.basename(audioPath)} ` +
+            `and none matches its name (${candidates.join(', ')}) — refusing to guess; the linked audiobook has NO transcript.`
+          );
+        } else if (vttFile) {
+          const vttAbs = path.join(audioDir, vttFile);
+          try {
+            if (await embedAndVerifyVtt(audioPath, vttAbs)) {
+              deleteSidecarsForM4b(audioPath);
+              console.log('[audiobook:link-audio] embedded sibling transcript into m4b:', audioPath);
+            } else {
+              console.error('[audiobook:link-audio] embedded transcript did not read back — linked audiobook has NO transcript:', audioPath);
+            }
+          } catch (embedErr) {
+            // Never swallowed: this catch used to be `.catch(() => false)`, which
+            // is how a failed 1.4 GB embed left no trace anywhere.
+            console.error(
+              `[audiobook:link-audio] embed of ${vttFile} into ${path.basename(audioPath)} failed ` +
+              `(${(embedErr as Error).message}) — linked audiobook has NO transcript.`
+            );
           }
-        } catch { /* dir read failed — link audio only */ }
+        }
       }
 
       // Atomic read-modify-write with per-project lock. Embed-only: never register a

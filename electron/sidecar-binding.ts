@@ -553,6 +553,20 @@ export async function resolveSidecars(
   return out;
 }
 
+/**
+ * The transcript sidecar that is currently BOUND to `m4bAbsPath` (absolute path),
+ * or null when this m4b has no valid binding — the one-line form of "does this
+ * audiobook already have a transcript tied to these exact bytes?". Fails closed
+ * exactly like {@link resolveSidecars}: a missing, malformed, or hash-mismatched
+ * binding answers null, never a maybe.
+ */
+export async function boundSidecarVtt(m4bAbsPath: string): Promise<string | null> {
+  const binding = await readBinding(sidecarPathsFor(m4bAbsPath).binding);
+  if (!binding) return null;
+  const resolved = await resolveSidecars(binding, m4bAbsPath, path.dirname(m4bAbsPath));
+  return resolved.vtt;
+}
+
 // ── guards ───────────────────────────────────────────────────────────────────
 
 function isSidecarBinding(v: unknown): v is SidecarBinding {

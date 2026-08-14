@@ -8,7 +8,8 @@ import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { getDefaultE2aPath, getDefaultE2aTmpPath, getPythonInvocation, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath, buildCondaSpawnEnv, shellEscapeArgs } from './e2a-paths';
 import * as os from 'os';
-import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b, embedAndVerifyVtt, deleteSidecarsForM4b, probeAudio } from './metadata-tools';
+import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b, embedAndVerifyVtt, deleteSidecarsForM4b, probeAudio, isEmbedTempFileName } from './metadata-tools';
+import { renameWithRetry, unlinkWithRetry, isTransientFsError } from './fs-retry';
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
@@ -2080,14 +2081,21 @@ export async function startReassembly(
             // Only NOW is the staging copy redundant — the m4b carries the transcript
             // and regenerateBoundSidecars re-extracts it into the bound sidecar below.
             deleteSidecarsForM4b(outputPath);
+            // …and it is gone, so it is no longer a transcript this run can hand to
+            // the sidecar binder. Clearing it keeps `sealVttSource` meaning exactly
+            // one thing: "the loose transcript this run still owns, wherever it is".
+            sealVttSource = undefined;
           } else {
             // KEEP the staging .vtt. With no embedded track it is the only transcript
             // this run produced, and deleting it (as the old embed-only rule did)
-            // destroys the only thing a repair could be built from.
-            reassemblyLog.error('Transcript NOT embedded — audiobook will have no bound transcript', {
+            // destroys the only thing a repair could be built from. It rides the
+            // promotion into output/ below and is then BOUND to the m4b as a
+            // hash-verified sidecar — the audiobook keeps its transcript even when
+            // the embed could not be written.
+            reassemblyLog.error('Transcript NOT embedded — falling back to a bound sidecar', {
               jobId, outputPath, sealVttSource,
             });
-            console.error('[REASSEMBLY] Transcript NOT embedded; keeping the staging .vtt as the only copy:', sealVttSource);
+            console.error('[REASSEMBLY] Transcript NOT embedded; the staging .vtt will be bound as a sidecar instead:', sealVttSource);
           }
         }
 
@@ -2114,36 +2122,9 @@ export async function startReassembly(
           resolve({ success: false, error: msg });
         };
 
-        // On Windows — especially on a double-synced drive (OneDrive + Syncthing) —
-        // a sync client or a media player holds a brief handle on a file, so
-        // unlink/rename throw EBUSY/EPERM/EACCES for a beat. These are transient:
-        // retry with backoff before giving up. (unlink is also "delete-pending" on
-        // Windows: the name stays reserved until the last handle closes, which is
-        // why deleting the old output then immediately renaming onto its name failed.)
-        const RETRY_DELAYS_MS = [100, 200, 400, 800, 1200, 1800, 2500];
-        const isTransientFsError = (e: unknown): boolean => {
-          const code = (e as NodeJS.ErrnoException)?.code;
-          return code === 'EBUSY' || code === 'EPERM' || code === 'EACCES';
-        };
-        const renameWithRetry = async (src: string, dest: string): Promise<void> => {
-          for (let attempt = 0; ; attempt++) {
-            try { fs.renameSync(src, dest); return; }
-            catch (e) {
-              if (!isTransientFsError(e) || attempt >= RETRY_DELAYS_MS.length) throw e;
-              await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
-            }
-          }
-        };
-        const unlinkWithRetry = async (target: string): Promise<void> => {
-          for (let attempt = 0; ; attempt++) {
-            try { fs.unlinkSync(target); return; }
-            catch (e) {
-              if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return; // already gone
-              if (!isTransientFsError(e) || attempt >= RETRY_DELAYS_MS.length) throw e;
-              await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
-            }
-          }
-        };
+        // The rename/unlink retries that this promotion needs on a synced volume
+        // live in ./fs-retry — the same policy the transcript embed uses, so a
+        // locked file behaves identically wherever we replace one.
 
         if (outputPath && fs.existsSync(outputPath)) {
           try {
@@ -2154,15 +2135,30 @@ export async function startReassembly(
             //    previous delete-old-then-move order did exactly that when the move hit
             //    EBUSY on the synced drive). staging lives under outputDir, so these are
             //    same-filesystem renames (no EXDEV).
-            const staged: { tmp: string; dest: string; isOutput: boolean }[] = [];
+            const staged: { tmp: string; dest: string; isOutput: boolean; isSealVtt: boolean }[] = [];
             const stagingFiles = fs.readdirSync(stagingDir);
             for (const file of stagingFiles) {
               const src = path.join(stagingDir, file);
               if (!fs.statSync(src).isFile()) continue;
+              // A transcript embed that could not replace the m4b leaves its scratch
+              // mux behind — a FULL-SIZE copy of the audiobook. It is not an output:
+              // promoting it stranded two 1.4 GB `.embed-*.m4b` files in the Nuremberg
+              // output folder (2026-08-14). Delete it here so no exit path leaks it.
+              if (isEmbedTempFileName(file)) {
+                try {
+                  await unlinkWithRetry(src);
+                  reassemblyLog.warn('Removed a leftover transcript-embed temp file', { jobId, file });
+                } catch (tmpErr) {
+                  reassemblyLog.error('Could not remove a leftover transcript-embed temp file', {
+                    jobId, file, error: (tmpErr as Error).message,
+                  });
+                }
+                continue;
+              }
               const dest = path.join(config.outputDir, file);
               const tmp = `${dest}.promote-${jobId}.tmp`;
               await renameWithRetry(src, tmp);
-              staged.push({ tmp, dest, isOutput: src === outputPath });
+              staged.push({ tmp, dest, isOutput: src === outputPath, isSealVtt: src === sealVttSource });
             }
 
             // 2. New files are safe in the output dir now — remove the OLD audiobook
@@ -2197,6 +2193,9 @@ export async function startReassembly(
               await renameWithRetry(s.tmp, s.dest);
               console.log(`[REASSEMBLY] Promoted ${path.basename(s.dest)} to output`);
               if (s.isOutput) outputPath = s.dest;
+              // Follow the un-embedded transcript to its new home so the sidecar
+              // binder below is handed a path that still exists.
+              if (s.isSealVtt) sealVttSource = s.dest;
             }
 
             // Only clean staging once everything moved out cleanly.
@@ -2260,15 +2259,32 @@ export async function startReassembly(
         // times already track the floored audio (verified to the millisecond —
         // last cue 03:52:41.378 against a 13961.378 s m4b). Only the binding needed
         // refreshing. regenerateBoundSidecars is best-effort and never throws.
+        //
+        // When the embed FAILED, `sealVttSource` still names the transcript this run
+        // produced (now promoted next to the m4b) and it is handed over explicitly.
+        // The binder used to read only the embedded track and the manifest, so a
+        // failed embed produced `vtt: skipped-none` — the safety net reporting "no
+        // transcript" while the transcript sat in the same folder (Nuremberg,
+        // 2026-08-14). Naming the file is not a guess: this code built it.
         try {
-          const bound = await regenerateBoundSidecars(outputPath);
+          const bound = await regenerateBoundSidecars(
+            outputPath,
+            sealVttSource ? { vttPath: sealVttSource } : undefined,
+          );
           const vttAction = bound?.vtt.action ?? 'none';
           const coverAction = bound?.cover.action ?? 'none';
           // A mono audiobook always has a transcript, so 'skipped-none' here means the
           // chain upstream broke — it is a defect, not a normal outcome. Reporting it
           // at INFO is exactly how it slipped through two rounds of "fixed".
           if (vttAction === 'written' || vttAction === 'would-write') {
-            reassemblyLog.info('Sidecar binding refreshed', { jobId, outputPath, vtt: vttAction, cover: coverAction });
+            reassemblyLog.info('Sidecar binding refreshed', {
+              jobId, outputPath, vtt: vttAction, vttSource: bound?.vtt.source, cover: coverAction,
+            });
+            // The transcript is now bound to these exact m4b bytes at `<m4b>.vtt`.
+            // The loose `<stem>.vtt` it was built from is a stray no player looks
+            // for; deleteSidecarsForM4b removes strays and PROTECTS bound sidecars
+            // (it refuses any .vtt that has a `.sidecars.json` beside it).
+            deleteSidecarsForM4b(outputPath);
           } else {
             reassemblyLog.error('Sidecar binding produced NO transcript', { jobId, outputPath, vtt: vttAction, cover: coverAction });
             console.error(`[REASSEMBLY] Sidecar binding produced NO transcript (vtt: ${vttAction}) — players will show none for:`, outputPath);
