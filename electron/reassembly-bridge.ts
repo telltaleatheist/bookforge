@@ -417,6 +417,28 @@ const activeRvcDirs = new Map<string, string>();
 const activeClosedDirs = new Map<string, string>();
 
 /**
+ * Does the e2a we are about to run understand --encoded_chapters_dir?
+ *
+ * BookForge and ebook2audiobook are separate repos on separate release cadences,
+ * and e2a exists as THREE checkouts (Windows, the WSL one Orpheus renders in, the
+ * Mac one) that routinely sit at different commits. app.py parses with
+ * parse_args(), so handing an older checkout a flag it does not know is not a
+ * degraded run — it is an immediate exit 2 with the whole assembly lost.
+ *
+ * So this is checked, not assumed. When the answer is no, the pre-closed chapters
+ * are simply not used and assembly does the work itself, which is the same thing
+ * that happens for a session the closer never touched.
+ */
+function e2aSupportsEncodedChapters(): boolean {
+  const argsFile = path.join(getDefaultE2aPath(), 'bookforge_ext', 'parallel', 'args.py');
+  try {
+    return fs.readFileSync(argsFile, 'utf8').includes('--encoded_chapters_dir');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Remove a job's staging dir AND its RVC scratch dir (if any), and clear the map
  * entries. Logs but does not throw on failure. Called at every reassembly
  * terminal point (success / error / stop), so the RVC-enhanced sentences are
@@ -1160,7 +1182,11 @@ export async function startReassembly(
       return { success: false, error: 'Sentence-gap normalization: cached sentences not found for this session.' };
     }
     const minChunkGapForCloser = resolveOrpheusMinChunkGap(provenance?.voice) ?? 0;
-    const closed = await resolveClosedSession({
+    const closed = !e2aSupportsEncodedChapters()
+      ? (reassemblyLog.info('Pre-closed chapters not used', {
+          jobId, reason: `the e2a at ${getDefaultE2aPath()} does not support --encoded_chapters_dir`,
+        }), null)
+      : await resolveClosedSession({
       tmpRoot: getDefaultE2aTmpPath(),
       sessionId: config.sessionId,
       sentencesDir: srcSentences,
