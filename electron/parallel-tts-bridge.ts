@@ -2183,12 +2183,26 @@ function toReadablePath(p: string): string {
  */
 function maybeStartChapterCloser(session: ConversionSession): void {
   const { config, prepInfo } = session;
-  if (!prepInfo) return;
   const settings = config.settings;
-  if (settings.ttsEngine?.toLowerCase() !== 'orpheus') return;
-  if (config.finalDenoise || config.rvcEnhancement?.enabled) return;
-  if (config.skipAssembly) return;
-  if (!prepInfo.chapters?.length) return;
+
+  // Every reason to decline is REPORTED. The first version of this returned bare,
+  // and when the closer then did not run on its first real book there was no way to
+  // tell which condition had rejected it — the feature and a silently-skipped
+  // feature look identical from the outside. Declining is fine; declining without
+  // saying so is not.
+  const decline = (reason: string): void => {
+    writeWorkerLog(`[CLOSER] not started: ${reason}`);
+    logger.log('INFO', session.jobId, `Chapter closer not started: ${reason}`).catch(() => {});
+  };
+
+  if (!prepInfo) return decline('prep info is not available');
+  if (settings.ttsEngine?.toLowerCase() !== 'orpheus') {
+    return decline(`engine is ${settings.ttsEngine ?? 'unset'}, not orpheus`);
+  }
+  if (config.finalDenoise) return decline('a final-denoise pass is scheduled, which re-renders every sentence afterwards');
+  if (config.rvcEnhancement?.enabled) return decline('an RVC pass is scheduled, which re-renders every sentence afterwards');
+  if (config.skipAssembly) return decline('skipAssembly is set — the caller concatenates the sentences itself');
+  if (!prepInfo.chapters?.length) return decline('prep reported no chapter ranges');
   // The output format is deliberately NOT checked here: BookForge never passes one,
   // so e2a's own default governs, and e2a is the authority anyway — its
   // parallel_export_supported() gate ignores the pre-encoded chapters outright on
