@@ -308,15 +308,15 @@ export class NarrationModalComponent {
    */
   readonly epubPath = input.required<string>();
   /**
-   * WHICH WORKING CHAIN that file is on — the other half of its identity.
+   * WHICH VERSION of the book that file is — the other half of its identity.
    *
    * `required` for the same reason the path is. Owen, 2026-08-10: "if the user
    * wants to process a specific TTS document then they click the process button
-   * next to it. no ambiguity, no confusion." The button knows which version it
-   * is on; nothing on this side could work it out, and a run that guessed would
-   * be filed against the wrong edition of the book.
+   * next to it. no ambiguity, no confusion." The row the button is on IS a
+   * version of this book and carries its id; nothing on this side could work it
+   * out, and a run that guessed would be filed against the wrong edition.
    */
-  readonly familyId = input.required<string>();
+  readonly variantId = input.required<string>();
   readonly projectDir = input.required<string>();
   readonly title = input<string>('');
   readonly author = input<string>('');
@@ -430,6 +430,18 @@ export class NarrationModalComponent {
       return 'The Process button did not name a file, so there is nothing to narrate. This is a '
         + 'bug in the page that opened this dialog.';
     }
+    // The file is handed over already proved to be on disk (the row's own
+    // `variantFile` check); what this side can still say is whether it is a
+    // BOOK. An M4B or a PDF reaching here would be queued and would fail an
+    // hour later inside the TTS job, naming a path the user cannot place.
+    if (!/\.epub$/i.test(this.epubPath())) {
+      return `${this.fileLabel()} is not an EPUB, so it cannot be narrated. Narration reads a `
+        + 'book; press Process on an EPUB version of this book.';
+    }
+    if (!this.variantId()) {
+      return 'The Process button did not say which version of the book this file is, so the run '
+        + 'could not be filed against one. This is a bug in the page that opened this dialog.';
+    }
     if (!this.projectDir()) {
       return 'This book has no project directory, so there is nowhere to put the rendered '
         + 'sentences or the finished audiobook.';
@@ -473,7 +485,7 @@ export class NarrationModalComponent {
       const book: NarrationRunBook = {
         epubPath: this.epubPath(),
         projectDir: this.projectDir(),
-        familyId: this.familyId(),
+        variantId: this.variantId(),
         title: this.title(),
         author: this.author(),
         year: this.year(),
@@ -524,7 +536,7 @@ export class NarrationModalComponent {
       const master = await this.queue.addJob({
         type: 'audiobook',
         epubPath: book.epubPath,
-        familyId: book.familyId,
+        variantId: book.variantId,
         ...(book.isArticle ? { projectDir: book.projectDir } : {}),
         metadata: { title: book.title, author: book.author },
         config: { type: 'audiobook' },

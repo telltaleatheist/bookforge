@@ -63,6 +63,7 @@ import {
 import { TTS_ENGINES, engineCaps, type TtsEngineCaps } from '../../models/tts-engine-registry';
 import { AIProvider } from '../../../../core/models/ai-config.types';
 import type { ChainPassRequest } from '@shared/processing/pass-types';
+import { samePath } from '@shared/document/same-path';
 import type { SourceType } from '../../../../core/models/manifest.types';
 import {
   DesktopButtonComponent,
@@ -411,25 +412,16 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                      what this run produces — and the user picked one. Owen,
                      2026-08-08: "by that time the system will know which one."
 
-                     It does. The artifact chain has exactly one answer at every
-                     link: the archive is the file you handed us, the working copy
-                     is the one file you edit, and the narration copy is that
-                     working copy with what you struck out taken out. TTS reads the
-                     last of those. There was never really a second candidate — the
-                     other two cards offered a file the user had already decided
-                     against (the whole book, footnotes and all) and a file that
-                     only existed while the pass page did.
-
-                     ensureNarrationEpub cuts it when there is not a current one,
-                     which is not a hidden side effect: the narration copy is
-                     DERIVED, so "there isn't one yet" and "the one on record was
-                     cut from an older book" are work with one correct answer
-                     rather than questions to put to somebody.
+                     It does — and as of Wave 1 (2026-08-16) it knows it without
+                     deriving anything. The document is the one the Process button
+                     on a version row named, carried here as it was carried into
+                     the narration dialog. Nothing is cut from it and nothing is
+                     looked up: a version's EPUB is final, and it is read exactly
+                     as it stands.
 
                      The Open button is why this can be a statement instead of a
                      choice — the user VERIFIES the document rather than selecting
-                     it. It opens read-only in the picker, which says so and offers
-                     the way back to the working copy. -->
+                     it. -->
                 <div class="config-section">
                   <label class="field-label">Narrating</label>
                   @if (narrationEpubPath(); as narrationPath) {
@@ -437,8 +429,7 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                       <div class="narration-input-text">
                         <span class="narration-input-file">{{ getFilenameFromPath(narrationPath) }}</span>
                         <span class="narration-input-note">
-                          Your working copy, with what you struck out removed.
-                          @if (narrationCutReason(); as why) { {{ why }} }
+                          The version you pressed Process on. It is read exactly as it is.
                         </span>
                       </div>
                       <desktop-button
@@ -2805,63 +2796,48 @@ export class LLWizardComponent implements OnInit {
   // to render one page, and that page is gone (see the template's note where it
   // was). What replaced it is nothing: a run is not composed in this wizard any
   // more, so there is no run to hold.
-  /** The project's book EPUB (manifest `outputs.epub`) when it is on disk. */
-  readonly bookEpubPath = signal<string | null>(null);
   /**
-   * The project's NARRATION COPY (manifest `outputs.ttsEpub`) when it is on disk.
+   * The FILE a standard run reads — the document this page was handed.
    *
-   * A SECOND file, cut from the book by what the user struck out of it in the
-   * editor — footnotes, captions, a table of contents. The book itself stays
-   * complete. See shared/vlm/narration-deletions.ts.
+   * Wave 1 (2026-08-16): this used to be the project's narration copy, a third
+   * file cut out of a working copy by what the user struck out in the editor.
+   * There is no cut any more. It is the version's own EPUB, named by the Process
+   * button that brought the user here and proved to be one of this book's
+   * versions by `resolveNarrationInput`.
    */
   readonly narrationEpubPath = signal<string | null>(null);
   /**
-   * WHICH WORKING CHAIN that file is on — learned from the same answer that
-   * named the file, at the same moment.
+   * WHICH VERSION of the book that file is — the manifest variant id, measured
+   * by matching the handed-over path against this project's own version records.
    *
-   * A project may hold several versions of one book, each with its own narration
-   * copy, and a narration run has to name the chain it belongs to or everything
-   * it asks the manifest about gets a refusal. This page has no button on a row
-   * to learn it from — it is reached as a page rather than from a document — so
-   * it takes whichever chain `narration:ensure-copy` resolved, which for a
-   * project with several is a refusal rather than a guess. Null until that has
-   * answered, and a run queued without it is refused BY NAME
+   * Null until that has answered, and a run queued without it is refused BY NAME
    * (`requireRun`, src/app/features/queue/jobs/narration-run.ts).
    */
-  readonly narrationFamilyId = signal<string | null>(null);
+  readonly narrationVariantId = signal<string | null>(null);
   /**
-   * Why there is nothing for this project to narrate, or null.
+   * Why there is nothing for this page to narrate, or null.
    *
-   * `ensureNarrationEpub`'s own refusal, verbatim — it names the act that
-   * produces a working copy (open the book, or Generate EPUB for a PDF) rather
-   * than offering a file picker, which is the whole point: there is one editable
-   * file, and if it does not exist yet the answer is to make it.
+   * Three real states, each said as itself: no document was handed over, this
+   * book's versions could not be read, or the document is not one of them. None
+   * of them is answered with a file picker — the file comes from the button that
+   * was pressed, and the fix is to press it.
    */
   readonly narrationBlockedReason = signal<string | null>(null);
 
   /**
-   * The project directory `narrationEpubPath`/`narrationFamilyId` were resolved
+   * The project directory `narrationEpubPath`/`narrationVariantId` were resolved
    * FOR, or null when nothing is resolved.
    *
-   * The three of them are one answer to one question — which file, on which
-   * chain, for which book — and the only way to keep them from being read apart
-   * is to carry the book with them. `narrationRunBook` refuses when this does
-   * not match the directory the job is about to be filed under.
+   * The three of them are one answer to one question — which file, which
+   * version, for which book — and the only way to keep them from being read
+   * apart is to carry the book with them. `narrationRunBook` refuses when this
+   * does not match the directory the job is about to be filed under.
    */
   private narrationResolvedFor: string | null = null;
   /** Bumped by every `resolveNarrationInput`; the older one publishes nothing. */
   private narrationResolveGeneration = 0;
 
-  /**
-   * Why the narration copy was cut just now, or null when the one on record
-   * already described the book.
-   *
-   * Shown beside the filename because "this was rebuilt a moment ago" is worth
-   * the user pressing Open over, and "the one from Tuesday still matches" is not.
-   */
-  readonly narrationCutReason = signal<string | null>(null);
-
-  /** Set while the Open button is putting the narration copy on screen. */
+  /** Set while the Open button is putting the narrated document on screen. */
   readonly openingNarration = signal(false);
   /**
    * The file a standard run will read, or null when there is none.
@@ -2882,11 +2858,12 @@ export class LLWizardComponent implements OnInit {
   readonly ttsBlockedReason = computed<string | null>(() => {
     // Sentence-aligned rows resolve their own per-language EPUBs at run time.
     if (this.pipelineMode() === 'bilingual') return null;
-    // The run cannot help: every pass rewrites a book that already exists, so a
-    // project with none has nothing for them to read either.
-    if (this.bookEpubPath() || this.narrationEpubPath()) return null;
-    return 'This book has no EPUB to narrate. Open it in the editor and run Convert to EPUB '
-      + 'from the Archive station — that is what turns the pages into a book.';
+    if (this.narrationEpubPath()) return null;
+    // `resolveNarrationInput`'s own sentence, which names WHICH of the three
+    // real states this is — no document handed over, versions unreadable, or a
+    // document that is not one of this book's versions. Null while it has not
+    // answered yet, and the step says "preparing" rather than refusing.
+    return this.narrationBlockedReason();
   });
 
   /** Every language, for the translate pass's from/into pickers. */
@@ -3939,69 +3916,85 @@ export class LLWizardComponent implements OnInit {
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * Ask main for the project's narration copy, cutting one if there is not a
-   * current one, and record the answer for the page to state.
+   * Say WHICH VERSION of the book the file this page was handed is, and record
+   * both for the page to state.
    *
-   * ── Why this is `ensure` and not `read` ─────────────────────────────────────
+   * ── Wave 1, 2026-08-16: the file is not derived any more ───────────────────
    *
-   * The page used to read `narration:state` — a report of whatever was on record
-   * — and offer that answer as one card among three. A report is a snapshot: it
-   * goes stale the moment a pass rewrites the book, and it is empty for a project
-   * nobody has exported a narration copy from yet, which is most of them. Both
-   * cases used to be handled by the user picking a different card, which is to
-   * say by narrating the wrong file.
+   * This used to call `narration:ensure-copy`, which cut a narration copy out of
+   * the working copy — a THIRD file, derived from a second one, which is the
+   * model the working chain was made of and which this wave retires. There is no
+   * cut any more: the document this page narrates is the one it was handed
+   * (`epubPath`, which the Process button on a version row named), and it is
+   * final.
    *
-   * `narration:ensure-copy` answers the question the page actually has — WHICH
-   * FILE WILL BE NARRATED — and makes it true, cutting from the working copy when
-   * the record is missing or was stamped with a book that has changed since. See
-   * `ensureNarrationEpub` for why that is derivation rather than a side effect.
-   *
-   * A refusal is KEPT rather than thrown away: it is the sentence the page shows
-   * in place of a filename, and it names the act that fixes it.
+   * What IS resolved here is the version that file belongs to, measured against
+   * the project's own variant records. That is not a lookup of "the file" — the
+   * file was handed over — it is the answer to "which of this book's versions am
+   * I holding", and a file that is none of them is REFUSED by name rather than
+   * narrated under some other version's identity.
    */
   private async resolveNarrationInput(): Promise<void> {
     const projectDir = this.effectiveProjectDir();
     if (!projectDir) {
       this.narrationResolvedFor = null;
       this.narrationEpubPath.set(null);
-      this.narrationCutReason.set(null);
+      this.narrationVariantId.set(null);
       this.narrationBlockedReason.set(null);
       return;
     }
 
-    // OWNERSHIP. `narration:ensure-copy` may CUT a fresh copy — seconds of work
-    // against a whole book — and everything it answers with (the file, the
-    // chain, the refusal) describes `projectDir` and nothing else. Selecting a
-    // different book while it runs used to land A's file and A's chain under B's
-    // identity, and the very next Add-to-queue filed hours of TTS from A's text
-    // against B's project. The superseded test is studio-versions' (:3610): a
-    // newer resolution has started, or the page has moved on.
+    const document = this.epubPath();
+    if (!document) {
+      this.narrationResolvedFor = null;
+      this.narrationEpubPath.set(null);
+      this.narrationVariantId.set(null);
+      this.narrationBlockedReason.set(
+        'This page was not told which document to narrate. Open the book\'s Versions tab and press '
+        + 'Process on the version you want read aloud — that button carries the file with it.');
+      return;
+    }
+
+    // OWNERSHIP. Everything below (the file, the version, the refusal) describes
+    // `projectDir` and nothing else. Selecting a different book while the
+    // variant list is being read used to land A's file and A's identity under
+    // B's, and the very next Add-to-queue filed hours of TTS from A's text
+    // against B's project. The superseded test is studio-versions': a newer
+    // resolution has started, or the page has moved on.
     const generation = ++this.narrationResolveGeneration;
     const superseded = () =>
       generation !== this.narrationResolveGeneration
-      || this.effectiveProjectDir() !== projectDir;
+      || this.effectiveProjectDir() !== projectDir
+      || this.epubPath() !== document;
 
-    const answer = await this.electronService.ensureNarrationEpub(projectDir);
+    const res = await this.electronService.variantList(this.projectId());
     if (superseded()) return;
-    if (!answer.success || !answer.narration) {
+    if (!res.success || !res.variants) {
       this.narrationResolvedFor = null;
       this.narrationEpubPath.set(null);
-      this.narrationCutReason.set(null);
-      this.narrationFamilyId.set(null);
+      this.narrationVariantId.set(null);
       this.narrationBlockedReason.set(
-        answer.error ?? 'This project could not say which file to narrate.');
+        `This book's versions could not be read, so this page cannot say which version the file it `
+        + `was handed is: ${res.error ?? 'no reason given'}`);
       return;
     }
-    // WHICH project these three answers describe. `narrationRunBook` checks it
-    // against the directory the job is being filed under, so a resolution that
-    // slipped through against a stale page can never be queued.
+    const version = res.variants.find(v => v.absPath && samePath(v.absPath, document)) ?? null;
+    if (version === null) {
+      this.narrationResolvedFor = null;
+      this.narrationEpubPath.set(null);
+      this.narrationVariantId.set(null);
+      this.narrationBlockedReason.set(
+        `${this.getFilenameFromPath(document)} is not one of this book's versions, so a run about `
+        + 'it could not be filed against one. Open the Versions tab and press Process on the '
+        + 'version you want read aloud.');
+      return;
+    }
+    // WHICH project these answers describe. `narrationRunBook` checks it against
+    // the directory the job is being filed under, so a resolution that slipped
+    // through against a stale page can never be queued.
     this.narrationResolvedFor = projectDir;
-    this.narrationEpubPath.set(answer.narration.epubPath);
-    this.narrationCutReason.set(answer.narration.cutReason);
-    // The chain the file is on, said back by the same call. Absent means an
-    // older main answered; the run then refuses by name rather than being filed
-    // against whichever version the far side reaches first.
-    this.narrationFamilyId.set(answer.familyId ?? null);
+    this.narrationEpubPath.set(document);
+    this.narrationVariantId.set(version.id);
     this.narrationBlockedReason.set(null);
   }
 
@@ -6278,18 +6271,18 @@ export class LLWizardComponent implements OnInit {
         + 'the book and try again.'
       );
     }
-    const familyId = this.narrationFamilyId();
-    if (familyId === null) {
+    const variantId = this.narrationVariantId();
+    if (variantId === null) {
       throw new Error(
         'This page has not been told which version of the book it is narrating, so the run cannot '
-        + 'say which working chain it belongs to. Open the book and press Process on its narration '
-        + 'copy — that button carries the version with it.'
+        + 'be filed against one. Open the book\'s Versions tab and press Process on the version you '
+        + 'want read aloud — that button carries the version with it.'
       );
     }
     return {
       epubPath: this.ttsInputPath(),
       projectDir,
-      familyId,
+      variantId,
       title: this.title(),
       author: this.author(),
       year: this.year(),
