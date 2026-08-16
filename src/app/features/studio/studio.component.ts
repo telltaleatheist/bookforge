@@ -353,7 +353,6 @@ import { isBookPath } from '@shared/document/book-path';
                       [projectDir]="selectedItem()?.projectDir || ''"
                       [item]="selectedItem()"
                       [refreshTrigger]="filesRefreshTrigger()"
-                      (edit)="openEditorWithFile($event)"
                       (open)="openVariantInEditor($event)"
                       (exportDoc)="exportDocument($event)"
                       (exportAudio)="exportM4b($event)"

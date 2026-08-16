@@ -17,32 +17,7 @@ import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-ta
 import type { PassDiffEntry } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
 import { samePath } from '@shared/document/same-path';
-import { isExplodedBookPath } from '@shared/document/book-path';
-import { describeWorkingCopyRemint } from '@shared/document/working-copy-remint';
-import {
-  describeLedgerDeletion,
-  ledgerAfterDeleting,
-  listLedgerLabels,
-  type LedgerDeletion,
-} from '@shared/document/book-ledger';
-import {
-  bookChain,
-  describeWorkingChangesErase,
-  type ChainFamily,
-  type ChainLine,
-  type ChainLineKind,
-} from '@shared/document/book-chain';
-import {
-  STAR_LABELS,
-  STAR_MEANINGS,
-  latestPassByKind,
-  narrationRefusal,
-  starForPassKind,
-  starSlotsFor,
-  starsFor,
-  type VersionFamilyInput,
-  type VersionStar,
-} from '@shared/document/version-family';
+import { latestPassByKind } from '@shared/document/version-family';
 import { StudioConvertModalComponent } from '../studio-convert-modal/studio-convert-modal.component';
 import { BookConversionService, type ConversionSource } from '../../services/book-conversion.service';
 import type { VlmConvertDestination } from '@shared/vlm/conversion';
@@ -54,9 +29,6 @@ import {
   type PassOptionsResult,
 } from '../../../pdf-picker/components/pass-options-modal/pass-options-modal.component';
 import { NarrationModalComponent } from '../narration-modal/narration-modal.component';
-import {
-  PassCompareComponent, type ComparedBookView,
-} from '../pass-compare/pass-compare.component';
 import type { ChainPassRequest, ProcessingPassKind } from '@shared/processing/pass-types';
 import { BOOK_PASS_OPTIONS, type BookPassOption } from '@shared/processing/book-passes';
 
@@ -151,65 +123,11 @@ interface SentenceCacheInfo {
  * what its latest run changed hanging off it.
  *
  * A pass is not a version (docs/PIPELINE_V2_PLAN.md), so there is no row for it
- * — but "Review changes" is the only way to see what a pass did, so it moved
- * onto the badge rather than out of the app.
+ * — but "Review changes" is the only way to see what a pass did, so it lives on
+ * the badge rather than out of the app. Wave 1 (2026-08-16) removed the star
+ * columns the book chain's own rows carried; the badges are the one way in to a
+ * recorded diff now, so they carry every kind that left one.
  */
-/**
- * One star column on a document row: what it is, whether it is lit, and — when
- * the pass behind it recorded one — the review of what it changed.
- *
- * Owen, third real session: "any time a process is run on a file, there should
- * be a diff with a 'review changes' button on that file… and it should be linked
- * to the file it was applied to." The star IS the record that the pass ran, so
- * the star is the way in to what it did. `review` is null for a star that is
- * unlit AND for a lit one whose pass left no diff (a job that died before it
- * wrote one) — and a star with no review must never look pressable, or two
- * identical-looking stars would behave differently.
- */
-interface StarSlot {
-  id: VersionStar;
-  label: string;
-  lit: boolean;
-  tooltip: string;
-  /** The latest run of this pass's recorded diff, or null. */
-  review: { diffPath: string; reportPath: string; kind: AppliedPassKind; when: string } | null;
-  /** What pressing it does, in words. Null exactly when `review` is. */
-  action: string | null;
-}
-
-/**
- * One LINE of the book chain, ready to render.
- *
- * The arrangement and the button matrix are `shared/document/book-chain.ts`; this
- * is that answer joined back to the row it describes, so the template reads
- * fields instead of deciding anything. `v` is null for the one line that names no
- * file — the virtual working-changes line — and `entry` is set for the ledger
- * lines only.
- */
-interface ChainRowView {
-  line: ChainLine;
-  /** The `editor:get-versions` row this line acts on, or null. */
-  v: VersionRow | null;
-  /** The ledger entry this line IS, for a 'ledger' line. */
-  entry: LedgerRowEntry | null;
-  label: string;
-  /** The file extension shown beside the label. Empty for a virtual line. */
-  ext: string;
-  icon: string;
-  description: string;
-  /**
-   * The star columns — on the BOOK line only, and only for passes the ledger
-   * does not carry.
-   *
-   * A pass that is a ledger entry has its own indented line with its own Review
-   * changes button, and two ways in to one diff is how a panel comes to look
-   * like it recorded a pass twice. What is left on the stars is the history the
-   * ledger cannot hold: passes applied before the ledger existed.
-   */
-  slots: StarSlot[];
-  staleness: string | null;
-}
-
 interface ProvenanceBadge {
   kind: AppliedPassKind;
   label: string;
@@ -280,7 +198,6 @@ const AUDIO_EXTS = new Set([
   imports: [
     CommonModule, FormsModule, DiffViewComponent, MetadataEditorComponent, DesktopSelectComponent,
     StudioConvertModalComponent, PassOptionsModalComponent, NarrationModalComponent,
-    PassCompareComponent,
   ],
   host: { '[class.comparing]': '!!comparing()' },
   template: `
@@ -296,43 +213,6 @@ const AUDIO_EXTS = new Set([
         }
         <app-diff-view [passDiffPath]="cmp.diffPath" />
       </div>
-    } @else if (comparePaths(); as cmp) {
-      <div class="compare-wrap">
-        <div class="compare-bar">
-          <button class="back" (click)="closeCompare()">← Back to versions</button>
-          <span class="compare-title">{{ cmp.labelA }} <span class="vs">vs</span> {{ cmp.labelB }}</span>
-        </div>
-        <app-diff-view [originalPath]="cmp.a" [cleanedPath]="cmp.b" />
-      </div>
-    } @else if (compareBooks(); as cmp) {
-      <!-- The two BOOKS a pass sits between, as real pages. A sibling of the
-           two diff surfaces above and hosted exactly like them, so leaving it
-           is the same gesture the user already knows. -->
-      <div class="compare-wrap">
-        <div class="compare-bar">
-          <button class="back" (click)="closeCompare()">← Back to versions</button>
-          <span class="compare-title">{{ cmp.title }}</span>
-          <span class="compare-when">{{ cmp.when }}</span>
-        </div>
-        <app-pass-compare [before]="cmp.before" [after]="cmp.after" />
-      </div>
-    } @else if (compareOpening(); as opening) {
-      <!-- Between the click and the answer. Main is resolving two paths and
-           proving both are on disk; a refusal replaces the versions list with
-           its sentence rather than dropping the gesture silently. -->
-      <div class="compare-wrap">
-        <div class="compare-bar">
-          <button class="back" (click)="closeCompare()">← Back to versions</button>
-          <span class="compare-title">{{ opening.title }}</span>
-        </div>
-        @if (opening.error === null) {
-          <div class="compare-opening">
-            Finding the book this pass ran on, and the book it left…
-          </div>
-        } @else {
-          <div class="compare-opening refused">{{ opening.error }}</div>
-        }
-      </div>
     } @else {
       <div class="versions">
         <!-- What has been done to the book EPUB, from its provenance record.
@@ -346,6 +226,14 @@ const AUDIO_EXTS = new Set([
         @if (projectDir()) {
           <div class="section-head">
             <span>What's been done</span>
+            <!-- The chunks an AI cleanup skipped or looped on. It used to hang
+                 off the cleanup output's chain row; the report is about the
+                 PROJECT's cleanup rather than about one version, so with the
+                 chain gone it stands here beside the other project-wide act. -->
+            @if (hasSkippedReport()) {
+              <button class="start-over" (click)="skipped.emit()"
+                      title="See the chunks the AI cleanup skipped or looped on">Skipped chunks</button>
+            }
             <button class="start-over" (click)="startOver()"
                     [disabled]="!canStartOver() || resetting()"
                     [title]="startOverTitle()">
@@ -419,10 +307,32 @@ const AUDIO_EXTS = new Set([
                     </div>
                     <div class="rdesc">{{ variantSubtitle(v) }}</div>
                     @if (variantFilename(v); as fn) { <div class="rfile" [title]="fn">{{ fn }}</div> }
+                    <!-- A conversion the user walked away from. The window is
+                         closed; the run is not, and this is where it stays
+                         visible — on the row whose pages are being read. -->
+                    @if (conversion(); as run) {
+                      @if (variantStartedConversion(v)) {
+                        <div class="converting">
+                          <div class="cbar" [class.waiting]="run.total === 0">
+                            <div class="cfill" [style.width.%]="conversionPercent() < 0 ? 100 : conversionPercent()"></div>
+                          </div>
+                          <span class="ctext">
+                            @if (run.total > 0) {
+                              Reading the pages on {{ run.route }} — {{ run.done }} of {{ run.total }}
+                            } @else {
+                              Reading the pages on {{ run.route }} — starting
+                            }
+                          </span>
+                        </div>
+                      }
+                    }
                   </div>
-                  <!-- The same three columns as the book chain below, so an
-                       archive EPUB listed here lines up with the book's own
-                       lines. Open is empty for a format the editor cannot show. -->
+                  <!-- Owen, 2026-08-09: "from right to left, on every file -
+                       delete, export, open. then, to the left of that are
+                       special buttons, depending on whether the file is capable
+                       of running the commands." The three standing acts are in
+                       fixed columns so they line up down the page; a row that
+                       cannot perform one leaves its column EMPTY. -->
                   <div class="ractions" (click)="$event.stopPropagation()">
                     <div class="specials">
                       @if (!isPrimary(v)) {
@@ -430,6 +340,27 @@ const AUDIO_EXTS = new Set([
                       }
                       @if (canAnalyzeVariant(v) && !variantIsAnalysisTarget(v)) {
                         <button class="act" (click)="emitGenerateAnalysisVariant(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
+                      }
+                      <!-- The pages of a PDF version, read into a book. It lands
+                           as another VERSION of this book, on a row of its own
+                           beside this one. -->
+                      @if (conversion() && variantStartedConversion(v)) {
+                        <button class="act" (click)="showConversion()"
+                                title="Watch the conversion, or stop it">Show progress</button>
+                      } @else if (canConvertVariant(v)) {
+                        <button class="act primary" [disabled]="!!conversion()"
+                                [title]="conversionBusyTitle() ?? 'Read every page of this PDF into an EPUB. It is added as another version of this book.'"
+                                (click)="startVariantConversion(v)">Convert to EPUB</button>
+                      }
+                      <!-- The TTS door. Owen's identity law, 2026-08-09: "the tts
+                           pipeline knows exactly which file its working with
+                           because the user came to the tts page FROM the button
+                           on that document." This row IS a version of the book,
+                           its file is final, and both travel into the dialog as
+                           inputs — nothing on the far side looks either up. -->
+                      @if (canNarrateVariant(v)) {
+                        <button class="act" (click)="processVariant(v)"
+                                title="Narrate this version — opens the narration dialog on this exact file">Process</button>
                       }
                     </div>
                     <div class="slot">
@@ -481,205 +412,6 @@ const AUDIO_EXTS = new Set([
             }
           }
         </div>
-
-        <!-- The book chains: ONE BOOK LINE PER VERSION, each with its working
-             changes, its recorded passes and its narration copy indented under
-             it. Owen, 2026-08-09: "the user would only ever see two files on the
-             main page - the pdf and the epub… under the epub… smaller, indented
-             lines that say 'working changes' or something… in whichever order
-             they were originally executed. the tts file is also indented under
-             its parent."
-
-             ── Why there is no "Documents" heading over this any more ──────────
-
-             Owen, 2026-08-10: "having the epub listed under documents instead of
-             versions breaks the chain of custody." A heading is a claim about
-             what a list IS, and "Documents" claimed these were loose files a
-             project happens to hold — which is the opposite of what they are.
-             They are the project's VERSIONS: each book line is one archive-grade
-             book and everything derived from it, and it belongs under the
-             versions heading with the other editions rather than in a second
-             list that says nothing about where any of it came from.
-
-             The working copy has no line of its own: the EPUB the user sees IS
-             their book, and opening it lands on the copy
-             (shared/document/artifact-open.ts). What the arrangement is, and
-             which line gets which buttons, is shared/document/book-chain.ts. -->
-        @if (loading()) {
-          <div class="muted">Loading versions…</div>
-        } @else if (documentRows().length === 0) {
-          <div class="muted">No document versions yet.</div>
-        } @else {
-          @for (row of documentRows(); track row.line.key) {
-            <div class="row" [class.child]="row.line.depth === 1"
-                 [class.clickable]="rowIsClickable(row)" (click)="onChainRowClick(row)">
-              <span class="ricon">{{ row.icon }}</span>
-              <div class="rinfo">
-                <div class="rlabel">{{ row.label }}@if (row.ext) { <span class="ext">.{{ row.ext }}</span> }</div>
-                <div class="rdesc">{{ row.description }}</div>
-                @if (row.slots.length > 0) {
-                  <!-- The stars are the record that a pass ran, so a star whose
-                       pass left a diff IS the way in to what it changed. One that
-                       did not is a plain span: two identical-looking stars where
-                       only one does something is worse than no affordance. -->
-                  <div class="stars">
-                    @for (s of row.slots; track s.id) {
-                      @if (s.review) {
-                        <button type="button" class="star lit review" [title]="s.action"
-                                [attr.aria-label]="s.action"
-                                (click)="$event.stopPropagation(); openStarReview(s)">
-                          <span class="sglyph">★</span>{{ s.label }}<span class="sgo">see changes</span>
-                        </button>
-                      } @else {
-                        <span class="star" [class.lit]="s.lit" [title]="s.tooltip">
-                          <span class="sglyph">{{ s.lit ? '★' : '☆' }}</span>{{ s.label }}
-                        </span>
-                      }
-                    }
-                  </div>
-                  @if (rowHasReviewableStar(row)) {
-                    <div class="stars-hint">Click a ★ pass to see the changes it made to this file.</div>
-                  }
-                }
-                @if (row.staleness; as stale) {
-                  <div class="stale">{{ stale }}</div>
-                }
-                <!-- A conversion the user walked away from. The window is closed;
-                     the run is not, and this is where it stays visible. -->
-                @if (conversion(); as run) {
-                  @if (rowStartedConversion(row)) {
-                    <div class="converting">
-                      <div class="cbar" [class.waiting]="run.total === 0">
-                        <div class="cfill" [style.width.%]="conversionPercent() < 0 ? 100 : conversionPercent()"></div>
-                      </div>
-                      <span class="ctext">
-                        @if (run.total > 0) {
-                          Reading the pages on {{ run.route }} — {{ run.done }} of {{ run.total }}
-                        } @else {
-                          Reading the pages on {{ run.route }} — starting
-                        }
-                      </span>
-                    </div>
-                  }
-                }
-              </div>
-              <!-- Owen, 2026-08-09: "theyre supposed to be lined up with each
-                   other. from right to left, on every file - delete, export,
-                   open. then, to the left of that are special buttons, depending
-                   on whether the file is capable of running the commands."
-
-                   The three standing acts are in fixed columns, so a line that
-                   cannot perform one leaves its column EMPTY rather than closing
-                   the gap — which is the whole of what makes them line up. The
-                   specials share one flexible column to the left of them. -->
-              <div class="ractions" (click)="$event.stopPropagation()">
-                <div class="specials">
-                  @if (conversion() && rowStartedConversion(row)) {
-                    <button class="act" (click)="showConversion()"
-                            title="Watch the conversion, or stop it">Show progress</button>
-                  } @else if (canConvert(row)) {
-                    <button class="act primary" [disabled]="!!conversion()"
-                            [title]="conversionBusyTitle() ?? convertTitle(row)"
-                            (click)="startConversion(row)">{{ convertLabel(row) }}</button>
-                  }
-                  @if (canMintWorkingCopy(row)) {
-                    <button class="act" [disabled]="makingWorkingCopy()" (click)="mintWorkingCopy(row)"
-                            title="Make your own copy of this PDF to mark up. The original is never written to.">
-                      {{ makingWorkingCopy() ? 'Making…' : 'Create working copy' }}
-                    </button>
-                  }
-                  @if (row.v && hasSkippedReport(row.v)) {
-                    <button class="act" (click)="skipped.emit()">Skipped</button>
-                  }
-                  @if (row.v && hasDiffRecord(row.v)) {
-                    <button class="act" (click)="startCompare(row.v)"
-                            title="Review the changes made to produce this version">Review Changes</button>
-                  }
-                  <!-- The frozen diff of a pass the user committed to. Owen asked
-                       for it by name; the receipts are what make it possible at
-                       all, because the pass's own stage directory is cleared by
-                       the next re-mint of the book. A line whose receipt is
-                       missing shows the button DISABLED with the reason — a
-                       silent gap there would read as a pass that changed nothing. -->
-                  @if (row.line.buttons.review !== 'none') {
-                    <button class="act" [disabled]="row.line.buttons.review !== 'ready'"
-                            [title]="reviewLineTitle(row)"
-                            (click)="reviewLedgerLine(row)">Review changes</button>
-                  }
-                  <!-- The same pass, as the two BOOKS rather than as words: what
-                       it ran on beside what it left, in the picker's own viewer.
-                       Beside Review changes and not instead of it — one shows
-                       which words moved, the other shows the pages. Disabled
-                       with its reason when either book is missing, exactly as
-                       the receipt's button is. -->
-                  @if (row.line.buttons.compare !== 'none') {
-                    <button class="act" [disabled]="row.line.buttons.compare !== 'ready'"
-                            [title]="compareLineTitle(row)"
-                            (click)="compareLedgerLine(row)">Compare books</button>
-                  }
-                  @if (row.line.buttons.analysis && row.v && !docIsAnalysisTarget(row.v)) {
-                    <button class="act" (click)="emitGenerateAnalysisDoc(row.v)"
-                            title="Analyze this book for rhetorical manipulation and problematic patterns">Generate analysis</button>
-                  }
-                  <!-- The act that came with the working copy's row when that row
-                       stopped being drawn. It clears the working changes AND the
-                       ledger, which is what it has always said. -->
-                  @if (row.line.buttons.eraseEverything) {
-                    <button class="act danger" (click)="eraseEverythingOnLine(row)"
-                            title="Clear every change AND every pass recorded on this book, and put a fresh copy in its place">Erase all changes</button>
-                  }
-                  <!-- Process on the BOOK opens the passes; Process on the
-                       narration copy takes THAT file to narration, carrying its
-                       path so the pipeline is told which document it has. -->
-                  @if (row.line.buttons.passes) {
-                    <button class="act" (click)="openPassesModal()"
-                            title="Have something done to this book — the passes run in the queue">Process</button>
-                  }
-                  <!-- Cutting the narration copy, from the versions window. Owen,
-                       2026-08-10: "lets also make it so they can generate a tts
-                       file from the versions window, with a button, instead of
-                       only doing it from inside the pdf picker" — and, closing
-                       the move, "we dont do tts configuration from there. we do
-                       it from the main window."
-
-                       Same main door the picker used (narration:export), so
-                       the strikes recorded for THIS chain are honoured by
-                       construction rather than by two implementations agreeing.
-                       It reports through the banner, never a modal: nothing is
-                       being asked, and the book is not touched. -->
-                  @if (row.line.buttons.ttsExport) {
-                    <button class="act" [disabled]="cuttingNarration() !== null"
-                            [title]="ttsExportTitle(row)"
-                            (click)="exportTtsCopyForLine(row)">
-                      {{ cuttingNarration() === row.line.familyId ? 'Cutting…' : 'Export TTS copy' }}
-                    </button>
-                  }
-                  @if (row.line.buttons.process) {
-                    <button class="act" [disabled]="narrationRefusalForLine(row) !== null"
-                            [title]="narrationTitleForLine(row)" (click)="processLine(row)">Process</button>
-                  }
-                </div>
-                <div class="slot">
-                  @if (row.line.buttons.open) {
-                    <button class="act" (click)="openLine(row)" [title]="openLineTitle(row)">Open</button>
-                  }
-                </div>
-                <div class="slot">
-                  @if (row.line.buttons.export) {
-                    <button class="act" (click)="exportLine(row)" [title]="exportLineTitle(row)">Export</button>
-                  }
-                </div>
-                <div class="slot">
-                  @if (row.line.buttons.delete) {
-                    <button class="act danger" [disabled]="deleteLineRefusal(row) !== null"
-                            (click)="deleteLine(row)"
-                            [title]="deleteLineTitle(row)">{{ deleteLineLabel(row) }}</button>
-                  }
-                </div>
-              </div>
-            </div>
-          }
-        }
 
         <!-- Analysis (content-analysis report — shown like a version, pinned to one) -->
         @if (analysisEntry(); as a) {
@@ -1036,13 +768,13 @@ const AUDIO_EXTS = new Set([
       />
     }
 
-    <!-- Narration. Opened by the Process button on the narration copy's line,
-         and handed THAT line's file AND THAT LINE'S CHAIN — the identity law, as
-         inputs rather than a lookup. Everything it collects goes to the queue. -->
+    <!-- Narration. Opened by the Process button on a VERSION row, and handed
+         THAT row's file AND THAT ROW'S VERSION ID — the identity law, as inputs
+         rather than a lookup. Everything it collects goes to the queue. -->
     @if (narrationFile(); as file) {
       <app-narration-modal
         [epubPath]="file.path"
-        [familyId]="file.familyId"
+        [variantId]="file.variantId"
         [projectDir]="projectDir()"
         [title]="item()?.title || ''"
         [author]="item()?.author || ''"
@@ -1447,12 +1179,11 @@ export class StudioVersionsComponent {
   readonly item = input<StudioItem | null>(null);
   readonly refreshTrigger = input<number>(0);
 
-  readonly edit = output<string>();          // working-file path -> open editor (with project state)
   readonly open = output<string>();         // book-variant abs path -> open standalone in the editor
   readonly exportDoc = output<string>();    // version path -> export EPUB/PDF
   readonly exportAudio = output<string>();  // abs path of the audiobook variant -> export the M4B
   readonly listen = output<string>();       // abs path of the audiobook variant to play
-  readonly skipped = output<void>();
+  readonly skipped = output<void>();        // open the skipped-chunks report panel
   readonly continueJob = output<void>();    // resume the partial render (routes to the Processing wizard)
   readonly assemble = output<void>();       // assemble the cached sentences (routes to the Processing wizard)
   /**
@@ -1462,9 +1193,9 @@ export class StudioVersionsComponent {
    * the host could look it up. Owen ruled that out on 2026-08-09: "the tts
    * pipeline knows exactly which file its working with because the user came to
    * the tts page FROM the button on that document." A lookup on the far side is
-   * a second answer to "which file", and the two can disagree — the narration
-   * copy and the book are both real files on this page, and the button that
-   * names one must not hand over the other.
+   * a second answer to "which file", and the two can disagree — a project holds
+   * several versions of one book, and the button that names one must not hand
+   * over another.
    *
    * So the path travels with the press, and the host binds it as the Process
    * wizard's document rather than re-deriving one.
@@ -1476,31 +1207,18 @@ export class StudioVersionsComponent {
   readonly viewAnalysis = output<{ path: string }>();  // open this version's file with analysis flags highlighted
   readonly generateAnalysis = output<StudioAnalysisTarget>(); // opens the analysis modal, locked to this source
 
-  readonly versions = signal<VersionRow[]>([]);
   /**
-   * The project's working chains, as `editor:get-versions` reports them — one
-   * book line each, in the manifest's own order.
+   * The rows `editor:get-versions` reports, as main measured them.
    *
-   * Kept beside the rows rather than derived from them: a chain whose working
-   * copy has been removed by hand emits no row at all, and a page that inferred
-   * the list from the rows would stop drawing a book the user can still erase
-   * and re-mint. Empty is real and ordinary — a PDF nobody has converted has no
-   * chain, because a chain hangs off an archive-grade EPUB and it has none yet.
+   * Wave 1 (2026-08-16): the only one this page still draws is the synthetic
+   * `analysis` entry (see `analysisEntry`). The document rows — the archive,
+   * the working copy, the cast, the book and its narration copy — were the book
+   * CHAIN's, and the chain is not rendered any more; the versions the user sees
+   * are the manifest's own variant records. The answer's `families` half is not
+   * read at all, which is what makes a legacy project carrying `families[]` open
+   * as an ordinary flat page rather than crashing.
    */
-  readonly chains = signal<Array<{
-    id: string;
-    sourceKind: 'archive-epub' | 'generated-epub';
-    sourceName: string;
-    archiveRowId: string | null;
-    hasWorkingChanges: boolean;
-    /**
-     * Whether this chain's archive-grade book is on disk, as main measured it.
-     *
-     * The FIRST pass's before-book and nothing else's, so it gates that one
-     * line's Compare. See ChainFamily.hasSource.
-     */
-    hasSource: boolean;
-  }>>([]);
+  readonly versions = signal<VersionRow[]>([]);
   readonly loading = signal(false);
   readonly cache = signal<SentenceCacheInfo | null>(null);
   // The TTS voice that rendered this project's audio (from the durable session's
@@ -1509,53 +1227,23 @@ export class StudioVersionsComponent {
   /**
    * What the tab is showing instead of the version list.
    *
-   * Four shapes, because there are genuinely different comparisons. `paths`
-   * compares two FILES that both exist (the original against a derived EPUB).
-   * `pass` opens ONE pass's recorded diff: the pass rewrote the book in place, so
-   * neither side of it exists as a file any more and the diff carries both texts.
+   * ONE shape now: `pass` opens a recorded diff — the pass rewrote the book in
+   * place, so neither side of it exists as a file any more and the diff carries
+   * both texts. It is reached from a provenance badge's "Review changes".
    *
-   * `books` is the same pass as `pass` and a different account of it: the two
-   * BOOKS it sits between, side by side as real pages. Both exist as files — the
-   * ledger keeps a snapshot per entry — which is exactly why the pages can be
-   * shown where the words alone had to do before. It is additive: a pass with a
-   * receipt offers both, and the user picks which question they are asking.
-   *
-   * `opening` is the moment between the click and main's answer, and it holds
-   * the refusal when there is one, because "which two books" can fail (a
-   * snapshot deleted by hand, a chain whose source has been moved) and a
-   * gesture that quietly does nothing is worse than a sentence.
-   *
-   * Read through comparePaths()/comparePass()/compareBooks()/compareOpening() so
-   * each branch of the template gets the narrowed shape rather than the union.
+   * There were four. `paths` compared two FILES the chain's rows named, and
+   * `books`/`opening` opened the two books a LEDGER entry sits between; all
+   * three were doors on the book chain, and Wave 1 (2026-08-16) took the chain
+   * off this page. Left as a discriminated union of one so the template keeps
+   * reading `comparePass()` and adding a second surface stays a type change.
    */
   readonly comparing = signal<
-    | { mode: 'paths'; a: string; b: string; labelA: string; labelB: string }
     | { mode: 'pass'; diffPath: string; reportPath: string; title: string; when: string }
-    | {
-      mode: 'books';
-      before: ComparedBookView;
-      after: ComparedBookView;
-      title: string;
-      when: string;
-    }
-    | { mode: 'opening'; title: string; error: string | null }
     | null
   >(null);
-  readonly comparePaths = computed(() => {
-    const c = this.comparing();
-    return c && c.mode === 'paths' ? c : null;
-  });
   readonly comparePass = computed(() => {
     const c = this.comparing();
     return c && c.mode === 'pass' ? c : null;
-  });
-  readonly compareBooks = computed(() => {
-    const c = this.comparing();
-    return c && c.mode === 'books' ? c : null;
-  });
-  readonly compareOpening = computed(() => {
-    const c = this.comparing();
-    return c && c.mode === 'opening' ? c : null;
   });
 
   // Book variants (editions/languages/formats). Rows arrive with their file path
@@ -1606,967 +1294,74 @@ export class StudioVersionsComponent {
   readonly variants = computed(() => this.variantList());
 
   /**
-   * Book versions section: the reading editions only (ebooks), and only the ones
-   * the family above is not already showing.
+   * Book versions section: EVERY reading edition this project holds.
    *
-   * A project's archive original is BOTH a manifest variant and the family's
-   * parent, so listing it in each put the same file on screen twice under two
-   * different names — which reads as two files, and invites the user to wonder
-   * which one their edits went to. The family is the authority for the
-   * documents this pipeline produces; this section is what is left, which is
-   * what "other editions of this book" always meant.
-   *
-   * Compared by absolute path because that is the only thing the two lists
-   * share: one is built from the manifest's variant records, the other from the
-   * binding record and the files on disk, and neither carries the other's ids.
+   * It used to subtract the rows the book chain was already drawing — the
+   * archive original was both a manifest variant and a chain's parent, and
+   * listing it in each put one file on screen twice under two different names.
+   * Wave 1 (2026-08-16) took the chain off this page, so there is no second list
+   * to be crossed with: the manifest's variant records ARE the versions, and
+   * subtracting anything from them would hide a file the user owns.
    */
-  readonly ebookVariants = computed(() => {
-    const shown = new Set(
-      this.documents()
-        .map(d => d.path?.toLowerCase())
-        .filter((p): p is string => !!p));
-    return this.variantList().filter(v =>
-      v.kind === 'ebook' && !shown.has(v.absPath.toLowerCase()));
-  });
+  readonly ebookVariants = computed(() =>
+    this.variantList().filter(v => v.kind === 'ebook'));
 
   /** Audio section: the audiobook editions — the single home for every M4B,
    *  whether uploaded via "+ Add version" or produced by TTS. */
   readonly audiobookVariants = computed(() => this.variantList().filter(v => v.kind === 'audiobook'));
-
-  readonly documents = computed(() => this.versions().filter(v => v.type !== 'analysis'));
-
-  // ── The document family ────────────────────────────────────────────────────
-
-  /**
-   * What ONE CHAIN has, as the family derivation needs it — read off the rows
-   * main measured, never off anything this component remembers.
-   *
-   * The members are found by TYPE and by CHAIN rather than by position or by
-   * name: the types are `editor:get-versions`'s contract, the chain is what a
-   * row says it is on, and a row that is not there means the file is not there.
-   */
-  private familyInputFor(familyId: string | null): VersionFamilyInput {
-    const docs = this.documents();
-    const of = (type: string): VersionRow | null => docs.find(v => v.type === type) ?? null;
-    // The three members a CHAIN owns are found by the chain they declare they
-    // are on, never by "the first row of that type": a project with two versions
-    // has two of each, and picking the first would put one book's stars on the
-    // other's line. The PDFs are found by type because a PDF is on no chain.
-    const ofChain = (type: string): VersionRow | null =>
-      familyId === null ? null : docs.find(v => v.type === type && v.familyId === familyId) ?? null;
-
-    const archiveRow = of('archive');
-    const generatedRow = ofChain('generated');
-    const workingRow = of('working');
-    const epubRow = ofChain('exported');
-
-    // Every 'working' row main emits carries its boundaries (possibly an empty
-    // list). One without them is IPC shape drift, not a working copy that has
-    // been through no stages — so it is reported and left out of the family
-    // rather than silently shown with no stars. The row itself still appears;
-    // rowDescription() says what could not be read.
-    if (workingRow && !workingRow.stageBoundaries) {
-      console.error(
-        `[studio-versions] the working-copy row for ${workingRow.path} arrived without its stage `
-        + 'boundaries. editor:get-versions sets them on every working row it emits, so this build '
-        + 'of the renderer and the main process disagree about the row shape.');
-    }
-
-    return {
-      archive: archiveRow ? { id: archiveRow.id } : null,
-      generated: generatedRow ? { id: generatedRow.id } : null,
-      working: workingRow && workingRow.stageBoundaries
-        ? {
-          id: workingRow.id,
-          boundaries: workingRow.stageBoundaries,
-          // The working document's mtime: curation lands as an append to this
-          // file, so this is the measurement of when it was last edited.
-          modifiedAt: workingRow.modifiedAt ?? null,
-        }
-        : null,
-      epub: epubRow ? { id: epubRow.id } : null,
-      // The project-level record, which is this chain's exactly when the project
-      // has one chain — `StudioService` reads it through `soleFamily` and claims
-      // none for a project with several (its own listing-shaped refusal). So a
-      // multi-chain project lights no stars rather than lighting one version's
-      // history on another version's line.
-      appliedPasses: this.item()?.appliedPasses ?? [],
-    };
-  }
-
-  /**
-   * Why this book cannot be narrated, or null when it can.
-   *
-   * Measured off the family — its EPUB member is `manifestService.readExportEpub`
-   * having found the book on disk, which is the SAME measure the picker's ladder
-   * calls `bookEpubExists`. So Process refuses exactly the books the picker
-   * refuses, in the same words (`narrationRefusal`, imported above from
-   * shared/document/version-family.ts), and there is no second notion of "this
-   * project has a book" anywhere.
-   */
-  narrationRefusalForLine(row: ChainRowView): string | null {
-    return narrationRefusal({
-      bookEpubExists: this.familyInputFor(row.line.familyId).epub !== null,
-    });
-  }
-
-  /** What Process says on hover: why it is locked, or what pressing it does. */
-  narrationTitleForLine(row: ChainRowView): string {
-    const refusal = this.narrationRefusalForLine(row);
-    return refusal === null
-      ? 'Narrate this book — opens the Process tab with narration ready to configure'
-      : refusal;
-  }
-
-  /**
-   * The rows as the page shows them: the family first, in ladder order, then
-   * whatever else this project carries.
-   *
-   * Depth and stars come from the shared derivation
-   * (`@shared/document/version-family`) rather than from anything decided here,
-   * which is what keeps "the archive can never earn a star" true by
-   * construction instead of by care.
-   */
-  readonly documentRows = computed<ChainRowView[]>(() => {
-    const docs = this.documents();
-    const byId = new Map(docs.map(v => [v.id, v]));
-    const bookSlots = this.bookStarSlots();
-
-    // Each chain's ledger travels on ITS OWN working copy's row — main puts it
-    // there, keyed by the chain — so a project with two versions never draws one
-    // book's passes under the other's book line. Kept in a map as well as handed
-    // to the arrangement, because the lines come back naming an ENTRY and the
-    // view row needs the entry itself.
-    const ledgers = new Map<string, LedgerRowEntry[]>(this.chains().map(chain => [
-      chain.id,
-      docs.find(v => v.type === 'exported' && v.familyId === chain.id)?.ledger ?? [],
-    ]));
-    const ledgerOf = (familyId: string | null): LedgerRowEntry[] =>
-      familyId === null ? [] : ledgers.get(familyId) ?? [];
-    const families: ChainFamily[] = this.chains().map(chain => ({
-      id: chain.id,
-      sourceKind: chain.sourceKind,
-      sourceName: chain.sourceName,
-      archiveRowId: chain.archiveRowId,
-      hasWorkingChanges: chain.hasWorkingChanges,
-      hasSource: chain.hasSource,
-      ledger: ledgerOf(chain.id),
-    }));
-
-    return bookChain({
-      rows: docs.map(v => ({
-        id: v.id,
-        type: v.type,
-        extension: (v.extension || '').toLowerCase(),
-        // Absent on every row that is on no chain — the archive PDFs and the
-        // legacy stage outputs — which is the same thing said as `null`.
-        familyId: v.familyId ?? null,
-      })),
-      families,
-    }).map((line): ChainRowView => {
-      const v = line.rowId === null ? null : byId.get(line.rowId) ?? null;
-      const entry = line.ledgerId === null
-        ? null
-        : ledgerOf(line.familyId).find(e => e.id === line.ledgerId) ?? null;
-      return {
-        line,
-        v,
-        entry,
-        label: this.lineLabel(line.kind, v, entry),
-        ext: this.lineExtension(line.kind, v, entry),
-        icon: this.lineIcon(line.kind, v),
-        description: this.lineDescription(line.kind, v, entry),
-        // The stars are read off the working copy the passes were recorded
-        // against, so they belong to the chain this book line is on and to no
-        // other. A project with several draws each book's own.
-        slots: line.kind === 'book' && line.familyId !== null
-          ? bookSlots.get(line.familyId) ?? []
-          : [],
-        staleness: null,
-      };
-    });
-  });
-
-  /**
-   * The chain a LINE is about, for the acts that take one.
-   *
-   * Refuses rather than guessing: an act taken from a line that cannot say which
-   * version it is on would clear an evening of edits made to a different book,
-   * which is exactly what `requireFamily` refuses on the other side of the IPC
-   * boundary. Saying it here as well means the user gets a sentence naming the
-   * button they pressed rather than a refusal naming a project.
-   */
-  private familyOfLine(row: ChainRowView, act: string): string | null {
-    if (row.line.familyId !== null) return row.line.familyId;
-    console.error(
-      `[studio-versions] "${act}" was pressed on a ${row.line.kind} line that is on no working `
-      + 'chain. Every act on a chain line carries the version it was pressed on; a line without '
-      + 'one is a row this build of main did not stamp.');
-    return null;
-  }
-
-  /**
-   * The star columns the BOOK line carries: the passes recorded against
-   * `outputs.epub` that the ledger does NOT hold an entry for.
-   *
-   * Read off the exported row's family membership rather than off the book
-   * line's own, because the passes are recorded on the working copy — and for a
-   * PDF-origin project the book line is the CAST, which nothing has ever written
-   * to and which therefore has no stars of its own by construction
-   * (`starsFor('generated')`, shared/document/version-family.ts).
-   *
-   * Kinds the ledger carries are dropped, and that is the whole point of the
-   * subtraction: those passes have their own indented line with their own Review
-   * changes, and a star offering the same diff would be the same record twice.
-   */
-  private readonly bookStarSlots = computed<Map<string, StarSlot[]>>(() => {
-    const reviews = this.reviewByStar();
-    const byChain = new Map<string, StarSlot[]>();
-    for (const chain of this.chains()) {
-      const input = this.familyInputFor(chain.id);
-      if (input.epub === null) continue;
-      const exported = this.documents()
-        .find(v => v.type === 'exported' && v.familyId === chain.id) ?? null;
-      // Which stars THIS CHAIN'S ledger already speaks for, asked through the one
-      // mapping from a pass kind to a star (@shared/document/version-family) so
-      // the two records agree about what a kind IS.
-      const inLedger = new Set<VersionStar>(
-        (exported?.ledger ?? [])
-          .map(e => starForPassKind(e.kind))
-          .filter((s): s is VersionStar => s !== null));
-      const lit = new Set<VersionStar>(starsFor('epub', input));
-      byChain.set(chain.id, starSlotsFor('epub')
-        .filter(id => !inLedger.has(id))
-        .map(id => {
-          // A review only ever hangs off a LIT star: the diff is the record of a
-          // run, and an unlit star is the absence of one. A lit star with no diff
-          // (the pass ran, its job died before recording, or it predates diffs)
-          // keeps `review: null` and stays inert.
-          const review = lit.has(id) ? reviews.get(id) ?? null : null;
-          return {
-            id,
-            label: STAR_LABELS[id],
-            lit: lit.has(id),
-            tooltip: lit.has(id)
-              ? STAR_MEANINGS[id]
-              : `Not done: ${STAR_MEANINGS[id].charAt(0).toLowerCase()}${STAR_MEANINGS[id].slice(1)}`,
-            review,
-            action: review
-              ? `See what ${STAR_LABELS[id].toLowerCase()} changed in this file — ${review.when}`
-              : null,
-          };
-        }));
-    }
-    return byChain;
-  });
-
-  /**
-   * The latest recorded diff for each star, keyed by the star it lights.
-   *
-   * `passDiffs()` is the manifest's own index of the passes that left a diff, in
-   * execution order, so the LAST of a kind is the one that describes the book —
-   * the same latest-wins the badges use. `starForPassKind` is the one mapping
-   * from a pass kind to a star (@shared/document/version-family), so a kind with
-   * no star column (get-text, blocks, reflow, and the retired kinds) simply does
-   * not appear here and its review stays on its badge.
-   */
-  private readonly reviewByStar = computed(() => {
-    const byStar = new Map<VersionStar, { diffPath: string; reportPath: string; kind: AppliedPassKind; when: string }>();
-    for (const diff of this.passDiffs()) {
-      const star = starForPassKind(diff.kind);
-      if (!star) continue;
-      const at = new Date(diff.at);
-      byStar.set(star, {
-        diffPath: diff.absPath,
-        // Footnote removal writes foundry's own review report beside its diff.
-        // Other passes have none, and a missing file shows no header.
-        reportPath: diff.absPath.replace(/diff\.json$/, 'report.json'),
-        kind: diff.kind,
-        when: isNaN(+at) ? 'date unknown' : at.toLocaleString(),
-      });
-    }
-    return byStar;
-  });
-
-  /**
-   * Is the book's own row on screen?
-   *
-   * Measured from the family, which mints an EPUB row exactly when the file is
-   * on disk. False is a real state — a record naming a book somebody removed by
-   * hand — and it is what decides whether the stars can carry the reviews.
-   */
-  private readonly epubRowPresent = computed(() =>
-    this.documents().some(v => v.type === 'exported'));
-
-  /**
-   * Is there a book behind this project's archive — a working copy, or the cast
-   * one could be minted from?
-   *
-   * Only the archive row's TOOLTIP turns on this now: with a book, the words
-   * point at the working copy's own row for editing; with none, they say a book
-   * will be read out of these pages. The OPEN itself no longer turns on it —
-   * the archive PDF opens its own pages either way (Owen, 2026-08-12: "i want
-   * ot be able to look at the pdf as well"), and only an archive-grade BOOK is
-   * redirected to the copy (`planArtifactOpen`). Measured off the rows for the
-   * same reason everything else here is — a row exists because a file does.
-   */
-  private readonly bookBehindArchive = computed(() =>
-    this.documents().some(v => v.type === 'exported' || v.type === 'generated'));
-
-  /** True when at least one star on this row can be pressed. Drives the hint. */
-  rowHasReviewableStar(row: ChainRowView): boolean {
-    return row.slots.some(s => !!s.review);
-  }
-
-  /**
-   * Open what a pass changed, from its star.
-   *
-   * The SAME viewer and the same report loading as the provenance badge's
-   * "Review changes" — one way to show a pass diff, reached from wherever the
-   * record of that pass is shown.
-   */
-  openStarReview(slot: StarSlot): void {
-    const review = slot.review;
-    if (!review) {
-      console.error(`[studio-versions] the ${slot.id} star was pressed with no recorded diff behind `
-        + 'it. Only a star carrying a review is rendered as a button.');
-      return;
-    }
-    this.passReport.set(null);
-    this.comparing.set({
-      mode: 'pass',
-      diffPath: review.diffPath,
-      reportPath: review.reportPath,
-      title: `${STAR_LABELS[slot.id]} — what changed`,
-      when: review.when,
-    });
-    this.compareActive.emit(true);
-    if (review.kind === 'footnotes') void this.loadPassReport(review.reportPath);
-  }
-
-  // ── The three standing acts, one per line ──────────────────────────────────
-  //
-  // Owen, 2026-08-09: "from right to left, on every file - delete, export, open.
-  // then, to the left of that are special buttons, depending on whether the file
-  // is capable of running the commands."
-  //
-  // They are laid out in fixed columns (see `.ractions` in the styles), so a
-  // line that cannot perform one leaves the column EMPTY rather than closing the
-  // gap — which is the whole of what makes them line up down the page. WHICH
-  // lines get which is `shared/document/book-chain.ts`; what each act IS, per
-  // kind, is here.
-
-  /**
-   * Open this line.
-   *
-   * ONLY DOCUMENTS OPEN (Owen, 2026-08-10). A ledger line used to open its
-   * SNAPSHOT — the book exactly as that pass left it — and that was the act that
-   * destroyed an evening of working changes: the snapshot opens as the PROJECT's
-   * displayed document, and the picker binds a project-owned file it cannot
-   * prove the saved edits describe WITHOUT applying them, leaving the session
-   * writable. The first autosave then wrote an empty edit set over the real one.
-   * "i closed it and reopened from the working copy and all my changes were
-   * indeed cleared."
-   *
-   * The branch is gone rather than guarded, and `book-chain.ts` no longer gives
-   * a ledger line the button — two statements of one rule, so neither the model
-   * nor this method can put the door back on its own.
-   */
-  openLine(row: ChainRowView): void {
-    // A ledger line CARRIES the working copy as its row — that is how its delete
-    // reaches the book — so falling through here would open the book instead of
-    // refusing, which is a different wrong file rather than none. Said out loud.
-    if (this.lineIsLedger(row)) {
-      console.error(`[studio-versions] Open was pressed on the ${row.line.kind} line. A ledger is a `
-        + 'record of what was done, not a document: it has no Open, and the row it carries is the '
-        + 'book above it.');
-      return;
-    }
-    if (row.v === null) return;
-    this.openDoc(row.v);
-  }
-
-  /** The two kinds that are RECORDS rather than files. See book-chain.ts. */
-  private lineIsLedger(row: ChainRowView): boolean {
-    return row.line.kind === 'working-changes' || row.line.kind === 'ledger';
-  }
-
-  /** What Open does on this line, in words. */
-  openLineTitle(row: ChainRowView): string {
-    return row.v === null ? '' : this.openTitle(row.v);
-  }
-
-  /** Save a copy of what this line names. Documents only, for the same reason. */
-  exportLine(row: ChainRowView): void {
-    if (this.lineIsLedger(row)) {
-      console.error(`[studio-versions] Export was pressed on the ${row.line.kind} line. A ledger `
-        + 'names no file of its own; the book it is recorded against is the line above it.');
-      return;
-    }
-    if (row.v === null) return;
-    this.exportDoc.emit(row.v.path);
-  }
-
-  exportLineTitle(row: ChainRowView): string {
-    return row.v === null ? '' : this.exportTitle(row.v);
-  }
-
-  /**
-   * What the danger button on this line is CALLED.
-   *
-   * Never "Delete" for an act that is not one. The working-changes line erases
-   * records; the book line of a project whose working copy IS the book erases
-   * changes — the file comes straight back, so calling it a delete was the
-   * inaccuracy Owen ruled on (2026-08-09: "the thing they 'delete' is actually
-   * the changes, not the working copy").
-   */
-  deleteLineLabel(row: ChainRowView): string {
-    // "Erase" alone: the row is already titled "Working changes", and the
-    // column is 78px — "Erase changes" was the label Owen caught overflowing
-    // it. The tooltip carries the whole sentence. Every other line's danger
-    // button is a real file delete and is called Delete; the act with the long
-    // name ("Erase all changes") lives in the specials column of the book line,
-    // where width is not rationed (Owen, 2026-08-10: "its a specialty button,
-    // and should be on the left side instead of covering the delete button").
-    if (row.line.kind === 'working-changes') return 'Erase';
-    return 'Delete';
-  }
-
-  /**
-   * Why this line's delete is locked, or null when it can be pressed.
-   *
-   * A reason rather than a missing button: the columns line up, so a line with
-   * no delete at all would leave a hole that reads as an oversight. Owen,
-   * 2026-08-10: "it should always be available" — so on the chain, every line's
-   * delete is live, each routed to the remover that owns its records. The
-   * narration copy USED to be refused here because a generic file remove would
-   * have stranded `outputs.ttsEpub`; the answer was `book:delete-tts-copy`
-   * (record first, file last), not a refusal.
-   */
-  deleteLineRefusal(row: ChainRowView): string | null {
-    if (row.line.kind === 'working-changes' || row.line.kind === 'ledger') return null;
-    if (row.v === null) {
-      return 'This line names no file, so there is nothing here to delete.';
-    }
-    return this.deletable(row.v)
-      ? null
-      : `${row.v.label} is not deleted from this page — it is part of how this project is put `
-        + 'together, and removing it here would leave records pointing at a file that is gone.';
-  }
-
-  deleteLineTitle(row: ChainRowView): string {
-    const refusal = this.deleteLineRefusal(row);
-    if (refusal !== null) return refusal;
-    if (row.line.kind === 'working-changes') {
-      return 'Clear every change you have made to this book. The passes you committed to are kept '
-        + '— they are the lines below.';
-    }
-    if (row.line.kind === 'ledger') {
-      return 'Take this pass back out of the book. Everything run after it goes with it, and you '
-        + 'are told which before anything happens.';
-    }
-    return row.v === null ? '' : this.deleteTitle(row.v);
-  }
-
-  /** Perform this line's delete. Each kind routes to the code that owns it. */
-  async deleteLine(row: ChainRowView): Promise<void> {
-    if (this.deleteLineRefusal(row) !== null) return;
-    if (row.line.kind === 'working-changes') { await this.eraseWorkingChanges(row); return; }
-    if (row.line.kind === 'ledger') { await this.deleteLedgerLine(row); return; }
-    if (row.v === null) return;
-    // The chain the user pressed on, carried through to main. A loose line is on
-    // none, and `removeDoc` takes the generic file delete for it — which is what
-    // a line nothing can place is: bytes with a door and no chain of custody.
-    await this.removeDoc(row.v, row.line.familyId);
-  }
-
-  /**
-   * Erase the working changes, keeping the passes.
-   *
-   * The narrower of the two scopes `book:erase-changes` takes, and the one this
-   * line exists for: a user clearing their own edits has not asked to throw away
-   * an hour of model time. What is kept is named in the confirmation BEFORE the
-   * act, from this book's own ledger, so the sentence describes this book rather
-   * than the feature.
-   */
-  private async eraseWorkingChanges(row: ChainRowView): Promise<void> {
-    const dir = this.projectDir();
-    const familyId = this.familyOfLine(row, 'Erase changes');
-    if (!dir || familyId === null) return;
-    // THIS chain's ledger — the passes that stand when the user's own edits go.
-    // Read off the line rather than off "the exported row", which names two
-    // files in a project with two versions.
-    const entries = row.v?.ledger ?? [];
-
-    const { confirmed } = await this.electron.showConfirmDialog({
-      title: 'Erase your working changes',
-      message: row.line.sourceName === null
-        ? 'Erase every change you have made to this book?'
-        : `Erase every change you have made to your copy of ${row.line.sourceName}?`,
-      detail: describeWorkingChangesErase(entries.map(e => e.label)),
-      confirmLabel: 'Erase changes', cancelLabel: 'Cancel', type: 'warning',
-    });
-    if (!confirmed) return;
-
-    const res = await this.electron.eraseBookChanges(dir, 'working-changes', familyId);
-    if (!res.success || !res.remint) {
-      await this.electron.showMessageDialog({
-        title: 'Nothing was erased',
-        message: res.error || 'The changes could not be erased, and nothing said why. Your working '
-          + 'copy is untouched.',
-        type: 'error',
-      });
-      await this.load();
-      return;
-    }
-    // The receipt for a confirm the user already gave. A banner: the reload
-    // below repaints the chain without their changes on it, which is the
-    // outcome, and a second box after the confirm box is one box too many.
-    this.notices.notify(describeWorkingCopyRemint(res.remint));
-    await this.load();
-    this.changed.emit();
-  }
-
-  /**
-   * Delete one ledger entry, and everything applied after it.
-   *
-   * The cascade is NAMED before the act, out of the shared rules
-   * (`ledgerAfterDeleting` / `listLedgerLabels`), because it is the part a user
-   * cannot infer: they press delete on one line and three changes come out of
-   * their book. Main computes the same cascade from the same rule and reports
-   * what it did in `describeLedgerDeletion`'s words — asked here, said there,
-   * one set of sentences.
-   */
-  private async deleteLedgerLine(row: ChainRowView): Promise<void> {
-    const dir = this.projectDir();
-    const entry = row.entry;
-    const familyId = this.familyOfLine(row, `Delete ${entry?.label ?? 'a pass'}`);
-    if (!dir || !entry || familyId === null) return;
-    // The cascade is computed from THIS chain's ledger — the one the line is on,
-    // carried on its own row — never from "the exported row", which in a project
-    // with two versions names two books.
-    const entries = row.v?.ledger ?? [];
-
-    let plan: LedgerDeletion<LedgerRowEntry>;
-    try {
-      plan = ledgerAfterDeleting(entries, entry.id);
-    } catch (err) {
-      // The line describes a pass this book no longer records. Said, not
-      // swallowed: the list on screen is out of date and a reload is the fix.
-      await this.electron.showMessageDialog({
-        title: 'That change is not in this book any more',
-        message: (err as Error).message,
-        type: 'error',
-      });
-      await this.load();
-      return;
-    }
-    const after = plan.cascaded.slice(1);
-
-    const { confirmed } = await this.electron.showConfirmDialog({
-      title: `Delete ${entry.label}`,
-      message: `Take ${entry.label} back out of this book?`,
-      // Three sentences: what else goes, where the book lands, what is safe.
-      // The reasoning behind the cascade is in `ledgerAfterDeleting`.
-      detail: [
-        after.length === 0
-          ? 'It is the last change recorded on this book, so nothing else is affected.'
-          : `Everything run after it goes with it — ${listLedgerLabels(after)}.`,
-        plan.kept.length === 0
-          ? 'Your book goes back to the archive-grade original it was copied from.'
-          : `Your book goes back to how ${listLedgerLabels(plan.kept)} left it.`,
-        'Your working changes are untouched.',
-      ].join(' '),
-      confirmLabel: after.length === 0 ? 'Delete it' : 'Delete them', cancelLabel: 'Cancel',
-      type: 'warning',
-    });
-    if (!confirmed) return;
-
-    const res = await this.electron.deleteBookLedgerEntry(dir, entry.id, familyId);
-    if (!res.success) {
-      await this.electron.showMessageDialog({
-        title: 'Nothing was deleted',
-        message: res.error || 'That change could not be taken back, and nothing said why. Your '
-          + 'book is untouched.',
-        type: 'error',
-      });
-      await this.load();
-      return;
-    }
-    // Main's own paragraph when it gave one; the same sentence built from the
-    // same rule when it did not, so the receipt never goes missing. A banner:
-    // the row leaving the chain on reload is what the user pressed for.
-    this.notices.notify(res.message ?? describeLedgerDeletion(plan));
-    await this.load();
-    this.changed.emit();
-  }
-
-  /**
-   * Erase EVERYTHING — the working changes and the ledger both.
-   *
-   * On the book line of a project whose `exported` row has been absorbed into it,
-   * because that is where the act went when the row stopped being drawn. It
-   * routes to the same handler the row's own danger button used, so what it says
-   * and what it does are unchanged.
-   */
-  async eraseEverythingOnLine(row: ChainRowView): Promise<void> {
-    const familyId = this.familyOfLine(row, 'Erase all changes');
-    if (familyId === null) return;
-    // THIS chain's working copy, found by the chain the line is on. Not "the
-    // exported row": a project with two versions has two, and erasing the wrong
-    // one clears an evening of edits made to a different book.
-    const exported = this.documents()
-      .find(v => v.type === 'exported' && v.familyId === familyId) ?? null;
-    if (!exported) {
-      console.error('[studio-versions] "Erase all changes" was pressed on a book line whose chain '
-        + 'has no working copy on screen. The button is rendered only where one exists.');
-      return;
-    }
-    await this.eraseBookChanges(exported, familyId, row.line.sourceName);
-  }
-
-  /**
-   * Review what a ledger pass changed — its FROZEN diff.
-   *
-   * The same viewer the stars and the provenance badges use. Owen asked for it
-   * by name: "will it be possible to keep the review changes button on
-   * footnotes/working changes, so we can open the file and see what changed?" —
-   * and the receipts are what make the answer yes, because the pass's own stage
-   * directory is cleared by the next re-mint of the book.
-   */
-  reviewLedgerLine(row: ChainRowView): void {
-    const entry = row.entry;
-    if (!entry || entry.receiptPath === null) {
-      console.error('[studio-versions] "Review changes" was pressed on a ledger line with no frozen '
-        + 'diff. That line renders the button DISABLED with its reason.');
-      return;
-    }
-    const at = new Date(entry.createdAt);
-    this.passReport.set(null);
-    this.comparing.set({
-      mode: 'pass',
-      diffPath: entry.receiptPath,
-      // The pass's own review report, when it wrote one beside its diff. Frozen
-      // in the entry's directory with the receipt; absent for a pass that writes
-      // none, which shows no header rather than an error.
-      reportPath: entry.receiptPath.replace(/receipt\.json$/, 'report.json'),
-      title: `${entry.label} — what changed`,
-      when: isNaN(+at) ? 'date unknown' : at.toLocaleString(),
-    });
-    this.compareActive.emit(true);
-    if (entry.kind === 'footnotes') {
-      void this.loadPassReport(entry.receiptPath.replace(/receipt\.json$/, 'report.json'));
-    }
-  }
-
-  /**
-   * See what a ledger pass did to the BOOK — its two books, side by side.
-   *
-   * ── Additive, and a different question from Review changes ─────────────────
-   *
-   * The receipt says which words moved. This says what the book looks like now:
-   * the publisher's typesetting, the figures, the chapter openings, rendered as
-   * real pages through the picker's own viewer. Owen, 2026-08-12: "i wonder if
-   * review changes could pull up the epubs before/after in pdf picker
-   * side-by-side… leave everything in place for now, we'll just add the new
-   * feature." So both buttons stand on the line and neither replaces the other.
-   *
-   * ── It opens NOTHING as the session's document ─────────────────────────────
-   *
-   * Main resolves two paths and proves both are on disk; the surface reads them
-   * where they lie. No working copy is minted, no manifest record is written,
-   * no editor state is saved against either file and this project is bound to
-   * neither. That is the entire reason a door onto a snapshot is safe here when
-   * the ledger line's Open was not — it is the same file, read instead of
-   * adopted.
-   */
-  compareLedgerLine(row: ChainRowView): void {
-    const entry = row.entry;
-    if (!entry) {
-      console.error('[studio-versions] "Compare books" was pressed on a line that is not a ledger '
-        + 'entry. Only a pass has two books to sit between, and only those lines draw the button.');
-      return;
-    }
-    const at = new Date(entry.createdAt);
-    const when = isNaN(+at) ? 'date unknown' : at.toLocaleString();
-    const title = `${entry.label} — the book before and after`;
-    // The chain is named, exactly as it is for every other act taken from a
-    // line: a project with two versions must be asked about the one whose
-    // button was pressed.
-    const familyId = this.familyOfLine(row, 'Compare books');
-    if (familyId === null) return;
-
-    this.passReport.set(null);
-    this.comparing.set({ mode: 'opening', title, error: null });
-    this.compareActive.emit(true);
-    void this.resolveComparison(entry.id, familyId, title, when, ++this.compareRequest);
-  }
-
-  /**
-   * Which "which two books?" the answers coming back belong to.
-   *
-   * A counter and not the title: a book can be simplified twice, and then two
-   * ledger lines carry the SAME label and produce the same heading. Two clicks
-   * in a row would leave the second surface showing the first pass's books —
-   * silently, and looking exactly right.
-   */
-  private compareRequest = 0;
-
-  /**
-   * Ask main which two books this pass sits between, and show them.
-   *
-   * A refusal lands in the SAME surface the user is already looking at rather
-   * than in a console line: "which two books" can genuinely fail — a snapshot
-   * deleted by hand between the listing and the click, a chain whose source has
-   * been moved away — and main's sentence says which file is missing and what
-   * to do about it. Nothing is rebuilt to stand in for a book nobody kept.
-   */
-  private async resolveComparison(
-    entryId: string,
-    familyId: string,
-    title: string,
-    when: string,
-    request: number,
-  ): Promise<void> {
-    const res = await this.electron.comparePassBooks(this.projectDir(), entryId, familyId);
-    // The user may have left, or asked about another pass, while main was
-    // reading. Landing this answer would re-open a surface they closed, or —
-    // worse, because it looks right — show one pass's books under another's
-    // name.
-    if (request !== this.compareRequest) return;
-    const current = this.comparing();
-    if (current === null || current.mode !== 'opening') return;
-    if (!res.success || !res.comparison) {
-      this.comparing.set({
-        mode: 'opening',
-        title,
-        error: res.error
-          ?? 'The main process could not say which two books this pass sits between, and did not '
-            + 'say why.',
-      });
-      return;
-    }
-    this.comparing.set({
-      mode: 'books',
-      before: res.comparison.before,
-      after: res.comparison.after,
-      title,
-      when,
-    });
-  }
-
-  /** What Compare books says on hover: what it opens, or which book is gone. */
-  compareLineTitle(row: ChainRowView): string {
-    const label = row.entry?.label ?? 'This pass';
-    switch (row.line.buttons.compare) {
-      case 'no-after':
-        return `${label} recorded the book as it left it, and that snapshot is not on disk any `
-          + 'more. Without it there is no "after" to show.';
-      case 'no-before':
-        return `The book ${label} ran on is not on disk any more — the snapshot the pass before it `
-          + 'left, or this version\'s archive-grade original. Without it there is no "before" to '
-          + 'show.';
-      default:
-        return 'Open the book this pass ran on beside the book it left, as real pages. Read only — '
-          + 'nothing here changes either.';
-    }
-  }
-
-  /** What Review changes says on hover: what it opens, or why it cannot. */
-  reviewLineTitle(row: ChainRowView): string {
-    if (row.line.buttons.review === 'no-receipt') {
-      return `${row.entry?.label ?? 'This pass'} rewrote the book, but no diff of what it changed `
-        + 'was recorded — either the pass writes none, or the file was not there when the change '
-        + 'was committed. There is nothing to show.';
-    }
-    return 'See exactly what this pass changed, as it was recorded the moment it ran';
-  }
-
-  /**
-   * Take THIS line's file to narration.
-   *
-   * Owen's law, 2026-08-09: "the tts pipeline knows exactly which file its
-   * working with because the user came to the tts page FROM the button on that
-   * document." So the path travels with the press. It is the narration copy's
-   * line that carries this button when the project has one — that is the file
-   * narration reads — and the book's line when it does not, which is the same
-   * file narration would have fallen back to.
-   *
-   * ── The copy is proved CURRENT before it travels ────────────────────────────
-   *
-   * The path on this row came out of the manifest when the versions list was
-   * built (`readNarrationEpub`, which returns a path and deliberately not the
-   * digest that says whether it still describes the book). So the row alone
-   * cannot know that a pass rewrote the book after the copy was cut — and on
-   * Killing America one did, by ONE MINUTE: the copy was cut at 21:55:41, the
-   * footnote-reference pass finished at 21:56:42, and the narration that started
-   * at 21:57 read all 322 markers the pass had just taken out of the book
-   * (measured 2026-08-13).
-   *
-   * `ensureNarrationEpub` is the answer that already existed for exactly this —
-   * it compares the record's `fromEpubSha256` against the book on disk and cuts
-   * the copy again when they disagree — and the old Process page called it. This
-   * one lost it when the press moved onto the line. It is asked here, on the
-   * narration line only: that is the one line whose file is DERIVED from another
-   * and can therefore go stale behind the user's back. Every other line names a
-   * file that is its own authority.
-   */
-  async processLine(row: ChainRowView): Promise<void> {
-    const path = row.v?.path;
-    const familyId = this.familyOfLine(row, 'Process');
-    if (!path || familyId === null) {
-      if (!path) {
-        console.error('[studio-versions] Process was pressed on a line with no file behind it. Only '
-          + 'a line naming a document carries that button.');
-      }
-      return;
-    }
-    if (row.line.kind === 'narration') {
-      if (this.ensuringNarration()) return;
-      this.ensuringNarration.set(true);
-      try {
-        const answer = await this.electron.ensureNarrationEpub(this.projectDir()!, familyId);
-        if (!answer.success || !answer.narration) {
-          throw new Error(answer.error
-            || 'The narration copy could not be proved current and main gave no reason.');
-        }
-        // Said, not swallowed. A re-cut costs minutes and changes which file is
-        // about to be narrated; a user who pressed Process and waited is owed
-        // the reason, in main's own words.
-        if (answer.narration.cutReason !== null) {
-          this.notices.notify(answer.narration.cutReason);
-          await this.load();
-        }
-        this.narrationFile.set({ path: answer.narration.epubPath, familyId });
-      } catch (err) {
-        await this.electron.showMessageDialog({
-          title: 'The narration copy was not made current',
-          message: (err as Error).message,
-          type: 'error',
-        });
-      } finally {
-        this.ensuringNarration.set(false);
-      }
-      return;
-    }
-    // The dialog, not the page. Owen, 2026-08-09: "maybe we turn the tts/assembly
-    // page into a modal that appears when the user hits process on the tts file."
-    // The path goes into it as an input rather than into a lookup on the far
-    // side, which is the whole of the identity law — and the CHAIN goes with it,
-    // because "which file" and "which version's chain of records it belongs to"
-    // are two facts and the run needs both.
-    this.narrationFile.set({ path, familyId });
-  }
-
-  // ── Cutting the narration copy ─────────────────────────────────────────────
-
-  /**
-   * The chain whose narration copy is being cut right now, or null.
-   *
-   * The CHAIN rather than a boolean, so a project holding two versions disables
-   * only the button that was pressed and says "Cutting…" on that one. A shared
-   * boolean would grey out the other version's button for work that has nothing
-   * to do with it — the same ambiguity the per-chain buttons exist to remove.
-   */
-  readonly cuttingNarration = signal<string | null>(null);
-
-  /**
-   * Is a Process press waiting on the narration copy being proved current?
-   *
-   * A plain boolean, unlike `cuttingNarration`: this one guards the press, not a
-   * button's label. Only one narration modal can be open at a time, so a second
-   * press while the first is still asking has nothing different to do.
-   */
-  readonly ensuringNarration = signal(false);
-
-  /** What Export TTS copy promises, named on the chain it would cut. */
-  ttsExportTitle(row: ChainRowView): string {
-    if (this.cuttingNarration() !== null) return 'A narration copy is being cut right now.';
-    return 'Cut the copy narration reads from this book — everything you struck out is left out of '
-      + 'it. The book itself is never rewritten.';
-  }
-
-  /**
-   * Cut this chain's narration copy from its book.
-   *
-   * ── One act, two doors, one implementation (Owen, 2026-08-10) ──────────────
-   *
-   * "lets also make it so they can generate a tts file from the versions window,
-   * with a button, instead of only doing it from inside the pdf picker." The
-   * picker's own button is gone with the rest of its TTS hand-off — TTS is the
-   * main window's now — and this reaches the SAME main handler it used
-   * (`narration:export`, electron/narration-export.ts). That is what makes "it
-   * respects the strikes recorded for this chain" a fact rather than a promise:
-   * there is no second implementation to drift from the first.
-   *
-   * The chain travels with the press, from the line the user pressed, exactly as
-   * Process does. A project with several versions has several of these buttons
-   * and each cuts its own book; nothing here looks up "the project's book".
-   *
-   * Reported by BANNER. Nothing is asked and nothing is destroyed — the copy is
-   * a second file beside the book, and the book is not rewritten — so a modal
-   * would be a popup for a background fact, which the popup policy forbids. A
-   * FAILURE is a different matter and gets main's own sentence, because a user
-   * who pressed a button and got nothing is owed the reason.
-   */
-  async exportTtsCopyForLine(row: ChainRowView): Promise<void> {
-    const dir = this.projectDir();
-    const familyId = this.familyOfLine(row, 'Export TTS copy');
-    if (!dir || familyId === null) {
-      if (!dir) {
-        console.error('[studio-versions] Export TTS copy was pressed with no project open.');
-      }
-      return;
-    }
-    if (this.cuttingNarration() !== null) return;
-
-    this.cuttingNarration.set(familyId);
-    try {
-      // `stripSupMarkers: false` explicitly, never absent. Footnote reference
-      // numbers are taken out by the footnote PASS now, run from this same
-      // window, so the cut takes the book as it stands — and the record it
-      // writes has to SAY that was the choice. An absent option would be
-      // recorded as unanswered, which is the state a later re-cut refuses by
-      // name (`strikeInNarrationCopy`).
-      const answer = await this.electron.exportNarrationEpub(dir, { stripSupMarkers: false }, familyId);
-      if (!answer.success || !answer.result) {
-        throw new Error(answer.error
-          || 'The narration copy was not cut and main gave no reason.');
-      }
-      const { relPath, removedElements, totalElements, removedDocuments } = answer.result;
-      this.notices.notify(
-        `${relPath} is cut — ${removedElements} of ${totalElements} block(s) left out`
-        + (removedDocuments.length > 0
-          ? `, and ${removedDocuments.length} chapter(s) emptied entirely (`
-            + `${removedDocuments.join(', ')})`
-          : '')
-        + '. The book itself is unchanged. Press Process on the narration line to narrate it.');
-      await this.load();
-      this.changed.emit();
-    } catch (err) {
-      await this.electron.showMessageDialog({
-        title: 'The narration copy was not cut',
-        message: (err as Error).message,
-        type: 'error',
-      });
-    } finally {
-      this.cuttingNarration.set(null);
-    }
-  }
 
   // ── Narration, configured here and queued from here ────────────────────────
 
   /**
    * The document the narration dialog is open on, or null.
    *
-   * The PATH AND ITS CHAIN rather than a boolean: together they ARE the dialog's
-   * subject, and holding them here means there is exactly one place the run's
-   * document can come from. Owen, 2026-08-10: "if the user wants to process a
-   * specific TTS document then they click the process button next to it. no
-   * ambiguity, no confusion" — the button that was pressed is the only thing
+   * The PATH AND ITS VERSION rather than a boolean: together they ARE the
+   * dialog's subject, and holding them here means there is exactly one place the
+   * run's document can come from. Owen, 2026-08-10: "if the user wants to
+   * process a specific TTS document then they click the process button next to
+   * it. no ambiguity, no confusion" — the row that was pressed is the only thing
    * that knows which version this is, so it says so and nothing looks it up.
    */
-  readonly narrationFile = signal<{ path: string; familyId: string } | null>(null);
+  readonly narrationFile = signal<{ path: string; variantId: string } | null>(null);
+
+  /**
+   * Can this version be narrated? An EPUB, and only an EPUB.
+   *
+   * Narration reads a book. A PDF version has pages rather than text and must be
+   * converted first; an audiobook version is already read. Neither gets the
+   * button — a Process that queued an hour of work and failed inside the job is
+   * worse than a button that is not there.
+   */
+  canNarrateVariant(v: ProjectVariant): boolean {
+    return v.kind === 'ebook' && this.variantExtension(v) === 'epub';
+  }
+
+  /**
+   * Take THIS version to narration.
+   *
+   * Owen's law, 2026-08-09: "the tts pipeline knows exactly which file its
+   * working with because the user came to the tts page FROM the button on that
+   * document." So the path travels with the press, together with the version it
+   * belongs to — and BOTH are proved before the dialog opens: `variantFile`
+   * refuses a row whose file main could not resolve or could not find on disk,
+   * naming which, and the extension is checked because the button is only drawn
+   * on an EPUB and a row that reached here as anything else is a bug worth
+   * saying out loud.
+   *
+   * Nothing is cut. Wave 1 (2026-08-16) retired the narration copy: a version's
+   * EPUB is final, and it is what gets read.
+   */
+  async processVariant(v: ResolvedProjectVariant): Promise<void> {
+    const abs = await this.variantFile(v, 'narrate this version');
+    if (abs === null) return;
+    if (!this.canNarrateVariant(v)) {
+      console.error(
+        `[studio-versions] Process was pressed on "${this.variantTitle(v)}", which is not an EPUB `
+        + '(it is a .' + this.variantExtension(v) + '). Only EPUB versions carry that button.');
+      return;
+    }
+    this.narrationFile.set({ path: abs, variantId: v.id });
+  }
 
   closeNarrationModal(): void {
     this.narrationFile.set(null);
@@ -2841,228 +1636,24 @@ export class StudioVersionsComponent {
     this.changed.emit();
   }
 
-  // ── Clicking a line ────────────────────────────────────────────────────────
-
-  /**
-   * Is this line's whole row a target for the click that opens it?
-   *
-   * Only where opening is the obvious thing the row means, which is the same
-   * test it always was: an editable document. The virtual lines and the archive
-   * files are not — their Open is a button, because what it does to them is not
-   * what a click on a file row usually means.
-   */
-  rowIsClickable(row: ChainRowView): boolean {
-    // The two virtual kinds carry the working copy as their row so their acts
-    // can reach it, and they must NOT inherit its click: a click on the ledger
-    // line would open the book rather than the snapshot the line is about, which
-    // is the one thing the line exists to distinguish.
-    if (row.line.kind === 'working-changes' || row.line.kind === 'ledger') return false;
-    return row.v !== null && row.v.editable;
-  }
-
-  onChainRowClick(row: ChainRowView): void {
-    if (!this.rowIsClickable(row) || row.v === null) return;
-    this.onDocRowClick(row.v);
-  }
-
-  /** What a stage boundary is called on the working copy's line. */
+  /** What a stage boundary is called, for the Start-over preview's sentence. */
   private readonly BOUNDARY_LABELS: Record<string, string> = {
     'get-text': 'Cast',
     blocks: 'Blocks detected',
     footnotes: 'Footnotes removed',
   };
 
-  /**
-   * The row's own sentence: what it is, what has landed on it and when, and how
-   * big it is.
-   *
-   * The working copy's stages are spelled out with their dates because "what has
-   * happened to this file" is exactly the question the missing row left the user
-   * unable to answer.
-   */
-  /**
-   * What each line is CALLED.
-   *
-   * The two virtual kinds get their names from this app rather than from a file,
-   * because they have none: the working-changes line is a standing set of
-   * records, and a ledger line is a pass. Everything else is named by main, and
-   * is not renamed here — the row's label is the book's own name, derived once
-   * (docs: "One place derives the name").
-   */
-  private lineLabel(kind: ChainLineKind, v: VersionRow | null, entry: LedgerRowEntry | null): string {
-    if (kind === 'working-changes') return 'Working changes';
-    if (kind === 'ledger') {
-      // Named by the pass that ran. A ledger line whose entry has gone missing
-      // is IPC shape drift, and it says so rather than showing a blank line.
-      return entry === null ? 'A recorded pass this build could not name' : entry.label;
-    }
-    return v === null ? 'A line with no file behind it' : v.label;
-  }
-
-  /** The extension shown beside the label. Empty for a line that names no file. */
-  private lineExtension(
-    kind: ChainLineKind, v: VersionRow | null, entry: LedgerRowEntry | null
-  ): string {
-    if (kind === 'working-changes') return '';
-    // The snapshot is an EPUB — the book exactly as the pass left it.
-    if (kind === 'ledger') return entry === null ? '' : 'epub';
-    if (v === null) return '';
-    // An exploded working copy says `epub`, not `working`.
-    //
-    // Main derives this field with `path.extname`, and on `source/<stem>.working`
-    // that is literally "working" — so the book's own line read "…(1994).working"
-    // in a column where every sibling reads ".epub", presenting a container
-    // detail as if it were a FILE FORMAT the user had somehow ended up with.
-    // `.working` is not a format: it is how the book is kept while it is being
-    // edited (a folder of its parts instead of a zip of them, so a chapter edit
-    // writes one file). The book is an EPUB, it opens as one, and every export of
-    // it is one — so the line says what the book IS.
-    return isExplodedBookPath(v.path) ? 'epub' : v.extension;
-  }
-
-  /** The glyph. The two virtual kinds have their own, so the chain reads down. */
-  private lineIcon(kind: ChainLineKind, v: VersionRow | null): string {
-    if (kind === 'working-changes') return '✏️';
-    if (kind === 'ledger') return '🧾';
-    return v?.icon || '\u{1F4C4}';
-  }
-
-  /** One line's own sentence, per kind. */
-  private lineDescription(
-    kind: ChainLineKind, v: VersionRow | null, entry: LedgerRowEntry | null
-  ): string {
-    if (kind === 'working-changes') {
-      return 'Your deletions, corrections, chapter markers and narration strikes — recorded against '
-        + 'the book rather than written into it';
-    }
-    if (kind === 'ledger') {
-      if (entry === null) {
-        return 'This line describes a pass the versions list no longer carries — reload the page.';
-      }
-      const at = new Date(entry.createdAt);
-      const when = isNaN(+at) ? 'date unknown' : at.toLocaleString();
-      return `A pass you committed to, ${when} · the book was rewritten and a copy of it kept`;
-    }
-    return this.rowDescription(v);
-  }
-
-  private rowDescription(v: VersionRow | null): string {
-    if (v === null) return '';
-    const parts: string[] = [v.description];
-
-    if (v.type === 'working') {
-      const boundaries = v.stageBoundaries;
-      if (!boundaries) {
-        parts.push('BookForge could not read which stages have landed on it — see the console');
-      } else if (boundaries.length === 0) {
-        parts.push('no stage has finished on it yet');
-      } else {
-        parts.push(boundaries
-          .map(b => `${this.BOUNDARY_LABELS[b.stage] ?? b.stage} ${this.fmtDate(b.finishedAt)}`)
-          .join(' · '));
-      }
-    }
-
-    if (v.fileSize) parts.push(this.fmtSize(v.fileSize));
-    if (v.modifiedAt) parts.push(this.fmtDate(v.modifiedAt));
-    return parts.filter(Boolean).join(' · ');
-  }
-
-  /**
-   * The file the editor is pointed at for this row.
-   *
-   * `openPath` is set only where the row's own file is NOT what should open —
-   * the legacy working copy, a hidden sidecar that standalone would carry no
-   * project, no binding and no annotations, and the two ARCHIVE-GRADE rows,
-   * whose own files nothing may write to. Its absence is the ordinary case
-   * ("open this row's file"), which is why this is a branch rather than a
-   * default.
-   *
-   * For the archive and the cast, main names the working copy here as the
-   * STATEMENT of where the button goes. The picker redirects those opens itself
-   * (`shared/document/artifact-open.ts`) — that is the safety net, and it is the
-   * reason a row whose copy is not on disk can still be handed its own file: the
-   * picker mints the copy and reports it. This is the mechanism only in the
-   * sense of being the intent said out loud.
-   */
-  private editorTargetFor(v: VersionRow): string {
-    return v.openPath ? v.openPath : v.path;
-  }
-
-  openDoc(v: VersionRow): void { this.edit.emit(this.editorTargetFor(v)); }
-
-  /**
-   * What pressing Open will DO, per row.
-   *
-   * Written as where the user lands and why, rather than as a rule about what
-   * may not be edited. The archive row's tooltip used to explain that there was
-   * nothing separate to open here — a true sentence hung on a disabled button,
-   * which told the user about the model instead of about the click. Every row
-   * opens now, so every tooltip names a destination.
-   */
-  openTitle(v: VersionRow): string {
-    if (v.type === 'working') return 'Open this book in the picker, on your working copy';
-    if (v.type === 'archive') {
-      // The pages themselves, read-only — always. This used to promise the
-      // working copy when a book existed, and Owen hit exactly that promise
-      // (2026-08-12): "opening the pdf archive file just opens the epub
-      // working file. i want ot be able to look at the pdf as well." A user
-      // clicking a file that is visibly a PDF wants the pages; the book has
-      // rows of its own.
-      return this.bookBehindArchive()
-        ? 'Look at the pages exactly as you imported them. Nothing ever writes to this file — '
-          + 'editing happens on your working copy, on its own row.'
-        : 'Opens these pages. Nothing ever writes to this file, so a book is read out of it — '
-          + 'and that book is what you then edit.';
-    }
-    if (v.type === 'narration') {
-      return 'Look at what narration will actually read. It is re-cut from your working copy every '
-        + 'time you export, so it opens read-only.';
-    }
-    if (v.type === 'generated') {
-      return 'Opens your working copy of this book, with your changes applied. The file on this row '
-        + 'is the reading itself, kept as the page reader made it so your copy can be made again '
-        + 'without reading the pages a second time — nothing writes to it.';
-    }
-    return 'Open this file in the editor';
-  }
-
-  /**
-   * Every document row exports. What differs is what an export IS.
-   *
-   * Owen, third session: "the archive and working pdf are missing their buttons
-   * on the version page. export, open, delete." The working copy used to be the
-   * one row without an Export, on the reasoning that it is the system's document
-   * rather than a deliverable. That was a judgement about what the user should
-   * want; the file is theirs, it is the only artifact carrying their curation as
-   * a readable PDF, and "give me a copy of it" is a request the app has no
-   * standing to refuse.
-   *
-   * Export never writes into the project — least of all into archive/, which is
-   * only ever READ here. The copy goes where the user pointed the save dialog.
-   */
-  exportable(_v: VersionRow): boolean { return true; }
-
-  exportTitle(v: VersionRow): string {
-    if (v.type === 'archive') return 'Save a copy of the untouched original to your computer';
-    if (v.type === 'working') {
-      return 'Save a copy of your working PDF — the cast text and your block curation — to your computer';
-    }
-    return 'Save a copy to your computer';
-  }
-
   // ── Making the book ────────────────────────────────────────────────────────
   //
-  // Owen's design, 2026-08-07: a PDF becomes this project's book HERE, on the
-  // versions page, and the archive is never written to on the way. There are two
-  // buttons because there are two documents you can mean —
+  // Owen's design, 2026-08-07: a PDF becomes a book HERE, on the versions page,
+  // and the original is never written to on the way. One button, on the PDF
+  // VERSION's own row, and one machine underneath it (`foundry vlm-convert`).
   //
-  //   Archive PDF → Convert to EPUB       reads every page of the original
-  //   Working copy → Create EPUB          reads it minus the pages you deleted
-  //
-  // — and one machine underneath both (`foundry vlm-convert`). An archive that
-  // arrived as an EPUB gets NEITHER: there is nothing to convert, and the book
-  // copy the passes rewrite is minted by main the first time something needs it.
+  // Wave 1 (2026-08-16) moved it off the book chain's archive line, which is
+  // where it used to stand, and took the second button ("Create EPUB", reading a
+  // legacy working PDF minus its deleted pages) with the chain. What a
+  // conversion produces is another VERSION of this book, on a row beside the
+  // PDF it was read from — not a working copy, and not a chain.
 
   private readonly conversions = inject(BookConversionService);
 
@@ -3070,78 +1661,35 @@ export class StudioVersionsComponent {
   readonly conversion = computed(() => this.conversions.runFor(this.projectDir()));
   /** The progress window is open. Closing it leaves the run going. */
   readonly convertModalOpen = signal(false);
-  readonly makingWorkingCopy = signal(false);
 
-  /** Does this project already have a working copy? Decides Create working copy. */
-  private readonly hasWorkingCopy = computed(() =>
-    this.documents().some(v => v.type === 'working'));
+  /** The version's format, lowercased, from the record main resolved it into. */
+  variantExtension(v: ProjectVariant): string {
+    return ((v.format || '') || this.variantFilename(v).split('.').pop() || '').toLowerCase();
+  }
 
   /**
-   * Can this line's document be read into a book?
+   * Can this version's pages be read into a book?
    *
-   * Which LINES offer it is `book-chain`'s answer (the archive PDF and a legacy
-   * working PDF, and nothing else). What is asked here is the fact about the
-   * FILE: a PDF has pages to read, and nothing else does. Both have to hold —
-   * a project imported as an EPUB has an archive line whose file is already a
+   * A PDF has pages to read and nothing else does. An EPUB version is already a
    * book, and offering to convert it would promise a second one.
    */
-  canConvert(row: ChainRowView): boolean {
-    return row.line.buttons.convert && (row.v?.extension ?? '').toLowerCase() === 'pdf';
-  }
-
-  /** Only the archive can mint one, and only when there is not one already. */
-  /**
-   * Nobody mints a working PDF any more.
-   *
-   * Owen settled the artifact model on 2026-08-08: the working file is ALWAYS an
-   * EPUB. An archive EPUB gets an instant copy; an archive PDF reaches one
-   * through `vlm-convert`, always, even when it is born-digital — one path, no
-   * converter choice. `<Original>.working.pdf` was the other answer, and two
-   * answers to "which file do I edit" is the thing the model removes.
-   *
-   * The method stays, returning a constant, rather than the button being torn
-   * out of the template: the row it sat on is still there and still says what it
-   * is, and a reader of this file needs to find out here why the button is gone
-   * rather than by not finding it. Measured before deciding — the library holds
-   * 385 projects and ZERO `.working.pdf` files, so nothing anyone owns is
-   * stranded by this.
-   */
-  canMintWorkingCopy(_row: ChainRowView): boolean {
-    return false;
-  }
-
-  convertLabel(row: ChainRowView): string {
-    return row.line.kind === 'working-pdf' ? 'Create EPUB' : 'Convert to EPUB';
-  }
-
-  convertTitle(row: ChainRowView): string {
-    return row.line.kind === 'working-pdf'
-      ? 'Read this book into an EPUB, leaving out the pages you deleted in your working copy'
-      : 'Read every page of the original into this project’s book EPUB';
+  canConvertVariant(v: ProjectVariant): boolean {
+    return v.kind === 'ebook' && this.variantExtension(v) === 'pdf';
   }
 
   /**
-   * Which document a conversion started from this line reads.
-   *
-   * The whole difference between the two buttons: the archive line reads every
-   * page, and a legacy working PDF's reads the book minus the pages the user
-   * deleted in it.
-   */
-  private conversionSourceOf(row: ChainRowView): ConversionSource {
-    return row.line.kind === 'working-pdf' ? 'working' : 'archive';
-  }
-
-  /**
-   * Start reading the pages, and open the window that watches it.
+   * Start reading this version's pages, and open the window that watches it.
    *
    * The refusal is asked FIRST — before the window, before anything spawns —
    * because "no machine here can read pages" is a sentence about a setting and
    * showing it inside a progress modal would dress a configuration problem up as
    * a failed run.
    */
-  async startConversion(row: ChainRowView): Promise<void> {
+  async startVariantConversion(v: ResolvedProjectVariant): Promise<void> {
     const dir = this.projectDir();
-    if (!dir || !this.canConvert(row) || row.v === null) return;
+    if (!dir || !this.canConvertVariant(v)) return;
+    const abs = await this.variantFile(v, 'convert this version');
+    if (abs === null) return;
 
     const refusal = await this.conversions.refusal();
     if (refusal !== null) {
@@ -3153,10 +1701,6 @@ export class StudioVersionsComponent {
       return;
     }
 
-    const destination = await this.askConversionDestination();
-    if (destination === null) return;
-
-    const from: ConversionSource = this.conversionSourceOf(row);
     this.convertModalOpen.set(true);
     // PREPARED, not started. The window opens on a conversion that has not
     // spawned anything, so there is a moment in which to say "queue this
@@ -3164,18 +1708,18 @@ export class StudioVersionsComponent {
     // Start and Add to queue are both in that window; closing it discards.
     const refused = await this.conversions.prepare({
       projectDir: dir,
-      from,
-      sourceLabel: row.v.label,
-      // Which document, said as precisely as the row can say it. The archive row
-      // carries its variant id; the working row is a sidecar with no variant of
-      // its own and carries the original it was copied from. Either is enough to
-      // stop a project with two PDFs having to be asked which one this is.
-      ...(row.v.variantId ? { variantId: row.v.variantId } : {}),
-      ...(!row.v.variantId && row.v.primaryPath ? { sourcePath: row.v.primaryPath } : {}),
-      // Where the finished book lands, decided before anything is prepared so
-      // the answer travels with the run — Start and Add to queue both read it,
-      // and neither re-asks.
-      destination,
+      // Every page of the version the user pressed. The other source a run could
+      // have ('working', a legacy working PDF minus its deleted pages) went with
+      // the chain in Wave 1 — there is no such document any more.
+      from: 'archive',
+      sourceLabel: this.variantTitle(v),
+      // WHICH document, said exactly: the version's own id, so a project holding
+      // two PDFs never has to be asked which one this is, and so the row that
+      // draws the progress bar is the row that was pressed.
+      variantId: v.id,
+      // Beside the version it was read from, never over this project's book:
+      // 'replace' meant "replace the chain's book", and there is no chain.
+      destination: 'new-copy',
     });
     if (refused !== null) {
       this.convertModalOpen.set(false);
@@ -3187,68 +1731,20 @@ export class StudioVersionsComponent {
     }
   }
 
-  /**
-   * Replace the book this project already has, or put the reading beside it?
-   *
-   * Owen, 2026-08-09: a Convert pressed on a project that already has an EPUB
-   * asks, and the second answer means the new reading "is added as a new archive
-   * file right next to the archive epub that already exists".
-   *
-   * NOT asked when there is no book yet: there is nothing to replace, nothing to
-   * put a copy beside, and a dialog with one real answer is a dialog that trains
-   * people to press the first button. Null is a cancel — the run is not prepared
-   * and nothing is opened.
-   */
-  private async askConversionDestination(): Promise<VlmConvertDestination | null> {
-    if (!this.hasBookAlready()) return 'replace';
-    const chosen = await this.dialog.choose({
-      title: 'This book already has an EPUB',
-      message: 'Reading the pages again produces another book. What should happen to the one this '
-        + 'project already has?',
-      detail:
-        'Replace it — the new reading becomes this project\'s book. Your working changes are '
-        + 'cleared with the book they were made against, and the passes recorded in its ledger go '
-        + 'with it: they were applied to the text this reading replaces.\n\n'
-        + 'Add a copy — the new reading is added as another archive file beside the one that is '
-        + 'already there, and nothing about the book you have been editing changes. It gets a '
-        + 'working chain of its own: its own working copy, its own recorded passes and its own '
-        + 'narration copy, so you can run adjustments on this reading separately.',
-      type: 'question',
-      confirmLabel: 'Replace the book',
-      alternateLabel: 'Add a copy',
-    });
-    if (chosen === 'cancel') return null;
-    return chosen === 'confirm' ? 'replace' : 'new-copy';
-  }
-
-  /**
-   * Does this project already have a book? Decides whether Convert asks.
-   *
-   * Measured off the rows for the same reason everything else here is: a row
-   * exists because a file does. Either the cast book or the working copy counts
-   * — both are a book this project has, and replacing either is the act the
-   * question is about.
-   */
-  private readonly hasBookAlready = computed(() =>
-    this.documents().some(v => v.type === 'generated' || v.type === 'exported'));
-
   /** Re-open the window onto a conversion that is already running. */
   showConversion(): void { this.convertModalOpen.set(true); }
 
   /**
    * Is the live conversion the one THIS row started?
    *
-   * Matched on which document it is reading, which is the only thing that
-   * distinguishes them: both buttons run the same command over the same archive
-   * PDF, and only the working-copy route leaves pages out. So the indicator sits
-   * on the row that was pressed, and the other row's button is disabled with the
-   * reason rather than showing a second copy of one run's progress.
+   * Matched on the VERSION id the run was prepared with, never on its label: two
+   * versions of one book can share a title, and a progress bar drawn on the
+   * wrong row attributes an hour of GPU to a document it never read. A run with
+   * no version id came from a queue row and belongs to no row here.
    */
-  rowStartedConversion(row: ChainRowView): boolean {
+  variantStartedConversion(v: ProjectVariant): boolean {
     const run = this.conversion();
-    if (run === null) return false;
-    if (row.line.kind !== 'archive-pdf' && row.line.kind !== 'working-pdf') return false;
-    return run.from === this.conversionSourceOf(row);
+    return run !== null && run.variantId === v.id;
   }
 
   /** Why Convert is locked right now, or null. Shown instead of the ordinary hint. */
@@ -3267,34 +1763,8 @@ export class StudioVersionsComponent {
     return Math.min(100, Math.round((run.done / run.total) * 100));
   }
 
-  /**
-   * Mint the working copy — a file copy and a marker, seconds, no queue.
-   *
-   * The row appears on its own: main broadcasts `project:files-changed` and
-   * `document:stage-finished`, and this page re-measures on the latter. Nothing
-   * is synthesized here from the answer.
-   */
-  async mintWorkingCopy(row: ChainRowView): Promise<void> {
-    const dir = this.projectDir();
-    if (!dir || this.makingWorkingCopy() || !this.canMintWorkingCopy(row)) return;
-    this.makingWorkingCopy.set(true);
-    try {
-      await this.electron.documentCreateWorkingCopy({
-        projectDir: dir,
-        ...(row.v?.variantId ? { variantId: row.v.variantId } : {}),
-      });
-      await this.load();
-      this.changed.emit();
-    } catch (err) {
-      await this.dialog.alert({
-        title: 'The working copy was not made',
-        message: (err as Error).message,
-        type: 'error',
-      });
-    } finally {
-      this.makingWorkingCopy.set(false);
-    }
-  }
+  /** Did an AI cleanup on this project record chunks it skipped or looped on? */
+  readonly hasSkippedReport = computed(() => !!this.item()?.skippedChunksPath);
 
   // ── Provenance ─────────────────────────────────────────────────────────────
 
@@ -3339,19 +1809,14 @@ export class StudioVersionsComponent {
       // The diffs for this kind, in execution order — so the last is the latest.
       // A pass whose job died halfway recorded nothing, so a kind with runs but
       // no diff is a real state and the badge simply carries no review.
-      // Which door this pass's diff is behind.
       //
-      // The STAR on the book's row is the way in (Owen, third session: the diff
-      // "should be linked to the file it was applied to"), so a kind that has a
-      // star column does not also offer "Review changes" here — two controls
-      // opening one diff is the duplication the stars exist to remove. Two kinds
-      // have no star column and would otherwise be unreachable: the retired
-      // `tesseract` and `detection` of books processed before Aug 2026. And when
-      // the book row is NOT on screen at all — its file removed from under the
-      // record — there is no star to carry any of them, so the badge takes them
-      // all back rather than stranding a diff the user can still read.
-      const carriedByStar = !!starForPassKind(kind) && this.epubRowPresent();
-      const ofKind = carriedByStar ? [] : diffs.filter(d => d.kind === kind);
+      // EVERY kind's diff is behind its badge now. The star columns on the book
+      // chain's own rows used to carry most of them (Owen, third session: the
+      // diff "should be linked to the file it was applied to"), and the badge
+      // deliberately did not offer a second door onto the same diff. Wave 1
+      // (2026-08-16) took the chain off this page and the stars with it, so a
+      // kind excluded here would be a recorded diff with no door at all.
+      const ofKind = diffs.filter(d => d.kind === kind);
       const latestDiff = ofKind.length > 0 ? ofKind[ofKind.length - 1] : null;
       const many = entry.count > 1
         ? ` (ran ${entry.count} times; this is the last${ofKind.length > 1 ? ', and Review changes opens its diff' : ''})`
@@ -3742,17 +2207,11 @@ export class StudioVersionsComponent {
     if (abs) this.exportAudio.emit(abs);
   }
 
-  /** Clicking a pipeline document row opens it in the editor (its "edit feature").
-   *  Variants open their inline details panel via the row's own toggleEditor. */
-  onDocRowClick(v: VersionRow): void {
-    if (v.editable) this.openDoc(v);
-  }
-
   /** The editor renders mupdf-backed documents — EPUB and PDF. Audio (m4b) and
    *  other formats have no editor view, so no Open button for them. */
   canOpenInEditor(v: ProjectVariant): boolean {
     if (v.kind !== 'ebook') return false;
-    const ext = ((v.format || '') || this.variantFilename(v).split('.').pop() || '').toLowerCase();
+    const ext = this.variantExtension(v);
     return ext === 'epub' || ext === 'pdf';
   }
 
@@ -3945,19 +2404,7 @@ export class StudioVersionsComponent {
         const res = await this.electron.variantAdd(pid, addPath);
         this.imports.clearProgress(pid); // this file's conversion is over either way
         if (!res.success) errors.push(`${p.split(/[\\/]/).pop()}: ${res.error || 'failed'}`);
-        else {
-          if (res.variantId) lastAddedId = res.variantId;
-          // The version is in, but it has no working chain — so no book line and
-          // no Process button. Main's sentence names the collision or the
-          // migration state; shown verbatim, because a version that silently
-          // cannot be narrated is a button the user would hunt for.
-          if (res.chainRefusal) {
-            this.notices.notify(
-              `${p.split(/[\\/]/).pop()} was added as a version, but it has no working chain of `
-              + `its own: ${res.chainRefusal}`,
-            );
-          }
-        }
+        else if (res.variantId) lastAddedId = res.variantId;
       }
     } finally {
       this.imports.end(pid);
@@ -4012,65 +2459,6 @@ export class StudioVersionsComponent {
     if (paths.length) void this.addFiles(paths);
   }
 
-  // ── Pipeline document versions ──────────────────────────────────────────
-
-  isEpub(v: VersionRow): boolean { return (v.extension || '').toLowerCase() === 'epub'; }
-
-  /** The skipped-sentences report belongs to the cleanup output it was produced with. */
-  hasSkippedReport(v: VersionRow): boolean {
-    return !!this.item()?.skippedChunksPath && (v.type === 'cleaned' || v.type === 'simplified');
-  }
-
-  /**
-   * Which rows can be deleted, and by what.
-   *
-   * Four different acts, each routed to the code that already owns it — see
-   * `removeDoc`. What is NOT here is a fifth: 'original' (the pre-archive
-   * `source/original.*` of an old project) and 'analysis' (deleted by its own
-   * button, which also removes the checkpoint) keep their existing protection.
-   *
-   * 'archive' is deletable, and it was until yesterday: the archive original is
-   * a manifest VARIANT, and every variant row in "Book versions" has always had
-   * a Delete that routes through `variant:delete`. Moving the original into the
-   * document family took its buttons away without deciding it should be
-   * undeletable. Restoring it is not a new capability.
-   */
-  deletable(v: VersionRow): boolean {
-    if (v.type === 'archive') {
-      // No variant id means main could not say which record this file is, and
-      // `variant:delete` is the only safe remover (record first, file after).
-      // Deleting by path instead is the guess that handler exists to avoid.
-      return !!v.variantId;
-    }
-    if (v.type === 'working') return !!v.primaryPath;
-    // 'narration' is deletable (Owen, 2026-08-10: "if i want to delete the tts
-    // file i can") through `book:delete-tts-copy`, which clears `outputs.ttsEpub`
-    // before touching the file — the record the generic remover would have
-    // stranded, and the whole reason this row used to be refused.
-    return !['original', 'analysis'].includes(v.type);
-  }
-
-
-  deleteTitle(v: VersionRow): string {
-    switch (v.type) {
-      case 'archive':
-        return 'Delete the original this book was imported from — and everything cast from it';
-      case 'generated':
-        return 'Delete the book read out of your pages. Reading them again is an hour of GPU — '
-          + 'erasing your changes, on the row below, is not.';
-      case 'working':
-        return 'Delete your working copy: the cast text and your block curation. The original is untouched.';
-      case 'exported':
-        return 'Clear every change and put a fresh byte-identical copy in its place. The book it '
-          + 'was copied from is untouched.';
-      case 'narration':
-        return 'Delete the TTS copy. It costs nothing to lose — Export TTS copy cuts it again '
-          + 'from your book and your strikes, which stay exactly as they are.';
-      default:
-        return 'Delete this version';
-    }
-  }
-
   async load(): Promise<void> {
     const dir = this.projectDir();
     const generation = ++this.loadGeneration;
@@ -4095,10 +2483,6 @@ export class StudioVersionsComponent {
     // that belong to THIS book.
     if (this.loadedForProjectDir() !== dir) {
       this.versions.set([]);
-      // The chains belong to the project the rows did. Left behind, they would
-      // name another book's versions and every act taken from a line would carry
-      // the wrong chain id into main.
-      this.chains.set([]);
       this.variantList.set([]);
       this.primaryId.set(undefined);
       this.transcriptEligibleVariantIds.set(new Set());
@@ -4133,17 +2517,10 @@ export class StudioVersionsComponent {
       if (superseded()) return;
       if (res.success && res.versions) {
         this.versions.set(res.versions as VersionRow[]);
-        // Both halves come from one read and are set together. A build of main
-        // that predates chains sends none, and the page then draws no book line
-        // at all — which is loud, and right: every act below hands a chain id
-        // back, and there is nothing here that could invent one.
-        if (res.families === undefined) {
-          console.error(
-            '[studio-versions] editor:get-versions answered without the project\'s working chains. '
-            + 'This window and the main process disagree about the answer shape; reload the window. '
-            + 'No book line is drawn, because every act on one names the chain it is about.');
-        }
-        this.chains.set(res.families ?? []);
+        // `res.families` is deliberately not read. It is the project's working
+        // chains, and Wave 1 (2026-08-16) stopped drawing them: a legacy project
+        // that carries them opens as an ordinary flat page, and no migration is
+        // performed and nothing is written back.
         this.versionsError.set(null);
       } else {
         // A FAILED read (e.g. a transient manifest lock on a synced drive) is NOT
@@ -4362,541 +2739,13 @@ export class StudioVersionsComponent {
     } catch { /* no cache / IPC unavailable — leave it hidden */ }
   }
 
-  /** A version is comparable only if a pre-computed diff record was produced for it. */
-  hasDiffRecord(v: VersionRow): boolean { return !!v.diffRecordPath; }
-
-  /** The source EPUB a derived version was produced from (prefer 'exported', else 'original'). */
-  private sourceEpubPath(): string | undefined {
-    const docs = this.documents();
-    return docs.find(v => v.type === 'exported')?.path
-      ?? docs.find(v => v.type === 'original')?.path;
-  }
-
-  /**
-   * One-click review of the changes made to produce a derived version.
-   * Compares the version against the original its diff was recorded against
-   * (falling back to the project's source EPUB), in the correct order so the
-   * pre-computed diff record is used rather than an empty on-demand compare.
-   */
-  startCompare(v: VersionRow): void {
-    const original = v.diffOriginalPath || this.sourceEpubPath();
-    if (!original) return;
-    this.comparing.set({ mode: 'paths', a: original, b: v.path, labelA: 'Original', labelB: v.label });
-    this.compareActive.emit(true);
-  }
-
   closeCompare(): void {
     this.comparing.set(null);
     this.passReport.set(null);
-    // A "which two books?" still in flight belongs to a surface that is gone.
-    // It answers into nothing rather than re-opening itself over the list.
-    this.compareRequest++;
     this.compareActive.emit(false);
   }
 
   /**
-   * Delete the working copy: the PDF, its binding record and the machine-local
-   * scan scratch — the three files `document:discard` removes as ONE act.
-   *
-   * THE WORKING **PDF** — `<Original>.working.pdf`, the retired artifact — and
-   * not the book. The row it sits on can only appear for a project that already
-   * has one on disk (nothing mints them any more, and the library holds zero),
-   * which is why this still says "the cast text layer": that is what a working
-   * PDF carries. The act on the book row is `eraseBookChanges`, which is a
-   * different thing entirely and says so in its own words.
-   *
-   * That handler, not a `deleteFile` on the PDF. The binding is what says a
-   * working document exists and which original it was cast from; deleting the
-   * file alone would leave a record vouching for a document that is gone, which
-   * is the state `listWorkingDocuments` has to skip rows for and the picker
-   * would then try to re-open. Whatever cannot be removed together is not
-   * removed at all: the handler fails as a whole and this says so by name.
-   *
-   * The archive original is untouched — it is what the next Cast reads — and the
-   * book EPUB, if one was built, survives: it is a separate artifact, and
-   * nothing about deleting the PDF says the user is finished with their book.
-   */
-  private async removeWorkingCopy(v: VersionRow): Promise<void> {
-    const dir = this.projectDir();
-    const primary = v.primaryPath;
-    if (!dir || !primary) {
-      // Both are set by main on every working row it emits. Missing means IPC
-      // shape drift, not a state — refuse rather than guess a path to delete.
-      await this.electron.showMessageDialog({
-        title: 'Could not delete the working copy',
-        message: 'BookForge cannot tell which original this working copy was cast from, so nothing '
-          + 'was removed. Reopen the book, and report this if it happens again.',
-        type: 'error',
-      });
-      return;
-    }
-
-    const boundaries = v.stageBoundaries ?? [];
-    const detail = [
-      `This deletes ${v.path.split(/[\\/]/).pop()} and the record that binds it to your original:`,
-      '  • the cast text layer — the words you can select and search',
-      '  • your block curation: labels, deletions, merges and chapter titles',
-      ...(boundaries.length > 0
-        ? ['  • the stages recorded on it: '
-          + boundaries.map(b => this.BOUNDARY_LABELS[b.stage] ?? b.stage).join(', ')]
-        : []),
-      '',
-      'KEPT: the archive original (untouched — Cast reads it again to start over), and the book '
-      + 'EPUB if one has been built.',
-    ].join('\n');
-
-    const { confirmed } = await this.electron.showConfirmDialog({
-      title: 'Delete the working copy',
-      message: 'Delete your working copy of this book?',
-      detail,
-      confirmLabel: 'Delete', cancelLabel: 'Cancel', type: 'warning',
-    });
-    if (!confirmed) return;
-
-    const res = await this.electron.discardWorkingDocument(dir, primary);
-    if (!res.success) {
-      await this.electron.showMessageDialog({
-        title: 'Delete failed',
-        message: res.error || 'The working copy could not be deleted, and gave no reason. '
-          + 'Nothing was removed.',
-        type: 'error',
-      });
-      return;
-    }
-    await this.load();
-    this.changed.emit();
-  }
-
-  /**
-   * Delete the archive original — the source everything else was derived from.
-   *
-   * Routed through `variant:delete`, which is what every row in "Book versions"
-   * has always used: it removes the manifest record FIRST and only unlinks the
-   * file once that write is confirmed, so a failure can never leave a file gone
-   * while the project still lists it. The archive original is a variant like any
-   * other version of the book (`arch:archive/<name>.pdf`), and that handler
-   * already knows an `arch:` variant's file IS its archive file.
-   *
-   * The working copy goes FIRST, and must: it is a copy of these bytes, stamped
-   * with their hash, and its binding names this file. Leaving it would leave a
-   * record vouching for an original that is gone — and every stage re-proves
-   * that hash, so it could never be worked on again either. If the working copy
-   * cannot be removed, the original is not touched: that is the recoverable
-   * direction, and the user is told which half stopped it.
-   *
-   * The book EPUB is NOT deleted. It is a finished artifact the user may still
-   * want, and nothing about it depends on the original being present. The
-   * confirmation says so rather than leaving them to find out.
-   */
-  private async removeArchiveOriginal(v: VersionRow): Promise<void> {
-    const pid = this.projectId();
-    const dir = this.projectDir();
-    const variantId = v.variantId;
-    if (!pid || !variantId) {
-      await this.electron.showMessageDialog({
-        title: 'Could not delete the original',
-        message: 'BookForge has no manifest record for this file, so there is no version to '
-          + 'delete and nothing was removed. Reopen the book, and report this if it happens again.',
-        type: 'error',
-      });
-      return;
-    }
-
-    const working = this.documents().find(d => d.type === 'working') ?? null;
-    const book = this.documents().find(d => d.type === 'exported') ?? null;
-    // A PDF project keeps the book read out of its pages when the PDF goes, and
-    // the working copy can still be made from THAT — so "it cannot be rebuilt"
-    // is only true when there is no generated book standing behind it.
-    const generated = this.documents().find(d => d.type === 'generated') ?? null;
-    // Three sentences: what goes, what stays, and that it is final. The full
-    // inventory — every file on each side — is in the log, because a wall of
-    // bullets in a confirm box is a wall people press through.
-    console.warn(
-      `[removeArchiveOriginal] deleting ${v.path}. Goes with it: `
-      + `${working ? `${working.path} plus its cast text layer and block curation` : 'nothing else'}. `
-      + `Kept: ${generated ? generated.path : book ? book.path : 'no derived book'}, finished `
-      + 'audiobooks, the rendered sentence cache, the cover and all metadata.',
-    );
-    const detail = [
-      `This deletes ${v.path.split(/[\\/]/).pop()} — the book exactly as you imported it, and `
-      + 'BookForge keeps no other copy.',
-      working
-        ? 'Your working copy of it goes too, with the cast text layer and your block labels, '
-          + 'deletions, merges and chapter titles.'
-        : 'Nothing else on this page is bound to it.',
-      generated
-        ? `The book read out of its pages — ${generated.path.split(/[\\/]/).pop()} — your `
-          + 'audiobooks, the cover and all metadata are kept, and this cannot be undone.'
-        : book
-          ? `The book you built from it — ${book.path.split(/[\\/]/).pop()} — your audiobooks, the `
-            + 'cover and all metadata are kept, and this cannot be undone.'
-          : 'Your audiobooks, the cover and all metadata are kept, and this cannot be undone.',
-    ].join(' ');
-
-    const { confirmed } = await this.electron.showConfirmDialog({
-      title: 'Delete the original',
-      message: `Delete "${v.label}" — the original this book was imported from?`,
-      detail,
-      confirmLabel: 'Delete the original', cancelLabel: 'Cancel', type: 'warning',
-    });
-    if (!confirmed) return;
-
-    if (working && dir && working.primaryPath) {
-      const discarded = await this.electron.discardWorkingDocument(dir, working.primaryPath);
-      if (!discarded.success) {
-        await this.electron.showMessageDialog({
-          title: 'Delete stopped — the original is still here',
-          message: 'The working copy cast from this original could not be removed: '
-            + `${discarded.error || 'no reason given'}. Nothing was deleted, because a working copy `
-            + 'bound to an original that is gone is a document nothing can reopen.',
-          type: 'error',
-        });
-        return;
-      }
-    }
-
-    const res = await this.electron.variantDelete(pid, variantId);
-    if (!res.success) {
-      await this.electron.showMessageDialog({
-        title: 'Delete failed',
-        message: res.error || 'Could not delete the original. The file was left in place — try again.',
-        type: 'error',
-      });
-    }
-    await this.load();
-    await this.loadVariants();
-    this.changed.emit();
-  }
-
-  /**
-   * Erase every change made to the book — the act that used to be called
-   * "delete the book EPUB".
-   *
-   * ── Why the delete became an erase ──────────────────────────────────────────
-   *
-   * Owen, 2026-08-09: "whats the goal of creating a working copy in the first
-   * place? … to make changes reversible and to protect an archived file … the
-   * thing they 'delete' is actually the changes, not the working copy."
-   *
-   * Deleting this file was never durable: the next thing that asks for the book
-   * mints it again from the archive-grade book behind it, byte-identical. So the
-   * button says what actually happens, and it goes through the SAME code path a
-   * user deleting the file in Explorer takes (`book:erase-changes` →
-   * `ensureBookEpub`) rather than a second one that could drift from it.
-   *
-   * The confirmation counts what goes because the receipt afterwards counts the
-   * same things — the strikes and the deletions are usually the largest numbers
-   * in an evening's work, and a user is owed them before as well as after.
-   */
-  private async eraseBookChanges(
-    v: VersionRow,
-    familyId: string | null,
-    sourceName: string | null
-  ): Promise<void> {
-    const dir = this.projectDir();
-    if (!dir) return;
-    if (familyId === null) {
-      console.error('[studio-versions] "Erase all changes" reached the eraser without a working '
-        + 'chain. Every book line carries the chain it is on; this one did not.');
-      return;
-    }
-    const withDiffs = this.passDiffs();
-    const passes = this.item()?.appliedPasses ?? [];
-    // The cast this chain hangs off, if it hangs off one — matched by the chain,
-    // because a project may hold a cast book AND a second edition beside it and
-    // only one of them is what THIS book comes back from.
-    const generated = this.documents()
-      .find(d => d.type === 'generated' && d.familyId === familyId) ?? null;
-    const name = v.path.split(/[\\/]/).pop();
-
-    // Which book the fresh copy comes from, in the user's words. The generated
-    // row's presence is the measurement — main emits it exactly when the project
-    // has one on disk — and its origin says whether those bytes are the reader's
-    // own output or a working copy adopted when the project was migrated.
-    const restoredFrom = generated === null
-      ? sourceName === null ? 'the original you imported' : sourceName
-      : generated.generatedOrigin === 'cast'
-        ? 'the book read out of your PDF\'s pages'
-        : 'the book read out of your PDF\'s pages, as it stood when BookForge started keeping it '
-          + '(so any edits made before that are still in it)';
-
-    const detail = [
-      `Every change you have made to ${name} is cleared, and a byte-identical fresh copy takes its `
-      + 'place immediately:',
-      '  • your block and page deletions',
-      '  • text corrections, splits, merges and category learning',
-      '  • chapter markers and any chapter openings you folded',
-      '  • everything struck out for narration',
-      '  • undo / redo history',
-      ...(passes.length > 0
-        ? [
-          `  • the record of the ${passes.length} pass${passes.length === 1 ? '' : 'es'} applied to `
-          + 'this book, and their stars'
-          + (withDiffs.length > 0
-            ? ` — including the ${withDiffs.length} you can still review, which have nothing left to `
-            + 'be changes TO'
-            : ''),
-        ]
-        : []),
-      '',
-      `The copy is made from ${restoredFrom}, which is not touched by this and never is.`,
-      ...(generated !== null
-        ? ['', 'Your pages are NOT read again — that is the row above, and it costs an hour of GPU.']
-        : []),
-    ].join('\n');
-
-    const { confirmed } = await this.electron.showConfirmDialog({
-      title: 'Erase all changes',
-      message: `Erase every change made to "${v.label}"?`,
-      detail,
-      confirmLabel: 'Erase all changes', cancelLabel: 'Cancel', type: 'warning',
-    });
-    if (!confirmed) return;
-
-    // 'everything', because that is what this button has always said and what
-    // its confirmation above lists: the working changes AND the record of every
-    // pass applied to the book. The narrower 'working-changes' scope — clear my
-    // edits, keep the passes — belongs to the indented ledger rows the versions
-    // page is being rebuilt around, and is not offered from here.
-    const res = await this.electron.eraseBookChanges(dir, 'everything', familyId);
-    if (!res.success || !res.remint) {
-      await this.electron.showMessageDialog({
-        title: 'Nothing was erased',
-        message: res.error || 'The changes could not be erased, and nothing said why. Your working '
-          + 'copy is untouched.',
-        type: 'error',
-      });
-      await this.load();
-      return;
-    }
-    // The whole-file diff sidecar (`<name>.diff.json`) an older pipeline wrote
-    // beside this book, if the versions scan found one. It is not in the
-    // manifest's provenance, so main cannot see it — but it is a diff OF THE
-    // BYTES that have just been replaced.
-    if (v.diffRecordPath) {
-      const delDiff = await this.electron.deleteFile(v.diffRecordPath);
-      if (!delDiff.success) {
-        console.warn('[studio-versions] the changes were erased but a diff sidecar survived:', delDiff.error);
-      }
-    }
-    // The receipt — the same sentence main writes to its console and the picker
-    // shows when the copy is re-made by the other route. A banner: this is the
-    // second half of a confirm the user has already given, and the reloaded
-    // page shows the result.
-    this.notices.notify(describeWorkingCopyRemint(res.remint));
-    await this.load();
-    this.changed.emit();
-  }
-
-  /**
-   * Delete the book cast from this project's pages — the heavy act.
-   *
-   * The one that costs the hour of GPU, kept deliberately separate from erasing
-   * changes so the cheap act cannot be pressed by somebody meaning the expensive
-   * one or the other way round. The working copy goes with it, because a working
-   * copy is a copy OF this book and nothing could mint another once it is gone.
-   */
-  private async removeGeneratedEpub(v: VersionRow, familyId: string | null): Promise<void> {
-    const dir = this.projectDir();
-    if (!dir) return;
-    if (familyId === null) {
-      console.error('[studio-versions] Delete reached the cast-book remover without a working '
-        + 'chain. The cast IS a chain\'s book line, and it always carries the chain it is on.');
-      return;
-    }
-    const working = this.documents()
-      .find(d => d.type === 'exported' && d.familyId === familyId) ?? null;
-    const detail = [
-      `This deletes ${v.path.split(/[\\/]/).pop()} — every page of your PDF as the reader read it.`,
-      '',
-      ...(working !== null
-        ? [
-          'GOES WITH IT: your working copy and everything recorded against it, because a working '
-          + 'copy is a copy of this book and there would be nothing left to make another from:',
-          `  • ${working.path.split(/[\\/]/).pop()}`,
-          '  • your deletions, chapter markers, narration strikes and applied passes',
-          '',
-        ]
-        : []),
-      'KEPT: the archive PDF. Convert to EPUB reads its pages again to start over — an hour of GPU, '
-      + 'where erasing your changes is a file copy.',
-      '',
-      'This cannot be undone.',
-    ].join('\n');
-
-    const { confirmed } = await this.electron.showConfirmDialog({
-      title: 'Delete the book read from your pages',
-      message: `Delete "${v.label}" and start the whole conversion over?`,
-      detail,
-      confirmLabel: 'Delete and start over', cancelLabel: 'Cancel', type: 'warning',
-    });
-    if (!confirmed) return;
-
-    const res = await this.electron.deleteGeneratedEpub(dir, familyId);
-    if (!res.success) {
-      await this.electron.showMessageDialog({
-        title: 'Delete failed',
-        message: res.error || 'Could not delete the generated book. Nothing was removed.',
-        type: 'error',
-      });
-    }
-    await this.load();
-    this.changed.emit();
-  }
-
-  /**
-   * Delete the TTS copy — the cheapest delete in the project.
-   *
-   * Owen, 2026-08-10: "if i want to delete the tts file i can." Through
-   * `book:delete-tts-copy`, which clears `outputs.ttsEpub` before unlinking, so
-   * nothing is ever left reading a path with no file behind it. The book and
-   * the strikes are untouched, which is why the confirmation can promise the
-   * copy back for the cost of one export.
-   */
-  private async removeTtsCopy(v: VersionRow, familyId: string | null): Promise<void> {
-    const dir = this.projectDir();
-    if (!dir) return;
-    if (familyId === null) {
-      console.error('[studio-versions] Delete reached the narration-copy remover without a working '
-        + 'chain. Every narration line is nested under the book it was cut from and says so.');
-      return;
-    }
-    const name = v.path.split(/[\\/]/).pop();
-    const { confirmed } = await this.electron.showConfirmDialog({
-      title: 'Delete the TTS copy',
-      message: `Delete ${name}?`,
-      detail: 'Your book and your strikes are untouched — Export TTS copy cuts this file again '
-        + 'from both, exactly as it was.',
-      confirmLabel: 'Delete', cancelLabel: 'Cancel', type: 'warning',
-    });
-    if (!confirmed) return;
-
-    const res = await this.electron.deleteTtsCopy(dir, familyId);
-    if (!res.success) {
-      await this.electron.showMessageDialog({
-        title: 'Delete failed',
-        message: res.error || 'The TTS copy could not be deleted, and gave no reason. Nothing was removed.',
-        type: 'error',
-      });
-      return;
-    }
-    await this.load();
-    this.changed.emit();
-  }
-
-  async removeDoc(v: VersionRow, familyId: string | null): Promise<void> {
-    // The chain's rows are five different acts, each owned by the code that
-    // already knows how to undo that artifact, and each told WHICH chain it is
-    // acting on. Only the rows below them — the legacy stage outputs, which are
-    // on no chain — take the generic file delete.
-    if (v.type === 'working') { await this.removeWorkingCopy(v); return; }
-    if (v.type === 'archive') { await this.removeArchiveOriginal(v); return; }
-    if (v.type === 'generated') { await this.removeGeneratedEpub(v, familyId); return; }
-    if (v.type === 'exported') {
-      await this.eraseBookChanges(
-        v, familyId, this.chains().find(c => c.id === familyId)?.sourceName ?? null);
-      return;
-    }
-    if (v.type === 'narration') { await this.removeTtsCopy(v, familyId); return; }
-
-    // Read BEFORE the confirm, as every sibling remover does (removeWorkingCopy,
-    // removeGeneratedEpub, removeTtsCopy all take `projectDir()` on their first
-    // line). Read after, it is whatever book the page has moved to while the
-    // dialog was up — and the stage deletes below would clear THAT project's
-    // cleanup or translation directory while naming this row.
-    const projectDir = this.projectDir();
-
-    const { confirmed } = await this.electron.showConfirmDialog({
-      title: 'Delete version',
-      message: `Delete "${v.label}"? The original archived copy is not affected.`,
-      confirmLabel: 'Delete', cancelLabel: 'Cancel', type: 'warning',
-    });
-    if (!confirmed) return;
-
-    // Cleaned / Simplified EPUBs live in the SHARED stages/01-cleanup/ directory
-    // alongside a set of sidecars: the diff cache the Review UI reads, the resume
-    // checkpoint (cleanup-progress.json — if it survives a delete the NEXT run
-    // resumes from stale chapters), the edit-list audit, the pre-pass report and
-    // the skipped-chunk record. Translated EPUBs live in stages/02-translate/ with
-    // their own diff cache, sentence-pair export and resume artifact (the mono
-    // translation-progress.json + chapter-cache/, or an LL sentences/<lang>.json).
-    // Deleting only the .epub would strand all of those and leave the project in a
-    // lying state — most dangerously letting a re-run RESUME from the deleted
-    // chapters. Route through the stage-aware main handlers, which remove this
-    // output's whole set and leave sibling outputs (the other cleanup/simplify
-    // pass, or another language) intact. Gate on the file ACTUALLY living under the
-    // stage dir so legacy projects (cleaned.epub in an audiobook folder) still take
-    // the direct-delete path below rather than no-op'ing against a stage dir that
-    // isn't there.
-    const inCleanupStage = /[\\/]stages[\\/]01-cleanup[\\/]/.test(v.path);
-    const inTranslateStage = /[\\/]stages[\\/]02-translate[\\/]/.test(v.path);
-    const pipeline = (window as any).electron?.pipeline;
-    const epubName = v.path.split(/[\\/]/).pop();
-    let res: { success: boolean; error?: string };
-
-    if (inCleanupStage && projectDir && (v.type === 'cleaned' || v.type === 'simplified')) {
-      const del = v.type === 'cleaned' ? pipeline?.deleteCleanup : pipeline?.deleteSimplify;
-      if (!del) {
-        // No silent fallback to a file-only delete — that would strand the very
-        // sidecars this branch exists to remove. Surface the wiring failure.
-        res = { success: false, error: 'Stage delete handler unavailable' };
-      } else {
-        res = await del(projectDir);
-      }
-    } else if (inTranslateStage && projectDir && v.type === 'translated' && epubName) {
-      // Delete just THIS language's files (epub, diff, sentence-pair export and
-      // resume cache) so a re-run does not resume from the deleted chapters and
-      // sibling languages stay intact. No silent fallback for the same reason.
-      const del = pipeline?.deleteTranslation;
-      if (!del) {
-        res = { success: false, error: 'Stage delete handler unavailable' };
-      } else {
-        res = await del(projectDir, epubName);
-      }
-    } else {
-      // A legacy cleaned/simplified/translated file that owns no shared stage
-      // directory. (The book EPUB never reaches here — `removeBookEpub` above
-      // owns it, because its provenance and its diffs have to go with it.)
-      // Delete the file plus the pre-computed diff sidecar the versions scan
-      // found next to it.
-      res = await this.electron.deleteFile(v.path);
-      if (res.success && v.diffRecordPath) {
-        const delDiff = await this.electron.deleteFile(v.diffRecordPath);
-        if (!delDiff.success) {
-          console.warn('[studio-versions] version deleted but its diff sidecar survived:', delDiff.error);
-        }
-      }
-    }
-
-    if (res.success) {
-      await this.load();
-      this.changed.emit();
-    } else {
-      await this.electron.showMessageDialog({
-        title: 'Delete failed',
-        message: res.error || 'Could not delete this version. Try again.',
-        type: 'error',
-      });
-    }
-  }
-
-  // ── "Reset edits" is gone, folded into "Erase all changes" ─────────────────
-  //
-  // It sat on the 'original' row and cleared the manifest records through
-  // `pipeline:reset-editor-state`, leaving the book file exactly where it was —
-  // so a user who pressed it got a book with no records and bytes still carrying
-  // the folded openings and named headings those records described. It also
-  // offered a checkbox to delete the export, which is the other half of the same
-  // act done as an afterthought.
-  //
-  // "Erase all changes" on the book row is that act, done completely and in one
-  // code path: the same wholesale reset, then a byte-identical fresh copy. Two
-  // buttons performing subtly different resets is exactly the drift the single
-  // `resetEditorRecords` was pulled out to prevent, so the weaker one is retired
-  // rather than kept beside it. The rail's own "Erase all changes and start
-  // over" (`pipeline:reset-editor-state`) is untouched — it is the picker's, it
-  // destroys the open editor window, and it is not this page's button.
-
   /** Delete every cached sentence-audio file for this book (all languages). */
   async deleteCache(): Promise<void> {
     const dir = this.projectDir();
