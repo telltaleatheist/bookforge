@@ -139,11 +139,16 @@ function progressDone() { if (process.stderr.isTTY) process.stderr.write('\r' + 
       const src = path.resolve(f);
       if (!fs.existsSync(src)) throw new Error(`No such file: ${src}`);
       if (args['dry-run']) { console.log(`  would add: ${path.basename(src)}`); continue; }
-      const res = await libraryActions.addVariant(projectId, src, { onProgress: progress });
+      // The same act the app's "+ Add version" performs (variant:add in
+      // electron/main.ts): an EPUB version also gets its own working chain and
+      // narration copy, so it can be narrated straight from the versions page.
+      const res = await libraryActions.addVariantWithChain(projectId, src, { onProgress: progress });
       progressDone();
       if (!res.success) { console.error(`  FAILED  ${path.basename(src)}: ${res.error}`); failures++; continue; }
       const kind = res.variant.kind === 'audiobook' ? 'audiobook, professionally read' : res.variant.kind;
       console.log(`  added   ${res.variant.path}   [${kind}]`);
+      if (res.familyId) console.log(`          working chain ${res.familyId} minted; narration copy cut`);
+      if (res.chainRefusal) console.error(`  NOTE    added without a working chain: ${res.chainRefusal}`);
     }
     if (failures) process.exitCode = 1;
     return;

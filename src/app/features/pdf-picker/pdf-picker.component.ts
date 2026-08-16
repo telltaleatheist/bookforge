@@ -4231,7 +4231,14 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
     try {
-      const info = await this.electronService.projectsExportInfo(dir);
+      // The chain this window already knows it opened, when it knows — the
+      // stamped id survives refreshes and never re-resolves. Failing that, the
+      // file in the viewer says which chain on a multi-version project
+      // (familyForOpen): this refresh can run before the open's own stamp has
+      // landed, and a project with several chains must not refuse its first
+      // refresh over an id that is a moment away.
+      const info = await this.electronService.projectsExportInfo(
+        dir, this.workingChainId(), this.effectivePath() || undefined);
       this.bookEpubErrorAnswer.set(null);
       this.bookEpubAnswer.set({
         dir,
@@ -11318,7 +11325,11 @@ export class PdfPickerComponent implements OnInit {
     // Main's answer about all three artifacts, in one round trip. This ask is
     // also what MINTS a first working copy (`projects:export-info`), so by the
     // time the plan is read the copy it may redirect to usually already exists.
-    const info = await this.electronService.projectsExportInfo(projectDir);
+    //
+    // `asked` travels with it: on a project holding several working chains the
+    // file being opened is what says which chain this open is about — the
+    // open's own identity, where an act would have a button's (familyForOpen).
+    const info = await this.electronService.projectsExportInfo(projectDir, undefined, asked);
     // The receipt, said here rather than waited for: this is the ask that
     // discovered the file was gone, and main reports a re-mint on exactly the
     // one that performed it. See `refreshBookEpub` for the whole of why.

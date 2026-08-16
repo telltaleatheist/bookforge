@@ -353,17 +353,27 @@ export function parseFilename(filename: string): BookMetadata {
       meta.title = titlePart;
     }
 
-    // Parse author: "Last, First" or "First Last"
+    // Parse author under the ONE rule (Owen, 2026-08-16): a comma means the
+    // segment is written "[Last], [First]" — strip the comma and read it that
+    // way; no comma means "[First] [Last]".
+    //
+    // `authorFull` is ALWAYS the natural "[First] [Last]" form. Every consumer
+    // treats it as display order and derives "Last, First" itself when it
+    // needs the file-as form (computeDescriptiveFilename, the shelf's
+    // fallback) — handing the comma'd form through is how a file named
+    // "… Bailey, Gene.epub" was inverted a second time into "Gene, Bailey,"
+    // on the first imported version.
     if (authorPart.includes(',')) {
-      const parts = authorPart.split(',').map(s => s.trim());
+      const parts = authorPart.split(',').map(s => s.trim()).filter(Boolean);
       meta.authorLast = parts[0];
-      meta.authorFirst = parts[1];
-      meta.authorFull = authorPart;
+      const first = parts.slice(1).join(' ');
+      if (first) meta.authorFirst = first;
+      meta.authorFull = first ? `${first} ${parts[0]}` : parts[0];
     } else if (authorPart.includes(' ')) {
       const parts = authorPart.split(/\s+/);
       meta.authorFirst = parts.slice(0, -1).join(' ');
       meta.authorLast = parts[parts.length - 1];
-      meta.authorFull = `${meta.authorLast}, ${meta.authorFirst}`;
+      meta.authorFull = authorPart;
     } else {
       meta.authorLast = authorPart;
       meta.authorFull = authorPart;

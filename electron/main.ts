@@ -52,7 +52,7 @@ import { chapterOpeningRefusal } from '../shared/document/chapter-opening-report
 // A block's element key says which DOCUMENT it is in, which is the identity a
 // chapter is listed, renamed and struck by.
 import { parseNarrationElementKey } from '../shared/vlm/narration-deletions';
-import { addVariant, importAudiobookProject, saveVariantMetadata, setPrimaryVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
+import { addVariantWithChain, importAudiobookProject, saveVariantMetadata, setPrimaryVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
@@ -3561,23 +3561,6 @@ function setupIpcHandlers(): void {
           console.warn(`[projects:load] ${staleLayoutRefusal}`);
         }
 
-        // ── The elements, given their IDENTITIES, before anything writes ────
-        //
-        // First, because an element's id has to exist before anything edits the
-        // element, and the naming pass immediately below is the first thing that
-        // does. Idempotent: a book already stamped writes no byte and says
-        // nothing. NOT inside the try above, for the same reason the naming pass
-        // is not — a refusal fails the open with its own sentence rather than
-        // handing the window a book whose identity is half written.
-        const { stampElementIds } = await import('./narration-export.js');
-        const stamped = await stampElementIds(filePath);
-        if (stamped.stamped > 0) {
-          console.log(
-            `[projects:load] ${path.basename(filePath)}: ${stamped.stamped} of ${stamped.total} `
-            + 'element(s) now carry a stable id.'
-          );
-        }
-
         // ── The chapter openings, NAMED, before anything reads the book ─────
         //
         // Owen, 2026-08-09: "from the moment the book opens, the chapter
@@ -3854,11 +3837,17 @@ function setupIpcHandlers(): void {
    * ordinary case and means the project's only chain; a project with several
    * refuses rather than opening whichever book it reached first — which would
    * put the user's edits into a version they were not looking at.
+   *
+   * `askedPath` is the FILE the window is opening, and it is the second way a
+   * multi-chain project resolves: the file says which chain it is on
+   * (`familyForOpen`). Without either, several chains still refuse — a caller
+   * that neither names a chain nor stands on a file has nothing to resolve by.
    */
   ipcMain.handle('projects:export-info', async (
     _event,
     projectDir: string,
-    familyId?: string
+    familyId?: string,
+    askedPath?: string
   ) => {
     try {
       // ── The working copy is made here, invisibly, because this is where the
@@ -3898,25 +3887,43 @@ function setupIpcHandlers(): void {
       let remint: WorkingCopyRemint | null = null;
       const adoption = await manifestService.ensureGeneratedEpub(projectDir);
       if (adoption.missing !== null) console.warn(`[projects:export-info] ${adoption.missing}`);
-      // WHICH chain this ask is about — through the LISTING resolver, first: a
-      // bare PDF has no chain yet, and opening it to scan its pages is not an
-      // act on a book. Null here means every chain-scoped step below is skipped
-      // and the answer carries no familyId — the honest shape of a project that
-      // has pages and nothing else (found live 2026-08-10: "Could not open this
-      // book … has no working chain yet" on a project whose PDF opens fine).
-      // A caller that NAMES a familyId still gets the refusal for a chain that
+      // WHICH chain this ask is about — the OPEN resolver: a named id first, a
+      // sole chain as the theorem, and on a multi-chain project the asked FILE
+      // says which (familyForOpen). Null means every chain-scoped step below is
+      // skipped and the answer carries no familyId — the honest shape of a
+      // project that has pages and nothing else (found live 2026-08-10: "Could
+      // not open this book … has no working chain yet" on a project whose PDF
+      // opens fine), and now also of an asked file that is on no chain. A
+      // caller that NAMES a familyId still gets the refusal for a chain that
       // is not there.
-      const resolvedChain = await manifestService.familyForListing(projectDir, familyId);
-      if (resolvedChain !== null) await manifestService.migrateWorkingEpubNaming(projectDir, familyId);
-      const recordedBefore = await manifestService.readExportEpub(projectDir, familyId);
+      //
+      // Every chain-scoped call below is handed the RESOLVED id, never the raw
+      // argument: the resolution may have been made by path, and asking again
+      // with `undefined` would put the multi-chain refusal right back.
+      const resolvedChain = await manifestService.familyForOpen(projectDir, askedPath, familyId);
+      const chainId = resolvedChain === null ? undefined : resolvedChain.family.id;
+      if (resolvedChain !== null) await manifestService.migrateWorkingEpubNaming(projectDir, chainId);
+      // Guarded on the resolution, like everything chain-scoped here: with no
+      // chain resolved there is no record to read, and the reader itself would
+      // refuse a multi-chain project asked without an id.
+      const recordedBefore = resolvedChain === null
+        ? null
+        : await manifestService.readExportEpub(projectDir, chainId);
       if (!recordedBefore || !fsSync.existsSync(recordedBefore.absPath)) {
         // Asked as "is there something to copy", not as "did it work": a project
         // with nothing archive-grade behind it is an ordinary state here (a PDF
         // nobody has converted), and minting is simply not one of the things
         // opening it does.
-        if (await manifestService.workingCopySource(projectDir) !== null) {
-          remint = (await manifestService.ensureBookEpub(projectDir, familyId)).remint;
-          await nameOpeningsOfRemintedCopy(projectDir, remint, familyId);
+        //
+        // A multi-chain project whose asked file resolved to NO chain mints
+        // nothing: the mint would have to guess which book, which is the exact
+        // ambiguity the resolution above exists to remove.
+        const unresolvedAmongSeveral = resolvedChain === null
+          && (await manifestService.readBookFamilies(projectDir)).length > 1;
+        if (!unresolvedAmongSeveral
+          && await manifestService.workingCopySource(projectDir) !== null) {
+          remint = (await manifestService.ensureBookEpub(projectDir, chainId)).remint;
+          await nameOpeningsOfRemintedCopy(projectDir, remint, chainId);
         }
       }
 
@@ -3925,8 +3932,10 @@ function setupIpcHandlers(): void {
       // a source the project does not record.
       const target = resolvedChain === null
         ? null
-        : await manifestService.exportEpubTarget(projectDir, familyId);
-      const record = await manifestService.readExportEpub(projectDir, familyId);
+        : await manifestService.exportEpubTarget(projectDir, chainId);
+      const record = resolvedChain === null
+        ? null
+        : await manifestService.readExportEpub(projectDir, chainId);
       const exported = record && fsSync.existsSync(record.absPath) ? record : null;
       // The book cast from this project's pages, when it has one ON DISK. The
       // picker needs it to tell that artifact apart from the archive original:
@@ -3953,7 +3962,9 @@ function setupIpcHandlers(): void {
       // rail lights its pass entries from this, and asking twice — once for the
       // path, once for the provenance — is how two surfaces come to disagree
       // about the same book.
-      const appliedPasses = await manifestService.readAppliedPasses(projectDir, familyId);
+      const appliedPasses = resolvedChain === null
+        ? []
+        : await manifestService.readAppliedPasses(projectDir, chainId);
       // WHICH chain everything above is about, handed back so the window that
       // opened can quote it in every act it performs afterwards rather than
       // asking again and possibly being answered about a different version.
@@ -6695,10 +6706,13 @@ function setupIpcHandlers(): void {
   });
 
   ipcMain.handle('variant:add', async (_event, projectId: string, filePath: string) => {
-    // Body lives in library-actions.addVariant so the headless CLI exercises the
-    // identical path (see cli/library.js). This wrapper only supplies the
-    // renderer progress channel.
-    return addVariant(projectId, filePath, { onProgress: emitImportProgress });
+    // Body lives in library-actions.addVariantWithChain so the headless CLI
+    // exercises the identical path (see cli/library.js). This wrapper only
+    // supplies the renderer progress channel. An EPUB version comes back with
+    // its own working chain and narration copy — that is what puts the Process
+    // button on an imported version — and `chainRefusal` carries the sentence
+    // when the chain half could not be made while the variant stands.
+    return addVariantWithChain(projectId, filePath, { onProgress: emitImportProgress });
   });
 
   ipcMain.handle('variant:save-metadata', async (_event, projectId: string, variantId: string, meta: Record<string, unknown>, coverData?: string) => {

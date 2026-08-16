@@ -1467,12 +1467,18 @@ export class ElectronService {
      * means the project's only one; a project with several refuses, naming
      * them, rather than acting on a version the user is not looking at.
      */
-    familyId?: string
+    familyId?: string,
+    /**
+     * The file being OPENED, when this ask comes from an open. On a project
+     * with several chains the file resolves which one (`familyForOpen` in
+     * main) — the open's own identity, where an act would have a button's.
+     */
+    askedPath?: string
   ): Promise<ProjectExportInfo> {
     if (!this.isElectron) {
       throw new Error('Resolving a project export path needs the desktop app.');
     }
-    const result = await (window as any).electron.projects.exportInfo(projectDir, familyId);
+    const result = await (window as any).electron.projects.exportInfo(projectDir, familyId, askedPath);
     if (!result.success) {
       throw new Error(result.error || 'Could not resolve the project\'s export path.');
     }
@@ -1887,7 +1893,10 @@ export class ElectronService {
     if (this.isElectron) return (window as any).electron.variant.list(projectId);
     return { success: false, error: 'Not running in Electron' };
   }
-  async variantAdd(projectId: string, filePath: string): Promise<{ success: boolean; variantId?: string; variant?: any; error?: string }> {
+  /** An added EPUB version comes back with its own working chain (`familyId`),
+   *  or with `chainRefusal` saying why the variant stands without one. Audio and
+   *  non-EPUB versions carry neither field. */
+  async variantAdd(projectId: string, filePath: string): Promise<{ success: boolean; variantId?: string; variant?: any; error?: string; familyId?: string | null; chainRefusal?: string | null }> {
     if (this.isElectron) return (window as any).electron.variant.add(projectId, filePath);
     return { success: false, error: 'Not running in Electron' };
   }

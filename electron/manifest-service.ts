@@ -2247,6 +2247,65 @@ export async function familyForListing(
 }
 
 /**
+ * The family an OPEN is about, said by the FILE being opened.
+ *
+ * ── Why a third resolver, beside the act's and the listing's ────────────────
+ *
+ * Opening a document is neither. An act without an id must refuse on a
+ * multi-chain project — the button not pressed cannot be inferred. A listing
+ * answers "nothing" for a project with no chain. But an OPEN carries its own
+ * identity: the path the user is opening. A project with two versions opened
+ * on `archive/Dune (2).epub` is not ambiguous — the file says which chain —
+ * and refusing it made every multi-version project unopenable (found live
+ * 2026-08-16, the day the first imported version existed: "Failed to open
+ * project … has 2 working chains …" from the picker's own open).
+ *
+ * This is Owen's identity law read in the other direction: the TTS pipeline
+ * knows its file because the user came from that file's button; an open knows
+ * its chain because the user came through that chain's file.
+ *
+ * ── Resolution, in order, none of it a guess ────────────────────────────────
+ *
+ *  - A NAMED id wins, exactly as everywhere else, and a stale one still
+ *    refuses with the alternatives.
+ *  - One chain or none: the listing resolver, unchanged — the theorem and the
+ *    bare-PDF answer both stand, and the asked path is never consulted.
+ *  - Several: the chain holding the asked file as a MEMBER (its source, its
+ *    working copy, its narration copy). Failing that, a project's ARCHIVE
+ *    ORIGINAL resolves to the chain descending from it — the same ownership
+ *    rule the picker records follow (`familyOwnsPickerRecords`), because
+ *    opening the original lands on that chain's working copy by design.
+ *  - No match: null. The asked file is on no chain (a loose stage output, an
+ *    audio file), and every chain-scoped step is honestly skipped — the same
+ *    shape a bare PDF has always answered with.
+ */
+export async function familyForOpen(
+  projectDir: string,
+  askedPath: string | undefined,
+  familyId?: string
+): Promise<ResolvedFamily | null> {
+  if (familyId !== undefined || askedPath === undefined) {
+    return familyForListing(projectDir, familyId);
+  }
+  const families = (await readManifestAt(projectDir)).families ?? [];
+  if (families.length <= 1) return familyForListing(projectDir, undefined);
+
+  const rel = path.relative(projectDir, askedPath).split(path.sep).join('/').toLowerCase();
+  const matches = (recorded?: string | null): boolean =>
+    !!recorded && recorded.toLowerCase() === rel;
+  const member = families.find((f) =>
+    matches(f.source.path) || matches(f.epub?.path) || matches(f.ttsEpub?.path));
+  if (member) return requireFamily(projectDir, member.id);
+
+  const original = await readArchiveOriginal(projectDir);
+  if (original && original.relPath.split(path.sep).join('/').toLowerCase() === rel) {
+    const owner = families.find((f) => familyOwnsPickerRecords(f, original.relPath));
+    if (owner) return requireFamily(projectDir, owner.id);
+  }
+  return null;
+}
+
+/**
  * The same family, located inside a manifest a `modifyManifest` callback is
  * holding — by ID, never by position.
  *
@@ -6232,8 +6291,17 @@ export function computeDescriptiveFilename(
   if (author && author !== 'Unknown') {
     if (metadata.authorFileAs) {
       authorPart = metadata.authorFileAs.trim();
+    } else if (author.includes(',')) {
+      // The ONE rule for reading an author string (Owen, 2026-08-16): a comma
+      // means it is already "[Last], [First]" — strip the comma and read it
+      // that way. Treating a comma'd name as first-last inverted it a second
+      // time: "Bailey, Gene" became the filename "Gene, Bailey," on the first
+      // imported version.
+      const parts = author.split(',').map((s) => s.trim()).filter(Boolean);
+      const first = parts.slice(1).join(' ');
+      authorPart = first ? `${parts[0]}, ${first}` : parts[0];
     } else {
-      // Try to parse "First Last" → "Last, First"
+      // No comma: "[First] [Last]", inverted for the filename's file-as form.
       const parts = author.split(/\s+/);
       if (parts.length >= 2) {
         const last = parts[parts.length - 1];

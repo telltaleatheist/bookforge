@@ -2975,8 +2975,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('projects:find-manifest-by-source', fileHash, sourcePath),
     loadFromPath: (filePath: string) =>
       ipcRenderer.invoke('projects:load-from-path', filePath),
-    exportInfo: (projectDir: string, familyId?: string) =>
-      ipcRenderer.invoke('projects:export-info', projectDir, familyId),
+    exportInfo: (projectDir: string, familyId?: string, askedPath?: string) =>
+      ipcRenderer.invoke('projects:export-info', projectDir, familyId, askedPath),
   },
   library: {
     seedBookPath: () =>

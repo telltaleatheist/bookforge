@@ -3945,7 +3945,19 @@ export class StudioVersionsComponent {
         const res = await this.electron.variantAdd(pid, addPath);
         this.imports.clearProgress(pid); // this file's conversion is over either way
         if (!res.success) errors.push(`${p.split(/[\\/]/).pop()}: ${res.error || 'failed'}`);
-        else if (res.variantId) lastAddedId = res.variantId;
+        else {
+          if (res.variantId) lastAddedId = res.variantId;
+          // The version is in, but it has no working chain — so no book line and
+          // no Process button. Main's sentence names the collision or the
+          // migration state; shown verbatim, because a version that silently
+          // cannot be narrated is a button the user would hunt for.
+          if (res.chainRefusal) {
+            this.notices.notify(
+              `${p.split(/[\\/]/).pop()} was added as a version, but it has no working chain of `
+              + `its own: ${res.chainRefusal}`,
+            );
+          }
+        }
       }
     } finally {
       this.imports.end(pid);
