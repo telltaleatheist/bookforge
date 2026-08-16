@@ -3967,7 +3967,14 @@ export class LLWizardComponent implements OnInit {
       || this.effectiveProjectDir() !== projectDir
       || this.epubPath() !== document;
 
-    const res = await this.electronService.variantList(this.projectId());
+    // The MANIFEST project id, which is the project directory's last segment —
+    // not `projectId()`, which for a book is the absolute project directory
+    // (StudioItem.id is a path for books and a slug for articles; see
+    // studioManifestProjectId). `variant:list` joins what it is given onto the
+    // library root, so handing it a path would ask about a directory that does
+    // not exist and report this book as having no versions at all.
+    const manifestProjectId = projectDir.split(/[\\/]/).filter(Boolean).pop() ?? '';
+    const res = await this.electronService.variantList(manifestProjectId);
     if (superseded()) return;
     if (!res.success || !res.variants) {
       this.narrationResolvedFor = null;
