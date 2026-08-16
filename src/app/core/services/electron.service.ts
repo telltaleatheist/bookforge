@@ -758,6 +758,46 @@ export class ElectronService {
     return 'browser';
   }
 
+  /**
+   * Where a `File` this window was handed — dropped on it, or chosen through an
+   * `<input type="file">` — actually lives on disk.
+   *
+   * Electron 32 deleted the `File.path` property every drop handler here used
+   * to read; the preload's `getPathForFile` door (`electron/preload.ts`) is
+   * what replaced it. Returns null for a file that HAS no path: one dragged out
+   * of another web page rather than off the filesystem, or anything at all in
+   * browser mode, which is handed a file's bytes and never its location.
+   *
+   * Null rather than a throw because a drop is plural — a caller has to be able
+   * to take the files that are on disk and name the ones that are not. What no
+   * caller may do is put `file.name` in a path's place: a name is not a path,
+   * and passing one on turns a condition that could have been refused here into
+   * a failure somewhere downstream that can no longer say which file it was.
+   */
+  pathForFile(file: File): string | null {
+    if (!this.isElectron) return null;
+    const filePath: string = (window as any).electron.getPathForFile(file);
+    return filePath || null;
+  }
+
+  /**
+   * {@link pathForFile} over a whole drop, keeping the two halves apart: the
+   * files that are on disk, and the names of the ones that are not. Callers
+   * proceed with `paths` and must say something about `unlocatable` rather than
+   * dropping them on the floor.
+   */
+  pathsForFiles(files: FileList): { paths: string[]; unlocatable: string[] } {
+    const paths: string[] = [];
+    const unlocatable: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const filePath = this.pathForFile(file);
+      if (filePath) paths.push(filePath);
+      else unlocatable.push(file.name);
+    }
+    return { paths, unlocatable };
+  }
+
   // File system operations
   async browse(dirPath: string): Promise<BrowseResult> {
     if (this.isElectron) {
@@ -1395,10 +1435,17 @@ export class ElectronService {
           resolve({ success: false, canceled: true });
           return;
         }
-        // In browser mode, we can't get the actual file path
-        // but we can get the file object
-        const filePath = (file as any).path || file.name;
-        resolve({ success: true, filePath });
+        // A browser hands over the file's BYTES and never its location: there
+        // is no `File.path` here (the web never had one, and Electron 32
+        // removed it in the app too) and `webUtils` lives in the preload, which
+        // a browser has none of. Everything downstream of this dialog opens the
+        // PDF by path, so answering with `file.name` would be a wrong answer
+        // wearing a right one's clothes — it would fail later, in code that can
+        // no longer say which file the user picked.
+        resolve({
+          success: false,
+          error: `Cannot open "${file.name}": a browser gives no file path, and opening a PDF needs one. Use the desktop app.`,
+        });
       };
       input.oncancel = () => resolve({ success: false, canceled: true });
       input.click();

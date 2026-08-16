@@ -4004,10 +4004,12 @@ export class StudioVersionsComponent {
     this.vDragOver.set(false); this.vDragCounter = 0;
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) return;
-    const paths: string[] = [];
-    for (let i = 0; i < files.length; i++) {
-      const fp = (files[i] as unknown as { path?: string }).path;
-      if (fp) paths.push(fp);
+    const { paths, unlocatable } = this.electron.pathsForFiles(files);
+    if (unlocatable.length > 0) {
+      this.notices.notify(
+        `Not added — ${unlocatable.join(', ')} ${unlocatable.length === 1 ? 'is' : 'are'} ` +
+        `not a file on this machine. Drop versions in from a folder, not from a web page.`
+      );
     }
     if (paths.length) void this.addFiles(paths);
   }
