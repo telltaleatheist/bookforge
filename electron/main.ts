@@ -13339,6 +13339,19 @@ app.whenReady().then(async () => {
     }
   };
 
+  /**
+   * The window a menu item was invoked over, when it is one that owns a page.
+   *
+   * Electron 30 introduced `BaseWindow` — the frame under `BrowserWindow`, which
+   * can host `WebContentsView`s and so has no `webContents` of its own — and
+   * retyped the `MenuItem` click handler's second argument to it. Every item
+   * below wants the page (reload it, clear its cache, zoom it), so each one asks
+   * here and does nothing at all when the focused window has no page to act on,
+   * rather than reaching for a `webContents` that may not exist.
+   */
+  const pageWindow = (win: Electron.BaseWindow | undefined): BrowserWindow | null =>
+    win instanceof BrowserWindow ? win : null;
+
   // Set up application menu
   const isMac = process.platform === 'darwin';
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -13389,15 +13402,17 @@ app.whenReady().then(async () => {
           label: 'Reload',
           accelerator: 'CmdOrCtrl+R',
           click: (_item, focusedWindow) => {
-            if (focusedWindow) reloadWindow(focusedWindow);
+            const win = pageWindow(focusedWindow);
+            if (win) reloadWindow(win);
           }
         },
         {
           label: 'Force Reload',
           accelerator: 'CmdOrCtrl+Shift+R',
           click: (_item, focusedWindow) => {
-            if (focusedWindow) {
-              focusedWindow.webContents.session.clearCache().then(() => reloadWindow(focusedWindow));
+            const win = pageWindow(focusedWindow);
+            if (win) {
+              win.webContents.session.clearCache().then(() => reloadWindow(win));
             }
           }
         },
@@ -13417,8 +13432,9 @@ app.whenReady().then(async () => {
           label: 'Zoom In',
           accelerator: 'CmdOrCtrl+=',
           click: (_item, focusedWindow) => {
-            if (focusedWindow) {
-              const newLevel = focusedWindow.webContents.getZoomLevel() + 0.5;
+            const win = pageWindow(focusedWindow);
+            if (win) {
+              const newLevel = win.webContents.getZoomLevel() + 0.5;
               saveZoomLevel(newLevel);
               for (const win of BrowserWindow.getAllWindows()) {
                 win.webContents.setZoomLevel(newLevel);
@@ -13430,8 +13446,9 @@ app.whenReady().then(async () => {
           label: 'Zoom Out',
           accelerator: 'CmdOrCtrl+-',
           click: (_item, focusedWindow) => {
-            if (focusedWindow) {
-              const newLevel = focusedWindow.webContents.getZoomLevel() - 0.5;
+            const win = pageWindow(focusedWindow);
+            if (win) {
+              const newLevel = win.webContents.getZoomLevel() - 0.5;
               saveZoomLevel(newLevel);
               for (const win of BrowserWindow.getAllWindows()) {
                 win.webContents.setZoomLevel(newLevel);
