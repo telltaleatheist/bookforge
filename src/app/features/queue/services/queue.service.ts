@@ -703,12 +703,18 @@ export class QueueService {
    *
    * Consequence: no rate exists until the SECOND flush lands. That is correct — one
    * observation cannot time anything.
+   *
+   * "Set once, never moved" is scoped to ONE RUN. A stop-then-resume reuses the job id,
+   * and both halves of the anchor describe the run that stamped them, so an anchor
+   * carried across the gap times this session's chunks against a window that opened
+   * before the previous session ended. runJob clears the pair at every start; the
+   * belongs-to-this-run check below is the invariant that catches any other start path.
    */
   private firstChunkAnchor(
     job: QueueJob,
     sessionChunksDone: number
   ): { firstChunkCompletedAt?: number; chunksAtFirstStamp?: number } {
-    if (job.firstChunkCompletedAt !== undefined) {
+    if (job.firstChunkCompletedAt !== undefined && this.anchorIsFromThisRun(job)) {
       return {
         firstChunkCompletedAt: job.firstChunkCompletedAt,
         chunksAtFirstStamp: job.chunksAtFirstStamp,
@@ -716,6 +722,26 @@ export class QueueService {
     }
     if (sessionChunksDone <= 0) return {};
     return { firstChunkCompletedAt: Date.now(), chunksAtFirstStamp: sessionChunksDone };
+  }
+
+  /**
+   * Whether the stamped anchor was taken during the run executing NOW.
+   *
+   * An anchor marks a chunk completing, and a chunk cannot complete before the run that
+   * rendered it started — so a stamp older than startedAt is, by definition, a previous
+   * run's, and re-stamping is the only honest reading. This is a check on a fact the row
+   * already carries, not a guess about which run is which.
+   *
+   * (thirdreich, 2026-08-16: a job stopped mid-render and resumed kept the first run's
+   * anchor. The window then spanned run 1 + the whole stopped gap + run 2, while the
+   * numerator counted only the chunks run 2 had pushed past run 1's stamp — 1.3 chunks/min
+   * reported against ~25 actual, and a 14h 31m ETA on ~1,100 chunks remaining.)
+   */
+  private anchorIsFromThisRun(job: QueueJob): boolean {
+    // Progress is arriving, so the row is running and startedAt is stamped. If it somehow
+    // is not, there is nothing to compare against and no basis to discard the anchor.
+    if (!job.startedAt) return true;
+    return job.firstChunkCompletedAt! >= new Date(job.startedAt).getTime();
   }
 
   private handleLLJobProgressUpdate(jobId: string, progress: any): void {
@@ -3089,7 +3115,22 @@ export class QueueService {
       this.setLaneCurrent(job);
     }
 
-    // Update job status to processing
+    // Update job status to processing, and drop everything the PREVIOUS run measured.
+    //
+    // A stop-then-resume reuses the row, so these fields arrive describing a session that
+    // is over. Two of them do real damage rather than merely going stale:
+    //
+    //  - completedAt is stamped on every terminal outcome, a user stop included. Beside a
+    //    freshly-stamped startedAt it makes (completedAt - startedAt) negative, and
+    //    taskElapsedSeconds clamps that at zero — so a resumed job read "ELAPSED 0s" for
+    //    the rest of its life, and the run total read 0s with it.
+    //  - the rate anchor times chunks against the window it opened in. Kept across the
+    //    gap, that window covers the previous run and the stopped time too. See
+    //    anchorIsFromThisRun().
+    //
+    // The session accumulators are re-sent on every progress tick, but they are cleared
+    // here anyway so the row never holds a count from one run beside an anchor from
+    // another — the pairing is what the arithmetic depends on.
     this._jobs.update(jobs =>
       jobs.map(j => {
         if (j.id !== job.id) return j;
@@ -3097,10 +3138,25 @@ export class QueueService {
           ...j,
           status: 'processing' as JobStatus,
           startedAt: new Date(),
-          progress: 0
+          progress: 0,
+          completedAt: undefined,
+          firstChunkCompletedAt: undefined,
+          chunksAtFirstStamp: undefined,
+          chunksDoneInSession: undefined,
+          rawSentencesDoneInSession: undefined,
+          rawWordsDoneInSession: undefined,
+          rawCharsDoneInSession: undefined,
+          // Sampled from the rendered audio of ONE run, which is the whole claim the
+          // realtime factor makes. Absent until this run's probe has enough again — a
+          // state the readout already knows how to show.
+          audioSecondsPerChar: undefined,
         };
       })
     );
+    // The held rate sample re-derives itself once the anchor changes, but the stage and
+    // master-ETA caches are keyed on the job id alone and would otherwise keep counting
+    // down from the previous run.
+    this.jobEta.forget(job.id);
 
     // Persist the 'processing' status IMMEDIATELY (not on the 500ms debounce). If the
     // app is hard-killed/crashes early in a job, the saved state must show 'processing'
@@ -4961,7 +5017,16 @@ export class QueueService {
                   totalAssigned: (w as any).totalAssigned,
                   actualConversions: (w as any).actualConversions
                 })),
-                startedAt: new Date(session.startTime)
+                startedAt: new Date(session.startTime),
+                // Re-attaching to a session main reports as LIVE, so the row cannot hold a
+                // completion. A stale one (from the stop that preceded this run) would sit
+                // behind the startedAt above and freeze the elapsed timer at zero.
+                //
+                // The rate anchor is deliberately NOT cleared here: after a renderer reload
+                // the persisted anchor may belong to this very session and is worth more
+                // than a fresh one, and firstChunkAnchor() discards it if it predates
+                // session.startTime.
+                completedAt: undefined
               };
             })
           );
