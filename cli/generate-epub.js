@@ -286,11 +286,7 @@ async function convert(request) {
     console.warn(`[epub]   WARNING: ${result.unreadable.length} page(s) could NOT be read and are missing:`);
     for (const p of result.unreadable) console.warn(`[epub]     page ${p.page}: ${p.reason}`);
   }
-  if (result.newCopy) {
-    console.log(result.newCopy.refusal === null
-      ? `[epub]   it has a working chain of its own (${result.newCopy.familyId})`
-      : `[epub]   WARNING: it could NOT be given a working chain: ${result.newCopy.refusal}`);
-  }
+  console.log(`[epub]   it is registered as version ${result.variantId} of this book`);
 }
 
 async function main() {

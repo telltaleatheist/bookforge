@@ -843,12 +843,10 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
    * variants, so writing to `manifest.archive[]` would leave most projects with a
    * file and no row).
    *
-   * It DOES get a working chain of its own, as of 2026-08-10. Owen: "i do have
-   * different versions of books, and i want to be able to run adjustment chains
-   * on different versions." A second reading beside the first is exactly such a
-   * version, and a chain per archive file is what makes that sayable — so the
-   * file is registered as a variant AND given a chain, and the two acts are
-   * reported separately because the second can refuse while the first stands.
+   * It used to get a working chain of its own as well. Wave 1 (2026-08-16)
+   * retired that: the versions page is flat, chains are not minted and are not
+   * drawn, and a reading is a VERSION of this book — the variant record is the
+   * whole of what makes it reachable.
    */
   if (destination === 'new-copy') {
     // Named before it is registered. `addVariant` reads the FILENAME for the
@@ -881,38 +879,9 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     }
     const absPath = path.join(project.projectDir, added.variant.path.split('/').join(path.sep));
 
-    // ── And a chain of its own ────────────────────────────────────────────────
-    //
-    // The whole point of the second copy: a version the user can run their own
-    // adjustments on, with its own working copy, its own ledger, its own strikes
-    // and its own narration copy. `addBookFamily` is the one act that makes one,
-    // and the one place the naming rule is enforced.
-    //
-    // Its refusal is CARRIED BACK, not thrown: the reading succeeded and the
-    // file is in the project, so failing the whole conversion would tell the
-    // user their hour of GPU produced nothing when it produced a book. The
-    // sentence names which two files collide and what to rename, and the caller
-    // shows it verbatim.
-    let newCopy: VlmConvertResult['newCopy'];
-    try {
-      const chain = await manifestService.addBookFamily(
-        project.projectDir, { absPath, kind: 'archive-epub' });
-      newCopy = { familyId: chain.id, refusal: null };
-      console.log(
-        `[vlm-convert] ${path.basename(project.projectDir)}: the new reading ${added.variant.path} `
-        + `has its own working chain, ${chain.id}.`
-      );
-    } catch (err) {
-      newCopy = { familyId: null, refusal: (err as Error).message };
-      console.warn(
-        `[vlm-convert] ${path.basename(project.projectDir)}: ${added.variant.path} was added, but `
-        + `it could not be given a working chain: ${(err as Error).message}`
-      );
-    }
-
     console.log(
       `[vlm-convert] ${path.basename(project.projectDir)}: read the pages into a NEW archive file, `
-      + `${added.variant.path}. The project's book, its working copy and its ledger are untouched.`
+      + `${added.variant.path}, registered as version ${added.variantId}.`
     );
     return {
       endpoint: endpoint === null ? null : endpoint.url,
@@ -922,7 +891,7 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
       totalPages: totalPagesFrom(result.stderr) ?? 0,
       unreadable: unreadableEarly,
       skippedPages,
-      newCopy,
+      variantId: added.variant.id,
     };
   }
 
@@ -953,8 +922,41 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
       + 'can find it — run Convert to EPUB again once the project can be written to.'
     );
   }
-  const target = await manifestService.mintWorkingCopyFrom(
-    project.projectDir, { absPath: generated.absPath, kind: 'generated-epub' });
+  // ── And a VERSION of the book, which is the only door onto it ─────────────
+  //
+  // Wave 1 (2026-08-16): this used to be `mintWorkingCopyFrom`, which made the
+  // reading this project's book by giving it a working chain — and the chain's
+  // book line was the only place the reading was ever drawn. The versions page
+  // is flat now and draws manifest VARIANTS, so a reading registered nowhere
+  // else would be an hour of GPU the user cannot see, open, export or narrate.
+  //
+  // Named before it is registered, exactly as the new-copy branch names its
+  // own: `addVariant` parses the FILENAME for the version's title and author,
+  // and `<stem>.generated.epub` would put a container detail in the version's
+  // name. The stem is the archive original's, so the reading is titled the same
+  // as the book it was read out of. The `.generated.epub` record above stands
+  // and is untouched — it is what says these bytes are the page reader's output.
+  const staged = path.join(
+    path.dirname(stagedEpub),
+    `${path.basename(generatedTarget.absPath, '.generated.epub')}.epub`);
+  await fs.promises.copyFile(generated.absPath, staged);
+  const { addVariant } = await import('./library-actions.js');
+  const added = await addVariant(project.projectId, staged);
+  // `addVariant` COPIES into archive/, so the staging copy has served its
+  // purpose either way — leaving it behind would fill staging with whole books.
+  try { await fs.promises.rm(staged, { force: true }); } catch { /* staging */ }
+  if (!added.success || !added.variant) {
+    throw new Error(
+      `The pages were read and recorded, but the book could not be registered as a version of `
+      + `${path.basename(project.projectDir)}: ${added.error ?? 'no reason given'}. The reading is `
+      + `on disk at ${generated.relPath}; run Convert to EPUB again once the project can be `
+      + 'written to.'
+    );
+  }
+  const target = {
+    absPath: path.join(project.projectDir, added.variant.path.split('/').join(path.sep)),
+    relPath: added.variant.path,
+  };
 
   const unreadable = unreadablePagesFrom(result.stderr);
   const totalPages = totalPagesFrom(result.stderr) ?? 0;
@@ -987,10 +989,9 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     },
   },
   // Nothing to carry, and the word for that is `none`. A conversion is not a
-  // pass over a book: `mintWorkingCopyFrom` two lines up has just put a NEW
-  // book in the chain, and `registerEpubExport` inside it ended the old book's
-  // strike record with the book it described. There is no record here to
-  // re-stamp and none to leave alone.
+  // pass over a book: it puts a NEW book in the project rather than rewriting
+  // one that was already there. There is no record here to re-stamp and none to
+  // leave alone.
   { outcome: 'none' });
 
   return {
@@ -1001,6 +1002,7 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     totalPages,
     unreadable,
     skippedPages,
+    variantId: added.variant.id,
   };
   }
   }

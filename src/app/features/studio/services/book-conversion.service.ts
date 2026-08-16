@@ -73,6 +73,16 @@ export interface ConversionRun {
   from: ConversionSource;
   /** The row's own label, so every sentence names the file the user pressed. */
   sourceLabel: string;
+  /**
+   * WHICH version row started it, when the row that was pressed is one.
+   *
+   * The label is what every sentence says; this is what the PAGE matches on to
+   * decide which row draws the progress bar. Two versions of one book can share
+   * a title, and a bar drawn on the wrong row is a run attributed to a document
+   * it never read. Absent for a run started from a queue row, which no row on
+   * this page owns.
+   */
+  variantId?: string;
   /** Which GPU is reading the pages, in words. Known before the first page. */
   route: string;
   /** foundry's own line, verbatim. */
@@ -265,6 +275,7 @@ export class BookConversionService {
       projectDir: request.projectDir,
       from: request.from,
       sourceLabel: request.sourceLabel,
+      ...(request.variantId ? { variantId: request.variantId } : {}),
       route: vlmRouteLabel(route),
       message: 'Not started yet.',
       done: 0,
@@ -633,20 +644,13 @@ export class BookConversionService {
   private async finished(result: VlmConvertResult): Promise<void> {
     const where = result.endpoint === null ? 'this machine' : result.endpoint;
     const notes: string[] = [];
-    // The second reading's own working chain — its own working copy, ledger,
-    // strikes and narration copy. Said VERBATIM when it could not be made:
-    // `addBookFamily` refuses two sources whose files would share a name and
-    // names both, and that sentence tells the user what to rename. Swallowing it
-    // would leave a version in the project that cannot be edited and no reason
-    // anywhere on screen.
-    if (result.newCopy) {
-      notes.push(result.newCopy.refusal === null
-        ? 'It has a chain of its own — its own working copy, its own recorded passes and its own '
-          + 'narration copy — so you can run adjustments on this reading without touching the book '
-          + 'you have been editing.'
-        : 'It was added to the project, but it could NOT be given a working chain of its own, so '
-          + `it cannot be edited yet:\n${result.newCopy.refusal}`);
-    }
+    // WHERE it landed. Wave 1 (2026-08-16): a reading is registered as a VERSION
+    // of this book and nothing else — no working chain, no working copy, no
+    // narration cut — so the one thing worth saying is that the versions list is
+    // where to find it, and that Process on its row is how it gets narrated.
+    notes.push(
+      'It is on this book\'s versions list as a version of its own. Press Process on its row to '
+      + 'narrate it.');
     if (result.skippedPages.length > 0) {
       notes.push(
         `${result.skippedPages.length} page(s) you deleted in the working copy were left out: `
