@@ -524,6 +524,19 @@ export async function addVariant(
  * "+ Add version", the whole act: the variant record PLUS — for an EPUB — a
  * working chain of its own, cut ready to narrate.
  *
+ * ── RETIRED IN PLACE, Wave 1, 2026-08-16 ───────────────────────────────────
+ *
+ * NOTHING CALLS THIS ANY MORE. `variant:add` (electron/main.ts) and the CLI's
+ * `--add-version` (cli/library.js) both went back to plain `addVariant` when the
+ * versions page went flat: the Process button stands on the version row itself
+ * now and reads that row's own file, so an imported EPUB does not need — and
+ * must not silently acquire — a family, a working copy and a narration cut.
+ *
+ * It is left standing rather than deleted because the chain machinery it drives
+ * is still standing: deleting the chain half is a later wave, after the Foundry
+ * window is proven, and this function is one of the callers that has to go with
+ * it. Do not wire it back up.
+ *
  * Owen (2026-08-16): a book cleaned elsewhere (foundry's EPUB export) is
  * imported as a version and narrated as-is, so the version must carry the
  * Process button. That button lives on a chain's narration line and nowhere

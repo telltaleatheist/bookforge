@@ -1893,10 +1893,11 @@ export class ElectronService {
     if (this.isElectron) return (window as any).electron.variant.list(projectId);
     return { success: false, error: 'Not running in Electron' };
   }
-  /** An added EPUB version comes back with its own working chain (`familyId`),
-   *  or with `chainRefusal` saying why the variant stands without one. Audio and
-   *  non-EPUB versions carry neither field. */
-  async variantAdd(projectId: string, filePath: string): Promise<{ success: boolean; variantId?: string; variant?: any; error?: string; familyId?: string | null; chainRefusal?: string | null }> {
+  /** A file copied into the project's archive/ and recorded as a version of this
+   *  book. Wave 1 (2026-08-16) took the working chain back out of the act: an
+   *  added version is a file and a record, and the Process button stands on its
+   *  row rather than on a chain minted behind it. */
+  async variantAdd(projectId: string, filePath: string): Promise<{ success: boolean; variantId?: string; variant?: any; error?: string }> {
     if (this.isElectron) return (window as any).electron.variant.add(projectId, filePath);
     return { success: false, error: 'Not running in Electron' };
   }

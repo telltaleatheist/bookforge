@@ -140,15 +140,15 @@ function progressDone() { if (process.stderr.isTTY) process.stderr.write('\r' + 
       if (!fs.existsSync(src)) throw new Error(`No such file: ${src}`);
       if (args['dry-run']) { console.log(`  would add: ${path.basename(src)}`); continue; }
       // The same act the app's "+ Add version" performs (variant:add in
-      // electron/main.ts): an EPUB version also gets its own working chain and
-      // narration copy, so it can be narrated straight from the versions page.
-      const res = await libraryActions.addVariantWithChain(projectId, src, { onProgress: progress });
+      // electron/main.ts): the file is copied into archive/ and recorded as a
+      // version of this book. Wave 1 (2026-08-16) took the working chain back
+      // out of both doors — the Process button stands on the version row itself
+      // now, so an import mints no family, no working copy and no narration cut.
+      const res = await libraryActions.addVariant(projectId, src, { onProgress: progress });
       progressDone();
       if (!res.success) { console.error(`  FAILED  ${path.basename(src)}: ${res.error}`); failures++; continue; }
       const kind = res.variant.kind === 'audiobook' ? 'audiobook, professionally read' : res.variant.kind;
-      console.log(`  added   ${res.variant.path}   [${kind}]`);
-      if (res.familyId) console.log(`          working chain ${res.familyId} minted; narration copy cut`);
-      if (res.chainRefusal) console.error(`  NOTE    added without a working chain: ${res.chainRefusal}`);
+      console.log(`  added   ${res.variant.path}   [${kind}]   version ${res.variantId}`);
     }
     if (failures) process.exitCode = 1;
     return;

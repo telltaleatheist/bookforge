@@ -52,7 +52,7 @@ import { chapterOpeningRefusal } from '../shared/document/chapter-opening-report
 // A block's element key says which DOCUMENT it is in, which is the identity a
 // chapter is listed, renamed and struck by.
 import { parseNarrationElementKey } from '../shared/vlm/narration-deletions';
-import { addVariantWithChain, importAudiobookProject, saveVariantMetadata, setPrimaryVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
+import { addVariant, importAudiobookProject, saveVariantMetadata, setPrimaryVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
@@ -6706,13 +6706,16 @@ function setupIpcHandlers(): void {
   });
 
   ipcMain.handle('variant:add', async (_event, projectId: string, filePath: string) => {
-    // Body lives in library-actions.addVariantWithChain so the headless CLI
-    // exercises the identical path (see cli/library.js). This wrapper only
-    // supplies the renderer progress channel. An EPUB version comes back with
-    // its own working chain and narration copy — that is what puts the Process
-    // button on an imported version — and `chainRefusal` carries the sentence
-    // when the chain half could not be made while the variant stands.
-    return addVariantWithChain(projectId, filePath, { onProgress: emitImportProgress });
+    // Body lives in library-actions.addVariant so the headless CLI exercises the
+    // identical path (see cli/library.js). This wrapper only supplies the
+    // renderer progress channel.
+    //
+    // Wave 1 (2026-08-16): this used to call `addVariantWithChain`, which minted
+    // a working chain, a working copy and a narration cut behind every imported
+    // EPUB — the ladder the Process button used to stand on. The versions page
+    // is flat now and Process stands on the version row itself, so an import is
+    // an import: a file, a record, and nothing else.
+    return addVariant(projectId, filePath, { onProgress: emitImportProgress });
   });
 
   ipcMain.handle('variant:save-metadata', async (_event, projectId: string, variantId: string, meta: Record<string, unknown>, coverData?: string) => {
