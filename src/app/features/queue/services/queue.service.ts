@@ -54,6 +54,7 @@ import { buildConversionConfig, type VlmConvertJobConfig } from '../jobs/vlm-con
 import { isExplodedBookPath, WORKING_COPY_SUFFIX } from '@shared/document/book-path';
 import { StudioService } from '../../studio/services/studio.service';
 import { ElectronService } from '../../../core/services/electron.service';
+import { isStandaloneWindow } from '../../../core/window-role';
 
 /**
  * What a pass run performed HERE came to — `runProcessingRunNow`.
@@ -298,6 +299,16 @@ export class QueueService {
 
   private readonly _snapshot = signal<QueueSnapshot>({ jobs: [], running: false });
 
+  /**
+   * The engine's own shape, read-only.
+   *
+   * The tab reads `jobs` (the flattened master/child list it was written
+   * against); the top-bar tray reads THIS, because a run's steps and their
+   * lineage are exactly what it draws and flattening them only to regroup them
+   * would be the translation run backwards.
+   */
+  readonly snapshot = computed(() => this._snapshot());
+
   /** The queue as the tab reads it: master rows and their steps, in order. */
   readonly jobs = computed(() => projectJobs(this._snapshot().jobs));
   readonly isRunning = computed(() => this._snapshot().running);
@@ -365,9 +376,29 @@ export class QueueService {
   // the shelf are LIBRARY acts, and the handlers that perform them
   // (`audiobook:link-audio`, `audiobook:append-analytics`) are the ones every
   // other library surface calls. They hang off the engine's step-finished event
-  // rather than off a diff of two snapshots, so they happen exactly once.
+  // rather than off a diff of two snapshots, so they fire on the TRANSITION
+  // rather than on a state a second observer could re-derive.
+  //
+  // ── Once per EVENT, not once per WINDOW ─────────────────────────────────
+  //
+  // `jobs:step-finished` is broadcast to EVERY window, and this service is
+  // root-provided, so a Listen window holding a mirror runs this handler too. As
+  // written before this guard that meant `audiobook:link-audio` ran twice for
+  // one finished M4B — and that handler is not a no-op the second time: it
+  // re-scans for a sibling transcript and can start a second multi-gigabyte
+  // remux of a book that was already filed (the Nuremberg failure mode, see
+  // `audiobook:link-audio` in electron/main.ts).
+  //
+  // The main window is the one that files. Same guard, and for the same reason,
+  // as the component-upgrade watcher in `App.ngOnInit` — a standalone popup
+  // shares the shell and must not start a second copy of a once-per-app act.
+  // Filing was NOT moved into main: `studioService.reloadItem` is the third
+  // effect here and it is a renderer act by nature (it refreshes the shelf this
+  // window is showing), so moving the other two would split one consequence
+  // across two processes and leave this guard needed anyway.
 
   private async onStepFinished(event: StepFinishedEvent): Promise<void> {
+    if (isStandaloneWindow()) return;
     if (!event.success || !event.projectId) return;
     const electron = window.electron;
 
