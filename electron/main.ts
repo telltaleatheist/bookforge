@@ -52,7 +52,10 @@ import { chapterOpeningRefusal } from '../shared/document/chapter-opening-report
 // A block's element key says which DOCUMENT it is in, which is the identity a
 // chapter is listed, renamed and struck by.
 import { parseNarrationElementKey } from '../shared/vlm/narration-deletions';
-import { addFoundryOutputVariant, addVariant, importAudiobookProject, promoteVariantToArchive, saveVariantMetadata, setPrimaryVariant, setTtsVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
+import { addVariant, importAudiobookProject, promoteVariantToArchive, saveVariantMetadata, setPrimaryVariant, setTtsVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
+// The export-landing act, shared with the tray sweep that files the exports no
+// announcement ever caught — see electron/foundry-export-sweep.ts.
+import { FOUNDRY_EXPORT_KINDS, fileFoundryExportAsVersion, sweepFoundryExportTrays } from './foundry-export-sweep';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
@@ -688,11 +691,11 @@ async function recordFoundryExportLanding(landing: FoundryExportLanding): Promis
 
   const matchDir = matches[0]!.dir;
 
-  if (landing.kind !== 'epub' && landing.kind !== 'txt' && landing.kind !== 'pdf') {
+  if (!FOUNDRY_EXPORT_KINDS.includes(landing.kind)) {
     console.error(
       `[foundry-host] "${landing.title}" was exported as kind "${landing.kind}", which is not a `
-      + `kind the versions page holds (epub, txt, pdf). Nothing was recorded for `
-      + `${path.basename(matchDir)}.`);
+      + `kind the versions page holds (${FOUNDRY_EXPORT_KINDS.join(', ')}). Nothing was recorded `
+      + `for ${path.basename(matchDir)}.`);
     return;
   }
 
@@ -703,41 +706,11 @@ async function recordFoundryExportLanding(landing: FoundryExportLanding): Promis
   // absolute path and nothing more — where Foundry keeps its tray stopped being
   // this function's business.
 
-  // WHICH VERSION this export derives from, from the mapping the import wrote.
-  // Read here rather than remembered: the user can re-import a different version
-  // into the same Foundry project between two exports, and the parent is
-  // whatever the mapping says at the moment the file lands. Null when the
-  // mapping records none — the row then renders at top level rather than under a
-  // version this code picked for it.
-  let parentVariantId: string | null = null;
-  try {
-    const ref = await manifestService.readFoundryProjectRef(matchDir);
-    parentVariantId = ref?.sourceVariantId ?? null;
-  } catch (err) {
-    // The mapping is how the landing got here at all, so failing to re-read it
-    // is worth saying — but it costs the NESTING, not the version. The export is
-    // still filed; it simply sits at top level.
-    console.error(
-      `[foundry-host] "${landing.title}" is being filed for ${path.basename(matchDir)}, but which `
-      + `version it derives from could not be read: ${(err as Error).message}. It lands as a `
-      + 'top-level version.');
-  }
-
-  const landed = await addFoundryOutputVariant(
-    path.basename(matchDir),
-    landing.path,
-    { projectKey: key, fileName: path.basename(landing.path), parentVariantId },
-    landing.title,
-  );
-  if (!landed.success) {
-    console.error(
-      `[foundry-host] "${landing.title}" could not be added to ${path.basename(matchDir)} as a `
-      + `version: ${landed.error}. The file is where Foundry left it; nothing lists it.`);
-    return;
-  }
-  console.log(
-    `[foundry-host] "${landing.title}" ${landed.replaced ? 're-exported over' : 'landed as'} a `
-    + `version of ${path.basename(matchDir)} (output/, variant ${landed.variantId}).`);
+  // NOW, because Foundry has just this instant told us the file exists. The
+  // sweep is the caller that knows better than now(); this one does not.
+  const filed = await fileFoundryExportAsVersion(
+    matchDir, key, landing.path, landing.title, new Date().toISOString());
+  if (!filed) return;
   // Every window: the versions page can be open in more than one, the shelf is
   // drawn in another, and the row must appear where the user is rather than
   // where the export was started.
@@ -838,6 +811,96 @@ async function recordFoundryImportLanding(landing: FoundryImportLanding): Promis
   // The door's label is read from this mapping, so it flips from
   // "Import via Foundry" to "Edit in Foundry" without a reload.
   broadcastToAllWindows('foundry-host:project-changed', { projectDir: owner.dir });
+}
+
+/**
+ * EVERY EXPORT SITTING IN A TRAY, ON THE VERSIONS PAGE — this side's half of it.
+ *
+ * The reconcile itself is `sweepFoundryExportTrays` in
+ * electron/foundry-export-sweep.ts, which is where the reasoning lives and where
+ * the tests reach it. THIS wrapper is the two things the module deliberately
+ * refuses to know: WHERE the trays are (`foundryProjectsDir()`, off a library
+ * root the user can move mid-session — one derivation, and the module is handed
+ * the answer rather than repeating it) and WHO TO TELL (the same
+ * `foundry-host:versions-changed` broadcast the live landing sends, on the same
+ * channel with the same payload, so a versions page that is open updates
+ * identically whichever door a version came through).
+ *
+ * A library that cannot be listed at all is named in one line and nothing else
+ * happens — the exports already on the versions page are untouched, and the ones
+ * that never landed are still in their trays where Foundry left them. It is the
+ * only failure the module throws rather than steps over, precisely so it cannot
+ * be mistaken here for "a library with nothing to reconcile".
+ */
+async function reconcileFoundryExportTrays(occasion: string): Promise<void> {
+  try {
+    await sweepFoundryExportTrays(
+      foundryProjectsDir(),
+      occasion,
+      (bookDir) => broadcastToAllWindows('foundry-host:versions-changed', { projectDir: bookDir }),
+    );
+  } catch (err) {
+    console.error(
+      `[foundry-host] The export trays could not be reconciled (${occasion}): `
+      + `${(err as Error).message}. Exports already on the versions page are unaffected; ones `
+      + 'that never landed are still only in their trays.');
+  }
+}
+
+/**
+ * Open the Foundry window and RECONCILE WHEN IT CLOSES.
+ *
+ * ── Why the close is worth a sweep at all ──────────────────────────────────
+ *
+ * Startup alone reconciles a library that was already stale, but it cannot help
+ * the user who exports in the Foundry window, closes it, and looks at the
+ * versions page in the session they are already in — which is the entire shape
+ * of Owen's report. Closing the window is the moment the user is done in there
+ * and turns back to BookForge, so it is the moment to make sure BookForge agrees
+ * with what they just did.
+ *
+ * ── Why it is caught this way ──────────────────────────────────────────────
+ *
+ * THE SEAM OFFERS NO CLOSE NOTIFICATION. `FoundryHost` carries `onExport` and
+ * `onImport` and nothing else; `foundryBusy()` answers whether a window is open
+ * but only when asked, and asking repeatedly is a poll, which this is not.
+ * `foundry-app/` is a SEALED vendored subtree (see VENDORED.md) — adding a
+ * callback there would have to be made in the Foundry repo and re-copied — so
+ * the notification is taken from the place a host legitimately owns: Electron's
+ * own `browser-window-created`, armed for exactly the duration of the call that
+ * creates the window. `openWindow()` constructs the BrowserWindow
+ * synchronously (foundry-app/electron/window.ts), so the event has fired by the
+ * time `openFoundryWindow` returns and the listener is removed on the same tick;
+ * it can never catch one of BookForge's own windows.
+ *
+ * A press that RAISES the window already open creates nothing and captures
+ * nothing — correctly, because the press that first opened it already attached
+ * the handler, and `once('closed')` on the same window twice would sweep twice
+ * for one close.
+ */
+function openFoundryWindowAndReconcileOnClose(
+  projectDir?: string,
+  opts?: { document?: string },
+): void {
+  const created: BrowserWindow[] = [];
+  const capture = (_event: unknown, win: BrowserWindow): void => { created.push(win); };
+  app.once('browser-window-created', capture);
+  try {
+    foundryMount.openFoundryWindow(projectDir, opts);
+  } finally {
+    // Whatever happened above — including a throw — the listener does not
+    // outlive this call. An armed listener that leaked would attach a Foundry
+    // close handler to the next BookForge window somebody opened.
+    app.removeListener('browser-window-created', capture);
+  }
+  const win = created[0];
+  if (win === undefined) return;
+  win.once('closed', () => {
+    // The user has left Foundry. Anything it wrote while nobody was listening —
+    // an export whose announcement failed, or one made before this pipeline
+    // existed — becomes a version now, before they look at the versions page.
+    void reconcileFoundryExportTrays('when the Foundry window closed');
+  });
 }
 
 /**
@@ -7564,7 +7627,14 @@ function setupIpcHandlers(): void {
    * pushes `project:open` once the renderer is listening, and Foundry lands on
    * the step its ledger says the book stands on. A second press raises the
    * window that is already open rather than making another; that is Foundry's
-   * rule, not ours, and it is why nothing here tracks a window.
+   * rule, not ours.
+   *
+   * WHAT THIS SIDE DOES TRACK, and only this: whether the window has CLOSED, so
+   * the export trays can be reconciled with the versions pages the moment the
+   * user turns back to BookForge — see `openFoundryWindowAndReconcileOnClose`,
+   * which is the only reason the press goes through a wrapper rather than
+   * straight at `foundryMount.openFoundryWindow`. Nothing about the window's
+   * life is remembered beyond that one handler.
    *
    * A book WITHOUT one gets the BARE window — the Import-via-Foundry door. There
    * is no project to deep-link into, and one cannot be minted from this side:
@@ -7611,10 +7681,10 @@ function setupIpcHandlers(): void {
       await fs.mkdir(foundryProjectsDir(), { recursive: true });
       const key = await manifestService.readFoundryProject(projectDir);
       if (key === null) {
-        foundryMount.openFoundryWindow(undefined, document ? { document } : undefined);
+        openFoundryWindowAndReconcileOnClose(undefined, document ? { document } : undefined);
         return { success: true, opened: 'bare' as const };
       }
-      foundryMount.openFoundryWindow(
+      openFoundryWindowAndReconcileOnClose(
         path.join(foundryProjectsDir(), key),
         document ? { document } : undefined,
       );
@@ -13908,6 +13978,26 @@ app.whenReady().then(async () => {
     onImport: (landing) => { void recordFoundryImportLanding(landing); },
   });
   logger.info('Hosted Foundry mounted', { libraryDir: foundryDataRoot() });
+
+  // ── Reconcile the export trays with the versions pages ───────────────────
+  //
+  // HERE, and not a line earlier: the sweep reads `foundryProjectsDir()`, which
+  // hangs off the library root restored above, and it is the same reconcile the
+  // live `onExport` announcement performs — so it belongs immediately after the
+  // wiring that would have caught these files had anybody been listening when
+  // they landed. See electron/foundry-export-sweep.ts for what it will and will
+  // not do.
+  //
+  // BACKGROUND and NOT AWAITED, exactly as the editor-state sweep below is: it
+  // is a readdir per mapped book and a copy per unlanded export, the window must
+  // not wait behind it, and every problem it meets is logged by name and stepped
+  // over. Gated on a chosen library for the same reason that one is — before a
+  // library exists there are no manifests to reconcile and no tray to read, and
+  // listing one would mkdir a projects folder in a location the user has not
+  // picked yet.
+  if (customLibraryRoot) {
+    void reconcileFoundryExportTrays('at startup');
+  }
 
   // ── Move every project's editor state out of its manifest ────────────────
   //

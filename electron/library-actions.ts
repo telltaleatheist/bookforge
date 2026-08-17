@@ -572,8 +572,19 @@ export async function addVariant(
   }
 }
 
-/** The one comparison that decides whether two landings name the same export. */
-function sameFoundryExportFile(a: string, b: string): boolean {
+/**
+ * The one comparison that decides whether two landings name the same export.
+ *
+ * EXPORTED because a second reader of this identity exists: the startup sweep
+ * (`sweepFoundryExportTrays`, electron/main.ts) decides which files in a tray
+ * are already on the versions page, and it must answer that question with
+ * exactly the predicate `addFoundryOutputVariant` would — a sweep that judged
+ * "already landed" more loosely would skip a file this function would have
+ * added, and one that judged it more strictly would hand back a file this
+ * function then REPLACES IN PLACE, silently overwriting a version's bytes and
+ * its landedAt on nothing more than an app restart. One comparison, one answer.
+ */
+export function sameFoundryExportFile(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
 
@@ -617,11 +628,30 @@ function sameFoundryExportFile(a: string, b: string): boolean {
  * was imported into Foundry is the ordinary result of exporting an unedited
  * book, and refusing it would mean the export the user just made never appears.
  * Same bytes under different provenance is a legitimate pair of rows.
+ *
+ * ── `landedAt` IS THE CALLER'S TO STATE, AND IT IS NOT ALWAYS NOW ───────────
+ *
+ * This function used to stamp `new Date()`, which was right while the only
+ * caller was the live announcement — Foundry says "this landed" the instant it
+ * lands, so now IS when. The startup sweep (`sweepFoundryExportTrays`,
+ * electron/main.ts) reads trays that have been sitting there since before this
+ * pipeline existed, and for those files the truth available is the file's own
+ * mtime. A default of now() would have let a sweep on any morning re-date every
+ * old export to that morning — and `landedAt` is what orders "the newest export"
+ * for the shelf's Process button, so the whole library would have claimed to
+ * have been exported the day it was first swept. So there is no default: both
+ * callers say when, because only they know.
  */
 export async function addFoundryOutputVariant(
   projectId: string,
   filePath: string,
-  provenance: { projectKey: string; fileName: string; parentVariantId: string | null },
+  provenance: {
+    projectKey: string;
+    fileName: string;
+    parentVariantId: string | null;
+    /** When this export APPEARED — now() for a live landing, the file's mtime for a swept one. */
+    landedAt: string;
+  },
   landingTitle: string,
 ): Promise<{ success: boolean; variantId?: string; replaced?: boolean; error?: string }> {
   try {
@@ -629,7 +659,7 @@ export async function addFoundryOutputVariant(
     const got0 = await manifestService.getManifest(projectId);
     if (!got0.manifest) return { success: false, error: 'Project not found' };
     const hash = await sha256File(filePath);
-    const landedAt = new Date().toISOString();
+    const landedAt = provenance.landedAt;
 
     const existing = manifestService.getVariants(got0.manifest).variants.find((v) =>
       !!v.foundrySource

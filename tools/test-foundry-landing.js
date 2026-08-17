@@ -2,9 +2,10 @@
 /**
  * Tests for what happens when Foundry exports a file for a book —
  * `addFoundryOutputVariant` and `promoteVariantToArchive` in
- * electron/library-actions.ts, plus the shelf's Process target and the TTS mark
- * in electron/manifest-service.ts. Against a REAL project directory on disk, in
- * a temp library.
+ * electron/library-actions.ts, the tray reconcile in
+ * electron/foundry-export-sweep.ts, plus the shelf's Process target and the TTS
+ * mark in electron/manifest-service.ts. Against a REAL project directory on
+ * disk, in a temp library.
  *
  *   npx tsc -p tsconfig.electron.json && node tools/test-foundry-landing.js
  *
@@ -31,6 +32,14 @@
  *    newest export, then a sole EPUB — and is ABSENT when the book has several
  *    EPUBs and no answer. Absent is the point: guessing would narrate whichever
  *    version sorted first.
+ *  - THE SWEEP RECONCILES AND NOTHING MORE. Owen, later the same day: "if theres
+ *    an exported doc in the foundry window, it should show in the versions
+ *    window too" — so an export nobody announced becomes a version, dated by the
+ *    file's own mtime rather than by the morning it was swept. And, the half
+ *    that is easier to get wrong: a file that IS already a version is skipped
+ *    outright, never handed to the re-export branch, because that branch
+ *    overwrites bytes and re-stamps `landedAt` — a sweep must be invisible to a
+ *    library that is already correct.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -40,7 +49,8 @@ const path = require('path');
 const REPO = path.resolve(__dirname, '..');
 const MANIFEST = path.join(REPO, 'dist', 'electron', 'manifest-service.js');
 const ACTIONS = path.join(REPO, 'dist', 'electron', 'library-actions.js');
-if (!fs.existsSync(MANIFEST) || !fs.existsSync(ACTIONS)) {
+const SWEEP = path.join(REPO, 'dist', 'electron', 'foundry-export-sweep.js');
+if (!fs.existsSync(MANIFEST) || !fs.existsSync(ACTIONS) || !fs.existsSync(SWEEP)) {
   console.error('Compile first: npx tsc -p tsconfig.electron.json');
   process.exit(1);
 }
@@ -55,6 +65,9 @@ if (!process.env.BOOKFORGE_USERDATA_DIR) {
 require(path.join(REPO, 'cli', 'electron-stub.js'));
 const manifestService = require(MANIFEST);
 const actions = require(ACTIONS);
+// The sweep is a sibling module rather than a function in main.ts precisely so
+// it can be reached from here — the Electron entry point cannot be required.
+const sweepModule = require(SWEEP);
 
 let passed = 0;
 const failures = [];
@@ -64,8 +77,14 @@ const test = (name, fn) => tests.push({ name, fn });
 const PROJECT_ID = 'Test_Book_-_A_Author_-_1999';
 const KEY = 'test-book';
 
-/** A project holding whatever variants the test needs, plus Foundry's tray. */
-function makeProject(variants = []) {
+/**
+ * A project holding whatever variants the test needs, plus Foundry's tray.
+ *
+ * `extra` is merged into the manifest — the sweep tests use it to say which
+ * version was imported into the Foundry project (`foundryProject.sourceVariantId`),
+ * and one of them uses it to take the mapping away entirely.
+ */
+function makeProject(variants = [], extra = {}) {
   const library = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-foundry-landing-'));
   const projectDir = path.join(library, 'projects', PROJECT_ID);
   fs.mkdirSync(path.join(projectDir, 'archive'), { recursive: true });
@@ -76,8 +95,13 @@ function makeProject(variants = []) {
     projectType: 'book',
     metadata: { title: 'Test Book', author: 'A Author', year: '1999' },
     variants,
+    // A book Foundry has exported for HAS a mapping — that is how the export
+    // reached it — so every project here carries one. The sweep visits books by
+    // this field and no other, so it is also what the mapping-less test removes.
+    foundryProject: { dir: KEY },
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),
+    ...extra,
   };
   fs.writeFileSync(path.join(projectDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
   manifestService.setLibraryBasePath(library);
@@ -101,8 +125,8 @@ function makeProject(variants = []) {
   };
 }
 
-const run = (fn, variants) => async () => {
-  const p = makeProject(variants);
+const run = (fn, variants, extra) => async () => {
+  const p = makeProject(variants, extra);
   try { await fn(p); } finally { p.cleanup(); }
 };
 
@@ -116,8 +140,30 @@ function ebookVariant(id, name) {
 
 const land = (p, srcAbs, over = {}) => actions.addFoundryOutputVariant(
   PROJECT_ID, srcAbs,
-  { projectKey: KEY, fileName: path.basename(srcAbs), parentVariantId: null, ...over },
+  {
+    projectKey: KEY,
+    fileName: path.basename(srcAbs),
+    parentVariantId: null,
+    // The live path's answer. There is no default inside the function — the
+    // sweep's answer is the file's mtime, and a hidden now() would have let a
+    // sweep re-date the library to the morning it ran.
+    landedAt: new Date().toISOString(),
+    ...over,
+  },
   over.title || 'Test Book (cleaned)');
+
+/**
+ * Run the reconcile over this temp library, collecting the per-project change
+ * notices main.ts turns into `foundry-host:versions-changed` broadcasts.
+ */
+const sweep = async (p) => {
+  const changed = [];
+  const result = await sweepModule.sweepFoundryExportTrays(
+    path.join(p.library, 'foundry', 'projects'),
+    'in a test',
+    (bookDir) => changed.push(bookDir));
+  return { ...result, changed };
+};
 
 // ── Landing ────────────────────────────────────────────────────────────────
 
@@ -211,6 +257,185 @@ test('the same file name from ANOTHER foundry project is its own version', run(a
   const b = await land(p, src, { projectKey: 'some-other-project' });
   assert.notStrictEqual(a.variantId, b.variantId,
     'the key is half the identity: two projects can both export "Test Book.epub"');
+}));
+
+// ── The tray sweep ─────────────────────────────────────────────────────────
+//
+// The backstop for exports no live announcement ever caught: everything made
+// before this pipeline existed, and anything whose `onExport` was missed. The
+// tray is the truth; these pin that the manifest is brought up to it and that
+// nothing else about the library moves.
+
+test('an export nobody announced becomes a version', run(async (p) => {
+  p.exportFile('Test Book.epub', 'NEVER ANNOUNCED');
+
+  const res = await sweep(p);
+  assert.strictEqual(res.landed, 1, 'the file in the tray is a version now');
+  assert.strictEqual(res.refused, 0);
+  assert.deepStrictEqual(res.changed, [p.projectDir],
+    'the versions page is told once, for this project');
+
+  const v = p.variants().find((x) => !!x.foundrySource);
+  assert.ok(v, 'a variant carrying the provenance exists');
+  assert.ok(v.path.startsWith('output/'), `lands in output/, not ${v.path}`);
+  assert.strictEqual(fs.readFileSync(p.abs(v.path), 'utf-8'), 'NEVER ANNOUNCED');
+  assert.strictEqual(v.foundrySource.projectKey, KEY);
+  assert.strictEqual(v.foundrySource.fileName, 'Test Book.epub');
+  assert.strictEqual(v.descriptor, 'Test Book.epub',
+    "the row is named the file's own name — the same thing Foundry's landing would have called it");
+  assert.ok(fs.existsSync(path.join(p.tray, 'Test Book.epub')),
+    "Foundry's tray is not ours to empty");
+}));
+
+test('a swept export is dated by the FILE, not by the morning it was swept', run(async (p) => {
+  const src = p.exportFile('Test Book.epub', 'OLD');
+  const when = new Date('2026-03-04T05:06:07.000Z');
+  fs.utimesSync(src, when, when);
+
+  await sweep(p);
+
+  const v = p.variants().find((x) => !!x.foundrySource);
+  assert.strictEqual(v.foundrySource.landedAt, when.toISOString(),
+    'now() here would re-date the whole library and reorder every "newest export"');
+  assert.strictEqual(v.addedAt, when.toISOString(),
+    'the row appeared when the file did, by the same reasoning');
+}));
+
+test('a file that is already a version is skipped — a sweep NEVER replaces', run(async (p) => {
+  const src = p.exportFile('Test Book.epub', 'FIRST');
+  const landed = await land(p, src);
+  const v0 = p.variants().find((x) => x.id === landed.variantId);
+
+  // The tray file changes underneath — which is exactly what a re-export looks
+  // like, and exactly what a sweep must NOT act on. Only the user's own export
+  // gets to overwrite a version's bytes.
+  fs.writeFileSync(src, 'CHANGED IN THE TRAY');
+
+  const res = await sweep(p);
+  assert.strictEqual(res.landed, 0, 'nothing to reconcile — this file is already listed');
+  assert.deepStrictEqual(res.changed, [], 'and nothing to announce, so no redraw');
+
+  const v1 = p.variants().find((x) => x.id === landed.variantId);
+  assert.strictEqual(p.variants().filter((x) => !!x.foundrySource).length, 1,
+    'no second row for the same file');
+  assert.strictEqual(v1.path, v0.path);
+  assert.strictEqual(fs.readFileSync(p.abs(v1.path), 'utf-8'), 'FIRST',
+    'the replace-in-place branch was never reached — the version keeps its bytes');
+  assert.strictEqual(v1.foundrySource.landedAt, v0.foundrySource.landedAt,
+    're-stamping landedAt on a restart would reorder the shelf behind the sweep');
+}));
+
+test('the already-landed check is case-insensitive on the file name', run(async (p) => {
+  // The identity the re-export branch matches on is (projectKey, fileName) with
+  // the name compared case-insensitively. A sweep that compared it exactly would
+  // hand this file back to that branch and silently overwrite the version.
+  const src = p.exportFile('Test Book.epub', 'BYTES');
+  await land(p, src, { fileName: 'TEST BOOK.EPUB' });
+
+  const res = await sweep(p);
+  assert.strictEqual(res.landed, 0, 'same file, different casing — already listed');
+  assert.strictEqual(p.variants().filter((x) => !!x.foundrySource).length, 1);
+}));
+
+test('a foreign extension in the tray is ignored', run(async (p) => {
+  // Foundry's tray holds what Foundry puts there. Only the kinds the versions
+  // page holds are exports: epub, txt, pdf.
+  p.exportFile('notes.md', 'X');
+  p.exportFile('proof.png', 'X');
+  p.exportFile('.gitkeep', '');
+
+  const res = await sweep(p);
+  assert.strictEqual(res.landed, 0);
+  assert.strictEqual(res.refused, 0, 'not a refusal — simply not an export');
+  assert.strictEqual(p.variants().filter((x) => !!x.foundrySource).length, 0);
+}));
+
+test('every kind the versions page holds is swept, and only those', run(async (p) => {
+  p.exportFile('Book.epub', 'A');
+  p.exportFile('Book.txt', 'B');
+  p.exportFile('Book.pdf', 'C');
+  p.exportFile('Book.docx', 'D');
+
+  const res = await sweep(p);
+  assert.strictEqual(res.landed, 3, 'epub, txt and pdf — the docx is not an export');
+  assert.deepStrictEqual(
+    p.variants().filter((x) => !!x.foundrySource).map((x) => x.format).sort(),
+    ['epub', 'pdf', 'txt']);
+}));
+
+test('a book whose Foundry project has no tray yet is a no-op, not a failure', run(async (p) => {
+  // The common case by far: a book opened in Foundry but never exported from,
+  // and a library whose foundry data has not synced to this machine. Nothing to
+  // reconcile is not a failure to reconcile.
+  fs.rmSync(p.tray, { recursive: true, force: true });
+
+  const res = await sweep(p);
+  assert.strictEqual(res.landed, 0);
+  assert.strictEqual(res.refused, 0, 'a missing final/ is a real answer');
+  assert.strictEqual(res.booksVisited, 0, 'there was no tray to read');
+  assert.deepStrictEqual(res.changed, []);
+}));
+
+test('a Foundry project directory that is missing entirely is the same no-op', run(async (p) => {
+  fs.rmSync(path.join(p.library, 'foundry'), { recursive: true, force: true });
+  const res = await sweep(p);
+  assert.strictEqual(res.landed, 0);
+  assert.strictEqual(res.refused, 0);
+}));
+
+test('a book with no Foundry mapping is never visited', run(async (p) => {
+  // Only `foundryProject` says which tray belongs to which book. A tray under a
+  // key no book claims is left entirely alone — guessing its owner is the thing
+  // the import announcement exists to avoid.
+  p.exportFile('Test Book.epub', 'X');
+  const m = p.read();
+  delete m.foundryProject;
+  fs.writeFileSync(path.join(p.projectDir, 'manifest.json'), JSON.stringify(m, null, 2));
+
+  const res = await sweep(p);
+  assert.strictEqual(res.booksVisited, 0);
+  assert.strictEqual(res.landed, 0);
+  assert.strictEqual(p.variants().filter((x) => !!x.foundrySource).length, 0);
+}));
+
+test('a swept export nests under the version the mapping names', run(async (p) => {
+  // Same derivation the live landing uses: the parent is whatever
+  // `foundryProject.sourceVariantId` says at the moment the file is filed, never
+  // inferred from the export's contents.
+  p.exportFile('Test Book.epub', 'X');
+  await sweep(p);
+  const v = p.variants().find((x) => !!x.foundrySource);
+  assert.strictEqual(v.foundrySource.parentVariantId, 'parent-1');
+}, [ebookVariant('parent-1', 'orig.epub')], { foundryProject: { dir: KEY, sourceVariantId: 'parent-1' } }));
+
+test('a mapping naming no source version lands the export at top level', run(async (p) => {
+  p.exportFile('Test Book.epub', 'X');
+  await sweep(p);
+  const v = p.variants().find((x) => !!x.foundrySource);
+  assert.strictEqual(v.foundrySource.parentVariantId, null,
+    'no source is a real answer, and it renders at top level rather than under a guess');
+}));
+
+test('one entry that is not a file does not cost the rest of the tray', run(async (p) => {
+  // A directory named like an export. It is skipped and the sweep carries on —
+  // one bad entry must never abort a tray.
+  fs.mkdirSync(path.join(p.tray, 'Draft.epub'));
+  p.exportFile('Real.epub', 'REAL');
+
+  const res = await sweep(p);
+  assert.strictEqual(res.landed, 1, 'the real export still landed');
+  const v = p.variants().find((x) => !!x.foundrySource);
+  assert.strictEqual(v.foundrySource.fileName, 'Real.epub');
+}));
+
+test('sweeping twice changes nothing the second time', run(async (p) => {
+  p.exportFile('Test Book.epub', 'X');
+  const first = await sweep(p);
+  const second = await sweep(p);
+  assert.strictEqual(first.landed, 1);
+  assert.strictEqual(second.landed, 0, 'a reconciled library is invisible to the next sweep');
+  assert.deepStrictEqual(second.changed, [], 'and nothing is redrawn on every startup');
+  assert.strictEqual(p.variants().filter((x) => !!x.foundrySource).length, 1);
 }));
 
 // ── Add to archive ─────────────────────────────────────────────────────────
