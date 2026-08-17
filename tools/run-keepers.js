@@ -41,6 +41,8 @@ const SUITES = [
   'test-foundry-landing',
   'test-legacy-migration',
   'test-ipc-collision',
+  'test-derivation-cache',
+  'test-versions-page-data',
 ];
 
 let failed = 0;
