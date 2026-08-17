@@ -473,7 +473,11 @@ export class BookshelfServer {
       this.userDataPath = config.userDataPath;
     }
 
-    // Load persistent caches + library config
+    // Load persistent caches + library config. The alias map is dropped rather
+    // than carried across a restart: the id migration is run with the app
+    // closed, so "start the server again" has to be a working way to pick its
+    // work up, not something you wait out.
+    this.aliasCache = null;
     this.loadBookshelfConfig();
     await this.loadDurationCache();
     this.initReaderStore();
@@ -1941,8 +1945,11 @@ export class BookshelfServer {
    */
   private analyticsBookKey(absPath: string): string {
     if (!absPath) return '';
-    const anchor = anchorForAbsolutePath(absPath);
-    return anchor ? variantKey(anchor.projectId, anchor.variantId) : this.relBookKey(absPath);
+    // Same resolution the per-book stores use, stale paths and all — a replayed
+    // heartbeat must credit the book, not a ghost of where it used to live.
+    const key = this.positionKeyFrom('', absPath);
+    if (key && isVariantKey(key)) return key;
+    return this.relBookKey(absPath);
   }
 
   /** An analytics bookKey off any log (old bare path or new variant key) → the
@@ -2001,10 +2008,18 @@ export class BookshelfServer {
     if (!bookPath) return null;
     const anchor = anchorForAbsolutePath(bookPath);
     if (anchor) return variantKey(anchor.projectId, anchor.variantId);
-    // No variant claims this file — an external m4b, or one no manifest points
-    // at. The path really is all we know about it, so the path-form key stays
-    // its key. That is not a fallback: there is no anchor to anchor to.
-    return legacyAudioKey(bookPath);
+    // No variant claims this file today. That is routinely a STALE PATH rather
+    // than an unknown book: a phone flushing an offline queue replays the path
+    // it captured, and the file has since been moved into archive/. Run it
+    // through the alias map, which is exact — the migration recorded where that
+    // path went. Without this, an offline replay mints a fresh orphan under the
+    // very key everything else just stopped using.
+    const canonical = this.canonicalKey(legacyAudioKey(bookPath));
+    if (isVariantKey(canonical)) return canonical;
+    // Genuinely unknown — an external m4b, or one no manifest points at. The
+    // path really is all we know about it, so the path-form key stays its key.
+    // That is not a fallback: there is no anchor to anchor to.
+    return canonical;
   }
 
   /** Any id form → the canonical key. Unresolvable ids pass through verbatim so
