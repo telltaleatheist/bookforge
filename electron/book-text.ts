@@ -104,7 +104,7 @@ export async function setBookBlockText(
   newText: string,
   familyId?: string,
 ): Promise<BookBlockTextResult> {
-  const book = await manifestService.readExportEpub(projectDir, familyId);
+  const book = await manifestService.bookForAct(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) {
     throw new Error(
       `${path.basename(projectDir)} has no working copy on disk, so there is no book to correct. `

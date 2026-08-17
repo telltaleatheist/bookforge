@@ -130,7 +130,7 @@ async function resolveSource(
     return abs;
   }
 
-  const record = await manifestService.readExportEpub(projectDir);
+  const record = await manifestService.bookForAct(projectDir);
   if (!record) {
     throw new Error(
       'This project has no book EPUB yet, so there is nothing for these passes to read. '

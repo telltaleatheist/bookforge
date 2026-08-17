@@ -115,7 +115,7 @@ export async function registerLedgerPass(
   projectDir: string,
   registration: LedgerPassRegistration
 ): Promise<LedgerRegistration> {
-  const book = await manifestService.readExportEpub(projectDir);
+  const book = await manifestService.bookForAct(projectDir);
   if (book === null || !fs.existsSync(book.absPath)) {
     return {
       entry: null,

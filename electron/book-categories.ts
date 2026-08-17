@@ -139,7 +139,7 @@ export async function setBookBlockCategories(
   requests: readonly BookElementCategoryRequest[],
   familyId?: string,
 ): Promise<BookBlockCategoriesResult> {
-  const book = await manifestService.readExportEpub(projectDir, familyId);
+  const book = await manifestService.bookForAct(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) {
     throw new Error(
       `${path.basename(projectDir)} has no working copy on disk, so there is no book to say what `

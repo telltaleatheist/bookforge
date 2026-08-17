@@ -139,7 +139,7 @@ export async function insertBookChapterHeading(
   title: string,
   familyId?: string,
 ): Promise<BookChapterHeadingInsertResult> {
-  const book = await manifestService.readExportEpub(projectDir, familyId);
+  const book = await manifestService.bookForAct(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) {
     throw new Error(
       `${path.basename(projectDir)} has no working copy on disk, so there is no book to insert a `
@@ -242,7 +242,7 @@ export async function removeBookInsertedHeading(
   elementKey: NarrationElementKey,
   familyId?: string,
 ): Promise<BookInsertedHeadingRemovalResult> {
-  const book = await manifestService.readExportEpub(projectDir, familyId);
+  const book = await manifestService.bookForAct(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) {
     throw new Error(
       `${path.basename(projectDir)} has no working copy on disk, so there is no book to remove a `

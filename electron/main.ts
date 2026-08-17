@@ -11036,9 +11036,12 @@ function setupIpcHandlers(): void {
   // this handler had no other caller in the app, the CLI or the tools.
   //
   // The two migrations it opened with (`ensureGeneratedEpub`, `ensureBookFamilies`)
-  // are not lost with it: `pass:list-diffs` runs them through
-  // `familyForListing`, on the same page load, and that is where a legacy project
-  // gets its chain minted now.
+  // do NOT move to another read to replace it. They briefly did — `pass:list-diffs`
+  // ran them through `familyForListing` — and the result was that drawing the
+  // versions page rewrote four projects' manifests, which is what
+  // `familyForListing` now refuses to do. A legacy project is adopted at an ACT:
+  // `requireFamily` at every write, `bookForAct` at the read an act makes just
+  // before one.
 
   // Save EPUB to a user-chosen location via Save As dialog
   // No library restriction — intended for exporting EPUBs for external use

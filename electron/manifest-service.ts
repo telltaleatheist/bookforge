@@ -1208,6 +1208,37 @@ export async function readExportEpub(
 }
 
 /**
+ * The same answer for a caller that is about to ACT on the book, with the
+ * legacy adoption run first.
+ *
+ * ── Why an act cannot just call `readExportEpub` ────────────────────────────
+ *
+ * A project made before working chains has its book at `outputs.epub`, and
+ * `ensureBookFamilies` is what moves it under a chain. That migration used to
+ * happen inside `familyForListing`, so every reader triggered it — which is
+ * exactly why drawing the versions page rewrote four manifests. Listings are
+ * pure now, and the migration lives where a write belongs: at an act.
+ *
+ * `requireFamily` runs it at the one chokepoint every WRITE goes through, so
+ * the record an act leaves lands on a real chain. But an act reads the book
+ * BEFORE it writes anything — "which file am I about to rewrite" — and a
+ * listing read of a project that has not been adopted yet answers "no book",
+ * which is how a legacy project came to be told it had nothing to cut a
+ * narration copy from while its book sat there in `outputs.epub`.
+ *
+ * So: adopt, then read. Idempotent and cheap — a project that already has a
+ * chain costs one manifest read and returns — and never called from a listing,
+ * which is the whole distinction this pair exists to draw.
+ */
+export async function bookForAct(
+  projectDir: string,
+  familyId?: string
+): Promise<ExportEpubLocation | null> {
+  await ensureBookFamilies(projectDir);
+  return readExportEpub(projectDir, familyId);
+}
+
+/**
  * Where a cast book is written: `source/<archive basename>.generated.epub`.
  *
  * Same stem as the working copy and derived through the same
@@ -2192,23 +2223,36 @@ export async function requireFamily(
  * what's been done to this book could not be read" in red over exactly that
  * state, which `FamiliesAdoption.refusal` documents as NOT an exception.
  *
- * Null ONLY when no chain exists, none can be minted, and none was asked for
- * by name. A caller that names a family is asking about a specific chain, and
- * a named chain that is not there is still an error — `requireFamily`'s, with
- * its alternatives.
+ * Null ONLY when no chain is recorded and none was asked for by name. A caller
+ * that names a family is asking about a specific chain, and a named chain that
+ * is not there is still an error — `resolveFamily`'s, with its alternatives.
+ *
+ * ── A LISTING NEVER WRITES ──────────────────────────────────────────────────
+ *
+ * This went through `requireFamily`, which mints a chain for a legacy project at
+ * the chokepoint. That made every read a write: opening the versions page ran
+ * `pass:list-diffs` and the reset preview, and four projects' manifests were
+ * rewritten by the act of being LOOKED AT (measured 2026-08-17). A read that
+ * writes is a read that can fail, that takes the manifest lock, that invents a
+ * record nobody asked for, and that reorders itself against a concurrent act.
+ *
+ * So absence is the answer here, and it is a true one: a project with no chain
+ * recorded has had nothing done to a book, which is exactly what the listing
+ * reports. The adoption of a legacy project is not lost — `requireFamily` runs
+ * it at every WRITE, and `bookForAct` runs it for the read an act makes just
+ * before one. Both are acts. Neither is a listing.
  */
 export async function familyForListing(
   projectDir: string,
   familyId?: string
 ): Promise<ResolvedFamily | null> {
-  if (familyId === undefined) {
-    const manifest = await readManifestAt(projectDir);
-    if ((manifest.families ?? []).length === 0
-      && (await ensureBookFamilies(projectDir)).refusal !== null) {
-      return null;
-    }
-  }
-  return requireFamily(projectDir, familyId);
+  const manifest = await readManifestAt(projectDir);
+  const families = manifest.families ?? [];
+  if (familyId === undefined && families.length === 0) return null;
+
+  const answer = resolveFamily(families, familyId, path.basename(projectDir));
+  if (answer.refusal !== null) throw new Error(answer.refusal);
+  return { manifest, family: answer.family };
 }
 
 /**

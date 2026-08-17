@@ -292,6 +292,43 @@ test('a legacy project is given ONE chain, off the book it already answered with
     'the migration rewrote the working copy');
 });
 
+test('A LISTING NEVER MINTS: reading a legacy project leaves its manifest alone', async () => {
+  const dir = await makeLegacyProject('listing-never-mints');
+  const before = fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8');
+
+  // Everything the versions page fires on open, and every other pure read that
+  // resolves through `familyForListing`. Not one of them may write: opening a
+  // page rewrote four projects' manifests when these went through the act's
+  // chokepoint (measured 2026-08-17), and a read that writes is a read that can
+  // fail, take the lock, and race an act.
+  assert.deepStrictEqual(await manifestService.listPassDiffs(dir), []);
+  assert.deepStrictEqual(await manifestService.readAppliedPasses(dir), []);
+  assert.deepStrictEqual(await manifestService.readBookLedger(dir), []);
+  assert.strictEqual(await manifestService.readExportEpub(dir), null);
+  assert.strictEqual(await manifestService.readNarrationEpub(dir), null);
+  assert.strictEqual(await manifestService.familyForListing(dir), null);
+  assert.strictEqual(await manifestService.familyForOpen(dir, undefined), null);
+
+  assert.strictEqual(
+    fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'), before,
+    'a read wrote to the manifest — byte for byte, it must be the file it was');
+  assert.strictEqual(familiesOf(dir).length, 0, 'a read minted a chain');
+});
+
+test('AN ACT STILL ADOPTS: the book a legacy project is about is found and minted', async () => {
+  const dir = await makeLegacyProject('act-adopts');
+  assert.strictEqual(familiesOf(dir).length, 0, 'the fixture is not legacy');
+
+  // `bookForAct` is the door an act uses to find the file it is about to
+  // rewrite. The adoption the listings no longer do happens HERE, where a write
+  // belongs — so a legacy project is never told it has no book while its book
+  // sits in `outputs.epub`.
+  const book = await manifestService.bookForAct(dir);
+  assert.ok(book, 'the act could not find the legacy project\'s book');
+  assert.strictEqual(book.relPath, 'source/Killing America.working.epub');
+  assert.strictEqual(familiesOf(dir).length, 1, 'the act left the project unadopted');
+});
+
 test('the migration is idempotent — a second run mints nothing and moves nothing', async () => {
   const dir = await makeLegacyProject('legacy-idempotent');
   const first = await manifestService.ensureBookFamilies(dir);

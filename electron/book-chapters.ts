@@ -1632,7 +1632,7 @@ export async function renameBookChapter(
     );
   }
 
-  const book = await manifestService.readExportEpub(projectDir, familyId);
+  const book = await manifestService.bookForAct(projectDir, familyId);
   if (!book) {
     throw new Error(
       `${path.basename(projectDir)} has no book EPUB recorded (manifest outputs.epub), so there is `
@@ -1823,7 +1823,7 @@ export async function addBookChapter(
     );
   }
 
-  const book = await manifestService.readExportEpub(projectDir, familyId);
+  const book = await manifestService.bookForAct(projectDir, familyId);
   if (!book) {
     throw new Error(
       `${path.basename(projectDir)} has no book EPUB recorded (manifest outputs.epub), so there is `

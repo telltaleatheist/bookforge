@@ -484,7 +484,7 @@ export async function ensureNarrationEpub(
   options?: NarrationExportOptions,
   familyId?: string,
 ): Promise<NarrationEpubForTts> {
-  const book = await manifestService.readExportEpub(projectDir, familyId);
+  const book = await manifestService.bookForAct(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) {
     throw new Error(
       `${path.basename(projectDir)} has no working copy, so there is nothing to narrate yet. Open `
@@ -569,7 +569,7 @@ export async function exportNarrationEpub(
   options?: NarrationExportOptions,
   familyId?: string,
 ): Promise<NarrationExportResult> {
-  const book = await manifestService.readExportEpub(projectDir, familyId);
+  const book = await manifestService.bookForAct(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) {
     throw new Error(
       `${path.basename(projectDir)} has no book EPUB on disk, so there is nothing to cut a `
@@ -803,7 +803,7 @@ export async function strikeInNarrationCopy(
     );
   }
 
-  const book = await manifestService.readExportEpub(projectDir, familyId);
+  const book = await manifestService.bookForAct(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) {
     throw new Error(
       `${path.basename(projectDir)} has no working copy on disk, so a deletion made on its TTS copy `
@@ -1096,7 +1096,7 @@ export async function mergeChapterOpening(
   foldedKeys: readonly NarrationElementKey[],
   familyId?: string,
 ): Promise<ChapterOpeningMergeResult> {
-  const book = await manifestService.readExportEpub(projectDir, familyId);
+  const book = await manifestService.bookForAct(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) {
     throw new Error(
       `${path.basename(projectDir)} has no working copy on disk, so there is no book to fold a `
@@ -1260,7 +1260,7 @@ export async function stampElementIds(
 ): Promise<ElementIdStampSummary> {
   const nothing: ElementIdStampSummary = { stamped: 0, total: 0, wrappersPersisted: 0 };
 
-  const book = await manifestService.readExportEpub(projectDir, familyId);
+  const book = await manifestService.bookForAct(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) return nothing;
 
   const { digest: fromSha256, hex: fromHex } = await bookDigest(book.absPath);
@@ -1367,7 +1367,7 @@ export async function nameChapterOpenings(
 ): Promise<ChapterOpeningNamingSummary> {
   const nothing: ChapterOpeningNamingSummary = { edited: 0, named: [], skipped: [] };
 
-  const book = await manifestService.readExportEpub(projectDir, familyId);
+  const book = await manifestService.bookForAct(projectDir, familyId);
   if (!book || !fs.existsSync(book.absPath)) return nothing;
 
   // The book as it stands, measured BEFORE anything is written: it is what says
