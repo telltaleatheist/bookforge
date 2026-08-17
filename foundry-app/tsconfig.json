@@ -1,0 +1,36 @@
+/* Renderer (Angular) program. The main process has its own — tsconfig.electron.json. */
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "experimentalDecorators": true,
+    "importHelpers": true,
+    "target": "ES2022",
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    // The wire shapes, compiled by BOTH programs — the renderer through this
+    // config, the main process through tsconfig.electron.json (which reaches
+    // them by relative path, since tsc does not rewrite aliases on emit). The
+    // substitution stays relative: a bare "shared/*" needs a baseUrl, and a
+    // baseUrl makes every typo resolvable against the project root.
+    "paths": {
+      "@shared/*": ["./shared/*"]
+    }
+  },
+  "angularCompilerOptions": {
+    "enableI18nLegacyMessageIdFormat": false,
+    "strictInjectionParameters": true,
+    "strictInputAccessModifiers": true,
+    "strictTemplates": true
+  },
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" }
+  ]
+}

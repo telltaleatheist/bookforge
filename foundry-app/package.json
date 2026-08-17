@@ -1,0 +1,78 @@
+{
+  "name": "foundry-app",
+  "productName": "Foundry",
+  "version": "0.1.0",
+  "description": "Foundry desktop — read a scanned PDF, cast a clean EPUB.",
+  "private": true,
+  "main": "dist/electron/main.js",
+  "scripts": {
+    "ng": "ng",
+    "clean:electron": "shx rm -rf dist/electron dist/shared",
+    "build:electron": "npm run clean:electron && tsc -p tsconfig.electron.json",
+    "build:renderer": "ng build",
+    "build": "npm run build:electron && npm run build:renderer",
+    "typecheck": "tsc -p tsconfig.electron.json --noEmit",
+    "start": "npm run electron:dev",
+    "electron:dev": "npm run build:electron && concurrently -k -n ng,electron \"ng serve --port 4260\" \"wait-on http-get://localhost:4260 && electron . --dev\"",
+    "electron:prod": "npm run build && electron .",
+    "build:engine:win-x64": "bash ../tools/release-build.sh windows-x64",
+    "build:engine:mac": "bash ../tools/release-build.sh darwin-arm64",
+    "package:win-x64": "npm run build:engine:win-x64 && npm run build && electron-builder --win --x64",
+    "package:mac": "npm run build:engine:mac && npm run build && electron-builder --mac --arm64"
+  },
+  "build": {
+    "appId": "com.telltale.foundry",
+    "productName": "Foundry",
+    "publish": null,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/electron/**",
+      "dist/shared/**",
+      "dist/renderer/**",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "extraResources": [
+        {
+          "from": "../dist/foundry-windows-x64.exe",
+          "to": "foundry.exe"
+        }
+      ]
+    },
+    "mac": {
+      "target": "dmg",
+      "extraResources": [
+        {
+          "from": "../dist/foundry-darwin-arm64",
+          "to": "foundry"
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "@angular/common": "^21.0.0",
+    "@angular/compiler": "^21.0.0",
+    "@angular/core": "^21.0.0",
+    "@angular/forms": "^21.0.0",
+    "@angular/platform-browser": "^21.0.0",
+    "@angular/router": "^21.0.0",
+    "pdfjs-dist": "^6.2.108",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0"
+  },
+  "devDependencies": {
+    "@angular/build": "^21.0.0",
+    "@angular/cli": "^21.0.0",
+    "@angular/compiler-cli": "^21.0.0",
+    "@types/node": "^20.11.0",
+    "concurrently": "^9.1.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^26.15.3",
+    "shx": "^0.4.0",
+    "typescript": "~5.9.2",
+    "wait-on": "^8.0.1"
+  }
+}

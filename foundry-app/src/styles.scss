@@ -1,0 +1,142 @@
+/* The whole palette, in one place. Values are BookForge's ("Creamsicle Desktop")
+   dark theme, so the two apps read as siblings: warm charcoal neutrals rather
+   than cold grays, cyan accent, 1px borders, small radii.
+
+   The names stay Foundry's — semantic, not BookForge's class vocabulary — so a
+   component asks for a ROLE (--bg-sunken, --border-subtle) and the mapping to a
+   palette entry lives here and only here. */
+:root {
+  /* Backgrounds, deepest first. The document is the only bright thing on
+     screen, which is the point of a viewer that fills the window. */
+  --bg-sunken: #0e0d0c;
+  --bg-base: #181715;
+  --bg-elevated: #211f1c;
+  --bg-input: #2a2824;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+  --bg-active: rgba(255, 255, 255, 0.08);
+  --bg-overlay: rgba(24, 23, 21, 0.9);
+
+  --border-subtle: #2a2824;
+  --border-default: #403c36;
+  --border-strong: #565149;
+
+  --text-primary: #faf9f7;
+  --text-secondary: #928b7f;
+  --text-tertiary: #706a60;
+  --text-muted: #565149;
+  /* For text ON a filled accent. BookForge puts white here; cyan-400 is bright
+     enough that white sits near 1.7:1, so Foundry uses the near-black instead —
+     same button, legible label. */
+  --text-inverse: #181715;
+
+  --accent: #22d3ee;
+  --accent-hover: #67e8f9;
+  --accent-active: #a5f3fc;
+  /* The saturated end of the ramp, for fills that must stay readable under
+     white-ish text (badges, selection). */
+  --accent-strong: #06b6d4;
+  --accent-soft: rgba(6, 182, 212, 0.2);
+  --accent-faint: rgba(6, 182, 212, 0.12);
+
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --error: #f87171;
+  --warn-soft: rgba(251, 191, 36, 0.12);
+  --error-soft: rgba(248, 113, 113, 0.12);
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+
+  --focus-ring: 0 0 0 2px rgba(34, 211, 238, 0.4);
+
+  /* How tall the dock along the bottom is. A TOKEN because two things read it:
+     the dock itself (app-tool-rail) and the queue shelf, which floats over the
+     window at z-index 900 and lifts itself by exactly this much so its pill sits
+     above the dock rather than over the Settings button at the dock's right-hand
+     end. Two hand-kept numbers would drift the first time the dock changed. */
+  --rail-h: 58px;
+
+  --scrollbar-track: #2a2824;
+  --scrollbar-thumb: #06b6d4;
+  --scrollbar-thumb-hover: #22d3ee;
+
+  /* The stacks, not the webfonts: this app runs offline, so nothing is fetched
+     and Segoe UI is what actually resolves on Windows. Outfit / DM Sans /
+     JetBrains Mono are named first so a machine that has them looks like
+     BookForge exactly. */
+  --font-display: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-body: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font: 13px/1.5 var(--font-body);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+}
+
+code, pre, kbd, samp { font-family: var(--font-mono); }
+
+button, input, select, textarea {
+  font: inherit;
+  color: inherit;
+}
+
+input, select, textarea {
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  width: 100%;
+  transition: border-color 100ms cubic-bezier(0, 0, 0.2, 1),
+              box-shadow 100ms cubic-bezier(0, 0, 0.2, 1);
+}
+input::placeholder, textarea::placeholder { color: var(--text-muted); }
+input:hover:not(:focus), select:hover, textarea:hover:not(:focus) {
+  border-color: var(--border-strong);
+}
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+/* Chromium on Windows does not give <option> the page's colours, so the popup
+   list has to be told twice. */
+select { cursor: pointer; color-scheme: dark; }
+select option { background: var(--bg-input); color: var(--text-primary); }
+
+:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+:focus:not(:focus-visible) { outline: none; box-shadow: none; }
+
+::selection { background: var(--accent-soft); color: var(--text-primary); }
+
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+* { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track); }
