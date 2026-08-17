@@ -11,7 +11,7 @@ import { VariantImportService } from '../../services/variant-import.service';
 import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-view.component';
 import { MetadataEditorComponent, EpubMetadata } from '../../../audiobook/components/metadata-editor/metadata-editor.component';
 import { StudioItem } from '../../models/studio.types';
-import { AppliedPass, AppliedPassKind, ProjectVariant, ResolvedFoundryExport, ResolvedProjectVariant } from '../../../../core/models/manifest.types';
+import { AppliedPass, AppliedPassKind, ProjectVariant, ResolvedProjectVariant } from '../../../../core/models/manifest.types';
 import { DesktopSelectComponent, DesktopSelectItems, DialogService } from '../../../../creamsicle-desktop';
 import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-target';
 import type { PassDiffEntry } from '@shared/processing/pass-types';
@@ -296,14 +296,22 @@ const AUDIO_EXTS = new Set([
               <b>Audio</b> section below.
             </div>
           } @else {
-            @for (v of ebookVariants(); track v.id) {
-              <div class="vrow" [class.open]="openId() === v.id">
+            <!-- ONE loop over a FLAT list, where an export's nesting under the
+                 version it was made from is a CLASS rather than a second block
+                 of markup. The row carries nine conditional actions; drawing
+                 parents and children through two copies of it would mean every
+                 future action has two places to be added to, and the one that
+                 gets forgotten is always the nested one. See ebookRows(). -->
+            @for (row of ebookRows(); track row.v.id) {
+              @let v = row.v;
+              <div class="vrow" [class.open]="openId() === v.id" [class.nested]="row.nested">
                 <div class="vhead" (click)="toggleEditor(v)">
                   <span class="ricon">{{ variantIcon(v) }}</span>
                   <div class="rinfo">
                     <div class="rlabel">
                       {{ variantTitle(v) }}
                       @if (isPrimary(v)) { <span class="badge">Primary</span> }
+                      @if (isTtsVariant(v)) { <span class="badge tts">TTS file</span> }
                     </div>
                     <div class="rdesc">{{ variantSubtitle(v) }}</div>
                     @if (variantFilename(v); as fn) { <div class="rfile" [title]="fn">{{ fn }}</div> }
@@ -362,6 +370,25 @@ const AUDIO_EXTS = new Set([
                         <button class="act" (click)="processVariant(v)"
                                 title="Narrate this version — opens the narration dialog on this exact file">Process</button>
                       }
+                      <!-- WHICH file this book gets narrated from, when the user
+                           says. At most one per book: the manifest holds one
+                           pointer, so marking another clears this one. It is
+                           what the shelf's Process button reads. -->
+                      @if (canMarkTts(v)) {
+                        <button class="act" (click)="toggleTtsVariant(v)"
+                                [title]="isTtsVariant(v)
+                                  ? 'This is the file the shelf narrates. Click to unmark it.'
+                                  : 'Mark this as the file to narrate. The book gets a Process button on the shelf.'"
+                        >{{ isTtsVariant(v) ? 'Unmark TTS file' : 'Mark as TTS file' }}</button>
+                      }
+                      <!-- Promote a Foundry export to one of the book's own
+                           files. It moves out of output/ (which is cleared when
+                           a book's output is deleted) into the protected
+                           archive/, and stops being drawn under its parent. -->
+                      @if (isFoundryExport(v)) {
+                        <button class="act" (click)="addToArchive(v)"
+                                title="Keep this as one of the book's own files. It moves out of output/ into the archive, at the top level.">Add to archive</button>
+                      }
                     </div>
                     <div class="slot">
                       @if (canOpenInFoundry(v)) {
@@ -413,51 +440,19 @@ const AUDIO_EXTS = new Set([
           }
         </div>
 
-        <!-- Made in Foundry: the files the hosted Foundry window exported for
-             this book, referenced WHERE THEY LIE in the foundry project's
-             final/ tray. Nothing was copied into this project, which is why
-             Delete here forgets the record and leaves the file alone.
+        <!-- "Made in Foundry" stood here until 2026-08-17, as a group of its own
+             holding rows that REFERENCED files in the foundry project's final/
+             tray. It is gone, and so is the distinction it drew.
 
-             Flat rows in the same four columns as every other line, and NOTHING
-             when the list is empty: a book that has never been through Foundry
-             has no group here, not an empty one explaining itself.
+             Owen's ruling: "I think exports should go to the project as a
+             version. The user can mark the file as a tts file if they want. I
+             think the user should be able to send any EPUB through tts. I.e. it
+             should have a process button if it's an epub file."
 
-             2026-08-16 — THERE IS NO PROCESS BUTTON ON THESE ROWS, and it is not
-             an oversight. Narration identity names a manifest VARIANT: the
-             Process press carries a variantId through NarrationRunBook, and an
-             export is not a variant. Broadening that identity to cover a foundry
-             export is the mount wave's work; a Process offered here before then
-             would file its run against nothing. -->
-        @if (foundryExports().length > 0) {
-          <div class="section-head">Made in Foundry</div>
-          @for (fx of foundryExports(); track fx.id) {
-            <div class="row">
-              <span class="ricon">{{ foundryExportIcon(fx) }}</span>
-              <div class="rinfo">
-                <div class="rlabel">{{ fx.title }}<span class="ext">.{{ fx.kind }}</span></div>
-                <div class="rdesc">{{ foundryExportDesc(fx) }}</div>
-                <div class="rfile" [title]="fx.path">{{ fx.path }}</div>
-              </div>
-              <div class="ractions">
-                <div class="specials"></div>
-                <div class="slot">
-                  <button class="act" (click)="openFoundryExport(fx)" title="Open in Foundry">Open</button>
-                </div>
-                <div class="slot">
-                  <button class="act" (click)="exportFoundryExport(fx)"
-                          title="Save a copy to your computer">Export</button>
-                </div>
-                <div class="slot">
-                  <button class="act danger" (click)="removeFoundryExport(fx)"
-                          title="Remove this from the list. The file itself stays in Foundry.">Delete</button>
-                </div>
-              </div>
-            </div>
-          }
-        }
-        @if (foundryExportsError(); as e) {
-          <div class="pass-err">{{ e }}</div>
-        }
+             So a Foundry export now LANDS as an ordinary version — copied into
+             the book's archive/, minted as a variant, drawn by the loop above
+             like every other version, and carrying Process because it is an
+             EPUB. There is no second kind of row to keep a second group for. -->
 
         <!-- Analysis (content-analysis report — shown like a version, pinned to one) -->
         @if (analysisEntry(); as a) {
@@ -1021,12 +1016,29 @@ const AUDIO_EXTS = new Set([
       overflow: hidden;
     }
     .vrow.open { border-color: var(--accent-primary, #06b6d4); }
-    .vhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 12px; cursor: pointer; }
+    /* A version Foundry made, drawn UNDER the version it was made from: indented,
+       lighter, and a size smaller. Owen, 2026-08-17: "visually be smaller
+       indented line items under their parent file". The left rule is what carries
+       the relationship down a run of several exports — the indent alone reads as
+       a stray margin once the parent has scrolled off. */
+    .vrow.nested {
+      margin-left: 26px;
+      background: var(--bg-base);
+      border-left: 2px solid var(--border-strong, var(--border-default, rgba(255,255,255,0.07)));
+      border-top-left-radius: 4px; border-bottom-left-radius: 4px;
+    }
+    .vrow.nested .vhead { padding: 7px 12px; }
+    .vrow.nested .ricon { font-size: 1.05rem; }
+    .vrow.nested .rlabel { font-size: 0.8rem; }
+    .vrow.nested .rdesc { font-size: 0.7rem; }
     .badge {
       font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
       color: #fff; background: var(--accent-primary, #06b6d4);
       padding: 1px 6px; border-radius: 4px; margin-left: 8px; vertical-align: middle;
     }
+    /* The TTS mark reads as a DIFFERENT KIND of fact from Primary, so it does not
+       borrow the accent that means "this is the book". */
+    .badge.tts { background: var(--success, #16a34a); }
     .veditor { padding: 4px 14px 16px; border-top: 1px solid var(--border-default, rgba(255,255,255,0.07)); }
     .drow { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; }
     .drow label {
@@ -1318,6 +1330,13 @@ export class StudioVersionsComponent {
    */
   private readonly loadedForProjectDir = signal<string | null>(null);
   readonly primaryId = signal<string | undefined>(undefined);
+  /**
+   * WHICH version the user marked as this book's TTS file, or undefined.
+   *
+   * A sibling of `primaryId` because it is the same kind of fact — a pointer the
+   * manifest holds to ONE of these rows — and it arrives on the same call.
+   */
+  readonly ttsId = signal<string | undefined>(undefined);
   readonly openId = signal<string | null>(null);
   readonly savingId = signal<string | null>(null);
   // Add-in-flight state is keyed by project id and OWNED BY VariantImportService,
@@ -1351,6 +1370,147 @@ export class StudioVersionsComponent {
    */
   readonly ebookVariants = computed(() =>
     this.variantList().filter(v => v.kind === 'ebook'));
+
+  /**
+   * The ebook versions in DISPLAY ORDER, each saying whether it is a nested row.
+   *
+   * Owen, 2026-08-17: "the exports should be moved to output and visually be
+   * smaller indented line items under their parent file that was used to open
+   * foundry originally."
+   *
+   * ── Why a FLAT list with a flag, and not a tree ─────────────────────────────
+   *
+   * The row markup is one block of forty lines carrying nine conditional
+   * actions. Rendering parents and children through two copies of it — or
+   * through an ng-template invoked twice — is two places for the next action to
+   * be added to, and the one that gets forgotten is always the nested one. So
+   * the NESTING IS A CLASS, not a structure: this flattens the parent/child
+   * relation into the order the rows appear in, and the template draws one loop.
+   *
+   * ── When a parent cannot be found ───────────────────────────────────────────
+   *
+   * A row lands at TOP LEVEL when it has no `foundrySource`, when its
+   * `parentVariantId` is null (the Foundry project was opened from a file that
+   * is no version of this book), or when the parent it names is not among these
+   * rows — deleted since, promoted out from under it, or an audiobook.
+   *
+   * That is a RENDERING answer to absent data, not a claim about provenance. The
+   * record still says what it says; there is simply no row to sit under, and a
+   * version drawn indented beneath an arbitrary neighbour would assert a
+   * derivation nobody recorded. The `foundrySource` is untouched either way, so
+   * a parent that comes back (an undo, a reload that finds the row) re-nests it.
+   */
+  readonly ebookRows = computed<{ v: ResolvedProjectVariant; nested: boolean }[]>(() => {
+    const all = this.ebookVariants();
+    const byId = new Map(all.map(v => [v.id, v]));
+    const children = new Map<string, ResolvedProjectVariant[]>();
+    const top: ResolvedProjectVariant[] = [];
+    for (const v of all) {
+      const parentId = v.foundrySource?.parentVariantId ?? null;
+      // `parentId !== v.id` is not paranoia about corrupt data — it is the one
+      // self-reference that would make the walk below never terminate.
+      if (parentId !== null && parentId !== v.id && byId.has(parentId)) {
+        const list = children.get(parentId);
+        if (list) list.push(v); else children.set(parentId, [v]);
+      } else {
+        top.push(v);
+      }
+    }
+    // Oldest landing first, so re-exports keep their place instead of the list
+    // reshuffling every time Foundry writes one.
+    for (const list of children.values()) {
+      list.sort((a, b) =>
+        (a.foundrySource?.landedAt ?? '').localeCompare(b.foundrySource?.landedAt ?? ''));
+    }
+    const rows: { v: ResolvedProjectVariant; nested: boolean }[] = [];
+    // `seen` guards a cycle in the recorded parents. Nothing writes one today —
+    // a parent is captured at import and an export is never another's parent —
+    // but this walk is the only thing between a malformed manifest and a hung
+    // renderer, and a version that appears once is a better failure than a page
+    // that never paints.
+    const seen = new Set<string>();
+    const emit = (v: ResolvedProjectVariant, nested: boolean): void => {
+      if (seen.has(v.id)) return;
+      seen.add(v.id);
+      rows.push({ v, nested });
+      for (const c of children.get(v.id) ?? []) emit(c, true);
+    };
+    for (const v of top) emit(v, false);
+    return rows;
+  });
+
+  /** Was this version landed by a Foundry export? (Cleared by "Add to archive".) */
+  isFoundryExport(v: ProjectVariant): boolean {
+    return !!v.foundrySource;
+  }
+
+  /** The version the user marked as this book's TTS file. */
+  isTtsVariant(v: ProjectVariant): boolean {
+    return !!this.ttsId() && v.id === this.ttsId();
+  }
+
+  /**
+   * Can this version be marked as the book's TTS file?
+   *
+   * An EPUB, and only an EPUB — the same test the Process button uses, for the
+   * same reason. Owen: "I think the user should be able to send any EPUB through
+   * tts." A mark on a PDF would put a Process button on the shelf for a file
+   * narration cannot read.
+   */
+  canMarkTts(v: ProjectVariant): boolean {
+    return v.kind === 'ebook' && this.variantExtension(v) === 'epub';
+  }
+
+  /**
+   * Mark this version as the book's TTS file, or clear the mark.
+   *
+   * At most one per book, enforced by the manifest holding ONE pointer — so
+   * marking a second version clears the first without this having to find it.
+   */
+  async toggleTtsVariant(v: ProjectVariant): Promise<void> {
+    const pid = this.projectId();
+    if (!pid) return;
+    const res = await this.electron.variantSetTts(pid, this.isTtsVariant(v) ? null : v.id);
+    if (!res.success) {
+      await this.electron.showMessageDialog({
+        title: 'Could not change the TTS file',
+        message: res.error || 'The mark was not changed. Try again.',
+        type: 'error',
+      });
+      return;
+    }
+    await this.loadVariants();
+    // The shelf draws its Process button off this mark, so it has to re-read.
+    this.changed.emit();
+  }
+
+  /**
+   * "Add to archive": promote a Foundry export to a top-level version.
+   *
+   * Owen, 2026-08-17: "an 'add to archive' button or something that moves it to
+   * the top level." It MOVES the file out of output/ — which delete-output wipes
+   * — into the protected archive/, and the version stops being drawn nested
+   * because its provenance is cleared. No confirm: it is a move within the
+   * project, Delete is still there, and the row does not go anywhere.
+   */
+  async addToArchive(v: ProjectVariant): Promise<void> {
+    const pid = this.projectId();
+    if (!pid) return;
+    const res = await this.electron.variantPromoteToArchive(pid, v.id);
+    if (!res.success) {
+      await this.electron.showMessageDialog({
+        title: 'Could not add this to the archive',
+        message: res.error || 'The file was not moved. Nothing was changed — try again.',
+        type: 'error',
+      });
+      return;
+    }
+    this.notices.notify(
+      `“${this.variantTitle(v)}” is now one of this book's own files. It moved out of output/, `
+      + 'which is cleared when you delete a book\'s output.');
+    await this.loadVariants();
+    this.changed.emit();
+  }
 
   /** Audio section: the audiobook editions — the single home for every M4B,
    *  whether uploaded via "+ Add version" or produced by TTS. */
@@ -2111,22 +2271,22 @@ export class StudioVersionsComponent {
 
     // ── What the Foundry window files, while it is filing it ────────────────
     //
-    // An export made in the Foundry window is recorded by main against the book
-    // it belongs to, and this page is very likely open on that book at the time
-    // — the user pressed Edit in Foundry from here. So the row appears when the
-    // file does, without a reload and without this page polling anything.
+    // An export made in the Foundry window is landed by main as a VERSION of the
+    // book it belongs to, and this page is very likely open on that book at the
+    // time — the user pressed Edit in Foundry from here. So the row appears when
+    // the file does, without a reload and without this page polling anything.
     //
-    // Only the EXPORTS are re-read, not the whole page: `load()` re-measures the
-    // project folder, closes an open compare and drops the open row, and doing
-    // all that because a file landed in Foundry's tray would yank the page out
-    // from under whatever the user was doing in it.
-    const unwatchExports = this.electron.onFoundryExportsChanged((event) => {
+    // The WHOLE page reloads, where the retired export list re-read only itself.
+    // That is not a regression: what changed is the variant list, and `load()` is
+    // the one thing that re-measures it (`loadVariants` is private to it and the
+    // row's own file resolution comes with it). The old narrow re-read existed to
+    // avoid yanking the page for a file that appeared in a group nobody was
+    // working in; a landing now changes a row the user can act on immediately.
+    const unwatchExports = this.electron.onFoundryVersionsChanged((event) => {
       const dir = this.projectDir();
       if (dir === '') return;
       if (!samePath(event.projectDir, dir)) return;
-      const generation = this.loadGeneration;
-      void this.loadFoundryExports(
-        dir, () => generation !== this.loadGeneration || this.projectDir() !== dir);
+      void this.load();
     });
     inject(DestroyRef).onDestroy(unwatchExports);
 
@@ -2157,6 +2317,7 @@ export class StudioVersionsComponent {
     if (!pid) {
       this.variantList.set([]);
       this.primaryId.set(undefined);
+      this.ttsId.set(undefined);
       this.transcriptEligibleVariantIds.set(new Set());
       this.transcriptEligibilityKnown.set(false);
       return;
@@ -2172,6 +2333,7 @@ export class StudioVersionsComponent {
         // Each row carries the absPath main resolved against THIS project's dir.
         this.variantList.set(res.variants);
         this.primaryId.set(res.primaryVariantId);
+        this.ttsId.set(res.ttsVariantId);
       } else {
         // A FAILED read (e.g. a transient manifest lock on a synced drive) is NOT
         // "this book has no versions" — do not wipe the list, or every version
@@ -2276,21 +2438,6 @@ export class StudioVersionsComponent {
     if (abs) this.open.emit(abs);
   }
 
-  /** Open a file Foundry exported, back in Foundry, at the path Foundry left it. */
-  async openFoundryExport(fx: ResolvedFoundryExport): Promise<void> {
-    if (!fx.exists) {
-      console.error(`[studio-versions] export missing on disk: ${fx.absPath}`);
-      await this.electron.showMessageDialog({
-        title: 'Could not open this file',
-        message: `“${fx.title}” is not on disk where Foundry left it — see the log for the path. `
-          + 'It may have been moved or deleted from the Foundry project.',
-        type: 'error',
-      });
-      return;
-    }
-    this.open.emit(fx.absPath);
-  }
-
   /** Save a copy of this version's file somewhere else. */
   async exportVariant(v: ResolvedProjectVariant): Promise<void> {
     const abs = await this.variantFile(v, 'export this version');
@@ -2323,6 +2470,14 @@ export class StudioVersionsComponent {
     if (v.format) parts.push(v.format.toUpperCase());
     if (v.metadata?.author) parts.push(v.metadata.author);
     if (v.metadata?.language) parts.push(v.metadata.language);
+    // WHERE it came from and WHEN, on the row rather than only in the indent: an
+    // export nested under a parent that has scrolled away is otherwise an
+    // unexplained duplicate of the book. Said for exports only — every other
+    // version is one the user put there themselves and needs no provenance line.
+    if (v.foundrySource) {
+      const at = new Date(v.foundrySource.landedAt);
+      parts.push(isNaN(+at) ? 'Made in Foundry' : `Made in Foundry ${at.toLocaleString()}`);
+    }
     return parts.join(' · ');
   }
 
@@ -2471,99 +2626,27 @@ export class StudioVersionsComponent {
     }
   }
 
-  // ── Made in Foundry ───────────────────────────────────────────────────────
+  // ── Made in Foundry (RETIRED 2026-08-17) ──────────────────────────────────
   //
-  // The files the hosted Foundry window exported for this book. They live in the
-  // foundry project's `final/` tray and are referenced from there — nothing is
-  // copied into the project — so every act here is about the RECORD.
-
-  /**
-   * The export rows, each with its file already resolved by main.
-   *
-   * Empty is the ordinary state and draws nothing at all: a book that has never
-   * been through Foundry has no group, not an empty one. A failed READ is a
-   * different fact and says so in `foundryExportsError` rather than presenting
-   * itself as "no exports".
-   */
-  readonly foundryExports = signal<ResolvedFoundryExport[]>([]);
-  readonly foundryExportsError = signal<string | null>(null);
-
-  private async loadFoundryExports(dir: string, superseded: () => boolean): Promise<void> {
-    try {
-      const res = await this.electron.foundryHostExports(dir);
-      if (superseded()) return;
-      if (!res.success || !res.exports) {
-        this.foundryExportsError.set(
-          `What Foundry has made for this book could not be read: ${res.error || 'no reason given'}`);
-        return;
-      }
-      this.foundryExports.set(res.exports);
-      this.foundryExportsError.set(null);
-    } catch (err) {
-      if (superseded()) return;
-      this.foundryExportsError.set(
-        `What Foundry has made for this book could not be read: `
-        + `${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  foundryExportIcon(fx: ResolvedFoundryExport): string {
-    return fx.kind === 'txt' ? '\u{1F4C4}' : '\u{1F4D6}';
-  }
-
-  /** The row's second line: what kind of file, when it landed, and whether it is there. */
-  foundryExportDesc(fx: ResolvedFoundryExport): string {
-    const at = new Date(fx.landedAt);
-    const when = isNaN(+at) ? 'date unknown' : at.toLocaleString();
-    const parts = [`${fx.kind.toUpperCase()} · Exported ${when}`];
-    // Said on the row, not on the click: the tray is Foundry's, and a file the
-    // user moved out of it is a fact about the row rather than a failure of it.
-    if (!fx.exists) parts.push('the file is not where Foundry left it');
-    return parts.join(' · ');
-  }
-
-  /** Save a copy of this export somewhere else — the same door every version uses. */
-  async exportFoundryExport(fx: ResolvedFoundryExport): Promise<void> {
-    if (!fx.exists) {
-      console.error(`[studio-versions] export missing on disk: ${fx.absPath}`);
-      await this.electron.showMessageDialog({
-        title: 'Could not export this file',
-        message: `“${fx.title}” is not on disk where Foundry left it — see the log for the path. `
-          + 'It may have been moved or deleted from the Foundry project.',
-        type: 'error',
-      });
-      return;
-    }
-    this.exportDoc.emit(fx.absPath);
-  }
-
-  /**
-   * Forget one export. The FILE is not deleted — it belongs to the Foundry
-   * project, and the confirm says so, because a Delete the user reads as
-   * "destroy my work" and a Delete that removes a reference are different acts.
-   */
-  async removeFoundryExport(fx: ResolvedFoundryExport): Promise<void> {
-    const dir = this.projectDir();
-    if (!dir) return;
-    const { confirmed } = await this.electron.showConfirmDialog({
-      title: 'Remove from this book',
-      message: `Remove “${fx.title}” from this book's versions?\n\nThe file itself is not deleted — `
-        + 'it stays in the Foundry project that made it, and Foundry can export it again.',
-      confirmLabel: 'Remove', cancelLabel: 'Cancel', type: 'warning',
-    });
-    if (!confirmed) return;
-    const res = await this.electron.foundryHostForgetExport(dir, fx.id);
-    if (!res.success) {
-      await this.electron.showMessageDialog({
-        title: 'Remove failed',
-        message: res.error || 'Could not remove this from the list. Nothing was changed — try again.',
-        type: 'error',
-      });
-      return;
-    }
-    await this.load();
-    this.changed.emit();
-  }
+  // The signals and the six methods that drew the export rows lived here:
+  // `foundryExports` / `foundryExportsError`, `loadFoundryExports`,
+  // `foundryExportIcon`, `foundryExportDesc`, `openFoundryExport`,
+  // `exportFoundryExport`, `removeFoundryExport`.
+  //
+  // All of it is gone because the thing it drew is gone. A Foundry export is not
+  // a reference to a file in Foundry's tray any more — it is COPIED into the
+  // book's archive/ and minted as an ordinary variant (see
+  // `landFoundryExportAsVariant`, electron/library-actions.ts), so it is drawn,
+  // opened, exported and deleted by the version machinery above and needs no
+  // second set of anything.
+  //
+  // The READ machinery on the main side (`foundry-host:exports`,
+  // `foundry-host:forget-export`, `readFoundryExports`, the `foundryExports[]`
+  // manifest field) is still there and still compiles. Nothing writes it any
+  // more, and the records a fresh library already holds are NOT migrated — there
+  // is at most a night's worth of them, they name files that are still in
+  // Foundry's tray, and re-exporting from Foundry lands each one properly as a
+  // version. That machinery dies in the deletion wave.
 
   // ── Adding versions ───────────────────────────────────────────────────────
 
@@ -2705,10 +2788,6 @@ export class StudioVersionsComponent {
       // would offer to delete them under this book's name.
       this.resetPlan.set(null);
       this.resetPlanError.set(null);
-      // Another book's Foundry exports. Every act on one names THIS projectDir,
-      // so a row left behind would forget a record out of the wrong manifest.
-      this.foundryExports.set([]);
-      this.foundryExportsError.set(null);
       this.loadedForProjectDir.set(dir);
     }
 
@@ -2757,8 +2836,6 @@ export class StudioVersionsComponent {
     await this.loadResetPlan(dir, superseded);
     if (superseded()) return;
     await this.loadVariants();
-    if (superseded()) return;
-    await this.loadFoundryExports(dir, superseded);
   }
 
   /**
