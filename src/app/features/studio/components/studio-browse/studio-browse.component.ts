@@ -2,6 +2,7 @@ import { Component, input, output, signal, ChangeDetectionStrategy } from '@angu
 import { CommonModule } from '@angular/common';
 import { CdkDragDrop, CdkDrag, CdkDropList, moveItemInArray } from '@angular/cdk/drag-drop';
 import { StudioItem } from '../../models/studio.types';
+import type { TtsTarget } from '../../../../core/models/manifest.types';
 
 /**
  * StudioBrowseComponent - cover-grid "Browse" view of the unified collection.
@@ -24,34 +25,52 @@ import { StudioItem } from '../../models/studio.types';
         </div>
       } @else {
         <div class="grid" cdkDropList cdkDropListOrientation="mixed" (cdkDropListDropped)="onDrop($event)">
+          <!-- The card is a BUTTON, so the Process button cannot live inside it
+               (a button inside a button is invalid, and the inner click never
+               arrives cleanly). The cell is the drag handle and the positioning
+               context; the card and the Process button are siblings in it. -->
           @for (item of gridItems(); track item.id) {
-            <button
-              class="card"
-              cdkDrag
-              [cdkDragData]="item"
-              [class.selected]="item.id === selectedId()"
-              (click)="open.emit(item)"
-              (contextmenu)="onContextMenu($event, item)"
-              [title]="item.title"
-            >
-              <div class="cover" [class.pro]="item.hasProfessionalNarration">
-                @if (item.coverData) {
-                  <img class="cover-bg" [src]="item.coverData" aria-hidden="true" />
-                  <img class="cover-fg" [src]="item.coverData" [alt]="item.title" loading="lazy" />
-                } @else {
-                  <div class="cover-placeholder">{{ item.type === 'article' ? '\u{1F4C4}' : '\u{1F4D6}' }}</div>
-                }
-                @if (item.audiobookPath || hasBilingual(item)) {
-                  <span class="badge audio" title="Has audiobook">\u{1F3A7}</span>
-                } @else if (item.hasCleaned || item.hasTranslated || item.hasTtsCache) {
-                  <span class="badge wip" title="In production">\u{2699}</span>
-                }
-              </div>
-              <div class="meta">
-                <div class="title">{{ item.title }}</div>
-                <div class="author">{{ item.author || 'Unknown' }}{{ item.year ? ' · ' + item.year : '' }}</div>
-              </div>
-            </button>
+            <div class="cell" cdkDrag [cdkDragData]="item">
+              <button
+                class="card"
+                [class.selected]="item.id === selectedId()"
+                (click)="open.emit(item)"
+                (contextmenu)="onContextMenu($event, item)"
+                [title]="item.title"
+              >
+                <div class="cover" [class.pro]="item.hasProfessionalNarration">
+                  @if (item.coverData) {
+                    <img class="cover-bg" [src]="item.coverData" aria-hidden="true" />
+                    <img class="cover-fg" [src]="item.coverData" [alt]="item.title" loading="lazy" />
+                  } @else {
+                    <div class="cover-placeholder">{{ item.type === 'article' ? '\u{1F4C4}' : '\u{1F4D6}' }}</div>
+                  }
+                  @if (item.audiobookPath || hasBilingual(item)) {
+                    <span class="badge audio" title="Has audiobook">\u{1F3A7}</span>
+                  } @else if (item.hasCleaned || item.hasTranslated || item.hasTtsCache) {
+                    <span class="badge wip" title="In production">\u{2699}</span>
+                  }
+                </div>
+                <div class="meta">
+                  <div class="title">{{ item.title }}</div>
+                  <div class="author">{{ item.author || 'Unknown' }}{{ item.year ? ' · ' + item.year : '' }}</div>
+                </div>
+              </button>
+              <!-- Owen, 2026-08-16: "im going to need a tts processing button on
+                   the homepage once i export a tts-able epub."
+                   Drawn ONLY when main named one file for this book — several
+                   EPUBs with none marked and none exported means no target and
+                   no button, because the shelf cannot say which and guessing is
+                   what the identity law forbids. The tooltip names the file AND
+                   which rule chose it, so a card that would narrate something
+                   unexpected says so before it is pressed. It sits over the
+                   cover rather than under the title so a card with a button is
+                   exactly as tall as one without. -->
+              @if (item.ttsTarget; as tts) {
+                <button class="process" (click)="processRequested.emit(item)"
+                        [title]="processTitle(tts)">Process</button>
+              }
+            </div>
           }
         </div>
       }
@@ -86,13 +105,31 @@ import { StudioItem } from '../../models/studio.types';
       gap: 18px 16px;
       width: 100%;
     }
+    /* The drag handle, the positioning context for the Process button, and the
+       grid item. The card inside it fills it. */
+    .cell { position: relative; min-width: 0; }
     .card {
       display: flex; flex-direction: column; gap: 8px;
+      width: 100%;
       min-width: 0;   /* allow grid item to shrink below its content's min-width */
       background: none; border: none; padding: 6px; margin: 0;
       cursor: pointer; text-align: left; border-radius: 8px;
       transition: background 0.12s;
     }
+    /* Over the cover, opposite the audio badge. Always visible rather than
+       hover-only: it is the shelf's one door into narration, and a door nobody
+       can see is a door nobody uses. */
+    .process {
+      position: absolute; left: 12px; top: 12px;
+      padding: 3px 9px; border-radius: 5px;
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.02em;
+      color: #fff; background: color-mix(in srgb, var(--accent-primary) 88%, transparent);
+      border: 1px solid color-mix(in srgb, #fff 22%, transparent);
+      backdrop-filter: blur(4px);
+      cursor: pointer; white-space: nowrap;
+    }
+    .process:hover { background: var(--accent-primary); }
+    .process:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
     .card:hover { background: var(--bg-elevated); }
     .card.selected { background: color-mix(in srgb, var(--accent-primary) 18%, transparent); }
     .cover {
@@ -153,15 +190,16 @@ import { StudioItem } from '../../models/studio.types';
     }
     .ctx-item:hover { background: var(--accent-primary, #06b6d4); color: #fff; }
 
-    /* CDK drag-drop */
-    .card.cdk-drag-preview {
+    /* CDK drag-drop. These moved from .card to .cell with cdkDrag itself, when
+       the Process button made the card stop being the outermost element. */
+    .cell.cdk-drag-preview {
       box-shadow: 0 8px 28px rgba(0,0,0,0.4);
       background: var(--bg-elevated);
       border-radius: 8px;
     }
-    .card.cdk-drag-placeholder { opacity: 0.3; }
-    .card.cdk-drag-animating { transition: transform 200ms cubic-bezier(0, 0, 0.2, 1); }
-    .grid.cdk-drop-list-dragging .card:not(.cdk-drag-placeholder) {
+    .cell.cdk-drag-placeholder { opacity: 0.3; }
+    .cell.cdk-drag-animating { transition: transform 200ms cubic-bezier(0, 0, 0.2, 1); }
+    .grid.cdk-drop-list-dragging .cell:not(.cdk-drag-placeholder) {
       transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
     }
   `]
@@ -171,6 +209,15 @@ export class StudioBrowseComponent {
   readonly selectedId = input<string | null>(null);
   readonly open = output<StudioItem>();
   readonly exportRequested = output<StudioItem>();
+  /**
+   * Narrate this book's TTS file — the shelf's door into the Process page.
+   *
+   * The ITEM travels, not the path: the item carries `ttsTarget`, which is the
+   * whole answer main derived (which version, where its file is, whether it is
+   * still there). Emitting a bare path would leave the host re-deciding which
+   * file this button meant.
+   */
+  readonly processRequested = output<StudioItem>();
   /** Move this item between the Books and Articles sections (flips projectType). */
   readonly reclassifyRequested = output<StudioItem>();
   /** New combined order (item ids) after a drag. */
@@ -199,6 +246,21 @@ export class StudioBrowseComponent {
     const x = Math.min(event.clientX, window.innerWidth - 200);
     const y = Math.min(event.clientY, window.innerHeight - 140);
     this.ctxMenu.set({ x, y, item });
+  }
+
+  /**
+   * The Process button's tooltip: WHICH file, and WHY that one.
+   *
+   * Saying which rule fired is the point. A book with a marked TTS file and a
+   * book whose newest Foundry export was picked for it look identical on the
+   * shelf, and the second is the one where a user may disagree with the choice —
+   * so the tooltip tells them what will be read before they press it.
+   */
+  processTitle(tts: TtsTarget): string {
+    if (!tts.exists) return `“${tts.title}” is no longer on disk — press to see why.`;
+    if (tts.rule === 'marked') return `Narrate the TTS file: “${tts.title}”`;
+    if (tts.rule === 'newest-export') return `Narrate the newest Foundry export: “${tts.title}”`;
+    return `Narrate “${tts.title}”`;
   }
 
   hasBilingual(item: StudioItem): boolean {

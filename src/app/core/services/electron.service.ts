@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
-import { FoundryExportRecord, ResolvedFoundryExport, ResolvedProjectVariant } from '../models/manifest.types';
+import { FoundryExportRecord, ResolvedFoundryExport, ResolvedProjectVariant, TtsTarget } from '../models/manifest.types';
 import type { AppliedPass } from '../models/manifest.types';
 import type { BlockCategoryProvenance } from '@shared/ocr/text-block';
 import type { TextLayerReport } from '@shared/pdf/text-layer';
@@ -5350,6 +5350,11 @@ export class ElectronService {
     projects?: any[];
     /** Narration flags per projectId, derived in the main process from getVariants(). */
     narration?: Record<string, { professional: boolean; ai: boolean }>;
+    /**
+     * WHICH file the shelf's Process button narrates, per projectId — derived in
+     * the main process, and present ONLY for books that have an unambiguous one.
+     */
+    ttsTargets?: Record<string, TtsTarget>;
     error?: string;
   }> {
     if (this.isElectron && (window as any).electron.manifest) {

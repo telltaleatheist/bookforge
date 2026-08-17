@@ -29,6 +29,7 @@ import type {
   ProjectVariant,
   VariantMetadata,
   NarrationFlags,
+  TtsTarget,
   FoundryProjectRef,
   AppliedPass,
   AppliedPassKind,
@@ -6026,6 +6027,72 @@ export function getNarrationFlags(manifest: ProjectManifest): NarrationFlags {
 /**
  * List all projects as summaries
  */
+/**
+ * WHICH file the shelf's Process button would narrate for this book, or null.
+ *
+ * The precedence and the reasoning behind each rung are stated on {@link
+ * TtsTarget}; this is only where it is applied. Three things are worth saying
+ * about the code rather than the rule:
+ *
+ * - EPUB ONLY, at every rung including the marked one. Narration reads a book,
+ *   and a mark that survived its file being replaced by a PDF must not put a
+ *   button on the shelf that fails an hour into a job.
+ * - A MARK NAMING NOTHING falls through rather than suppressing the button. The
+ *   pointer can outlive the version it named (the row was deleted), and the
+ *   honest reading of a dangling pointer is "the user has not marked one of the
+ *   versions that exist", not "this book is forbidden a button".
+ * - `exists` is stat'ed HERE, at list time, so the card can refuse by naming the
+ *   missing file instead of failing deeper. It costs one stat per book that has
+ *   a candidate at all — books with no EPUB never reach it.
+ */
+async function resolveTtsTarget(manifest: ProjectManifest): Promise<TtsTarget | null> {
+  const { variants } = getVariants(manifest);
+  const epubs = variants.filter((v) => v.kind === 'ebook' && (v.format || '').toLowerCase() === 'epub');
+  if (epubs.length === 0) return null;
+
+  let chosen: ProjectVariant | undefined;
+  let rule: TtsTarget['rule'] = 'sole-epub';
+
+  const marked = manifest.ttsVariantId
+    ? epubs.find((v) => v.id === manifest.ttsVariantId)
+    : undefined;
+  if (marked) {
+    chosen = marked;
+    rule = 'marked';
+  } else {
+    // The most recent thing Foundry made for this book. `landedAt` is refreshed
+    // on every re-export, so "newest" tracks what the user last produced rather
+    // than which row was created first.
+    const exports = epubs
+      .filter((v) => !!v.foundrySource)
+      .sort((a, b) => (b.foundrySource!.landedAt || '').localeCompare(a.foundrySource!.landedAt || ''));
+    if (exports.length > 0) {
+      chosen = exports[0];
+      rule = 'newest-export';
+    } else if (epubs.length === 1) {
+      chosen = epubs[0];
+      rule = 'sole-epub';
+    }
+  }
+  // Several EPUBs, none marked, none exported: the shelf cannot say which, so it
+  // says nothing and the versions page keeps the choice.
+  if (!chosen) return null;
+
+  const projectDir = getProjectPath(manifest.projectId);
+  const absPath = normalizeFsPath(path.join(projectDir, ...chosen.path.split('/')));
+  let exists = false;
+  try {
+    exists = (await fs.promises.stat(absPath)).isFile();
+  } catch {
+    // Missing is a legitimate answer — output/ can be cleared, a file can be
+    // moved. Reported as exists:false so the click refuses by name.
+  }
+  const title = (chosen.metadata?.title || '').trim()
+    || chosen.path.split('/').pop()
+    || 'this version';
+  return { variantId: chosen.id, absPath, exists, title, rule };
+}
+
 export async function listProjects(filter?: { type?: ProjectType }): Promise<ManifestListResult> {
   try {
     const projectsDir = getProjectsPath();
@@ -6095,10 +6162,22 @@ export async function listProjects(filter?: { type?: ProjectType }): Promise<Man
       narration[manifest.projectId] = getNarrationFlags(manifest);
     }
 
+    // The shelf's Process target, derived here for the same two reasons the
+    // narration flags are: the variants have already been read, and the renderer
+    // cannot resolve a project-relative variant path without joining a directory
+    // it must never join (see ResolvedProjectVariant). Absent for a book with no
+    // unambiguous answer — the entry is simply not written.
+    const ttsTargets: Record<string, TtsTarget> = {};
+    await Promise.all(projects.map(async (manifest) => {
+      const target = await resolveTtsTarget(manifest);
+      if (target) ttsTargets[manifest.projectId] = target;
+    }));
+
     return {
       success: true,
       projects,
       narration,
+      ttsTargets,
     };
   } catch (error: any) {
     return {

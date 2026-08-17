@@ -157,6 +157,7 @@ import { isBookPath } from '@shared/document/book-path';
           [items]="browseItems()"
           [selectedId]="selectedItemId()"
           (open)="openInWorkspace($event)"
+          (processRequested)="processFromBrowse($event)"
           (exportRequested)="exportFromBrowse($event)"
           (reclassifyRequested)="reclassifyFromBrowse($event)"
           (reorder)="onBrowseReorder($event)"
@@ -2057,6 +2058,18 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.unwatchFoundryMapping = this.electronService.onFoundryProjectChanged(() => {
       this.foundryMappingTrigger.update(v => v + 1);
     });
+
+    // A Foundry export landed as a VERSION of some book. The shelf's Process
+    // button is drawn off `ttsTarget`, which main derives from that book's
+    // versions — so the book list has to be re-read or the button the export
+    // just earned does not appear until something else reloads the page.
+    //
+    // Not filtered to the selected book: the shelf shows every book, and the
+    // landing is very often for one the user is NOT standing on (they pressed
+    // Edit in Foundry, went to the shelf, and exported from the Foundry window).
+    this.unwatchFoundryVersions = this.electronService.onFoundryVersionsChanged(() => {
+      void this.studioService.loadBooks();
+    });
   }
 
   /** Any click anywhere dismisses the context menu. Named so it can be removed. */
@@ -2066,6 +2079,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   private unwatchEditorClosed: (() => void) | null = null;
   private unwatchFilesChanged: (() => void) | null = null;
   private unwatchFoundryMapping: (() => void) | null = null;
+  private unwatchFoundryVersions: (() => void) | null = null;
 
   ngOnDestroy(): void {
     document.removeEventListener('click', this.documentClickListener);
@@ -2075,6 +2089,8 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.unwatchFilesChanged = null;
     this.unwatchFoundryMapping?.();
     this.unwatchFoundryMapping = null;
+    this.unwatchFoundryVersions?.();
+    this.unwatchFoundryVersions = null;
     if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer);
   }
 
@@ -2306,6 +2322,44 @@ export class StudioComponent implements OnInit, OnDestroy {
   openInWorkspace(item: StudioItem): void {
     this.selectItem(item);
     this.viewMode.set('workspace');
+  }
+
+  /**
+   * Process, pressed on a card in the Browse grid.
+   *
+   * Owen, 2026-08-16: "im going to need a tts processing button on the homepage
+   * once i export a tts-able epub."
+   *
+   * It goes through the SAME door the versions page's "More options" uses —
+   * open the book's workspace, then `goToNarration` with the file — so there is
+   * one Process destination and not a second one that drifts. WHICH file was
+   * decided in main (`ttsTarget`) and travels with the press; nothing here picks
+   * a version, and nothing downstream picks a different one, because the path
+   * names exactly one of this book's version records.
+   *
+   * The two refusals are separate facts and are said separately. A card with no
+   * target draws no button at all, so reaching here without one is a bug in the
+   * grid rather than a user error — logged, not shown. A target whose FILE has
+   * gone is an ordinary thing (output/ is the folder a book's output delete
+   * clears) and is told to the user in the notice bar, naming the file.
+   */
+  processFromBrowse(item: StudioItem): void {
+    const target = item.ttsTarget;
+    if (!target) {
+      console.error(
+        `[studio] Process was pressed on "${item.title}", which has no TTS target. The button is `
+        + 'only drawn for a book main named one file for — this is a bug in the browse grid.');
+      return;
+    }
+    if (!target.exists) {
+      this.notices.notify(
+        `“${target.title}” is not on disk any more, so there is nothing to narrate. If it was a `
+        + 'file Foundry made, it lived in this book\'s output folder — export it from Foundry '
+        + 'again, or open the book and press Process on the version you want read.');
+      return;
+    }
+    this.openInWorkspace(item);
+    this.goToNarration(target.absPath);
   }
 
   // Quick "Export audiobook" from the Browse context menu.

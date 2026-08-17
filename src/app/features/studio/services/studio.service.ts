@@ -185,6 +185,19 @@ export class StudioService {
       }
       const narrationFlags = result.narration;
 
+      // WHICH file the shelf's Process button narrates, per book. Derived by the
+      // main process alongside the manifests, exactly as the narration flags are
+      // — the renderer cannot resolve a variant's project-relative path without
+      // joining a directory it must never join.
+      //
+      // The MAP must be present (a build that predates it is out of date, and is
+      // said so in the same voice as the flags above); an ENTRY is optional and
+      // its absence is the real answer "this book gets no button".
+      if (!result.ttsTargets) {
+        throw new Error('manifestList returned no TTS targets — main process out of date');
+      }
+      const ttsTargets = result.ttsTargets;
+
       const projectsPath = this.libraryService.projectsPath();
       if (!projectsPath) return;
 
@@ -455,6 +468,10 @@ export class StudioService {
           audiobookPath,
           vttPath,
           skippedChunksPath,
+          // Absent for a book the shelf cannot name one file for. Left off the
+          // row entirely rather than carried as a null, so the card's `@if` is
+          // asking the same question the main process answered.
+          ttsTarget: ttsTargets[manifest.projectId],
           hasProfessionalNarration: narration.professional,
           hasAiNarration: narration.ai,
           bilingualAudioPath,

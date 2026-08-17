@@ -1344,11 +1344,59 @@ export interface NarrationFlags {
   ai: boolean;
 }
 
+/**
+ * WHICH file the shelf's Process button would narrate for one book, and why.
+ *
+ * Owen, 2026-08-16: "im going to need a tts processing button on the homepage
+ * once i export a tts-able epub." The shelf shows a card, not a version list, so
+ * the button has to name ONE file — and the whole of Owen's identity law is that
+ * the button carries the file rather than the far side looking one up. This is
+ * that answer, computed once in main where the variants are already read, rather
+ * than by every card making its own IPC call.
+ *
+ * ── The precedence, and why each rung is where it is ───────────────────────
+ *
+ * 'marked'       — the user said so ({@link ProjectManifest.ttsVariantId}). A
+ *                  stated choice outranks anything derived, always.
+ * 'newest-export' — the most recent EPUB Foundry exported. This is the case
+ *                  Owen asked for: he exports a cleaned EPUB and wants to
+ *                  narrate it. It sits ABOVE 'sole-epub' because a book that has
+ *                  been through Foundry has at least two EPUBs (what went in and
+ *                  what came out), so 'sole-epub' would almost never fire for
+ *                  exactly the books this button exists for.
+ * 'sole-epub'    — the book has exactly ONE EPUB version, so there is nothing to
+ *                  be ambiguous about.
+ *
+ * ABSENT IS THE FOURTH ANSWER and the important one: several EPUBs, none marked
+ * and none exported, means the shelf cannot say which — so it draws no button
+ * and the versions page, which shows every row, keeps the choice. Guessing here
+ * would narrate whichever version sorted first, which is precisely the failure
+ * the identity law names.
+ */
+export interface TtsTarget {
+  /** The version record this names — a real `variants[]` id. */
+  variantId: string;
+  /** Absolute, platform-native, resolved in main against THIS project's dir. */
+  absPath: string;
+  /** absPath was a regular file when this list was produced. */
+  exists: boolean;
+  /** What the row calls itself, for the button's tooltip. */
+  title: string;
+  /** WHICH rule fired, so the tooltip can say why this file and not another. */
+  rule: 'marked' | 'newest-export' | 'sole-epub';
+}
+
 export interface ManifestListResult {
   success: boolean;
   projects?: ProjectManifest[];
   /** Narration flags per projectId. Populated for EVERY returned project. */
   narration?: Record<string, NarrationFlags>;
+  /**
+   * The shelf's Process target per projectId — present ONLY for books that have
+   * one. A missing entry means "this book gets no Process button on the shelf",
+   * which is a real answer and never "look one up".
+   */
+  ttsTargets?: Record<string, TtsTarget>;
   error?: string;
 }
 

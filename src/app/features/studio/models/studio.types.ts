@@ -2,7 +2,7 @@
  * Studio Types - Unified type definitions for books and articles
  */
 
-import type { AppliedPass, SourceType } from '../../../core/models/manifest.types';
+import type { AppliedPass, SourceType, TtsTarget } from '../../../core/models/manifest.types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Unified Item Type
@@ -147,6 +147,16 @@ export interface StudioItem {
   // bought human-narrated m4b and a TTS render side by side, and it belongs under both
   // filters. Both false means the book has no audiobook at all — which is why "AI" can't
   // be expressed as "not professional".
+  /**
+   * WHICH file this book's Process button on the SHELF would narrate, or absent.
+   *
+   * Owen, 2026-08-16: "im going to need a tts processing button on the homepage
+   * once i export a tts-able epub." Derived in main (see `TtsTarget`) rather than
+   * by every card asking, and ABSENT is the answer for a book the shelf cannot
+   * name one file for — several EPUBs, none marked and none exported. No field,
+   * no button; nothing here ever falls back to "the book's EPUB".
+   */
+  ttsTarget?: TtsTarget;
   hasProfessionalNarration?: boolean;  // Has ≥1 audiobook variant flagged "professionally read"
   hasAiNarration?: boolean;            // Has ≥1 audiobook variant NOT flagged "professionally read"
 

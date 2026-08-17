@@ -42,6 +42,7 @@ const SUITES = [
   'test-vlm-convert-attach',
   'test-picker-session-state',
   'test-foundry-host',
+  'test-foundry-landing',
   'test-ipc-collision',
 ];
 

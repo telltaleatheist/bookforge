@@ -699,11 +699,39 @@ export interface NarrationFlags {
   ai: boolean;
 }
 
+/**
+ * WHICH file the shelf's Process button would narrate for one book, and why.
+ *
+ * MIRRORS `TtsTarget` in electron/manifest-types.ts (the deriving side); keep the
+ * two in step. Owen, 2026-08-16: "im going to need a tts processing button on the
+ * homepage once i export a tts-able epub."
+ *
+ * Precedence: the version the user MARKED, else the newest EPUB Foundry exported
+ * (the case the button exists for — a book that has been through Foundry has at
+ * least two EPUBs, so "sole EPUB" would almost never fire for it), else the sole
+ * EPUB version. Several EPUBs with none marked and none exported yields NO
+ * target and no button: the shelf cannot say which, and the versions page keeps
+ * the choice. `absPath` is resolved in main; the renderer never joins it.
+ */
+export interface TtsTarget {
+  variantId: string;
+  absPath: string;
+  exists: boolean;
+  title: string;
+  rule: 'marked' | 'newest-export' | 'sole-epub';
+}
+
 export interface ManifestListResult {
   success: boolean;
   projects?: ProjectManifest[];
   /** Narration flags per projectId. Populated for EVERY returned project. */
   narration?: Record<string, NarrationFlags>;
+  /**
+   * The shelf's Process target per projectId — present ONLY for books that have
+   * one. A missing entry means "no Process button for this book on the shelf",
+   * which is a real answer and never "look one up".
+   */
+  ttsTargets?: Record<string, TtsTarget>;
   error?: string;
 }
 

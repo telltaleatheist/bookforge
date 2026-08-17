@@ -12,12 +12,20 @@
  *
  *  - `setFoundryProject` stores a KEY. A path — absolute or nested — is refused
  *    by name rather than trimmed into one, because a stored path names a volume
- *    and every one of them is wrong after a move.
+ *    and every one of them is wrong after a move. It also stores WHICH VERSION
+ *    was imported, which is the parent every export from that project nests
+ *    under, and it stores `null` as an absent field rather than a hole.
  *  - `appendFoundryExport` is append-only WITH ONE EXCEPTION: a re-export of the
  *    same file replaces that record in place, keeping its id and its position.
  *    Same path means same version row; two rows for one file leaves the user
  *    guessing which of them their next act addresses.
  *  - `forgetFoundryExport` forgets a REFERENCE. Nothing here touches a file.
+ *
+ * `appendFoundryExport`/`forgetFoundryExport` are RETIRED as of 2026-08-17 —
+ * nothing writes them any more (an export lands as a version; see
+ * test-foundry-landing.js). Their tests stay while they do: the read machinery
+ * still answers for the records a library already holds, and it should keep
+ * answering correctly until it is deleted.
  *
  * And the legacy rule that bounds all of it: a project carrying neither key
  * answers "no project" and "no exports" — real states, never refusals.
@@ -77,28 +85,51 @@ test('a project with no mapping has no Foundry project — null, not a refusal',
   assert.strictEqual(await manifestService.readFoundryProject(p.projectDir), null);
 }));
 
-test('the mapping round-trips as a KEY', run(async (p) => {
-  await manifestService.setFoundryProject(p.projectDir, 'test-book');
+test('the mapping round-trips as a KEY, with no source version', run(async (p) => {
+  await manifestService.setFoundryProject(p.projectDir, 'test-book', null);
   assert.strictEqual(await manifestService.readFoundryProject(p.projectDir), 'test-book');
   assert.deepStrictEqual(p.read().foundryProject, { dir: 'test-book' },
-    'the manifest stores the key and nothing else');
+    'a null source version is an ABSENT field, not a stored null');
+}));
+
+test('the mapping remembers WHICH version was imported', run(async (p) => {
+  await manifestService.setFoundryProject(p.projectDir, 'test-book', 'var-1');
+  const ref = await manifestService.readFoundryProjectRef(p.projectDir);
+  assert.deepStrictEqual(ref, { dir: 'test-book', sourceVariantId: 'var-1' });
+}));
+
+test('re-importing from a different version REPLACES the source, never merges', run(async (p) => {
+  await manifestService.setFoundryProject(p.projectDir, 'test-book', 'var-1');
+  await manifestService.setFoundryProject(p.projectDir, 'test-book', 'var-2');
+  const ref = await manifestService.readFoundryProjectRef(p.projectDir);
+  assert.strictEqual(ref.sourceVariantId, 'var-2');
+  // The whole point: a stale parent would nest tomorrow's exports under a
+  // version they did not come from.
+  await manifestService.setFoundryProject(p.projectDir, 'test-book', null);
+  const cleared = await manifestService.readFoundryProjectRef(p.projectDir);
+  assert.strictEqual(cleared.sourceVariantId, undefined,
+    'a re-import that names no version of ours erases the old source');
+}));
+
+test('a project with no mapping has no ref at all', run(async (p) => {
+  assert.strictEqual(await manifestService.readFoundryProjectRef(p.projectDir), null);
 }));
 
 test('an absolute path is refused by name and nothing is written', run(async (p) => {
   await assert.rejects(
-    () => manifestService.setFoundryProject(p.projectDir, path.join(p.library, 'foundry', 'projects', 'x')),
+    () => manifestService.setFoundryProject(p.projectDir, path.join(p.library, 'foundry', 'projects', 'x'), null),
     /not a Foundry project key/);
   assert.strictEqual(p.read().foundryProject, undefined);
 }));
 
 test('a nested path is refused too — a key is one folder name', run(async (p) => {
   await assert.rejects(
-    () => manifestService.setFoundryProject(p.projectDir, 'projects/test-book'),
+    () => manifestService.setFoundryProject(p.projectDir, 'projects/test-book', null),
     /not a Foundry project key/);
 }));
 
 test('an empty key is refused', run(async (p) => {
-  await assert.rejects(() => manifestService.setFoundryProject(p.projectDir, '   '), /no project key/);
+  await assert.rejects(() => manifestService.setFoundryProject(p.projectDir, '   ', null), /no project key/);
 }));
 
 // ── The export list ─────────────────────────────────────────────────────────
