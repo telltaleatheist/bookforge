@@ -1936,7 +1936,7 @@ export class ElectronService {
   /** Every variant arrives with `absPath` already resolved by main against ITS OWN
    *  project directory (plus `exists`). Callers must use that path — never join
    *  `variant.path` onto a directory here; see ResolvedProjectVariant. */
-  async variantList(projectId: string): Promise<{ success: boolean; variants?: ResolvedProjectVariant[]; primaryVariantId?: string; error?: string }> {
+  async variantList(projectId: string): Promise<{ success: boolean; variants?: ResolvedProjectVariant[]; primaryVariantId?: string; ttsVariantId?: string; error?: string }> {
     if (this.isElectron) return (window as any).electron.variant.list(projectId);
     return { success: false, error: 'Not running in Electron' };
   }
@@ -1975,6 +1975,16 @@ export class ElectronService {
   }
   async variantSetProfessional(projectId: string, variantId: string, value: boolean): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) return (window as any).electron.variant.setProfessional(projectId, variantId, value);
+    return { success: false, error: 'Not running in Electron' };
+  }
+  /** Mark ONE version as this book's TTS file, or clear the mark with `null`. */
+  async variantSetTts(projectId: string, variantId: string | null): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) return (window as any).electron.variant.setTts(projectId, variantId);
+    return { success: false, error: 'Not running in Electron' };
+  }
+  /** "Add to archive": move a Foundry export into the protected folder, top level. */
+  async variantPromoteToArchive(projectId: string, variantId: string): Promise<{ success: boolean; path?: string; error?: string }> {
+    if (this.isElectron) return (window as any).electron.variant.promoteToArchive(projectId, variantId);
     return { success: false, error: 'Not running in Electron' };
   }
   async variantPullMetadata(projectId: string, fromId: string, toId: string, fields: string[]): Promise<{ success: boolean; error?: string }> {
@@ -2021,10 +2031,10 @@ export class ElectronService {
     if (this.isElectron) return (window as any).electron.foundryHost.open(projectDir, documentPath);
     return { success: false, error: 'Not running in Electron' };
   }
-  /** Foundry filed an export onto a book. Every window hears it. */
-  onFoundryExportsChanged(callback: (event: { projectDir: string }) => void): () => void {
+  /** Foundry landed an export as a VERSION of a book. Every window hears it. */
+  onFoundryVersionsChanged(callback: (event: { projectDir: string }) => void): () => void {
     if (!this.isElectron) return () => { /* nothing subscribed */ };
-    return (window as any).electron.foundryHost.onExportsChanged(callback);
+    return (window as any).electron.foundryHost.onVersionsChanged(callback);
   }
   /** A book's Foundry project mapping was learned or corrected (first contact). */
   onFoundryProjectChanged(callback: (event: { projectDir: string }) => void): () => void {

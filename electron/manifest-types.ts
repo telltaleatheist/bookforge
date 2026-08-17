@@ -77,6 +77,25 @@ export interface ProjectManifest {
   primaryVariantId?: string;
 
   /**
+   * WHICH version the user marked as this book's TTS file, or absent.
+   *
+   * Owen, 2026-08-17: "The user can mark the file as a tts file if they want."
+   * At most one per book, which is why it is a scalar POINTER beside
+   * `primaryVariantId` rather than a boolean on every variant — one slot cannot
+   * hold two answers, so marking a second version clears the first by
+   * construction and no sweep can ever leave two marked.
+   *
+   * NEVER set automatically. An export landing does not mark itself: the mark is
+   * a statement about which file the user wants read aloud, and a pipeline that
+   * made it for them would silently redirect the shelf's Process button the next
+   * time Foundry exported anything.
+   *
+   * Absent means "the user has not said", which the shelf answers by its own
+   * precedence rule rather than by guessing (see `TtsTarget`).
+   */
+  ttsVariantId?: string;
+
+  /**
    * Completed audiobook analyses, keyed by the stable audiobook variant id.
    * The referenced report is usable only after the protocol verifies both hashes
    * against the current variant. Document analysis remains in pipeline.analysis.
@@ -97,9 +116,25 @@ export interface ProjectManifest {
   /**
    * What Foundry has EXPORTED for this book, oldest first, referenced in place.
    *
-   * Append-only, and absent until the first export lands. See
-   * {@link FoundryExportRecord} for why the files are not copied into the
-   * project.
+   * ── RETIRED 2026-08-17. NO NEW RECORDS ARE WRITTEN. ────────────────────────
+   *
+   * Owen's ruling: "I think exports should go to the project as a version." An
+   * export is now COPIED into the project's `output/` folder and minted as an
+   * ordinary {@link ProjectVariant} carrying {@link FoundryVariantSource}
+   * provenance — see `addFoundryOutputVariant` (electron/library-actions.ts).
+   * A version is a thing the user can narrate, promote, rename and delete; a
+   * reference to a file in somebody else's tray was none of those.
+   *
+   * The records a library already holds are NOT migrated. There is at most a
+   * night's worth of them (the field shipped 2026-08-16), each naming a file
+   * that is still in Foundry's `final/` tray, and re-exporting from Foundry
+   * lands each one properly as a version. Migrating would mean copying files on
+   * behalf of a user who never asked, to heal a day-old field.
+   *
+   * The READ machinery (`readFoundryExports`, `foundry-host:exports`,
+   * `foundry-host:forget-export`) still compiles and still answers, so nothing
+   * that holds these records is left unable to see them. All of it dies in the
+   * deletion wave.
    */
   foundryExports?: FoundryExportRecord[];
 }
@@ -116,6 +151,56 @@ export interface ProjectManifest {
  */
 export interface FoundryProjectRef {
   dir: string;
+  /**
+   * WHICH version of this book was imported into that Foundry project — the
+   * parent every export from it derives from, or absent when the import named no
+   * version of ours.
+   *
+   * Learned at FIRST CONTACT (`onImport`), which is the only moment the answer
+   * exists: Foundry announces the file the user opened, and that file is a
+   * variant of this book or it is not. An export landing has no way back to it —
+   * it names a file in `final/` whose name Foundry chose — so the answer is
+   * captured when it is known and copied onto each export's own provenance.
+   *
+   * Absent is a real state, not a hole: a user can import a stray file into a
+   * book's Foundry project. Exports from such a project nest under nothing and
+   * render at top level rather than being attached to a guessed parent.
+   */
+  sourceVariantId?: string;
+}
+
+/**
+ * WHERE a version came from, when Foundry made it.
+ *
+ * Present only on variants landed by an export (`addFoundryOutputVariant`), and
+ * CLEARED when the user promotes one to `archive/` — promotion is the user
+ * saying "this is my file now", and a promoted version is a top-level version of
+ * the book rather than a derivative of another one.
+ *
+ * `projectKey` + `fileName` together are the RE-EXPORT IDENTITY. Foundry rewrites
+ * the same file in its tray every time the user exports again, so a landing that
+ * matches an existing variant on both replaces that variant's file in place —
+ * same id, same row, same TTS mark — instead of piling up a version per export.
+ * Neither half is enough alone: two books' Foundry projects can both export
+ * "book.epub", and one project can export several differently-named files.
+ */
+export interface FoundryVariantSource {
+  /** The folder name under `<library>/foundry/projects/`, never a path. */
+  projectKey: string;
+  /** The basename Foundry left in `final/`, compared case-insensitively. */
+  fileName: string;
+  /**
+   * The variant this one derives from — the file that was imported into Foundry
+   * — or null when the mapping records none.
+   *
+   * Null is rendered as a top-level row, NOT as a guess. There is no way to
+   * infer a parent from an export's contents, and attaching it to whichever
+   * version sorted first is exactly the ambiguity Owen's identity law exists to
+   * refuse.
+   */
+  parentVariantId: string | null;
+  /** ISO timestamp of the landing this record describes; refreshed on re-export. */
+  landedAt: string;
 }
 
 /** What Foundry can hand back. The tray holds nothing else. */
@@ -204,6 +289,14 @@ export interface ProjectVariant {
   sourceFileHash?: string; // dedup
   addedAt: string;
   professionallyRead?: boolean;  // audiobook variants: user-settable "professionally read" flag
+  /**
+   * This version is a Foundry EXPORT, and this says which and from what.
+   *
+   * Absent on every version the user added themselves — which is what makes it
+   * the test for "render this nested under its parent". See
+   * {@link FoundryVariantSource}.
+   */
+  foundrySource?: FoundryVariantSource;
 }
 
 /**

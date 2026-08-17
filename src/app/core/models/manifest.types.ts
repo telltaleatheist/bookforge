@@ -69,6 +69,16 @@ export interface ProjectManifest {
   primaryVariantId?: string;
 
   /**
+   * WHICH version the user marked as this book's TTS file, or absent.
+   *
+   * MIRRORS `ttsVariantId` in electron/manifest-types.ts (the writing side).
+   * At most one per book — a scalar pointer beside `primaryVariantId`, so
+   * marking a second version clears the first by construction. Never set
+   * automatically; absent means the user has not said.
+   */
+  ttsVariantId?: string;
+
+  /**
    * Completed audiobook analyses, keyed by the stable audiobook variant id.
    * Entries are cryptographic pointers; consumers must verify them before use.
    * Document analysis remains in pipeline.analysis.
@@ -81,7 +91,13 @@ export interface ProjectManifest {
    */
   foundryProject?: FoundryProjectRef;
 
-  /** What Foundry has exported for this book, oldest first, referenced in place. */
+  /**
+   * What Foundry has exported for this book, oldest first, referenced in place.
+   *
+   * RETIRED 2026-08-17 — no new records are written, and the ones a library
+   * already holds are not migrated. An export now lands as an ordinary variant
+   * carrying `foundrySource`. See electron/manifest-types.ts for the full note.
+   */
   foundryExports?: FoundryExportRecord[];
 }
 
@@ -96,6 +112,32 @@ export interface ProjectManifest {
  */
 export interface FoundryProjectRef {
   dir: string;
+  /**
+   * WHICH version of this book was imported into that Foundry project — the
+   * parent every export from it derives from — or absent when the import named
+   * no version of ours. Learned at first contact; never inferred later.
+   */
+  sourceVariantId?: string;
+}
+
+/**
+ * WHERE a version came from, when Foundry made it.
+ *
+ * MIRRORS `FoundryVariantSource` in electron/manifest-types.ts (the writing
+ * side); keep the two in step. Present only on variants a Foundry export landed
+ * as, and cleared when the user promotes one to `archive/`.
+ *
+ * `projectKey` + `fileName` are the re-export identity: a landing matching both
+ * replaces that variant's file in place rather than adding another version.
+ * `parentVariantId` is null when the mapping records no source version, and a
+ * null parent renders at top level rather than under a guessed one.
+ */
+export interface FoundryVariantSource {
+  projectKey: string;
+  fileName: string;
+  parentVariantId: string | null;
+  /** ISO timestamp of the landing; refreshed on re-export. */
+  landedAt: string;
 }
 
 /** What Foundry can hand back. The tray holds nothing else. */
@@ -177,6 +219,12 @@ export interface ProjectVariant {
   sourceFileHash?: string;
   addedAt: string;
   professionallyRead?: boolean;  // audiobook variants: user-settable "professionally read" flag
+  /**
+   * This version is a Foundry EXPORT, and this says which and from what.
+   * Absent on every version the user added themselves — which is what makes it
+   * the test for "render this nested under its parent".
+   */
+  foundrySource?: FoundryVariantSource;
 }
 
 /**

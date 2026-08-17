@@ -29,6 +29,7 @@ import type {
   ProjectVariant,
   VariantMetadata,
   NarrationFlags,
+  FoundryProjectRef,
   AppliedPass,
   AppliedPassKind,
   LedgerEntry,
@@ -6451,14 +6452,39 @@ export async function readFoundryProject(projectDir: string): Promise<string | n
 }
 
 /**
- * Record which hosted-Foundry project this book's is.
+ * The whole mapping — the key AND the version that was imported into it — or
+ * null when this book has no Foundry project.
+ *
+ * Separate from `readFoundryProject` because the two answer different questions
+ * and the callers are different: the door's label needs the key, and an export
+ * landing needs the source version so it can say which row it derives from.
+ */
+export async function readFoundryProjectRef(projectDir: string): Promise<FoundryProjectRef | null> {
+  const manifest = await readManifestAt(projectDir);
+  return manifest.foundryProject ?? null;
+}
+
+/**
+ * Record which hosted-Foundry project this book's is, and WHICH VERSION of the
+ * book was imported into it.
  *
  * The KEY — the folder name under `<libraryRoot>/foundry/projects/` — and a path
  * is refused by name rather than trimmed into one: a caller holding an absolute
  * path has resolved the library root already, and storing the result is what
  * makes every record wrong the next time the library moves.
+ *
+ * `sourceVariantId` is the parent every export from this project derives from.
+ * It is written as given, INCLUDING `null`, which erases a previously recorded
+ * source: a re-import announces what the project holds now, so a stale parent
+ * left behind would nest tomorrow's exports under a version they did not come
+ * from. Null is stored as an absent field, which is what "we do not know" is
+ * spelled as everywhere else in this manifest.
  */
-export async function setFoundryProject(projectDir: string, key: string): Promise<void> {
+export async function setFoundryProject(
+  projectDir: string,
+  key: string,
+  sourceVariantId: string | null,
+): Promise<void> {
   const trimmed = (key || '').trim();
   if (!trimmed) {
     throw new Error(
@@ -6477,7 +6503,10 @@ export async function setFoundryProject(projectDir: string, key: string): Promis
   const manifest = await readManifestAt(projectDir);
   const projectId = requireLibraryProjectId(projectDir, manifest);
   const saved = await modifyManifest(projectId, (m) => {
-    m.foundryProject = { dir: trimmed };
+    m.foundryProject = {
+      dir: trimmed,
+      ...(sourceVariantId === null ? {} : { sourceVariantId }),
+    };
   });
   if (!saved.success) {
     throw new Error(

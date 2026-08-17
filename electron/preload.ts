@@ -1042,7 +1042,7 @@ export interface ElectronAPI {
     copyToPath: (source: string, dest: string) => Promise<{ success: boolean; error?: string }>;
   };
   variant: {
-    list: (projectId: string) => Promise<{ success: boolean; variants?: unknown[]; primaryVariantId?: string; error?: string }>;
+    list: (projectId: string) => Promise<{ success: boolean; variants?: unknown[]; primaryVariantId?: string; ttsVariantId?: string; error?: string }>;
     add: (projectId: string, filePath: string) => Promise<{ success: boolean; variantId?: string; variant?: unknown; error?: string }>;
     saveMetadata: (projectId: string, variantId: string, meta: Record<string, unknown>, coverData?: string) => Promise<{ success: boolean; coverPath?: string; error?: string }>;
     ensureCover: (projectId: string, variantId: string) => Promise<{ success: boolean; coverPath?: string; data?: string; error?: string }>;
@@ -1051,6 +1051,10 @@ export interface ElectronAPI {
     pullMetadata: (projectId: string, fromId: string, toId: string, fields: string[]) => Promise<{ success: boolean; error?: string }>;
     sendToPipeline: (projectId: string, variantId: string) => Promise<{ success: boolean; sourcePath?: string; projectDir?: string; error?: string }>;
     setProfessional: (projectId: string, variantId: string, value: boolean) => Promise<{ success: boolean; error?: string }>;
+    /** Mark ONE version as this book's TTS file, or clear the mark with `null`. */
+    setTts: (projectId: string, variantId: string | null) => Promise<{ success: boolean; error?: string }>;
+    /** Move a Foundry export from output/ into archive/, as a top-level version. */
+    promoteToArchive: (projectId: string, variantId: string) => Promise<{ success: boolean; path?: string; error?: string }>;
   };
   epub: {
     parse: (epubPath: string) => Promise<{ success: boolean; data?: EpubStructure; error?: string }>;
@@ -1258,11 +1262,11 @@ export interface ElectronAPI {
     open: (projectDir: string) =>
       Promise<{ success: boolean; opened?: 'bare' | 'project'; error?: string }>;
     /**
-     * Foundry filed an export onto a book. Broadcast to EVERY window — the
-     * versions page can be open in more than one, and the export was started
-     * somewhere else entirely.
+     * Foundry landed an export as a VERSION of a book. Broadcast to EVERY window
+     * — the versions page can be open in more than one, the shelf is drawn in
+     * another, and the export was started somewhere else entirely.
      */
-    onExportsChanged: (callback: (event: { projectDir: string }) => void) => () => void;
+    onVersionsChanged: (callback: (event: { projectDir: string }) => void) => () => void;
     /** A book's Foundry project mapping was learned or corrected (first contact). */
     onProjectChanged: (callback: (event: { projectDir: string }) => void) => () => void;
     /**
@@ -3127,6 +3131,8 @@ const electronAPI: ElectronAPI = {
     pullMetadata: (projectId: string, fromId: string, toId: string, fields: string[]) => ipcRenderer.invoke('variant:pull-metadata', projectId, fromId, toId, fields),
     sendToPipeline: (projectId: string, variantId: string) => ipcRenderer.invoke('variant:send-to-pipeline', projectId, variantId),
     setProfessional: (projectId, variantId, value) => ipcRenderer.invoke('variant:set-professional', projectId, variantId, value),
+    setTts: (projectId: string, variantId: string | null) => ipcRenderer.invoke('variant:set-tts', projectId, variantId),
+    promoteToArchive: (projectId: string, variantId: string) => ipcRenderer.invoke('variant:promote-to-archive', projectId, variantId),
   },
   epub: {
     parse: (epubPath: string) =>
@@ -3385,11 +3391,14 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('foundry-host:forget-export', projectDir, exportId),
     open: (projectDir: string, documentPath?: string) =>
       ipcRenderer.invoke('foundry-host:open', projectDir, documentPath),
-    onExportsChanged: (callback: (event: { projectDir: string }) => void) => {
+    // A Foundry landing changed this book's VERSIONS. Named for what it means
+    // since 2026-08-17: an export is copied in and minted as a variant, so what
+    // the listener must re-read is the version list, not an export list.
+    onVersionsChanged: (callback: (event: { projectDir: string }) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, event: { projectDir: string }) =>
         callback(event);
-      ipcRenderer.on('foundry-host:exports-changed', listener);
-      return () => { ipcRenderer.removeListener('foundry-host:exports-changed', listener); };
+      ipcRenderer.on('foundry-host:versions-changed', listener);
+      return () => { ipcRenderer.removeListener('foundry-host:versions-changed', listener); };
     },
     onProjectChanged: (callback: (event: { projectDir: string }) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, event: { projectDir: string }) =>

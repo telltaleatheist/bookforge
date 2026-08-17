@@ -22,7 +22,7 @@ import * as manifestService from './manifest-service';
 import { applyMetadata, normalizeAudioToM4b } from './metadata-tools';
 import { normalizeFsPath, toAsciiSlug } from './path-utils';
 import { familyStem } from '../shared/document/book-families';
-import type { ProjectVariant } from './manifest-types';
+import type { FoundryVariantSource, ProjectVariant } from './manifest-types';
 
 /** Progress sink for long transcodes. In the app this forwards to the renderer's
  *  `import:progress` channel; in the CLI it prints. Never affects the outcome. */
@@ -343,6 +343,58 @@ export async function setPrimaryVariant(
 }
 
 /**
+ * Mark ONE version as this book's TTS file, or clear the mark (`null`).
+ *
+ * Owen, 2026-08-17: "The user can mark the file as a tts file if they want. I
+ * think the user should be able to send any EPUB through tts."
+ *
+ * THE SAME SHAPE AS `setPrimaryVariant`, and for the same reason: the answer is
+ * a single pointer on the manifest (`ttsVariantId`), not a boolean on every
+ * variant. One slot cannot hold two answers, so marking a second version clears
+ * the first by construction — there is no sweep to forget, and no way for two
+ * rows to come back marked. (`setVariantProfessional` is the other idiom in this
+ * file, and it is deliberately NOT the one copied: that flag is independent per
+ * row, and it needs the multi-record stamping this does not.)
+ *
+ * It does NOT adopt the variant's metadata onto the project the way
+ * `setPrimaryVariant` does. Primary is the book's IDENTITY; this is a statement
+ * about which file to read aloud, and a book whose title changed because the
+ * user picked a narration source would be a surprise nobody asked for.
+ *
+ * Clearing is `variantId === null` — a real act with its own button ("Unmark"),
+ * not the absence of one. Marking a version that does not exist is refused by
+ * name rather than stored as a pointer to nothing.
+ */
+export async function setTtsVariant(
+  projectId: string,
+  variantId: string | null,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    let found = false;
+    const saved = await manifestService.modifyManifest(projectId, (mf) => {
+      const cur = manifestService.getVariants(mf);
+      mf.variants = cur.variants;
+      if (variantId === null) {
+        delete mf.ttsVariantId;
+        found = true;
+        return;
+      }
+      const v = mf.variants.find((x) => x.id === variantId);
+      if (!v) return;
+      found = true;
+      mf.ttsVariantId = variantId;
+    });
+    // saved before found, exactly as setPrimaryVariant orders them: a failed
+    // manifest READ leaves found=false, and "version not found" would mask it.
+    if (!saved?.success) {
+      return { success: false, error: saved?.error || 'Failed to update project — the TTS mark is unchanged.' };
+    }
+    if (!found) return { success: false, error: `Version ${variantId} not found` };
+    return { success: true };
+  } catch (err) { return { success: false, error: (err as Error).message }; }
+}
+
+/**
  * Update one variant's metadata. When the variant is the project's primary, the
  * project-level metadata is kept in sync; when it is an audiobook, the effective
  * tags (and cover) are embedded into the m4b immediately so the file on disk and
@@ -516,6 +568,250 @@ export async function addVariant(
     return { success: true, variantId: variant.id, variant };
   } catch (err) {
     console.error('[library-actions] addVariant:', err);
+    return { success: false, error: (err as Error).message };
+  }
+}
+
+/** The one comparison that decides whether two landings name the same export. */
+function sameFoundryExportFile(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * Land a file Foundry exported as a VERSION of this book, in `output/`.
+ *
+ * Owen, 2026-08-17: "I think exports should go to the project as a version" —
+ * and, refining it: "maybe the exports should be moved to output and visually be
+ * smaller indented line items under their parent file... And maybe we have an
+ * option to make it an archive file if we want."
+ *
+ * ── Why this is a sibling of addVariant rather than a call into it ──────────
+ *
+ * `addVariant` lands in `archive/`, and that is not incidental to it — the
+ * folder is the PROTECTED one, the descriptive name steps around working-chain
+ * stems, and the audio branch transcodes. An export is none of those things: it
+ * is a derived file the user has not adopted yet, so it belongs in `output/`
+ * until they say otherwise (`promoteVariantToArchive`). Passing a flag into
+ * addVariant to switch its destination folder would have made every one of its
+ * archive-shaped decisions conditional on a caller it was not written for. The
+ * idioms are reused verbatim instead: atomic copy, descriptive name through
+ * `uniqueArchiveName`, a `ProjectVariant` written under `modifyManifest`, and
+ * the same orphan-copy cleanup when the manifest write fails.
+ *
+ * ── output/ IS THE WIPEABLE FOLDER, AND THAT IS THE POINT ───────────────────
+ *
+ * `delete-output` blind-wipes `output/` (see `importAudiobookProject`, which
+ * says so at length about why irreplaceable audio must never sit there). An
+ * export is replaceable BY CONSTRUCTION — Foundry still holds the project that
+ * made it and can export it again — so it is exactly the kind of file that
+ * folder is for. A user who wants one kept says so with "Add to archive", which
+ * moves it to the protected folder and severs the nesting.
+ *
+ * ── Re-export replaces; it never piles up ───────────────────────────────────
+ *
+ * A landing whose (projectKey, fileName) matches an existing variant's
+ * `foundrySource` overwrites THAT VARIANT'S FILE, keeping its id, its row, its
+ * descriptor and the user's TTS mark. Exporting the same book five times leaves
+ * one version, not five. There is deliberately NO cross-variant `sourceFileHash`
+ * refusal here (addVariant has one): an export whose bytes match the file that
+ * was imported into Foundry is the ordinary result of exporting an unedited
+ * book, and refusing it would mean the export the user just made never appears.
+ * Same bytes under different provenance is a legitimate pair of rows.
+ */
+export async function addFoundryOutputVariant(
+  projectId: string,
+  filePath: string,
+  provenance: { projectKey: string; fileName: string; parentVariantId: string | null },
+  landingTitle: string,
+): Promise<{ success: boolean; variantId?: string; replaced?: boolean; error?: string }> {
+  try {
+    const projectDir = manifestService.getProjectPath(projectId);
+    const got0 = await manifestService.getManifest(projectId);
+    if (!got0.manifest) return { success: false, error: 'Project not found' };
+    const hash = await sha256File(filePath);
+    const landedAt = new Date().toISOString();
+
+    const existing = manifestService.getVariants(got0.manifest).variants.find((v) =>
+      !!v.foundrySource
+      && v.foundrySource.projectKey === provenance.projectKey
+      && sameFoundryExportFile(v.foundrySource.fileName, provenance.fileName));
+
+    if (existing) {
+      // IN PLACE, at the path the row already names. The variant keeps its id, so
+      // a TTS mark, a descriptor the user typed and anything pointing at this
+      // version all survive the re-export — which is the whole reason the
+      // provenance pair is recorded.
+      const dest = normalizeFsPath(path.join(projectDir, ...existing.path.split('/')));
+      await manifestService.atomicCopyFile(filePath, dest);
+      const saved = await manifestService.modifyManifest(projectId, (mf) => {
+        const cur = manifestService.getVariants(mf);
+        mf.variants = cur.variants.map((v) => v.id === existing.id
+          ? {
+              ...v,
+              // The file changed, so the hash that describes it must change with
+              // it — a stale hash is what makes a later duplicate guard answer
+              // about bytes that are no longer there.
+              sourceFileHash: hash,
+              foundrySource: {
+                projectKey: provenance.projectKey,
+                fileName: provenance.fileName,
+                // Re-read from the mapping every landing: the user can re-import
+                // a different version into the same Foundry project, and the
+                // parent is whatever the mapping says NOW.
+                parentVariantId: provenance.parentVariantId,
+                landedAt,
+              } satisfies FoundryVariantSource,
+            }
+          : v);
+      });
+      if (!saved?.success) {
+        return {
+          success: false,
+          error: saved?.error
+            || `${provenance.fileName} was copied in, but recording the re-export failed. The version row may name the old file.`,
+        };
+      }
+      return { success: true, variantId: existing.id, replaced: true };
+    }
+
+    // A VERSION OF A BOOK WE ALREADY KNOW, so the project's own metadata names
+    // it — the same rule addVariant's audio branch states. Foundry's tray name
+    // goes in `descriptor` (free text: "how this version differs"), where it is
+    // the user's to edit and is never overwritten by a later re-export.
+    const m = got0.manifest.metadata;
+    const ext = path.extname(provenance.fileName).toLowerCase();
+    const outputDir = path.join(projectDir, 'output');
+    await fs.mkdir(outputDir, { recursive: true });
+    const descriptiveName = uniqueArchiveName(
+      outputDir,
+      manifestService.computeDescriptiveFilename(
+        { title: m.title, author: m.author, year: m.year ? String(m.year) : undefined }, ext),
+    );
+    const dest = path.join(outputDir, descriptiveName);
+    await manifestService.atomicCopyFile(filePath, dest);
+
+    const variant: ProjectVariant = {
+      id: crypto.randomUUID(),
+      kind: 'ebook',
+      format: ext.replace('.', ''),
+      path: `output/${descriptiveName}`,
+      descriptor: landingTitle,
+      metadata: {
+        title: m.title, author: m.author, year: m.year ? String(m.year) : undefined,
+        language: m.language, coverPath: m.coverPath,
+      },
+      sourceFileHash: hash,
+      addedAt: landedAt,
+      foundrySource: {
+        projectKey: provenance.projectKey,
+        fileName: provenance.fileName,
+        parentVariantId: provenance.parentVariantId,
+        landedAt,
+      },
+    };
+
+    const savedAdd = await manifestService.modifyManifest(projectId, (mf) => {
+      const cur = manifestService.getVariants(mf);
+      mf.variants = [...cur.variants, variant];
+      // Deliberately NOT touched: `primaryVariantId` (addVariant seeds it when a
+      // project has none) and `ttsVariantId`. An export must not become the
+      // book's identity, and it must not mark itself as the file to narrate —
+      // the mark is the user's, and a Foundry export that claimed it would
+      // silently redirect the shelf's Process button.
+    });
+    if (!savedAdd?.success) {
+      // The copy is on disk but the manifest write failed. Remove the orphan so a
+      // retry is clean, exactly as addVariant does.
+      try { await fs.unlink(normalizeFsPath(dest)); } catch { /* leave it */ }
+      return {
+        success: false,
+        error: savedAdd?.error || 'Failed to update project — the exported version was not added.',
+      };
+    }
+    return { success: true, variantId: variant.id, replaced: false };
+  } catch (err) {
+    console.error('[library-actions] addFoundryOutputVariant:', err);
+    return { success: false, error: (err as Error).message };
+  }
+}
+
+/**
+ * "Add to archive": promote a Foundry export to a top-level version of the book.
+ *
+ * Owen, 2026-08-17: "maybe we have an option to make it an archive file if we
+ * want. Like an 'add to archive' button or something that moves it to the top
+ * level."
+ *
+ * A MOVE, not a copy — the file leaves `output/` (where `delete-output` may wipe
+ * it) for the protected `archive/` folder, under a name unique THERE. One file
+ * before, one file after; the version keeps its id, so nothing pointing at it
+ * (the TTS mark above all) is disturbed.
+ *
+ * ── Why the provenance is CLEARED ──────────────────────────────────────────
+ *
+ * `foundrySource` is what makes a row render nested under its parent, and
+ * promotion is the user saying this is their own file at the top level. Keeping
+ * the provenance would leave it drawn as a derivative of another version while
+ * living in the folder reserved for originals — the record and the picture
+ * disagreeing. Clearing it also releases the (projectKey, fileName) pair, which
+ * is the deliberate consequence: the NEXT export of that same file lands as a
+ * fresh version in output/ rather than overwriting the copy the user just chose
+ * to keep. That is the behaviour promotion is for.
+ */
+export async function promoteVariantToArchive(
+  projectId: string,
+  variantId: string,
+): Promise<{ success: boolean; path?: string; error?: string }> {
+  try {
+    const projectDir = manifestService.getProjectPath(projectId);
+    const got0 = await manifestService.getManifest(projectId);
+    if (!got0.manifest) return { success: false, error: 'Project not found' };
+    const variant = manifestService.getVariants(got0.manifest).variants.find((v) => v.id === variantId);
+    if (!variant) return { success: false, error: `Version ${variantId} not found` };
+    if (!variant.foundrySource) {
+      return {
+        success: false,
+        error: 'That version is already one of this book\'s own files, so there is nothing to add to '
+          + 'the archive. Only a version Foundry exported can be promoted.',
+      };
+    }
+    const from = normalizeFsPath(path.join(projectDir, ...variant.path.split('/')));
+    if (!fsSync.existsSync(from)) {
+      return {
+        success: false,
+        error: `${path.basename(from)} is not on disk, so there is nothing to move into the archive. `
+          + 'It may have been deleted, or output/ may have been cleared.',
+      };
+    }
+    const archiveDir = path.join(projectDir, 'archive');
+    await fs.mkdir(archiveDir, { recursive: true });
+    const name = uniqueArchiveName(archiveDir, path.basename(from));
+    const to = path.join(archiveDir, name);
+    // Same project directory, so the same volume: a rename is atomic and leaves
+    // no window in which the file is in both folders or neither.
+    await fs.rename(from, to);
+
+    const saved = await manifestService.modifyManifest(projectId, (mf) => {
+      const cur = manifestService.getVariants(mf);
+      mf.variants = cur.variants.map((v) => {
+        if (v.id !== variantId) return v;
+        const promoted = { ...v, path: `archive/${name}` };
+        delete promoted.foundrySource;
+        return promoted;
+      });
+    });
+    if (!saved?.success) {
+      // The file moved but the record still names output/. Put it back rather
+      // than leaving the manifest pointing at a path with nothing on it.
+      try { await fs.rename(to, from); } catch { /* the move below is now the report */ }
+      return {
+        success: false,
+        error: saved?.error || 'Failed to update project — the version was not moved into the archive.',
+      };
+    }
+    return { success: true, path: `archive/${name}` };
+  } catch (err) {
+    console.error('[library-actions] promoteVariantToArchive:', err);
     return { success: false, error: (err as Error).message };
   }
 }

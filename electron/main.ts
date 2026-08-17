@@ -52,7 +52,7 @@ import { chapterOpeningRefusal } from '../shared/document/chapter-opening-report
 // A block's element key says which DOCUMENT it is in, which is the identity a
 // chapter is listed, renamed and struck by.
 import { parseNarrationElementKey } from '../shared/vlm/narration-deletions';
-import { addVariant, importAudiobookProject, saveVariantMetadata, setPrimaryVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
+import { addFoundryOutputVariant, addVariant, importAudiobookProject, promoteVariantToArchive, saveVariantMetadata, setPrimaryVariant, setTtsVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
@@ -621,7 +621,9 @@ function foundryLandingKey(projectDir: string): string {
  * import that just landed changed a manifest this instant, and a cache would
  * answer with the library as it stood before the thing being announced.
  */
-async function foundryProjectClaims(): Promise<{ dir: string; key: string | null }[]> {
+async function foundryProjectClaims(): Promise<
+  { dir: string; key: string | null; sourceVariantId?: string }[]
+> {
   const listed = await manifestService.listProjects();
   if (!listed.success || !listed.projects) {
     throw new Error(
@@ -630,6 +632,9 @@ async function foundryProjectClaims(): Promise<{ dir: string; key: string | null
   return listed.projects.map((m) => ({
     dir: manifestService.getProjectPath(m.projectId),
     key: m.foundryProject?.dir ?? null,
+    // Carried so a re-import can tell "the same mapping again" from "the same
+    // project, a different source version" without a second manifest read.
+    sourceVariantId: m.foundryProject?.sourceVariantId,
   }));
 }
 
@@ -645,7 +650,7 @@ function isInside(parent: string, child: string): boolean {
  */
 async function recordFoundryExportLanding(landing: FoundryExportLanding): Promise<void> {
   const key = foundryLandingKey(landing.projectDir);
-  let claims: { dir: string; key: string | null }[];
+  let claims: Awaited<ReturnType<typeof foundryProjectClaims>>;
   try {
     claims = await foundryProjectClaims();
   } catch (err) {
@@ -691,31 +696,52 @@ async function recordFoundryExportLanding(landing: FoundryExportLanding): Promis
     return;
   }
 
-  // The record is LIBRARY-RELATIVE with forward slashes, for the reason every
-  // other path in a manifest is: an absolute path names a volume, and stops
-  // being true the day the library moves.
-  const libraryRoot = getLibraryRoot();
-  if (!isInside(libraryRoot, landing.path)) {
-    console.error(
-      `[foundry-host] "${landing.title}" cannot be recorded: Foundry left it at ${landing.path}, `
-      + `which is not inside this library (${libraryRoot}). Only files inside the library can be `
-      + 'referenced by a version row. Nothing was recorded.');
-    return;
-  }
-  const rel = path.relative(normalizeFsPath(libraryRoot), normalizeFsPath(landing.path))
-    .split(path.sep).join('/');
+  // The library-root containment check that stood here is gone with the reason
+  // for it. It existed because the record was a REFERENCE stored as a
+  // library-relative path, so a file outside the library could not be named. The
+  // file is COPIED into the project now (2026-08-17), which is a read of an
+  // absolute path and nothing more — where Foundry keeps its tray stopped being
+  // this function's business.
 
+  // WHICH VERSION this export derives from, from the mapping the import wrote.
+  // Read here rather than remembered: the user can re-import a different version
+  // into the same Foundry project between two exports, and the parent is
+  // whatever the mapping says at the moment the file lands. Null when the
+  // mapping records none — the row then renders at top level rather than under a
+  // version this code picked for it.
+  let parentVariantId: string | null = null;
   try {
-    await manifestService.appendFoundryExport(matchDir, {
-      path: rel, kind: landing.kind, title: landing.title,
-    });
+    const ref = await manifestService.readFoundryProjectRef(matchDir);
+    parentVariantId = ref?.sourceVariantId ?? null;
   } catch (err) {
-    console.error(`[foundry-host] ${(err as Error).message}`);
+    // The mapping is how the landing got here at all, so failing to re-read it
+    // is worth saying — but it costs the NESTING, not the version. The export is
+    // still filed; it simply sits at top level.
+    console.error(
+      `[foundry-host] "${landing.title}" is being filed for ${path.basename(matchDir)}, but which `
+      + `version it derives from could not be read: ${(err as Error).message}. It lands as a `
+      + 'top-level version.');
+  }
+
+  const landed = await addFoundryOutputVariant(
+    path.basename(matchDir),
+    landing.path,
+    { projectKey: key, fileName: path.basename(landing.path), parentVariantId },
+    landing.title,
+  );
+  if (!landed.success) {
+    console.error(
+      `[foundry-host] "${landing.title}" could not be added to ${path.basename(matchDir)} as a `
+      + `version: ${landed.error}. The file is where Foundry left it; nothing lists it.`);
     return;
   }
-  // Every window: the versions page can be open in more than one, and the row
-  // must appear where the user is rather than where the export was started.
-  broadcastToAllWindows('foundry-host:exports-changed', { projectDir: matchDir });
+  console.log(
+    `[foundry-host] "${landing.title}" ${landed.replaced ? 're-exported over' : 'landed as'} a `
+    + `version of ${path.basename(matchDir)} (output/, variant ${landed.variantId}).`);
+  // Every window: the versions page can be open in more than one, the shelf is
+  // drawn in another, and the row must appear where the user is rather than
+  // where the export was started.
+  broadcastToAllWindows('foundry-host:versions-changed', { projectDir: matchDir });
 }
 
 /**
@@ -735,7 +761,7 @@ async function recordFoundryExportLanding(landing: FoundryExportLanding): Promis
  */
 async function recordFoundryImportLanding(landing: FoundryImportLanding): Promise<void> {
   const key = foundryLandingKey(landing.projectDir);
-  let claims: { dir: string; key: string | null }[];
+  let claims: Awaited<ReturnType<typeof foundryProjectClaims>>;
   try {
     claims = await foundryProjectClaims();
   } catch (err) {
@@ -755,20 +781,60 @@ async function recordFoundryImportLanding(landing: FoundryImportLanding): Promis
     return;
   }
 
-  if (owner.key === key) return; // already recorded, and a re-import says the same thing
-
-  const changing = owner.key !== null;
+  // WHICH VERSION of this book was opened in Foundry — the parent every export
+  // from this project will nest under.
+  //
+  // THIS IS THE ONLY MOMENT THE ANSWER EXISTS. Foundry names the file the user
+  // imported; an export landing names a file in `final/` whose name Foundry
+  // chose, with no way back to the version it came from. So the match is made
+  // here, against this book's own variant list, and recorded — never inferred
+  // later from an export's contents.
+  //
+  // No match is a real answer and is stored as one (null): a user can import a
+  // stray file into a book's Foundry project, and an export from it derives from
+  // no version of ours. Such exports render at top level rather than being
+  // attached to whichever version happened to sort first.
+  let sourceVariantId: string | null = null;
   try {
-    await manifestService.setFoundryProject(owner.dir, key);
+    const projectId = path.basename(owner.dir);
+    const got = await manifestService.getManifest(projectId);
+    if (got.manifest) {
+      const projectDir = manifestService.getProjectPath(projectId);
+      const match = manifestService.getVariants(got.manifest).variants.find((v) =>
+        sameResolvedPath(
+          normalizeFsPath(path.join(projectDir, ...v.path.split('/'))),
+          landing.originalPath));
+      sourceVariantId = match?.id ?? null;
+    }
+  } catch (err) {
+    console.error(
+      `[foundry-host] Which version ${landing.originalPath} is could not be read: `
+      + `${(err as Error).message}. The mapping is still recorded; exports from it will land at `
+      + 'top level.');
+  }
+
+  // A re-import that says the same thing about BOTH halves has nothing to write.
+  // The source is compared too: the same project can be re-imported from a
+  // different version of the book, and that is precisely the change this
+  // announcement exists to record.
+  if (owner.key === key && owner.sourceVariantId === (sourceVariantId ?? undefined)) return;
+
+  const changing = owner.key !== null && owner.key !== key;
+  try {
+    await manifestService.setFoundryProject(owner.dir, key, sourceVariantId);
   } catch (err) {
     console.error(`[foundry-host] ${(err as Error).message}`);
     return;
   }
+  const from = sourceVariantId === null
+    ? 'no version of this book (exports from it land at top level)'
+    : `version ${sourceVariantId}`;
   console.log(
     changing
       ? `[foundry-host] ${path.basename(owner.dir)} now points at Foundry project "${key}" `
-        + `(it pointed at "${owner.key}"). Foundry's own announcement is the authority.`
-      : `[foundry-host] ${path.basename(owner.dir)} is Foundry project "${key}".`);
+        + `(it pointed at "${owner.key}"), opened from ${from}. Foundry's own announcement is the `
+        + 'authority.'
+      : `[foundry-host] ${path.basename(owner.dir)} is Foundry project "${key}", opened from ${from}.`);
   // The door's label is read from this mapping, so it flips from
   // "Import via Foundry" to "Edit in Foundry" without a reload.
   broadcastToAllWindows('foundry-host:project-changed', { projectDir: owner.dir });
@@ -7097,7 +7163,10 @@ function setupIpcHandlers(): void {
           vttExists: vtt ? vtt.isFile : false,
         };
       }));
-      return { success: true, variants: resolved, primaryVariantId };
+      // `ttsVariantId` rides alongside `primaryVariantId` because it is the same
+      // kind of fact: a pointer to ONE of these rows, held on the manifest rather
+      // than on the rows. Absent means the user has not marked one.
+      return { success: true, variants: resolved, primaryVariantId, ttsVariantId: got.manifest.ttsVariantId };
     } catch (err) { console.error('[variant:list]', err); return { success: false, error: (err as Error).message }; }
   });
 
@@ -7346,6 +7415,23 @@ function setupIpcHandlers(): void {
   ipcMain.handle('variant:set-professional', async (_event, projectId: string, variantId: string, value: boolean) => {
     // Body lives in library-actions.setVariantProfessional, shared with cli/library.js.
     return setVariantProfessional(projectId, variantId, value);
+  });
+
+  /**
+   * Mark ONE version as this book's TTS file, or clear the mark (`null`).
+   * Body lives in library-actions.setTtsVariant, shared with cli/library.js.
+   */
+  ipcMain.handle('variant:set-tts', async (_event, projectId: string, variantId: string | null) => {
+    return setTtsVariant(projectId, variantId);
+  });
+
+  /**
+   * "Add to archive": move a Foundry export out of output/ into the protected
+   * archive/, as a top-level version of the book. Body lives in
+   * library-actions.promoteVariantToArchive, shared with cli/library.js.
+   */
+  ipcMain.handle('variant:promote-to-archive', async (_event, projectId: string, variantId: string) => {
+    return promoteVariantToArchive(projectId, variantId);
   });
 
   ipcMain.handle('variant:pull-metadata', async (_event, projectId: string, fromId: string, toId: string, fields: string[]) => {
