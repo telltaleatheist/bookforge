@@ -65,7 +65,10 @@ export const routes: Routes = [
     loadComponent: () => import('./features/first-run-setup/first-run-setup.component').then(m => m.FirstRunSetupComponent)
   },
   {
-    // Editor window - opens in separate Electron window
+    // Editor window - opens in separate Electron window.
+    // Unreachable since 2026-08-16 (Owen's ruling: Foundry is the one editing
+    // surface); deleted in the chain-deletion wave. Nothing in the renderer
+    // navigates here and no main-side flow loads it any more.
     path: 'editor',
     loadComponent: () => import('./features/studio/components/editor-window/editor-window.component').then(m => m.EditorWindowComponent)
   },
