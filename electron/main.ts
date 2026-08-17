@@ -166,6 +166,15 @@ interface FoundryMountModule {
   stopFoundry(): Promise<void>;
   /** The library root Foundry is answering with, or null when unmounted. */
   hostedLibraryDir(): string | null;
+  /**
+   * Is the hosted Foundry busy — its window open, or jobs held/queued/running?
+   *
+   * Added at foundry@c805bd6 for exactly one caller: the library-move gate in
+   * `library:set-root`. HELD JOBS COUNT, by their design: a held read has not
+   * started, but its output paths were minted at enqueue, and a root that moves
+   * between enqueue and Start tears its output exactly as a move mid-run would.
+   */
+  foundryBusy(): { windowOpen: boolean; jobsPending: number };
 }
 
 /**
@@ -3399,6 +3408,32 @@ function setupIpcHandlers(): void {
   // IPC handler to set custom library root (uses module-level customLibraryRoot)
   ipcMain.handle('library:set-root', async (_event, libraryPath: string | null) => {
     console.log('[library:set-root] Setting library root to:', libraryPath);
+
+    // The hosted Foundry reads its data root LIVE from the library root (the
+    // getter handed to mountFoundry), so a move here takes effect mid-session
+    // on its side too — but a job already in its queue minted output paths
+    // against the OLD root at enqueue time, and a move now would land those
+    // files on one root while every later read answers the other. So the move
+    // refuses while Foundry is busy, naming what is still running. Foundry's
+    // own probe (foundry@c805bd6) counts held jobs on purpose: held means
+    // "paths minted, work not started", which a move tears just the same.
+    {
+      const busy = foundryMount.foundryBusy();
+      if (busy.windowOpen || busy.jobsPending > 0) {
+        const what = [
+          busy.windowOpen ? 'the Foundry window is open' : null,
+          busy.jobsPending > 0
+            ? `${busy.jobsPending} Foundry job${busy.jobsPending === 1 ? ' is' : 's are'} held, queued or running`
+            : null,
+        ].filter(Boolean).join(' and ');
+        console.warn(`[library:set-root] refused: ${what}`);
+        return {
+          success: false,
+          error: `The library cannot move while ${what}. Close the Foundry window`
+            + `${busy.jobsPending > 0 ? ' and let its queue finish (or cancel its jobs)' : ''}, then try again.`,
+        };
+      }
+    }
 
     // Validate path exists if provided
     if (libraryPath) {

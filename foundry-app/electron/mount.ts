@@ -54,7 +54,7 @@ import { registerIpc } from './ipc';
 import * as queue from './job-queue';
 import { listProjects, onImportLanded } from './projects';
 import * as vllm from './vllm-server';
-import { isDev, openWindow, whenRendererReady } from './window';
+import { foundryWindow, isDev, openWindow, whenRendererReady } from './window';
 import { originalOf } from '../shared/original';
 
 export type { FoundryHost };
@@ -360,6 +360,32 @@ export function openFoundryWindow(projectDir?: string): void {
  * asks second gets the same promise the first ask made, and the SIGTERM is sent
  * once.
  */
+/**
+ * Whether Foundry is in the middle of something — the probe a host's own
+ * dangerous doors gate on.
+ *
+ * The concrete hazard that asked for it: the host's `libraryDir` may be a live
+ * value, and a queued or running job resolved its output paths against the OLD
+ * root at enqueue time — so a host about to move its library needs one honest
+ * answer to "is now safe", and every fact in that answer lives on this side of
+ * the seam (`queue:list` is renderer-facing IPC a host's main process cannot
+ * invoke).
+ *
+ * `jobsPending` counts held jobs too, deliberately: a held read has not started,
+ * but its paths are already minted, and a root that moves between enqueue and
+ * Start tears it exactly as a move mid-run would. Done, failed and cancelled
+ * rows are history and count for nothing.
+ */
+export function foundryBusy(): { windowOpen: boolean; jobsPending: number } {
+  const win = foundryWindow();
+  return {
+    windowOpen: win !== null && !win.isDestroyed(),
+    jobsPending: queue.listJobs()
+      .filter((job) => job.state === 'held' || job.state === 'queued' || job.state === 'running')
+      .length,
+  };
+}
+
 let stopping: Promise<void> | null = null;
 
 export function stopFoundry(): Promise<void> {

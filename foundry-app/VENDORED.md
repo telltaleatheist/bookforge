@@ -10,15 +10,16 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **7e0bf21** — *"feat(app): first contact -- an import tells the host which project it minted"* |
+| Source sha | **c805bd6** — *"feat(mount): foundryBusy() — the host's idle probe"* |
 | Copied on | 2026-08-16 |
-| Copied by | `git -C <foundry> archive 7e0bf21 app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive c805bd6 app \| tar -x --strip-components=1` |
 
-The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` is the commit
-after it, which adds the optional `onImport` half of the host contract (four
-files: `shared/types.ts`, `electron/{projects,host,mount}.ts`). BookForge wires
-both halves, so the copy is taken from the later sha. `docs/IPC-CHANNELS.md` is
-byte-identical between the two.
+The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` (one commit
+later) added the optional `onImport` half of the host contract, and `c805bd6`
+(one further) added the `foundryBusy()` export that gates BookForge's
+library-move door. Each refresh changed only contract-adjacent files and was
+hash-verified against the source tree. `docs/IPC-CHANNELS.md` is byte-identical
+across all three shas (`foundryBusy` is a mount export, not a channel).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the
