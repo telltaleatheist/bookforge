@@ -1,6 +1,28 @@
 import { Injectable, signal } from '@angular/core';
 
 /**
+ * WHICH HOST ACT IS BEING CONFIGURED, AND WHAT IT WOULD RUN AGAINST.
+ *
+ * The three facts an invoke needs, held together because they are one decision:
+ * a person pressed a particular operation from a particular row of a particular
+ * book. Nothing about the operation itself is copied in — the id is looked up
+ * against `HostOpsService` when the dialog draws, so the registry stays the one
+ * authority on what an operation is called and what it asks.
+ */
+export interface HostOpRequest {
+  /** The host's own operation id — what `host-ops:invoke` names. */
+  operationId: string;
+  /** The book, as a project directory. */
+  projectDir: string;
+  /**
+   * WHAT THE ACT WAS ORDERED FROM: a ledger step id, one of the host's own node
+   * ids, or the step an export was made from. Foundry does not interpret it; the
+   * host minted or recognises it. See `HostOperation.invoke`.
+   */
+  nodeId: string;
+}
+
+/**
  * The chrome's own state: which dialog is up, and whether the shelf is unrolled.
  *
  * The OCR tool used to be a slide-out panel beside the viewer and a toggle in
@@ -42,6 +64,27 @@ export class UiService {
   readonly simplifyOpen = signal(false);
   /** The Metadata dialog — the book's own record, not the app's idea of it. */
   readonly metadataOpen = signal(false);
+  /**
+   * THE HOST'S OWN OPERATION DIALOG — the only one of these that carries data.
+   *
+   * ── Why it is a request and not a boolean ───────────────────────────────────
+   *
+   * Every other dialog in this list is opened against THE POSITION: the export
+   * card, the translate card and the metadata card all work out for themselves
+   * what book they are about, because there is one selection and it is the
+   * ledger's. A host operation cannot — it is named by an id the host registered,
+   * aimed at a node the person pressed it from, and the same operation pressed on
+   * two different rows is two different runs. So what opens it is the whole
+   * question: which operation, in which project, from which node.
+   *
+   * NULL IS SHUT. There is no second boolean to keep in step with the payload,
+   * which is the failure a `{ open: boolean; request: … }` pair invites — an open
+   * dialog with a stale request is a form that would start the wrong run.
+   *
+   * IT IS HOST-AGNOSTIC ALL THE WAY DOWN: nothing here names an operation, a
+   * kind, or a word like "narrate". The dialog draws what the offer says.
+   */
+  readonly hostOpOpen = signal<HostOpRequest | null>(null);
   /**
    * The one confirmation, asked before anything is erased (ConfirmService).
    *
@@ -141,8 +184,16 @@ export class UiService {
     this.confirmOpen,
   ] as const;
 
-  private only(which: typeof this.dialogs[number]): void {
+  private only(which: typeof this.dialogs[number] | null): void {
     for (const dialog of this.dialogs) dialog.set(dialog === which);
+    /*
+     * AND THE HOST-OP DIALOG, WHICH IS NOT IN THE LIST BECAUSE IT IS NOT A
+     * BOOLEAN. It obeys the same rule — a modal is a question and there is only
+     * ever one being asked — so every opener clears it, and it is cleared here
+     * rather than in each of them for the reason the list exists at all: a
+     * sibling somebody forgot to clear is a bug that only appears in one order.
+     */
+    this.hostOpOpen.set(null);
   }
 
   openOcr(): void {
@@ -175,6 +226,23 @@ export class UiService {
 
   closeSimplify(): void {
     this.simplifyOpen.set(false);
+  }
+
+  /**
+   * Ask the host's own questions before running one of its acts.
+   *
+   * `only(null)` CLOSES EVERY OTHER DIALOG AND OPENS NONE OF THEM, which is how
+   * this one joins the rule without joining the list: the booleans all go false,
+   * and then the request is set. Passing null rather than adding a seventh entry
+   * keeps `dialogs` what it says it is — the signals that are just open-or-shut.
+   */
+  openHostOp(request: HostOpRequest): void {
+    this.only(null);
+    this.hostOpOpen.set(request);
+  }
+
+  closeHostOp(): void {
+    this.hostOpOpen.set(null);
   }
 
   openMetadata(): void {

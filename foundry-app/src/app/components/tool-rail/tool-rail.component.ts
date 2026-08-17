@@ -1,8 +1,13 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import { Router, RouterLink, RouterLinkActive } from '@angular/router';
 
+import type { HostOperationOffer } from '@shared/host-ops';
+import { fold } from '@shared/original';
+
 import { hosted } from '../../core/foundry';
+import { HostOpsService } from '../../core/host-ops.service';
 import { LedgerService } from '../../core/ledger.service';
+import { NoticeService } from '../../core/notice.service';
 import { ProjectsService } from '../../core/projects.service';
 import { OpenDocumentsService } from '../../core/documents.service';
 import { StageService } from '../../core/stage.service';
@@ -181,6 +186,38 @@ import { UiService } from '../../core/ui.service';
              button of its own: the rail names TOOLS, and picking between an
              EPUB, plain text and a reprint of the pages is one decision about
              one act, made where the rest of that act is described. -->
+
+        <!--
+          ── AND THE HOST'S OWN ACTS, WHEN THERE IS A HOST ────────────────────
+
+          *"Owen wants the dialog in the Foundry window, like translate/simplify
+          — and a narrate button on the nav rail besides."* (BookForge →
+          Foundry, 2026-08-18.) These sit at the end of the tools because they
+          are the end of the pipeline: everything above makes the words, and
+          this makes something out of them.
+
+          NOT ONE STRING HERE NAMES AN ACT. The label, the hover and the icon
+          all come off the offer the host registered — this app has never
+          contained the word "narrate" and does not start now. The amber is the
+          rail's existing tint for the host's work, the same one the tree draws
+          audio cards in.
+
+          STANDALONE THIS LOOP RUNS ZERO TIMES: no host, no operations,
+          \`railActs()\` is empty, and the dock is exactly the dock. There is no
+          \`hosted()\` branch here because there does not need to be one — the
+          emptiness is the guard.
+        -->
+        @for (act of railActs(); track act.id) {
+          <button
+            class="rail-item audio"
+            [class.active]="ui.hostOpOpen()?.operationId === act.id"
+            [title]="act.label + ' — handled by the app Foundry is running inside'"
+            (click)="runHostAct(act.id)"
+          >
+            <span class="rail-icon">♪</span>
+            <span class="rail-label">{{ act.label }}</span>
+          </button>
+        }
       </div>
 
       <div class="rail-foot">
@@ -250,6 +287,14 @@ import { UiService } from '../../core/ui.service';
     /* The tools scroll sideways rather than shrinking: a narrow window must not
        squeeze seven labels into unreadable stubs, and the dock is the one place
        every mode in this app is named. */
+    /*
+      THE HOST'S OWN COLOUR, the same amber the tree tints audio cards with, so
+      that an act belonging to another application reads as one at a glance
+      wherever it appears. Only the icon takes it: a whole button in the host's
+      colour would compete with the accent this rail uses for "active".
+    */
+    .rail-item.audio .rail-icon { color: var(--audio); }
+
     .rail-tools {
       display: flex; flex-direction: row; align-items: center;
       gap: 4px; min-width: 0;
@@ -326,11 +371,113 @@ export class ToolRailComponent {
   protected readonly stage = inject(StageService);
   private readonly projects = inject(ProjectsService);
   private readonly ledger = inject(LedgerService);
+  private readonly hostOps = inject(HostOpsService);
+  private readonly notices = inject(NoticeService);
   private readonly router = inject(Router);
 
   /** Lit when the panel is actually on screen, which needs both halves of it. */
   protected readonly documentsUp = computed(() =>
     this.ui.documentsShown() && this.documents.tabs().length > 0);
+
+  /**
+   * THE HOST'S ACTS THAT BELONG ON THE DOCK — the ones with a form, that
+   * consume the book.
+   *
+   * ── Two filters, and each earns its place ───────────────────────────────────
+   *
+   * `appliesTo: 'book'` because the rail aims at THE BOOK IN FRONT OF YOU, and
+   * that is the only currency the dock can name — an act consuming AUDIO is about
+   * a particular narration, which is a row in the tree and not a thing this dock
+   * has a way to point at. `offeredFrom` is the same function the tree's footer
+   * asks, so the two surfaces cannot come to different answers about what may be
+   * offered from a book.
+   *
+   * A `form` because an act WITHOUT one runs the instant it is pressed, and a
+   * rail button that started an hours-long job on a single click — with no
+   * dialog, no confirmation and no statement of what it would run against —
+   * is the one gesture on this dock that could not be taken back. The tree's
+   * footer is where a formless act is pressed, beside the row it names.
+   *
+   * EMPTY STANDALONE, which is the whole of the guard: nobody registered
+   * anything, so this is `[]` and the loop that draws it runs zero times.
+   */
+  protected readonly railActs = computed(() => {
+    if (this.target() === null) return NO_ACTS;
+    return this.hostOps.offersFor('book').filter((offer) => offer.form !== undefined);
+  });
+
+  /**
+   * WHAT A RAIL ACT WOULD RUN AGAINST — the book's export target, per 9a/9b.
+   *
+   * ── The same rule the export row follows, reached from the dock ─────────────
+   *
+   * The tree's export row knows its own provenance (`ProjectFinal.stepId`); the
+   * dock has no row in hand, so it works out which export the book has. ONE
+   * EXPORT IS THE ANSWER — its recorded step where there is one, and the position
+   * as the documented fallback, exactly as `nodeIdFor` resolves it in the tree.
+   *
+   * TWO OR MORE AND THE DOCK REFUSES rather than choosing. *"Today
+   * narrate-from-any-node resolves to 'the project's one exported EPUB' and
+   * refuses when there are two."* That refusal is the letter's own description of
+   * today's behaviour and it is the right one here: a book exported at three
+   * positions has three candidates and the dock cannot know which the person
+   * means — the tree can, because they clicked a row. The sentence says so and
+   * says where to go instead.
+   *
+   * NULL MEANS THE BUTTON IS NOT DRAWN AT ALL, which is only the case with no
+   * book in front of you. A book with no export yet still draws the button and
+   * refuses in a sentence on the press: the act is real, the target is missing,
+   * and "export it first" is a thing a person can act on where a hidden button
+   * is not.
+   */
+  private readonly target = computed<string | null>(() => {
+    const tab = this.stage.activeDocument();
+    if (tab === null) return null;
+    return this.documents.projectDirOf(tab);
+  });
+
+  /**
+   * Press one: work out the target, then open the host's questions in our card.
+   *
+   * EVERY REFUSAL IS A SENTENCE ON THE STRIP, which is this rail's own habit for
+   * a button that cannot grey itself out against a fact this deep in the model.
+   */
+  protected runHostAct(operationId: string): void {
+    const dir = this.target();
+    if (dir === null) return;
+    const project = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
+    const exports = project?.exports ?? [];
+    if (exports.length === 0) {
+      this.notices.notice.set(
+        'There is nothing finished to work from yet — export this book first, and the act will '
+        + 'have a file to consume.',
+      );
+      return;
+    }
+    if (exports.length > 1) {
+      this.notices.notice.set(
+        'This book has more than one finished export, so which one this should work from is not '
+        + 'obvious from here. Pick the one you mean in the library tree and start it from there.',
+      );
+      return;
+    }
+    /*
+     * ONE EXPORT, AND ITS OWN PROVENANCE WHERE THE CATALOGUE RECORDED ONE. The
+     * fallback to the standing step is `nodeIdFor`'s, for `nodeIdFor`'s reason:
+     * it is the id the tree would have sent a moment ago, which is exactly the
+     * input the host's unique-export fallback was written against — not a claim
+     * about where the bytes came from.
+     */
+    const nodeId = exports[0]?.stepId ?? this.ledger.standingIn(dir)?.id ?? null;
+    if (nodeId === null) {
+      this.notices.notice.set(
+        'This book has no history to name a starting point with yet.',
+      );
+      return;
+    }
+    void this.router.navigateByUrl('/');
+    this.ui.openHostOp({ operationId, projectDir: dir, nodeId });
+  }
 
   protected home(): void {
     void this.router.navigateByUrl('/');
@@ -544,3 +691,9 @@ export class ToolRailComponent {
     this.ui.openMetadata();
   }
 }
+
+/**
+ * ONE empty array for a dock with no host behind it — a fresh `[]` per call
+ * would be a new identity on every repaint, and this is read inside a computed.
+ */
+const NO_ACTS: readonly HostOperationOffer[] = [];

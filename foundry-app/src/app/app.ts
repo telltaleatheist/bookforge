@@ -6,6 +6,7 @@ import { Router, RouterOutlet } from '@angular/router';
 import { InspectorComponent } from './components/inspector/inspector.component';
 import { ConfirmDialogComponent } from './components/confirm-dialog/confirm-dialog.component';
 import { ExportDialogComponent } from './components/export-dialog/export-dialog.component';
+import { HostOpDialogComponent } from './components/host-op-dialog/host-op-dialog.component';
 import { OcrDialogComponent } from './components/ocr-dialog/ocr-dialog.component';
 import { OpenDocumentsComponent } from './components/open-documents/open-documents.component';
 import { MetadataDialogComponent } from './components/metadata-dialog/metadata-dialog.component';
@@ -76,7 +77,7 @@ import { api } from './core/foundry';
     RouterOutlet, ToolRailComponent, OpenDocumentsComponent, InspectorComponent,
     QueueShelfComponent, OcrDialogComponent, ExportDialogComponent, TranslateDialogComponent,
     SimplifyDialogComponent, MetadataDialogComponent,
-    ConfirmDialogComponent,
+    ConfirmDialogComponent, HostOpDialogComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -114,6 +115,17 @@ import { api } from './core/foundry';
 
       @if (ui.metadataOpen()) {
         <app-metadata-dialog />
+      }
+
+      <!--
+        THE HOST'S OWN ACT, CONFIGURED IN THIS WINDOW. Opened by a request
+        rather than a boolean (\`UiService.hostOpOpen\`), because unlike the five
+        above it cannot work out for itself what it is about: which operation,
+        which book, which node. Standalone nothing ever opens it — no host, no
+        operations, no forms.
+      -->
+      @if (ui.hostOpOpen() !== null) {
+        <app-host-op-dialog />
       }
 
       <!-- Always mounted, unlike the three above: it owns its own visibility

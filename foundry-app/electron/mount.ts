@@ -76,7 +76,7 @@ import { net, protocol, session } from 'electron';
 import { bookFigureFile } from './book';
 import { openDocument } from './documents';
 import { type FoundryHost, recordHost } from './host';
-import { type HostOperation, recordHostOperations } from './host-ops';
+import { type HostOperation, recordHostNodeActions, recordHostOperations } from './host-ops';
 import { registerIpc } from './ipc';
 import * as queue from './job-queue';
 import { listProjects, onImportLanded } from './projects';
@@ -331,6 +331,22 @@ export function mountFoundry(host?: FoundryHost): void {
      * silently does nothing is the one outcome this socket must not have.
      */
     if (host.hostOperations !== undefined) recordHostOperations(host.hostOperations);
+    /*
+     * AND WHAT MAY BE DONE TO A NODE THAT FAILED — Retry and Dismiss.
+     *
+     * Bound rather than stored raw, for `onImport`'s reason: a host that wrote
+     * its handler as a method is entitled to its own `this`. Registered only when
+     * the host has one, because the tree asks whether it exists before it draws
+     * the pair (`hostTakesNodeActions`) — an absent callback means no buttons
+     * rather than buttons that refuse.
+     *
+     * NOT WRAPPED IN A CATCH, which puts it with the operations above rather than
+     * with the two announcements: this is a button somebody pressed, and its
+     * rejection travels back over `host-ops:node-action` to be said where the
+     * button was.
+     */
+    const nodeAction = host.onNodeAction?.bind(host);
+    if (nodeAction !== undefined) recordHostNodeActions(nodeAction);
   }
   applyContentSecurityPolicy();
   registerFileProtocol();

@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **6925d21** — *"fix(renderer): the book scrolls again — the viewer stops overriding its child's own display"* |
-| Copied on | 2026-08-18 |
-| Copied by | `git -C <foundry> archive 6925d21 app \| tar -x --strip-components=1` |
+| Source sha | **a32c087** — *"feat(mount): host-ops round 2 — the step behind an export, forms in the window, and a way out of failed"* |
+| Copied on | 2026-08-17 |
+| Copied by | `git -C <foundry> archive a32c087 app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -38,8 +38,16 @@ the hand — an X on the rule, right-click starts one), `370fafc` (ONE VIEWER,
 NO TABS — columns, strips and pins retire), `218f0b2` (TabsService becomes
 five services), `1858041` (Compare — a second read-only column locked to a
 chosen step), `7eb10da` (Wave 6 closes), and `6925d21` itself (the book
-scrolls again). Each refresh changed only the files its commits name and was
-hash-verified against the source tree (92/92 blobs at 6925d21).
+scrolls again). `a32c087` is HOST-OPS ROUND 2, the whole delta from 6925d21
+in one commit: `ExportLanding.stepId` (exports know their ledger step, also
+in project.json final[] rows), host ops offered on export rows, the in-window
+form dialog (`HostOperationOffer.form: HostOpField[]`, `invoke` grew a third
+`settings` arg — two-arg hosts keep working), nav-rail buttons for formed
+'book' ops, failed nodes withhold chaining ops (CHAINABLE_FROM table) and
+render Retry/Dismiss when the host registers `FoundryHost.onNodeAction`
+(new handle `host-ops:node-action`; 69 total). `host-ops:offers` now answers
+`{operations, nodeActions}`. Each refresh changed only the files its commits
+name and was hash-verified against the source tree (93/93 blobs at a32c087).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

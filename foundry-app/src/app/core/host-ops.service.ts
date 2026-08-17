@@ -1,7 +1,7 @@
 import { Injectable, signal } from '@angular/core';
 
 import { offeredFrom } from '@shared/host-ops';
-import type { HostOperationOffer } from '@shared/host-ops';
+import type { HostNodeAction, HostOperationOffer } from '@shared/host-ops';
 import { fold } from '@shared/original';
 import type { HostNode, NodeOutput } from '@shared/types';
 
@@ -33,6 +33,18 @@ export class HostOpsService {
   private readonly registered = signal<readonly HostOperationOffer[]>([]);
 
   /**
+   * WHETHER A FAILED NODE'S RETRY AND DISMISS HAVE ANYWHERE TO GO.
+   *
+   * The other half of the same mount-time answer (`host-ops:offers`), held
+   * beside the operations because it is the same fact: what did the host
+   * register. False standalone and false for a host that contributed operations
+   * without a way to retry one — and the tree draws the pair only when it is
+   * true, because a button that silently does nothing is the one outcome this
+   * socket must not have.
+   */
+  private readonly actionable = signal(false);
+
+  /**
    * Per project, keyed by the FOLDED directory — on Windows one path arrives
    * spelled three ways, and two spellings would be two sets of rows for one
    * book. Main folds its own side identically (electron/host-ops.ts), so a push
@@ -45,7 +57,10 @@ export class HostOpsService {
 
   constructor() {
     if (!api) return;
-    void api.hostOps.offers().then((offers) => this.registered.set(offers));
+    void api.hostOps.offers().then((answer) => {
+      this.registered.set(answer.operations);
+      this.actionable.set(answer.nodeActions);
+    });
     /*
      * THE WHOLE SET FOR ONE PROJECT, on every push. It replaces rather than
      * merges, which is what makes "it finished and left" expressible at all: a
@@ -116,9 +131,60 @@ export class HostOpsService {
    * user pressed a button, and if the host refused, the host's sentence is the
    * only useful thing anybody has. The tree puts it on the notice strip.
    */
-  async invoke(operationId: string, projectDir: string, nodeId: string): Promise<void> {
+  async invoke(
+    operationId: string,
+    projectDir: string,
+    nodeId: string,
+    /**
+     * The answers to the operation's own form, or nothing at all for one that
+     * declared none — see `HostOpField` (shared/host-ops.ts).
+     *
+     * DEFAULTED TO `{}` HERE so that every caller which has no form to answer
+     * reads as it always did. What crosses the preload is always an object,
+     * because the host is entitled to destructure it.
+     */
+    settings: Record<string, unknown> = {},
+  ): Promise<void> {
     if (!api) return;
-    await api.hostOps.invoke(operationId, projectDir, nodeId);
+    await api.hostOps.invoke(operationId, projectDir, nodeId, settings);
+  }
+
+  /**
+   * The operation with this id, or null — what the dialog needs to draw itself.
+   *
+   * ASKED BY ID BECAUSE THAT IS WHAT A DIALOG CAN CARRY. The host-op dialog is
+   * opened with a request naming an operation, a project and a node; holding the
+   * whole offer in that request would be a copy of something the registry already
+   * has, and a copy that would go stale if a host ever re-registered. One
+   * lookup, at draw time, against the list that is the authority.
+   */
+  offer(operationId: string): HostOperationOffer | null {
+    return this.registered().find((one) => one.id === operationId) ?? null;
+  }
+
+  /**
+   * True when the host said it can retry and dismiss its own failed work.
+   *
+   * READ BY THE TREE BEFORE IT DRAWS THE PAIR. It is a signal rather than a
+   * promise because the answer lands one turn after the window opens, and a card
+   * drawn in that turn has to grow the buttons when it arrives rather than
+   * having been drawn without them forever.
+   */
+  takesNodeActions(): boolean {
+    return this.actionable();
+  }
+
+  /**
+   * Retry or dismiss one failed host node.
+   *
+   * THE REJECTION IS THE CALLER'S TO SHOW, on `invoke`'s rule exactly: the person
+   * pressed a button, and the host's own sentence is the only useful account of
+   * why nothing happened. Foundry changes nothing itself — the row leaves or
+   * re-runs when the host pushes its nodes again.
+   */
+  async nodeAction(projectDir: string, nodeId: string, action: HostNodeAction): Promise<void> {
+    if (!api) return;
+    await api.hostOps.nodeAction(projectDir, nodeId, action);
   }
 }
 

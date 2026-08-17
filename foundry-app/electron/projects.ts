@@ -708,7 +708,21 @@ function readFinal(value: unknown): ProjectManifest['final'] {
     const kind = row['kind'];
     if (typeof file !== 'string') continue;
     if (kind !== 'epub' && kind !== 'pdf' && kind !== 'txt') continue;
-    files.push({ file, kind, madeAt: typeof row['madeAt'] === 'number' ? row['madeAt'] : 0 });
+    /*
+     * THE STEP THIS EXPORT WAS MADE FROM, where a row has one. Rows written
+     * before the field existed simply do not, and nothing is invented for them:
+     * an unknown provenance is a true statement (`ProjectFinal.stepId`), and a
+     * guess here would be this parser asserting a history the catalogue never
+     * recorded. Spread conditionally so an old row round-trips byte for byte
+     * rather than gaining an `undefined` the writer would then serialise away.
+     */
+    const stepId = row['stepId'];
+    files.push({
+      file,
+      kind,
+      madeAt: typeof row['madeAt'] === 'number' ? row['madeAt'] : 0,
+      ...(typeof stepId === 'string' && stepId.length > 0 ? { stepId } : {}),
+    });
   }
   return files;
 }
@@ -3888,7 +3902,20 @@ async function refreshLivePdf(
  * `rotateFinal`), and two rows for one file is a left nav that offers a document it
  * cannot tell apart from itself.
  */
-export async function recordFinal(destination: string): Promise<void> {
+export async function recordFinal(
+  destination: string,
+  /**
+   * THE LEDGER STEP THIS EXPORT REPLAYED TO, when the caller is the queue and
+   * therefore knows — see `ProjectFinal.stepId`.
+   *
+   * OPTIONAL BECAUSE THE OTHER CALLER CANNOT KNOW IT. Save As is a person
+   * choosing a folder in a dialog, and the file they are filing has no step
+   * behind it at all; passing a position from there would be recording where
+   * somebody happened to be standing as though it were where the bytes came
+   * from. Absent is the honest answer and it is the pre-existing behaviour.
+   */
+  stepId: string | null = null,
+): Promise<void> {
   const resolved = path.resolve(destination);
   const dir = projectDirOf(resolved);
   if (dir === null) return;
@@ -3901,7 +3928,12 @@ export async function recordFinal(destination: string): Promise<void> {
     await withManifest(dir, async (manifest) => {
       manifest.final = [
         ...manifest.final.filter((entry) => entry.file !== file),
-        { file, kind, madeAt: Date.now() },
+        {
+          file,
+          kind,
+          madeAt: Date.now(),
+          ...(stepId !== null && stepId.length > 0 ? { stepId } : {}),
+        },
       ];
       await writeManifest(dir, manifest);
     });

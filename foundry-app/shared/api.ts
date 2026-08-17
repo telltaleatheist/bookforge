@@ -8,7 +8,7 @@
  * renderer's `window.foundry` is typed as it.
  */
 import type { BookOutcome } from './book';
-import type { HostOperationOffer } from './host-ops';
+import type { HostNodeAction, HostOperationOffer } from './host-ops';
 import type { ReadAsk } from './ledger';
 import type { BookOp } from './ops';
 import type { ReReadPrompt } from './reread';
@@ -847,8 +847,30 @@ export interface FoundryApi {
    * nothing to draw, so it draws what it always drew.
    */
   hostOps: {
-    /** Everything the host registered at mount. Empty with no host. */
-    offers(): Promise<HostOperationOffer[]>;
+    /**
+     * Everything the host registered at mount — its operations, and whether a
+     * failed node's Retry and Dismiss have anywhere to go.
+     *
+     * ONE ANSWER FOR ONE QUESTION. Both halves are facts about the same mount and
+     * are read out of the same registration, so asking them separately would be
+     * two round trips that could disagree. Standalone the operations are empty and
+     * `nodeActions` is false, which is the tree drawing exactly what it drew
+     * before the socket existed.
+     */
+    offers(): Promise<{ operations: HostOperationOffer[]; nodeActions: boolean }>;
+    /**
+     * Retry or dismiss a host node that FAILED — the pair the tree draws on a
+     * failed card, and only when `offers().nodeActions` said somebody is
+     * listening.
+     *
+     * FOUNDRY CHANGES NOTHING ITSELF: a retry is the host's queue running the work
+     * again, a dismiss is the host's queue forgetting it, and what reaches this
+     * window either way is the next push of that project's nodes.
+     *
+     * REJECTS WITH THE HOST'S OWN SENTENCE, on `invoke`'s rule — this is a button,
+     * and the tree says what the host said where the button was.
+     */
+    nodeAction(projectDir: string, nodeId: string, action: HostNodeAction): Promise<void>;
     /** This project's host nodes as they now stand. Empty is the ordinary answer. */
     nodes(projectDir: string): Promise<HostNode[]>;
     /**
@@ -859,7 +881,23 @@ export interface FoundryApi {
      * button somebody pressed and the alternative is a button that appears to
      * do nothing.
      */
-    invoke(operationId: string, projectDir: string, nodeId: string): Promise<void>;
+    invoke(
+      operationId: string,
+      projectDir: string,
+      nodeId: string,
+      /**
+       * THE ANSWERS TO THE OPERATION'S OWN FORM, keyed by each field's `key`, and
+       * `{}` for an operation that declared none.
+       *
+       * Foundry draws the form from `HostOperationOffer.form` and passes what was
+       * chosen back untouched — it validates nothing in here and understands
+       * none of it, which is what keeps this window host-agnostic (see
+       * `HostOpField`). An operation with no form invokes the instant it is
+       * pressed and still sends `{}`, so the host is never handed `undefined` for
+       * a record it is entitled to read.
+       */
+      settings: Record<string, unknown>,
+    ): Promise<void>;
     /** Every push, whole set, one project. Returns its own unsubscribe. */
     onChanged(listener: (pushed: HostNodes) => void): () => void;
   };

@@ -30,7 +30,7 @@
  * of the arrangement rather than a flag anybody has to remember to check.
  */
 import type { HostNode, HostOperationKind, NodeOutput } from '../shared/types';
-import type { HostOperationOffer } from '../shared/host-ops';
+import type { HostNodeAction, HostOperationOffer } from '../shared/host-ops';
 import { fold } from '../shared/original';
 import { broadcast } from './window';
 
@@ -44,12 +44,35 @@ import { broadcast } from './window';
  *
  * ── What `invoke` is handed, and what it is expected to do ──────────────────
  *
- * `(projectDir, nodeId)`. The project is the folder Foundry's own doors take, so
- * a host can look the book up in whatever mapping it keeps. The node is WHAT THE
- * USER PRESSED "FROM HERE" ON — a ledger step id when the act was ordered from
- * something Foundry made, or one of the host's OWN node ids when it was chained
- * onto work that has not happened yet. The host can tell the two apart because
- * it minted one of them; that is the whole of how chaining is expressed.
+ * `(projectDir, nodeId, settings)`. The project is the folder Foundry's own doors
+ * take, so a host can look the book up in whatever mapping it keeps. The node is
+ * WHAT THE USER PRESSED "FROM HERE" ON — a ledger step id when the act was
+ * ordered from something Foundry made, one of the host's OWN node ids when it was
+ * chained onto work that has not happened yet, and (since the export rows began
+ * offering operations) the step an EXPORT was made from. The host can tell them
+ * apart because it minted one of them; that is the whole of how chaining is
+ * expressed.
+ *
+ * ── `settings` IS THE SIGNATURE CHANGE, AND IT IS THE ANNOUNCED ONE ─────────
+ *
+ * The third argument arrived with the in-window dialog (BookForge → Foundry,
+ * 2026-08-18): *"Foundry renders a generic dialog from `form` … and
+ * `invoke(projectDir, nodeId)` grows a third argument: `settings:
+ * Record<string, unknown>` — the user's answers."* It is the answers to the
+ * fields the operation declared in `HostOperationOffer.form`, keyed by each
+ * field's own `key`, untouched by this app on the way through.
+ *
+ * AN EMPTY OBJECT IS THE ORDINARY VALUE and never `undefined`: an operation that
+ * declared no form is pressed and runs, and it is handed `{}` rather than
+ * nothing, so a host destructuring the argument does not have to guard it. That
+ * is the compatibility shape — a host written against the two-argument signature
+ * keeps working untouched, because JavaScript ignores an argument nobody named.
+ *
+ * FOUNDRY VALIDATES NOTHING IN IT. The values are whatever the declared controls
+ * produced — a string for a select and a text box, a number for a number, a
+ * boolean for a toggle — and the host is the only side that knows what any of
+ * them mean. `Record<string, unknown>` rather than a generic is deliberate: a
+ * type this app could check would be a type this app would have to understand.
  *
  * IT MAY BE ASYNCHRONOUS AND ITS REJECTION IS NOT SWALLOWED, which is where this
  * parts company with `onExport`. A landed export has already happened and a
@@ -59,7 +82,11 @@ import { broadcast } from './window';
  * the tree says what the host said.
  */
 export interface HostOperation extends HostOperationOffer {
-  invoke(projectDir: string, nodeId: string): void | Promise<void>;
+  invoke(
+    projectDir: string,
+    nodeId: string,
+    settings: Record<string, unknown>,
+  ): void | Promise<void>;
 }
 
 let operations: readonly HostOperation[] = [];
@@ -81,7 +108,15 @@ export function recordHostOperations(offered: readonly HostOperation[]): void {
  *
  * The strip is explicit rather than a spread, so a host that hangs extra state
  * off its operation object cannot have it serialised across the preload by
- * accident. What crosses is exactly the four fields the tree draws.
+ * accident. What crosses is exactly the fields the renderer draws — and `invoke`,
+ * which is a function in the host's process, could not cross even if it were
+ * listed.
+ *
+ * `form` JOINS THEM AND IS OMITTED WHEN ABSENT rather than sent as `undefined`.
+ * The renderer's test is "does this operation have a form", and a key that is
+ * present holding nothing is a shape that answers that question differently
+ * depending on whether it is asked with `in` or with a truth test. Omitted, the
+ * two agree.
  */
 export function hostOperationOffers(): HostOperationOffer[] {
   return operations.map((operation) => ({
@@ -89,6 +124,7 @@ export function hostOperationOffers(): HostOperationOffer[] {
     label: operation.label,
     kind: operation.kind,
     appliesTo: operation.appliesTo,
+    ...(operation.form !== undefined ? { form: operation.form } : {}),
   }));
 }
 
@@ -105,12 +141,81 @@ export async function invokeHostOperation(
   operationId: string,
   projectDir: string,
   nodeId: string,
+  /**
+   * The answers to the operation's own `form`, or `{}` for one that has none.
+   *
+   * DEFAULTED HERE AS WELL AS AT THE DOOR, because this function is exported and
+   * a caller inside main that has no form to answer should not have to write an
+   * empty object to say so. See `HostOperation.invoke` for why the host is
+   * always handed an object.
+   */
+  settings: Record<string, unknown> = {},
 ): Promise<void> {
   const operation = operations.find((one) => one.id === operationId);
   if (operation === undefined) {
     throw new Error(`No operation called ${operationId} is registered by this app's host.`);
   }
-  await operation.invoke(projectDir, nodeId);
+  await operation.invoke(projectDir, nodeId, settings);
+}
+
+/**
+ * WHETHER THE HOST CAN BE TOLD ABOUT A FAILED NODE — the probe the tree draws by.
+ *
+ * ── Why the tree has to ask at all ──────────────────────────────────────────
+ *
+ * `onNodeAction` is optional (electron/host.ts): a host may contribute
+ * operations and still have no way to retry or forget one. Retry and Dismiss are
+ * therefore drawn ONLY where somebody is listening, because *"a button that
+ * silently does nothing is the socket's one forbidden outcome"* — the same rule
+ * that makes the invoke door refuse an unregistered id by name rather than
+ * returning quietly.
+ *
+ * ── IT RIDES ON THE OFFERS ANSWER RATHER THAN ON A DOOR OF ITS OWN ──────────
+ *
+ * The choice was a second handle (`host-ops:can-act`) against a field on the one
+ * the renderer already calls at startup, and the field won on three counts: it is
+ * the SAME QUESTION — what did the host register at mount — asked in the same
+ * round trip; it adds no channel name for BookForge's collision keeper to audit;
+ * and it cannot go stale relative to the operations, because both are read out of
+ * one registration in one call. The cost is that `host-ops:offers` answers an
+ * object rather than an array, which is a payload change inside a channel Foundry
+ * owns both ends of.
+ */
+let nodeActions: ((projectDir: string, nodeId: string, action: HostNodeAction) => void | Promise<void>) | null = null;
+
+/** Said once, by `mountFoundry`, and only when the host registered the callback. */
+export function recordHostNodeActions(
+  handler: (projectDir: string, nodeId: string, action: HostNodeAction) => void | Promise<void>,
+): void {
+  nodeActions = handler;
+}
+
+/** True when a failed node's Retry and Dismiss have somewhere to go. */
+export function hostTakesNodeActions(): boolean {
+  return nodeActions !== null;
+}
+
+/**
+ * Retry or dismiss one failed host node, by the id the renderer named.
+ *
+ * IT REFUSES BY NAME RATHER THAN RETURNING QUIETLY, on `invokeHostOperation`'s
+ * rule: the only way to see this is a renderer drawing a button the host cannot
+ * answer, and a silent return would make that look like a working button.
+ * Foundry does nothing to the node itself — a retry is the host's queue running
+ * the work again, a dismiss is the host's queue forgetting it, and what reaches
+ * this window either way is the next `setHostNodes` push.
+ */
+export async function actOnHostNode(
+  projectDir: string,
+  nodeId: string,
+  action: HostNodeAction,
+): Promise<void> {
+  if (nodeActions === null) {
+    throw new Error(
+      'The app Foundry is running inside does not offer retry or dismiss for its own work.',
+    );
+  }
+  await nodeActions(projectDir, nodeId, action);
 }
 
 /**
@@ -172,3 +277,5 @@ export function hostNodesFor(projectDir: string): readonly HostNode[] {
  * hand these on without pretending to own them.
  */
 export type { HostNode, HostOperationKind, HostOperationOffer, NodeOutput };
+export type { HostNodeAction } from '../shared/host-ops';
+export type { HostOpField } from '../shared/host-ops';

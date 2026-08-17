@@ -3,7 +3,8 @@ import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } 
 import { Router } from '@angular/router';
 
 import { typeLabel } from '@shared/documents';
-import { PRODUCES_OF } from '@shared/host-ops';
+import { CHAINABLE_FROM, PRODUCES_OF } from '@shared/host-ops';
+import type { HostNodeAction } from '@shared/host-ops';
 import { languageNameFor } from '@shared/languages';
 import type {
   HostNode,
@@ -631,6 +632,37 @@ import { UiService } from '../../core/ui.service';
                 }
               </div>
             }
+
+            <!--
+              ── A FAILED CARD OFFERS THE WAY OUT INSTEAD ──────────────────────
+
+              Owen's screenshot: a failed narrate still offering "from here:
+              Enhance / Assemble" — acts that chain onto audio the run never
+              produced — and no way to retry it or make it go away without
+              leaving for the other application's window. \`acts()\` refuses
+              the first half (\`CHAINABLE_FROM\`); this is the second.
+
+              ALWAYS ON A FAILED CARD, not only on the selected one. The "from
+              here" footer unrolls on selection because it is an OFFER and five
+              open footers would be five sets of buttons aimed at five books;
+              this is the exit from a state, and a person looking at a red card
+              is already asking how to get rid of it. Hiding that behind a click
+              would be one more gesture between somebody and the tidy-up.
+
+              DRAWN ONLY WHERE SOMEBODY IS LISTENING — see \`canAct\`. A host
+              that contributed operations without \`onNodeAction\` gets neither
+              button rather than two that refuse.
+            -->
+            @if (canAct(row)) {
+              <div class="ops recovery">
+                <button class="op" title="Run this again" (click)="act($event, row, 'retry')">
+                  Retry
+                </button>
+                <button class="op" title="Take this row away" (click)="act($event, row, 'dismiss')">
+                  Dismiss
+                </button>
+              </div>
+            }
           </div>
         </div>
       </ng-template>
@@ -1114,6 +1146,14 @@ import { UiService } from '../../core/ui.service';
       cursor: pointer;
     }
     .op svg { width: 12px; height: 12px; }
+    /*
+      THE RECOVERY PAIR wears the failure's own colour rather than the accent
+      wash the offer footer has: it is not an offer, it is what is left when the
+      work did not happen, and a red-bordered card whose only controls looked
+      like invitations would be two moods in one place.
+    */
+    .ops.recovery { background: var(--error-soft); border-top-color: rgba(248, 113, 113, 0.35); }
+    .ops.recovery .op:hover { color: var(--error); border-color: rgba(248, 113, 113, 0.55); }
     .op:hover { color: var(--text-primary); border-color: var(--accent-strong); }
     /* The host's acts wear the host's colour, here as well as on the cards they
        make, so pressing one is visibly ordering a different KIND of work. */
@@ -1507,6 +1547,27 @@ export class OpenDocumentsComponent {
            */
           openable: made.kind === 'pdf',
           focused: already?.focused ?? false,
+          /*
+           * ── THE EXPORT ROW IS WHERE NARRATION BELONGS, AND NOW IT OFFERS IT ──
+           *
+           * *"In the tree, 'The book' and 'Applied changes (52)' offer
+           * translate/simplify/narrate/etc., but the exported-EPUB row offers
+           * nothing. The export row is the single most correct place for
+           * `narrate` — it IS the file narration consumes."* (BookForge →
+           * Foundry, 2026-08-18.)
+           *
+           * IT PRODUCES A BOOK, which is the honest answer to `offeredFrom`'s
+           * question and the whole of what makes host acts appear here: an act
+           * declaring `appliesTo: 'book'` consumes the words, and this row is the
+           * finished file of them. What it does NOT get is Foundry's own three —
+           * see `acts`, where Translate, Simplify and Export are gated on the row
+           * being a POSITION rather than on what it produces. An export is
+           * terminal in this app's own pipeline and a source in the host's, and
+           * this field is the only place those two facts meet.
+           */
+          produces: 'book',
+          // Its provenance, where the catalogue recorded one (`ProjectFinal.stepId`).
+          madeFrom: made.stepId ?? null,
         });
       }
 
@@ -1791,7 +1852,16 @@ export class OpenDocumentsComponent {
     const row = this.groups().flatMap((group) => group.rows).find((one) => one.key === key) ?? null;
     if (row === null || row.dir === null || row.produces === null) return NO_ACTS;
     const out: Act[] = [];
-    if (row.produces === 'book') {
+    /*
+     * FOUNDRY'S OWN THREE ARE OFFERED FROM A POSITION, and that test used to be
+     * `produces === 'book'` because until export rows produced anything, the two
+     * were the same set. They are not any more (9b): an export row produces a
+     * book for the HOST to consume and is terminal for this app — Translate,
+     * Simplify and Export all act on the POSITION, and offering them on an export
+     * would be offering to make a new book out of a finished file by standing
+     * somewhere the card cannot stand.
+     */
+    if (row.produces === 'book' && (row.kind === 'root' || row.kind === 'step')) {
       /*
        * THE SAME THREE THE DOCK OFFERS, in the dock's own order, opening the
        * dock's own dialogs. Metadata is deliberately NOT here: it is a record
@@ -1801,13 +1871,29 @@ export class OpenDocumentsComponent {
        */
       out.push(
         { id: 'translate', label: 'Translate', icon: 'ft-globe', audio: false, host: null,
-          hint: 'Translate what this node holds into another language' },
+          form: false, hint: 'Translate what this node holds into another language' },
         { id: 'simplify', label: 'Simplify', icon: 'ft-spark', audio: false, host: null,
+          form: false,
           hint: 'Say this again in its own language: plainer, more natural, or for a learner' },
         { id: 'export', label: 'Export', icon: 'ft-out', audio: false, host: null,
-          hint: 'Make the finished book from this node' },
+          form: false, hint: 'Make the finished book from this node' },
       );
     }
+    /*
+     * AND NOTHING CHAINS OFF A NODE THAT FAILED.
+     *
+     * *"Owen's screenshot of a FAILED narrate node: the card still offers 'FROM
+     * HERE: Enhance / Assemble' — ops that chain onto the audio the step never
+     * produced."* `produces` on a host node is a PROMISE (it is what makes a
+     * queued run chainable at all), and a failure is the promise broken while the
+     * row goes on making it. `CHAINABLE_FROM` is the table that says so, in
+     * shared/host-ops.ts where the offer rule lives.
+     *
+     * ONLY HOST NODES ARE ASKED. A ledger step cannot be in a failed state — a
+     * step exists because something landed — so this is a question about the one
+     * kind of row that carries somebody else's queue state.
+     */
+    if (row.node !== null && !CHAINABLE_FROM[row.node.state]) return out;
     for (const offer of this.hostOps.offersFor(row.produces)) {
       out.push({
         id: `host:${offer.id}`,
@@ -1815,6 +1901,7 @@ export class OpenDocumentsComponent {
         icon: iconForHostKind(offer.kind),
         audio: true,
         host: offer.id,
+        form: offer.form !== undefined,
         hint: `${offer.label} — handled by the app Foundry is running inside`,
       });
     }
@@ -1930,16 +2017,23 @@ export class OpenDocumentsComponent {
    * made anyway because "very nearly always" is not a thing to leave a dialog's
    * aim resting on.
    *
-   * ── The host's: NAME THE NODE, AND LET THE HOST ASK ITS OWN QUESTIONS ───────
+   * ── The host's: NAME THE NODE, AND ASK ITS QUESTIONS IN THIS WINDOW ────────
    *
-   * Nothing is stood on and no dialog of ours opens. Main hands the host the
-   * project and the id of the node the footer belongs to — a ledger step id, or
-   * one of the host's own node ids when the act was chained onto work that has
-   * not finished — and the host takes it from there, with its own modal, in its
-   * own window, into its own queue. What comes back is either nothing or a
-   * rejection, and a rejection is the host's sentence: it goes on the notice
-   * strip verbatim, because a button that appears to do nothing is the one
-   * outcome this socket must not have.
+   * Nothing is stood on. Main hands the host the project and the id of the node
+   * the footer belongs to — a ledger step id, one of the host's own node ids when
+   * the act was chained onto work that has not finished, or the step an EXPORT
+   * was made from — and the host takes it from there, into its own queue. What
+   * comes back is either nothing or a rejection, and a rejection is the host's
+   * sentence: it goes on the notice strip verbatim, because a button that appears
+   * to do nothing is the one outcome this socket must not have.
+   *
+   * ── AND THE MODAL IS OURS NOW, WHERE THE ACT HAS ONE ───────────────────────
+   *
+   * *"Owen wants the dialog in the Foundry window, like translate/simplify."* An
+   * operation that declared a `form` opens `app-host-op-dialog` — Foundry's own
+   * card, drawn from the host's fields, invoking on Start. One that declared none
+   * invokes on this click exactly as every operation did before, which is the
+   * compatibility promise stated where it is kept.
    */
   protected run(event: MouseEvent, row: Row, act: Act): void {
     // Without this the click also lands on the card, which for a step would
@@ -1948,8 +2042,12 @@ export class OpenDocumentsComponent {
     event.stopPropagation();
     if (act.host !== null) {
       if (row.dir === null) return;
-      const nodeId = row.node !== null ? row.node.id : row.step?.id ?? null;
+      const nodeId = this.nodeIdFor(row);
       if (nodeId === null) return;
+      if (act.form) {
+        this.ui.openHostOp({ operationId: act.host, projectDir: row.dir, nodeId });
+        return;
+      }
       void this.hostOps.invoke(act.host, row.dir, nodeId).catch((err: unknown) => {
         this.notices.notice.set(err instanceof Error ? err.message : String(err));
       });
@@ -1961,6 +2059,78 @@ export class OpenDocumentsComponent {
       else if (act.id === 'simplify') this.ui.openSimplify();
       else this.ui.openExport();
     });
+  }
+
+  /**
+   * THE MOST PRECISE NODE ID THIS ROW CAN HONESTLY NAME.
+   *
+   * ── Three answers, in order of how much they know ──────────────────────────
+   *
+   * A HOST NODE names itself: the host minted the id, so chaining onto work that
+   * has not finished is expressed by handing the id straight back.
+   *
+   * A POSITION names its step. That is what "from here" has always sent, and the
+   * host resolves it against whatever mapping it keeps.
+   *
+   * AN EXPORT names THE STEP IT WAS MADE FROM (`Row.madeFrom`), which is the
+   * whole point of 9a: *"narrate on a step should mean 'the export made from this
+   * step's state'."* With the provenance recorded, invoking from an export row
+   * gives the host a precise target for free.
+   *
+   * ── AND THE FALLBACK, WHICH IS DELIBERATELY NOT A GUESS ────────────────────
+   *
+   * An export written before `ProjectFinal.stepId` existed has no provenance, and
+   * this sends THE STEP THE BOOK IS STANDING ON. That is not a claim that the
+   * export came from there — it did not necessarily — it is the id that pressing
+   * the act on the tree a moment earlier would have sent, which is exactly the
+   * input the host's own fallback was written against: *"absent stepId = today's
+   * behavior (unique-export-or-refuse)."* Sending nothing would take the feature
+   * away from every book exported before this wave; sending the root would be a
+   * fabricated provenance. Sending the position is honest about being a fallback
+   * and preserves the behaviour the letter asked to preserve.
+   *
+   * NULL WHEN THERE IS NOTHING AT ALL, and the caller draws no button rather than
+   * one that cannot say what it would act on.
+   */
+  private nodeIdFor(row: Row): string | null {
+    if (row.node !== null) return row.node.id;
+    if (row.step !== null) return row.step.id;
+    if (row.madeFrom !== null) return row.madeFrom;
+    if (row.dir === null) return null;
+    return this.ledger.standingIn(row.dir)?.id ?? null;
+  }
+
+  /**
+   * RETRY OR DISMISS A HOST NODE THAT FAILED — the pair a failed card wears
+   * instead of a "from here" footer.
+   *
+   * *"Failed nodes want `Retry` and `Dismiss` instead."* Foundry does neither
+   * itself: it tells the host, and the row re-runs or leaves on the next push of
+   * that project's nodes, which is how every other fact about a host node
+   * arrives. The rejection is said on the strip, where this panel says everything
+   * a host refused.
+   */
+  protected async act(event: MouseEvent, row: Row, action: HostNodeAction): Promise<void> {
+    event.stopPropagation();
+    if (row.dir === null || row.node === null) return;
+    try {
+      await this.hostOps.nodeAction(row.dir, row.node.id, action);
+    } catch (err) {
+      this.notices.notice.set(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Whether this card draws Retry and Dismiss.
+   *
+   * BOTH HALVES, AND THE SECOND IS THE ONE THAT MATTERS. A failed node is the
+   * only place they belong; a host that never registered `onNodeAction` is the
+   * case where drawing them would produce a button that refuses — *"a button that
+   * silently does nothing is the socket's one forbidden outcome"* — so the probe
+   * rides on the mount-time offers answer and is asked here.
+   */
+  protected canAct(row: Row): boolean {
+    return row.node !== null && row.node.state === 'failed' && this.hostOps.takesNodeActions();
   }
 
   /**
@@ -2383,6 +2553,12 @@ interface Act {
   audio: boolean;
   /** The host operation to invoke, or null for one of this app's own acts. */
   host: string | null;
+  /**
+   * True when the host declared a `form` for it, so pressing opens Foundry's own
+   * dialog instead of running immediately (`HostOperationOffer.form`). Always
+   * false for this app's own three, which have dialogs of their own.
+   */
+  form: boolean;
   /** The hover sentence — the only place a footer button explains itself. */
   hint: string;
 }
@@ -2451,6 +2627,24 @@ interface Row {
   dir: string | null;
   /** The step a root or a step card names, when the history has arrived. */
   step: LedgerStep | null;
+  /**
+   * THE STEP AN EXPORT WAS MADE FROM — its provenance, and not its position.
+   *
+   * ── Why it is not `step` above ──────────────────────────────────────────────
+   *
+   * `step` is the row's OWN position: a thing you can stand on, delete, and act
+   * from, and every gesture in this panel that reads it means exactly that. An
+   * export has no position — it is terminal, *"it wont go into the working files
+   * as a step because it isnt the base for new steps"* — but it does have a
+   * PROVENANCE, which is the row of the ledger whose state it replayed. Two
+   * different facts; putting them in one field would make a right-click on an
+   * export offer to delete the step that produced it.
+   *
+   * NULL FOR EVERY EXPORT WRITTEN BEFORE `ProjectFinal.stepId` EXISTED, which is
+   * an unknown provenance rather than none — see `run` for what the invoke sends
+   * in that case.
+   */
+  madeFrom: string | null;
   /** The host's own row, for `kind === 'host'`. Null everywhere else. */
   node: HostNode | null;
   /**
@@ -2522,6 +2716,7 @@ const blank = {
   progress: null,
   why: null,
   produces: null,
+  madeFrom: null,
   depth: 0,
   dir: null,
   current: false,

@@ -1629,7 +1629,18 @@ async function pump(): Promise<void> {
      * undo beyond the one `rotateFinal` already made.
      */
     if (exporting) {
-      await recordFinal(next.outputPath);
+      /*
+       * THE STEP THE JOB CAPTURED GOES INTO THE TRAY ROW, so that a host reading
+       * `project.json` afterwards learns what a host listening at this instant
+       * learns from the announcement below. `next.parentStep` is where the person
+       * was standing when they pressed Export — held all along so a pointer move
+       * during the wait cannot change which corrections the book carries — and it
+       * is the same value both halves record, out of one variable, because two
+       * derivations of one provenance is how the event and the catalogue come to
+       * disagree.
+       */
+      const madeFrom = next.parentStep ?? null;
+      await recordFinal(next.outputPath, madeFrom);
       const filed = path.basename(next.outputPath);
       next.message = `Wrote ${filed}`;
       changed();
@@ -1661,6 +1672,9 @@ async function pump(): Promise<void> {
             path: next.outputPath,
             kind: request.kind,
             title: filed,
+            // See `ExportLanding.stepId`: absent for a job with no position
+            // behind it, which a host must read as "unknown" and not as "none".
+            ...(madeFrom !== null ? { stepId: madeFrom } : {}),
           });
         } catch (err) {
           console.error(

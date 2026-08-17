@@ -22,6 +22,7 @@ import type { ExportLanding, ImportLanding } from '../shared/types';
 // A TYPE, and it has to stay one: `host-ops.ts` pushes at windows and therefore
 // imports `window.ts`, which is exactly the weight this leaf exists to keep out
 // of `app-settings.ts`. `import type` is erased, so the leaf stays a leaf.
+import type { HostNodeAction } from '../shared/host-ops';
 import type { HostOperation } from './host-ops';
 
 /**
@@ -62,6 +63,35 @@ export interface FoundryHost {
    * Same error posture as `onExport`: caught and logged at the call.
    */
   onImport?(landing: ImportLanding): void;
+  /**
+   * A PERSON PRESSED RETRY OR DISMISS ON A HOST NODE THAT FAILED.
+   *
+   * ── The gesture that had nowhere to happen ──────────────────────────────────
+   *
+   * A failed narrate card offered chaining and no way out of it, so the only way
+   * to clear a failure was to leave for the host's own window and press Clear
+   * finished there: *"Works, but it is the wrong window for the gesture."*
+   * (BookForge → Foundry, 2026-08-18, the same-day addendum.) This is the door
+   * that keeps the gesture where the person is standing.
+   *
+   * OPTIONAL, AND ITS ABSENCE IS DRAWN. A host that does not register this gets
+   * NO Retry and NO Dismiss on its failed cards — the tree asks whether the
+   * callback exists before it draws the pair, because a button that silently
+   * does nothing is the one outcome this socket must not have. That probe is the
+   * `nodeActions` flag on the offers answer (electron/host-ops.ts).
+   *
+   * ITS REJECTION IS NOT SWALLOWED, which puts it with `hostOperations` and not
+   * with the two announcements above. `onExport` and `onImport` are Foundry
+   * TELLING the host something that has already happened, so a host's throw must
+   * not fail the job; this is a BUTTON, and its rejection travels back over
+   * `host-ops:node-action` to be said where the button was.
+   *
+   * FOUNDRY CHANGES NOTHING ITSELF. A retry is the host's queue running the work
+   * again and a dismiss is the host's queue forgetting it; either way what
+   * reaches this window is the next `setHostNodes` push, which is how every other
+   * fact about a host node arrives.
+   */
+  onNodeAction?(projectDir: string, nodeId: string, action: HostNodeAction): void | Promise<void>;
   /**
    * ACTS THE HOST CONTRIBUTES TO THE PROVENANCE TREE — narration, enhancement,
    * assembly: the audio half of a pipeline whose text half is this app.

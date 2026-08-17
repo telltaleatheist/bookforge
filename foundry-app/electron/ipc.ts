@@ -41,7 +41,10 @@ import {
 } from './engine';
 import { catalogForThisMachine, onEnvInstallProgress } from './env-install';
 import { hosted } from './host';
-import { hostNodesFor, hostOperationOffers, invokeHostOperation } from './host-ops';
+import {
+  actOnHostNode, hostNodesFor, hostOperationOffers, hostTakesNodeActions, invokeHostOperation,
+} from './host-ops';
+import type { HostNodeAction } from '../shared/host-ops';
 import * as queue from './job-queue';
 import {
   deletableStep,
@@ -214,7 +217,20 @@ export function registerIpc(): void {
    * would be a renderer that has to know which world it woke up in before it
    * can draw a tree.
    */
-  ipcMain.handle('host-ops:offers', () => hostOperationOffers());
+  /*
+   * WHAT THE HOST REGISTERED AT MOUNT — the operations, and whether a failed
+   * node's Retry and Dismiss have anywhere to go.
+   *
+   * IT ANSWERS AN OBJECT RATHER THAN AN ARRAY, and the shape change is the
+   * cheapest of the three ways to let the tree ask that second question: it is
+   * the same question as the first (what did the host register), asked in the
+   * same round trip the renderer already makes at startup, and it adds no channel
+   * name for BookForge's collision keeper to audit. See `hostTakesNodeActions`.
+   */
+  ipcMain.handle('host-ops:offers', () => ({
+    operations: hostOperationOffers(),
+    nodeActions: hostTakesNodeActions(),
+  }));
   ipcMain.handle('host-ops:nodes', (_event, projectDir: string) => hostNodesFor(projectDir));
   /*
    * The user pressed one of the host's acts, from a node in the tree.
@@ -227,8 +243,47 @@ export function registerIpc(): void {
    */
   ipcMain.handle(
     'host-ops:invoke',
-    (_event, operationId: string, projectDir: string, nodeId: string) =>
-      invokeHostOperation(operationId, projectDir, nodeId),
+    /*
+     * `settings` IS THE THIRD ARGUMENT AND IT IS THE ANNOUNCED CHANGE — the
+     * answers to the form the operation declared, or `{}` for one that declared
+     * none (see `HostOperation.invoke`, electron/host-ops.ts). Defaulted at the
+     * door as well as inside, because a renderer built against the older preload
+     * would send two arguments and must go on working rather than handing the
+     * host `undefined` for a record it is entitled to destructure.
+     */
+    (
+      _event,
+      operationId: string,
+      projectDir: string,
+      nodeId: string,
+      settings: Record<string, unknown> = {},
+    ) => invokeHostOperation(operationId, projectDir, nodeId, settings),
+  );
+
+  /*
+   * RETRY OR DISMISS A HOST NODE THAT FAILED.
+   *
+   * ── Why it is a door of its own and not another operation ─────────────────
+   *
+   * An operation is the HOST's — it has an id the host minted, a label the host
+   * wrote, and a rule about what it may be chained onto. These two are FOUNDRY's
+   * words for a thing every queue has: the tree draws them itself, on a fixed
+   * pair (`HostNodeAction`), so that a failed card has a way out of it without
+   * the host having had to think of registering one. Routing them through
+   * `host-ops:invoke` would have meant inventing operation ids on this side and
+   * hoping no host ever used the same string.
+   *
+   * THE REJECTION IS DELIBERATELY NOT CAUGHT, exactly as with `invoke`: this is a
+   * button, the tree says the host's sentence where the button was, and a button
+   * that appears to do nothing is the one outcome this socket must not have. A
+   * host that registered no callback is refused BY NAME here rather than silently
+   * — though the tree does not draw the buttons at all in that case, so the only
+   * way to see it is a renderer and a host that disagree.
+   */
+  ipcMain.handle(
+    'host-ops:node-action',
+    (_event, projectDir: string, nodeId: string, action: HostNodeAction) =>
+      actOnHostNode(projectDir, nodeId, action),
   );
 
   ipcMain.handle('dialog:open-document', () => promptForDocument());

@@ -1182,6 +1182,28 @@ export interface ProjectFinal {
   file: string;
   kind: ProjectDocumentKind;
   madeAt: number;
+  /**
+   * THE LEDGER STEP THIS EXPORT WAS MADE FROM, for rows written since it began
+   * being recorded — see `ExportLanding.stepId` for the whole argument.
+   *
+   * ── Why the catalogue keeps it and not only the announcement ────────────────
+   *
+   * The announcement is a moment and a host can miss it: BookForge is not always
+   * running when an export lands, and its sweep reads `project.json` afterwards to
+   * catch up. *"add `stepId` … to whatever `final[]` records in project.json so
+   * the sweep can read it for exports that landed while the host wasn't
+   * looking."* A fact that exists only in an event is a fact that is lost to
+   * anybody who was not listening.
+   *
+   * OPTIONAL FOREVER, and that is the compatibility promise rather than a
+   * hedge. Every row written before this field existed simply has no answer, and
+   * `readFinal` neither invents one nor refuses the row — an export whose
+   * provenance was never recorded is an export whose provenance is unknown, which
+   * is a true statement the surfaces above already know how to say. NO VERSION
+   * BUMP: the parser is a whitelist rebuild, so an old catalogue parses and the
+   * field appears the next time anything writes.
+   */
+  stepId?: string;
 }
 
 /**
@@ -1194,10 +1216,36 @@ export interface ProjectFinal {
  * is where finished things are listed (docs/BOOKFORGE-HANDOFF.md §8). Those are
  * two truths about one moment: the file goes into `<project>/final/` and stays
  * there — nothing is copied, nothing is moved — and the host learns that a row
- * pointing AT IT is now worth drawing. So this carries a path and enough words
- * to name a row with, and nothing else: no bytes, no step, no ledger. A host
- * that wants more asks the project folder, which is the whole truth and always
- * was.
+ * pointing AT IT is now worth drawing.
+ *
+ * ── "NO BYTES, NO STEP, NO LEDGER" — AND THE STEP CAME BACK ─────────────────
+ *
+ * This paragraph used to end: *a path and enough words to name a row with, and
+ * nothing else: no bytes, no step, no ledger. A host that wants more asks the
+ * project folder, which is the whole truth and always was.* Two thirds of that
+ * still stand. The STEP does not, and it was Owen's first real use of the loop
+ * that settled it (BookForge → Foundry, 2026-08-18):
+ *
+ *   *"`ExportLanding = {projectDir, path, kind, title}` carries no step id, so
+ *   the host cannot know WHICH step an export was cast from. Today
+ *   narrate-from-any-node resolves to 'the project's one exported EPUB' and
+ *   refuses when there are two. Owen's expectation is stronger: narrate on a
+ *   step should mean 'the export made from this step's state'."*
+ *
+ * The old reasoning was not wrong about hosts and folders; it was wrong about
+ * WHICH TRUTH THE FOLDER HOLDS. A project directory tells you every export that
+ * exists, and it cannot tell you which of them a given row of the tree produced
+ * — that fact exists for one instant, inside the queue, in the step the job
+ * captured when the button was pressed, and it is gone the moment the job
+ * settles. So "ask the project folder" was an answer to a question the folder
+ * could not answer, and a host obeying it had to fall back to guessing whenever
+ * a book had been exported twice.
+ *
+ * IT IS THE ONE FIELD THAT COULD NOT BE RECOVERED LATER, which is what makes it
+ * belong on the announcement rather than behind a door. No bytes and no ledger
+ * still hold: a host wanting the words opens the file, and a host wanting the
+ * history reads `project.json`. This is neither — it is the provenance OF THIS
+ * LANDING, known here and nowhere else.
  *
  * IT LIVES IN `shared/` RATHER THAN IN THE MOUNT SEAM because it is the shape of
  * an announcement, and announcements in this app are declared where both ends
@@ -1212,6 +1260,25 @@ export interface ExportLanding {
   kind: string;
   /** What to call it in a list: the file's own name, as the shelf announces it. */
   title: string;
+  /**
+   * THE LEDGER STEP THIS EXPORT REPLAYED TO — the position the person was
+   * standing on when they pressed Export, captured by the job and carried here.
+   *
+   * `Job.parentStep`, which the queue has held all along for a different reason:
+   * a pointer move made while an export waits in the queue must not change which
+   * corrections the book coming out of it carries. That capture is exactly the
+   * provenance the host wants, so nothing new is computed for this — it is a
+   * fact the queue already had, said out loud at the one moment it is still
+   * true.
+   *
+   * ABSENT MEANS TODAY'S BEHAVIOUR, by the letter's own terms:
+   * *"Backward-compatible: absent stepId = today's behavior
+   * (unique-export-or-refuse)."* It is absent for a project with no ledger
+   * behind the file at all, and for every export that landed before this field
+   * existed. A host reading it must treat the absence as "I do not know", never
+   * as "no step" — the difference is the whole of the compatibility promise.
+   */
+  stepId?: string;
 }
 
 /**
