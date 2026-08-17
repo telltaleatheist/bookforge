@@ -297,6 +297,18 @@ import { isBookPath } from '@shared/document/book-path';
                   <span class="listen-glyph">▶</span> Listen
                 </button>
 
+                <!-- The door to the hosted Foundry window, which does not exist
+                     yet. Disabled, and the tooltip says WHY rather than leaving
+                     the user to guess at a dead button; the label is already
+                     honest per book (Edit vs Import) because the mapping is read
+                     from the manifest, so the day the window lands only the
+                     disabled state and a click handler change. -->
+                <button
+                  class="btn-foundry"
+                  disabled
+                  title="The Foundry window arrives with the next update."
+                >{{ foundryButtonLabel() }}</button>
+
                 <!-- Finalize button for articles on Content tab only -->
                 @if (selectedItem()!.type === 'article' && mainTab() === 'content') {
                   <button
@@ -1191,6 +1203,36 @@ import { isBookPath } from '@shared/document/book-path';
       }
     }
 
+    /* Sits beside Listen in the right-hand group (Listen carries the
+       margin-left:auto that pushes the pair over). A quieter, outlined shape
+       than Listen's filled pill: it is a door, not the primary act. */
+    .btn-foundry {
+      margin-left: 8px;
+      display: inline-flex;
+      align-items: center;
+      padding: 7px 16px;
+      background: transparent;
+      border: 1px solid var(--border-default);
+      border-radius: 16px;
+      color: var(--text-primary);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+
+      &:hover:not(:disabled) {
+        border-color: var(--border-accent);
+        background: var(--hover-bg);
+      }
+
+      &:disabled {
+        color: var(--text-disabled);
+        border-color: var(--border-subtle);
+        cursor: not-allowed;
+      }
+    }
+
     .btn-finalize {
       margin-left: 8px;
       padding: 6px 16px;
@@ -1760,6 +1802,42 @@ export class StudioComponent implements OnInit, OnDestroy {
       if (res.success && res.data) this.editorCoverData.set(res.data);
     });
   }, { allowSignalWrites: true });
+
+  // ── The door to Foundry ───────────────────────────────────────────────────
+  //
+  // Which hosted-Foundry project this book has, read from its manifest. Null is
+  // the ordinary state — no project yet — and it is what makes the button's
+  // label honest per book instead of a single word for the whole library.
+  //
+  // Read here rather than inferred from anything on screen: the mapping is a
+  // manifest record, and the only thing that can answer "has this book been into
+  // Foundry" is the manifest.
+  readonly foundryProjectKey = signal<string | null>(null);
+  private readonly foundryProjectEffect = effect(() => {
+    const dir = this.selectedItem()?.projectDir ?? '';
+    if (!dir) { this.foundryProjectKey.set(null); return; }
+    void this.electronService.foundryHostProject(dir).then(res => {
+      // Drop a stale read: the selection can move while this is in flight, and a
+      // late answer would label THIS book's button with THAT book's mapping.
+      if ((this.selectedItem()?.projectDir ?? '') !== dir) return;
+      if (!res.success) {
+        // Not silent, and not guessed either. A book whose mapping could not be
+        // read is shown as having none, which is the state the button already
+        // handles; the reason belongs in the log rather than in a label.
+        console.error('[studio] Could not read the Foundry project mapping:', res.error);
+        this.foundryProjectKey.set(null);
+        return;
+      }
+      this.foundryProjectKey.set(res.key ?? null);
+    });
+  }, { allowSignalWrites: true });
+
+  /**
+   * "Edit in Foundry" for a book that has a project, "Import via Foundry" for one
+   * that does not — the two are different acts and the button says which.
+   */
+  readonly foundryButtonLabel = computed(() =>
+    this.foundryProjectKey() === null ? 'Import via Foundry' : 'Edit in Foundry');
 
   // ─────────────────────────────────────────────────────────────────────────
   // Computed

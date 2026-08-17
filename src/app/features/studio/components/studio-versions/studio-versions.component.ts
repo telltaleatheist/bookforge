@@ -11,7 +11,7 @@ import { VariantImportService } from '../../services/variant-import.service';
 import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-view.component';
 import { MetadataEditorComponent, EpubMetadata } from '../../../audiobook/components/metadata-editor/metadata-editor.component';
 import { StudioItem } from '../../models/studio.types';
-import { AppliedPass, AppliedPassKind, ProjectVariant, ResolvedProjectVariant } from '../../../../core/models/manifest.types';
+import { AppliedPass, AppliedPassKind, ProjectVariant, ResolvedFoundryExport, ResolvedProjectVariant } from '../../../../core/models/manifest.types';
 import { DesktopSelectComponent, DesktopSelectItems, DialogService } from '../../../../creamsicle-desktop';
 import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-target';
 import type { PassDiffEntry } from '@shared/processing/pass-types';
@@ -412,6 +412,50 @@ const AUDIO_EXTS = new Set([
             }
           }
         </div>
+
+        <!-- Made in Foundry: the files the hosted Foundry window exported for
+             this book, referenced WHERE THEY LIE in the foundry project's
+             final/ tray. Nothing was copied into this project, which is why
+             Delete here forgets the record and leaves the file alone.
+
+             Flat rows in the same four columns as every other line, and NOTHING
+             when the list is empty: a book that has never been through Foundry
+             has no group here, not an empty one explaining itself.
+
+             2026-08-16 — THERE IS NO PROCESS BUTTON ON THESE ROWS, and it is not
+             an oversight. Narration identity names a manifest VARIANT: the
+             Process press carries a variantId through NarrationRunBook, and an
+             export is not a variant. Broadening that identity to cover a foundry
+             export is the mount wave's work; a Process offered here before then
+             would file its run against nothing. -->
+        @if (foundryExports().length > 0) {
+          <div class="section-head">Made in Foundry</div>
+          @for (fx of foundryExports(); track fx.id) {
+            <div class="row">
+              <span class="ricon">{{ foundryExportIcon(fx) }}</span>
+              <div class="rinfo">
+                <div class="rlabel">{{ fx.title }}<span class="ext">.{{ fx.kind }}</span></div>
+                <div class="rdesc">{{ foundryExportDesc(fx) }}</div>
+                <div class="rfile" [title]="fx.path">{{ fx.path }}</div>
+              </div>
+              <div class="ractions">
+                <div class="specials"></div>
+                <div class="slot"></div>
+                <div class="slot">
+                  <button class="act" (click)="exportFoundryExport(fx)"
+                          title="Save a copy to your computer">Export</button>
+                </div>
+                <div class="slot">
+                  <button class="act danger" (click)="removeFoundryExport(fx)"
+                          title="Remove this from the list. The file itself stays in Foundry.">Delete</button>
+                </div>
+              </div>
+            </div>
+          }
+        }
+        @if (foundryExportsError(); as e) {
+          <div class="pass-err">{{ e }}</div>
+        }
 
         <!-- Analysis (content-analysis report — shown like a version, pinned to one) -->
         @if (analysisEntry(); as a) {
@@ -2369,6 +2413,100 @@ export class StudioVersionsComponent {
     }
   }
 
+  // ── Made in Foundry ───────────────────────────────────────────────────────
+  //
+  // The files the hosted Foundry window exported for this book. They live in the
+  // foundry project's `final/` tray and are referenced from there — nothing is
+  // copied into the project — so every act here is about the RECORD.
+
+  /**
+   * The export rows, each with its file already resolved by main.
+   *
+   * Empty is the ordinary state and draws nothing at all: a book that has never
+   * been through Foundry has no group, not an empty one. A failed READ is a
+   * different fact and says so in `foundryExportsError` rather than presenting
+   * itself as "no exports".
+   */
+  readonly foundryExports = signal<ResolvedFoundryExport[]>([]);
+  readonly foundryExportsError = signal<string | null>(null);
+
+  private async loadFoundryExports(dir: string, superseded: () => boolean): Promise<void> {
+    try {
+      const res = await this.electron.foundryHostExports(dir);
+      if (superseded()) return;
+      if (!res.success || !res.exports) {
+        this.foundryExportsError.set(
+          `What Foundry has made for this book could not be read: ${res.error || 'no reason given'}`);
+        return;
+      }
+      this.foundryExports.set(res.exports);
+      this.foundryExportsError.set(null);
+    } catch (err) {
+      if (superseded()) return;
+      this.foundryExportsError.set(
+        `What Foundry has made for this book could not be read: `
+        + `${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  foundryExportIcon(fx: ResolvedFoundryExport): string {
+    return fx.kind === 'txt' ? '\u{1F4C4}' : '\u{1F4D6}';
+  }
+
+  /** The row's second line: what kind of file, when it landed, and whether it is there. */
+  foundryExportDesc(fx: ResolvedFoundryExport): string {
+    const at = new Date(fx.landedAt);
+    const when = isNaN(+at) ? 'date unknown' : at.toLocaleString();
+    const parts = [`${fx.kind.toUpperCase()} · Exported ${when}`];
+    // Said on the row, not on the click: the tray is Foundry's, and a file the
+    // user moved out of it is a fact about the row rather than a failure of it.
+    if (!fx.exists) parts.push('the file is not where Foundry left it');
+    return parts.join(' · ');
+  }
+
+  /** Save a copy of this export somewhere else — the same door every version uses. */
+  async exportFoundryExport(fx: ResolvedFoundryExport): Promise<void> {
+    if (!fx.exists) {
+      console.error(`[studio-versions] export missing on disk: ${fx.absPath}`);
+      await this.electron.showMessageDialog({
+        title: 'Could not export this file',
+        message: `“${fx.title}” is not on disk where Foundry left it — see the log for the path. `
+          + 'It may have been moved or deleted from the Foundry project.',
+        type: 'error',
+      });
+      return;
+    }
+    this.exportDoc.emit(fx.absPath);
+  }
+
+  /**
+   * Forget one export. The FILE is not deleted — it belongs to the Foundry
+   * project, and the confirm says so, because a Delete the user reads as
+   * "destroy my work" and a Delete that removes a reference are different acts.
+   */
+  async removeFoundryExport(fx: ResolvedFoundryExport): Promise<void> {
+    const dir = this.projectDir();
+    if (!dir) return;
+    const { confirmed } = await this.electron.showConfirmDialog({
+      title: 'Remove from this book',
+      message: `Remove “${fx.title}” from this book's versions?\n\nThe file itself is not deleted — `
+        + 'it stays in the Foundry project that made it, and Foundry can export it again.',
+      confirmLabel: 'Remove', cancelLabel: 'Cancel', type: 'warning',
+    });
+    if (!confirmed) return;
+    const res = await this.electron.foundryHostForgetExport(dir, fx.id);
+    if (!res.success) {
+      await this.electron.showMessageDialog({
+        title: 'Remove failed',
+        message: res.error || 'Could not remove this from the list. Nothing was changed — try again.',
+        type: 'error',
+      });
+      return;
+    }
+    await this.load();
+    this.changed.emit();
+  }
+
   // ── Adding versions ───────────────────────────────────────────────────────
 
   async addViaDialog(): Promise<void> {
@@ -2509,6 +2647,10 @@ export class StudioVersionsComponent {
       // would offer to delete them under this book's name.
       this.resetPlan.set(null);
       this.resetPlanError.set(null);
+      // Another book's Foundry exports. Every act on one names THIS projectDir,
+      // so a row left behind would forget a record out of the wrong manifest.
+      this.foundryExports.set([]);
+      this.foundryExportsError.set(null);
       this.loadedForProjectDir.set(dir);
     }
 
@@ -2557,6 +2699,8 @@ export class StudioVersionsComponent {
     await this.loadResetPlan(dir, superseded);
     if (superseded()) return;
     await this.loadVariants();
+    if (superseded()) return;
+    await this.loadFoundryExports(dir, superseded);
   }
 
   /**
