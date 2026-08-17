@@ -42,6 +42,7 @@ const SUITES = [
   'test-foundry-host',
   'test-foundry-host-nodes',
   'test-foundry-landing',
+  'test-foundry-adopt',
   'test-legacy-migration',
   'test-ipc-collision',
   'test-derivation-cache',

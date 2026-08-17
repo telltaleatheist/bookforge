@@ -14,6 +14,13 @@ import type { EpubPreservingEdits } from './epub-processor';
 import type { WhisperModelStatus, WhisperDownloadProgress } from './whisper-models';
 import type { CorrectSentencesSession, GenerateCandidatesResult } from './correct-sentences-bridge';
 import type { JobStageProgress } from './job-stages';
+// The Adopt door's wire shapes, imported rather than re-declared for the reason
+// stated below the pass types: this module compiles to nothing at runtime, so a
+// second spelling of them here could only ever be a spelling that drifts.
+import type {
+  AdoptableFoundryProject as FoundryAdoptableProject,
+  AdoptResult as FoundryAdoptResult,
+} from '../shared/foundry/adopt-types';
 // Types only — this module compiles to nothing at runtime, so the wire shapes are
 // imported rather than re-declared (see shared/processing/pass-types.ts).
 import type {
@@ -1267,6 +1274,29 @@ export interface ElectronAPI {
      */
     open: (projectDir: string) =>
       Promise<{ success: boolean; opened?: 'bare' | 'project'; error?: string }>;
+    /**
+     * Foundry projects this library has never seen — standalone Foundry's own
+     * library, and orphans in our hosted root that no book's manifest maps.
+     * `refusals` are folders passed over, one sentence each; they are shown, not
+     * swallowed.
+     */
+    adoptables: () => Promise<{
+      success: boolean;
+      projects?: FoundryAdoptableProject[];
+      refusals?: string[];
+      error?: string;
+    }>;
+    /**
+     * Make a book of this library out of an existing Foundry project: copy it
+     * under the hosted root if it is not already there, mint the book from the
+     * project's own archived original, record the mapping, and land whatever is
+     * already in its export tray as versions.
+     */
+    adopt: (sourceDir: string) =>
+      Promise<{ success: boolean; result?: FoundryAdoptResult; error?: string }>;
+    /** Pick a project folder by hand — the fallback for one in neither place. */
+    browseForProject: () =>
+      Promise<{ success: boolean; folderPath?: string; canceled?: boolean; error?: string }>;
     /**
      * Foundry landed an export as a VERSION of a book. Broadcast to EVERY window
      * — the versions page can be open in more than one, the shelf is drawn in
@@ -2931,6 +2961,11 @@ const electronAPI: ElectronAPI = {
     project: (projectDir: string) => ipcRenderer.invoke('foundry-host:project', projectDir),
     open: (projectDir: string, documentPath?: string) =>
       ipcRenderer.invoke('foundry-host:open', projectDir, documentPath),
+    // The Adopt door: Foundry projects this library has never seen — standalone
+    // Foundry's own library, and orphans in our hosted root that no book maps.
+    adoptables: () => ipcRenderer.invoke('foundry-host:adoptables'),
+    adopt: (sourceDir: string) => ipcRenderer.invoke('foundry-host:adopt', sourceDir),
+    browseForProject: () => ipcRenderer.invoke('foundry-host:browse-for-project'),
     // A Foundry landing changed this book's VERSIONS. Named for what it means
     // since 2026-08-17: an export is copied in and minted as a variant, so what
     // the listener must re-read is the version list, not an export list.

@@ -58,6 +58,19 @@ import { addVariant, importAudiobookProject, promoteVariantToArchive, saveVarian
 // The export-landing act, shared with the tray sweep that files the exports no
 // announcement ever caught — see electron/foundry-export-sweep.ts.
 import { FOUNDRY_EXPORT_KINDS, fileFoundryExportAsVersion, sweepFoundryExportTrays } from './foundry-export-sweep';
+// How a Foundry project becomes a book of ours — BOTH doors. The live import
+// announcement below is a three-line wrapper around the same act the manual
+// "Adopt a Foundry project" door performs, so the two cannot produce different
+// state; see the header of electron/foundry-adopt.ts.
+import {
+  adoptFoundryProject,
+  foundryLandingKey,
+  foundryProjectClaims,
+  isInside,
+  listAdoptableFoundryProjects,
+  recordFoundryImportLanding,
+  standaloneFoundryProjectsRoot,
+} from './foundry-adopt';
 // The other half of the host-operations socket: the ids that come back on an
 // invoke, and the mapping that turns the queue into the rows Foundry draws.
 import {
@@ -657,48 +670,12 @@ function foundryProjectsDir(): string {
 // written nowhere; that is the entire policy, and it is why the mapping is
 // allowed to be authoritative when it does match.
 
-/**
- * A landing's project KEY — the folder name under `<library>/foundry/projects/`.
- *
- * The key is what a manifest stores (`foundryProject.dir`), never a path, so
- * this is the one conversion the announcements need.
- */
-function foundryLandingKey(projectDir: string): string {
-  return path.basename(normalizeFsPath(projectDir));
-}
-
-/**
- * Every BookForge book, with the Foundry project key it claims.
- *
- * ONE PASS OVER THE LIBRARY PER LANDING. `listProjects` reads each manifest
- * exactly once, concurrently, which is the same read the Studio list does on
- * every load — so matching a landing costs one library sweep rather than one
- * manifest read per project per landing. It is deliberately NOT cached: an
- * import that just landed changed a manifest this instant, and a cache would
- * answer with the library as it stood before the thing being announced.
- */
-async function foundryProjectClaims(): Promise<
-  { dir: string; key: string | null; sourceVariantId?: string }[]
-> {
-  const listed = await manifestService.listProjects();
-  if (!listed.success || !listed.projects) {
-    throw new Error(
-      `the library could not be listed: ${listed.error || 'no reason given'}`);
-  }
-  return listed.projects.map((m) => ({
-    dir: manifestService.getProjectPath(m.projectId),
-    key: m.foundryProject?.dir ?? null,
-    // Carried so a re-import can tell "the same mapping again" from "the same
-    // project, a different source version" without a second manifest read.
-    sourceVariantId: m.foundryProject?.sourceVariantId,
-  }));
-}
-
-/** Is `child` inside `parent`? Windows-safe: normalized, and case-insensitively. */
-function isInside(parent: string, child: string): boolean {
-  const rel = path.relative(normalizeFsPath(parent), normalizeFsPath(child));
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
-}
+// `foundryLandingKey`, `foundryProjectClaims` and `isInside` stood here until
+// the Adopt door landed. They are imported from electron/foundry-adopt.ts now,
+// because adoption asks the very same questions this file's announcements do —
+// which key is this folder, which books claim it, is this file inside that book
+// — and two copies of those answers is how the two doors would come to disagree
+// about which book a Foundry project belongs to.
 
 /**
  * An export landed in a Foundry project's tray: file it onto the right book's
@@ -771,99 +748,22 @@ async function recordFoundryExportLanding(landing: FoundryExportLanding): Promis
 }
 
 /**
- * FIRST CONTACT: an import inside the Foundry window minted a project. Learn
- * which of our books it belongs to, from the file the user opened.
+ * FIRST CONTACT: an import inside the Foundry window minted a project — the
+ * host's half of the announcement.
  *
- * `originalPath` is the thread. The bare Import-via-Foundry window is opened
- * FROM a book of ours, the user then drops or opens that book's own file, and
- * that file lives inside its BookForge project — so a landing whose original is
- * under one of our project folders names that book and no other.
- *
- * THE ANNOUNCEMENT IS AUTHORITATIVE, including over a mapping already recorded:
- * Foundry has just told us which project this file is, and a stored key that
- * disagrees is a stale one. That overwrite is the healing path the re-import
- * re-fire exists for, so it is taken rather than refused — loudly, because a
- * mapping CHANGING is worth a line in the log where first contact is routine.
+ * The whole of the reasoning, and the act itself, is `recordFoundryImportLanding`
+ * in electron/foundry-adopt.ts: it is written there because the manual Adopt
+ * door performs the SAME join, and one mapping written by two functions is two
+ * functions that drift. What is left here is the one thing that module
+ * deliberately refuses to know — WHO TO TELL. The door’s label is read from the
+ * mapping, so it flips from "Import via Foundry" to "Edit in Foundry" without a
+ * reload, and it must flip in whichever window the user is actually looking at.
  */
-async function recordFoundryImportLanding(landing: FoundryImportLanding): Promise<void> {
-  const key = foundryLandingKey(landing.projectDir);
-  let claims: Awaited<ReturnType<typeof foundryProjectClaims>>;
-  try {
-    claims = await foundryProjectClaims();
-  } catch (err) {
-    console.error(
-      `[foundry-host] Foundry imported ${landing.originalPath} as project "${key}", but `
-      + `${(err as Error).message}. The mapping was not recorded; re-import to try again.`);
-    return;
-  }
-
-  const owner = claims.find((c) => isInside(c.dir, landing.originalPath));
-  if (owner === undefined) {
-    // Legitimate: somebody imported a stray file inside the Foundry window. It is
-    // a Foundry project with no BookForge book, which is a thing that may exist.
-    console.log(
-      `[foundry-host] Foundry imported ${landing.originalPath} as project "${key}". It is not a `
-      + 'file of any book in this library, so no mapping was recorded.');
-    return;
-  }
-
-  // WHICH VERSION of this book was opened in Foundry — the parent every export
-  // from this project will nest under.
-  //
-  // THIS IS THE ONLY MOMENT THE ANSWER EXISTS. Foundry names the file the user
-  // imported; an export landing names a file in `final/` whose name Foundry
-  // chose, with no way back to the version it came from. So the match is made
-  // here, against this book's own variant list, and recorded — never inferred
-  // later from an export's contents.
-  //
-  // No match is a real answer and is stored as one (null): a user can import a
-  // stray file into a book's Foundry project, and an export from it derives from
-  // no version of ours. Such exports render at top level rather than being
-  // attached to whichever version happened to sort first.
-  let sourceVariantId: string | null = null;
-  try {
-    const projectId = path.basename(owner.dir);
-    const got = await manifestService.getManifest(projectId);
-    if (got.manifest) {
-      const projectDir = manifestService.getProjectPath(projectId);
-      const match = manifestService.getVariants(got.manifest).variants.find((v) =>
-        sameResolvedPath(
-          normalizeFsPath(path.join(projectDir, ...v.path.split('/'))),
-          landing.originalPath));
-      sourceVariantId = match?.id ?? null;
-    }
-  } catch (err) {
-    console.error(
-      `[foundry-host] Which version ${landing.originalPath} is could not be read: `
-      + `${(err as Error).message}. The mapping is still recorded; exports from it will land at `
-      + 'top level.');
-  }
-
-  // A re-import that says the same thing about BOTH halves has nothing to write.
-  // The source is compared too: the same project can be re-imported from a
-  // different version of the book, and that is precisely the change this
-  // announcement exists to record.
-  if (owner.key === key && owner.sourceVariantId === (sourceVariantId ?? undefined)) return;
-
-  const changing = owner.key !== null && owner.key !== key;
-  try {
-    await manifestService.setFoundryProject(owner.dir, key, sourceVariantId);
-  } catch (err) {
-    console.error(`[foundry-host] ${(err as Error).message}`);
-    return;
-  }
-  const from = sourceVariantId === null
-    ? 'no version of this book (exports from it land at top level)'
-    : `version ${sourceVariantId}`;
-  console.log(
-    changing
-      ? `[foundry-host] ${path.basename(owner.dir)} now points at Foundry project "${key}" `
-        + `(it pointed at "${owner.key}"), opened from ${from}. Foundry's own announcement is the `
-        + 'authority.'
-      : `[foundry-host] ${path.basename(owner.dir)} is Foundry project "${key}", opened from ${from}.`);
-  // The door's label is read from this mapping, so it flips from
-  // "Import via Foundry" to "Edit in Foundry" without a reload.
-  broadcastToAllWindows('foundry-host:project-changed', { projectDir: owner.dir });
+function announceFoundryImportLanding(landing: FoundryImportLanding): Promise<void> {
+  return recordFoundryImportLanding(
+    landing,
+    (bookDir) => broadcastToAllWindows('foundry-host:project-changed', { projectDir: bookDir }),
+  );
 }
 
 /**
@@ -7741,6 +7641,102 @@ function setupIpcHandlers(): void {
     } catch (err) { console.error('[foundry-host:open]', err); return { success: false, error: (err as Error).message }; }
   });
 
+  /**
+   * ADOPT A FOUNDRY PROJECT — the other direction through the same seam.
+   *
+   * `foundry-host:open` is how a BOOK reaches Foundry. These two are how a
+   * FOUNDRY PROJECT reaches the library: one that already exists, that BookForge
+   * never witnessed being made, and that therefore has no book and no mapping.
+   *
+   * Both handlers are three lines each because the whole of the act is
+   * electron/foundry-adopt.ts. What is HERE is exactly what that module refuses
+   * to know, and it is the same short list `reconcileFoundryExportTrays` carries
+   * for the sweep: WHERE the roots are (`foundryProjectsDir()`, off a library
+   * root the user can move mid-session, and standalone Foundry's own userData
+   * folder) and WHO TO TELL (`foundry-host:project-changed`, so the door's label
+   * flips, and `project:files-changed`, so the shelf redraws with the new book on
+   * it).
+   */
+  ipcMain.handle('foundry-host:adoptables', async () => {
+    try {
+      // `app.getPath('appData')` is the ROAMING folder — `%APPDATA%` on Windows,
+      // `~/Library/Application Support` on macOS — which is where a standalone
+      // Electron app's userData sits under its product name. Foundry's is
+      // "Foundry"; its app-settings.json is what names its library.
+      const standalone = await standaloneFoundryProjectsRoot(
+        path.join(app.getPath('appData'), 'Foundry'));
+      const listing = await listAdoptableFoundryProjects(foundryProjectsDir(), standalone);
+      return { success: true, ...listing };
+    } catch (err) {
+      console.error('[foundry-host:adoptables]', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('foundry-host:adopt', async (_event, sourceDir: string) => {
+    try {
+      if (typeof sourceDir !== 'string' || !path.isAbsolute(sourceDir)) {
+        return {
+          success: false,
+          error: `Adopting needs the full path of a Foundry project folder, and “${sourceDir}” is `
+            + 'not one. Nothing was adopted.',
+        };
+      }
+      const result = await adoptFoundryProject(
+        sourceDir,
+        foundryProjectsDir(),
+        (bookDir) => {
+          // BOTH, and they are two different facts. The mapping changed (the
+          // book's Foundry button), and the library gained a book or a version
+          // (the shelf). The versions broadcast is the sweep's own, sent from
+          // inside adoption on the same channel with the same payload, so a
+          // versions page that is open updates identically whichever door a
+          // version came through.
+          broadcastToAllWindows('foundry-host:project-changed', { projectDir: bookDir });
+          broadcastToAllWindows('foundry-host:versions-changed', { projectDir: bookDir });
+        },
+      );
+      // The shelf is a list of PROJECTS, and adoption can add one. Sent once,
+      // after the whole act, rather than per notification above — a new book is
+      // one change however many versions arrived with it. The payload is the
+      // book's directory, the bare string every other sender on this channel
+      // uses.
+      if (result.outcome !== 'refused') {
+        broadcastToAllWindows('project:files-changed', result.bookDir);
+      }
+      return { success: result.outcome !== 'refused', result };
+    } catch (err) {
+      console.error('[foundry-host:adopt]', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * The browse-for-folder fallback behind the Adopt door.
+   *
+   * A project that is in NEITHER place the list looks — an old library, a folder
+   * off a backup drive, a Foundry install whose settings file was never written
+   * — is still a project, and the user knows where it is. Its own handler rather
+   * than `dialog:open-folder` because the title and the starting folder are what
+   * make a picker useful, and because adoption is the only caller that wants to
+   * start in standalone Foundry's library.
+   */
+  ipcMain.handle('foundry-host:browse-for-project', async () => {
+    if (!mainWindow) return { success: false, error: 'No window' };
+    const standalone = await standaloneFoundryProjectsRoot(
+      path.join(app.getPath('appData'), 'Foundry'));
+    const picked = await dialog.showOpenDialog(mainWindow, {
+      title: 'Select a Foundry project folder',
+      message: 'Pick the folder containing project.json and archive/',
+      properties: ['openDirectory'],
+      ...(standalone !== null && fsSync.existsSync(standalone) ? { defaultPath: standalone } : {}),
+    });
+    if (picked.canceled || picked.filePaths.length === 0) {
+      return { success: false, canceled: true };
+    }
+    return { success: true, folderPath: picked.filePaths[0] };
+  });
+
   // ─── Archive IPC Handlers ─────────────────────────────────────────────────
 
   ipcMain.handle('archive:save-to-archive', async (
@@ -11412,7 +11408,7 @@ app.whenReady().then(async () => {
     // these do is file I/O. Each reports its own failures — the `void` is not
     // swallowing anything, because neither ever rejects.
     onExport: (landing) => { void recordFoundryExportLanding(landing); },
-    onImport: (landing) => { void recordFoundryImportLanding(landing); },
+    onImport: (landing) => { void announceFoundryImportLanding(landing); },
     // Narrate / Enhance / Assemble, on the provenance tree. NOT wrapped, unlike
     // the two announcements above: an operation is a button the user pressed,
     // and its refusal has to reach the tree that asked.

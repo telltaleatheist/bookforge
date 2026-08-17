@@ -23,6 +23,10 @@ import type {
   BookChapterAddResult, BookChapterRenameResult, BookChapterTitles,
 } from '@shared/vlm/chapter-titles';
 import type { DocumentStageProgressEvent } from '@shared/document/pipeline-types';
+import type {
+  AdoptResult as FoundryAdoptOutcome,
+  AdoptableFoundryProject as FoundryAdoptable,
+} from '@shared/foundry/adopt-types';
 import type { PassDiffFile } from '../models/diff.types';
 
 // Lightweight match rectangle for custom category highlights
@@ -1510,6 +1514,44 @@ export class ElectronService {
    */
   async foundryHostOpen(projectDir: string, documentPath?: string): Promise<{ success: boolean; opened?: 'bare' | 'project'; error?: string }> {
     if (this.isElectron) return (window as any).electron.foundryHost.open(projectDir, documentPath);
+    return { success: false, error: 'Not running in Electron' };
+  }
+  /**
+   * Foundry projects this library has never seen — standalone Foundry's own
+   * library (`%APPDATA%/Foundry/app-settings.json` names where it keeps them)
+   * and orphans in BookForge's hosted root that no book's manifest maps.
+   *
+   * `refusals` are folders the search passed over, one sentence each. They are
+   * SHOWN rather than swallowed: a user looking for a project they know is there
+   * needs the reason it is not on the list.
+   */
+  async foundryHostAdoptables(): Promise<{
+    success: boolean;
+    projects?: FoundryAdoptable[];
+    refusals?: string[];
+    error?: string;
+  }> {
+    if (this.isElectron) return (window as any).electron.foundryHost.adoptables();
+    return { success: false, error: 'Not running in Electron' };
+  }
+  /**
+   * Make a book of this library out of an existing Foundry project.
+   *
+   * `result.outcome` is the whole answer: `'adopted'` (a book was minted, or an
+   * existing one was joined), `'already-mapped'` (a book already claims it —
+   * nothing was adopted again), `'refused'` with a sentence saying why.
+   */
+  async foundryHostAdopt(sourceDir: string): Promise<{
+    success: boolean;
+    result?: FoundryAdoptOutcome;
+    error?: string;
+  }> {
+    if (this.isElectron) return (window as any).electron.foundryHost.adopt(sourceDir);
+    return { success: false, error: 'Not running in Electron' };
+  }
+  /** Pick a Foundry project folder by hand — for one in neither searched place. */
+  async foundryHostBrowseForProject(): Promise<{ success: boolean; folderPath?: string; canceled?: boolean; error?: string }> {
+    if (this.isElectron) return (window as any).electron.foundryHost.browseForProject();
     return { success: false, error: 'Not running in Electron' };
   }
   /** Foundry landed an export as a VERSION of a book. Every window hears it. */

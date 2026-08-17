@@ -6,6 +6,7 @@ import { ElectronService } from '../../../../core/services/electron.service';
 import { NoticeService } from '../../../../core/services/notice.service';
 import { StudioItem } from '../../models/studio.types';
 import { ImportMetadataModalComponent, ImportMetadata } from '../import-metadata-modal/import-metadata-modal.component';
+import type { AdoptableFoundryProject as FoundryAdoptable } from '@shared/foundry/adopt-types';
 
 interface ImportProgress {
   total: number;
@@ -117,6 +118,81 @@ interface ImportProgress {
             }
             @if (urlWarning()) {
               <p class="url-warning">{{ urlWarning() }}</p>
+            }
+          </div>
+
+          <!--
+            ADOPT A FOUNDRY PROJECT.
+
+            A book edited in standalone Foundry, or an orphan project in this
+            library's own foundry/ folder that no book maps, is work that exists
+            and that BookForge cannot see. This is the door: it mints the book
+            from the project's own archived original and joins the two, so the
+            result is exactly what importing through the Foundry window would
+            have produced.
+
+            Drawn in the modal's own idiom and nothing new: the same "or"
+            divider, the same browse button, list rows built from the same
+            surface/border tokens the drop zone uses.
+          -->
+          <div class="divider">
+            <span>or</span>
+          </div>
+
+          <div class="adopt-section">
+            <p class="adopt-title">Adopt a Foundry project</p>
+            <p class="adopt-hint">
+              Projects you made in Foundry that aren’t in your library yet. The
+              original stays where it is — a copy comes in with its exports.
+            </p>
+
+            @if (adoptLoading()) {
+              <p class="adopt-empty">Looking for Foundry projects…</p>
+            } @else if (adoptables().length === 0) {
+              <p class="adopt-empty">No Foundry projects left to adopt.</p>
+            } @else {
+              <ul class="adopt-list">
+                @for (project of adoptables(); track project.dir) {
+                  <li class="adopt-row">
+                    <div class="adopt-row-text">
+                      <span class="adopt-name" [title]="project.dir">{{ project.title }}</span>
+                      <span class="adopt-meta">
+                        {{ project.origin === 'standalone' ? 'Foundry library' : 'In this library' }}
+                        · edited {{ formatAdoptDate(project.modifiedAt) }}
+                        @if (project.hasExports) {
+                          <span class="adopt-badge">has exports</span>
+                        }
+                      </span>
+                    </div>
+                    <button
+                      class="btn-adopt"
+                      [disabled]="adoptingDir() !== null"
+                      (click)="adoptProject(project.dir)"
+                    >
+                      @if (adoptingDir() === project.dir) {
+                        <span class="spinner-small"></span>
+                      } @else {
+                        Adopt
+                      }
+                    </button>
+                  </li>
+                }
+              </ul>
+            }
+
+            <button
+              class="btn-browse btn-browse-folder"
+              [disabled]="adoptingDir() !== null"
+              (click)="browseForFoundryProject()"
+            >
+              Choose a project folder…
+            </button>
+
+            @if (adoptError()) {
+              <p class="import-error adopt-message">{{ adoptError() }}</p>
+            }
+            @for (refusal of adoptRefusals(); track refusal) {
+              <p class="url-warning adopt-message">{{ refusal }}</p>
             }
           </div>
         </div>
@@ -402,6 +478,123 @@ interface ImportProgress {
       font-size: 13px;
       color: var(--warning-text);
     }
+
+    /* ── Adopt a Foundry project ─────────────────────────────────────────── */
+
+    .adopt-title {
+      margin: 0 0 2px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .adopt-hint {
+      margin: 0 0 12px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .adopt-empty {
+      margin: 0 0 12px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .adopt-list {
+      list-style: none;
+      margin: 0 0 12px;
+      padding: 0;
+      /* Capped rather than unbounded: a library with thirty unadopted projects
+         must not turn this modal into a page. */
+      max-height: 200px;
+      overflow-y: auto;
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+    }
+
+    .adopt-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 12px;
+
+      & + & {
+        border-top: 1px solid var(--border-subtle);
+      }
+
+      &:hover {
+        background: var(--bg-hover);
+      }
+    }
+
+    .adopt-row-text {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .adopt-name {
+      font-size: 13px;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .adopt-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .adopt-badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      color: var(--text-secondary);
+    }
+
+    .btn-adopt {
+      flex-shrink: 0;
+      min-width: 64px;
+      padding: 6px 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text-primary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s ease;
+
+      &:hover:not(:disabled) {
+        background: var(--bg-hover);
+        border-color: var(--border-strong);
+      }
+
+      &:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+    }
+
+    .btn-adopt .spinner-small {
+      border-top-color: var(--color-primary);
+    }
+
+    .btn-browse-folder {
+      width: 100%;
+    }
+
+    .adopt-message {
+      text-align: left;
+    }
   `]
 })
 export class AddModalComponent {
@@ -449,7 +642,110 @@ export class AddModalComponent {
   readonly pendingMetadataNotice = signal<string | null>(null);
   private pendingFilePath: string | null = null;
 
+  // ── Adopt a Foundry project ───────────────────────────────────────────────
+  //
+  // Foundry projects that exist and that this library has never seen: standalone
+  // Foundry's own library, and orphans in our own hosted root that no book's
+  // manifest maps. Listed on open (one IPC call), adopted one press at a time.
+
+  readonly adoptables = signal<FoundryAdoptable[]>([]);
+  readonly adoptRefusals = signal<string[]>([]);
+  readonly adoptLoading = signal<boolean>(true);
+  /** The project currently being adopted — one at a time, so the list can't race. */
+  readonly adoptingDir = signal<string | null>(null);
+  readonly adoptError = signal<string | null>(null);
+
   urlValue = '';
+
+  constructor() {
+    void this.loadAdoptables();
+  }
+
+  private async loadAdoptables(): Promise<void> {
+    // Outside Electron there is no filesystem to look in, and the door is not a
+    // door. Empty rather than an error: "not running in Electron" is a sentence
+    // about the harness, not about the user's Foundry projects.
+    if (!this.electronService.isRunningInElectron) {
+      this.adoptLoading.set(false);
+      return;
+    }
+    this.adoptLoading.set(true);
+    try {
+      const result = await this.electronService.foundryHostAdoptables();
+      if (result.success) {
+        this.adoptables.set(result.projects ?? []);
+        this.adoptRefusals.set(result.refusals ?? []);
+      } else {
+        // The list failing is NOT the same as an empty list, and must not look
+        // like one: an empty list says "there is nothing to adopt", which would
+        // be a lie about a library that could not be read.
+        this.adoptables.set([]);
+        this.adoptRefusals.set([]);
+        this.adoptError.set(
+          `Foundry projects could not be looked for: ${result.error || 'no reason given'}`);
+      }
+    } finally {
+      this.adoptLoading.set(false);
+    }
+  }
+
+  /** "17 Aug 2026" — the short form the rows want; never a raw ISO string. */
+  formatAdoptDate(iso: string): string {
+    const at = new Date(iso);
+    if (isNaN(+at)) return 'at an unknown time';
+    return at.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  }
+
+  async adoptProject(dir: string): Promise<void> {
+    if (this.adoptingDir() !== null) return;
+    this.adoptError.set(null);
+    this.adoptingDir.set(dir);
+    try {
+      const response = await this.electronService.foundryHostAdopt(dir);
+      const result = response.result;
+      if (!result) {
+        this.adoptError.set(response.error || 'The project could not be adopted.');
+        return;
+      }
+      if (result.outcome === 'refused') {
+        // A refusal is the whole answer and it is a sentence. Shown here rather
+        // than as a toast, because the user is looking at the row they pressed.
+        this.adoptError.set(result.reason);
+        return;
+      }
+
+      this.notices.notify(result.message);
+      // The row is gone from the list once the book claims it — re-asked rather
+      // than spliced out, because adoption of an orphan can change what the
+      // OTHER half of the list holds too.
+      await this.loadAdoptables();
+
+      // The same reload-and-find the file import does: the shelf is rebuilt from
+      // the library, and the new book is handed to the parent so it can select
+      // it. loadBooks builds `projectDir` with forward slashes while main returns
+      // path.join(...) — backslashes on Windows — so compare separator-normalized.
+      await this.studioService.loadBooks();
+      const norm = (p?: string) => p?.replace(/\\/g, '/');
+      const adopted = this.studioService.books().find(
+        (b) => norm(b.projectDir) === norm(result.bookDir));
+      if (adopted) this.added.emit(adopted);
+      this.close.emit();
+    } catch (err) {
+      this.adoptError.set((err as Error).message);
+    } finally {
+      this.adoptingDir.set(null);
+    }
+  }
+
+  /**
+   * The fallback for a project in neither searched place — an old library, a
+   * backup drive, a Foundry install whose settings file was never written.
+   */
+  async browseForFoundryProject(): Promise<void> {
+    const picked = await this.electronService.foundryHostBrowseForProject();
+    if (!picked.success || !picked.folderPath) return;
+    await this.adoptProject(picked.folderPath);
+  }
 
   @HostListener('document:keydown.escape')
   onEscapeKey(): void {
