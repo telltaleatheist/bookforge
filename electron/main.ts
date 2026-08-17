@@ -4206,6 +4206,16 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
+  // Does ANY BookForge window have focus right now?
+  //
+  // The queue's completion toasts show in the focused window only — a step
+  // finishing is broadcast to every window, and the same news said three times
+  // is noise. A renderer can see its own focus and nothing else's, so the main
+  // window asks this before deciding to speak for an app nobody is looking at.
+  ipcMain.handle('window:any-focused', () => ({
+    focused: BrowserWindow.getAllWindows().some((w) => w.isFocused()),
+  }));
+
   // Plugin system handlers
   ipcMain.handle('plugins:list', async () => {
     try {

@@ -48,6 +48,34 @@ export class StudioService {
   // Combined count
   readonly totalCount = computed(() => this._books().length + this._articles().length);
 
+  /**
+   * A book another surface wants opened on its versions page.
+   *
+   * Studio selects from its own list, so there was no way to say "open THIS
+   * book" from outside it — the route carries no project. The queue's completion
+   * toast needs exactly that: click the news that a book finished and land on
+   * that book. It is left HERE, as a request, rather than delivered to a
+   * listener, because Studio may not be mounted when the toast is clicked — the
+   * same reason the narration hand-off is left with a service.
+   *
+   * The id is a StudioItem id: a book's project directory, an article's manifest
+   * id. Whoever consumes it TAKES it, so a second visit to Studio does not
+   * re-open a book the user has since navigated away from.
+   */
+  private readonly _openRequest = signal<string | null>(null);
+  readonly openRequest = this._openRequest.asReadonly();
+
+  requestOpen(itemId: string): void {
+    this._openRequest.set(itemId);
+  }
+
+  /** Read the pending request and clear it. Null when there is none. */
+  takeOpenRequest(): string | null {
+    const id = this._openRequest();
+    if (id !== null) this._openRequest.set(null);
+    return id;
+  }
+
   private loadSortPref(): SortPreference {
     try {
       const raw = localStorage.getItem(SORT_STORAGE_KEY);
