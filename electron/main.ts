@@ -3710,6 +3710,17 @@ function setupIpcHandlers(): void {
     applyE2aScratchDir();
     // Sync to manifest service
     manifestService.setLibraryBasePath(libraryPath);
+    // Re-point the audiobook job log at the new root's logs/ — it holds an
+    // absolute file path from whenReady and would keep writing to the old
+    // library (or spam ENOENT if that root is gone) after a move.
+    if (libraryPath) {
+      try {
+        const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+        await parallelTtsBridge.initializeLogger(libraryPath);
+      } catch (err) {
+        console.error('[library:set-root] audiobook logger re-init failed:', err);
+      }
+    }
     // Scaffold the drop-in audiobooks/ folder so its .m4b files surface in the
     // Bookshelf by default — created the moment a library is pointed to, no UI step.
     if (libraryPath) {
@@ -11122,6 +11133,18 @@ app.whenReady().then(async () => {
   // there are no windows and nothing to close.
   manifestService.useViewerReaderCloser(closeViewerDocumentsUnder);
   logger.info('BookForge starting', { version: app.getVersion(), platform: process.platform });
+
+  // The audiobook job log (<library>/logs/audiobook-<date>.log) was initialized
+  // only when a renderer happened to call logger:initialize — a queue-engine job
+  // that started first wrote every entry to '' and spammed ENOENT (seen live
+  // 2026-08-17, first engine-run TTS job). The main process owns the library
+  // root, so the log is opened here, before any job can start.
+  try {
+    const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+    await parallelTtsBridge.initializeLogger(getLibraryRoot());
+  } catch (err) {
+    logger.warn('audiobook logger init failed', { error: (err as Error).message });
+  }
 
   // In development, point FOUNDRY_CLI_PATH at the locally-built binary unless
   // the developer set one. Dev only: a packaged build resolves the foundry CLI

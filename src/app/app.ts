@@ -9,7 +9,6 @@ import {
 import { NavRailComponent, NavRailItem } from './components/nav-rail/nav-rail.component';
 import { SetupDownloadDockComponent } from './components/setup-download-dock/setup-download-dock.component';
 import { UpdateBannerComponent } from './components/update-banner/update-banner.component';
-import { NoticeBannerComponent } from './components/notice-banner/notice-banner.component';
 import { ToastHostComponent } from './components/toast-host/toast-host.component';
 import { QueueChipComponent } from './features/queue/components/queue-chip/queue-chip.component';
 import { QueueToastsService } from './features/queue/services/queue-toasts.service';
@@ -33,7 +32,6 @@ import { DialogService } from './creamsicle-desktop/services/dialog.service';
     NavRailComponent,
     SetupDownloadDockComponent,
     UpdateBannerComponent,
-    NoticeBannerComponent,
     ToastHostComponent,
     QueueChipComponent
   ],
@@ -115,14 +113,11 @@ import { DialogService } from './creamsicle-desktop/services/dialog.service';
     <!-- App self-update toast: "update ready — restart to apply" (and download progress). -->
     <app-update-banner />
 
-    <!-- Dismissible stack of "this finished" / "this was partial" lines. The
-         non-blocking half of the dialog vocabulary: anything that is not a
-         destructive confirm, a refusal, or a stopping error says itself here
-         instead of interrupting. -->
-    <app-notice-banner />
-
-    <!-- Completion news: a run's last step landing, or any step failing. Shown
-         in whichever window has focus (see QueueToastsService). -->
+    <!-- The app's ONE notification stack: completion cards (a run's last step
+         landing, or any step failing — shown in whichever window has focus,
+         see QueueToastsService) and plain notice lines (NoticeService — the
+         non-blocking half of the dialog vocabulary). The bottom-left notice
+         banner it replaced is gone (unified 2026-08-17). -->
     <app-toast-host />
 
     <!-- First-run engine setup: slim progress bar pinned to the bottom while the

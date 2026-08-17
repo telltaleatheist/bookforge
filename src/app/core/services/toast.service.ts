@@ -1,15 +1,14 @@
 /**
  * ToastService — the bottom-right stack of "this landed".
  *
- * ── Why not the notice banner ───────────────────────────────────────────────
+ * ── One stack, two shapes ───────────────────────────────────────────────────
  *
- * `NoticeService` already carries the non-blocking half of the dialog
- * vocabulary, and this is deliberately NOT that. A notice is a sentence about
- * something the user just did and is still looking at. A toast is news about
- * work that finished while they were doing something else: it carries the book's
- * cover, it names what was produced, and clicking it takes them to the thing.
- * Folding one into the other would mean either notices grow a cover and a
- * destination, or completions lose them.
+ * This stack is the app's ONLY notification surface (Owen, 2026-08-17: "we
+ * need to unify" — the bottom-left notice banner that used to coexist with it
+ * is gone). Two shapes ride on it: the CARD (cover, kicker, title, meta,
+ * click destination — news about work that finished elsewhere) and the LINE
+ * (`line()` / `plain` — one sentence about something the user just did, which
+ * is what `NoticeService` renders through).
  *
  * ── Why hand-rolled ─────────────────────────────────────────────────────────
  *
@@ -42,6 +41,12 @@ export interface Toast {
   /** A cover thumbnail as a data URI, or null. */
   cover: string | null;
   action: ToastAction | null;
+  /**
+   * A one-sentence toast: no cover slot, and the title wraps instead of
+   * ellipsizing. The shape {@link ToastService.line} raises — see there for
+   * why it exists.
+   */
+  plain?: boolean;
 }
 
 /**
@@ -67,6 +72,22 @@ export class ToastService {
       this.timers.set(id, setTimeout(() => this.dismiss(id), SUCCESS_DISMISS_MS));
     }
     return id;
+  }
+
+  /**
+   * Say one sentence on the stack — no cover, no destination, gone in a few
+   * seconds. This is NoticeService's rendering since the two stacks were
+   * unified (Owen, 2026-08-17: "we need to unify" — the bottom-left banner and
+   * this stack were two visual languages for the same "here is a fact").
+   *
+   * Repeating a line already on the stack does nothing: a job reporting itself
+   * twice should read as one event.
+   */
+  line(text: string): void {
+    const line = text.trim();
+    if (!line) throw new Error('ToastService.line was given an empty notice');
+    if (this._toasts().some(t => t.plain && t.title === line)) return;
+    this.show({ tone: 'success', kicker: 'Notice', title: line, meta: '', cover: null, action: null, plain: true });
   }
 
   dismiss(id: number): void {

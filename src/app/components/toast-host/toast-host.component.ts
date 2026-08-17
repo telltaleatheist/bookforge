@@ -33,16 +33,20 @@ import { Toast, ToastService } from '../../core/services/toast.service';
             (keydown.enter)="activate(toast)"
             (keydown.space)="activate(toast); $event.preventDefault()"
           >
-            @if (toast.cover) {
-              <img class="toast-cover" [src]="toast.cover" alt="" />
-            } @else {
-              <span class="toast-cover toast-cover-blank" aria-hidden="true"></span>
+            @if (!toast.plain) {
+              @if (toast.cover) {
+                <img class="toast-cover" [src]="toast.cover" alt="" />
+              } @else {
+                <span class="toast-cover toast-cover-blank" aria-hidden="true"></span>
+              }
             }
 
             <div class="toast-body">
               <div class="toast-kicker">{{ toast.kicker }}</div>
-              <div class="toast-title">{{ toast.title }}</div>
-              <div class="toast-meta">{{ toast.meta }}</div>
+              <div class="toast-title" [class.wrap]="toast.plain">{{ toast.title }}</div>
+              @if (!toast.plain) {
+                <div class="toast-meta">{{ toast.meta }}</div>
+              }
             </div>
 
             <button
@@ -150,6 +154,14 @@ import { Toast, ToastService } from '../../core/services/toast.service';
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    /* The plain LINE shape: a sentence, so it wraps instead of ellipsizing
+       and reads at body weight rather than as a headline. */
+    .toast-title.wrap {
+      white-space: normal;
+      font-weight: 500;
+      line-height: 1.45;
     }
 
     .toast-meta {

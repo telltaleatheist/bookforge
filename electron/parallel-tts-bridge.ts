@@ -2962,6 +2962,15 @@ export async function prepareSession(
   const useWsl = shouldUseWslForSpawn(settings.ttsEngine);
   let sessionDir: string;
   let sessionDirForReading: string;
+  // The --ebook path as the spawned e2a will see it. For a WSL prep the file is
+  // STAGED into WSL's own filesystem first: buildWslBashCommand maps drive
+  // letters to /mnt/<letter>, but WSL auto-mounts only fixed drives — a library
+  // on a mapped network drive (Z: → titan since 2026-08-17) has no /mnt/z, and
+  // prep died in prepare_dirs' shutil.copy on exactly that. Staging through the
+  // \\wsl$ UNC works for EVERY source the host can read — local, mapped, or UNC
+  // — so it is done unconditionally for WSL preps rather than by probing mounts.
+  let ebookArgPath = epubPath;
+  let stagedEbookUnc: string | null = null;
 
   if (useWsl) {
     // Session will be created in WSL's e2a path
@@ -2970,6 +2979,16 @@ export async function prepareSession(
     // Convert to Windows UNC path for reading from Node.js
     sessionDirForReading = wslPathToWindows(sessionDir);
     console.log(`[PARALLEL-TTS] WSL session dir: ${sessionDir} -> ${sessionDirForReading}`);
+
+    // Stage the ebook where WSL can read it. Prep copies it into the session
+    // dir immediately (prepare_dirs), so the staged file is deleted again the
+    // moment prep settles — see the finally below.
+    const stagedWsl = `${wslE2aPath}/tmp/staged-${sessionId}${path.extname(epubPath)}`;
+    stagedEbookUnc = wslPathToWindows(stagedWsl);
+    await fs.mkdir(path.dirname(stagedEbookUnc), { recursive: true });
+    await fs.copyFile(epubPath, stagedEbookUnc);
+    ebookArgPath = stagedWsl;
+    console.log(`[PARALLEL-TTS] Staged ebook for WSL: ${epubPath} -> ${stagedWsl}`);
   } else {
     // Native session dir — the configured scratch, or <e2a>/tmp by default.
     // Must match where the spawned e2a writes it (buildCondaSpawnEnv passes
@@ -2990,7 +3009,7 @@ export async function prepareSession(
     ...pythonInvocation(settings.ttsEngine).args,
     appPath,
     '--headless',
-    '--ebook', epubPath,
+    '--ebook', ebookArgPath,
     '--session', sessionId,
     '--language', settings.language,
     '--tts_engine', settings.ttsEngine,
@@ -3033,6 +3052,20 @@ export async function prepareSession(
   }
 
   console.log('[PARALLEL-TTS] Running prep with:', args.join(' '));
+
+  // The staged copy's whole job is done once prep settles: prepare_dirs copies
+  // the ebook into the session dir in its first act, and nothing after prep
+  // reads --ebook through WSL again (assembly runs natively on the original).
+  const removeStagedEbook = async (): Promise<void> => {
+    if (stagedEbookUnc === null) return;
+    const staged = stagedEbookUnc;
+    stagedEbookUnc = null;
+    try {
+      await fs.unlink(staged);
+    } catch (err) {
+      console.error(`[PARALLEL-TTS] Staged ebook could not be removed (${staged}): ${(err as Error).message}`);
+    }
+  };
 
   // Hoisted OUTSIDE the promise so the tails remain visible after it settles —
   // needed for the exit-0 validation below and the stall-timeout reject message.
@@ -3148,7 +3181,7 @@ export async function prepareSession(
       clearStallTimer();
       reject(err);
     });
-  });
+  }).finally(removeStagedEbook);
 
   // Prep exited 0 — validate it actually produced a usable session. Calibre can die
   // silently on some filesystems (e.g. ExFAT) yet leave exit code 0, producing no
