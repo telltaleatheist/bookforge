@@ -2,17 +2,29 @@ import { NgTemplateOutlet } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 
-import { qualify, typeLabel } from '@shared/documents';
-import type { LedgerStep, ProjectDocumentKind, ProjectSummary } from '@shared/types';
+import { typeLabel } from '@shared/documents';
+import { PRODUCES_OF } from '@shared/host-ops';
+import { languageNameFor } from '@shared/languages';
+import type {
+  HostNode,
+  HostNodeProgress,
+  LedgerParams,
+  LedgerStep,
+  NodeOutput,
+  ProjectDocumentKind,
+  ProjectSummary,
+} from '@shared/types';
 
 import { api } from '../../core/foundry';
+import { HostOpsService } from '../../core/host-ops.service';
 import { LedgerService } from '../../core/ledger.service';
 import { ProjectsService } from '../../core/projects.service';
 import { TabsService, type Tab } from '../../core/tabs.service';
 import { UiService } from '../../core/ui.service';
 
 /**
- * The LIBRARY, down the left — one provenance tree per open book.
+ * The LIBRARY, down the left — one provenance tree per open book, and since the
+ * pipeline redesign the place a book's next act is ordered from.
  *
  * ── It was a documents list, and that was one selector too many ──────────────
  *
@@ -34,19 +46,88 @@ import { UiService } from '../../core/ui.service';
  * ── The ledger was always a tree; this stops hiding it ───────────────────────
  *
  * Every step records the step it was made FROM (`LedgerStep.parent`), and
- * shared/types.ts:2385 says out loud that the flat chronological list was that
- * tree with the indentation taken off. The flattening was the right call for a
- * 260px accordion that had to say "what have I done to this book" in one
- * column; it is the wrong call for a navigator, because the one question a
- * navigator has to answer is "what was this made FROM" — which is exactly the
- * fact the flattening threw away. So: the import is the root, the reading hangs
- * under it, curation saves hang under the reading, and a translation is a new
- * book that nests and grows saves of its own.
+ * shared/types.ts says out loud that the flat chronological list was that tree
+ * with the indentation taken off. The flattening was the right call for a 260px
+ * accordion that had to say "what have I done to this book" in one column; it is
+ * the wrong call for a navigator, because the one question a navigator has to
+ * answer is "what was this made FROM" — which is exactly the fact the flattening
+ * threw away. So: the import is the root, the reading hangs under it, curation
+ * saves hang under the reading, and a translation is a new book that nests and
+ * grows saves of its own.
  *
  * NOTHING IS RE-DERIVED FROM A FILE HERE. The parent chain is the ledger's own
- * (`LedgerService.historyFor`); the exports are `listProjects`' own; the labels
+ * (`LedgerService.historyFor`); the exports are `listProjects`' own; the facts
  * are the ones main wrote when the step was made. This component owns the
- * indentation and nothing else about the shape.
+ * DRAWING and nothing else about the shape.
+ *
+ * ══ THE REDESIGN (2026-08-17): CARDS ON A DRAWN SPINE ════════════════════════
+ *
+ * *"not intuitive or descriptive enough"* — the user, about the indented row
+ * list this used to be, in the ruling that turned this panel into the PIPELINE
+ * COMPOSER. Three things changed and none of them is the click model.
+ *
+ * 1. GEOMETRY. A row was `[arrow][glyph][name][date]` at `10 + depth × 14`
+ *    pixels of padding, and the indentation was the only thing saying what came
+ *    from what — a relationship the eye has to reconstruct by comparing left
+ *    edges four rows apart. Now every node is a CARD to the right of a state dot
+ *    sitting on a drawn lineage line: the line is the ancestry, the dot is the
+ *    state, the card is the thing. Branches curve off the parent's line with a
+ *    rounded elbow into a lane of their own.
+ *
+ * 2. LANGUAGE. A row said "Translated (de)" because that is the label main
+ *    stamped on the step. A card says "Translated into German" and, underneath,
+ *    "from **Applied changes**" — the same two facts a person actually asks for,
+ *    in a sentence rather than in a notation. THE STORED LABEL IS UNTOUCHED:
+ *    `LedgerStep.label` is the record of what this app called the act when it
+ *    happened and rewriting somebody's history to tidy our own naming is exactly
+ *    what `labelFor` refuses to do. These sentences are DERIVED, from the action
+ *    and the params the step already carries, and the stored label is still what
+ *    the tooltip says.
+ *
+ * 3. THE SPINE GOES DASHED PAST WHAT EXISTS. Solid line, filled dot: this
+ *    happened. Dashed line, hollow dot: this is the plan. That grammar is what
+ *    makes a queued act drawable at all — and a queued act is drawable because a
+ *    host can now contribute one (below).
+ *
+ * WHAT DID NOT CHANGE, and must not: a click on a node MOVES THE POSITION and is
+ * not a tab; exports are terminal children of the root at the Book's own indent;
+ * a step row wears no ✕; the group is one book and the first row is its import;
+ * the collapse is a session and not a setting. The redesign changes geometry and
+ * language, not what a gesture means.
+ *
+ * ── The "from here" footer, which is the second door onto the dock's acts ────
+ *
+ * A selected card grows a footer offering the acts applicable FROM THAT NODE:
+ * Translate, Simplify, Export — the same dialogs the dock opens, opened the same
+ * way, after standing on the node the footer belongs to. The dock stays exactly
+ * where it is. This is not a second implementation of those acts and must never
+ * become one: every button here calls the same `UiService` opener the dock's
+ * button calls, and the aiming is what it has always been — the dialogs act on
+ * the POSITION, so standing first is the whole of "aimed at this node".
+ *
+ * WHY A FOOTER RATHER THAN A MENU. The right-click menu is still there and still
+ * carries the destructive and arranging acts (split, delete, reveal). What the
+ * footer carries is the MAKING acts, and those are the ones a person has to be
+ * able to SEE from the node they are standing on — a right-click is a gesture
+ * with nothing on screen to suggest it, which is the same argument that put a ✕
+ * on the root when Close book was menu-only.
+ *
+ * ── AND THE HOST'S OWN WORK, WHEN THERE IS A HOST ───────────────────────────
+ *
+ * Hosted, BookForge contributes operations (Narrate, Enhance, Assemble) and
+ * pushes NODES for the work it is doing (electron/host-ops.ts, shared/host-ops.ts
+ * — the whole design lives there). This panel draws those nodes as children of
+ * the ledger step they were ordered from, in the same card grammar, with the
+ * host's own words: a queued one is a dashed card, a running one carries a live
+ * bar, a failed one wears the error colour and the host's sentence.
+ *
+ * THEY ARE NOT STEPS AND THIS FILE MUST NOT TREAT THEM AS ANY. A host node has
+ * no `LedgerStep`, so it cannot be stood on, split, deleted or dragged; what it
+ * CAN be is selected, and its footer offers the host's acts that apply to what
+ * it produces — even while it is queued, which is the point: *"they can chain the
+ * next op onto a pending node's future output"*. Standalone, no operations are
+ * registered and no nodes are ever pushed, so every one of these branches is
+ * dead code that costs one empty array.
  *
  * ── The rows that died with the flattening ───────────────────────────────────
  *
@@ -73,7 +154,10 @@ import { UiService } from '../../core/ui.service';
  * are not top-level: with three books open, exports floating at the root of the
  * panel would have lost their parentage, and "Facsimile PDF · 14 Aug" names a
  * product and a day, not a book. Named by product and date, never by filename,
- * because that is the pair of facts that tells two of them apart.
+ * because that is the pair of facts that tells two of them apart. A terminal card
+ * says so in words under its title — nothing is made from it — and it is the one
+ * card with no lineage line under its name, because the tray does not record
+ * which position an export was made at and this panel will not guess one.
  *
  * THE FACSIMILE IS THERE BESIDE THEM, and it is the one terminal row nobody asked
  * for: a reading makes it the moment it lands, because the pages as they were
@@ -104,12 +188,20 @@ import { UiService } from '../../core/ui.service';
  * rather than the step, which is the next section — no middle-click close, no
  * column badge, no accent bar for "on screen".
  * A step is a POSITION — clicking it moves where the project stands and the
- * panes follow — and the panel's statement about it is `.current`, one row in
- * the tree drawn in the accent. Marking step rows as "showing in column 3" as
+ * panes follow — and the panel's statement about it is `.standing`, one card in
+ * the tree drawn in the accent. Marking step cards as "showing in column 3" as
  * well would put the second selector straight back: *"Tabs are windows onto the
  * selection, never a second selector"* (§6c). The rows that ARE tabs — exports,
  * HTML faces, copies, loose files — keep every one of those marks, because for
  * them the mark is the truth.
+ *
+ * SELECTED AND STANDING ARE TWO DIFFERENT FACTS and the redesign needs both.
+ * Standing is where the BOOK is, one card per open book, and it is what the
+ * panes show. Selected is the one card in the whole panel whose footer is open —
+ * panel-wide, because two footers offering acts on two different books would be
+ * two answers to "what happens if I press Translate". Clicking a node does both;
+ * clicking a HOST node selects without standing, because there is no position to
+ * move to.
  *
  * ── The three ✕, and the header they came from ───────────────────────────────
  *
@@ -128,7 +220,7 @@ import { UiService } from '../../core/ui.service';
  * a time and hope the tree went with them.
  *
  * The rule it bends is worth stating so it is not read as a licence. What a step
- * row must never carry is a ✕ meaning "delete this step and everything made from
+ * card must never carry is a ✕ meaning "delete this step and everything made from
  * it" — that is the panel's most expensive ambiguity and it stays behind the
  * menu, with main's accounting of the cost. This is not that button: it closes
  * tabs, it writes nothing and destroys nothing, and the book is one click from
@@ -155,8 +247,8 @@ import { UiService } from '../../core/ui.service';
  * document's order still exists. Rows inside a project cannot be reordered:
  * their order is the ledger's and the catalogue's, and a line drawn above one
  * would promise a move the next redraw undoes. A row dragged onto the workspace
- * lands in a column (the workspace owns that half of the gesture). Step rows are
- * not draggable at all: there is no tab to carry.
+ * lands in a column (the workspace owns that half of the gesture). Step and host
+ * cards are not draggable at all: there is no tab to carry.
  *
  * Native HTML5 drag and drop, with the same custom MIME the strips used, and the
  * window's own file-drop veil still tells the two apart by looking for `Files`
@@ -182,6 +274,82 @@ import { UiService } from '../../core/ui.service';
       </div>
     } @else {
     <div class="panel">
+      <!--
+        THE ICONS, DEFINED ONCE AND USED BY REFERENCE.
+
+        Stroke icons in a symbol sheet rather than the typographic glyphs this
+        panel used to draw (▤ ▦ ✎ ⇄). Those were chosen when a row was twelve
+        pixels of text and they were honest about it; in a card with a tinted
+        square to put a mark in, a font glyph is whatever the platform happens to
+        have — ⇄ is a different weight on every machine and ⓘ is a different SIZE
+        — and the one thing a set of marks has to be is a set.
+
+        INLINE AND NOT A FILE, because the renderer's CSP is "default-src 'self'"
+        with no fetching of anything, and because an svg use against a symbol in
+        the same document is the one form that costs no request at all. The ids
+        carry an "ft-" prefix: they are global to the document, and hosted, this
+        page is Foundry's own — but the habit is cheap and the collision is not.
+      -->
+      <svg class="sheet" aria-hidden="true" focusable="false">
+        <defs>
+          <symbol id="ft-check" viewBox="0 0 24 24">
+            <path d="M4 12.5l5 5L20 6.5" fill="none" stroke="currentColor" stroke-width="3.4"
+                  stroke-linecap="round" stroke-linejoin="round" />
+          </symbol>
+          <symbol id="ft-cross" viewBox="0 0 24 24">
+            <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3.2"
+                  stroke-linecap="round" />
+          </symbol>
+          <symbol id="ft-scan" viewBox="0 0 24 24">
+            <path d="M7 3h8l4 4v14H7z M15 3v4h4 M10 12h6 M10 16h6" fill="none" stroke="currentColor"
+                  stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" />
+          </symbol>
+          <symbol id="ft-book" viewBox="0 0 24 24">
+            <path d="M4 4.5h6a2.5 2.5 0 012.5 2.5v13a2 2 0 00-2-2H4z M20 4.5h-6A2.5 2.5 0 0011.5 7v13a2 2 0 012-2H20z"
+                  fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+          </symbol>
+          <symbol id="ft-pen" viewBox="0 0 24 24">
+            <path d="M4 20l1-4L16.5 4.5a2.1 2.1 0 013 3L8 19l-4 1z M14 6l3 3" fill="none"
+                  stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" />
+          </symbol>
+          <symbol id="ft-globe" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8" />
+            <path d="M3.5 12h17 M12 3.5c3 2.6 3 14.4 0 17 M12 3.5c-3 2.6-3 14.4 0 17" fill="none"
+                  stroke="currentColor" stroke-width="1.6" />
+          </symbol>
+          <symbol id="ft-spark" viewBox="0 0 24 24">
+            <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z M18.5 15.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"
+                  fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+          </symbol>
+          <symbol id="ft-tag" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8" />
+            <path d="M12 11v6 M12 7.4v.2" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" />
+          </symbol>
+          <symbol id="ft-out" viewBox="0 0 24 24">
+            <path d="M12 15V4 M8 8l4-4 4 4 M5 15v4h14v-4" fill="none" stroke="currentColor"
+                  stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+          </symbol>
+          <symbol id="ft-page" viewBox="0 0 24 24">
+            <path d="M6 3h8l4 4v14H6z M14 3v4h4" fill="none" stroke="currentColor" stroke-width="1.8"
+                  stroke-linejoin="round" />
+          </symbol>
+          <symbol id="ft-mic" viewBox="0 0 24 24">
+            <rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="1.8" />
+            <path d="M5.5 11.5a6.5 6.5 0 0013 0 M12 18v3.5" fill="none" stroke="currentColor"
+                  stroke-width="1.8" stroke-linecap="round" />
+          </symbol>
+          <symbol id="ft-wave" viewBox="0 0 24 24">
+            <path d="M3 12h2.5 M8 5.5v13 M12 8.5v7 M16 4.5v15 M20.5 10v4" fill="none"
+                  stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+          </symbol>
+          <symbol id="ft-disc" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8" />
+            <circle cx="12" cy="12" r="2.6" fill="currentColor" />
+          </symbol>
+        </defs>
+      </svg>
+
       <header class="head">
         <button class="collapse" title="Hide the library (Ctrl+B)" (click)="ui.toggleDocuments()">«</button>
         <!-- "Open documents" was the name of a list of files. This is the books
@@ -207,7 +375,7 @@ import { UiService } from '../../core/ui.service';
           <!--
             role=group with the book's name on it, so the tree inside is
             announced as belonging to something rather than as a run of
-            unrelated rows. There is no header element any more: the first row
+            unrelated cards. There is no header element any more: the first card
             IS the book — its import, the thing it all started from.
           -->
           <div class="group" role="group" [attr.aria-label]="'Book: ' + group.title">
@@ -223,123 +391,242 @@ import { UiService } from '../../core/ui.service';
       </div>
 
       <!--
-        ONE ROW TEMPLATE FOR ALL FOUR KINDS, because a step, an export, an open
-        file and a loose one are the same drawn line with different gestures
-        behind it, and four copies of this markup would drift the first time a
-        mark was added to one of them. What differs is carried on the row.
+        ONE CARD TEMPLATE FOR ALL FIVE KINDS, because a step, a host's job, an
+        export, an open file and a loose one are the same drawn card with
+        different gestures behind it, and five copies of this markup would drift
+        the first time a mark was added to one of them. What differs is carried
+        on the row.
       -->
       <ng-template #line let-row>
         <div
-          class="row"
-          [style.padding-left.px]="10 + row.depth * 14"
+          class="step"
           [class.node]="row.kind === 'root' || row.kind === 'step'"
-          [class.root]="row.kind === 'root'"
-          [class.current]="row.current"
-          [class.stale]="row.stale"
-          [class.inert]="row.tab === null && row.openable === false"
-          [class.on]="row.column !== null"
-          [class.focused]="row.focused"
-          [class.available]="row.kind === 'export' && row.tab === null"
-          [class.before]="before() === row.key"
-          [title]="row.tooltip"
-          [attr.draggable]="row.tab !== null"
           (click)="pickRow(row)"
           (auxclick)="onAux($event, row.tab)"
           (contextmenu)="onMenu($event, row)"
+          [attr.draggable]="row.tab !== null"
           (dragstart)="onDragStart($event, row.tab)"
           (dragend)="onDragEnd()"
           (dragover)="onRowOver($event, row)"
           (drop)="onDrop($event, row)"
         >
           <!--
-            THE ARROW IS A SLOT EVEN WHEN THERE IS NO ARROW. A twist that
-            appeared and disappeared would shift every name in the panel
-            sideways by nine pixels depending on whether the book above had been
-            translated. An export never gets one — it is terminal, and an arrow
-            on it would promise something under it.
-          -->
-          @if (row.expanded !== null) {
-            <button
-              class="twist"
-              [attr.aria-expanded]="row.expanded"
-              [title]="row.expanded ? 'Collapse' : 'Expand'"
-              (click)="toggle($event, row)"
-            >{{ row.expanded ? '▾' : '▸' }}</button>
-          } @else {
-            <span class="twist"></span>
-          }
-          <span class="kind">{{ row.glyph }}</span>
-          <span class="name">{{ row.title }}</span>
-          <!--
-            TWO marks, because they are two different things to fix. The dot is
-            "this book is not in a folder of yours"; the pencil is "the copy
-            that is in one is older than this". A row can wear both.
-          -->
-          @if (row.tab?.unsaved) {
-            <span class="dot" title="Not saved anywhere you chose">●</span>
-          }
-          @if (row.tab?.modified) {
-            <span class="pencil" title="Edited since it was last saved">✎</span>
-          }
-          <!-- WHEN, for the rows that are a moment in a book's history. -->
-          @if (row.tally) {
-            <span class="tally">{{ row.tally }}</span>
-          }
-          <!--
-            WHICH column it is in, and only once there are two. With one column
-            open the number is the only number it could be, and a badge that
-            always says 1 is a badge that teaches people to stop reading it.
+            THE ANCESTRY, ONE SLOT PER LEVEL. Each lane is the width of one
+            indent and draws its ancestor's line where that ancestor still has
+            something below it — which is what makes a deep branch legible: the
+            line running past a translation's own saves is the BOOK's line, on
+            its way down to the next thing made from the book.
 
-            NEVER ON A STEP ROW: a step is a position and not a tab, and a
-            column number on one would be the second selector this tree exists
-            to abolish.
+            The elbow lives in the LAST lane, on the first card of an indented
+            run, and curves out of the parent's line into this card's dot. Every
+            sibling after it joins the lane's own vertical instead, which is why
+            a branch reads as one lane rather than as a row of hooks.
           -->
-          @if (row.column !== null && multi()) {
-            <span class="column" [title]="'Showing in column ' + row.column">{{ row.column }}</span>
+          @for (lane of row.lanes; track $index) {
+            <span class="lane">
+              @if (lane.line) { <span class="thread" [class.dashed]="lane.dashed"></span> }
+              @if (lane.elbow) { <span class="elbow" [class.dashed]="row.planned"></span> }
+            </span>
           }
-          <!--
-            ONE GLYPH, THREE JOBS, AND EVERY ONE OF THEM SAID IN WORDS ON HOVER.
-            The root's closes the BOOK; a file's inside a project DELETES it; a
-            file's from outside one CLOSES it, because a file opened from
-            elsewhere is not this app's to erase. Three meanings on one shape is
-            only safe while the tooltip is what a person actually reads, so none
-            of these buttons is ever drawn without one.
 
-            NONE, ON A STEP. Deleting a step is not deleting a file — it takes
-            everything made from it — and that lives behind the right-click,
-            with main's own accounting of what it costs.
-          -->
-          @if (row.kind === 'root') {
+          <span class="rail">
+            @if (row.up) { <span class="thread up" [class.dashed]="row.planned"></span> }
             <!--
-              THE BOOK'S OWN ✕, and the only one on a node row. It closes this
-              book's tabs and nothing else — no file, no step, no confirmation of
-              its own beyond the ordinary close question a document with
-              uncommitted work still asks. So it wears the plain ✕ rather than the
-              danger one, and it calls the same action the right-click's Close
-              book calls, through the same path: two doors onto one gesture must
-              not become two implementations of it.
+              THE STATE DOT — the whole state grammar in eighteen pixels. Solid
+              accent with a check: this exists. A ring with a pulsing core: it is
+              happening. Hollow and dashed: it is the plan. Solid error with a
+              cross: it was tried and it failed. The card repeats the same fact
+              in words; the dot is what makes a column of ten of them scannable.
             -->
-            <button
-              class="x"
-              (click)="closeBook($event, row)"
-              title="Close book"
-              aria-label="Close book"
-            >✕</button>
-          } @else if (row.kind === 'export' || (row.kind === 'document' && row.dir !== null)) {
-            <button
-              class="x danger"
-              (click)="remove($event, row)"
-              [title]="'Delete the ' + row.title + ' — permanently, from this book'"
-              [attr.aria-label]="'Delete the ' + row.title"
-            >✕</button>
-          } @else if (row.kind === 'document' && row.tab !== null) {
-            <button
-              class="x"
-              (click)="close($event, row.tab)"
-              title="Close this document — it was opened from outside Foundry's library, so this app does not delete it"
-              [attr.aria-label]="'Close ' + row.title"
-            >✕</button>
-          }
+            <span [class]="'dot ' + row.dot">
+              @if (row.dot === 'done') {
+                <svg class="mark" aria-hidden="true"><use href="#ft-check" /></svg>
+              } @else if (row.dot === 'failed') {
+                <svg class="mark" aria-hidden="true"><use href="#ft-cross" /></svg>
+              } @else if (row.dot === 'source') {
+                <svg class="mark" aria-hidden="true"><use [attr.href]="'#' + row.icon" /></svg>
+              }
+            </span>
+            @if (row.down) { <span class="thread down" [class.dashed]="row.downDashed"></span> }
+          </span>
+
+          <div
+            class="card"
+            [class.root]="row.kind === 'root'"
+            [class.standing]="row.current"
+            [class.selected]="row.key === picked()"
+            [class.stale]="row.stale"
+            [class.inert]="row.tab === null && row.openable === false"
+            [class.on]="row.column !== null"
+            [class.focused]="row.focused"
+            [class.available]="row.kind === 'export' && row.tab === null"
+            [class.before]="before() === row.key"
+            [class.pending]="row.dot === 'queued'"
+            [class.running]="row.dot === 'running'"
+            [class.failed]="row.dot === 'failed'"
+            [title]="row.tooltip"
+          >
+            <div class="row1">
+              <span class="kind" [class.text-op]="row.tint === 'text'" [class.audio-op]="row.tint === 'audio'">
+                <svg aria-hidden="true"><use [attr.href]="'#' + row.icon" /></svg>
+              </span>
+              <div class="words">
+                <div class="name">
+                  {{ row.title }}
+                  <!-- The one animation on a card, and it is only ever on audio
+                       work that is actually running: three bars, because a
+                       narration is the only thing in this app that takes an hour
+                       and has nothing to show for itself until it is done. -->
+                  @if (row.dot === 'running' && row.tint === 'audio') {
+                    <span class="meter" aria-hidden="true"><i></i><i></i><i></i></span>
+                  }
+                </div>
+                <!--
+                  THE LINEAGE, IN WORDS. "from **Applied changes**" — the fact
+                  the indentation used to imply and the eye had to reconstruct.
+                  A card with nothing honest to claim (an export, whose position
+                  the tray does not record; the import, which came from outside)
+                  says what it IS instead, and never invents a parent.
+                -->
+                <div class="from">
+                  @if (row.from !== null) {
+                    @if (row.fact !== null) { <span>{{ row.fact }} · </span> }
+                    <span>from </span><b>{{ row.from }}</b>
+                  } @else if (row.said !== null) {
+                    <span>{{ row.said }}</span>
+                  }
+                </div>
+              </div>
+              <!-- WHEN, or what the host says about it: the same slot, because
+                   both answer "where is this up to". -->
+              @if (row.state !== null) {
+                <span class="state">{{ row.state }}</span>
+              }
+              <!--
+                THE ARROW IS A SLOT EVEN WHEN THERE IS NO ARROW. A twist that
+                appeared and disappeared would shift the ✕ beside it sideways
+                depending on whether the book above had been translated. An
+                export never gets one — it is terminal, and an arrow on it would
+                promise something under it.
+              -->
+              @if (row.expanded !== null) {
+                <button
+                  class="twist"
+                  [attr.aria-expanded]="row.expanded"
+                  [title]="row.expanded ? 'Collapse' : 'Expand'"
+                  (click)="toggle($event, row)"
+                >{{ row.expanded ? '▾' : '▸' }}</button>
+              } @else {
+                <span class="twist"></span>
+              }
+              <!--
+                TWO marks, because they are two different things to fix. The dot
+                is "this book is not in a folder of yours"; the pencil is "the
+                copy that is in one is older than this". A card can wear both.
+              -->
+              @if (row.tab?.unsaved) {
+                <span class="mark-dot" title="Not saved anywhere you chose">●</span>
+              }
+              @if (row.tab?.modified) {
+                <span class="pencil" title="Edited since it was last saved">✎</span>
+              }
+              <!--
+                WHICH column it is in, and only once there are two. With one
+                column open the number is the only number it could be, and a
+                badge that always says 1 is a badge that teaches people to stop
+                reading it.
+
+                NEVER ON A STEP CARD: a step is a position and not a tab, and a
+                column number on one would be the second selector this tree
+                exists to abolish.
+              -->
+              @if (row.column !== null && multi()) {
+                <span class="column" [title]="'Showing in column ' + row.column">{{ row.column }}</span>
+              }
+              <!--
+                ONE GLYPH, THREE JOBS, AND EVERY ONE OF THEM SAID IN WORDS ON
+                HOVER. The root's closes the BOOK; a file's inside a project
+                DELETES it; a file's from outside one CLOSES it, because a file
+                opened from elsewhere is not this app's to erase. Three meanings
+                on one shape is only safe while the tooltip is what a person
+                actually reads, so none of these buttons is ever drawn without
+                one.
+
+                NONE, ON A STEP OR ON A HOST'S OWN CARD. Deleting a step takes
+                everything made from it and lives behind the right-click with
+                main's accounting of the cost; a host's node is not this app's to
+                cancel at all — the queue that owns it is somewhere else.
+              -->
+              @if (row.kind === 'root') {
+                <button
+                  class="x"
+                  (click)="closeBook($event, row)"
+                  title="Close book"
+                  aria-label="Close book"
+                >✕</button>
+              } @else if (row.kind === 'export' || (row.kind === 'document' && row.dir !== null)) {
+                <button
+                  class="x danger"
+                  (click)="remove($event, row)"
+                  [title]="'Delete the ' + row.title + ' — permanently, from this book'"
+                  [attr.aria-label]="'Delete the ' + row.title"
+                >✕</button>
+              } @else if (row.kind === 'document' && row.tab !== null) {
+                <button
+                  class="x"
+                  (click)="close($event, row.tab)"
+                  title="Close this document — it was opened from outside Foundry's library, so this app does not delete it"
+                  [attr.aria-label]="'Close ' + row.title"
+                >✕</button>
+              }
+            </div>
+
+            <!-- HOW FAR ALONG, in the host's own counting. Drawn only while the
+                 host is counting: a bar sitting at zero for an hour says less
+                 than the state word does. -->
+            @if (row.progress !== null) {
+              <div class="progress">
+                <div class="pbar"><i [style.width.%]="row.progress.percent"></i></div>
+                <div class="pmeta">
+                  <span class="doing">{{ row.progress.message }}</span>
+                  <span>{{ row.progress.eta }}</span>
+                </div>
+              </div>
+            }
+            <!-- A FAILURE GETS A LINE OF ITS OWN, because it is a sentence and
+                 the state slot is a word. The words are the host's, verbatim. -->
+            @if (row.why !== null) {
+              <div class="why">{{ row.why }}</div>
+            }
+
+            <!--
+              "FROM HERE" — the acts this node can be the start of.
+
+              Inside the card and only on the selected one, which is the whole
+              idea: the question a person is asking when they click a step is
+              "what can I do from this", and the answer belongs where they asked
+              it rather than on a dock at the bottom of the window that says
+              nothing about which node it would act on. The dock still works and
+              still means the same thing; this is a second door onto the same
+              acts, aimed by the same mechanism (the position) at the node whose
+              footer it is.
+            -->
+            @if (row.key === picked() && acts().length > 0) {
+              <div class="ops">
+                <span class="lbl">from here</span>
+                @for (act of acts(); track act.id) {
+                  <button
+                    class="op"
+                    [class.audio-op]="act.audio"
+                    [title]="act.hint"
+                    (click)="run($event, row, act)"
+                  >
+                    <svg aria-hidden="true"><use [attr.href]="'#' + act.icon" /></svg>{{ act.label }}
+                  </button>
+                }
+              </div>
+            }
+          </div>
         </div>
       </ng-template>
 
@@ -354,7 +641,8 @@ import { UiService } from '../../core/ui.service';
         done to it: a book can be closed, a step can be split out or deleted, an
         export and a copy can be revealed or erased. Offering all of them and
         greying most would be a card whose shape says nothing about what it is
-        over.
+        over. A HOST'S NODE HAS NO MENU AT ALL — none of these four acts is
+        Foundry's to perform on somebody else's job.
 
         A full-window scrim under it, so the next click anywhere dismisses it
         exactly once and cannot also land on whatever was underneath.
@@ -412,15 +700,24 @@ import { UiService } from '../../core/ui.service';
     }
   `,
   styles: [`
+    /*
+      WIDER THAN IT WAS, and the width is the redesign's one real cost. 220px
+      held an indented line of text; a card holds a sentence, a lineage line
+      under it and a state on the right, and at 220 the titles this panel now
+      writes ("Translated into German") would ellipse into "Translated int…" —
+      which is the old notation with worse manners. 288 is what fits the longest
+      ordinary title at 12.5px with the dot column and one level of indent, and
+      the panel is still put away with one click on the corner button.
+    */
     :host {
       display: block;
-      width: 220px;
-      min-width: 220px;
+      width: 288px;
+      min-width: 288px;
       height: 100%;
     }
     /* Collapsed, the HOST narrows to the stub's width, because the shell's flex
        row measures the host and not the panel inside it — a stub drawn inside a
-       220px host would be 30 pixels of button beside 190 of nothing. The class
+       288px host would be 30 pixels of button beside 258 of nothing. The class
        is put on by the shell (see App's template) rather than by a host binding
        here, so the element carrying it is invalidated by the same change
        detection pass that reads the flag. */
@@ -453,19 +750,29 @@ import { UiService } from '../../core/ui.service';
     }
     .collapse:hover { background: var(--bg-hover); color: var(--text-primary); }
 
-    /* The rail's own surface and border, so the two read as one left edge with a
-       divider in it rather than as two panels of different materials. */
+    /*
+      THE PANEL DROPPED A LAYER so the cards could have one. It used to be
+      --bg-elevated because it was a rail of text against the workspace; now the
+      cards are the elevated things and a card on a surface of its own colour is
+      an invisible card. Base underneath, elevated on top, the divider unchanged.
+    */
     .panel {
       display: flex;
       flex-direction: column;
       height: 100%;
-      background: var(--bg-elevated);
+      background: var(--bg-base);
       border-right: 1px solid var(--border-default);
     }
+
+    /* Present so the symbols resolve; never drawn. Not display:none — a hidden
+       subtree still defines its <defs>, but zero-sized is the form every icon
+       sheet uses and the one browsers agree about. */
+    .sheet { position: absolute; width: 0; height: 0; overflow: hidden; }
 
     .head {
       display: flex; align-items: center; gap: 8px;
       padding: 8px 12px 8px 5px;
+      background: var(--bg-sunken);
       border-bottom: 1px solid var(--border-subtle);
     }
     .label {
@@ -476,50 +783,175 @@ import { UiService } from '../../core/ui.service';
     }
     .count { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 
-    .list { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 0; }
+    .list { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 12px 16px; }
     /* Where a dragged row would land, when it is past the last one. */
     .list.landing { background: var(--accent-faint); }
 
-    .row {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      /* The left padding is the DEPTH and is bound per row; only the other three
-         sides are settled here. */
-      padding: 6px 8px;
+    /* Each book is a run; the space between two of them is what says where one
+       ends. Heavier chrome would make the panel read as several lists. */
+    .group { margin-bottom: 14px; }
+
+    /*
+      ── THE DRAWN LINEAGE ─────────────────────────────────────────────────────
+
+      A row is [one lane per ancestor][the rail][the card], and every number
+      below is one of three: the LANE is 18px (one indent), the RAIL is 26px, and
+      the vertical thread sits at 12px inside whichever of them it belongs to, so
+      an ancestor's line and its own rail's line are the same line at the same x.
+      The 10px gap under a card is bridged by the thread's negative bottom —
+      without that the spine would be a dotted column of segments.
+    */
+    .step { display: flex; position: relative; margin-bottom: 10px; }
+    .lane { position: relative; flex: 0 0 18px; }
+    .rail { position: relative; flex: 0 0 26px; }
+
+    .thread { position: absolute; left: 12px; width: 2px; background: var(--border-default); }
+    .lane .thread { top: 0; bottom: -10px; }
+    /* 22px is the dot's centre: 8px of card padding plus half of the 26px icon
+       square, which is what the dot is vertically aligned to. */
+    .rail .thread.up { top: 0; height: 22px; }
+    .rail .thread.down { top: 22px; bottom: -10px; }
+    /*
+      SOLID IS WHAT EXISTS, DASHED IS THE PLAN — the grammar the whole panel now
+      reads by, and the reason a queued act can be drawn at all. Border rather
+      than background, because a dashed background does not exist.
+    */
+    .thread.dashed { width: 0; background: none; border-left: 2px dashed var(--border-default); }
+
+    /* The curve out of a parent's line into an indented lane. Drawn in the last
+       lane so it starts on the PARENT's thread, and ending under the dot, which
+       is painted over it. */
+    .elbow {
+      position: absolute; left: 12px; top: 0;
+      width: 14px; height: 22px;
+      border-left: 2px solid var(--border-default);
+      border-bottom: 2px solid var(--border-default);
+      border-bottom-left-radius: 10px;
+    }
+    .elbow.dashed { border-style: dashed; }
+
+    .dot {
+      position: absolute; left: 5px; top: 14px;
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      display: grid; place-items: center;
+      z-index: 2;
+    }
+    .dot .mark { width: 9px; height: 9px; }
+    /* The origin: a filled neutral disc wearing the mark of what arrived. It is
+       not "done" — nothing was run to make it — and it is not pending either. */
+    .dot.source { background: var(--border-strong); color: var(--bg-base); }
+    .dot.done { background: var(--accent-strong); color: var(--text-inverse); }
+    .dot.running { background: var(--bg-base); border: 2px solid var(--accent); }
+    .dot.running::after {
+      content: '';
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent);
+      animation: node-pulse 1.4s ease-in-out infinite;
+    }
+    .dot.queued { background: var(--bg-base); border: 2px dashed var(--text-muted); }
+    .dot.failed { background: var(--error); color: var(--bg-base); }
+    /* A file — an export, a facsimile, a copy somebody opened. Small and hollow:
+       it is on the tree because it belongs to the book, not because it is a
+       moment in its history. */
+    .dot.file {
+      width: 8px; height: 8px;
+      left: 9px; top: 18px;
+      background: var(--border-strong);
+    }
+    @keyframes node-pulse {
+      0%, 100% { opacity: 0.35; transform: scale(0.75); }
+      50% { opacity: 1; transform: scale(1); }
+    }
+
+    /*
+      ── THE CARD ──────────────────────────────────────────────────────────────
+    */
+    .card {
+      flex: 1; min-width: 0;
+      position: relative;
+      padding: 8px 10px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius);
       color: var(--text-secondary);
       font-size: 12px;
       cursor: default;
       user-select: none;
-      /* The accent bar lives here, so a row that is not on screen still holds
-         the 2px and nothing shifts sideways when it arrives in a column. */
-      box-shadow: inset 2px 0 0 0 transparent;
-      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  box-shadow 100ms cubic-bezier(0, 0, 0.2, 1);
+      transition: border-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  background-color 100ms cubic-bezier(0, 0, 0.2, 1);
     }
-    .row:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .card:hover { border-color: var(--border-strong); }
 
-    /* Each book is a run; the space between two of them is what says where one
-       ends. Heavier chrome would make the panel read as several lists. */
-    .group { margin-bottom: 6px; }
+    .row1 { display: flex; align-items: center; gap: 8px; }
+    .kind {
+      flex: 0 0 auto;
+      width: 26px; height: 26px;
+      display: grid; place-items: center;
+      border-radius: var(--radius-md);
+      background: var(--bg-input);
+      color: var(--text-secondary);
+    }
+    .kind svg { width: 14px; height: 14px; }
+    /*
+      TWO TINTS AND ONE MEANING EACH. The accent is this app's word for its own
+      work — reading, editing, translating, exporting. Amber is the HOST's:
+      narration, enhancement, assembly. A person looking at a branch can see
+      where the words stop and the audio starts without reading a title.
+    */
+    .kind.text-op { background: var(--accent-faint); color: var(--accent); }
+    .kind.audio-op { background: var(--audio-soft); color: var(--audio); }
+
+    .words { flex: 1; min-width: 0; }
+    .name {
+      font-size: 12.5px; font-weight: 600; line-height: 1.35;
+      color: var(--text-primary);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .from {
+      font-size: 10.5px; line-height: 1.35;
+      color: var(--text-tertiary);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .from b { color: var(--text-secondary); font-weight: 500; }
+
+    .state {
+      flex: 0 0 auto;
+      max-width: 88px;
+      color: var(--text-tertiary); font-size: 10.5px;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
 
     /*
-      THE ROOT IS THE BOOK. It is a row like every other — clickable, and what it
-      shows is the original import — so it is not given a header's uppercase
-      shouting; it is given the weight a title has among its own contents.
+      THE ROOT IS THE BOOK. Its title is the book's name — the one thing this
+      panel must never stop saying, since the group header that used to say it is
+      gone — and what KIND of thing it started as goes on the lineage line
+      underneath, where every other card keeps its second fact.
     */
-    .row.root .name { color: var(--text-primary); font-weight: 600; }
+    .card.root .name { font-size: 13px; }
 
     /*
-      THE STANDING ROW, in the same accent and the same faint wash the inspector
-      marks its current category with. One word for "this is the one you are on"
-      across the whole app; inventing a second is how a palette stops meaning
-      anything. This is the panel's ONLY statement about selection — see the
-      class docblock on why a step row wears no on-screen marks.
+      THE STANDING CARD, in the same accent and the same faint wash the inspector
+      marks its current category with. One word for "this is the one the book is
+      on" across the whole app; inventing a second is how a palette stops meaning
+      anything. It is NOT the same statement the ring below makes — see the
+      class docblock on standing against selected.
     */
-    .row.node.current { background: var(--accent-faint); }
-    .row.node.current .name { color: var(--accent); font-weight: 500; }
+    .card.standing { background: var(--accent-faint); }
+    .card.standing .name { color: var(--accent); }
+
+    /*
+      THE SELECTED CARD — the one whose "from here" footer is open. A ring rather
+      than a wash, so a card that is both standing and selected (the ordinary
+      case, since clicking stands) reads as one thing with two marks rather than
+      as two competing highlights.
+    */
+    .card.selected {
+      border-color: var(--accent-strong);
+      box-shadow: 0 0 0 1px var(--accent-strong), 0 6px 18px -8px rgba(6, 182, 212, 0.5);
+    }
 
     /*
       A STALE STEP IS DIMMED AND STILL CLICKABLE, which was the ruling. Its
@@ -528,31 +960,32 @@ import { UiService } from '../../core/ui.service';
       it renders, and only its currency is in question. The reason is on hover,
       where an explanation nobody needs stays out of the way of a list.
     */
-    .row.stale .name, .row.stale .tally, .row.stale .kind { opacity: 0.55; }
+    .card.stale .name, .card.stale .from, .card.stale .state, .card.stale .kind { opacity: 0.55; }
 
     /*
-      PLAIN TEXT HAS NO TAB IN THIS APP, and the row says so by not lighting up.
+      PLAIN TEXT HAS NO TAB IN THIS APP, and the card says so by not lighting up.
       It is still listed, because it is a thing the user made and a thing they can
       reveal or delete; what it does not do is pretend a click will open it.
     */
-    .row.inert { color: var(--text-tertiary); opacity: 0.65; }
-    .row.inert:hover { background: transparent; color: var(--text-tertiary); }
+    .card.inert { opacity: 0.65; }
+    .card.inert:hover { border-color: var(--border-default); }
 
     /*
       AN EXPORT NOBODY HAS OPENED — dimmed and nothing else. The list's language
       for "on screen" is the accent bar (.on / .focused), so the honest opposite
       is simply not having it.
     */
-    .row.available { color: var(--text-tertiary); }
-    .row.available:hover { color: var(--text-primary); }
+    .card.available .name { color: var(--text-secondary); }
+    .card.available:hover .name { color: var(--text-primary); }
 
     /*
       ON SCREEN SOMEWHERE, and in the FOCUSED column, are two different facts
       and get two different strengths: the rail, the menu and Ctrl+S all act on
       the focused one, so which it is has to be visible without being loud.
     */
-    .row.on { color: var(--text-primary); box-shadow: inset 2px 0 0 0 var(--border-strong); }
-    .row.on.focused {
+    .card.on { box-shadow: inset 2px 0 0 0 var(--border-strong); }
+    .card.on .name { color: var(--text-primary); }
+    .card.on.focused {
       background: var(--accent-faint);
       box-shadow: inset 2px 0 0 0 var(--accent);
     }
@@ -561,19 +994,117 @@ import { UiService } from '../../core/ui.service';
       The insertion point: a line along the edge the dragged row would land on.
       Spelled out against the on-screen selectors as well, because they set the
       same property at a higher specificity — without this the line would be
-      invisible on exactly the rows a person is most likely to be dragging.
+      invisible on exactly the cards a person is most likely to be dragging.
     */
-    .row.before,
-    .row.on.before,
-    .row.on.focused.before { box-shadow: inset 0 2px 0 0 var(--accent); }
+    .card.before,
+    .card.on.before,
+    .card.on.focused.before { box-shadow: inset 0 2px 0 0 var(--accent); }
 
     /*
-      THE ARROW, AND THE SPACE WHERE AN ARROW WOULD BE. Both are 9px wide so the
-      names in one book line up whether or not a node has anything under it.
+      ── THE THREE HOST STATES ─────────────────────────────────────────────────
+
+      PENDING is drawn as an outline of a card rather than a card: no fill, a
+      dashed border, an untinted mark. *"a queued step should look grayed out"* —
+      and the reason it is an outline and not a grey fill is that the fill is what
+      the eye reads as "this is a thing"; a plan is the shape of one.
+    */
+    .card.pending { background: transparent; border-style: dashed; }
+    .card.pending .name { color: var(--text-secondary); font-weight: 500; }
+    .card.pending .kind { background: transparent; border: 1px dashed var(--border-default); color: var(--text-tertiary); }
+    .card.running { border-color: var(--accent-soft); }
+    .card.failed { border-color: rgba(248, 113, 113, 0.45); background: var(--error-soft); }
+    .card.failed .state { color: var(--error); }
+
+    .progress { margin-top: 8px; }
+    .pbar { height: 4px; border-radius: 2px; background: var(--bg-input); overflow: hidden; }
+    .pbar i {
+      display: block; height: 100%; border-radius: 2px;
+      background: linear-gradient(90deg, var(--accent-strong), var(--accent));
+    }
+    .pmeta {
+      display: flex; justify-content: space-between; gap: 8px;
+      margin-top: 4px;
+      font-size: 10.5px; color: var(--text-tertiary);
+      font-variant-numeric: tabular-nums;
+    }
+    .pmeta .doing {
+      color: var(--text-secondary);
+      min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .why { margin-top: 6px; font-size: 10.5px; line-height: 1.4; color: var(--error); }
+
+    .meter { display: inline-flex; align-items: flex-end; gap: 2px; height: 9px; margin-left: 6px; }
+    .meter i {
+      width: 2px; border-radius: 1px;
+      background: var(--audio);
+      animation: node-eq 1s ease-in-out infinite;
+    }
+    .meter i:nth-child(1) { height: 55%; animation-delay: -0.2s; }
+    .meter i:nth-child(2) { height: 100%; animation-delay: -0.55s; }
+    .meter i:nth-child(3) { height: 40%; animation-delay: -0.8s; }
+    @keyframes node-eq {
+      0%, 100% { transform: scaleY(0.4); }
+      50% { transform: scaleY(1); }
+    }
+
+    /*
+      SOMEBODY WHO HAS ASKED FOR LESS MOTION GETS THE SAME TWO FACTS, HELD STILL.
+      The pulsing core stays a core and the meter stays three bars — both of them
+      say "running" by existing at all, and the animation was only ever the
+      emphasis. Nothing else in this panel moves.
+    */
+    @media (prefers-reduced-motion: reduce) {
+      .dot.running::after { animation: none; opacity: 1; transform: none; }
+      .meter i { animation: none; }
+    }
+
+    /*
+      ── "FROM HERE" ───────────────────────────────────────────────────────────
+
+      Bled to the card's own edges (the negative margins) so it reads as a
+      drawer inside the card rather than as a second card in a stack, and washed
+      in the accent so that it is legible as an offer rather than as more of the
+      description above it.
+    */
+    .ops {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
+      margin: 8px -10px -8px;
+      padding: 7px 10px 8px;
+      background: var(--accent-faint);
+      border-top: 1px solid var(--accent-soft);
+      border-radius: 0 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px);
+    }
+    .ops .lbl {
+      font-family: var(--font-mono);
+      font-size: 8.5px; font-weight: 600;
+      letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--accent);
+      margin-right: 2px;
+    }
+    .op {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 8px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      color: var(--text-secondary);
+      font-size: 11.5px;
+      cursor: pointer;
+    }
+    .op svg { width: 12px; height: 12px; }
+    .op:hover { color: var(--text-primary); border-color: var(--accent-strong); }
+    /* The host's acts wear the host's colour, here as well as on the cards they
+       make, so pressing one is visibly ordering a different KIND of work. */
+    .op.audio-op { color: var(--audio); border-color: rgba(240, 168, 96, 0.35); }
+    .op.audio-op:hover { color: var(--audio-bright); border-color: var(--audio); }
+
+    /*
+      THE ARROW, AND THE SPACE WHERE AN ARROW WOULD BE. Both are 10px wide so the
+      marks to their right line up whether or not a node has anything under it.
     */
     .twist {
       flex: 0 0 auto;
-      width: 9px; height: 14px;
+      width: 10px; height: 14px;
       padding: 0; margin: 0;
       background: transparent; border: none;
       color: var(--text-tertiary); font-size: 9px; line-height: 14px;
@@ -582,15 +1113,8 @@ import { UiService } from '../../core/ui.service';
     button.twist { cursor: pointer; }
     button.twist:hover { color: var(--text-primary); }
 
-    .kind { flex: 0 0 auto; opacity: 0.6; font-size: 11px; }
-    .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .dot { flex: 0 0 auto; color: var(--accent); font-size: 9px; line-height: 1; }
+    .mark-dot { flex: 0 0 auto; color: var(--accent); font-size: 9px; line-height: 1; }
     .pencil { flex: 0 0 auto; color: var(--warn); font-size: 11px; line-height: 1; }
-    .tally {
-      flex: 0 0 auto;
-      color: var(--text-tertiary); font-size: 10px;
-      font-variant-numeric: tabular-nums;
-    }
     .column {
       flex: 0 0 auto;
       min-width: 12px;
@@ -601,8 +1125,8 @@ import { UiService } from '../../core/ui.service';
     }
 
     /*
-      Hidden until the row is under the pointer or the button is keyboard-focused.
-      Visibility rather than display, so the row's width does not change when it
+      Hidden until the card is under the pointer or the button is keyboard-focused.
+      Visibility rather than display, so the card's width does not change when it
       appears and the title does not re-truncate under the mouse.
     */
     .x {
@@ -613,7 +1137,7 @@ import { UiService } from '../../core/ui.service';
       padding: 2px 3px; border-radius: var(--radius-sm);
       transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1);
     }
-    .row:hover .x, .x:focus-visible { visibility: visible; }
+    .card:hover .x, .x:focus-visible { visibility: visible; }
     .x:hover { background: var(--bg-hover); color: var(--text-primary); }
     /* The button that ends something wears the error colour on hover, and only
        on hover — the same rule Home's delete follows. A permanently red control
@@ -649,6 +1173,11 @@ export class OpenDocumentsComponent {
   protected readonly tabs = inject(TabsService);
   protected readonly projects = inject(ProjectsService);
   private readonly ledger = inject(LedgerService);
+  /**
+   * The host's contributions — empty and silent standalone, which is why nothing
+   * in this class asks whether the app is hosted (`HostOpsService`).
+   */
+  private readonly hostOps = inject(HostOpsService);
   /** Public to the template AND to the host binding above, which is a template too. */
   protected readonly ui = inject(UiService);
   private readonly router = inject(Router);
@@ -665,12 +1194,13 @@ export class OpenDocumentsComponent {
      * re-trigger the effect that asked for it.
      */
     effect(() => {
-      this.tabs.tabs().map((tab) => tab.path).join('\u0000');
+      this.tabs.tabs().map((tab) => tab.path).join(' ');
       void this.projects.refresh();
     });
 
     /*
-     * THE HISTORY OF EVERY OPEN BOOK, ASKED FOR ONCE.
+     * THE HISTORY OF EVERY OPEN BOOK, ASKED FOR ONCE — and, in the same pass,
+     * whatever the host is making in it.
      *
      * Until this panel drew trees, the only surfaces that needed a ledger were
      * the inspector — which asks for the FOCUSED document's project — and the
@@ -680,15 +1210,18 @@ export class OpenDocumentsComponent {
      * nothing under it until somebody clicked into them. So the library asks for
      * its own, for every book it is about to draw.
      *
-     * `ensure` IS IDEMPOTENT AND SILENT BY CONTRACT (LedgerService) — a project
-     * already held or already in flight is a no-op — which is what makes it safe
-     * from an effect that re-runs whenever a tab opens. It also reads no signal
-     * this effect writes: `openProjects` is composed from the tabs and the
-     * catalogue, never from the held ledgers, so nothing here can chase its own
-     * tail.
+     * BOTH `ensure` CALLS ARE IDEMPOTENT AND SILENT BY CONTRACT (LedgerService,
+     * HostOpsService) — a project already held or already in flight is a no-op —
+     * which is what makes them safe from an effect that re-runs whenever a tab
+     * opens. They also read no signal this effect writes: `openProjects` is
+     * composed from the tabs and the catalogue, never from the held ledgers or
+     * the host's rows, so nothing here can chase its own tail.
      */
     effect(() => {
-      for (const project of this.openProjects()) this.ledger.ensure(project.dir);
+      for (const project of this.openProjects()) {
+        this.ledger.ensure(project.dir);
+        this.hostOps.ensure(project.dir);
+      }
     });
   }
 
@@ -697,6 +1230,25 @@ export class OpenDocumentsComponent {
   protected readonly landing = signal(false);
   /** The open context menu: which row it is about, and where it was asked for. */
   protected readonly menu = signal<{ row: Row; x: number; y: number } | null>(null);
+
+  /**
+   * The one card in the whole panel whose "from here" footer is open.
+   *
+   * ── Panel-wide rather than per book, and why that is the safe direction ─────
+   *
+   * `current` is per project — five open books have five standing positions —
+   * and hanging the footer off THAT would put five sets of Translate buttons on
+   * screen at once, each aimed at a different book. Every one of them opens the
+   * same dialog, which acts on the POSITION, so five identical-looking buttons
+   * would do five different things. One selection, set by the click that already
+   * moves the position, is the only shape where what is offered and what would
+   * happen are the same statement.
+   *
+   * NULL UNTIL SOMEBODY CLICKS, deliberately: a panel that opened with a footer
+   * already unrolled would be offering acts nobody asked for, on whichever book
+   * happened to be first.
+   */
+  protected readonly picked = signal<string | null>(null);
 
   /**
    * The nodes somebody has folded shut, by row key.
@@ -748,7 +1300,7 @@ export class OpenDocumentsComponent {
        * THE COLUMN A DOCUMENT IS SHOWING IN, and showing is the word: with the
        * strips back a tab can be in a column's stack without being the one on
        * screen, and the accent bar here has always meant "you are looking at
-       * this". A tab waiting in a strip is drawn as an ordinary row — its strip
+       * this". A tab waiting in a strip is drawn as an ordinary card — its strip
        * already says where it is, and marking it on screen as well would be two
        * surfaces disagreeing about what "on screen" means.
        */
@@ -760,7 +1312,8 @@ export class OpenDocumentsComponent {
         tab,
         path: tab.path,
         title: tab.title,
-        glyph: glyphFor(tab),
+        icon: iconForTab(tab),
+        dot: 'file',
         tooltip: this.tooltip(tab),
         depth: indent ? 1 : 0,
         column: at < 0 ? null : at + 1,
@@ -779,9 +1332,15 @@ export class OpenDocumentsComponent {
    * A recursive template would need a component or a self-referencing
    * ng-template per level, and every gesture on a row — the drop insertion
    * point, the menu, the middle-click — is written against a flat list of keys.
-   * Flattening at the source keeps ONE row template, one `track`, and one place
+   * Flattening at the source keeps ONE card template, one `track`, and one place
    * that decides what is visible: a collapsed node simply does not emit its
    * children, which is also what makes collapse cost nothing.
+   *
+   * IT IS ALSO WHAT MAKES THE SPINE DRAWABLE. The lineage is a per-row set of
+   * lane flags computed in one backward pass over the finished list
+   * (`drawLineage`), and a backward pass needs a list. A nested template would
+   * have to ask each level whether anything below it continues, which is the
+   * same question asked once per level instead of once per book.
    *
    * ── What is claimed, and what is left over ──────────────────────────────────
    *
@@ -809,6 +1368,21 @@ export class OpenDocumentsComponent {
       const standing = this.ledger.standingIn(project.dir)?.id ?? null;
 
       /*
+       * WHETHER THERE IS A BOOK IN THIS PROJECT AT ALL, asked once per book and
+       * spent on every card in it.
+       *
+       * It decides `produces`, which decides what the "from here" footer may
+       * offer — and it is the DOCK'S OWN TEST, deliberately (`canTranslate`,
+       * tool-rail.component.ts): the reading landed, or the book arrived as one,
+       * and never the import row where somebody has stepped back to the
+       * untouched scan. Two surfaces offering the same act must agree about when
+       * it is available, and the way they agree is by asking the same question
+       * of the same project record.
+       */
+      const arrivedAsBook = this.projects.arrivedAsBook(project);
+      const hasBook = project.reading.done || arrivedAsBook;
+
+      /*
        * THE PARENT CHAIN, INDEXED ONCE. `ProjectLedger.steps` is in creation
        * order and `parseLedger` refuses a file where it is not, so the children
        * of any node come out in the order they were made without a sort — which
@@ -826,6 +1400,23 @@ export class OpenDocumentsComponent {
         const already = kids.get(step.parent);
         if (already === undefined) kids.set(step.parent, [step]);
         else already.push(step);
+      }
+
+      /*
+       * WHAT THE HOST IS MAKING IN THIS BOOK, indexed by the ledger step each
+       * node hangs under.
+       *
+       * A HOST NODE IS NOT IN `steps` AND NEVER WILL BE. This is a second index
+       * beside the ledger's, read from a mirror of somebody else's queue, and it
+       * is joined onto the tree at exactly one place: the walk below emits a
+       * step's host nodes after the step's own children. Standalone the map is
+       * empty and the walk emits nothing extra.
+       */
+      const hosted = new Map<string, HostNode[]>();
+      for (const node of this.hostOps.nodesFor(project.dir)) {
+        const already = hosted.get(node.parentStepId);
+        if (already === undefined) hosted.set(node.parentStepId, [node]);
+        else already.push(node);
       }
 
       /*
@@ -872,9 +1463,22 @@ export class OpenDocumentsComponent {
           kind: 'export',
           tab: already?.tab ?? null,
           path,
+          /*
+           * THE PRODUCT, AS THE DIALOG NAMED IT — a noun where a step's card
+           * carries a past tense, on the same precedent the root and the reading
+           * follow: what a person wants off a terminal card is the thing, not
+           * the act. It is also what every other surface in this file spells its
+           * sentences out of (the delete's tooltip, the tab an EPUB opens into),
+           * so it stays exactly the word it has always been.
+           */
           title: label,
-          tally: whenOn(made.madeAt),
-          glyph: made.kind === 'epub' ? '▤' : made.kind === 'pdf' ? '▦' : '≡',
+          // NOT A LINEAGE LINE. The tray records what was made and when, never
+          // the position it was made at, and a card that said "from the Book"
+          // would be this panel inventing a parent it does not have.
+          said: 'a finished file — nothing is made from it',
+          state: whenOn(made.madeAt),
+          icon: 'ft-out',
+          dot: 'file',
           tooltip: made.kind === 'txt'
             ? `Show this ${label} in the file manager\nExported `
               + `${new Date(made.madeAt).toLocaleString()}\nRight-click to save a copy.\n${path}`
@@ -890,7 +1494,7 @@ export class OpenDocumentsComponent {
            * has exactly one viewer left for a file — pdf.js — so a PDF export
            * opens and an EPUB does not: the iframe reader that used to show one
            * is deleted (docs/RENDERER.md §7), and pointing pdf.js at a zip would
-           * be a pane with "This PDF would not open" on it. The row stays, wearing
+           * be a pane with "This PDF would not open" on it. The card stays, wearing
            * its date and its Reveal, because an export the app made and then would
            * not admit to is worse than one it will not open.
            */
@@ -905,7 +1509,7 @@ export class OpenDocumentsComponent {
        * ARE — *"from the bank, pdf facsimile can be generated. that's a terminal
        * item"* (docs/RENDERER.md §0 A3).
        *
-       * A reading has two documents in it: the Book, which is the read step's row
+       * A reading has two documents in it: the Book, which is the read step's card
        * up in the tree and the thing everything downstream is made from, and the
        * page-for-page record, which nothing is ever made from. So it is a leaf
        * beside the exports rather than a step of its own — no arrow, no position,
@@ -921,17 +1525,18 @@ export class OpenDocumentsComponent {
        *
        * DRAWN UNDER THE IMPORT, at the Book's own indent, because that is where
        * the ruling puts it and because the alternative is worse than it looks: a
-       * facsimile hung under the READ step would be a child of a row that is
+       * facsimile hung under the READ step would be a child of a card that is
        * itself a position, so folding the reading away would hide a terminal file,
-       * and a project with two readings would draw two rows that look like
+       * and a project with two readings would draw two cards that look like
        * versions of one document rather than the records of two different passes.
        *
        * CALLED "FACSIMILE" AND NOT "FACSIMILE PDF", which is the export's word.
-       * The two rows can appear together — somebody who exports a facsimile after
-       * one has been made has both — and the distinction they need is that one is
-       * a copy they filed and one is the record this book keeps of its own
-       * reading. The tooltip says which in words; the label carries the difference
-       * a person scanning a tree can use, and neither of them is a filename.
+       * The two cards can appear together — somebody who exports a facsimile
+       * after one has been made has both — and the distinction they need is that
+       * one is a copy they filed and one is the record this book keeps of its own
+       * reading. The line underneath says which in words; the title carries the
+       * difference a person scanning a tree can use, and neither of them is a
+       * filename.
        *
        * Main sends only the ones that are ON DISK (`ProjectSummary.facsimiles`),
        * project-relative, newest reading last — the same rules the exports above
@@ -952,8 +1557,10 @@ export class OpenDocumentsComponent {
           tab: already?.tab ?? null,
           path,
           title: 'Facsimile',
-          tally: whenOn(made.madeAt),
-          glyph: '▦',
+          said: 'the pages as they were printed — nothing is made from it',
+          state: whenOn(made.madeAt),
+          icon: 'ft-page',
+          dot: 'file',
           tooltip: 'Open this facsimile\nThe pages of this book as they were '
             + 'printed, reprinted as real text from what the reading found. Nothing '
             + `is made from it.\n${path}`,
@@ -967,22 +1574,8 @@ export class OpenDocumentsComponent {
       }
 
       /*
-       * THE TABS THE TREE DOES NOT SPEAK FOR.
-       *
-       * An HTML face first, because it shares its book's path exactly and would
-       * otherwise be swallowed by the catalogue test one line below — one file,
-       * two tabs, and the one that is a separate document is the one that would
-       * have gone missing.
-       *
-       * AND IT IS CALLED "HTML" HERE AND NOWHERE ELSE. Its tab is titled
-       * "<book> — HTML", which is right in the loose list where nothing else
-       * names the book; inside a book's own tree the root above has already said
-       * it, so repeating it is two thirds of a row spent on what the reader can
-       * already see.
-       */
-      /*
-       * WHAT THE TREE ALREADY SPEAKS FOR — the catalogue, AND the books the steps
-       * cast for themselves.
+       * THE TABS THE TREE DOES NOT SPEAK FOR — the catalogue, AND the books the
+       * steps cast for themselves.
        *
        * The catalogue alone was wrong and the way it was wrong was visible:
        * *"under that - 'epub - a copy you open…' is this the OCR record/OCR bank?
@@ -1005,8 +1598,8 @@ export class OpenDocumentsComponent {
       for (const row of mine) {
         if (claimed.has(row.key)) continue;
         /*
-         * THE BOOK IS THE READ STEP, and the read step is already a row up
-         * there — the one called "Book", which is what standing on it opens
+         * THE BOOK IS THE READ STEP, and the read step is already a card up
+         * there — the one called "The book", which is what standing on it opens
          * (`showBook`, core/tabs.service.ts). It cannot be claimed by the
          * catalogue test below because it is not a file in the catalogue: its
          * path is the PROJECT's own directory, which is the whole of how a tab
@@ -1029,15 +1622,16 @@ export class OpenDocumentsComponent {
         /*
          * IT SAYS WHAT MAKES IT DIFFERENT, which is that the project does not
          * claim it. Its tab is titled after the book, and under a root already
-         * reading the book's name that would be a row saying nothing at all. The
+         * reading the book's name that would be a card saying nothing at all. The
          * old answer was the filename, which is the one thing this list is not
          * allowed to fall back to; the honest answer is that this is a copy the
          * reader went and opened themselves, with the path one hover away.
          */
-        const said = row.tab === null ? row.title : typeLabel(row.tab.kind);
+        const named = row.tab === null ? '' : typeLabel(row.tab.kind);
         extras.push({
           ...row,
-          title: qualify(said, null, 'a copy you opened'),
+          title: named.length > 0 ? named : row.title,
+          said: 'a copy you opened',
           depth: 1,
           dir: project.dir,
         });
@@ -1049,7 +1643,9 @@ export class OpenDocumentsComponent {
       const rootKids = origin === null
         ? stranded
         : [...kids.get(origin.id) ?? [], ...stranded];
-      const rootHasChildren = rootKids.length + terminals.length + extras.length > 0;
+      const rootHostNodes = origin === null ? [] : hosted.get(origin.id) ?? [];
+      const rootHasChildren =
+        rootKids.length + rootHostNodes.length + terminals.length + extras.length > 0;
       const rootOpen = !collapsed.has(rootKey);
       const rows: Row[] = [{
         ...blank,
@@ -1058,13 +1654,24 @@ export class OpenDocumentsComponent {
         // The project's directory, because Show in file manager on a book means
         // the book's folder — and because the root names a book, not a file.
         path: project.dir,
+        // THE BOOK'S OWN NAME, and it is the one title in this panel that is not
+        // a sentence about an act. The group header that used to carry it is
+        // gone; what the import IS goes on the line underneath, where every
+        // other card keeps its second fact.
         title: project.title,
-        glyph: origin === null ? '▦' : glyphForPayload(origin.payload),
-        tally: origin === null ? null : whenOn(origin.createdAt),
+        said: origin === null ? 'reading this book’s history…' : arrivalSentence(origin.payload),
+        state: origin === null ? null : whenOn(origin.createdAt),
+        icon: origin === null ? 'ft-scan' : iconForArrival(origin.payload),
+        dot: 'source',
         tooltip: this.rootTitle(project, origin, problem),
         depth: 0,
         dir: project.dir,
         step: origin,
+        // The import is a position like any other, so acting from it is offered
+        // on exactly the terms the dock offers it on: only where the import IS
+        // the book (a project that arrived as one), never where it is the scan
+        // somebody has stepped back to.
+        produces: hasBook && arrivedAsBook ? 'book' : null,
         current: origin !== null && origin.id === standing,
         stale: origin?.stale === true,
         expanded: rootHasChildren ? rootOpen : null,
@@ -1073,6 +1680,7 @@ export class OpenDocumentsComponent {
       if (rootOpen) {
         const walk = (step: LedgerStep, depth: number): void => {
           const under = kids.get(step.id) ?? [];
+          const jobs = hosted.get(step.id) ?? [];
           const key = `${project.key}:step:${step.id}`;
           const shown = !collapsed.has(key);
           rows.push({
@@ -1080,23 +1688,40 @@ export class OpenDocumentsComponent {
             key,
             kind: 'step',
             path: project.dir,
-            // THE READING IS "THE BOOK" AND NOT ITS LABEL, because that is what
-            // the row IS: the flowing document you read, curate and translate.
-            // Everything else says what main wrote when the step was made.
-            title: step.action === 'read' ? 'Book' : step.label,
-            glyph: glyphForStep(step),
-            tally: whenOn(step.createdAt),
+            // A SENTENCE, DERIVED — never `step.label`, which is the record of
+            // what this app called the act at the time and is what the tooltip
+            // still says. See `titleForStep`.
+            title: titleForStep(step),
+            fact: factForStep(step),
+            from: parentTitleOf(step, steps, project.title),
+            state: whenOn(step.createdAt),
+            icon: iconForStep(step),
+            tint: 'text',
+            dot: 'done',
             tooltip: stepTitle(step, standing),
             depth,
             dir: project.dir,
             step,
+            produces: hasBook && (arrivedAsBook || step.action !== 'import') ? 'book' : null,
             current: step.id === standing,
             stale: step.stale === true,
-            expanded: under.length === 0 ? null : shown,
+            expanded: under.length + jobs.length === 0 ? null : shown,
           });
-          if (shown) for (const kid of under) walk(kid, depth + 1);
+          if (!shown) return;
+          for (const kid of under) walk(kid, depth + 1);
+          /*
+           * THE HOST'S OWN WORK, AFTER THE STEPS MADE FROM THE SAME PLACE.
+           *
+           * Last rather than first, and it is the honest order: the ledger's
+           * children are things that HAVE happened to the words, and a host node
+           * is most often the thing that has not happened yet. A queued
+           * narration drawn above a finished translation would put the plan
+           * above the record.
+           */
+          for (const node of jobs) rows.push(hostRow(project, node, step, depth + 1));
         };
         for (const step of rootKids) walk(step, 1);
+        for (const node of rootHostNodes) rows.push(hostRow(project, node, origin, 1));
         rows.push(...terminals, ...extras);
       }
 
@@ -1104,7 +1729,7 @@ export class OpenDocumentsComponent {
         key: project.key,
         title: project.title,
         dir: project.dir,
-        rows,
+        rows: drawLineage(rows),
         /*
          * EVERY TAB IN THE BOOK, AND NOT EVERY TAB IN THE ROWS. The tree draws
          * fewer rows than the project has open documents — the scan and the
@@ -1124,6 +1749,11 @@ export class OpenDocumentsComponent {
    * BY TAB AND NOT ONLY BY KEY. A tree row carries a key of its own and most of
    * a book's tabs are not drawn as rows at all, so the tab ids a group holds are
    * the only complete account of what it has spoken for.
+   *
+   * NO SPINE ON THESE, which is the one place the drawn lineage is deliberately
+   * withheld: two files opened from two folders are not related, and a line
+   * joining them would be the panel asserting an ancestry that does not exist.
+   * They keep `lanes: []` and no threads, straight out of `blank`.
    */
   protected readonly loose = computed<Row[]>(() => {
     const groups = this.groups();
@@ -1131,6 +1761,59 @@ export class OpenDocumentsComponent {
     const taken = new Set(groups.flatMap((group) => group.tabIds));
     return this.rows().filter((row) => !keys.has(row.key)
       && !(row.tab !== null && taken.has(row.tab.id)));
+  });
+
+  /**
+   * WHAT CAN BE DONE FROM THE SELECTED CARD — the "from here" footer's contents.
+   *
+   * ── Foundry's own acts, and the host's, gated by one rule ───────────────────
+   *
+   * A node PRODUCES something (`Row.produces`): the book's words, or a host's
+   * audio. Translate, Simplify and Export consume the words, so they are offered
+   * from a `book` node and from nothing else; the host declares what each of its
+   * operations consumes (`HostOperationOffer.appliesTo`) and the same comparison
+   * settles those. That single rule is what stops Translate appearing on a
+   * narration and Assemble appearing on a chapter of text — no special cases,
+   * and none to forget when a fourth act arrives.
+   *
+   * COMPUTED FOR THE SELECTED CARD ONLY, because that is the only card that
+   * draws it: this reads `picked()`, so it is recomputed when the selection
+   * moves and not once per row per repaint.
+   */
+  protected readonly acts = computed<readonly Act[]>(() => {
+    const key = this.picked();
+    if (key === null) return NO_ACTS;
+    const row = this.groups().flatMap((group) => group.rows).find((one) => one.key === key) ?? null;
+    if (row === null || row.dir === null || row.produces === null) return NO_ACTS;
+    const out: Act[] = [];
+    if (row.produces === 'book') {
+      /*
+       * THE SAME THREE THE DOCK OFFERS, in the dock's own order, opening the
+       * dock's own dialogs. Metadata is deliberately NOT here: it is a record
+       * ABOUT the position rather than a thing made FROM it — the pointer does
+       * not even move for it (`StepAction`) — so "from here" is the wrong
+       * sentence for it, and the dock keeps it.
+       */
+      out.push(
+        { id: 'translate', label: 'Translate', icon: 'ft-globe', audio: false, host: null,
+          hint: 'Translate what this node holds into another language' },
+        { id: 'simplify', label: 'Simplify', icon: 'ft-spark', audio: false, host: null,
+          hint: 'Say this again in its own language: plainer, more natural, or for a learner' },
+        { id: 'export', label: 'Export', icon: 'ft-out', audio: false, host: null,
+          hint: 'Make the finished book from this node' },
+      );
+    }
+    for (const offer of this.hostOps.offersFor(row.produces)) {
+      out.push({
+        id: `host:${offer.id}`,
+        label: offer.label,
+        icon: iconForHostKind(offer.kind),
+        audio: true,
+        host: offer.id,
+        hint: `${offer.label} — handled by the app Foundry is running inside`,
+      });
+    }
+    return out;
   });
 
   /**
@@ -1145,17 +1828,24 @@ export class OpenDocumentsComponent {
   }
 
   /**
-   * A click on any kind of row.
+   * A click on any kind of card.
    *
    * A STEP MOVES THE POSITION and everything else follows: main resolves what
    * that step shows and the panes are told (`ledger:go` → `showPosition`). It
    * costs nothing, asks nothing and throws nothing away — the promise every
    * history panel makes by looking like one, now made by the navigator itself.
    *
+   * A HOST NODE MOVES NOTHING. There is no position to go to — it is somebody
+   * else's job, and the ledger has never heard of it — so the click does the one
+   * half that still means something: it selects the card, which opens its "from
+   * here" footer. That is what makes a QUEUED node chainable, which was the
+   * ruling: the user can order the next act against an artifact that does not
+   * exist yet, and the host is handed the pending node's id to hang it on.
+   *
    * A FILE ROW puts a document in front of you: revealing it if it is open,
    * opening it if it is not, and doing nothing at all for a file this app has no
    * tab for. The first two are deliberately the same gesture — from the user's
-   * side both rows say "put this in front of me", and whether that costs a tab
+   * side both cards say "put this in front of me", and whether that costs a tab
    * or merely a focus change is bookkeeping, not their question.
    *
    * ── AND IT REPLACES WHAT THE COLUMN WAS SHOWING ─────────────────────────────
@@ -1168,23 +1858,36 @@ export class OpenDocumentsComponent {
    * a person saying "that one instead of this one".
    */
   protected pickRow(row: Row): void {
+    if (row.kind === 'host') {
+      this.picked.set(row.key);
+      return;
+    }
     if (row.kind === 'root' || row.kind === 'step') {
+      this.picked.set(row.key);
       void this.stand(row);
       return;
     }
+    /*
+     * A FILE CLEARS THE SELECTION rather than taking it. A footer says "from
+     * here", and nothing is ever made from an export or from a copy somebody
+     * opened; leaving the previous card's footer open while the click landed
+     * somewhere else would be an offer pointing at a node the user has just
+     * moved away from.
+     */
+    this.picked.set(null);
     if (row.tab !== null) {
       this.pick(row.tab);
       return;
     }
     if (row.openable !== true) {
       /*
-       * A ROW THIS APP HAS NO TAB FOR STILL ANSWERS THE CLICK. An EPUB or txt
+       * A CARD THIS APP HAS NO TAB FOR STILL ANSWERS THE CLICK. An EPUB or txt
        * export used to eat the press — no viewer, so nothing happened — and a
        * person who just exported clicked it expecting to be taken to the file
        * (user report, 2026-08-16). "Put this in front of me" for a finished
        * file with no tab means the file manager: the same reveal the context
        * menu offers, promoted to the click, because a dead left-click teaches
-       * people the row is furniture.
+       * people the card is furniture.
        */
       if (row.kind === 'export') {
         /*
@@ -1206,13 +1909,59 @@ export class OpenDocumentsComponent {
   }
 
   /**
-   * Stand on the step this row names — the gesture that used to live on a Steps
+   * Press one of the acts in a card's footer.
+   *
+   * ── Foundry's own three: STAND, THEN OPEN THE DOCK'S OWN DIALOG ─────────────
+   *
+   * The dialogs act on the POSITION — that is how aiming has always worked in
+   * this app, and it is why there is no second targeting mechanism here. So the
+   * footer's Translate stands on its own card first and then opens exactly the
+   * dialog the dock opens. The stand is very nearly always a no-op (clicking the
+   * card is what opened the footer, and clicking a node stands on it), and it is
+   * made anyway because "very nearly always" is not a thing to leave a dialog's
+   * aim resting on.
+   *
+   * ── The host's: NAME THE NODE, AND LET THE HOST ASK ITS OWN QUESTIONS ───────
+   *
+   * Nothing is stood on and no dialog of ours opens. Main hands the host the
+   * project and the id of the node the footer belongs to — a ledger step id, or
+   * one of the host's own node ids when the act was chained onto work that has
+   * not finished — and the host takes it from there, with its own modal, in its
+   * own window, into its own queue. What comes back is either nothing or a
+   * rejection, and a rejection is the host's sentence: it goes on the notice
+   * strip verbatim, because a button that appears to do nothing is the one
+   * outcome this socket must not have.
+   */
+  protected run(event: MouseEvent, row: Row, act: Act): void {
+    // Without this the click also lands on the card, which for a step would
+    // re-stand it and for a host node would do nothing — but both of them would
+    // fire while a dialog was opening over the top.
+    event.stopPropagation();
+    if (act.host !== null) {
+      if (row.dir === null) return;
+      const nodeId = row.node !== null ? row.node.id : row.step?.id ?? null;
+      if (nodeId === null) return;
+      void this.hostOps.invoke(act.host, row.dir, nodeId).catch((err: unknown) => {
+        this.tabs.notice.set(err instanceof Error ? err.message : String(err));
+      });
+      return;
+    }
+    void this.stand(row).then(() => {
+      void this.router.navigateByUrl('/');
+      if (act.id === 'translate') this.ui.openTranslate();
+      else if (act.id === 'simplify') this.ui.openSimplify();
+      else this.ui.openExport();
+    });
+  }
+
+  /**
+   * Stand on the step this card names — the gesture that used to live on a Steps
    * row in the inspector (docs/WORKBENCH.md §6c: the section moved here whole).
    *
    * FREE, INSTANT AND UNCONFIRMED — one line of the manifest, no job, no
    * rendering, no question asked.
    *
-   * The row already being current is not a no-op worth guarding: main answers
+   * The card already being current is not a no-op worth guarding: main answers
    * with the same ledger and the panel repaints to the same thing, and a click
    * that did nothing is cheaper than a branch that has to be kept true.
    */
@@ -1231,7 +1980,7 @@ export class OpenDocumentsComponent {
     }
   }
 
-  /** Fold a node shut, or open it. The click must not also stand on the row. */
+  /** Fold a node shut, or open it. The click must not also stand on the card. */
   protected toggle(event: MouseEvent, row: Row): void {
     event.stopPropagation();
     this.collapsed.update((shut) => {
@@ -1258,7 +2007,7 @@ export class OpenDocumentsComponent {
   }
 
   /**
-   * The visible door onto that — the ✕ that appears on a root row under the
+   * The visible door onto that — the ✕ that appears on a root card under the
    * pointer. Same gesture as the right-click's Close book, and deliberately the
    * same CALL: it goes through the menu's own dispatch rather than looking a
    * group up for itself, because finding the book from a root row is the part
@@ -1266,7 +2015,7 @@ export class OpenDocumentsComponent {
    * matched case-folded), and a second copy of that is a second thing to keep
    * true. `fromMenu` closing a menu that is not open costs a signal write.
    *
-   * `stopPropagation` because the click would otherwise land on the row as well
+   * `stopPropagation` because the click would otherwise land on the card as well
    * and stand the project on its import — moving the position of a book on its
    * way out of the library.
    */
@@ -1276,14 +2025,14 @@ export class OpenDocumentsComponent {
   }
 
   /**
-   * Delete the document this row names — the file, its catalogue row, and its
+   * Delete the document this card names — the file, its catalogue row, and its
    * project if it turns out to be the original.
    *
    * Every branch of that is main's to decide and the modal's to ask; this hands
    * over a path and says whatever comes back.
    */
   protected async remove(event: MouseEvent, row: Row): Promise<void> {
-    // Without this the click also lands on the row and opens the document that
+    // Without this the click also lands on the card and opens the document that
     // is about to be deleted.
     event.stopPropagation();
     try {
@@ -1318,12 +2067,12 @@ export class OpenDocumentsComponent {
    *
    * WHAT A STEP SHOWS IS NOT KNOWN HERE. Main resolves it (`ledger:document-at`)
    * and only for the position the project is standing ON, so there is no way to
-   * ask "what would that row show" without moving there first. So the intention
+   * ask "what would that card show" without moving there first. So the intention
    * is left with `TabsService` before the pointer moves, and the answer — which
    * arrives asynchronously, inside the effect that watches the position — picks
    * it up and opens into a new column instead of into the one in front.
    *
-   * THE ROW ALREADY BEING CURRENT IS THE CASE THAT NEEDS SAYING. `go` on the
+   * THE CARD ALREADY BEING CURRENT IS THE CASE THAT NEEDS SAYING. `go` on the
    * position you are on produces the same ledger and the same picture, so nothing
    * moves and nothing would ever consume that intention — the menu would appear
    * to do nothing and then split the NEXT step somebody clicked. So that row asks
@@ -1349,7 +2098,7 @@ export class OpenDocumentsComponent {
    * Delete this step. Main says what it costs, the app's own card asks, main
    * does it. Moved here from the inspector's Steps ✕ (docs/WORKBENCH.md §6c),
    * where it was a button on the row; it is behind the right-click now because a
-   * step row wears no ✕ — the visible ✕ in this panel closes or deletes a FILE,
+   * step card wears no ✕ — the visible ✕ in this panel closes or deletes a FILE,
    * and one glyph meaning "and everything made from this" as well would be the
    * most expensive ambiguity in the panel.
    *
@@ -1375,10 +2124,19 @@ export class OpenDocumentsComponent {
     }
   }
 
-  /** Right-click: whatever this kind of row can be asked to do. */
+  /**
+   * Right-click: whatever this kind of card can be asked to do.
+   *
+   * NOTHING, ON A HOST'S NODE. Split, delete, reveal and close are all acts on
+   * something Foundry owns; a job in another application's queue is none of
+   * those, and a menu that opened with nothing safe in it would be worse than no
+   * menu. The default browser menu is suppressed either way, so a right-click
+   * there is simply nothing.
+   */
   protected onMenu(event: MouseEvent, row: Row): void {
     event.preventDefault();
     event.stopPropagation();
+    if (row.kind === 'host') return;
     this.menu.set({ row, x: event.clientX, y: event.clientY });
   }
 
@@ -1417,7 +2175,7 @@ export class OpenDocumentsComponent {
 
   protected close(event: MouseEvent, tab: Tab | null): void {
     if (tab === null) return;
-    // Without this the click also lands on the row and reveals what is about to
+    // Without this the click also lands on the card and reveals what is about to
     // be closed, which flashes the document on screen for one frame.
     event.stopPropagation();
     void this.tabs.close(tab.id);
@@ -1433,8 +2191,9 @@ export class OpenDocumentsComponent {
   // ── Dragging a row ───────────────────────────────────────────────────────
 
   protected onDragStart(event: DragEvent, tab: Tab | null): void {
-    // A step row has no tab to carry, and the workspace's drop handler is
-    // written against a tab id. Standing on the step is what puts it on screen.
+    // A step or host card has no tab to carry, and the workspace's drop handler
+    // is written against a tab id. Standing on the step is what puts it on
+    // screen; a host's job has nothing to put anywhere.
     if (tab === null) {
       event.preventDefault();
       return;
@@ -1469,7 +2228,7 @@ export class OpenDocumentsComponent {
     event.preventDefault();
     event.stopPropagation();
     /*
-     * A ROW INSIDE A BOOK IS NOT AN INSERTION POINT. Its order is the ledger's
+     * A CARD INSIDE A BOOK IS NOT AN INSERTION POINT. Its order is the ledger's
      * and the catalogue's, so a line drawn above it would promise a move the
      * redraw undoes a frame later. `none` rather than `move` says so with the
      * cursor, before the drop — the refusal in `onDrop` is the sentence for
@@ -1550,7 +2309,7 @@ export class OpenDocumentsComponent {
    * is in, over the LOOSE list.
    *
    * The loose rows are the only ones a reorder can touch (see `onDrop`), so they
-   * are the only ones this has to index into: a drop over a book's row is
+   * are the only ones this has to index into: a drop over a book's card is
    * refused before it gets here.
    */
   private landingFor(event: DragEvent, row: Row): string | null {
@@ -1592,7 +2351,7 @@ export class OpenDocumentsComponent {
   }
 
   /**
-   * What a file row says when you rest on it — the whole of what a document's
+   * What a file card says when you rest on it — the whole of what a document's
    * flags mean, in the one place there is room to spell it out.
    *
    * THE FILE IS STILL HERE, and that is deliberate rather than a leftover:
@@ -1610,17 +2369,53 @@ export class OpenDocumentsComponent {
   }
 }
 
-/** What a right-click can offer, across the four kinds of row. */
+/** What a right-click can offer, across the four kinds of row that have one. */
 type MenuAction = 'reveal' | 'save-copy' | 'view' | 'close' | 'delete' | 'close-project' | 'split' | 'discard';
 
 /**
- * One drawn line of the library.
+ * ONE ACT OFFERED IN A CARD'S FOOTER — ours or the host's, drawn identically and
+ * dispatched differently.
  *
- * FOUR KINDS, ONE SHAPE. A `root` and a `step` are POSITIONS — clicking one
- * moves where the book stands — and carry a `step`; an `export` and a
- * `document` are FILES and carry a tab when something has opened them. The
- * template draws them all and the gestures fork on `kind`, which is the one
- * fact that decides everything else about a row.
+ * `host` IS THE DISCRIMINANT and it is a string rather than a boolean because it
+ * is also the thing `run` needs: null means one of Foundry's own three, in which
+ * case `id` names which dialog to open; anything else is the host's operation id,
+ * which is exactly what `host-ops:invoke` takes.
+ */
+interface Act {
+  /** Unique in the footer. Foundry's are `translate`/`simplify`/`export`. */
+  id: string;
+  label: string;
+  /** A symbol in the sheet at the top of the template. */
+  icon: string;
+  /** Drawn in the host's amber rather than in the accent. */
+  audio: boolean;
+  /** The host operation to invoke, or null for one of this app's own acts. */
+  host: string | null;
+  /** The hover sentence — the only place a footer button explains itself. */
+  hint: string;
+}
+
+const NO_ACTS: readonly Act[] = [];
+
+/** One ancestor's lane, in the row's own drawn lineage. See `drawLineage`. */
+interface Lane {
+  /** Whether that ancestor still has something below this row to reach. */
+  line: boolean;
+  /** Dashed when what it reaches down to has not happened yet. */
+  dashed: boolean;
+  /** True in the LAST lane of the first card of an indented run. */
+  elbow: boolean;
+}
+
+/**
+ * One drawn card of the library.
+ *
+ * FIVE KINDS, ONE SHAPE. A `root` and a `step` are POSITIONS — clicking one
+ * moves where the book stands — and carry a `step`; an `export` and a `document`
+ * are FILES and carry a tab when something has opened them; a `host` is a job in
+ * somebody else's queue and carries a `node`. The template draws them all and
+ * the gestures fork on `kind`, which is the one fact that decides everything
+ * else about a card.
  */
 interface Row {
   /** Unique in the list: a tab id, or the book's key and what the row names. */
@@ -1630,22 +2425,55 @@ interface Row {
   tab: Tab | null;
   /** A file for the rows that are files; the book's own directory for a position. */
   path: string;
+  /**
+   * The card's first line — a SENTENCE about what happened, derived from the
+   * action and its params, never `LedgerStep.label` (see `titleForStep`).
+   */
   title: string;
-  glyph: string;
+  /**
+   * The parent's title, for the lineage line: "from **Applied changes**". Null
+   * where there is no honest parent to name — the import, an export, a loose
+   * file — and those say `said` instead.
+   */
+  from: string | null;
+  /** One extra fact in front of the lineage: "41 edits", "312 pages". */
+  fact: string | null;
+  /** What this IS, for a card with no lineage to claim. */
+  said: string | null;
+  /** The right-hand slot: a date, or the host's own word about where it is up to. */
+  state: string | null;
+  /** A symbol id from the sheet at the top of the template. */
+  icon: string;
+  /** Which tint the icon square wears: this app's accent, the host's amber, or neither. */
+  tint: 'plain' | 'text' | 'audio';
+  /** Which state the dot draws. See the dot's styles. */
+  dot: DotState;
+  /** A running host node's live counting, or null. */
+  progress: HostNodeProgress | null;
+  /** A failed host node's sentence, drawn on a line of its own. */
+  why: string | null;
   tooltip: string;
   /** How far in the tree. 0 for a root and for a loose file. */
   depth: number;
   /** The book this row belongs to. Null for a loose file, and only for that. */
   dir: string | null;
-  /** The step a root or a step row names, when the history has arrived. */
+  /** The step a root or a step card names, when the history has arrived. */
   step: LedgerStep | null;
-  /** The date on the right, for a row that is a moment in a book's history. */
-  tally: string | null;
-  /** True on the one row the book is standing on. */
+  /** The host's own row, for `kind === 'host'`. Null everywhere else. */
+  node: HostNode | null;
+  /**
+   * WHAT CAN BE MADE FROM HERE — the whole gate on the "from here" footer.
+   * Null means nothing can: a terminal file, a loose one, or a position with no
+   * book behind it yet.
+   */
+  produces: NodeOutput | null;
+  /** True on the one card the book is standing on. */
   current: boolean;
   /** True for a step made from something that has been replaced since. */
   stale: boolean;
-  /** Null when the row can never have children; otherwise whether it is open. */
+  /** True for a node that has not happened yet: dashed line, hollow dot. */
+  planned: boolean;
+  /** Null when the card can never have children; otherwise whether it is open. */
   expanded: boolean | null;
   /** File rows only: false for a missing file and for `.txt`. */
   openable?: boolean;
@@ -1655,29 +2483,60 @@ interface Row {
   column: number | null;
   /** True when that column is the focused one. */
   focused: boolean;
+  // ── The drawn lineage, filled in by `drawLineage` once the group is whole ──
+  /** One per ancestor level, outermost first. */
+  lanes: readonly Lane[];
+  /** Whether this card's own lane comes down from above into its dot. */
+  up: boolean;
+  /** Whether it continues below — to a sibling, or into a child's elbow. */
+  down: boolean;
+  /** Dashed when the thing that segment reaches has not happened yet. */
+  downDashed: boolean;
 }
 
-type RowKind = 'root' | 'step' | 'export' | 'document';
+type RowKind = 'root' | 'step' | 'export' | 'document' | 'host';
+
+type DotState = 'source' | 'done' | 'running' | 'queued' | 'failed' | 'file';
 
 /**
  * The fields every row has and most rows do not set.
  *
- * ONE DEFAULT AND NOT FOUR LITERALS: a row is built in five places here, and
+ * ONE DEFAULT AND NOT SIX LITERALS: a row is built in six places here, and
  * without this each of them would have to remember to say `stale: false` — which
  * they would, until somebody added a field, and then exactly one of them would
  * be missing it and exactly one kind of row would draw wrong.
+ *
+ * THE LINEAGE DEFAULTS TO NOTHING DRAWN, which is what the loose list wants: it
+ * never goes through `drawLineage`, so a file opened from somewhere else gets a
+ * card with a plain dot and no thread, and no relationship is asserted between
+ * two of them.
  */
 const blank = {
   tab: null,
   step: null,
-  tally: null,
+  node: null,
+  from: null,
+  fact: null,
+  said: null,
+  state: null,
+  icon: 'ft-page',
+  tint: 'plain',
+  dot: 'file',
+  progress: null,
+  why: null,
+  produces: null,
   depth: 0,
   dir: null,
   current: false,
   stale: false,
+  planned: false,
   expanded: null,
   column: null,
   focused: false,
+  lanes: [],
+  up: false,
+  down: false,
+  downDashed: false,
 } satisfies Partial<Row>;
 
 /** One book, and the tree drawn for it. */
@@ -1690,11 +2549,130 @@ interface Group {
   tabIds: string[];
 }
 
-function glyphFor(tab: Tab): string {
-  // The book wears the reading's own mark, because the book IS the reading — the
-  // same glyph `glyphForStep` gives the row that opens it, one line above it in
-  // this tree.
-  return tab.kind === 'book' ? '▤' : '▦';
+/**
+ * ONE ROW FOR ONE THING THE HOST IS MAKING.
+ *
+ * Everything on it is the host's except the lineage line, which is Foundry's:
+ * the host names a parent step and this composes "from **The book**" out of that
+ * step's own title, in the same words every other card uses. A host writing its
+ * own lineage sentence would be a second voice in a panel whose whole redesign
+ * was about having one.
+ *
+ * THE STATE SLOT AND THE SENTENCE ARE THE SAME FIELD, spent differently. A
+ * host's `detail` is a short piece of news while it is short news ("queued · 2nd
+ * in line") and a sentence when it is a failure — so it goes to the right of the
+ * title in the first case and onto a line of its own in the second, where there
+ * is room to read it. Running, the slot shows the percentage instead, because a
+ * number that changes is what the eye goes to and the message is already on the
+ * progress line underneath.
+ */
+function hostRow(project: ProjectSummary, node: HostNode, parent: LedgerStep | null, depth: number): Row {
+  const failed = node.state === 'failed';
+  const running = node.state === 'running';
+  return {
+    ...blank,
+    key: `${project.key}:host:${node.id}`,
+    kind: 'host',
+    path: project.dir,
+    title: node.title,
+    // The parent named the same way a ledger child names it — and a node hung
+    // off the IMPORT says the book's own name, because that is what the root's
+    // card says and a lineage line has to point at something the reader can see.
+    from: parent === null ? null : parent.parent === null ? project.title : titleForStep(parent),
+    said: parent === null ? node.detail : null,
+    state: running && node.progress !== undefined
+      ? `${Math.round(node.progress.percent)}%`
+      : failed ? 'failed' : node.detail,
+    why: failed ? node.detail : null,
+    progress: running && node.progress !== undefined ? node.progress : null,
+    icon: iconForHostKind(node.kind),
+    tint: 'audio',
+    // The four host states ARE four of the dot's six, spelled the same way on
+    // purpose: the grammar in the mockup and the grammar in the contract are one
+    // vocabulary, so this is a pass-through rather than a mapping table that
+    // could disagree with either.
+    dot: node.state,
+    tooltip: `${node.title}\n${node.detail}\n`
+      + 'Made by the app Foundry is running inside — it is not a step in this book’s history.',
+    depth,
+    dir: project.dir,
+    node,
+    // WHAT IT WILL PRODUCE, not what it has produced — which is exactly what
+    // makes a queued node chainable: the host's next act is offered against an
+    // artifact that does not exist yet.
+    produces: PRODUCES_OF[node.kind],
+    planned: node.state === 'queued',
+    expanded: null,
+  };
+}
+
+/**
+ * THE DRAWN LINEAGE, in one backward pass over a book's finished row list.
+ *
+ * ── What has to be decided, per row ─────────────────────────────────────────
+ *
+ * Three things, and all three are questions about what comes AFTER the row: does
+ * this card's own lane continue below it (a sibling, or a child's elbow to feed);
+ * which ANCESTOR lanes are still running past it on their way to something of
+ * their own; and is the thing any of those reach down to a plan rather than a
+ * fact, which is what decides solid against dashed.
+ *
+ * Backwards is the only direction those are cheap in. `nextAt[d]` holds the
+ * nearest row below at depth `d` that is still reachable — reachable meaning no
+ * row shallower than `d` sits between, because a shallower row ENDS every lane
+ * deeper than itself. Walking up, each row reads that array for its answer and
+ * then rewrites it: everything deeper than this row is now cut off, and this row
+ * is now the nearest thing at its own depth.
+ *
+ * ── Why the rows are mutated rather than rebuilt ────────────────────────────
+ *
+ * Every row here was built moments ago inside the same computed — six object
+ * literals, none of them shared with anything and none of them escaping until
+ * this returns — so a copy would be a second allocation per row to protect a
+ * value nobody else has seen yet.
+ */
+function drawLineage(rows: Row[]): Row[] {
+  const nextAt: (Row | null)[] = [];
+  for (let at = rows.length - 1; at >= 0; at -= 1) {
+    const row = rows[at]!;
+    const below = rows[at + 1] ?? null;
+    const hasChild = below !== null && below.depth > row.depth;
+    const sibling = nextAt[row.depth] ?? null;
+
+    /*
+     * THE ANCESTORS' LANES, outermost first. A lane is drawn where that ancestor
+     * still has a sibling of its own waiting below — which is what makes a
+     * translation's saves legible as being inside the translation while the
+     * book's own line runs past them to the next thing made from the book.
+     */
+    const lanes: Lane[] = [];
+    for (let level = 0; level < row.depth; level += 1) {
+      const carries = nextAt[level] ?? null;
+      lanes.push({
+        line: carries !== null,
+        dashed: carries?.planned === true,
+        // The elbow belongs to the first card of an indented run and to no
+        // other: every sibling after it joins the lane's own vertical instead.
+        elbow: level === row.depth - 1 && (at === 0 || rows[at - 1]!.depth < row.depth),
+      });
+    }
+    row.lanes = lanes;
+    row.up = row.depth > 0 && !(lanes[row.depth - 1]?.elbow ?? false);
+    /*
+     * DOWN IS FED BY WHICHEVER COMES FIRST — a child's elbow hangs off this
+     * card's own lane, and so does a sibling, so the segment is drawn if either
+     * exists. Its dash follows the one it actually reaches: a running narration
+     * with a queued assemble under it draws a dashed line down to it, which is
+     * the whole "solid is what exists, dashed is the plan" grammar in one row.
+     */
+    const reaches = hasChild ? below : sibling;
+    row.down = reaches !== null;
+    row.downDashed = reaches?.planned === true;
+
+    for (let deeper = row.depth + 1; deeper < nextAt.length; deeper += 1) nextAt[deeper] = null;
+    nextAt[row.depth] = row;
+  }
+  return rows;
 }
 
 /**
@@ -1714,47 +2692,242 @@ function inProject(filePath: string, dir: string): boolean {
 }
 
 /**
- * The root's glyph, from the import's own payload.
+ * WHAT THE BOOK ARRIVED AS, on the root card's second line.
  *
  * BY EXTENSION AND NOT BY NAME. The house rule forbids matching a basename
  * across directories; reading the last few characters of `archive/Book.pdf` to
- * decide between two shapes is not matching anything, and it is the only fact
- * about the original this panel needs.
+ * decide between three sentences is not matching anything, and it is the only
+ * fact about the original this panel needs.
+ *
+ * IT IS ALSO WHY THE ROOT KEEPS THE BOOK'S NAME AS ITS TITLE. The design mockup
+ * put "The scan" on this card and the book's name in a header above the tree;
+ * this panel has no header — the group's own ruling removed it when the import
+ * root took its place — so the two facts swap slots. The name is the title,
+ * because it is the one thing that must never leave the panel; what it arrived
+ * as is the sentence underneath.
  */
-function glyphForPayload(payload: string): string {
+function arrivalSentence(payload: string): string {
+  const ext = extensionOf(payload);
+  if (ext === 'epub') return 'the book it all started from';
+  if (ext === 'txt') return 'the text it all started from';
+  return 'the scan it all started from';
+}
+
+function iconForArrival(payload: string): string {
+  const ext = extensionOf(payload);
+  return ext === 'epub' ? 'ft-book' : ext === 'txt' ? 'ft-page' : 'ft-scan';
+}
+
+function extensionOf(payload: string): string {
   const dot = payload.lastIndexOf('.');
-  const ext = dot < 0 ? '' : payload.slice(dot + 1).toLowerCase();
-  return ext === 'epub' ? '▤' : ext === 'txt' ? '≡' : '▦';
+  return dot < 0 ? '' : payload.slice(dot + 1).toLowerCase();
+}
+
+function iconForTab(tab: Tab): string {
+  // The book wears the reading's own mark, because the book IS the reading — the
+  // same symbol `iconForStep` gives the card that opens it.
+  return tab.kind === 'book' ? 'ft-book' : 'ft-page';
 }
 
 /**
- * What a step LOOKS like in the tree — the action, at a glance.
+ * WHAT A STEP LOOKS LIKE — the action, at a glance.
  *
  * The reading wears the book's own mark because the reading IS the book; a save
- * wears the pencil the app uses everywhere for "edited"; a translation wears the
- * two ways it goes; a metadata edit wears the mark of a note about a thing rather
- * than a change to it, which is what a record of the title is. Nothing here is
- * load-bearing: the name beside it says the same thing in words, and the glyph is
- * what makes a tree of twenty rows scannable.
+ * wears the pen this app uses everywhere for "edited"; a translation wears the
+ * globe and a rewrite the spark, which is the same pair the "from here" footer
+ * puts on Translate and Simplify, so the button and the card it makes are
+ * recognisably one act. Nothing here is load-bearing: the title beside it says
+ * the same thing in words, and the icon is what makes a tree of twenty cards
+ * scannable.
  */
-function glyphForStep(step: LedgerStep): string {
-  if (step.action === 'read') return '▤';
-  if (step.action === 'curate') return '✎';
-  if (step.action === 'translate') return '⇄';
-  if (step.action === 'metadata') return 'ⓘ';
-  return '▦';
+function iconForStep(step: LedgerStep): string {
+  if (step.action === 'read') return 'ft-book';
+  if (step.action === 'curate' || step.action === 'edit') return 'ft-pen';
+  if (step.action === 'translate') return step.params?.rewrite === undefined ? 'ft-globe' : 'ft-spark';
+  if (step.action === 'metadata') return 'ft-tag';
+  return 'ft-scan';
+}
+
+/** The host's three acts, and the marks they wear on cards and on buttons alike. */
+function iconForHostKind(kind: HostNode['kind']): string {
+  if (kind === 'narrate') return 'ft-mic';
+  if (kind === 'enhance') return 'ft-wave';
+  return 'ft-disc';
 }
 
 /**
- * What a step row says on hover — including the STALE REASON, which is the whole
- * of why a dimmed row is dimmed.
+ * WHAT HAPPENED, AS A SENTENCE — the card's title.
+ *
+ * ── Derived here, and the stored label left exactly where it is ─────────────
+ *
+ * `LedgerStep.label` is what this app called the act at the moment it happened,
+ * and `labelFor` refuses to rewrite one afterwards for a reason that has not
+ * changed: *"rewriting a person's history to tidy the app's own naming would be
+ * editing the record of what happened to their book"*. So nothing here touches
+ * it — the tooltip still says it, verbatim, and a project that has been through
+ * three of this app's vocabularies still holds three spellings.
+ *
+ * What a CARD needs is a different thing: a sentence a person recognises as the
+ * act they ordered. "Translated (de)" is a notation — correct, and unreadable to
+ * anybody who has not learned that `de` is German. So the card composes from the
+ * two things the step already carries, its `action` and its `params`, and every
+ * word of it is honest to what was recorded: the language name is the one the
+ * dialog itself offered (`languageNameFor`, the same table `LANGUAGE_CHOICES`
+ * is built from), and the rewrite phrase is the one the Simplify dialog printed
+ * over the card that was pressed.
+ *
+ * A PARAM NOBODY WROTE DOWN SHORTENS THE SENTENCE RATHER THAN INVENTING ONE. An
+ * old translation with no `language` says "Translated", because that is all the
+ * ledger knows and a guess would be this panel making something up about a book.
+ */
+function titleForStep(step: LedgerStep): string {
+  switch (step.action) {
+    case 'import':
+      return 'The original';
+    /*
+     * THE READING IS THE BOOK, which is the ruling this title has always kept:
+     * *"we shouldnt call the working files 'epub' until we export"* — the thing
+     * a reading makes is the Book, and standing on this card is what opens it.
+     * It is a noun where the others are past tenses, on the mockup's own
+     * precedent ("The scan"), because what a person wants from this card is the
+     * artifact and not the act.
+     */
+    case 'read':
+      return 'The book';
+    case 'curate':
+    case 'edit':
+      return 'Applied changes';
+    case 'metadata':
+      return metadataSentence(step.params);
+    default:
+      return translateSentence(step.params);
+  }
+}
+
+/**
+ * "Translated into German", "Simplified into plain terms".
+ *
+ * A REWRITE NEVER NAMES A LANGUAGE, and that is the shape of the act rather than
+ * a shortening: it happens IN the book's own language, so both ends are the same
+ * tag and "Simplified into plain terms (de)" would spend the card's one line on
+ * the half of the sentence that is not the answer. Which of the three modes it
+ * was IS the answer, and it is what the row says. (A project holding a German
+ * rewrite and an English one tells them apart by the branch they hang on, which
+ * is the thing the drawn lineage now makes visible.)
+ */
+function translateSentence(params: LedgerParams | undefined): string {
+  const rewrite = params?.rewrite;
+  if (rewrite !== undefined) return REWRITTEN_AS[rewrite];
+  const into = params?.language ?? '';
+  return into.length === 0 ? 'Translated' : `Translated into ${languageNameFor(into)}`;
+}
+
+/**
+ * The three rewrites, as sentences.
+ *
+ * THE SAME WORDS THE DIALOG PRINTED. `REWRITE_LABELS` (shared/ledger.ts) holds
+ * "plain terms", "natural voice" and "easy language" — the reader's phrases,
+ * chosen once so that a row is recognisable as the card somebody pressed — and
+ * these are those phrases with a verb in front. Two tables rather than one
+ * composed string because "Simplified into natural voice" is not English and the
+ * middle one has to say it differently.
+ */
+const REWRITTEN_AS: Readonly<Record<NonNullable<LedgerParams['rewrite']>, string>> = {
+  dejargon: 'Simplified into plain terms',
+  destiffen: 'Said again in a natural voice',
+  learner: 'Rewritten in easy language',
+};
+
+/**
+ * "Set the title and author" — a metadata step, in words.
+ *
+ * THE FIELDS AND NOT THE VALUES, which is the line `LedgerParams.fields` is
+ * drawn on and this inherits without restating the argument: what was actually
+ * written is the step's payload, and a card is not a place to keep a second copy
+ * of it. Past a few names the list stops being scannable and the plain sentence
+ * is the honest answer — the same threshold `labelFor` uses, for the same
+ * reason.
+ */
+function metadataSentence(params: LedgerParams | undefined): string {
+  const said = params?.fields ?? [];
+  if (said.length === 0 || said.length > 3) return 'Set the book’s own record';
+  const printed = said.length === 1
+    ? said[0]!
+    : `${said.slice(0, -1).join(', ')} and ${said[said.length - 1]!}`;
+  return printed.length > 34 ? 'Set the book’s own record' : `Set the ${printed}`;
+}
+
+/**
+ * The extra fact in front of the lineage line: "41 edits · from **The scan**".
+ *
+ * ONLY WHERE THE STEP ALREADY COUNTED IT. These are `params` the run wrote down
+ * for its own row's sentence and nothing else (`LedgerParams.pages`, `.ops`,
+ * `.amendments`), so a step from before they were recorded simply has no prefix
+ * — which is the correct outcome, and the reason none of this is derived by
+ * opening a file.
+ */
+function factForStep(step: LedgerStep): string | null {
+  const params = step.params;
+  if (step.action === 'read') {
+    return params?.pages === undefined || params.pages <= 0 ? null : `${params.pages} pages`;
+  }
+  if (step.action === 'edit') {
+    return params?.ops === undefined || params.ops <= 0 ? null : `${params.ops} edits`;
+  }
+  if (step.action === 'curate') {
+    return params?.amendments === undefined || params.amendments <= 0
+      ? null
+      : `${params.amendments} changes`;
+  }
+  return null;
+}
+
+/**
+ * THE PARENT, BY NAME — the second half of every lineage line.
+ *
+ * Composed from the parent STEP rather than from the row above, because the row
+ * above is a fact about the drawing and the parent is a fact about the book: a
+ * translation made from an edit two branches away has a row above it that is
+ * neither. The one node with no step behind it is the import, whose card is the
+ * book's own name — so a child of the root names the BOOK, which is exactly what
+ * a person would say out loud.
+ */
+function parentTitleOf(step: LedgerStep, steps: readonly LedgerStep[], bookTitle: string): string | null {
+  if (step.parent === null) return null;
+  const parent = steps.find((one) => one.id === step.parent) ?? null;
+  if (parent === null) return null;
+  return parent.parent === null ? bookTitle : titleForStep(parent);
+}
+
+/**
+ * What an export IS, in the words the export modal offered it in.
+ *
+ * THE PRODUCT AND NOT THE FORMAT, and certainly not the file: somebody chose
+ * "Facsimile PDF" in a dialog and the card that turns up afterwards has to be
+ * recognisably the thing they chose. A `pdf` under `final/` is never anything
+ * else in this app — a real-text reprint is a `generated/` rendering and a step's
+ * document, not an export — so the word is not a guess.
+ *
+ * AND IT IS THE ONLY PLACE IN THIS PANEL THE WORD "EPUB" APPEARS. The working
+ * document is the Book; EPUB means finished (docs/WORKBENCH.md §6c, Naming).
+ */
+function exportLabel(kind: ProjectDocumentKind): string {
+  if (kind === 'epub') return 'EPUB';
+  if (kind === 'txt') return 'Plain text';
+  return 'Facsimile PDF';
+}
+
+/**
+ * What a step card says on hover — including the STORED LABEL, which is the
+ * record, and the STALE REASON, which is the whole of why a dimmed card is
+ * dimmed.
  *
  * A step goes stale when something it was made from was replaced under it: the
  * blocks a curation named by `(page, order)` mean different blocks after a
  * re-read, and a translation of those blocks was a translation of paragraphs
  * that have moved. It is a display state and not a deletion — the payload is
- * still a true record of what was made, so the row still opens and still
- * renders. Saying that on hover is what keeps a dimmed row from reading as a
+ * still a true record of what was made, so the card still opens and still
+ * renders. Saying that on hover is what keeps a dimmed card from reading as a
  * broken one.
  */
 function stepTitle(step: LedgerStep, standing: string | null): string {
@@ -1771,29 +2944,11 @@ function stepTitle(step: LedgerStep, standing: string | null): string {
 }
 
 /**
- * What an export IS, in the words the export modal offered it in.
- *
- * THE PRODUCT AND NOT THE FORMAT, and certainly not the file: somebody chose
- * "Facsimile PDF" in a dialog and the row that turns up afterwards has to be
- * recognisably the thing they chose. A `pdf` under `final/` is never anything
- * else in this app — a real-text reprint is a `generated/` rendering and a step's
- * document, not an export — so the word is not a guess.
- *
- * AND IT IS THE ONLY PLACE IN THIS PANEL THE WORD "EPUB" APPEARS. The working
- * document is the Book; EPUB means finished (docs/WORKBENCH.md §6c, Naming).
- */
-function exportLabel(kind: ProjectDocumentKind): string {
-  if (kind === 'epub') return 'EPUB';
-  if (kind === 'txt') return 'Plain text';
-  return 'Facsimile PDF';
-}
-
-/**
- * WHEN, in as few characters as a row can spare — the Steps section's rule, for
- * the Steps section's reason, now applied to every row in the tree.
+ * WHEN, in as few characters as a card can spare — the Steps section's rule, for
+ * the Steps section's reason, now applied to every card in the tree.
  *
  * The year is dropped for anything from this one, which is nearly everything
- * anybody looks at, and kept for the rest: two rows both reading "14 Aug" would
+ * anybody looks at, and kept for the rest: two cards both reading "14 Aug" would
  * be this panel quietly claiming they happened together.
  */
 function whenOn(at: number): string {

@@ -8,6 +8,7 @@
  * renderer's `window.foundry` is typed as it.
  */
 import type { BookOutcome } from './book';
+import type { HostOperationOffer } from './host-ops';
 import type { ReadAsk } from './ledger';
 import type { BookOp } from './ops';
 import type { ReReadPrompt } from './reread';
@@ -26,6 +27,8 @@ import type {
   EnvInstallRequest,
   EnvTooling,
   EpubMetadataFields,
+  HostNode,
+  HostNodes,
   Job,
   JobRequest,
   MetadataOutcome,
@@ -777,6 +780,48 @@ export interface FoundryApi {
     clearFinished(): Promise<void>;
     /** Every change, whole list. Returns its own unsubscribe. */
     onChanged(listener: (jobs: Job[]) => void): () => void;
+  };
+
+  /**
+   * THE HOST-OPERATIONS SOCKET, from the renderer's side — what somebody else's
+   * application has contributed to this app's provenance tree.
+   *
+   * ── Three doors, and why the renderer needs all three ───────────────────────
+   *
+   * `offers` is asked ONCE, like `hosted()`: a host registers its operations at
+   * mount and nothing can change them while the process lives, so a subscription
+   * for them would be one that never fires. `nodes` is the first paint — a window
+   * that opened after the host had already pushed has to be able to catch up —
+   * and `onChanged` is every push after that, carrying the whole set for one
+   * project on `queue.onChanged`'s precedent.
+   *
+   * `invoke` NAMES AN OPERATION BY ID AND A NODE BY ID, and that pair is the
+   * entire request: main turns the operation id back into the host's own function
+   * (a renderer can only name something the host registered), and the node id is
+   * what the user pressed "from here" on — a ledger step when the act was ordered
+   * from something this app made, one of the host's own nodes when it was chained
+   * onto work that has not finished yet.
+   *
+   * STANDALONE IT IS TWO EMPTY LISTS AND A DOOR NOBODY OPENS, which is why the
+   * tree needs no branch for "is this app hosted": there is nothing to offer and
+   * nothing to draw, so it draws what it always drew.
+   */
+  hostOps: {
+    /** Everything the host registered at mount. Empty with no host. */
+    offers(): Promise<HostOperationOffer[]>;
+    /** This project's host nodes as they now stand. Empty is the ordinary answer. */
+    nodes(projectDir: string): Promise<HostNode[]>;
+    /**
+     * Run one of the host's acts, from a node in the tree.
+     *
+     * REJECTS WITH THE HOST'S OWN SENTENCE when the host's handler throws —
+     * deliberately not swallowed anywhere along the way, because this is a
+     * button somebody pressed and the alternative is a button that appears to
+     * do nothing.
+     */
+    invoke(operationId: string, projectDir: string, nodeId: string): Promise<void>;
+    /** Every push, whole set, one project. Returns its own unsubscribe. */
+    onChanged(listener: (pushed: HostNodes) => void): () => void;
   };
 
   engineInfo(): Promise<EngineInfo>;

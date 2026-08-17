@@ -1244,6 +1244,129 @@ export interface ImportLanding {
 }
 
 /**
+ * WHAT A NODE IN THE TREE PRODUCES — the two currencies the pipeline trades in.
+ *
+ * `book` is Foundry's: the words of a book at some position, which a translate,
+ * a simplify or an export consumes. `audio` is a host's: a narration, an
+ * enhanced narration, an assembled audiobook. Every operation declares which of
+ * these it consumes (`HostOperationOffer.appliesTo`) and every node is one of
+ * these, so "what may be done from here" is a single comparison and never a list
+ * of special cases — a Translate is not offered on a narration, and an Assemble
+ * is not offered on a book, by the same one rule in both directions.
+ *
+ * TWO MEMBERS AND NOT AN OPEN STRING, because the tree has to be able to gate on
+ * it. A host inventing a third currency would be a host asking Foundry to draw
+ * something it cannot reason about; the honest way to grow this is to add the
+ * member here, in the same commit as whatever understands it.
+ */
+export type NodeOutput = 'book' | 'audio';
+
+/**
+ * WHICH ACT A HOST OPERATION IS — the field that picks the icon, and the field
+ * `PRODUCES_OF` (shared/host-ops.ts) turns into what its nodes produce.
+ *
+ * The three the user's pipeline actually has: narration (TTS over the book's
+ * text), enhancement (a voice-conversion pass over the narration), and assembly
+ * (the m4b). Foundry does none of them and knows nothing about how any of them
+ * work — what it knows is that they are audio work, which is why they are drawn
+ * in amber rather than in the accent this app spends on the text.
+ */
+export type HostOperationKind = 'narrate' | 'enhance' | 'assemble';
+
+/** Where a host node has got to. See `HostNode`. */
+export type HostNodeState = 'queued' | 'running' | 'done' | 'failed';
+
+/**
+ * How far along a running host node is — the live half of a card.
+ *
+ * ALL THREE FIELDS TOGETHER OR NONE OF THEM, which is why this is one optional
+ * object rather than three optional fields on the node. A bar with no percentage
+ * and a percentage with no bar are two halves of a control that has to arrive
+ * whole; a host with nothing to say about progress says nothing (`progress`
+ * absent) and its card draws the state word instead of a meter that sits at
+ * zero.
+ */
+export interface HostNodeProgress {
+  /** 0–100. The bar's width and the number beside it, which are one fact. */
+  percent: number;
+  /** What is happening, in the host's words: "sentence 1,842 of 2,970". */
+  message: string;
+  /** How much longer, in the host's words: "1 h 12 m left". */
+  eta: string;
+}
+
+/**
+ * ONE ROW THE HOST CONTRIBUTES TO THE TREE — a thing BookForge is making, or is
+ * about to make, out of something Foundry made.
+ *
+ * ── A display row, and never a step ─────────────────────────────────────────
+ *
+ * Nothing here is written to a ledger, swept, deleted or replayed. The host
+ * pushes the whole set for a project (`setHostNodes`) whenever its own state
+ * moves, and Foundry draws what it was last given: a node that stops being
+ * pushed stops existing, which is the correct lifetime for a row describing
+ * somebody else's queue. shared/host-ops.ts holds the whole of that argument.
+ *
+ * ── Why it names a LEDGER step as its parent ────────────────────────────────
+ *
+ * Because that is the fact the tree is about: this narration was made from THAT
+ * translation, and the lineage line under the card says so in the same words it
+ * says everything else. The host learns the id from the invocation it was
+ * answering (`host-ops:invoke` carries the node the user pressed "from here"
+ * on), so it never has to parse a ledger to find one.
+ *
+ * A CHAIN IS A RUN OF SIBLINGS rather than a nest: an assemble ordered from a
+ * queued narration hangs off the SAME ledger step, below the narration, and says
+ * what it is waiting for in its own `detail`. Nesting host nodes inside host
+ * nodes would draw a staircase that says nothing the order of the rows does not
+ * already say, and it would put a host in charge of the tree's shape rather than
+ * of its own rows.
+ */
+export interface HostNode {
+  /**
+   * The host's own id for this row, unique within the project.
+   *
+   * IT IS ALSO WHAT COMES BACK on an invoke made from this node, which is what
+   * makes chaining work: the host recognises its own id and knows the user asked
+   * for work on an artifact that does not exist yet. A ledger step id and a host
+   * node id can never be confused, because the host minted one of them.
+   */
+  id: string;
+  /** The ledger step this hangs under — an id from THIS project's ledger. */
+  parentStepId: string;
+  /** The card's title, in the host's words: "Narrating with Leah". */
+  title: string;
+  /**
+   * The host's one line about this row, whatever state it is in: "queued · 2nd
+   * in line", "starts when Narrating with Leah finishes", "3 h 21 m of audio",
+   * or — on a failure — the sentence saying what went wrong.
+   *
+   * IT IS THE HOST'S SENTENCE AND FOUNDRY NEVER COMPOSES ONE. This app cannot
+   * know what a queue position means in another application, and a card that
+   * said "queued" over a host that had something more useful to say would be
+   * this app talking over the only side that knows.
+   */
+  detail: string;
+  kind: HostOperationKind;
+  state: HostNodeState;
+  /** Present while it is running and the host is counting. See `HostNodeProgress`. */
+  progress?: HostNodeProgress;
+}
+
+/**
+ * One project's host nodes, as they now stand — the payload of the push, and of
+ * the read a window makes when it first draws a book.
+ *
+ * THE WHOLE SET, EVERY TIME, on `queue:changed`'s precedent exactly: a diff
+ * between two processes is a thing that goes wrong silently and stays wrong,
+ * and the set is a handful of rows.
+ */
+export interface HostNodes {
+  projectDir: string;
+  nodes: readonly HostNode[];
+}
+
+/**
  * One reading's page-for-page reprint, in `generated/`. See
  * `ProjectSummary.facsimiles`, which is the only thing that carries these and
  * where the whole argument for the shape lives.

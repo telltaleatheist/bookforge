@@ -19,6 +19,10 @@
  * writes it and that sits at the top of everything.
  */
 import type { ExportLanding, ImportLanding } from '../shared/types';
+// A TYPE, and it has to stay one: `host-ops.ts` pushes at windows and therefore
+// imports `window.ts`, which is exactly the weight this leaf exists to keep out
+// of `app-settings.ts`. `import type` is erased, so the leaf stays a leaf.
+import type { HostOperation } from './host-ops';
 
 /**
  * What a host tells Foundry about itself, and the one thing it asks to be told.
@@ -58,6 +62,23 @@ export interface FoundryHost {
    * Same error posture as `onExport`: caught and logged at the call.
    */
   onImport?(landing: ImportLanding): void;
+  /**
+   * ACTS THE HOST CONTRIBUTES TO THE PROVENANCE TREE — narration, enhancement,
+   * assembly: the audio half of a pipeline whose text half is this app.
+   *
+   * OPTIONAL, AND EMPTY IS THE STANDALONE SHAPE. A host that registers none —
+   * and Foundry's own shell, which passes no host at all — gets a tree with
+   * exactly the acts this app has always offered. Nothing about the socket
+   * shows up until somebody puts something in it (electron/host-ops.ts holds
+   * the whole design; `HostOperation` is declared there because `invoke` is a
+   * function and functions do not cross the preload).
+   *
+   * READ ONCE, AT MOUNT. There is one host and one mount, so this is a fact for
+   * the lifetime of the process — the same reason `app:hosted` is asked once and
+   * never pushed. What DOES change while the app runs is what the host is making
+   * (`setHostNodes`), which is a push and is deliberately the other thing.
+   */
+  hostOperations?: readonly HostOperation[];
 }
 
 let host: FoundryHost | null = null;

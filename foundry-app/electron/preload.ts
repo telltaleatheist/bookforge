@@ -14,6 +14,7 @@ import type {
   Asked,
   CloseAnswer,
   EnvInstallProgress,
+  HostNodes,
   Job,
   QuestionAnswer,
   ReReadAnswer,
@@ -185,6 +186,20 @@ const api: FoundryApi = {
     cancel: (id) => ipcRenderer.invoke('queue:cancel', id),
     clearFinished: () => ipcRenderer.invoke('queue:clear-finished'),
     onChanged: (listener) => subscribe<Job[]>('queue:changed', listener),
+  },
+
+  /*
+   * The host-operations socket. Nothing here knows what a narration is: it
+   * carries ids one way and rows the other, and both ends of the family are
+   * `host-ops:` — a family this app invented for the socket precisely because
+   * the host owns nothing in it (electron/ipc.ts says why in full).
+   */
+  hostOps: {
+    offers: () => ipcRenderer.invoke('host-ops:offers'),
+    nodes: (projectDir) => ipcRenderer.invoke('host-ops:nodes', projectDir),
+    invoke: (operationId, projectDir, nodeId) =>
+      ipcRenderer.invoke('host-ops:invoke', operationId, projectDir, nodeId),
+    onChanged: (listener) => subscribe<HostNodes>('host-ops:changed', listener),
   },
 
   engineInfo: () => ipcRenderer.invoke('engine:info'),

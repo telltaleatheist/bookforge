@@ -38,6 +38,18 @@
   --accent-soft: rgba(6, 182, 212, 0.2);
   --accent-faint: rgba(6, 182, 212, 0.12);
 
+  /* AUDIO — the one colour in this palette that does not name a state.
+     It names an OWNER: the acts on the provenance tree that belong to the
+     application hosting Foundry (narrate, enhance, assemble), against the accent
+     that means this app's own work on the words. A user looking at a branch can
+     see where the text stops and the audio starts without reading a title, which
+     is the whole point of spending a hue on it — and it is amber rather than a
+     second cyan because the two have to be distinguishable at 14 pixels inside a
+     tinted square. Standalone Foundry never draws it. */
+  --audio: #f0a860;
+  --audio-bright: #ffc78a;
+  --audio-soft: rgba(240, 168, 96, 0.15);
+
   --ok: #4ade80;
   --warn: #fbbf24;
   --error: #f87171;

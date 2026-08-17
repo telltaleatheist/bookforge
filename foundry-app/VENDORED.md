@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **6a9d31c** — *"fix(renderer): a project opens on the picture its position names, not on the file the gesture named"* |
+| Source sha | **ec1edda** — *"feat(renderer): the library is the pipeline composer — cards on a drawn spine, and what can be made from here"* |
 | Copied on | 2026-08-17 |
-| Copied by | `git -C <foundry> archive 6a9d31c app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive ec1edda app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -25,8 +25,15 @@ simplify), `82a3763` (hosted, closing the last tab closes the window instead
 of falling through to Foundry Home — this one added the `window:close`
 channel, the first channel change since the copy began), and `6a9d31c` itself
 (a project opens showing the latest change its position names, not the
-original file). Each refresh changed only the files its commits name and was
-hash-verified against the source tree.
+original file). `ec1edda` brought the queue-rebuild pair: `e8b0399` — the
+HOST-OPERATIONS SOCKET (`mountFoundry({hostOperations})`, `setHostNodes()`,
+the `host-ops:` channel family — three handles and one push, a family
+BookForge owns nothing in, so collision-safety is structural) — and
+`ec1edda` itself, the provenance-tree redesign (cards on a drawn spine,
+plain-sentence titles, host nodes drawn in the same grammar; the composer
+of Owen's pipeline ruling). Each refresh changed only the files its commits
+name and was hash-verified against the source tree (86/86 blobs at
+ec1edda).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the
@@ -87,9 +94,11 @@ foundry-app/dist/electron/mount.js
 ```
 
 It registers the privileged `foundry-file://` scheme at import time, which
-Electron refuses to do after `whenReady`. Importing it runs nothing else. Its
-four exports are the whole seam: `mountFoundry(host?)`, `openFoundryWindow(dir?)`,
-`stopFoundry()` and `hostedLibraryDir()`.
+Electron refuses to do after `whenReady`. Importing it runs nothing else. The
+seam's exports: `mountFoundry(host?)`, `openFoundryWindow(dir?)`,
+`stopFoundry()`, `hostedLibraryDir()`, and — since ec1edda — `setHostNodes()`
+plus the `HostOperation`/`HostNode` types for the host-operations socket
+(`hostOperations` rides in on the host object).
 
 The host object BookForge hands to `mountFoundry` carries `libraryDir`,
 `onExport(ExportLanding)` — a finished file landed in a project's `final/` — and

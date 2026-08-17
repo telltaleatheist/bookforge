@@ -40,6 +40,7 @@ import {
 } from './engine';
 import { catalogForThisMachine, onEnvInstallProgress } from './env-install';
 import { hosted } from './host';
+import { hostNodesFor, hostOperationOffers, invokeHostOperation } from './host-ops';
 import * as queue from './job-queue';
 import {
   deletableStep,
@@ -193,6 +194,40 @@ export function registerIpc(): void {
    * channel for it would be a subscription that never fires.
    */
   ipcMain.handle('app:hosted', () => hosted());
+
+  /*
+   * ── THE HOST-OPERATIONS SOCKET — three doors in a family BookForge owns
+   *    nothing in ───────────────────────────────────────────────────────────
+   *
+   * `host-ops:` was chosen for exactly that reason. Hosting is additive only
+   * while no FULL channel name is shared, and every family this app has ever
+   * used was audited against the host's registry once (docs/IPC-CHANNELS.md);
+   * a brand-new family with a hyphen in it cannot collide with anything, so
+   * the socket is collision-safe by construction rather than by re-running an
+   * audit every time it grows a door.
+   *
+   * ALL THREE ARE REGISTERED WHETHER OR NOT ANYBODY MOUNTED A HOST. The
+   * renderer asks the same questions in both worlds and gets an empty list
+   * standalone (electron/host-ops.ts): a door that existed only when hosted
+   * would be a renderer that has to know which world it woke up in before it
+   * can draw a tree.
+   */
+  ipcMain.handle('host-ops:offers', () => hostOperationOffers());
+  ipcMain.handle('host-ops:nodes', (_event, projectDir: string) => hostNodesFor(projectDir));
+  /*
+   * The user pressed one of the host's acts, from a node in the tree.
+   *
+   * MAIN OWNS THE FUNCTION AND THE RENDERER OWNS ONLY THE ID — the operation is
+   * looked up in what the host registered at mount, and an id nothing registered
+   * is a refusal naming it. The rejection is deliberately NOT caught: this is a
+   * button, and the tree puts the host's own sentence on the notice strip when
+   * it fails. See `HostOperation.invoke`.
+   */
+  ipcMain.handle(
+    'host-ops:invoke',
+    (_event, operationId: string, projectDir: string, nodeId: string) =>
+      invokeHostOperation(operationId, projectDir, nodeId),
+  );
 
   ipcMain.handle('dialog:open-document', () => promptForDocument());
 

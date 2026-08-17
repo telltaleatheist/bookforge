@@ -33,6 +33,20 @@
       "dist/renderer/**",
       "package.json"
     ],
+    "fileAssociations": [
+      {
+        "ext": "pdf",
+        "name": "PDF document",
+        "description": "PDF document",
+        "role": "Editor"
+      },
+      {
+        "ext": "epub",
+        "name": "EPUB book",
+        "description": "EPUB book",
+        "role": "Editor"
+      }
+    ],
     "win": {
       "target": "nsis",
       "extraResources": [

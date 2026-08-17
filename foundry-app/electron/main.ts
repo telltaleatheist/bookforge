@@ -27,6 +27,8 @@
  * hour of GPU, and the engine's identity (electron/engine.ts) because the
  * renderer is not allowed to name a program to run.
  */
+import * as path from 'node:path';
+
 import {
   app,
   BrowserWindow,
@@ -298,6 +300,34 @@ function openTheWindow(): void {
     const named = documentFromArgv(process.argv);
     if (named) void openDocument(named);
     void provision();
+  });
+}
+
+/*
+ * ONE FOUNDRY PER MACHINE. Foundry is a program a .pdf or .epub can be
+ * "opened with", which makes every double-click in a file manager a LAUNCH —
+ * and a second launch must become "the running Foundry opens the file", never a
+ * second Foundry. A second instance is a second job queue over the same
+ * projects and a second claim on the same GPU; two of those over one library is
+ * the crash, not a feature. So the loser of the lock forwards its argv through
+ * `second-instance` and exits before it has made a window.
+ *
+ * Standalone-only on purpose, like everything in this file: hosted, BookForge
+ * holds its own instance lock, and this module is never imported.
+ */
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv, workingDirectory) => {
+    const win = foundryWindow();
+    if (win !== null) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+    const named = documentFromArgv(argv);
+    // Resolved against the SECOND instance's cwd, not ours: a relative path on
+    // its command line means nothing from where this process happens to sit.
+    if (named) void openDocument(path.resolve(workingDirectory, named));
   });
 }
 

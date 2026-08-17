@@ -20,6 +20,31 @@
  * exactly the same order. One path, two callers: the standalone app cannot drift
  * from the hosted one, because there is no second path for it to drift along.
  *
+ * ── The host-operations socket, which is the fourth and fifth things ────────
+ *
+ *     mountFoundry({ …, hostOperations })      acts the host contributes
+ *     setHostNodes(projectDir, nodes)          what the host is making, now
+ *
+ * The user ruled that audio work — narrate, enhance, assemble — belongs ON the
+ * provenance tree rather than on a page beside it, because "translate this, then
+ * narrate the translation" is one pipeline and the tree is where a person is
+ * standing when they decide it. Foundry does none of that work and knows nothing
+ * about it: a host REGISTERS operations at mount, and the tree offers them from
+ * the nodes they apply to; the host PUSHES nodes, and the tree draws them as
+ * children of the ledger step they were ordered from, in the same card grammar
+ * as everything else.
+ *
+ * THE LEDGER IS NOT PART OF THIS. A host node is a display row with the lifetime
+ * of the host's own queue — never a step, never on disk, never anybody's parent
+ * in this app's own record of what happened to the words. shared/host-ops.ts and
+ * electron/host-ops.ts carry the whole argument; the socket's channels are the
+ * `host-ops:` family, which BookForge owns nothing in, so the full-name rule that
+ * makes hosting additive holds by construction.
+ *
+ * REGISTERED OR NOT, IT COSTS THE STANDALONE APP NOTHING: with no host there are
+ * no operations and nobody pushing, both doors answer empty, and the tree is
+ * exactly the tree.
+ *
  * ── What is NOT here, deliberately ──────────────────────────────────────────
  *
  * THE MENU. `Menu.setApplicationMenu` is process-global — it replaces the menu of
@@ -51,6 +76,7 @@ import { net, protocol, session } from 'electron';
 import { bookFigureFile } from './book';
 import { openDocument } from './documents';
 import { type FoundryHost, recordHost } from './host';
+import { type HostOperation, recordHostOperations } from './host-ops';
 import { registerIpc } from './ipc';
 import * as queue from './job-queue';
 import { listProjects, onImportLanded } from './projects';
@@ -58,8 +84,16 @@ import * as vllm from './vllm-server';
 import { foundryWindow, isDev, openWindow, whenRendererReady } from './window';
 import { originalOf } from '../shared/original';
 
-export type { FoundryHost };
+export type { FoundryHost, HostOperation };
 export { hostedLibraryDir } from './host';
+/*
+ * THE HOST-OPERATIONS SOCKET, re-exported through the seam a host actually
+ * imports. `setHostNodes` is the push door — see electron/host-ops.ts — and the
+ * types are here so a host can declare its operations array without reaching
+ * past `mount.ts` into modules that are Foundry's own business.
+ */
+export { setHostNodes } from './host-ops';
+export type { HostNode, HostNodeProgress, HostNodeState, HostOperationKind, NodeOutput } from '../shared/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // foundry-file:// — how a book's figures reach the page
@@ -287,6 +321,16 @@ export function mountFoundry(host?: FoundryHost): void {
         }
       });
     }
+    /*
+     * THE ACTS THE HOST CONTRIBUTES, taken as declared and not wrapped.
+     *
+     * Unlike the two announcements above, an operation is not something Foundry
+     * TELLS the host — it is something the user presses, so nothing here is
+     * caught: a rejection travels back over `host-ops:invoke` to the tree that
+     * asked, which says the host's sentence where the button was. A button that
+     * silently does nothing is the one outcome this socket must not have.
+     */
+    if (host.hostOperations !== undefined) recordHostOperations(host.hostOperations);
   }
   applyContentSecurityPolicy();
   registerFileProtocol();
