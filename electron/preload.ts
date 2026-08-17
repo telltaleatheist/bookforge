@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
   ComponentStatus,
   SystemProfile,
@@ -2773,6 +2773,20 @@ export interface ElectronAPI {
    * ninety-minute run rather than after it, that this machine needs an endpoint.
    */
   arch: string;
+  /**
+   * Where a `File` the renderer was handed — from a drop, or from an `<input
+   * type="file">` — actually lives on disk.
+   *
+   * Electron 32 deleted the `File.path` property the renderer used to read, and
+   * `webUtils.getPathForFile` is the replacement; it only works in the preload,
+   * which is why it is a door rather than something the renderer does itself.
+   *
+   * Returns the EMPTY STRING for a File that has no path — one made by `new
+   * File(...)`, or dropped out of another page rather than off the filesystem.
+   * Callers must read that as "this file is not on disk" and say so; a name is
+   * not a path and must never be passed off as one.
+   */
+  getPathForFile: (file: File) => string;
 }
 
 const electronAPI: ElectronAPI = {
@@ -4734,6 +4748,7 @@ const electronAPI: ElectronAPI = {
 
   platform: process.platform,
   arch: process.arch,
+  getPathForFile: (file: File) => webUtils.getPathForFile(file),
 };
 
 contextBridge.exposeInMainWorld('electron', electronAPI);

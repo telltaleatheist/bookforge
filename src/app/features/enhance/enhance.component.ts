@@ -946,11 +946,16 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     this.isDragging.set(false);
     const dropped = e.dataTransfer?.files;
     if (!dropped) return;
-    for (let i = 0; i < dropped.length; i++) {
-      // Electron exposes the absolute path on dropped File objects.
-      const p = (dropped[i] as unknown as { path?: string }).path;
-      if (p) await this.addPath(p);
+    // Electron 32 removed `File.path`; the preload's `getPathForFile` door is
+    // what tells us where a dropped file lives now. See ElectronService.
+    const { paths, unlocatable } = this.electron.pathsForFiles(dropped);
+    if (unlocatable.length > 0) {
+      this.notices.notify(
+        `Not added — ${unlocatable.join(', ')} ${unlocatable.length === 1 ? 'is' : 'are'} ` +
+        `not a file on this machine. Drop audio in from a folder, not from a web page.`
+      );
     }
+    for (const p of paths) await this.addPath(p);
   }
 
   private async addPath(path: string): Promise<void> {

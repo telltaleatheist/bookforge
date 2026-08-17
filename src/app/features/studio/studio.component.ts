@@ -2832,10 +2832,12 @@ export class StudioComponent implements OnInit, OnDestroy {
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) return;
 
-    const paths: string[] = [];
-    for (let i = 0; i < files.length; i++) {
-      const filePath = (files[i] as any).path;
-      if (filePath) paths.push(filePath);
+    const { paths, unlocatable } = this.electronService.pathsForFiles(files);
+    if (unlocatable.length > 0) {
+      this.notices.notify(
+        `Not added — ${unlocatable.join(', ')} ${unlocatable.length === 1 ? 'is' : 'are'} ` +
+        `not a file on this machine. Drop books in from a folder, not from a web page.`
+      );
     }
     if (paths.length === 0) return;
 
