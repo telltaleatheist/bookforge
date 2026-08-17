@@ -22,14 +22,7 @@ import type { NarrationDeletions, NarrationState } from '@shared/vlm/narration-d
 import type {
   BookChapterAddResult, BookChapterRenameResult, BookChapterTitles,
 } from '@shared/vlm/chapter-titles';
-import type {
-  DocumentBlocksPayload,
-  DocumentPipelineState,
-  DocumentRef,
-  DocumentStageProgressEvent,
-  ResetTarget,
-  WorkingDocumentEdit,
-} from '@shared/document/pipeline-types';
+import type { DocumentStageProgressEvent } from '@shared/document/pipeline-types';
 import type { PassDiffFile } from '../models/diff.types';
 import type { QuirePageMount } from '../../../../packages/quire/src/types';
 

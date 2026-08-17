@@ -38,14 +38,7 @@ import type {
   BookChapterAddResult, BookChapterRenameResult, BookChapterTitles,
 } from '../shared/vlm/chapter-titles';
 import type { TextLayerReport } from '../shared/pdf/text-layer';
-import type {
-  DocumentBlocksPayload,
-  DocumentPipelineState,
-  DocumentRef,
-  DocumentStageProgressEvent,
-  ResetTarget,
-  WorkingDocumentEdit,
-} from '../shared/document/pipeline-types';
+import type { DocumentStageProgressEvent } from '../shared/document/pipeline-types';
 import type {
   EnhanceCacheEntry,
   EnhanceProcessConfig,
