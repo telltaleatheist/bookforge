@@ -40,6 +40,17 @@ import { getActiveEngine, getSelectedEngineName, getDefaultStreamVoice } from '.
 import { verifyAudiobookAnalysis } from './audiobook-analysis-protocol';
 import { readBinding, resolveSidecars, sidecarPathsFor } from './sidecar-binding';
 import { regenerateBoundSidecars } from './sidecar-migration';
+import {
+  BookRecord, BookPosition, BookHeard, BookmarkOp,
+  anchorForAbsolutePath, anchorForLegacyKey, currentPathOfAnchor,
+  variantKey, isVariantKey, parseVariantKey, bookIdFromKey,
+  legacyAudioKey, libraryRelativePath,
+  readAliasMap, invertAliasMap, mergeBookRecords, mergeIntervals,
+} from './bookshelf-identity';
+import {
+  ResolvedCover, ALLOWED_THUMBNAIL_WIDTHS, coverBytes, coverEtag, etagMatches,
+  fileCoverIdentity, bytesCoverIdentity, parseThumbnailWidth, sweepThumbnailCache,
+} from './cover-thumbnails';
 
 const execFileAsync = promisify(execFile);
 
@@ -156,15 +167,11 @@ interface ListeningEvent {
 }
 
 // Per-book storage unit (books/<bookId>/<deviceId>.json = { [readerId]: BookRecord }).
-interface BookPosition { kind: string; value: unknown; at: string; }
-interface BookHeard { intervals: number[][]; at: string; }
-interface BookmarkOp { op: string; bm: Record<string, unknown> & { id?: string }; at: string; }
-// `heardResetAt` is a per-book-per-reader RESET TOMBSTONE (ISO). When a reader
-// resets a book's progress, this device stamps `heardResetAt = now` and clears
-// its own heard. On merge, the MAX heardResetAt across all devices tombstones
-// every heard snapshot written before it (from any device), so a reset wins
-// cross-device while post-reset coverage from every device still unions in.
-interface BookRecord { position?: BookPosition; heard?: BookHeard; bookmarks?: BookmarkOp[]; heardResetAt?: string; }
+// BookPosition / BookHeard / BookmarkOp / BookRecord and the merge that folds
+// them now live in electron/bookshelf-identity.ts, next to the id grammar —
+// because the id migration has to fold two books' records into one with EXACTLY
+// the semantics this server reads them back with, and two copies of that rule
+// would drift. `heardResetAt` is documented there.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bookshelf Server Class
@@ -192,8 +199,10 @@ export class BookshelfServer {
   private port: number = 8765;
   private userDataPath: string | null = null;
 
-  // Cover cache to avoid repeated extraction (capped to limit memory)
-  private coverCache: Map<string, { data: string; timestamp: number }> = new Map();
+  // Resolved-cover cache: which FILE (or which bytes) a book's cover is, not the
+  // image itself. Skips re-walking the ladder — manifest read, sidecar check,
+  // m4b crack — on every tile of every shelf load.
+  private coverCache: Map<string, { cover: ResolvedCover; timestamp: number }> = new Map();
   private readonly COVER_CACHE_TTL = 1000 * 60 * 60; // 1 hour
   private readonly MAX_COVER_CACHE_SIZE = 50;
 
@@ -261,6 +270,9 @@ export class BookshelfServer {
   //   <library>/.bookshelf/events/<device>.jsonl  append-only, this device only
   // Tokens are per-machine (userData), never synced.
   private storeReady = false;
+  // Why the last attempt to open the store failed, for the sentence the client
+  // is shown. Null when the store is ready or has never been tried.
+  private storeInitError: string | null = null;
   private deviceId = '';
   private readerTokens: Map<string, string> = new Map(); // token -> readerId
   // Event ids already written to THIS device's log — the append-if-absent guard
@@ -277,6 +289,10 @@ export class BookshelfServer {
   // that as "no key → open" (fail-open) — a corrupt config could be hiding a
   // serverAccessKey that was meant to gate the library. Fail CLOSED instead.
   private configLoadFailed = false;
+  // size|mtime of the config as last read, or 'absent'. Compared per /api request
+  // so a bookshelf.json that appeared (or changed) after startup takes effect
+  // without a restart — see revalidateBookshelfConfig.
+  private configIdentity = '';
 
   // "Listen to anything" Reader: streams TTS of arbitrary text to the web app over
   // a WebSocket riding this same HTTP server (authed by the reader's bearer token).
@@ -313,9 +329,12 @@ export class BookshelfServer {
     // Absent config → wide open, exactly as before (the trusted-tailnet default).
     // See projects/bookshelf/MULTI_SERVER.md → Identity & analytics.
     this.app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+      // Pick up a bookshelf.json that appeared, changed or vanished since the last
+      // request. One stat; see revalidateBookshelfConfig for why not a timer.
+      this.revalidateBookshelfConfig();
       // Fail CLOSED if the config file existed but couldn't be parsed: we cannot
       // rule out that it carried a serverAccessKey, so serving the library would be
-      // a silent security downgrade. Lock the API until the config is fixed + restart.
+      // a silent security downgrade. Lock the API until the config is fixed.
       if (this.configLoadFailed) {
         res.status(503).json({ error: 'server configuration could not be read; API is locked for safety', code: 'CONFIG_ERROR' });
         return;
@@ -459,6 +478,13 @@ export class BookshelfServer {
     await this.loadDurationCache();
     this.initReaderStore();
 
+    // A re-saved cover leaves its old thumbnail behind (the identity changed),
+    // so trim the oldest once per start. 4000 is ~8 shelves' worth of covers at
+    // three widths — far more than the 543 covers in Owen's library.
+    const thumbs = this.thumbnailCacheDir();
+    if (thumbs) sweepThumbnailCache(thumbs, 4000);
+    else console.warn('[BookshelfServer] No userData path — cover thumbnails will be generated per request, not cached.');
+
     return new Promise((resolve, reject) => {
       this.server = this.app.listen(this.port, '0.0.0.0', () => {
         console.log(`[BookshelfServer] Started on port ${this.port}`);
@@ -510,14 +536,49 @@ export class BookshelfServer {
     }
   }
 
-  /** Read bookshelf.json (library root) once at startup. A restart picks up edits. */
+  /**
+   * Re-read bookshelf.json when it has changed — checked PER /api REQUEST, not
+   * on a timer.
+   *
+   * It used to be read once at startup, which had a failure mode nobody wants:
+   * a server that started before the library root existed (or before the file
+   * was synced in) served the whole library unguarded until somebody thought to
+   * restart it. A timer would only narrow that window; the direction that
+   * matters — a `serverAccessKey` appearing — has to take effect on the very
+   * next request. The check is one `stat` of one small file, against handlers
+   * that read manifests and crack m4bs, so its cost is not measurable.
+   */
+  private revalidateBookshelfConfig(): void {
+    const configPath = path.join(getLibraryBasePath(), 'bookshelf.json');
+    let identity = '';
+    try {
+      const st = fsSync.statSync(configPath);
+      identity = `${st.size}|${Math.round(st.mtimeMs)}`;
+    } catch {
+      identity = 'absent';
+    }
+    if (identity === this.configIdentity) return;
+    this.loadBookshelfConfig();
+  }
+
+  /** Read bookshelf.json (library root). Called at startup and whenever the file's
+   *  size/mtime has changed since we last looked. */
   private loadBookshelfConfig(): void {
     const configPath = path.join(getLibraryBasePath(), 'bookshelf.json');
     // A genuinely ABSENT file is the trusted-tailnet default: open, not a failure.
     if (!fsSync.existsSync(configPath)) {
       this.bookshelfConfig = {};
       this.configLoadFailed = false;
+      this.configIdentity = 'absent';
       return;
+    }
+    try {
+      const st = fsSync.statSync(configPath);
+      this.configIdentity = `${st.size}|${Math.round(st.mtimeMs)}`;
+    } catch {
+      // It existed a line ago and cannot be stat'd now — leave the identity
+      // unset so the next request looks again rather than trusting this read.
+      this.configIdentity = '';
     }
     // The file exists — if we can't read/parse it we do NOT know whether it gated
     // the library, so we latch a failure that makes the /api gate fail closed.
@@ -1159,6 +1220,64 @@ export class BookshelfServer {
   }
 
   /**
+   * A cover FILE described without reading it: its identity is size+mtime, so
+   * the ETag and the thumbnail cache key are both known off one `stat()`. The
+   * mime type is sniffed lazily by the thumbnailer, which re-encodes anyway;
+   * for the full-size path we sniff the first two bytes and no more.
+   */
+  private async describeCoverFile(absPath: string): Promise<ResolvedCover | null> {
+    let stat: fsSync.Stats;
+    try {
+      stat = await fs.stat(absPath);
+    } catch {
+      return null;
+    }
+    if (!stat.isFile() || stat.size === 0) return null;
+    let contentType = 'image/jpeg';
+    try {
+      const handle = await fs.open(absPath, 'r');
+      try {
+        const head = Buffer.alloc(2);
+        await handle.read(head, 0, 2, 0);
+        if (head[0] === 0x89 && head[1] === 0x50) contentType = 'image/png';
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      return null;
+    }
+    return { identity: fileCoverIdentity(absPath, stat), contentType, filePath: absPath };
+  }
+
+  /** A data URL turned into an in-memory cover (only the m4b-extraction rung
+   *  produces one of these; everything else is already a file). */
+  private describeCoverDataUrl(dataUrl: string): ResolvedCover | null {
+    const m = /^data:([^;]+);base64,(.*)$/s.exec(dataUrl);
+    if (!m) return null;
+    const buffer = Buffer.from(m[2], 'base64');
+    if (buffer.length === 0) return null;
+    return { identity: bytesCoverIdentity(buffer), contentType: m[1], buffer };
+  }
+
+  /** The project's manifest cover as a file, or null. The plain-file rung of the
+   *  ladder, split out from the old data-URL loader so a request that only needs
+   *  the ETag never reads a 14 MB JPEG. */
+  private async manifestCoverFile(projectId: string): Promise<string | null> {
+    try {
+      const manifestPath = path.join(getProjectPath(projectId), 'manifest.json');
+      if (!fsSync.existsSync(manifestPath)) return null;
+      const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+      const coverPath = manifest.metadata?.coverPath;
+      if (!coverPath) return null;
+      const absPath = path.join(getLibraryBasePath(), coverPath);
+      return fsSync.existsSync(absPath) ? absPath : null;
+    } catch (err) {
+      console.error('[BookshelfServer] Error reading manifest cover path:', err);
+      return null;
+    }
+  }
+
+  /**
    * Return the chapter markers embedded in an m4b (start/end seconds + title)
    * via bundled ffprobe. Works for both project and imported audiobooks.
    * Cached per file (validated by size + mtime).
@@ -1242,9 +1361,24 @@ export class BookshelfServer {
     return this.userDataPath ? path.join(this.userDataPath, 'reader-tokens.json') : null;
   }
 
-  /** Prepare the shared per-device store. No native deps — just the filesystem.
-   *  Profiles + event logs live in the shared library; tokens stay per-machine. */
-  private initReaderStore(): void {
+  /**
+   * Prepare the shared per-device store. No native deps — just the filesystem.
+   * Profiles + event logs live in the shared library; tokens stay per-machine.
+   *
+   * ── Why this can be called again ──────────────────────────────────────────
+   *
+   * This ran ONCE, at start. A server that started before `.bookshelf/` could be
+   * made — the library root not mounted yet, a freshly-pointed library root that
+   * did not exist when the window opened — latched `storeReady = false` and kept
+   * it for the life of the process. Every reader endpoint then behaved as though
+   * there were simply no readers: Owen opened the bookshelf on his phone and was
+   * offered the create-a-profile screen for accounts that were sitting on disk.
+   *
+   * So the latch is now a CACHE of the last attempt, not a verdict:
+   * `requireReaderStore()` retries whenever the store is not ready, and a
+   * failure is reported with its reason instead of being answered with [].
+   */
+  private initReaderStore(): boolean {
     try {
       fsSync.mkdirSync(this.readersDir(), { recursive: true });
       fsSync.mkdirSync(this.eventsDir(), { recursive: true });
@@ -1258,11 +1392,31 @@ export class BookshelfServer {
       }
       this.loadSeenEventIds();
       this.storeReady = true;
+      this.storeInitError = null;
       console.log('[BookshelfServer] Reader store ready (device', this.deviceId + ')');
+      return true;
     } catch (err) {
-      console.error('[BookshelfServer] Failed to init reader store (analytics disabled):', err);
+      this.storeInitError = err instanceof Error ? err.message : String(err);
+      console.error('[BookshelfServer] Failed to init reader store:', err);
       this.storeReady = false;
+      return false;
     }
+  }
+
+  /**
+   * The reader store, made if it isn't there yet. THROWS when it cannot be made,
+   * naming the directory and the reason — every caller turns that into a 503 the
+   * client shows. An empty answer is not available here on purpose: "there are
+   * no readers" and "I could not look" are different sentences, and only one of
+   * them should send somebody to the create-a-profile screen.
+   */
+  private requireReaderStore(): void {
+    if (this.storeReady) return;
+    if (this.initReaderStore()) return;
+    throw new Error(
+      `The reader store under ${this.bookshelfDir()} could not be opened (${this.storeInitError}). `
+      + 'No reader list is given rather than an empty one, which would read as "nobody has an account '
+      + 'on this library".');
   }
 
   /** Seed the idempotency set from this device's existing log so a replayed event
@@ -1774,13 +1928,29 @@ export class BookshelfServer {
       });
   }
 
-  /** Stable, cross-machine book identifier: library-relative path, forward slashes. */
+  /** Library-relative, forward slashes — the shape a pre-anchor analytics log
+   *  recorded. Kept only so those old rows can still be recognised. */
   private relBookKey(absPath: string): string {
-    try {
-      const rel = path.relative(getLibraryBasePath(), absPath);
-      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return rel.split(path.sep).join('/');
-    } catch { /* fall through */ }
-    return path.basename(absPath);
+    return libraryRelativePath(absPath) ?? path.basename(absPath);
+  }
+
+  /**
+   * The analytics log's name for a book. Same variant anchor the per-book stores
+   * use, so "Add to archive" no longer splits a book's listening time in two.
+   * A file no variant claims keeps the library-relative path it always had.
+   */
+  private analyticsBookKey(absPath: string): string {
+    if (!absPath) return '';
+    const anchor = anchorForAbsolutePath(absPath);
+    return anchor ? variantKey(anchor.projectId, anchor.variantId) : this.relBookKey(absPath);
+  }
+
+  /** An analytics bookKey off any log (old bare path or new variant key) → the
+   *  canonical one, so the two forms sum into a single book. */
+  private analyticsKeyOf(raw: string): string {
+    if (isVariantKey(raw)) return raw;
+    const canonical = this.canonicalKey(`a:${raw}`);
+    return isVariantKey(canonical) ? canonical : raw;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1792,26 +1962,86 @@ export class BookshelfServer {
   // One writer per file (this device) → Syncthing never conflicts; the server
   // merges every device's file on read. Legacy per-concern stores are folded in
   // on read so nothing already saved is lost.
+  //
+  // The bookId is base64url of the book's KEY, and the key is anchored to the
+  // VARIANT, not to the file path — see electron/bookshelf-identity.ts for why
+  // (short version: "Add to archive" used to rename the book out from under the
+  // reader). Old path-form keys are still read, forever; they are never written.
   // ─────────────────────────────────────────────────────────────────────────────
 
   private booksRoot(): string { return path.join(this.bookshelfDir(), 'books'); }
   private bookDir(bookId: string): string { return path.join(this.booksRoot(), bookId); }
   private bookFile(bookId: string): string { return path.join(this.bookDir(bookId), `${this.deviceId}.json`); }
-  private bookIdFromKey(key: string): string { return Buffer.from(key, 'utf-8').toString('base64url'); }
+  private bookIdFromKey(key: string): string { return bookIdFromKey(key); }
 
-  /** Platform-independent book key: reader `ref` verbatim, or `a:<library-relative m4b>`. */
-  private positionKeyFrom(ref: string, bookPath: string): string | null {
-    if (ref) return ref;
-    if (bookPath) return 'a:' + this.relBookKey(bookPath);
-    return null;
+  // The alias map is read from disk and cached briefly: it changes only when the
+  // id migration runs, and re-reading a directory of JSON on every position
+  // heartbeat would be a silly tax. A parse failure PROPAGATES (it is a store
+  // that cannot be read, not an empty one) — see readAliasMap.
+  private aliasCache: { at: number; map: Map<string, string>; back: Map<string, string[]> } | null = null;
+  private readonly ALIAS_CACHE_TTL = 1000 * 10;
+
+  private aliases(): { map: Map<string, string>; back: Map<string, string[]> } {
+    if (this.aliasCache && Date.now() - this.aliasCache.at < this.ALIAS_CACHE_TTL) return this.aliasCache;
+    const map = readAliasMap(this.bookshelfDir());
+    this.aliasCache = { at: Date.now(), map, back: invertAliasMap(map) };
+    return this.aliasCache;
   }
 
-  /** Read this device's per-book record for a reader (empty if none). */
-  private readBookRecord(key: string, readerId: string): BookRecord {
-    try {
-      const store = JSON.parse(fsSync.readFileSync(this.bookFile(this.bookIdFromKey(key)), 'utf-8'));
-      return (store?.[readerId] as BookRecord) || {};
-    } catch { return {}; }
+  /**
+   * The key this book is READ AND WRITTEN under: `v:<projectId>/<variantId>`.
+   *
+   * `ref` is whatever the client called the book — a new-form key, a path-form
+   * key cached on a phone that has been offline for a month, or a reader ref
+   * (`p:<projectId>`) that was never path-anchored to begin with. `bookPath` is
+   * an absolute audiobook file, which is what every audio client sends.
+   */
+  private positionKeyFrom(ref: string, bookPath: string): string | null {
+    if (ref) return this.canonicalKey(ref);
+    if (!bookPath) return null;
+    const anchor = anchorForAbsolutePath(bookPath);
+    if (anchor) return variantKey(anchor.projectId, anchor.variantId);
+    // No variant claims this file — an external m4b, or one no manifest points
+    // at. The path really is all we know about it, so the path-form key stays
+    // its key. That is not a fallback: there is no anchor to anchor to.
+    return legacyAudioKey(bookPath);
+  }
+
+  /** Any id form → the canonical key. Unresolvable ids pass through verbatim so
+   *  whatever is filed under them stays reachable. */
+  private canonicalKey(key: string): string {
+    if (isVariantKey(key)) return key;
+    const aliased = this.aliases().map.get(key);
+    if (aliased) return aliased;
+    const anchor = anchorForLegacyKey(key);
+    return anchor ? variantKey(anchor.projectId, anchor.variantId) : key;
+  }
+
+  /**
+   * Every key whose stored records belong to this book, canonical first.
+   *
+   * Reading is a UNION; writing only ever touches the canonical key. The union
+   * covers three cases at once: a migrated library (records under the canonical
+   * key), a phone that wrote under an old id before the migration (records
+   * under an aliased key), and a library that has never been migrated at all
+   * (records under whatever path the variant's file sits at today).
+   */
+  private keysToFold(key: string): string[] {
+    const keys = [key];
+    const add = (k: string) => { if (k && !keys.includes(k)) keys.push(k); };
+    for (const old of this.aliases().back.get(key) || []) add(old);
+    const anchor = parseVariantKey(key);
+    if (anchor) {
+      const current = currentPathOfAnchor(anchor);
+      if (current) {
+        add(legacyAudioKey(current));
+        // A reading edition's legacy key was the ebook address, not the audio one.
+        const rel = libraryRelativePath(current);
+        const m = rel ? /^projects\/([^/]+)\/archive\/(.+)$/.exec(rel) : null;
+        if (m) add(`e:__archive__/${m[1]}/${m[2]}`);
+      }
+    }
+    return keys;
   }
 
   /** Update this device's per-book record for a reader (atomic stage + rename). */
@@ -1828,85 +2058,47 @@ export class BookshelfServer {
     fsSync.renameSync(tmp, file);
   }
 
-  /** Merge every device's per-book record (+ legacy stores) for reader+key. */
+  /**
+   * Everything every device (and every id this book has ever had) holds for
+   * reader+key, folded into one answer.
+   *
+   * `keysToFold` decides WHICH ids belong to this book; `mergeBookRecords`
+   * decides HOW they combine — the identical function the id migration uses, so
+   * a migrated store reads back exactly as the un-migrated one did.
+   */
   private mergeBook(key: string, readerId: string): { position: BookPosition | null; heard: number[][]; heardResetAt: string; bookmarks: Record<string, unknown>[] } {
-    // Track winners via primitive timestamp holders (avoids closure-narrowing).
-    let position: BookPosition | null = null;
-    let positionAt = '';
-    // Heard is UNIONED across every device's snapshot (not newest-wins), so two
-    // devices' concurrent coverage accumulates. Reset still wins: collect every
-    // snapshot + the max reset tombstone, then union only snapshots written at or
-    // after the latest reset (anything older is tombstoned — resurrection-proof).
-    const heardSnaps: BookHeard[] = [];
-    let heardResetAt = '';
-    const bmLatest = new Map<string, BookmarkOp>();
-    const fold = (rec: BookRecord | undefined) => {
-      if (!rec) return;
-      const p = rec.position;
-      if (p && p.at && p.at > positionAt) { positionAt = p.at; position = p; }
-      const h = rec.heard;
-      if (h && h.at) heardSnaps.push(h);
-      if (rec.heardResetAt && rec.heardResetAt > heardResetAt) heardResetAt = rec.heardResetAt;
-      for (const op of rec.bookmarks || []) {
-        const id = op?.bm?.id;
-        if (!id) continue;
-        const cur = bmLatest.get(id);
-        if (!cur || op.at > cur.at) bmLatest.set(id, op);
-      }
-    };
+    const records: Array<BookRecord | undefined> = [];
 
-    const dir = this.bookDir(this.bookIdFromKey(key));
-    try {
-      for (const f of fsSync.readdirSync(dir).filter(x => x.endsWith('.json'))) {
-        let store: Record<string, BookRecord>;
-        try { store = JSON.parse(fsSync.readFileSync(path.join(dir, f), 'utf-8')); } catch { continue; }
-        fold(store?.[readerId]);
-      }
-    } catch { /* no per-book dir yet */ }
-
-    this.foldLegacy(key, readerId, fold, bmLatest);
-
-    // Union of every snapshot at/after the latest reset (>= keeps the resetting
-    // device's own cleared snapshot, whose at == the tombstone, in the pool).
-    const heard = this.mergeIntervals(
-      heardSnaps.filter(h => h.at >= heardResetAt).flatMap(h => h.intervals),
-    );
-    const bookmarks = [...bmLatest.values()].filter(o => o.op === 'add').map(o => o.bm);
-    return { position, heard, heardResetAt, bookmarks };
-  }
-
-  /** Merge overlapping/adjacent intervals into a minimal sorted set. Mirrors the
-   *  client's addHeard semantics: sort by start, join when the next start falls
-   *  within 1s of the running end (tiny gaps from separate runs are stitched). */
-  private mergeIntervals(intervals: number[][]): number[][] {
-    const list = (intervals || [])
-      .filter((iv): iv is [number, number] =>
-        Array.isArray(iv) && iv.length === 2 &&
-        Number.isFinite(iv[0]) && Number.isFinite(iv[1]) && iv[1] > iv[0])
-      .map(iv => [iv[0], iv[1]] as [number, number])
-      .sort((a, b) => a[0] - b[0]);
-    const merged: number[][] = [];
-    for (const [s, e] of list) {
-      const last = merged[merged.length - 1];
-      if (last && s <= last[1] + 1) last[1] = Math.max(last[1], e); // join within 1s
-      else merged.push([s, e]);
+    for (const k of this.keysToFold(key)) {
+      const dir = this.bookDir(this.bookIdFromKey(k));
+      try {
+        for (const f of fsSync.readdirSync(dir).filter(x => x.endsWith('.json'))) {
+          let store: Record<string, BookRecord>;
+          try { store = JSON.parse(fsSync.readFileSync(path.join(dir, f), 'utf-8')); } catch { continue; }
+          if (store?.[readerId]) records.push(store[readerId]);
+        }
+      } catch { /* no per-book dir for this id */ }
+      this.foldLegacy(k, readerId, records);
     }
-    return merged;
+
+    const merged = mergeBookRecords(records);
+    return {
+      position: merged.position ?? null,
+      heard: merged.heard?.intervals ?? [],
+      heardResetAt: merged.heardResetAt ?? '',
+      // A 'del' op is a tombstone, kept through the merge and dropped here.
+      bookmarks: (merged.bookmarks || []).filter(o => o.op === 'add').map(o => o.bm),
+    };
   }
 
-  /** Fold pre-consolidation stores (positions/, heard/, bookmarks/) into the merge. */
-  private foldLegacy(
-    key: string,
-    readerId: string,
-    fold: (rec: BookRecord) => void,
-    bmLatest: Map<string, BookmarkOp>,
-  ): void {
+  /** Add the pre-consolidation stores (positions/, heard/, bookmarks/) for one id. */
+  private foldLegacy(key: string, readerId: string, records: Array<BookRecord | undefined>): void {
     try {
       for (const f of fsSync.readdirSync(this.positionsDir()).filter(x => x.endsWith('.json'))) {
         let store: Record<string, Record<string, BookPosition>>;
         try { store = JSON.parse(fsSync.readFileSync(path.join(this.positionsDir(), f), 'utf-8')); } catch { continue; }
         const e = store?.[readerId]?.[key];
-        if (e) fold({ position: e });
+        if (e) records.push({ position: e });
       }
     } catch { /* none */ }
     try {
@@ -1914,7 +2106,7 @@ export class BookshelfServer {
         let store: Record<string, Record<string, BookHeard>>;
         try { store = JSON.parse(fsSync.readFileSync(path.join(this.heardDir(), f), 'utf-8')); } catch { continue; }
         const e = store?.[readerId]?.[key];
-        if (e) fold({ heard: e });
+        if (e) records.push({ heard: e });
       }
     } catch { /* none */ }
     try {
@@ -1926,8 +2118,7 @@ export class BookshelfServer {
           let e: { readerId: string; key: string; op: string; bm: { id?: string }; at: string };
           try { e = JSON.parse(line); } catch { continue; }
           if (e.readerId !== readerId || e.key !== key || !e.bm?.id) continue;
-          const cur = bmLatest.get(e.bm.id);
-          if (!cur || e.at > cur.at) bmLatest.set(e.bm.id, { op: e.op, bm: e.bm as Record<string, unknown>, at: e.at });
+          records.push({ bookmarks: [{ op: e.op, bm: e.bm as Record<string, unknown>, at: e.at }] });
         }
       }
     } catch { /* none */ }
@@ -1951,7 +2142,10 @@ export class BookshelfServer {
    * "nobody has an account on this machine" and send the user to create one.
    */
   listReaderProfiles(): Array<{ id: string; name: string; hasPin: boolean }> {
-    if (!this.storeReady) return [];
+    // Was `if (!storeReady) return []` — the very fallback the doc comment above
+    // forbids, which is how the desktop picker could come up blank for a library
+    // full of readers. It now makes the store (or says why it cannot).
+    this.requireReaderStore();
     return this.allProfiles()
       .map(r => ({ id: r.id, name: r.name, hasPin: !!r.pinHash }))
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
@@ -1959,13 +2153,14 @@ export class BookshelfServer {
 
   /** Credit listening seconds to a reader (same event log the analytics read). */
   recordListening(readerId: string, bookPath: string, title: string, author: string, seconds: number, id?: string): void {
-    if (!this.storeReady || !readerId) return;
+    if (!readerId) return;
+    this.requireReaderStore();
     if (!Number.isFinite(seconds) || seconds <= 0) return;
     seconds = Math.min(seconds, 3600);
     if (id && this.seenEventIds.has(id)) return;
     const event: ListeningEvent = {
       readerId,
-      bookKey: bookPath ? this.relBookKey(bookPath) : '',
+      bookKey: this.analyticsBookKey(bookPath),
       title, author,
       day: this.localDateKey(),
       seconds,
@@ -1978,7 +2173,8 @@ export class BookshelfServer {
 
   /** Save / read a reader's resume position for an audiobook (seconds). */
   saveAudioPosition(readerId: string, bookPath: string, seconds: number): void {
-    if (!this.storeReady || !readerId) return;
+    if (!readerId) return;
+    this.requireReaderStore();
     const key = this.positionKeyFrom('', bookPath);
     if (!key) return;
     this.writeBookRecord(key, readerId, (rec) => { rec.position = { kind: 'audio', value: seconds, at: new Date().toISOString() }; });
@@ -2001,7 +2197,8 @@ export class BookshelfServer {
 
   /** Add ('add') or remove ('del') a bookmark for a reader. `bm` must carry an id. */
   saveAudioBookmark(readerId: string, bookPath: string, op: 'add' | 'del', bm: Record<string, unknown> & { id?: string }): void {
-    if (!this.storeReady || !readerId) return;
+    if (!readerId) return;
+    this.requireReaderStore();
     const key = this.positionKeyFrom('', bookPath);
     if (!key || !bm || !bm.id) return;
     this.writeBookRecord(key, readerId, (rec) => {
@@ -2013,7 +2210,12 @@ export class BookshelfServer {
   // ── Position (audio time / epub CFI / pdf page) ──────────────────────────────
   private async postPosition(req: Request, res: Response): Promise<void> {
     const readerId = this.readerIdFromRequest(req);
-    if (!readerId || !this.storeReady) { res.status(401).json({ error: 'Not signed in' }); return; }
+    if (!readerId) { res.status(401).json({ error: 'Not signed in' }); return; }
+    // The store is opened here, not assumed ready at startup; a failure below is
+    // a 503 with its reason, never a 401 that would sign the reader out.
+    try { this.requireReaderStore(); } catch (err) {
+      res.status(503).json({ error: err instanceof Error ? err.message : 'reader store unavailable' }); return;
+    }
     try {
       const key = this.positionKeyFrom((req.body?.ref || '').toString(), (req.body?.bookPath || '').toString());
       const kind = (req.body?.kind || '').toString();
@@ -2030,15 +2232,35 @@ export class BookshelfServer {
   private async getPosition(req: Request, res: Response): Promise<void> {
     const readerId = this.readerIdFromRequest(req);
     if (!readerId) { res.status(401).json({ error: 'Not signed in' }); return; }
-    const key = this.positionKeyFrom((req.query.ref as string) || '', (req.query.bookPath as string) || '');
-    if (!key) { res.json({}); return; }
-    res.json(this.mergeBook(key, readerId).position || {});
+    try {
+      const key = this.positionKeyFrom((req.query.ref as string) || '', (req.query.bookPath as string) || '');
+      if (!key) { res.json({}); return; }
+      res.json(this.mergeBook(key, readerId).position || {});
+    } catch (err) {
+      // A store we cannot read is a said failure. `{}` here would look like "you
+      // have never opened this book" and restart it from zero.
+      this.sendStoreReadFailure(res, 'position', err);
+    }
+  }
+
+  /** One shape for "the durable store could not be read". 503 keeps the client's
+   *  own cached value in play instead of overwriting it with an empty answer. */
+  private sendStoreReadFailure(res: Response, what: string, err: unknown): void {
+    console.error(`[BookshelfServer] ${what} read failed:`, err);
+    res.status(503).json({
+      error: err instanceof Error ? err.message : `the ${what} store could not be read`,
+    });
   }
 
   // ── Listened coverage (per reader; unioned across devices; reset tombstones) ──
   private async postHeard(req: Request, res: Response): Promise<void> {
     const readerId = this.readerIdFromRequest(req);
-    if (!readerId || !this.storeReady) { res.status(401).json({ error: 'Not signed in' }); return; }
+    if (!readerId) { res.status(401).json({ error: 'Not signed in' }); return; }
+    // The store is opened here, not assumed ready at startup; a failure below is
+    // a 503 with its reason, never a 401 that would sign the reader out.
+    try { this.requireReaderStore(); } catch (err) {
+      res.status(503).json({ error: err instanceof Error ? err.message : 'reader store unavailable' }); return;
+    }
     try {
       const key = this.positionKeyFrom((req.body?.ref || '').toString(), (req.body?.bookPath || '').toString());
       if (!key) { res.json({ ok: true }); return; }
@@ -2068,19 +2290,28 @@ export class BookshelfServer {
   private async getHeard(req: Request, res: Response): Promise<void> {
     const readerId = this.readerIdFromRequest(req);
     if (!readerId) { res.status(401).json({ error: 'Not signed in' }); return; }
-    const key = this.positionKeyFrom((req.query.ref as string) || '', (req.query.bookPath as string) || '');
-    if (!key) { res.json({ intervals: [], resetAt: null }); return; }
-    // resetAt (the merged reset tombstone) lets the client discard its own local
-    // cache when that cache predates a reset done on another device — so an offline
-    // device rejoining after a reset can't resurrect the erased coverage.
-    const merged = this.mergeBook(key, readerId);
-    res.json({ intervals: merged.heard, resetAt: merged.heardResetAt || null });
+    try {
+      const key = this.positionKeyFrom((req.query.ref as string) || '', (req.query.bookPath as string) || '');
+      if (!key) { res.json({ intervals: [], resetAt: null }); return; }
+      // resetAt (the merged reset tombstone) lets the client discard its own local
+      // cache when that cache predates a reset done on another device — so an offline
+      // device rejoining after a reset can't resurrect the erased coverage.
+      const merged = this.mergeBook(key, readerId);
+      res.json({ intervals: merged.heard, resetAt: merged.heardResetAt || null });
+    } catch (err) {
+      this.sendStoreReadFailure(res, 'listened-coverage', err);
+    }
   }
 
   // ── Bookmarks (per-device op list, compacted to latest-per-id; LWW on merge) ──
   private async postBookmark(req: Request, res: Response): Promise<void> {
     const readerId = this.readerIdFromRequest(req);
-    if (!readerId || !this.storeReady) { res.status(401).json({ error: 'Not signed in' }); return; }
+    if (!readerId) { res.status(401).json({ error: 'Not signed in' }); return; }
+    // The store is opened here, not assumed ready at startup; a failure below is
+    // a 503 with its reason, never a 401 that would sign the reader out.
+    try { this.requireReaderStore(); } catch (err) {
+      res.status(503).json({ error: err instanceof Error ? err.message : 'reader store unavailable' }); return;
+    }
     try {
       const key = this.positionKeyFrom((req.body?.ref || '').toString(), (req.body?.bookPath || '').toString());
       const op = (req.body?.op || '').toString();
@@ -2100,9 +2331,14 @@ export class BookshelfServer {
   private async getBookmarks(req: Request, res: Response): Promise<void> {
     const readerId = this.readerIdFromRequest(req);
     if (!readerId) { res.status(401).json({ error: 'Not signed in' }); return; }
-    const key = this.positionKeyFrom((req.query.ref as string) || '', (req.query.bookPath as string) || '');
-    if (!key) { res.json({ bookmarks: [] }); return; }
-    res.json({ bookmarks: this.mergeBook(key, readerId).bookmarks });
+    try {
+      const key = this.positionKeyFrom((req.query.ref as string) || '', (req.query.bookPath as string) || '');
+      if (!key) { res.json({ bookmarks: [] }); return; }
+      res.json({ bookmarks: this.mergeBook(key, readerId).bookmarks });
+    } catch (err) {
+      // An empty list would look like the reader deleted their bookmarks.
+      this.sendStoreReadFailure(res, 'bookmarks', err);
+    }
   }
 
   private localDateKey(): string {
@@ -2111,9 +2347,14 @@ export class BookshelfServer {
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   }
 
+  /**
+   * The sign-in list. Read FRESH off the directory on every request (allProfiles
+   * does a readdir per call), and the store is opened here if the server started
+   * before it existed — the ordering that once handed Owen an empty picker.
+   */
   private async getReaders(_req: Request, res: Response): Promise<void> {
-    if (!this.storeReady) { res.json({ readers: [] }); return; }
     try {
+      this.requireReaderStore();
       const readers = this.allProfiles()
         .map(r => ({ id: r.id, name: r.name, hasPin: !!r.pinHash }))
         .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
@@ -2128,8 +2369,8 @@ export class BookshelfServer {
   }
 
   private async createReader(req: Request, res: Response): Promise<void> {
-    if (!this.storeReady) { res.status(503).json({ error: 'Reader storage unavailable' }); return; }
     try {
+      this.requireReaderStore();
       const name = (req.body?.name || '').toString().trim();
       const pin = req.body?.pin ? String(req.body.pin) : '';
       if (!name) { res.status(400).json({ error: 'Name is required' }); return; }
@@ -2149,13 +2390,16 @@ export class BookshelfServer {
       res.json({ token, reader: { id: profile.id, name: profile.name, hasPin: !!profile.pinHash } });
     } catch (err) {
       console.error('[BookshelfServer] createReader failed:', err);
-      res.status(500).json({ error: 'Failed to create reader' });
+      // 503 when the store itself is the problem, so the client says "the
+      // library's reader store can't be reached" rather than "creating failed".
+      res.status(this.storeReady ? 500 : 503)
+        .json({ error: err instanceof Error ? err.message : 'Failed to create reader' });
     }
   }
 
   private async loginReader(req: Request, res: Response): Promise<void> {
-    if (!this.storeReady) { res.status(503).json({ error: 'Reader storage unavailable' }); return; }
     try {
+      this.requireReaderStore();
       const id = (req.body?.id || '').toString();
       const pin = req.body?.pin ? String(req.body.pin) : '';
       const profile = this.readProfile(id);
@@ -2170,7 +2414,8 @@ export class BookshelfServer {
       res.json({ token, reader: { id: profile.id, name: profile.name, hasPin: !!profile.pinHash } });
     } catch (err) {
       console.error('[BookshelfServer] loginReader failed:', err);
-      res.status(500).json({ error: 'Failed to log in' });
+      res.status(this.storeReady ? 500 : 503)
+        .json({ error: err instanceof Error ? err.message : 'Failed to log in' });
     }
   }
 
@@ -2192,7 +2437,12 @@ export class BookshelfServer {
 
   private async postHeartbeat(req: Request, res: Response): Promise<void> {
     const readerId = this.readerIdFromRequest(req);
-    if (!readerId || !this.storeReady) { res.status(401).json({ error: 'Not signed in' }); return; }
+    if (!readerId) { res.status(401).json({ error: 'Not signed in' }); return; }
+    // The store is opened here, not assumed ready at startup; a failure below is
+    // a 503 with its reason, never a 401 that would sign the reader out.
+    try { this.requireReaderStore(); } catch (err) {
+      res.status(503).json({ error: err instanceof Error ? err.message : 'reader store unavailable' }); return;
+    }
     try {
       const bookPath = (req.body?.bookPath || '').toString();
       const title = (req.body?.title || '').toString();
@@ -2211,7 +2461,7 @@ export class BookshelfServer {
 
       const event: ListeningEvent = {
         readerId,
-        bookKey: bookPath ? this.relBookKey(bookPath) : '',
+        bookKey: this.analyticsBookKey(bookPath),
         title,
         author,
         day: this.localDateKey(),
@@ -2237,13 +2487,20 @@ export class BookshelfServer {
    */
   private async postAnalyticsRemove(req: Request, res: Response): Promise<void> {
     const readerId = this.readerIdFromRequest(req);
-    if (!readerId || !this.storeReady) { res.status(401).json({ error: 'Not signed in' }); return; }
+    if (!readerId) { res.status(401).json({ error: 'Not signed in' }); return; }
+    // The store is opened here, not assumed ready at startup; a failure below is
+    // a 503 with its reason, never a 401 that would sign the reader out.
+    try { this.requireReaderStore(); } catch (err) {
+      res.status(503).json({ error: err instanceof Error ? err.message : 'reader store unavailable' }); return;
+    }
     try {
       const bookKey = (req.body?.bookKey || '').toString();
       if (!bookKey) { res.status(400).json({ error: 'Missing bookKey' }); return; }
       const tombstone: ListeningEvent = {
         readerId,
-        bookKey,
+        // Canonicalized so a tombstone from a client still holding the old
+        // path-form key erases the book the reader actually pointed at.
+        bookKey: this.analyticsKeyOf(bookKey),
         title: '',
         author: '',
         day: this.localDateKey(),
@@ -2300,6 +2557,12 @@ export class BookshelfServer {
         }
       }
 
+      // Every event's book, canonicalized. Logs written before the variant
+      // anchor carry a library-relative path; logs written after carry
+      // `v:<project>/<variant>`. Folding them here is what makes a book that was
+      // moved into archive/ ONE row in the analytics instead of two halves.
+      for (const e of events) if (e.bookKey) e.bookKey = this.analyticsKeyOf(e.bookKey);
+
       // Pass 1: latest 'remove' tombstone per book. Any listen at/before it is erased.
       const removedUntil: Record<string, string> = {};
       for (const e of events) {
@@ -2339,20 +2602,28 @@ export class BookshelfServer {
     }
   }
 
-  /** Resolve a cover to a base64 data URL, shared by the JSON (/api/cover) and
-   *  binary (/api/cover-image) endpoints. Same ladder either way: in-memory cache
-   *  → user-editable manifest cover file → hash-bound sidecar → crack the m4b
-   *  (self-healing the extracted art to disk so future loads read a plain file).
-   *  Returns null when nothing resolves — an out-of-library path (never read
-   *  outside the library) or an m4b with no embedded art. */
-  private async resolveCoverDataUrl(projectId?: string, downloadPath?: string): Promise<string | null> {
+  /**
+   * Resolve a cover to a FILE (or, at the last rung, to bytes) plus the identity
+   * that versions it. Same ladder it always was — user-editable manifest cover
+   * → hash-bound sidecar → crack the m4b (self-healing the extracted art to
+   * disk so the next load reads a plain file) — but it stops at the path.
+   *
+   * Stopping at the path is the point: `/api/cover-image` can now answer a
+   * conditional request off one `stat()`, and the thumbnailer can key its cache
+   * on the source's size+mtime. Reading 536 KB (the mean on Owen's library) to
+   * decide it need not be sent was the old behaviour.
+   *
+   * Null when nothing resolves — an out-of-library path (we never read outside
+   * the library) or an m4b with no embedded art.
+   */
+  private async resolveCoverSource(projectId?: string, downloadPath?: string): Promise<ResolvedCover | null> {
     const cacheKey = projectId || downloadPath;
     if (!cacheKey) return null;
 
     const cached = this.coverCache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < this.COVER_CACHE_TTL) return cached.data;
+    if (cached && Date.now() - cached.timestamp < this.COVER_CACHE_TTL) return cached.cover;
 
-    let cover: string | null = null;
+    let cover: ResolvedCover | null = null;
 
     // Prefer the accessible manifest cover (a plain image file) over cracking
     // the m4b. The request may omit projectId (external m4bs and some shelf
@@ -2361,48 +2632,63 @@ export class BookshelfServer {
     const derivedProjectId = downloadPath ? this.projectIdFromPath(downloadPath) : null;
     const resolvedProjectId = projectId || derivedProjectId;
 
-    if (projectId) {
-      cover = await this.loadManifestCover(projectId);
-    }
-    // If the given projectId was missing or didn't resolve, try the derived one.
-    if (!cover && derivedProjectId && derivedProjectId !== projectId) {
-      cover = await this.loadManifestCover(derivedProjectId);
+    for (const pid of [projectId, derivedProjectId]) {
+      if (cover || !pid) continue;
+      const file = await this.manifestCoverFile(pid);
+      if (file) cover = await this.describeCoverFile(file);
     }
 
     // Hash-bound cover sidecar for this exact m4b — a validated plain-file read,
     // below the user-editable manifest cover but above cracking the m4b per request.
     if (!cover && downloadPath && this.isPathWithinLibrary(downloadPath) && fsSync.existsSync(downloadPath)) {
       const bound = await this.boundSidecars(downloadPath);
-      if (bound.cover) cover = await this.coverFileToDataUrl(bound.cover);
+      if (bound.cover) cover = await this.describeCoverFile(bound.cover);
     }
 
     // Last resort: extract the cover embedded in the M4B file. Only for in-library
     // paths — an out-of-library downloadPath simply resolves to no cover.
     if (!cover && downloadPath && this.isPathWithinLibrary(downloadPath)) {
-      cover = await this.extractAudioCover(downloadPath);
+      const dataUrl = await this.extractAudioCover(downloadPath);
+      cover = dataUrl ? this.describeCoverDataUrl(dataUrl) : null;
       // Self-heal: materialize the extracted cover as a plain file and record
       // it in the manifest, so future loads read it from disk (and it syncs to
-      // other devices) via loadManifestCover instead of re-cracking the m4b.
+      // other devices) via the manifest rung instead of re-cracking the m4b.
       // Best-effort and fire-and-forget — it never blocks serving the cover.
-      if (cover && resolvedProjectId) {
-        void this.persistExtractedCover(resolvedProjectId, cover);
+      if (dataUrl && resolvedProjectId) {
+        void this.persistExtractedCover(resolvedProjectId, dataUrl);
       }
       // Also (re)generate the hash-bound sidecars for this m4b (new/re-aligned
       // book with no valid binding) so downloads get a bound cover + transcript.
-      if (cover) this.regenerateSidecarsLazily(downloadPath);
+      if (dataUrl) this.regenerateSidecarsLazily(downloadPath);
     }
 
     if (cover) {
-      // Evict oldest entry if cache is at capacity
+      // Evict oldest entry if cache is at capacity. Entries are now a path + an
+      // identity string rather than a megabyte of base64, so the cap is about
+      // staleness, not memory.
       if (this.coverCache.size >= this.MAX_COVER_CACHE_SIZE) {
         const oldestKey = this.coverCache.keys().next().value;
         if (oldestKey !== undefined) this.coverCache.delete(oldestKey);
       }
-      this.coverCache.set(cacheKey, { data: cover, timestamp: Date.now() });
+      this.coverCache.set(cacheKey, { cover, timestamp: Date.now() });
     }
     return cover;
   }
 
+  /** The same ladder as a base64 data URL, for /api/cover's JSON shape (which
+   *  the offline downloader stores verbatim). */
+  private async resolveCoverDataUrl(projectId?: string, downloadPath?: string): Promise<string | null> {
+    const cover = await this.resolveCoverSource(projectId, downloadPath);
+    if (!cover) return null;
+    const { buffer, contentType } = await coverBytes(null, cover, null);
+    return `data:${contentType};base64,${buffer.toString('base64')}`;
+  }
+
+  /**
+   * JSON cover (a data URL). Now conditional and sized like its binary sibling:
+   * `?w=` picks a thumbnail, `If-None-Match` gets a 304. The offline downloader
+   * asks for no width and gets the original, which is what it wants to keep.
+   */
   private async getCover(req: Request, res: Response): Promise<void> {
     try {
       const projectId = req.query.projectId as string;
@@ -2411,8 +2697,19 @@ export class BookshelfServer {
         res.status(400).json({ error: 'Missing projectId or downloadPath parameter' });
         return;
       }
-      const cover = await this.resolveCoverDataUrl(projectId, downloadPath);
-      res.json({ cover: cover ?? null });
+      const width = parseThumbnailWidth(req.query.w);
+      if (width === undefined) { res.status(400).json({ error: this.badWidthMessage() }); return; }
+
+      const cover = await this.resolveCoverSource(projectId, downloadPath);
+      if (!cover) { res.json({ cover: null }); return; }
+
+      // The `j` distinguishes this endpoint's base64 body from the binary one's
+      // bytes: same image, different representation, so they must not share a tag.
+      const etag = coverEtag(`${cover.identity}|json`, width);
+      if (etagMatches(req.headers['if-none-match'], etag)) { this.sendCoverValidators(res, etag); res.status(304).end(); return; }
+      const { buffer, contentType } = await coverBytes(this.thumbnailCacheDir(), cover, width);
+      this.sendCoverValidators(res, etag);
+      res.json({ cover: `data:${contentType};base64,${buffer.toString('base64')}` });
     } catch (err) {
       console.error('[BookshelfServer] Error getting cover:', err);
       res.status(500).json({ error: 'Failed to get cover' });
@@ -2421,28 +2718,56 @@ export class BookshelfServer {
 
   /** Binary cover: streams the actual image bytes so a plain <img src> renders
    *  and browser-caches it natively — no base64-through-JSON round-trip, no giant
-   *  string to stuff into a JS Map or evict into a broken image. Serves an ETag +
-   *  Cache-Control so repeat loads are 304s. 404 (not an empty 200) when there's
-   *  no cover, so the client's <img (error)> falls back to the placeholder. */
+   *  string to stuff into a JS Map or evict into a broken image.
+   *
+   *  `?w=<240|480|960>` serves a cached thumbnail; no `w` serves the original, so
+   *  the shelf's fifty tiles cost tens of KB each while the player's full-bleed
+   *  cover is still the real art. The ETag is computed from the SOURCE's identity
+   *  before any image byte is read, so a repeat visit costs one `stat` and a 304.
+   *  404 (not an empty 200) when there's no cover, so the client's <img (error)>
+   *  falls back to the placeholder. */
   private async getCoverImage(req: Request, res: Response): Promise<void> {
     try {
       const projectId = req.query.projectId as string;
       const downloadPath = req.query.downloadPath as string;
       if (!projectId && !downloadPath) { res.status(400).end(); return; }
-      const dataUrl = await this.resolveCoverDataUrl(projectId, downloadPath);
-      const m = dataUrl ? /^data:([^;]+);base64,(.*)$/s.exec(dataUrl) : null;
-      if (!m) { res.status(404).end(); return; }
-      const buf = Buffer.from(m[2], 'base64');
-      const etag = '"' + crypto.createHash('sha1').update(buf).digest('hex') + '"';
-      if (req.headers['if-none-match'] === etag) { res.status(304).end(); return; }
-      res.setHeader('Content-Type', m[1]);
-      res.setHeader('Cache-Control', 'public, max-age=3600');
-      res.setHeader('ETag', etag);
-      res.end(buf);
+      const width = parseThumbnailWidth(req.query.w);
+      if (width === undefined) { res.status(400).json({ error: this.badWidthMessage() }); return; }
+
+      const cover = await this.resolveCoverSource(projectId, downloadPath);
+      if (!cover) { res.status(404).end(); return; }
+
+      const etag = coverEtag(cover.identity, width);
+      if (etagMatches(req.headers['if-none-match'], etag)) { this.sendCoverValidators(res, etag); res.status(304).end(); return; }
+
+      const { buffer, contentType } = await coverBytes(this.thumbnailCacheDir(), cover, width);
+      this.sendCoverValidators(res, etag);
+      res.setHeader('Content-Type', contentType);
+      res.end(buffer);
     } catch (err) {
       console.error('[BookshelfServer] Error getting cover image:', err);
       if (!res.headersSent) res.status(500).end();
     }
+  }
+
+  /** ETag + Cache-Control, on the 200 and on the 304 alike (a 304 that omits the
+   *  validator makes some caches drop the entry and re-download next time). */
+  private sendCoverValidators(res: Response, etag: string): void {
+    res.setHeader('ETag', etag);
+    // A day, revalidated: the ETag is derived from the source's mtime, so a
+    // re-saved cover changes the tag and the phone picks it up on the next
+    // revalidation rather than being stuck with the old art for the full max-age.
+    res.setHeader('Cache-Control', 'public, max-age=86400, must-revalidate');
+  }
+
+  private badWidthMessage(): string {
+    return `w must be one of ${ALLOWED_THUMBNAIL_WIDTHS.join(', ')} — or be omitted for the full-size cover.`;
+  }
+
+  /** Where generated thumbnails live. Null when the server was started without a
+   *  userData path: thumbnails are still generated, they just aren't kept. */
+  private thumbnailCacheDir(): string | null {
+    return this.userDataPath ? path.join(this.userDataPath, 'bookshelf-thumbnails') : null;
   }
 
   private async downloadFile(req: Request, res: Response): Promise<void> {
@@ -2711,8 +3036,17 @@ export class BookshelfServer {
         res.status(400).json({ error: `Not a library ebook address: ${relativePath}` });
         return;
       }
+      const width = parseThumbnailWidth(req.query.w);
+      if (width === undefined) { res.status(400).json({ error: this.badWidthMessage() }); return; }
 
-      res.json({ cover: await this.resolveEbookCoverDataUrl(projectId, relativePath) });
+      const cover = await this.resolveEbookCoverSource(projectId, relativePath);
+      if (!cover) { res.json({ cover: null }); return; }
+
+      const etag = coverEtag(`${cover.identity}|json`, width);
+      if (etagMatches(req.headers['if-none-match'], etag)) { this.sendCoverValidators(res, etag); res.status(304).end(); return; }
+      const { buffer, contentType } = await coverBytes(this.thumbnailCacheDir(), cover, width);
+      this.sendCoverValidators(res, etag);
+      res.json({ cover: `data:${contentType};base64,${buffer.toString('base64')}` });
     } catch (err) {
       console.error('[BookshelfServer] Error getting ebook cover:', err);
       res.status(500).json({ error: 'Failed to get ebook cover' });
@@ -2729,23 +3063,30 @@ export class BookshelfServer {
    * Deliberately NOT a sidecar cache of its own — the retired ebooks/.cache/covers
    * folder was a second place a cover could live and disagree from.
    */
-  private async resolveEbookCoverDataUrl(projectId: string, relativePath: string): Promise<string | null> {
+  private async resolveEbookCoverSource(projectId: string, relativePath: string): Promise<ResolvedCover | null> {
     const cacheKey = `ebook:${relativePath}`;
     const cached = this.coverCache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < this.COVER_CACHE_TTL) return cached.data;
+    if (cached && Date.now() - cached.timestamp < this.COVER_CACHE_TTL) return cached.cover;
 
-    let cover = await this.loadManifestCover(projectId);
+    const manifestFile = await this.manifestCoverFile(projectId);
+    let cover: ResolvedCover | null = manifestFile ? await this.describeCoverFile(manifestFile) : null;
 
     if (!cover) {
       const absolutePath = getAbsolutePath(relativePath);
       if (fsSync.existsSync(absolutePath)) {
         const tmpOut = path.join(os.tmpdir(), `bookforge-ebook-cover-${crypto.randomBytes(6).toString('hex')}.jpg`);
+        let dataUrl: string | null = null;
         try {
-          if (await extractCover(absolutePath, tmpOut)) cover = await this.coverFileToDataUrl(tmpOut);
+          if (await extractCover(absolutePath, tmpOut)) dataUrl = await this.coverFileToDataUrl(tmpOut);
         } finally {
           fs.unlink(tmpOut).catch(() => {});
         }
-        if (cover) void this.persistExtractedCover(projectId, cover);
+        // The temp file is already gone, so this rung yields BYTES; the
+        // self-heal below turns the next request's answer back into a file.
+        if (dataUrl) {
+          cover = this.describeCoverDataUrl(dataUrl);
+          void this.persistExtractedCover(projectId, dataUrl);
+        }
       }
     }
 
@@ -2754,7 +3095,7 @@ export class BookshelfServer {
         const oldestKey = this.coverCache.keys().next().value;
         if (oldestKey !== undefined) this.coverCache.delete(oldestKey);
       }
-      this.coverCache.set(cacheKey, { data: cover, timestamp: Date.now() });
+      this.coverCache.set(cacheKey, { cover, timestamp: Date.now() });
     }
     return cover;
   }
@@ -3057,34 +3398,6 @@ export class BookshelfServer {
   }
 
   /**
-   * Load cover from the manifest's coverPath (library-relative image file)
-   */
-  private async loadManifestCover(projectId: string): Promise<string | null> {
-    try {
-      const manifestPath = path.join(getProjectPath(projectId), 'manifest.json');
-      if (!fsSync.existsSync(manifestPath)) return null;
-
-      const content = await fs.readFile(manifestPath, 'utf-8');
-      const manifest = JSON.parse(content);
-      const coverPath = manifest.metadata?.coverPath;
-      if (!coverPath) return null;
-
-      const absPath = path.join(getLibraryBasePath(), coverPath);
-      if (!fsSync.existsSync(absPath)) return null;
-
-      const buffer = await fs.readFile(absPath);
-      let mimeType = 'image/jpeg';
-      if (buffer[0] === 0x89 && buffer[1] === 0x50) {
-        mimeType = 'image/png';
-      }
-      return `data:${mimeType};base64,${buffer.toString('base64')}`;
-    } catch (err) {
-      console.error('[BookshelfServer] Error loading manifest cover:', err);
-      return null;
-    }
-  }
-
-  /**
    * Extract cover image embedded in M4B/M4A audio files
    */
   private async extractAudioCover(filePath: string): Promise<string | null> {
@@ -3165,7 +3478,7 @@ export class BookshelfServer {
   /**
    * Self-heal: save an extracted cover to the library `media/` folder and record
    * its path in the manifest, so subsequent loads read the plain file via
-   * loadManifestCover instead of re-parsing the m4b (and it syncs to other
+   * the manifest rung instead of re-parsing the m4b (and it syncs to other
    * devices). Content-hash filename mirrors saveImageToMedia's dedup scheme.
    * Best-effort — logs and returns on any failure; never throws.
    */
@@ -3195,7 +3508,7 @@ export class BookshelfServer {
         }
       }
 
-      // Point the manifest at the file so loadManifestCover serves it next time.
+      // Point the manifest at the file so the manifest rung serves it next time.
       const result = await modifyManifest(projectId, (manifest) => {
         manifest.metadata.coverPath = relPath;
       });
