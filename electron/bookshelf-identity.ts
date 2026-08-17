@@ -203,17 +203,62 @@ export function anchorForAbsolutePath(absPath: string): VariantAnchor | null {
  * cannot place is never guessed at and never dropped.
  */
 export function anchorForLegacyKey(key: string): VariantAnchor | null {
+  const at = legacyKeyLocation(key);
+  return at ? anchorForProjectPath(at.projectId, at.projectRelativePath) : null;
+}
+
+/** The project and project-relative file a legacy key names, whether or not any
+ *  variant still points at it. Null for a form this does not address. */
+export function legacyKeyLocation(
+  key: string,
+): { projectId: string; projectRelativePath: string } | null {
   if (key.startsWith('a:')) {
     const parts = key.slice(2).split('/');
     if (parts[0] !== 'projects' || parts.length < 3) return null;
-    return anchorForProjectPath(parts[1], parts.slice(2).join('/'));
+    return { projectId: parts[1], projectRelativePath: parts.slice(2).join('/') };
   }
   if (key.startsWith('e:')) {
     const parts = key.slice(2).split('/');
     if (parts[0] !== '__archive__' || parts.length < 3) return null;
-    return anchorForProjectPath(parts[1], `archive/${parts.slice(2).join('/')}`);
+    return { projectId: parts[1], projectRelativePath: `archive/${parts.slice(2).join('/')}` };
   }
   return null;
+}
+
+/**
+ * The variant a MOVED file belonged to, matched by filename within its own
+ * project — the only thing that can rescue a key whose path nothing points at
+ * any more.
+ *
+ * This is the case the whole change exists for. When "Add to archive" moved
+ * output/X.m4b to archive/X.m4b, the variant row followed the file, so the OLD
+ * key resolves to nothing: there is no longer a variant at output/X.m4b. The
+ * records filed under it are the reader's whole pre-move history.
+ *
+ * The rule is deliberately narrow, and it is a rule rather than a guess:
+ *   - the SAME project (a filename never matches across projects);
+ *   - EXACTLY ONE variant in it bears that filename (two candidates is an
+ *     ambiguity, and an ambiguity is reported, not resolved);
+ *   - and the old path is genuinely GONE (a file still sitting there is its own
+ *     thing, not a stale name for something else).
+ *
+ * Used ONLY by the migration, where a dry run shows a person every match before
+ * anything is written. Live request handling never reaches for it — an old id
+ * resolves through the alias map the migration wrote, which is exact.
+ */
+export function anchorForMovedFile(key: string): VariantAnchor | null {
+  const at = legacyKeyLocation(key);
+  if (!at) return null;
+  const variants = variantsOfProject(at.projectId);
+  if (!variants) return null;
+
+  const oldAbs = path.join(getProjectPath(at.projectId), at.projectRelativePath.split('/').join(path.sep));
+  if (fsSync.existsSync(oldAbs)) return null; // still there — not a move
+
+  const wanted = path.posix.basename(at.projectRelativePath).toLowerCase();
+  const matches = variants.filter((v) => path.posix.basename(v.path.replace(/\\/g, '/')).toLowerCase() === wanted);
+  if (matches.length !== 1) return null;
+  return { projectId: at.projectId, variantId: matches[0].id };
 }
 
 /**
