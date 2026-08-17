@@ -7633,8 +7633,21 @@ function setupIpcHandlers(): void {
         openFoundryWindowAndReconcileOnClose(undefined, document ? { document } : undefined);
         return { success: true, opened: 'bare' as const };
       }
+      const hostedDir = path.join(foundryProjectsDir(), key);
+      if (document !== undefined && !isInside(hostedDir, document)) {
+        // A file OUTSIDE the mapped project must not travel: Foundry imports a
+        // stranger, which MINTS A SECOND PROJECT from the book's pristine copy
+        // and re-points the mapping at it — a bare tree where the user's work
+        // was (the Flashpoint accident, 2026-08-17). The press means "this
+        // book, in Foundry", and for a mapped book that IS the project, so the
+        // deep link lands there and the ledger raises the book's current step.
+        console.log(
+          `[foundry-host:open] ${document} is not inside Foundry project "${key}"; opening the `
+          + 'project itself so Foundry does not import the file as a new one.');
+        document = undefined;
+      }
       openFoundryWindowAndReconcileOnClose(
-        path.join(foundryProjectsDir(), key),
+        hostedDir,
         document ? { document } : undefined,
       );
       return { success: true, opened: 'project' as const };

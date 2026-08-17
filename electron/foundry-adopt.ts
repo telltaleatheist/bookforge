@@ -809,6 +809,35 @@ export async function adoptFoundryProject(
   }
 
   // ── 5. Join them ────────────────────────────────────────────────────────
+  //
+  // NOT if the book is already joined to a DIFFERENT project that still
+  // exists. Two projects made from the same file mint the same book, so an
+  // adopt of the second lands here with `imported.duplicate` — and writing the
+  // new key would re-point the book away from a project that may hold the
+  // user's work, silently, in an act the user read as "import". That is how
+  // the Flashpoint accident became permanent (2026-08-17): adopting an empty
+  // twin re-pointed the book off the project with the real ledger. A previous
+  // project that is GONE is the healing case, and the re-point is taken.
+  if (!minted) {
+    const previousKey = await manifestService.readFoundryProject(bookDir);
+    if (previousKey !== null && previousKey !== key) {
+      let previousExists = false;
+      try {
+        previousExists = (await fs.stat(path.join(hostedProjectsRoot, previousKey))).isDirectory();
+      } catch { /* gone — the healing case */ }
+      if (previousExists) {
+        if (copied) await rollBack(hostedDir);
+        return {
+          outcome: 'refused',
+          reason: `${projectId} is already joined to Foundry project "${previousKey}", which is `
+            + `still in this library's Foundry folder. Adopting "${key}" would re-point the book `
+            + 'away from that project and whatever work is in it, so nothing was adopted. If '
+            + `"${key}" is the project you mean, delete the book (or the old project folder) `
+            + 'first, then adopt again.',
+        };
+      }
+    }
+  }
   let mapping: FoundryMappingResult;
   try {
     mapping = await recordFoundryProjectMapping(bookDir, key, originalInBook);

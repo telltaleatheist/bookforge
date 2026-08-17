@@ -370,6 +370,44 @@ test('a book already made from the same file is JOINED, not duplicated', run(asy
   assert.ok(m.foundryProject.sourceVariantId, 'and it names the version, not nothing');
 }));
 
+test('adopting a TWIN does not re-point a book off the project it is joined to', run(async (w) => {
+  // Two projects made from the same file mint the same book, so adopting the
+  // second lands on the first's book — and writing the new key would re-point
+  // the book away from a project that may hold the user's work, in an act the
+  // user read as "import". The Flashpoint accident, 2026-08-17: an empty twin
+  // was adopted after the real project and won the mapping by coming last.
+  const real = makeFoundryProject(w.standalone, 'Real-Work-Book-e5836de0');
+  const first = await doAdopt(w, real);
+  assert.strictEqual(first.outcome, 'adopted', first.reason);
+
+  const twin = makeFoundryProject(w.standalone, 'Empty-Twin-Book-e5836de0');
+  const res = await doAdopt(w, twin);
+  assert.strictEqual(res.outcome, 'refused');
+  assert.ok(res.reason.includes('Real-Work-Book-e5836de0'), `names the joined project: ${res.reason}`);
+  assert.ok(/nothing was adopted/i.test(res.reason), res.reason);
+  const m = w.manifestOf(first.projectId);
+  assert.strictEqual(m.foundryProject.dir, 'Real-Work-Book-e5836de0', 'the mapping did not move');
+  assert.deepStrictEqual(
+    fs.readdirSync(w.hosted), ['Real-Work-Book-e5836de0'],
+    'the refused twin\'s copy was rolled back');
+}));
+
+test('the re-point IS taken when the joined project is gone — the healing case', run(async (w) => {
+  const real = makeFoundryProject(w.standalone, 'Real-Work-Book-e5836de0');
+  const first = await doAdopt(w, real);
+  assert.strictEqual(first.outcome, 'adopted', first.reason);
+  // The joined project is deleted out from under the book — a mapping to
+  // nothing. Adopting another project made from the same file heals it.
+  fs.rmSync(path.join(w.hosted, 'Real-Work-Book-e5836de0'), { recursive: true });
+
+  const replacement = makeFoundryProject(w.standalone, 'Replacement-Book-e5836de0');
+  const res = await doAdopt(w, replacement);
+  assert.strictEqual(res.outcome, 'adopted', res.reason);
+  assert.strictEqual(res.minted, false, 'the same book, re-joined');
+  assert.strictEqual(
+    w.manifestOf(first.projectId).foundryProject.dir, 'Replacement-Book-e5836de0');
+}));
+
 // ── Discovery ──────────────────────────────────────────────────────────────
 
 test('both halves are listed, with origin, edited date and the exports badge', run(async (w) => {
