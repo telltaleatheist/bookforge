@@ -753,9 +753,11 @@ export class AddModalComponent {
         if (result.item) {
           this.added.emit(result.item);
         }
-        if (isPdf && result.item?.projectDir) {
-          await this.electronService.editorOpenWindowWithBfp(result.item.projectDir, filePath);
-        }
+        // An imported PDF used to throw the legacy editor window open on top of
+        // the import. That window is unreachable since 2026-08-16 (Owen's
+        // ruling: Foundry is the one editing surface), and an import now only
+        // imports — the book lands in the library and the user chooses when to
+        // edit it, from its own Edit in Foundry button.
         this.close.emit();
       } else {
         this.importError.set(result.error || 'Failed to import');

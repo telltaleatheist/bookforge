@@ -160,8 +160,17 @@ interface FoundryHostRecord {
 interface FoundryMountModule {
   /** Register everything Foundry owns in this main process. Once, after ready. */
   mountFoundry(host?: FoundryHostRecord): void;
-  /** Open the Foundry window, or raise the one already open. */
-  openFoundryWindow(projectDir?: string): void;
+  /**
+   * Open the Foundry window, or raise the one already open.
+   *
+   * `opts.document` (absolute path) IS the landing: it goes through the same
+   * admission door as a drop, so a wrong extension or a missing file is a
+   * logged refusal on Foundry's side rather than a throw, and a file that lies
+   * inside a project adopts into that project's context automatically. Foundry
+   * deliberately does NOT also send `project:open` when a document is named —
+   * Open lands on the file, not on the proof sheet beside it.
+   */
+  openFoundryWindow(projectDir?: string, opts?: { document?: string }): void;
   /** Stop the queue and the reading server. Idempotent; awaited on quit. */
   stopFoundry(): Promise<void>;
   /** The library root Foundry is answering with, or null when unmounted. */
@@ -7471,20 +7480,45 @@ function setupIpcHandlers(): void {
    * first-contact callback. The unknown-key refusal in the export handler stays
    * as the backstop for landings from genuinely alien projects — a stray file
    * somebody imported inside the window, which belongs to no book of ours.
+   *
+   * `documentPath` names ONE FILE to land on, and it is what the versions page's
+   * Open buttons pass: the row names a file, so the press opens that file. It
+   * travels with the project dir rather than instead of it — a file inside a
+   * project adopts into that project's context on Foundry's side — and it is
+   * the LANDING, so Foundry does not also raise the project's proof sheet.
    */
-  ipcMain.handle('foundry-host:open', async (_event, projectDir: string) => {
+  ipcMain.handle('foundry-host:open', async (_event, projectDir: string, documentPath?: string) => {
     try {
       if (!projectDir || !fsSync.existsSync(projectDir)) return { success: false, error: 'Project not found' };
+      // A named document is checked HERE even though Foundry's admission door
+      // would only log its refusal: this side has a user in front of it, and a
+      // press that lands nowhere must say why in a sentence rather than in a
+      // log the user will never read.
+      let document: string | undefined;
+      if (documentPath !== undefined) {
+        if (!path.isAbsolute(documentPath)) {
+          return { success: false, error: `Foundry needs a full path to open a file, and “${documentPath}” is not one. Nothing was opened.` };
+        }
+        let isFile = false;
+        try { isFile = (await fs.stat(documentPath)).isFile(); } catch { /* named below */ }
+        if (!isFile) {
+          return { success: false, error: `There is no file at ${documentPath}, so Foundry has nothing to open. It may have been moved, deleted, or not yet synced to this machine.` };
+        }
+        document = documentPath;
+      }
       // LAZILY, here rather than at startup: a library with no Foundry project
       // has no reason to carry an empty folder, and this is the first moment one
       // is genuinely wanted. Recursive, so pressing the button twice is nothing.
       await fs.mkdir(foundryProjectsDir(), { recursive: true });
       const key = await manifestService.readFoundryProject(projectDir);
       if (key === null) {
-        foundryMount.openFoundryWindow();
+        foundryMount.openFoundryWindow(undefined, document ? { document } : undefined);
         return { success: true, opened: 'bare' as const };
       }
-      foundryMount.openFoundryWindow(path.join(foundryProjectsDir(), key));
+      foundryMount.openFoundryWindow(
+        path.join(foundryProjectsDir(), key),
+        document ? { document } : undefined,
+      );
       return { success: true, opened: 'project' as const };
     } catch (err) { console.error('[foundry-host:open]', err); return { success: false, error: (err as Error).message }; }
   });
@@ -12288,6 +12322,10 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
+  // Unreachable since 2026-08-16 (Owen's ruling: Foundry is the one editing
+  // surface); deleted in the chain-deletion wave. Both openers below still work
+  // if invoked, but no renderer affordance and no main-side flow invokes them —
+  // every door that used to land here now lands in the hosted Foundry window.
   ipcMain.handle('editor:open-window', async (_event, rawProjectPath: string, options?: { mode?: string }) =>
     openEditorWindow(rawProjectPath, options));
 

@@ -59,7 +59,10 @@ import { StudioItem } from '../../models/studio.types';
       @if (ctxMenu(); as ctx) {
         <div class="ctx-backdrop" (click)="ctxMenu.set(null)" (contextmenu)="$event.preventDefault(); ctxMenu.set(null)"></div>
         <div class="ctx-menu" [style.top.px]="ctx.y" [style.left.px]="ctx.x">
-          <button class="ctx-item" (click)="editRequested.emit(ctx.item); ctxMenu.set(null)">Edit (PDF viewer)</button>
+          <!-- "Edit (PDF viewer)" is gone: it opened the legacy editor window,
+               unreachable since 2026-08-16 (Owen's ruling: Foundry is the one
+               editing surface). Open in workspace is the way in, and the book's
+               own Edit in Foundry button is one press further. -->
           <button class="ctx-item" (click)="open.emit(ctx.item); ctxMenu.set(null)">Open in workspace</button>
           @if (ctx.item.audiobookPath || hasBilingual(ctx.item)) {
             <button class="ctx-item" (click)="exportRequested.emit(ctx.item); ctxMenu.set(null)">Export audiobook…</button>
@@ -167,7 +170,6 @@ export class StudioBrowseComponent {
   readonly items = input<StudioItem[]>([]);
   readonly selectedId = input<string | null>(null);
   readonly open = output<StudioItem>();
-  readonly editRequested = output<StudioItem>();
   readonly exportRequested = output<StudioItem>();
   /** Move this item between the Books and Articles sections (flips projectType). */
   readonly reclassifyRequested = output<StudioItem>();

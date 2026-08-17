@@ -25,9 +25,7 @@ import { CorrectSentencesComponent } from '../correct-sentences/correct-sentence
 import { MetadataEditorComponent, EpubMetadata } from '../audiobook/components/metadata-editor/metadata-editor.component';
 import { TTSSettings } from './models/tts.types';
 import { SkippedChunksPanelComponent } from '../audiobook/components/skipped-chunks-panel/skipped-chunks-panel.component';
-import { VersionPickerDialogComponent, VersionPickerDialogData, VariantOption } from './components/version-picker-dialog/version-picker-dialog.component';
 import { DiffRequest } from './components/project-files/project-files.component';
-import { ProjectVersion } from './models/project-version.types';
 
 import { ElectronService } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
@@ -61,7 +59,6 @@ import { isBookPath } from '@shared/document/book-path';
     CorrectSentencesComponent,
     MetadataEditorComponent,
     SkippedChunksPanelComponent,
-    VersionPickerDialogComponent,
     StudioBrowseComponent,
     StudioVersionsComponent,
     StudioAnalysisModalComponent,
@@ -160,7 +157,6 @@ import { isBookPath } from '@shared/document/book-path';
           [items]="browseItems()"
           [selectedId]="selectedItemId()"
           (open)="openInWorkspace($event)"
-          (editRequested)="editFromBrowse($event)"
           (exportRequested)="exportFromBrowse($event)"
           (reclassifyRequested)="reclassifyFromBrowse($event)"
           (reorder)="onBrowseReorder($event)"
@@ -363,7 +359,7 @@ import { isBookPath } from '@shared/document/book-path';
                       [projectDir]="selectedItem()?.projectDir || ''"
                       [item]="selectedItem()"
                       [refreshTrigger]="filesRefreshTrigger()"
-                      (open)="openVariantInEditor($event)"
+                      (open)="openInFoundry($event)"
                       (exportDoc)="exportDocument($event)"
                       (exportAudio)="exportM4b($event)"
                       (listen)="openListen($event)"
@@ -374,7 +370,6 @@ import { isBookPath } from '@shared/document/book-path';
                       (correctSentences)="startCorrectSentences()"
                       (changed)="onFileChanged()"
                       (compareActive)="versionsComparing.set($event)"
-                      (viewAnalysis)="openEditorWithFile($event.path)"
                       (generateAnalysis)="onGenerateAnalysis($event)"
                     />
                   }
@@ -592,13 +587,6 @@ import { isBookPath } from '@shared/document/book-path';
           <button class="epub-picker-cancel" (click)="epubPickerVisible.set(false)">Cancel</button>
         </div>
       </div>
-    }
-
-    <!-- Version Picker Dialog -->
-    @if (showVersionPicker()) {
-      <app-version-picker-dialog
-        [data]="versionPickerData()"
-      />
     }
 
   `,
@@ -1695,8 +1683,6 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly analyticsLoading = signal<boolean>(false);
 
   // Version picker dialog
-  readonly showVersionPicker = signal<boolean>(false);
-  readonly versionPickerData = signal<VersionPickerDialogData | null>(null);
 
   // Context menu
   readonly contextMenuVisible = signal<boolean>(false);
@@ -1860,11 +1846,16 @@ export class StudioComponent implements OnInit, OnDestroy {
    * a manifest record and this window holds a cached read of it. Pressing again
    * while the window is open raises it; that too is main's (really Foundry's)
    * rule, so nothing is tracked here.
+   *
+   * `documentPath` is what the versions page's Open buttons pass: that press was
+   * made ON A FILE, so Foundry lands on the file. The workspace's own Edit in
+   * Foundry button passes nothing — that press is about the BOOK, and it opens
+   * the project.
    */
-  async openInFoundry(): Promise<void> {
+  async openInFoundry(documentPath?: string): Promise<void> {
     const dir = this.selectedItem()?.projectDir ?? '';
     if (!dir) return;
-    const res = await this.electronService.foundryHostOpen(dir);
+    const res = await this.electronService.foundryHostOpen(dir, documentPath);
     if (!res.success) {
       await this.electronService.showMessageDialog({
         title: 'Could not open Foundry',
@@ -2317,13 +2308,6 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.viewMode.set('workspace');
   }
 
-  // Quick "Edit" from the Browse context menu — open the PDF/EPUB editor without
-  // leaving Browse (the editor opens in its own window).
-  editFromBrowse(item: StudioItem): void {
-    this.selectItem(item);
-    void this.openEditor();
-  }
-
   // Quick "Export audiobook" from the Browse context menu.
   exportFromBrowse(item: StudioItem): void {
     this.contextMenuItem.set(item);
@@ -2350,38 +2334,6 @@ export class StudioComponent implements OnInit, OnDestroy {
     const id = this.selectedItemId();
     if (id) {
       await this.studioService.reloadItem(id);
-    }
-  }
-
-  /**
-   * Open the editor for a specific file path (from file browser).
-   * Routes through the version picker for projects.
-   */
-  async openEditorWithFile(filePath: string): Promise<void> {
-    const item = this.selectedItem();
-    if (!item) return;
-
-    if (item.projectDir) {
-      await this.openEditorWithProjectDir(item.projectDir, filePath);
-    } else {
-      await this.openEditorWithVersion(filePath);
-    }
-  }
-
-  /**
-   * Open a book VARIANT file directly in the editor as a standalone document
-   * (no project state), so a reader can view/edit that specific edition. Only
-   * EPUB/PDF variants offer this (the editor is mupdf-backed).
-   */
-  async openVariantInEditor(filePath: string): Promise<void> {
-    const result = await this.electronService.editorOpenWindow(filePath);
-    if (!result.success) {
-      console.error('[Studio] Failed to open version in editor:', result.error);
-      void this.electronService.showMessageDialog({
-        title: 'Could not open editor',
-        message: result.error || 'Failed to open this edition in the editor.',
-        type: 'error',
-      });
     }
   }
 
@@ -3088,157 +3040,6 @@ export class StudioComponent implements OnInit, OnDestroy {
       });
     });
   }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Editor Window
-  // ─────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Get the path to use for the editor.
-   * Prefers projectDir (existing project), falls back to epubPath (source file).
-   */
-  getEditorPath(): string | null {
-    const item = this.selectedItem();
-    if (!item) return null;
-
-    // Prefer the project directory if available
-    if (item.projectDir) {
-      return item.projectDir;
-    }
-
-    // Fall back to source EPUB/PDF path
-    if (item.epubPath) {
-      return item.epubPath;
-    }
-
-    return null;
-  }
-
-  /**
-   * Open the editor. A fresh project (nothing exported yet) opens its source book
-   * directly: a single ebook edition is auto-picked; multiple editions pop a
-   * picker so the user chooses which one to edit. Once editing has started
-   * (exported/cleaned exist), the version picker offers the working files too.
-   */
-  async openEditor(): Promise<void> {
-    const item = this.selectedItem();
-    if (!item) return;
-
-    const projectId = item.projectDir ? (item.id.split(/[\\/]/).filter(Boolean).pop() || '') : '';
-
-    // The book's ebook editions — the choices for which source to edit.
-    let variantOptions: VariantOption[] = [];
-    if (projectId) {
-      try {
-        const vres = await this.electronService.variantList(projectId);
-        if (vres.success && vres.variants) {
-          variantOptions = (vres.variants as Array<{ id: string; kind: string; format: string; descriptor?: string; metadata?: { title?: string } }>)
-            .filter(v => v.kind === 'ebook')
-            .map(v => {
-              const t = (v.metadata?.title || '').trim();
-              const d = (v.descriptor || '').trim();
-              const label = t && d ? `${t} (${d})` : (t || d || 'Untitled edition');
-              return { id: v.id, label, descriptor: v.descriptor, format: v.format, icon: '📖' };
-            });
-        }
-      } catch { /* no variants — fall back to the resolved source path */ }
-    }
-
-    const fresh = this.needsExport() && !item.hasAnalysis;
-
-    // Fresh project → pick which edition to edit.
-    if (item.projectDir && fresh) {
-      if (variantOptions.length > 1) { this.showSourcePicker(item, projectId, variantOptions); return; }
-      if (variantOptions.length === 1) { await this.editEdition(item, projectId, variantOptions[0].id); return; }
-      // No editions recorded — fall back to the resolved source path (legacy projects).
-      if (item.epubPath) { await this.openEditorWithProjectDir(item.projectDir, item.epubPath); return; }
-    }
-
-    // Editing already started (exported/cleaned exist) or re-opening → version picker
-    // (working files + editions). No project directory → open the source file directly.
-    if (item.projectDir) { this.showSourcePicker(item, projectId, variantOptions); return; }
-    if (item.epubPath) { this.openEditorWithVersion(item.epubPath); return; }
-
-    // No project directory AND no source document on disk. There is nothing to open,
-    // so say that rather than letting the click do nothing — epubPath is null for a
-    // project with no source file (see StudioItem.epubPath), and the old invented
-    // fallback path meant this branch could never be reached, it just opened an editor
-    // that then failed on a file the user had never seen.
-    void this.electronService.showMessageDialog({
-      title: 'Nothing to edit',
-      message: `“${item.title}” has no source document on disk, so there is nothing for the editor `
-        + 'to open. Add a version on the Versions tab first.',
-      type: 'info',
-    });
-  }
-
-  /** Copy the chosen ebook edition into the pipeline (pristine edition untouched)
-   *  and open it in the editor. */
-  private async editEdition(item: StudioItem, projectId: string, variantId: string): Promise<void> {
-    const res = await this.electronService.variantSendToPipeline(projectId, variantId);
-    if (res.success && res.sourcePath) {
-      await this.openEditorWithProjectDir(item.projectDir!, res.sourcePath);
-      this.studioService.reloadItem(item.id);   // source changed → refresh derived state
-    } else {
-      console.error('[Studio] Failed to open edition in editor:', res.error);
-      void this.electronService.showMessageDialog({
-        title: 'Could not open edition',
-        message: res.error || 'Failed to copy this edition into the pipeline.',
-        type: 'error',
-      });
-    }
-  }
-
-  /** Show the version picker: pipeline working files plus the book's ebook editions. */
-  private showSourcePicker(item: StudioItem, projectId: string, variantOptions: VariantOption[]): void {
-    this.versionPickerData.set({
-      projectDir: item.projectDir!,
-      onSelect: (version: ProjectVersion) => {
-        this.showVersionPicker.set(false);
-        this.openEditorWithProjectDir(item.projectDir!, version.path);
-      },
-      onCancel: () => this.showVersionPicker.set(false),
-      variants: variantOptions.length ? variantOptions : undefined,
-      onSelectVariant: variantOptions.length
-        ? (variantId: string) => { this.showVersionPicker.set(false); void this.editEdition(item, projectId, variantId); }
-        : undefined,
-    });
-    this.showVersionPicker.set(true);
-  }
-
-  /**
-   * Open the editor window with a specific version (no project - direct file editing)
-   */
-  private async openEditorWithVersion(versionPath: string): Promise<void> {
-    const result = await this.electronService.editorOpenWindow(versionPath);
-    if (!result.success) {
-      console.error('[Studio] Failed to open editor window:', result.error);
-      void this.electronService.showMessageDialog({
-        title: 'Could not open editor',
-        message: result.error || 'Failed to open the editor window.',
-        type: 'error',
-      });
-    }
-  }
-
-  /**
-   * Open the editor window with a project directory and a specific source version
-   * This ensures project state (deletions, chapters) is preserved
-   */
-  private async openEditorWithProjectDir(projectDir: string, sourcePath: string): Promise<void> {
-    const result = await this.electronService.editorOpenWindowWithBfp(projectDir, sourcePath);
-    if (!result.success) {
-      console.error('[Studio] Failed to open editor window:', result.error);
-      void this.electronService.showMessageDialog({
-        title: 'Could not open editor',
-        message: result.error || 'Failed to open the editor window.',
-        type: 'error',
-      });
-    }
-  }
-
-  // Labelling is a mode inside the editor (the left rail), not a way of opening
-  // it: open any version with Open and switch to Label there.
 
   // ─────────────────────────────────────────────────────────────────────────
   // Processing
