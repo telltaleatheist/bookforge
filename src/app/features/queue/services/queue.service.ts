@@ -1,295 +1,66 @@
 /**
- * Queue Service - Manages the unified processing queue
+ * QueueService — a MIRROR of the queue, which lives in main.
  *
- * Signal-based state management for job queue operations.
- * Jobs are processed sequentially and automatically.
+ * ── What this used to be ────────────────────────────────────────────────────
+ *
+ * 5,373 lines: the scheduler, two-lane concurrency, persistence, a 1,590-line
+ * `runJob` ladder with one branch per job type, and eight per-bridge progress
+ * subscriptions each with its own wire shape. All of it in a process that can be
+ * reloaded, closed, or opened twice — which is how a renderer reload came to
+ * orphan the GPU, and how every extra Listen window booted a second scheduler
+ * that wrote its own `queue.json` over the one the user was watching.
+ *
+ * ── What it is now ──────────────────────────────────────────────────────────
+ *
+ * Seed from `queue:list`, replace on `queue:changed`, and turn what the
+ * components ask for into an IPC call. NO scheduling, NO persistence, NO
+ * progress parsing. The second-window hazard is gone by construction: a mirror
+ * that never writes cannot overwrite anything, so a Listen window showing the
+ * queue is a second VIEW rather than a second scheduler.
+ *
+ * ── Why it still speaks in the old shape ────────────────────────────────────
+ *
+ * The engine's model is a JOB with a CHAIN OF STEPS. The queue tab's model is a
+ * flat list of rows where a run is a master row plus children carrying
+ * `parentJobId`/`workflowId`. Those are the same thing said twice, and this file
+ * is where the translation lives (`projectJobs`) — one function, so the tab, the
+ * ETA service and the stage bars keep working unchanged while the truth moved
+ * processes. A row's `id` is a STEP id; a master row's is the job's.
  */
 
-import { Injectable, inject, signal, computed, DestroyRef, NgZone, effect } from '@angular/core';
+import { Injectable, inject, signal, computed, DestroyRef, NgZone } from '@angular/core';
+
 import {
   QueueJob,
   JobType,
   JobStatus,
-  QueueState,
-  QueueProgress,
-  JobResult,
   CreateJobRequest,
   JobConfig,
   TtsConversionConfig,
-  TranslationJobConfig,
-  RvcEnhancementJobConfig,
-  ReassemblyJobConfig,
-  BilingualCleanupJobConfig,
-  BilingualTranslationJobConfig,
-  BilingualAssemblyJobConfig,
-  VideoAssemblyJobConfig,
-  AudiobookJobConfig,
-  BookAnalysisConfig,
-  GenerateSentencesJobConfig,
-  ResumeCheckResult,
-  TtsResumeInfo,
-  JobStageProgress,
-  ActiveBatchProgress,
   ProcessingPassJobConfig,
   PASS_JOB_TYPES,
-  RETIRED_JOB_TYPES,
-  RATE_WINDOW_MIN_SECONDS
 } from '../models/queue.types';
-import type { PassJobConfig, PassJobResult, ProcessingChainPlan, ProcessingChainRequest } from '@shared/processing/pass-types';
+import type {
+  ArtifactRef,
+  QueueJob as EngineJob,
+  QueueSnapshot,
+  QueueStep as EngineStep,
+  StepStatus,
+} from '@shared/queue/engine-types';
+import { jobPercent, jobStatus, SOURCE_PARENT } from '@shared/queue/engine-types';
+import type { PassJobResult, ProcessingChainPlan, ProcessingChainRequest } from '@shared/processing/pass-types';
 import { passResultNotes } from '@shared/processing/pass-notes';
-import { stagesFor } from '../models/job-stages';
-import { JobEtaService } from './job-eta.service';
-import {
-  buildConversionConfig,
-  runConversionJob,
-  stagesOf,
-  type VlmConvertJobConfig,
-} from '../jobs/vlm-convert-job';
-import { samePath } from '@shared/document/same-path';
+import { buildConversionConfig, type VlmConvertJobConfig } from '../jobs/vlm-convert-job';
 import { isExplodedBookPath, WORKING_COPY_SUFFIX } from '@shared/document/book-path';
-import { AIProvider } from '../../../core/models/ai-config.types';
-import { collapseFilenameDots } from '../../../core/utils/filename-utils';
 import { StudioService } from '../../studio/services/studio.service';
-import { SettingsService } from '../../../core/services/settings.service';
-import { RuntimeService } from '../../../core/services/runtime.service';
 import { ElectronService } from '../../../core/services/electron.service';
 
-// AI Provider config for IPC
-interface AIProviderConfig {
-  provider: AIProvider;
-  ollama?: { baseUrl: string; model: string };
-  claude?: { apiKey: string; model: string };
-  openai?: { apiKey: string; model: string };
-}
-
-// Parallel TTS progress type
-interface ParallelWorkerState {
-  id: number;
-  sentenceStart: number;
-  sentenceEnd: number;
-  currentSentence: number;
-  completedSentences: number;
-  status: 'pending' | 'running' | 'complete' | 'error';
-  error?: string;
-}
-
-interface ParallelAggregatedProgress {
-  /** Mirrors AggregatedProgress.phase in parallel-tts-bridge.ts. 'stopped' is a user stop:
-   *  terminal but RESUMABLE, and deliberately distinct from 'error'. */
-  phase: 'preparing' | 'converting' | 'assembling' | 'complete' | 'error' | 'stopped';
-  totalSentences: number;
-  completedSentences: number;
-  percentage: number;
-  activeWorkers: number;
-  workers: ParallelWorkerState[];
-  estimatedRemaining: number;
-  message?: string;
-  error?: string;
-  // Ordered stage bars reported by parallel-tts-bridge (prepare → load model →
-  // convert → assemble). Authoritative when present — only the bridge knows the
-  // model spent 40s loading before conversion started.
-  stages?: JobStageProgress[];
-  // What's happening inside the running stage right now (MLX bucket heartbeat,
-  // which chunk is being repaired, which chapter is being combined).
-  stageDetail?: string;
-  // Progress inside the MLX batch currently decoding. Absent when none is.
-  activeBatch?: ActiveBatchProgress;
-}
-
-// Access window.electron directly
-declare global {
-  interface Window {
-    electron?: {
-      queue?: {
-        runTtsConversion: (jobId: string, epubPath: string, config: any) => Promise<{ success: boolean; data?: any; error?: string }>;
-        runTranslation: (jobId: string, epubPath: string, translationConfig: any, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
-        runBookAnalysis: (jobId: string, source: BookAnalysisConfig['source'], aiConfig: AIProviderConfig & {
-          categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
-          testMode?: boolean;
-          testModeChunks?: number;
-        }) => Promise<{ success: boolean; data?: any; error?: string }>;
-        cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
-        saveState: (queueState: string) => Promise<{ success: boolean; error?: string }>;
-        loadState: () => Promise<{ success: boolean; data?: any; error?: string }>;
-        onProgress: (callback: (progress: QueueProgress) => void) => () => void;
-        onComplete: (callback: (result: JobResult) => void) => () => void;
-        onRemoteControl: (callback: (action: 'start' | 'pause') => void) => () => void;
-      };
-      processing?: {
-        // `data` is main's PassJobResult, WHOLE. It was re-declared here as three of
-        // its fields, which is how `ledgerRefusal` / `narrationCarryNote` / `summary`
-        // became unreachable from the renderer without anyone writing a line to drop
-        // them — the type simply did not admit they existed.
-        runPass: (jobId: string, config: PassJobConfig) => Promise<{ success: boolean; data?: PassJobResult; error?: string }>;
-        onEnqueueChain: (callback: (plan: ProcessingChainPlan) => void) => () => void;
-      };
-      parallelTts?: {
-        detectRecommendedWorkerCount: () => Promise<{ success: boolean; data?: { count: number; reason: string }; error?: string }>;
-        startConversion: (jobId: string, config: any) => Promise<{ success: boolean; data?: any; error?: string }>;
-        stopConversion: (jobId: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
-        getProgress: (jobId: string) => Promise<{ success: boolean; data?: ParallelAggregatedProgress | null; error?: string }>;
-        isActive: (jobId: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
-        listActive: () => Promise<{ success: boolean; data?: Array<{ jobId: string; progress: ParallelAggregatedProgress; epubPath: string; startTime: number }>; error?: string }>;
-        onProgress: (callback: (data: { jobId: string; progress: ParallelAggregatedProgress }) => void) => () => void;
-        onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any; rvcAnalytics?: any; wasStopped?: boolean; stopInfo?: { sessionId?: string; sessionDir?: string; processDir?: string; completedSentences?: number; totalSentences?: number; stoppedAt?: string }; sessionId?: string; sessionDir?: string }) => void) => () => void;
-        // Session tracking for stop/resume
-        onSessionCreated: (callback: (data: { jobId: string; sessionId: string; sessionDir: string; processDir: string; totalSentences: number; totalChapters: number }) => void) => () => void;
-        // Resume support
-        checkResumeFast: (epubPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
-        checkResumeFromDir: (processDir: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
-        checkResume: (sessionPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
-        resumeConversion: (jobId: string, config: any, resumeInfo: ResumeCheckResult) => Promise<{ success: boolean; data?: any; error?: string }>;
-        buildResumeInfo: (prepInfo: any, settings: any) => Promise<{ success: boolean; data?: TtsResumeInfo; error?: string }>;
-      };
-      sessionCache?: {
-        scanProject: (projectDir: string) => Promise<{ success: boolean; sessions?: Array<{ language: string; sessionDir: string; sentencesDir: string; sentenceCount: number; createdAt: string }>; error?: string }>;
-      };
-      debug?: {
-        /** Persist a TTS resume/cache decision to tts.log (renderer console.logs don't survive). */
-        ttsDecision: (level: 'INFO' | 'WARN' | 'ERROR', message: string, data?: Record<string, unknown>) => Promise<void>;
-      };
-      shell?: {
-        openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
-      };
-      ai?: {
-        checkProviderConnection: (provider: AIProvider) => Promise<{ success: boolean; data?: { available: boolean; error?: string; models?: string[] }; error?: string }>;
-      };
-      epub?: {
-        editText: (epubPath: string, chapterId: string, oldText: string, newText: string) => Promise<{ success: boolean; error?: string }>;
-      };
-      fs?: {
-        exists: (filePath: string) => Promise<boolean>;
-        deleteDirectory: (dirPath: string) => Promise<{ success: boolean; error?: string }>;
-      };
-      reassembly?: {
-        startReassembly: (jobId: string, config: {
-          sessionId: string;
-          sessionDir: string;
-          processDir: string;
-          outputDir: string;
-          totalChapters?: number;
-          metadata: { title: string; author: string; year?: string; coverPath?: string; outputFilename?: string };
-          excludedChapters: number[];
-          rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number; nSemitones?: number };
-          sentencesDir?: string;
-          finalDenoise?: boolean;
-          applyDeRing?: boolean;
-          sentenceGap?: number;
-        }) => Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }>;
-        onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
-      };
-      rvc?: {
-        startEnhancement: (jobId: string, config: {
-          sessionId: string;
-          sessionDir: string;
-          processDir: string;
-          voiceId: string;
-          indexRate?: number;
-          protectRate?: number;
-          nSemitones?: number;
-          finalDenoise?: boolean;
-        }) => Promise<{ success: boolean; data?: { scratchDir?: string }; error?: string; wasStopped?: boolean }>;
-        stopEnhancement: (jobId: string) => Promise<{ success: boolean; error?: string }>;
-        onProgress: (callback: (data: { jobId: string; progress: { phase: string; percentage: number; processed?: number; total?: number; message?: string; error?: string } }) => void) => () => void;
-      };
-      languageLearning?: {
-        runJob: (jobId: string, config: {
-          projectId: string;
-          sourceUrl: string;
-          sourceLang: string;
-          targetLang?: string;      // Legacy single language
-          targetLangs?: string[];   // Multi-language support
-          htmlPath: string;
-          pdfPath?: string;
-          deletedBlockIds: string[];
-          title?: string;
-          aiProvider: AIProvider;
-          aiModel: string;
-          ollamaBaseUrl?: string;
-          claudeApiKey?: string;
-          openaiApiKey?: string;
-          // AI prompt settings
-          translationPrompt?: string;
-          enableCleanup?: boolean;
-          cleanupPrompt?: string;
-          // TTS settings
-          sourceVoice: string;
-          targetVoice: string;
-          ttsEngine: 'xtts' | 'orpheus';
-          sourceTtsSpeed: number;
-          targetTtsSpeed: number;
-          device: 'gpu' | 'mps' | 'cpu';
-          workerCount?: number;
-        }) => Promise<{ success: boolean; data?: any; error?: string }>;
-        onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
-      };
-      // Language Learning Split Pipeline
-      bilingualCleanup?: {
-        run: (jobId: string, config: {
-          projectId: string;
-          projectDir: string;
-          sourceEpubPath?: string;
-          sourceLang: string;
-          aiProvider: AIProvider;
-          aiModel: string;
-          ollamaBaseUrl?: string;
-          claudeApiKey?: string;
-          openaiApiKey?: string;
-          cleanupPrompt?: string;
-          customInstructions?: string;
-          simplifyForLearning?: boolean;
-          simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
-          startFresh?: boolean;
-          testMode?: boolean;
-          testModeChunks?: number;
-        }) => Promise<{
-          success: boolean;
-          outputPath?: string;
-          error?: string;
-          nextJobConfig?: { cleanedEpubPath?: string };
-        }>;
-        onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
-      };
-      bilingualTranslation?: {
-        run: (jobId: string, config: {
-          projectId?: string;
-          projectDir?: string;
-          cleanedEpubPath?: string;
-          sourceLang: string;
-          targetLang: string;
-          title?: string;
-          aiProvider: AIProvider;
-          aiModel: string;
-          ollamaBaseUrl?: string;
-          claudeApiKey?: string;
-          openaiApiKey?: string;
-          translationPrompt?: string;
-          customInstructions?: string;
-          testMode?: boolean;
-          testModeChunks?: number;
-        }) => Promise<{
-          success: boolean;
-          outputPath?: string;
-          error?: string;
-          nextJobConfig?: {
-            epubPath?: string;
-            sentencePairsPath?: string;
-            sourceEpubPath?: string;
-            targetEpubPath?: string;
-          };
-        }>;
-        onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
-      };
-    };
-  }
-}
-
 /**
- * What a pass run performed HERE came to — `QueueService.runProcessingRunNow`.
+ * What a pass run performed HERE came to — `runProcessingRunNow`.
  *
- * Three outcomes and they are genuinely different, so none of them is folded
- * into another: the planner refused (nothing ran), a pass failed partway (the
- * ones before it really did rewrite the book), or every one of them ran.
+ * Three outcomes and they are genuinely different, so none is folded into
+ * another: the planner refused (nothing ran), a pass failed partway (the ones
+ * before it really did rewrite the book), or every one of them ran.
  */
 export interface DirectPassRunResult {
   success: boolean;
@@ -299,1481 +70,678 @@ export interface DirectPassRunResult {
   failure: { label: string; error: string } | null;
   /** A refusal from the PLANNER — nothing ran, and this says why. */
   error?: string;
-  /**
-   * What the passes that RAN had to say beyond succeeding, each already named by
-   * the pass that said it — a ledger refusal, a narration-carry note, a count of
-   * markers removed. Empty when they had nothing to add, which is the ordinary
-   * case.
-   *
-   * A run with no queue row has no row to put these on, so the modal that started
-   * it is where they have to be read. Collected even on the failure path: the
-   * passes before the failure really did rewrite the book, and their notes are
-   * about that book.
-   */
+  /** What the passes that RAN had to say beyond succeeding, each named by its pass. */
   notes: string[];
 }
 
-@Injectable({
-  providedIn: 'root'
-})
+/** One step, as the engine takes it. Mirrors electron/queue-engine.ts StepSpec. */
+interface StepSpec {
+  type: JobType;
+  label: string;
+  config: Record<string, unknown>;
+  parentIndex?: number;
+  sourceRef?: ArtifactRef;
+}
+
+interface AppendStepSpec {
+  type: JobType;
+  label: string;
+  config: Record<string, unknown>;
+  parentStepId: string;
+  sourceRef?: ArtifactRef;
+}
+
+interface QueueBridge {
+  list(): Promise<{ success: boolean; data?: QueueSnapshot; error?: string }>;
+  enqueue(spec: unknown): Promise<{ success: boolean; data?: EngineJob; error?: string }>;
+  appendStep(jobId: string, spec: AppendStepSpec): Promise<{ success: boolean; data?: EngineStep; error?: string }>;
+  release(target?: { jobId?: string; stepId?: string }): Promise<{ success: boolean; error?: string }>;
+  start(target?: { jobId?: string; stepId?: string }): Promise<{ success: boolean; error?: string }>;
+  pause(): Promise<{ success: boolean; error?: string }>;
+  cancel(target: { jobId?: string; stepId?: string }, reason?: string): Promise<{ success: boolean; error?: string }>;
+  retry(target: { jobId?: string; stepId?: string }): Promise<{ success: boolean; error?: string }>;
+  remove(jobId: string): Promise<{ success: boolean; error?: string }>;
+  reorder(jobId: string, beforeJobId: string | null): Promise<{ success: boolean; error?: string }>;
+  clearFinished(): Promise<{ success: boolean; error?: string }>;
+  updateStepConfig(stepId: string, patch: Record<string, unknown>): Promise<{ success: boolean; error?: string }>;
+  onChanged(cb: (snapshot: QueueSnapshot) => void): () => void;
+  onStepFinished(cb: (event: StepFinishedEvent) => void): () => void;
+}
+
+interface StepFinishedEvent {
+  jobId: string;
+  stepId: string;
+  type: JobType;
+  label: string;
+  projectId?: string;
+  success: boolean;
+  outputPath?: string;
+  error?: string;
+  analytics?: { jobId: string; [key: string]: unknown };
+}
+
+declare global {
+  interface Window {
+    electron?: {
+      queue?: QueueBridge;
+      processing?: {
+        runPass: (jobId: string, config: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+      };
+      audiobook?: {
+        linkAudio?: (projectDir: string, audioPath: string) => Promise<{ success: boolean; error?: string }>;
+        appendAnalytics?: (
+          projectDir: string, jobType: string, analytics: { jobId: string; [k: string]: unknown },
+        ) => Promise<{ success: boolean; error?: string }>;
+      };
+    };
+  }
+}
+
+/** The job types whose analytics the project ledger accepts. */
+const ANALYTICS_JOB_TYPES: ReadonlySet<string> = new Set([
+  'tts-conversion', 'reassembly', 'video-assembly', 'rvc', 'translation',
+]);
+
+/**
+ * A step's status, in the vocabulary the queue tab was written against.
+ *
+ * `held` splits: a step that has never run is waiting for Start ('pending'); one
+ * that HAS run and was interrupted is 'stopped', which is the state the per-row ▶
+ * exists for. That distinction is the whole reason `wasInterrupted` is carried.
+ */
+function legacyStatus(step: EngineStep): JobStatus {
+  switch (step.status) {
+    case 'running': return 'processing';
+    case 'done': return 'complete';
+    case 'failed': return 'error';
+    case 'cancelled': return 'error';
+    case 'held': return step.wasInterrupted ? 'stopped' : 'pending';
+    case 'queued': return 'pending';
+    case 'waiting': return 'pending';
+    default: return 'pending';
+  }
+}
+
+function legacyJobStatus(status: StepStatus): JobStatus {
+  switch (status) {
+    case 'running': return 'processing';
+    case 'done': return 'complete';
+    case 'failed': case 'cancelled': return 'error';
+    default: return 'pending';
+  }
+}
+
+function asDate(iso: string | undefined): Date | undefined {
+  return iso ? new Date(iso) : undefined;
+}
+
+/**
+ * The file a queue row NAMES, as the user knows that file.
+ *
+ * An exploded working copy is named as the BOOK it holds: taking the basename
+ * verbatim put ".working" in front of the user wherever `epubFilename` is read,
+ * and the container a book happens to be kept in read as its format. This is a
+ * LABEL and only a label — nothing resolves a path from it.
+ */
+function jobFileLabel(documentPath: string): string {
+  const parts = documentPath.replace(/\\/g, '/').split('/');
+  const name = parts[parts.length - 1];
+  return isExplodedBookPath(name)
+    ? `${name.slice(0, -WORKING_COPY_SUFFIX.length)}.epub`
+    : name;
+}
+
+/** One engine step → the row the queue tab draws. */
+function projectStep(job: EngineJob, step: EngineStep, multi: boolean): QueueJob {
+  const m = step.metrics;
+  return {
+    id: step.id,
+    type: step.type,
+    epubPath: step.sourceRef?.path ?? job.documentPath,
+    epubFilename: job.documentLabel,
+    status: legacyStatus(step),
+    progress: step.progress.percent,
+    stages: step.progress.stages,
+    stageDetail: step.progress.detail,
+    activeBatch: step.progress.activeBatch,
+    error: step.error,
+    outputPath: step.outputPath ?? step.output?.path,
+    addedAt: new Date(step.addedAt),
+    startedAt: asDate(step.startedAt),
+    completedAt: asDate(step.finishedAt),
+    metadata: { title: step.label },
+    projectDir: job.projectId,
+    parentJobId: multi ? job.id : undefined,
+    workflowId: multi ? job.id : undefined,
+    config: step.config as unknown as JobConfig,
+    currentChunk: m.currentChunk,
+    totalChunks: m.totalChunks,
+    currentChapter: m.currentChapter,
+    totalChapters: m.totalChapters,
+    chunksCompletedInJob: m.chunksCompletedInJob,
+    totalChunksInJob: m.totalChunksInJob,
+    totalRawSentencesInJob: m.totalRawSentencesInJob,
+    totalRawWordsInJob: m.totalRawWordsInJob,
+    totalRawCharsInJob: m.totalRawCharsInJob,
+    chunkCompletedAt: m.chunkCompletedAt,
+    firstChunkCompletedAt: m.firstChunkCompletedAt,
+    chunksAtFirstStamp: m.chunksAtFirstStamp,
+    progressMessage: step.progress.message,
+    cleanupPhase: m.cleanupPhase,
+    parallelWorkers: m.parallelWorkers,
+    isResumeJob: m.resumeCompletedSentences !== undefined,
+    resumeCompletedSentences: m.resumeCompletedSentences,
+    resumeMissingSentences: m.resumeMissingSentences,
+    chunksDoneInSession: m.chunksDoneInSession,
+    rawSentencesDoneInSession: m.rawSentencesDoneInSession,
+    rawWordsDoneInSession: m.rawWordsDoneInSession,
+    rawCharsDoneInSession: m.rawCharsDoneInSession,
+    audioSecondsPerChar: m.audioSecondsPerChar,
+    copyrightIssuesDetected: m.copyrightIssuesDetected,
+    copyrightChunksAffected: m.copyrightChunksAffected,
+    contentSkipsDetected: m.contentSkipsDetected,
+    contentSkipsAffected: m.contentSkipsAffected,
+    translationFailedChunks: m.translationFailedChunks,
+    skippedChunksPath: m.skippedChunksPath,
+    bfpPath: job.projectId,
+    analytics: step.analytics,
+    ttsPhase: m.ttsPhase,
+    ttsConversionProgress: m.ttsConversionProgress,
+    assemblyProgress: m.assemblyProgress,
+    assemblySubPhase: m.assemblySubPhase,
+    wasInterrupted: step.wasInterrupted,
+    orpheusMemoryLevel: m.orpheusMemoryLevel,
+    completionNotes: step.completionNotes,
+  };
+}
+
+/**
+ * The engine's runs → the flat master/child list the tab draws.
+ *
+ * A run with one step is ONE row and has no master: a master with a single child
+ * is a container around nothing, which is what the retired 'audiobook' job type
+ * was and why it is now a row the migration explicitly fails with a sentence.
+ */
+function projectJobs(jobs: EngineJob[]): QueueJob[] {
+  const rows: QueueJob[] = [];
+  for (const job of jobs) {
+    const multi = job.steps.length > 1;
+    if (multi) {
+      rows.push({
+        id: job.id,
+        type: 'audiobook',
+        epubPath: job.documentPath,
+        epubFilename: job.documentLabel,
+        status: legacyJobStatus(jobStatus(job)),
+        progress: jobPercent(job),
+        addedAt: new Date(job.createdAt),
+        startedAt: asDate(job.startedAt),
+        completedAt: asDate(job.finishedAt),
+        metadata: { title: job.title },
+        projectDir: job.projectId,
+        bfpPath: job.projectId,
+        workflowId: job.id,
+        config: { type: 'audiobook' },
+      });
+    }
+    for (const step of job.steps) rows.push(projectStep(job, step, multi));
+  }
+  return rows;
+}
+
+@Injectable({ providedIn: 'root' })
 export class QueueService {
   private readonly destroyRef = inject(DestroyRef);
   private readonly ngZone = inject(NgZone);
   private readonly studioService = inject(StudioService);
-  private readonly settingsService = inject(SettingsService);
-  private readonly runtimeService = inject(RuntimeService);
   private readonly electron = inject(ElectronService);
-  // The one throughput/ETA engine, shared with the queue panel so a child's row and
-  // the workflow total can never quote different numbers for the same work.
-  private readonly jobEta = inject(JobEtaService);
 
-  /**
-   * Cancellation handles for conversions currently running, by job id.
-   *
-   * A conversion is a document stage owned by MAIN, so stopping one is asking
-   * main to stop it — the abort here is only how the runner is told to make that
-   * ask. The map is keyed by job id and cleared in a `finally`, so a job that
-   * failed does not leave a handle behind for a later job to abort.
-   */
-  private readonly conversionAborts = new Map<string, AbortController>();
+  private readonly _snapshot = signal<QueueSnapshot>({ jobs: [], running: false });
 
-  /**
-   * Stop a running conversion, if this job is one. Safe to call for any job id.
-   *
-   * Separate from `electron.queue.cancelJob` because a conversion is not one of
-   * main's queue jobs: it is a document stage, and cancelling it means asking
-   * main to cancel THAT. Every path that removes or stops a job calls this too,
-   * or a row vanishes from the list while foundry keeps reading pages.
-   */
-  private abortConversion(jobId: string): void {
-    const abort = this.conversionAborts.get(jobId);
-    if (!abort) return;
-    abort.abort();
-    this.conversionAborts.delete(jobId);
-  }
+  /** The queue as the tab reads it: master rows and their steps, in order. */
+  readonly jobs = computed(() => projectJobs(this._snapshot().jobs));
+  readonly isRunning = computed(() => this._snapshot().running);
 
-  // Progress listener cleanup
-  private unsubscribeProgress: (() => void) | null = null;
-  private unsubscribeComplete: (() => void) | null = null;
-  private unsubscribeParallelProgress: (() => void) | null = null;
-  private unsubscribeParallelComplete: (() => void) | null = null;
-  private unsubscribeParallelSessionCreated: (() => void) | null = null;
-  private unsubscribeReassemblyProgress: (() => void) | null = null;
-  private unsubscribeRvcProgress: (() => void) | null = null;
-  private unsubscribeLanguageLearningProgress: (() => void) | null = null;
-  private unsubscribeLLJobProgress: (() => void) | null = null;
-  private unsubscribeRemoteControl: (() => void) | null = null;
-  private unsubscribeEnqueueChain: (() => void) | null = null;
+  readonly currentJob = computed(() =>
+    this.jobs().find(j => j.status === 'processing' && j.type !== 'audiobook') ?? null);
 
-  // Scratch dir of enhanced sentences produced by an 'rvc-enhancement' job,
-  // keyed by workflowId, consumed by the downstream reassembly job in the same
-  // workflow (injected as config.sentencesDir). Cleared once consumed.
-  private readonly rvcScratchByWorkflow = new Map<string, string>();
-
-  // State signals
-  private readonly _jobs = signal<QueueJob[]>([]);
-  private readonly _isRunning = signal<boolean>(false); // Don't auto-run - user starts manually
-  private readonly _currentJobId = signal<string | null>(null); // Queue-driven job in the EXCLUSIVE (GPU/CPU/local) lane
-  private readonly _currentCloudJobId = signal<string | null>(null); // Queue-driven job in the CLOUD lane (Claude/OpenAI network jobs)
-  private readonly _standaloneJobIds = signal<Set<string>>(new Set()); // Manually started jobs
-  private readonly _lastCompletedJobWithAnalytics = signal<{
-    jobId: string;
-    jobType: string;
-    bfpPath?: string;
-    analytics: any;
-  } | null>(null);
-
-  // Public readonly computed signals
-  readonly jobs = computed(() => this._jobs());
-  readonly isRunning = computed(() => this._isRunning());
-  readonly currentJobId = computed(() => this._currentJobId());
-  readonly currentCloudJobId = computed(() => this._currentCloudJobId());
-  readonly standaloneJobIds = computed(() => this._standaloneJobIds());
-  readonly lastCompletedJobWithAnalytics = computed(() => this._lastCompletedJobWithAnalytics());
-
-  // Check if any job is currently running (either lane or standalone)
-  readonly hasActiveJobs = computed(() =>
-    this._currentJobId() !== null || this._currentCloudJobId() !== null || this._standaloneJobIds().size > 0
-  );
-
-  // Computed helpers
-  readonly currentJob = computed(() => {
-    const id = this._currentJobId();
-    if (!id) return null;
-    return this._jobs().find(j => j.id === id) || null;
-  });
-
-  readonly pendingJobs = computed(() =>
-    this._jobs().filter(j => j.status === 'pending')
-  );
-
-  readonly completedJobs = computed(() =>
-    this._jobs().filter(j => j.status === 'complete')
-  );
-
-  readonly errorJobs = computed(() =>
-    this._jobs().filter(j => j.status === 'error')
-  );
-
-  readonly queueLength = computed(() =>
-    this._jobs().filter(j => j.status === 'pending' || j.status === 'processing').length
-  );
+  readonly pendingJobs = computed(() => this.jobs().filter(j => j.status === 'pending'));
 
   getChildJobs(masterJobId: string): QueueJob[] {
-    return this._jobs().filter(j => j.parentJobId === masterJobId);
+    return this.jobs().filter(j => j.parentJobId === masterJobId);
   }
+
+  /**
+   * Runs COMPOSED here that the engine has not been told about yet.
+   *
+   * `addJob` is called once for the master and once per child — the narration
+   * modal and the LL wizard both do this — and the engine will not take a run
+   * with no steps, because a run with no steps has no status to read. So a master
+   * `addJob` opens a composition and returns a row with a local id; the first
+   * child creates the real job; every later child appends to it. The local id is
+   * swapped for the engine's the moment there is one, so a caller holding the
+   * master's id can still address the run.
+   */
+  private readonly compositions = new Map<string, { jobId?: string; lastStepId?: string; spec: CreateJobRequest }>();
 
   constructor() {
-    this.setupIpcListeners();
+    void this.seed();
 
-    // Load persisted queue state on startup
-    this.loadQueueState();
-
-    // Auto-save queue state when jobs change (debounced)
-    let saveTimeout: ReturnType<typeof setTimeout> | null = null;
-    effect(() => {
-      const jobs = this._jobs();
-      // Debounce saves to avoid excessive writes
-      if (saveTimeout) clearTimeout(saveTimeout);
-      saveTimeout = setTimeout(() => {
-        this.saveQueueState();
-      }, 500);
-    });
-
-    // Resume the queue once the bundled runtime finishes its first-run unpack.
-    // processNext() bails out while the runtime is preparing (see guard there),
-    // so a job queued during setup — or a remote start from the bookshelf —
-    // would otherwise sit until the next completion event nudged the queue.
-    effect(() => {
-      if (this.runtimeService.ready() && this._isRunning()) {
-        this.processNext();
-      }
-    });
-
-    this.destroyRef.onDestroy(() => {
-      if (this.unsubscribeProgress) {
-        this.unsubscribeProgress();
-      }
-      if (this.unsubscribeComplete) {
-        this.unsubscribeComplete();
-      }
-      if (this.unsubscribeParallelProgress) {
-        this.unsubscribeParallelProgress();
-      }
-      if (this.unsubscribeParallelComplete) {
-        this.unsubscribeParallelComplete();
-      }
-      if (this.unsubscribeParallelSessionCreated) {
-        this.unsubscribeParallelSessionCreated();
-      }
-      if (this.unsubscribeReassemblyProgress) {
-        this.unsubscribeReassemblyProgress();
-      }
-      if (this.unsubscribeRvcProgress) {
-        this.unsubscribeRvcProgress();
-      }
-      if (this.unsubscribeLanguageLearningProgress) {
-        this.unsubscribeLanguageLearningProgress();
-      }
-      if (this.unsubscribeLLJobProgress) {
-        this.unsubscribeLLJobProgress();
-      }
-      if (this.unsubscribeRemoteControl) {
-        this.unsubscribeRemoteControl();
-      }
-      if (this.unsubscribeEnqueueChain) {
-        this.unsubscribeEnqueueChain();
-      }
-      this.stopMasterEtaTimer();
-    });
+    const bridge = window.electron?.queue;
+    if (bridge) {
+      const stopChanged = bridge.onChanged((snapshot) => {
+        this.ngZone.run(() => this._snapshot.set(snapshot));
+      });
+      const stopFinished = bridge.onStepFinished((event) => {
+        this.ngZone.run(() => { void this.onStepFinished(event); });
+      });
+      this.destroyRef.onDestroy(() => { stopChanged(); stopFinished(); });
+    }
   }
 
-  private setupIpcListeners(): void {
+  private async seed(): Promise<void> {
+    const bridge = window.electron?.queue;
+    if (!bridge) return;
+    const result = await bridge.list();
+    if (result.success && result.data) this._snapshot.set(result.data);
+  }
+
+  private requireBridge(): QueueBridge {
+    const bridge = window.electron?.queue;
+    if (!bridge) {
+      throw new Error('The queue lives in the BookForge desktop app, which is not running here.');
+    }
+    return bridge;
+  }
+
+  /** Main's own refusal, said out loud. Never swallowed into a silent no-op. */
+  private static settle(result: { success: boolean; error?: string }, what: string): void {
+    if (!result?.success) throw new Error(result?.error || `${what} failed and gave no reason.`);
+  }
+
+  // ── Post-completion effects ───────────────────────────────────────────────
+  //
+  // Filing the audio against the project, recording its analytics and reloading
+  // the shelf are LIBRARY acts, and the handlers that perform them
+  // (`audiobook:link-audio`, `audiobook:append-analytics`) are the ones every
+  // other library surface calls. They hang off the engine's step-finished event
+  // rather than off a diff of two snapshots, so they happen exactly once.
+
+  private async onStepFinished(event: StepFinishedEvent): Promise<void> {
+    if (!event.success || !event.projectId) return;
     const electron = window.electron;
-    if (!electron?.queue) return;
 
-    // Listen for progress updates
-    this.unsubscribeProgress = electron.queue.onProgress((progress: QueueProgress) => {
-      this.ngZone.run(() => {
-        this.handleProgressUpdate(progress);
-      });
-    });
-
-    // Listen for job completion
-    this.unsubscribeComplete = electron.queue.onComplete((result: JobResult) => {
-      this.ngZone.run(async () => {
-        await this.handleJobComplete(result);
-      });
-    });
-
-    // A processing run planned in main. The plan arrives whole and is enqueued
-    // whole, in order — see enqueueChain.
-    if (electron.processing?.onEnqueueChain) {
-      this.unsubscribeEnqueueChain = electron.processing.onEnqueueChain((plan) => {
-        this.ngZone.run(() => {
-          void this.enqueueChain(plan).catch(err =>
-            console.error('[QUEUE] Failed to enqueue processing chain:', err));
-        });
-      });
-    }
-
-    // Listen for remote control commands from library web UI
-    this.unsubscribeRemoteControl = electron.queue.onRemoteControl((action: 'start' | 'pause') => {
-      this.ngZone.run(() => {
-        if (action === 'start') {
-          this.startQueue();
-        } else if (action === 'pause') {
-          this.pauseQueue();
-        }
-      });
-    });
-
-    // Listen for parallel TTS progress updates (rAF-coalesced)
-    if (electron.parallelTts) {
-      let pendingParallelData: any = null;
-      let parallelRaf: number | null = null;
-      this.unsubscribeParallelProgress = electron.parallelTts.onProgress((data) => {
-        // Always process terminal phases immediately (same pattern as reassembly).
-        // 'stopped' belongs here: RAF-batching it lets a stale in-flight progress event
-        // overwrite the stop, leaving the row 'processing' on a job with no worker.
-        if (data.progress?.phase === 'complete' || data.progress?.phase === 'error'
-            || data.progress?.phase === 'stopped') {
-          // Clear pending RAF data so a stale progress event doesn't overwrite completion
-          pendingParallelData = null;
-          this.ngZone.run(() => this.handleParallelProgressUpdate(data.jobId, data.progress));
-          return;
-        }
-        pendingParallelData = data;
-        if (!parallelRaf) {
-          parallelRaf = requestAnimationFrame(() => {
-            parallelRaf = null;
-            if (pendingParallelData) {
-              const d = pendingParallelData;
-              pendingParallelData = null;
-              this.ngZone.run(() => this.handleParallelProgressUpdate(d.jobId, d.progress));
-            }
-          });
-        }
-      });
-
-      this.unsubscribeParallelComplete = electron.parallelTts.onComplete((data) => {
-        // Clear any pending progress RAF so it can't overwrite the completion status
-        pendingParallelData = null;
-        this.ngZone.run(async () => {
-          await this.handleJobComplete({
-            jobId: data.jobId,
-            success: data.success,
-            outputPath: data.outputPath,
-            error: data.error,
-            analytics: data.analytics,
-            rvcAnalytics: (data as any).rvcAnalytics,
-            wasStopped: data.wasStopped,
-            stopInfo: data.stopInfo,
-            sessionId: data.sessionId,
-            sessionDir: data.sessionDir
-          });
-        });
-      });
-
-      // Listen for session-created events (logged; resume finds sessions on disk)
-      if (electron.parallelTts.onSessionCreated) {
-        this.unsubscribeParallelSessionCreated = electron.parallelTts.onSessionCreated((data) => {
-          this.ngZone.run(() => {
-            this.handleSessionCreated(data);
-          });
-        });
+    if (event.analytics && ANALYTICS_JOB_TYPES.has(event.type)) {
+      try {
+        await electron?.audiobook?.appendAnalytics?.(
+          event.projectId, event.type, event.analytics);
+      } catch (err) {
+        console.error('[QUEUE] Could not record this run in the project ledger:', err);
       }
     }
 
-    // Listen for reassembly progress updates.
-    // Coalesce with rAF so at most one ngZone.run per frame — prevents
-    // change detection storms when the renderer is loading heavy components.
-    if (electron.reassembly) {
-      let pendingReassemblyData: any = null;
-      let reassemblyRaf: number | null = null;
-      this.unsubscribeReassemblyProgress = electron.reassembly.onProgress((data) => {
-        // Always process completion/error immediately
-        if (data.progress?.phase === 'complete' || data.progress?.phase === 'error') {
-          // Clear any pending RAF data so a stale progress event doesn't overwrite completion
-          pendingReassemblyData = null;
-          this.ngZone.run(() => this.handleReassemblyProgressUpdate(data.jobId, data.progress));
-          return;
-        }
-        pendingReassemblyData = data;
-        if (!reassemblyRaf) {
-          reassemblyRaf = requestAnimationFrame(() => {
-            reassemblyRaf = null;
-            if (pendingReassemblyData) {
-              const d = pendingReassemblyData;
-              pendingReassemblyData = null;
-              this.ngZone.run(() => this.handleReassemblyProgressUpdate(d.jobId, d.progress));
-            }
-          });
-        }
-      });
-    }
-
-    // Listen for RVC enhancement progress (rAF-coalesced). Maps per-sentence
-    // progress to the job's chunk fields so the queue UI shows a real ETA, the
-    // same way TTS does.
-    if (electron.rvc) {
-      let pendingRvcData: any = null;
-      let rvcRaf: number | null = null;
-      this.unsubscribeRvcProgress = electron.rvc.onProgress((data) => {
-        if (data.progress?.phase === 'complete' || data.progress?.phase === 'error') {
-          pendingRvcData = null;
-          this.ngZone.run(() => this.handleRvcProgressUpdate(data.jobId, data.progress));
-          return;
-        }
-        pendingRvcData = data;
-        if (!rvcRaf) {
-          rvcRaf = requestAnimationFrame(() => {
-            rvcRaf = null;
-            if (pendingRvcData) {
-              const d = pendingRvcData;
-              pendingRvcData = null;
-              this.ngZone.run(() => this.handleRvcProgressUpdate(d.jobId, d.progress));
-            }
-          });
-        }
-      });
-    }
-
-    // Listen for language learning progress updates
-    if (electron.languageLearning) {
-      let pendingLLData: any = null;
-      let llRaf: number | null = null;
-      this.unsubscribeLanguageLearningProgress = electron.languageLearning.onProgress((data) => {
-        if (data.progress?.phase === 'complete' || data.progress?.phase === 'error') {
-          pendingLLData = null;
-          this.ngZone.run(() => this.handleLanguageLearningProgressUpdate(data.jobId, data.progress));
-          return;
-        }
-        pendingLLData = data;
-        if (!llRaf) {
-          llRaf = requestAnimationFrame(() => {
-            llRaf = null;
-            if (pendingLLData) {
-              const d = pendingLLData;
-              pendingLLData = null;
-              this.ngZone.run(() => this.handleLanguageLearningProgressUpdate(d.jobId, d.progress));
-            }
-          });
-        }
-      });
-    }
-
-    // Listen for LL split pipeline job progress (cleanup + translation, rAF-coalesced)
-    if (electron.bilingualCleanup) {
-      let pendingLLJobData: any = null;
-      let llJobRaf: number | null = null;
-      this.unsubscribeLLJobProgress = electron.bilingualCleanup.onProgress((data) => {
-        if (data.progress?.phase === 'complete' || data.progress?.phase === 'error') {
-          // Clear any pending RAF data so a stale progress event can't overwrite completion
-          pendingLLJobData = null;
-          this.ngZone.run(() => this.handleLLJobProgressUpdate(data.jobId, data.progress));
-          return;
-        }
-        pendingLLJobData = data;
-        if (!llJobRaf) {
-          llJobRaf = requestAnimationFrame(() => {
-            llJobRaf = null;
-            if (pendingLLJobData) {
-              const d = pendingLLJobData;
-              pendingLLJobData = null;
-              this.ngZone.run(() => this.handleLLJobProgressUpdate(d.jobId, d.progress));
-            }
-          });
-        }
-      });
+    if (event.outputPath?.endsWith('.m4b')) {
+      try {
+        await electron?.audiobook?.linkAudio?.(event.projectId, event.outputPath);
+      } catch (err) {
+        console.error('[QUEUE] Could not link the finished audio to its project:', err);
+      }
+      try {
+        await this.studioService.reloadItem(event.projectId);
+      } catch (err) {
+        console.error('[QUEUE] Could not refresh the shelf after the audio landed:', err);
+      }
     }
   }
+
+  // ── Composition ───────────────────────────────────────────────────────────
 
   /**
-   * Anchor for every rate measurement: the time of the FIRST observed session progress
-   * AND the chunk count at that instant. Set once, never moved.
+   * Add a job. The shape callers already speak, translated into the engine's.
    *
-   * Both halves are required. Measuring from startedAt would fold in model load and
-   * pass-1 planning; measuring from the stamp WITHOUT its count assumes progress arrives
-   * one chunk at a time, which is false — Orpheus emits "Converting sentence" only when a
-   * whole batch (64) finishes, so the first observation is routinely already 128 chunks
-   * deep. The window is therefore [stamp, now] containing (done - chunksAtFirstStamp)
-   * completions; everything before the anchor is excluded from BOTH numerator and
-   * denominator, which is unbiased rather than merely later.
-   *
-   * Consequence: no rate exists until the SECOND flush lands. That is correct — one
-   * observation cannot time anything.
-   *
-   * "Set once, never moved" is scoped to ONE RUN. A stop-then-resume reuses the job id,
-   * and both halves of the anchor describe the run that stamped them, so an anchor
-   * carried across the gap times this session's chunks against a window that opened
-   * before the previous session ended. runJob clears the pair at every start; the
-   * belongs-to-this-run check below is the invariant that catches any other start path.
+   * A `type: 'audiobook'` request is a CONTAINER and always was: it ran nothing,
+   * it existed to group the rows under it. It opens a composition here and
+   * queues nothing, which is why the retired-type table now fails one that is
+   * found in an old queue file.
    */
-  private firstChunkAnchor(
-    job: QueueJob,
-    sessionChunksDone: number
-  ): { firstChunkCompletedAt?: number; chunksAtFirstStamp?: number } {
-    if (job.firstChunkCompletedAt !== undefined && this.anchorIsFromThisRun(job)) {
+  async addJob(request: CreateJobRequest): Promise<QueueJob> {
+    if (request.type === 'audiobook') {
+      const token = `pending_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      this.compositions.set(token, { spec: request });
       return {
-        firstChunkCompletedAt: job.firstChunkCompletedAt,
-        chunksAtFirstStamp: job.chunksAtFirstStamp,
+        id: token,
+        type: 'audiobook',
+        epubPath: request.epubPath,
+        epubFilename: request.epubPath ? jobFileLabel(request.epubPath) : undefined,
+        status: 'pending',
+        addedAt: new Date(),
+        metadata: request.metadata,
+        workflowId: token,
+        bfpPath: request.bfpPath,
+        projectDir: request.projectDir,
       };
     }
-    if (sessionChunksDone <= 0) return {};
-    return { firstChunkCompletedAt: Date.now(), chunksAtFirstStamp: sessionChunksDone };
-  }
 
-  /**
-   * Whether the stamped anchor was taken during the run executing NOW.
-   *
-   * An anchor marks a chunk completing, and a chunk cannot complete before the run that
-   * rendered it started — so a stamp older than startedAt is, by definition, a previous
-   * run's, and re-stamping is the only honest reading. This is a check on a fact the row
-   * already carries, not a guess about which run is which.
-   *
-   * (thirdreich, 2026-08-16: a job stopped mid-render and resumed kept the first run's
-   * anchor. The window then spanned run 1 + the whole stopped gap + run 2, while the
-   * numerator counted only the chunks run 2 had pushed past run 1's stamp — 1.3 chunks/min
-   * reported against ~25 actual, and a 14h 31m ETA on ~1,100 chunks remaining.)
-   */
-  private anchorIsFromThisRun(job: QueueJob): boolean {
-    // Progress is arriving, so the row is running and startedAt is stamped. If it somehow
-    // is not, there is nothing to compare against and no basis to discard the anchor.
-    if (!job.startedAt) return true;
-    return job.firstChunkCompletedAt! >= new Date(job.startedAt).getTime();
-  }
+    const bridge = this.requireBridge();
+    const config = this.buildJobConfig(request);
+    const label = request.metadata?.title ?? request.type;
+    const sourceRef: ArtifactRef = {
+      kind: 'epub',
+      path: request.epubPath,
+    };
 
-  private handleLLJobProgressUpdate(jobId: string, progress: any): void {
-    this._jobs.update(jobs =>
-      jobs.map(job => {
-        if (job.id !== jobId) return job;
+    const parentToken = request.parentJobId;
+    const composition = parentToken ? this.compositions.get(parentToken) : undefined;
 
-        // Don't overwrite terminal statuses — runJob/handleJobComplete may have
-        // already marked this job complete before this RAF-coalesced update fires.
-        // Without this, a late "saving 95%" event reverts a finished translation
-        // to 'processing', which then blocks its reassembly sibling forever.
-        if (job.status === 'complete' || job.status === 'error') return job;
-
-        const currentChunk = progress.currentChunk || progress.currentSentence || 0;
-        const totalChunks = progress.totalChunks || progress.totalSentences || 0;
-        const prevCompleted = job.chunksCompletedInJob || 0;
-        return {
-          ...job,
-          progress: progress.percentage || 0,
-          status: progress.phase === 'complete' ? 'complete' as JobStatus :
-                  progress.phase === 'error' ? 'error' as JobStatus :
-                  'processing' as JobStatus,
-          currentChunk,
-          totalChunks,
-          // Map to ETA calculation fields
-          chunksCompletedInJob: currentChunk,
-          totalChunksInJob: totalChunks,
-          chunkCompletedAt: currentChunk > prevCompleted ? Date.now() : job.chunkCompletedAt,
-          ...this.firstChunkAnchor(job, currentChunk),
-          progressMessage: progress.message || progress.phase,
-          error: progress.error
-        };
-      })
-    );
-  }
-
-  /**
-   * RVC enhancement progress → job fields. Maps processed/total to the chunk
-   * fields the UI's chunk-rate ETA reads (chunksCompletedInJob/totalChunksInJob/
-   * chunksDoneInSession/chunkCompletedAt), so the RVC job shows a real ETA and a
-   * "Chunks X/Y" stat exactly like TTS — no bridge-side ETA math needed.
-   */
-  private handleRvcProgressUpdate(
-    jobId: string,
-    progress: { phase: string; percentage: number; processed?: number; total?: number; message?: string; error?: string }
-  ): void {
-    this._jobs.update(jobs =>
-      jobs.map(job => {
-        if (job.id !== jobId) return job;
-        if (job.status === 'complete' || job.status === 'error') return job;
-
-        const processed = progress.processed ?? 0;
-        const total = progress.total ?? job.totalChunksInJob ?? 0;
-        const prev = job.chunksCompletedInJob ?? 0;
-        return {
-          ...job,
-          status: 'processing' as JobStatus,
-          progress: progress.percentage,
-          progressMessage: progress.message,
-          chunksCompletedInJob: processed,
-          totalChunksInJob: total,
-          chunksDoneInSession: processed,
-          chunkCompletedAt: processed > prev ? Date.now() : job.chunkCompletedAt,
-          ...this.firstChunkAnchor(job, processed),
-          error: progress.error,
-        };
-      })
-    );
-    this.bubbleProgressToMaster(jobId);
-  }
-
-  private handleReassemblyProgressUpdate(jobId: string, progress: any): void {
-    this._jobs.update(jobs =>
-      jobs.map(job => {
-        if (job.id !== jobId) return job;
-
-        // Don't overwrite terminal statuses — handleJobComplete may have already
-        // marked this job as complete/error before this RAF-coalesced update fires
-        if (job.status === 'complete' || job.status === 'error') return job;
-
-        return {
-          ...job,
-          progress: progress.percentage || 0,
-          status: progress.phase === 'complete' ? 'complete' as JobStatus :
-                  progress.phase === 'error' ? 'error' as JobStatus :
-                  'processing' as JobStatus,
-          // Only update chapter fields when actually sent — encoding phase omits them
-          currentChapter: progress.currentChapter ?? job.currentChapter,
-          totalChapters: progress.totalChapters ?? job.totalChapters,
-          // Same rule for the stage bars: the terminal error event carries none, and
-          // blanking them would erase the record of how far the run got.
-          stages: progress.stages ?? job.stages,
-          progressMessage: progress.message || progress.phase,
-          error: progress.error
-        };
-      })
-    );
-    this.bubbleProgressToMaster(jobId);
-  }
-
-  private handleLanguageLearningProgressUpdate(jobId: string, progress: any): void {
-    this._jobs.update(jobs =>
-      jobs.map(job => {
-        if (job.id !== jobId) return job;
-
-        // Don't overwrite terminal statuses — handleJobComplete may have already
-        // marked this job as complete/error before this RAF-coalesced update fires
-        if (job.status === 'complete' || job.status === 'error') return job;
-
-        return {
-          ...job,
-          progress: progress.percentage || 0,
-          status: progress.phase === 'complete' ? 'complete' as JobStatus :
-                  progress.phase === 'error' ? 'error' as JobStatus :
-                  'processing' as JobStatus,
-          currentChunk: progress.currentSentence,
-          totalChunks: progress.totalSentences,
-          progressMessage: progress.message || progress.phase,
-          error: progress.error
-        };
-      })
-    );
-    this.bubbleProgressToMaster(jobId);
-  }
-
-  private handleProgressUpdate(progress: QueueProgress): void {
-    this._jobs.update(jobs =>
-      jobs.map(job => {
-        if (job.id !== progress.jobId) return job;
-
-        // Don't overwrite terminal statuses — handleJobComplete may have already
-        // marked this job as complete/error before this RAF-coalesced update fires
-        if (job.status === 'complete' || job.status === 'error') return job;
-
-        return {
-          ...job,
-          progress: progress.progress,
-          status: 'processing' as JobStatus,
-          // Track outputPath from progress for diff view during processing
-          outputPath: progress.outputPath || job.outputPath,
-          // Progress tracking for ETA calculation
-          currentChunk: progress.currentChunk,
-          totalChunks: progress.totalChunks,
-          currentChapter: progress.currentChapter,
-          totalChapters: progress.totalChapters,
-          chunksCompletedInJob: progress.chunksCompletedInJob,
-          totalChunksInJob: progress.totalChunksInJob,
-          chunkCompletedAt: progress.chunkCompletedAt,
-          // Nullish (not ||): a legit session count of 0 (first emit after resume) must
-          // NOT collapse to the cumulative chunksCompletedInJob, or speed/ETA would divide
-          // prior-session chunks by this-session elapsed → a huge phantom rate at startup.
-          chunksDoneInSession: progress.completedInSession ?? progress.chunksCompletedInJob,
-          ...this.firstChunkAnchor(
-            job, progress.completedInSession ?? progress.chunksCompletedInJob ?? 0),
-          // Bridge-reported stage bars. Nullish-kept, never blanked: the foundry
-          // passes' own download note and other one-off events carry no stage
-          // list, and erasing the bars on those would flicker them away mid-run.
-          stages: progress.stages ?? job.stages,
-          progressMessage: progress.message,
-          // Backend phase drives the phase-1 (analyzing) UI on the mono cleanup path.
-          cleanupPhase: progress.phase as QueueJob['cleanupPhase']
-        };
-      })
-    );
-    this.bubbleProgressToMaster(progress.jobId);
-  }
-
-  private handleParallelProgressUpdate(jobId: string, progress: ParallelAggregatedProgress): void {
-    this._jobs.update(jobs =>
-      jobs.map(job => {
-        if (job.id !== jobId) return job;
-
-        // Don't overwrite terminal statuses — handleJobComplete may have already
-        // marked this job as complete/error before this RAF-coalesced update fires
-        if (job.status === 'complete' || job.status === 'error') return job;
-
-        // For resume jobs, ensure progress is capped at 100% and uses correct counts
-        let displayProgress = progress.percentage;
-        let displayCompleted = progress.completedSentences;
-        let displayTotal = progress.totalSentences;
-
-        // During assembly phase, show phase-specific progress instead of overall
-        // This makes the progress bar show meaningful progress for each phase
-        if (progress.phase === 'assembling' && (progress as any).assemblyProgress !== undefined) {
-          displayProgress = (progress as any).assemblyProgress;
-        }
-
-        // Cap percentage at 100% (in case of any calculation issues)
-        if (displayProgress > 100) {
-          displayProgress = Math.min(100, displayProgress);
-        }
-
-        // Build progress message
-        let progressMessage = progress.message;
-        if (!progressMessage) {
-          const n = progress.activeWorkers;
-          const workerWord = n === 1 ? 'worker' : 'workers';
-          if (job.isResumeJob) {
-            progressMessage = `Resuming: ${n} ${workerWord} (${displayCompleted}/${displayTotal} chunks)`;
-          } else {
-            progressMessage = `${n} ${workerWord} active (${displayCompleted}/${displayTotal} chunks)`;
-          }
-        }
-
-        // Calculate TTS conversion progress (before assembly)
-        const ttsConversionProgress = displayTotal > 0
-          ? Math.min(100, Math.round((displayCompleted / displayTotal) * 100))
-          : 0;
-
-        return {
-          ...job,
-          progress: displayProgress,
-          // Completion is finalized ONLY by handleJobComplete — the authoritative
-          // path that caches the session, releases the exclusive lane, and chains
-          // the reassembly job. emitComplete() (parallel-tts-bridge) fires this
-          // progress 'complete' event immediately BEFORE 'parallel-tts:complete';
-          // if we set status 'complete' here and it wins the race, handleJobComplete
-          // sees an already-terminal job, takes its double-processing guard, and
-          // never clears the lane — the exclusive lane stays pinned to the finished
-          // TTS job and the pending reassembly never starts (the queue freezes).
-          // So only surface a terminal ERROR here (errors don't chain); leave the
-          // 'complete' transition to handleJobComplete, which always runs next.
-          //
-          // A user STOP is its own phase and lands on 'stopped' — a resumable state, not
-          // a failure. It used to arrive as phase 'error', which wrote a terminal 'error'
-          // here and then tripped handleJobComplete's already-terminal guard, so the
-          // completion carrying wasStopped returned before marking the job resumable and
-          // the row stuck in 'error' forever. handleJobComplete still owns the final
-          // word; this just stops painting a stop as a failure in the meantime.
-          status: progress.phase === 'error' ? 'error' as JobStatus
-            : progress.phase === 'stopped' ? 'stopped' as JobStatus
-            : 'processing' as JobStatus,
-          // Stops carry no error, and must CLEAR any stale one — a resumable row that
-          // still shows an error message reads as broken.
-          error: progress.phase === 'stopped' ? undefined : (progress.error ?? job.error),
-          // Marks the session as resumable-from-cache, matching what handleJobComplete
-          // sets from wasStopped. Set here too so it survives even if the completion
-          // event is lost (app closed in the gap between the two messages).
-          wasInterrupted: progress.phase === 'stopped' ? true : job.wasInterrupted,
-          // Terminal: freeze the elapsed timer. Without this the row keeps counting up
-          // after the job has stopped, which is what made a dead job look alive.
-          completedAt: progress.phase === 'stopped' ? new Date() : job.completedAt,
-          progressMessage,
-          // Map parallel progress to ETA calculation fields
-          chunksCompletedInJob: displayCompleted,
-          totalChunksInJob: displayTotal,
-          // Real sentence total across the book (a chunk holds a variable number) — for a true sentences/min
-          // readout. Set once from prep; persists across progress ticks.
-          totalRawSentencesInJob: (progress as any).totalRawSentences ?? job.totalRawSentencesInJob,
-          // EXACT real sentences rendered this session (backend summed per-chunk counts) —
-          // for a precise sentences/min. Absent on old sessions → estimate used instead.
-          rawSentencesDoneInSession: (progress as any).rawCompletedInSession ?? job.rawSentencesDoneInSession,
-          // Words and characters over the same rendered chunks: words for the readout,
-          // characters for the ETA. Set once from prep for the book totals; accrued per
-          // tick for the session figures.
-          totalRawWordsInJob: (progress as any).totalRawWords ?? job.totalRawWordsInJob,
-          totalRawCharsInJob: (progress as any).totalRawChars ?? job.totalRawCharsInJob,
-          rawWordsDoneInSession: (progress as any).rawWordsCompletedInSession ?? job.rawWordsDoneInSession,
-          rawCharsDoneInSession: (progress as any).rawCharsCompletedInSession ?? job.rawCharsDoneInSession,
-          // Sampled from the rendered audio; absent until the probe has enough.
-          audioSecondsPerChar: (progress as any).audioSecondsPerChar ?? job.audioSecondsPerChar,
-          chunkCompletedAt: displayCompleted > (job.chunksCompletedInJob || 0) ? Date.now() : job.chunkCompletedAt,
-          // Session-specific progress for accurate ETA (especially for resume jobs).
-          // Nullish (not ||): a legit session count of 0 must not collapse to the
-          // cumulative displayCompleted, or the rate spikes at resume startup.
-          chunksDoneInSession: (progress as any).completedInSession ?? displayCompleted,
-          ...this.firstChunkAnchor(
-            job, (progress as any).completedInSession ?? displayCompleted),
-          // Map assembly chapter progress (from parallel-tts-bridge during assembly phase)
-          currentChapter: (progress as any).assemblyChapter || job.currentChapter,
-          totalChapters: (progress as any).assemblyTotalChapters || job.totalChapters,
-          // Store per-worker progress for UI display
-          parallelWorkers: progress.workers.map(w => ({
-            id: w.id,
-            sentenceStart: w.sentenceStart,
-            sentenceEnd: w.sentenceEnd,
-            completedSentences: w.completedSentences,
-            status: w.status,
-            error: w.error,
-            totalAssigned: (w as any).totalAssigned,
-            actualConversions: (w as any).actualConversions
-          })),
-          // Bridge-reported stage bars. Nullish-kept, never blanked: the first-run
-          // download note and other one-off events carry no stage list, and erasing
-          // the bars on those would flicker the breakdown away mid-run.
-          stages: progress.stages ?? job.stages,
-          stageDetail: progress.stageDetail ?? job.stageDetail,
-          // NOT nullish-kept, unlike stages/stageDetail: the batch bar must
-          // disappear the moment the bridge stops reporting a batch, or a landed
-          // batch leaves a 100% bar hanging under a chunk bar that's moving again.
-          // Every conversion-phase event carries the current value (or nothing).
-          activeBatch: progress.activeBatch,
-          // Phase tracking for TTS + Assembly progress display. No cast: the declared
-          // union now covers every phase the bridge actually sends, so a new one is a
-          // compile error here instead of a value the type says is impossible.
-          ttsPhase: progress.phase,
-          ttsConversionProgress: progress.phase === 'converting' ? ttsConversionProgress :
-                                  progress.phase === 'assembling' || progress.phase === 'complete' ? 100 :
-                                  job.ttsConversionProgress || 0,
-          assemblyProgress: (progress as any).assemblyProgress,
-          assemblySubPhase: (progress as any).assemblySubPhase,
-          // Orpheus memory level badge (sticky: keep the last non-empty value).
-          orpheusMemoryLevel: (progress as any).orpheusMemoryLevel || job.orpheusMemoryLevel
-        };
-      })
-    );
-    this.bubbleProgressToMaster(jobId);
-  }
-
-  /**
-   * Handle session-created event from parallel TTS.
-   *
-   * This used to mirror the session id/dirs into the project's audiobook state so
-   * a stopped job could be resumed from it. Resume never reads that back — it
-   * finds the session on disk (scanProjectSessions / checkResumeFast) — so the
-   * write is gone and this only records the session in the log.
-   */
-  private handleSessionCreated(data: {
-    jobId: string;
-    sessionId: string;
-    sessionDir: string;
-    processDir: string;
-    totalSentences: number;
-    totalChapters: number;
-  }): void {
-    console.log(
-      `[QUEUE] Session created for job ${data.jobId}: sessionId=${data.sessionId}, ` +
-      `${data.totalSentences} sentences in ${data.totalChapters} chapters`
-    );
-  }
-
-  /**
-   * Check if a project has a resumable TTS session.
-   * Returns ResumeCheckResult if found and valid, null otherwise.
-   */
-  /**
-   * Mirror a TTS resume/cache decision into the PERSISTED tts.log (via the main
-   * process) as well as the dev console. queue.service.ts is renderer code, so its
-   * console.logs vanish with the window — which is why the July 2026 destructive-resume
-   * incident could not be reconstructed from files. Every branch of the resume-mode
-   * selection below goes through here. Never throws.
-   */
-  private ttsDecisionLog(
-    level: 'INFO' | 'WARN' | 'ERROR',
-    message: string,
-    data?: Record<string, unknown>
-  ): void {
-    const line = data ? `${message} ${JSON.stringify(data)}` : message;
-    if (level === 'ERROR') console.error(`[QUEUE] ${line}`);
-    else if (level === 'WARN') console.warn(`[QUEUE] ${line}`);
-    else console.log(`[QUEUE] ${line}`);
-    try {
-      const electron = window.electron as any;
-      electron?.debug?.ttsDecision?.(level, message, data)?.catch?.(() => { /* logging is never fatal */ });
-    } catch { /* logging is never fatal */ }
-  }
-
-  private async checkBfpForResumableSession(
-    _bfpPath: string,
-    epubPath: string
-  ): Promise<ResumeCheckResult | null> {
-    const electron = window.electron as any;
-    if (!electron?.parallelTts?.checkResumeFast) {
-      console.log('[QUEUE] checkResumeFast not available');
-      return null;
-    }
-
-    try {
-      // Check for a resumable session using the epub path
-      // This scans e2a's tmp/ folder for sessions matching this epub
-      console.log(`[QUEUE] Checking for resumable session: ${epubPath}`);
-      const result = await electron.parallelTts.checkResumeFast(epubPath);
-
-      if (result.success && result.data?.success) {
-        const resumeData = result.data;
-
-        // Only auto-resume if there's actual progress (not starting fresh)
-        if (resumeData.completedSentences && resumeData.completedSentences > 0) {
-          console.log(`[QUEUE] Found resumable session: ${resumeData.completedSentences}/${resumeData.totalSentences} sentences, sessionId=${resumeData.sessionId}`);
-          return resumeData;
-        }
-        console.log(`[QUEUE] Session found but no progress (${resumeData.completedSentences} sentences)`);
-      } else {
-        console.log(`[QUEUE] No resumable session found: ipcSuccess=${result.success}, dataSuccess=${result.data?.success}, error=${result.data?.error || result.error || 'none'}`);
+    if (composition) {
+      if (!composition.jobId) {
+        const master = composition.spec;
+        const created = await bridge.enqueue({
+          title: master.metadata?.title ?? label,
+          projectId: master.bfpPath ?? master.projectDir ?? request.bfpPath ?? request.projectDir,
+          documentPath: master.epubPath ?? request.epubPath,
+          documentLabel: (master.epubPath ?? request.epubPath)
+            ? jobFileLabel((master.epubPath ?? request.epubPath)!) : undefined,
+          steps: [{ type: request.type, label, config, sourceRef } as StepSpec],
+        });
+        QueueService.settle(created, 'Queueing this run');
+        composition.jobId = created.data!.id;
+        composition.lastStepId = created.data!.steps[0].id;
+        return this.rowFor(created.data!.steps[0].id) ?? projectStep(created.data!, created.data!.steps[0], false);
       }
-
-      return null;
-    } catch (err) {
-      console.error('[QUEUE] Error checking for resumable session:', err);
-      return null;
-    }
-  }
-
-  /**
-   * When a job fails, cancel every still-pending job in the same workflow so
-   * downstream steps (translation, TTS, reassembly, assembly, video) never run on
-   * missing or unclean input. Called from BOTH failure paths: handleJobComplete
-   * (job types that finish via a result) and runJob's catch (job types that report
-   * failure by throwing — rvc-enhancement, reassembly, bilingual-*, video-assembly,
-   * generate-sentences). Before this was extracted, only the former cancelled
-   * siblings, so a thrown failure left downstream jobs pending and the master
-   * workflow spinning forever.
-   */
-  private cancelPendingWorkflowJobs(failedJob: QueueJob): void {
-    if (!failedJob.workflowId) return;
-    const failedType = failedJob.type;
-    const workflowId = failedJob.workflowId;
-    const pendingInWorkflow = this._jobs().filter(j =>
-      j.workflowId === workflowId &&
-      j.status === 'pending' &&
-      j.id !== failedJob.id
-    );
-    if (pendingInWorkflow.length === 0) return;
-    const failIds = new Set(pendingInWorkflow.map(j => j.id));
-    console.log(`[QUEUE] ${failedType} job failed in workflow ${workflowId} - cancelling ${failIds.size} pending job(s)`);
-    this._jobs.update(jobs =>
-      jobs.map(job => {
-        if (!failIds.has(job.id)) return job;
-        console.log(`[QUEUE] Cancelling ${job.type} job ${job.id} due to ${failedType} failure`);
-        return {
-          ...job,
-          status: 'error' as JobStatus,
-          error: `Skipped: ${failedType} failed. Fix the issue and re-run the workflow.`,
-          metadata: {
-            ...job.metadata,
-            bilingualPlaceholder: undefined, // Clear placeholder flag if present
-          },
-        };
-      })
-    );
-  }
-
-  private async handleJobComplete(result: JobResult): Promise<void> {
-    console.log(`[QUEUE] handleJobComplete called for job ${result.jobId}, success=${result.success}, wasStopped=${result.wasStopped}`);
-    console.log(`[QUEUE] Current state: isRunning=${this._isRunning()}, currentJobId=${this._currentJobId()}`);
-
-    // Get the job before updating to capture the type
-    const completedJob = this._jobs().find(j => j.id === result.jobId);
-    console.log('[QUEUE] Found completed job:', completedJob ? `type=${completedJob.type}, id=${completedJob.id}, status=${completedJob.status}` : 'NOT FOUND');
-
-    // Guard against double-processing (status-based, for non-race cases like retries).
-    // Still try to advance the queue — the first caller may not have reached processNext()
-    // yet (e.g., if it's awaiting a slow IPC call like updatePipeline).
-    //
-    // A wasStopped result is EXEMPT. This message is the only one that knows the session
-    // is resumable, and 'error' is a state nothing revives — Start revives 'stopped',
-    // loadQueueState revives 'processing', neither touches 'error'. So a completion
-    // saying "stopped, resume from cache" must be allowed to correct an already-terminal
-    // row rather than being swallowed by it. That swallowing is what made a stopped job
-    // unresumable: the stop's progress event marked the row terminal, and this guard then
-    // dropped the completion that would have marked it resumable.
-    if (completedJob && !result.wasStopped
-        && (completedJob.status === 'complete' || completedJob.status === 'error')) {
-      console.log(`[QUEUE] handleJobComplete: job ${result.jobId} already ${completedJob.status}, skipping processing`);
-      // A progress-phase handler (handleParallelProgressUpdate / handleReassemblyProgressUpdate /
-      // handleLanguageLearningProgressUpdate) can mark a job terminal from a 'complete'/'error'
-      // progress event that lands just before this authoritative completion — but those handlers
-      // do NOT release the lane. If this finished job still holds a lane, clear it here; otherwise
-      // the safety-net processNext() below sees the lane busy and never starts the next sibling
-      // (e.g. reassembly), freezing the queue until app restart.
-      if (this._currentJobId() === result.jobId || this._currentCloudJobId() === result.jobId) {
-        this.clearRunningJob(result.jobId);
-        console.log(`[QUEUE] handleJobComplete: released lane still held by already-${completedJob.status} job ${result.jobId}`);
-      }
-      // Safety net: ensure the queue advances even if the first caller hasn't reached processNext yet.
-      // processNext() is idempotent and lane-aware — it fills whichever lane is free.
-      if (this._isRunning()) {
-        console.log(`[QUEUE] handleJobComplete: safety-net processNext for already-completed job`);
-        this.processNext();
-      }
-      return;
-    }
-
-    // Determine the final status:
-    // - success=true -> 'complete'
-    // - wasStopped=true -> 'stopped' (stays in queue with its cached progress, but is
-    //   NEVER auto-picked by processNext — an explicit Start/▶ resumes it. The old
-    //   'pending' value made processNext re-pick the job in the same tick, spawning a
-    //   new GPU worker while the stopped one was still dying — the WSL wedge trigger.)
-    // - otherwise -> 'error'
-    let finalStatus: JobStatus = result.success ? 'complete' : 'error';
-    if (result.wasStopped) {
-      finalStatus = 'stopped';
-      console.log(`[QUEUE] Job ${result.jobId} was stopped by the user - setting status to 'stopped' (resume requires explicit Start)`);
-      // A user stop idles the WHOLE queue (you stop a GPU job to get the GPU/memory
-      // back — auto-starting the next job would defeat the purpose). This also covers
-      // stop paths that don't go through cancelJob() (e.g. main-process initiated).
-      this._isRunning.set(false);
-    }
-
-    // Update the job status
-    this._jobs.update(jobs =>
-      jobs.map(job => {
-        if (job.id !== result.jobId) return job;
-        return {
-          ...job,
-          status: finalStatus,
-          error: result.wasStopped ? undefined : result.error, // Clear error for stopped jobs
-          // Mark stopped jobs so TTS auto-resumes instead of starting fresh
-          wasInterrupted: result.wasStopped ? true : job.wasInterrupted,
-          progress: result.success ? 100 : job.progress,
-          // Stamped on EVERY terminal outcome, not just success. elapsedSeconds counts to
-          // now while this is unset, so a stopped or failed row kept ticking as though it
-          // were still working — the "timer counting up but nothing happening" symptom.
-          completedAt: new Date(),
-          outputPath: result.outputPath || job.outputPath,
-          // Whatever this run had to say, verbatim. Assigned rather than merged with
-          // what the row already carried: a re-run's notes are about THIS run, and a
-          // re-run that recorded its ledger row properly must not keep showing the
-          // previous run's refusal.
-          completionNotes: result.completionNotes,
-          // Copyright detection for AI cleanup jobs
-          copyrightIssuesDetected: result.copyrightIssuesDetected,
-          copyrightChunksAffected: result.copyrightChunksAffected,
-          // Content skips detection for AI cleanup jobs
-          contentSkipsDetected: result.contentSkipsDetected,
-          contentSkipsAffected: result.contentSkipsAffected,
-          // Translation chunks that failed and kept original (untranslated) text
-          translationFailedChunks: result.translationFailedChunks,
-          // Path to skipped chunks JSON
-          skippedChunksPath: result.skippedChunksPath,
-          // Analytics data
-          analytics: result.analytics
-        };
-      })
-    );
-
-    // Handle stopped jobs
-
-    // If any job in a workflow fails, cancel all remaining pending jobs in the same
-    // workflow so downstream steps don't run on missing/unclean input.
-    if (!result.success && !result.wasStopped && completedJob) {
-      this.cancelPendingWorkflowJobs(completedJob);
-    }
-
-    // Save analytics to the project folder (no longer using signal/effect pattern to avoid duplicates)
-    if (result.analytics && completedJob?.bfpPath) {
-      this.saveProjectAnalytics(
-        completedJob.bfpPath,
-        completedJob.type,
-        result.analytics
-      );
-    }
-
-    // RVC enhancement runs as a sub-pass of the TTS job, so it arrives on the
-    // same completion event but is persisted as its own 'rvc' analytics entry.
-    if (result.rvcAnalytics && completedJob?.bfpPath) {
-      this.saveProjectAnalytics(
-        completedJob.bfpPath,
-        'rvc',
-        result.rvcAnalytics
-      );
-    }
-
-    // Post-completion tasks (session caching, audio linking, bilingual chaining).
-    // Wrapped in try/catch to guarantee processNext() runs even if something here fails.
-    try {
-
-    // Embed-only: the TTS/reassembly bridges seal the transcript INTO the m4b, so
-    // there is no sidecar to copy here (copying one was the anti-pattern we removed).
-
-    // Link the completed audio file to the project so it shows up in Studio and Audiobook tabs
-    // without relying on filename matching (which can fail if e2a names the file differently)
-    if (result.success && result.outputPath && completedJob?.bfpPath &&
-        (completedJob.type === 'tts-conversion' || completedJob.type === 'reassembly') &&
-        result.outputPath.endsWith('.m4b')) {
-      try {
-        const electron = (window as any).electron;
-        if (electron?.audiobook?.linkAudio) {
-          console.log(`[QUEUE] Auto-linking audio to BFP: ${result.outputPath}`);
-          await electron.audiobook.linkAudio(completedJob.bfpPath, result.outputPath);
-        }
-      } catch (err) {
-        console.error('[QUEUE] Failed to auto-link audio to BFP:', err);
-      }
-    }
-
-    // Cache TTS session to project's stages/03-tts/sessions/{lang}/ directory
-    // Both standard and LL pipelines use the same location for consistency
-    if (result.success && result.sessionDir && completedJob?.type === 'tts-conversion') {
-      const ttsConfig = completedJob.config as TtsConversionConfig;
-      const projectDir = completedJob.bfpPath || completedJob.projectDir;
-      const language = ttsConfig?.language || 'en';
-
-      if (projectDir) {
-        try {
-          const electron = (window as any).electron;
-          if (electron?.sessionCache?.saveToProject) {
-            console.log(`[QUEUE] Caching TTS session for ${language} to project: ${projectDir}`);
-            const cacheResult = await electron.sessionCache.saveToProject(
-              result.sessionDir, projectDir, language
-            );
-            if (cacheResult.success && cacheResult.cachedSentencesDir) {
-              console.log(`[QUEUE] Session cached, sentences at: ${cacheResult.cachedSentencesDir}`);
-              // Update outputPath to cached location so chaining handler uses persistent paths
-              result.outputPath = cacheResult.cachedSentencesDir;
-              // Also update the job's stored outputPath so queue state reflects the
-              // persistent cached path instead of the ephemeral e2a tmp path
-              this._jobs.update(jobs =>
-                jobs.map(j => j.id === result.jobId ? { ...j, outputPath: cacheResult.cachedSentencesDir } : j)
-              );
-            } else {
-              console.error('[QUEUE] Failed to cache session:', cacheResult.error);
-            }
-          }
-        } catch (err) {
-          console.error('[QUEUE] Error caching TTS session:', err);
-        }
-      }
-    }
-
-    // Cache audio files for cached-language TTS jobs (bilingual tab)
-    if (result.success && result.outputPath && completedJob?.type === 'tts-conversion') {
-      const ttsConfig = completedJob.config as TtsConversionConfig;
-      if (ttsConfig?.cacheAudioTo && ttsConfig?.cacheLanguage) {
-        console.log(`[QUEUE] Caching audio for ${ttsConfig.cacheLanguage} to ${ttsConfig.cacheAudioTo}`);
-        this.cacheAudioAfterTts(
-          result.outputPath,  // sentencesDir from TTS
-          ttsConfig.cacheAudioTo,
-          ttsConfig.cacheLanguage,
-          {
-            engine: ttsConfig.ttsEngine as 'xtts' | 'orpheus',
-            voice: ttsConfig.fineTuned,
-            speed: ttsConfig.speed,
-          }
-        );
-      }
-    }
-
-    // Handle bilingual dual-voice workflow chaining
-    const bilingualWorkflow = (completedJob?.metadata as any)?.bilingualWorkflow;
-    if (result.success && bilingualWorkflow && completedJob?.type === 'tts-conversion') {
-      if (bilingualWorkflow.role === 'source') {
-        // Source TTS complete - update existing target TTS job with chaining metadata
-        console.log('[QUEUE] Bilingual source TTS complete, updating target TTS job');
-        const sourceSentencesDir = result.outputPath; // With skipAssembly, outputPath is sentences dir
-        const targetConfig = bilingualWorkflow.targetConfig;
-        const assemblyConfig = bilingualWorkflow.assemblyConfig;
-
-        // Fallback: use assemblyConfig.audiobooksDir if targetConfig.outputDir is missing
-        const targetOutputDir = targetConfig?.outputDir || assemblyConfig?.audiobooksDir;
-
-        // Look for existing placeholder target TTS job in the same workflow
-        const existingTargetJob = this._jobs().find(j =>
-          j.workflowId === completedJob.workflowId &&
-          j.type === 'tts-conversion' &&
-          j.status === 'pending' &&
-          j.id !== completedJob.id &&
-          j.epubPath === bilingualWorkflow.targetEpubPath
-        );
-
-        if (existingTargetJob) {
-          // Update existing target TTS job with chaining metadata
-          console.log('[QUEUE] Found existing target TTS job, updating with chaining metadata:', existingTargetJob.id);
-          this._jobs.update(jobs =>
-            jobs.map(j => {
-              if (j.id === existingTargetJob.id) {
-                return {
-                  ...j,
-                  metadata: {
-                    ...j.metadata,
-                    bilingualPlaceholder: undefined, // Clear placeholder so processNext() picks it up
-                    bilingualWorkflow: {
-                      role: 'target',
-                      sourceSentencesDir, // Pass source sentences dir for assembly
-                      assemblyConfig
-                    }
-                  },
-                  config: {
-                    ...j.config as TtsConversionConfig,
-                    outputDir: targetOutputDir,
-                    outputFilename: targetConfig.outputFilename,
-                    speed: targetConfig.speed
-                  }
-                };
-              }
-              return j;
-            })
-          );
-        } else {
-          // Fallback: create new target TTS job (legacy behavior)
-          console.log('[QUEUE] No existing target TTS job found, creating new one');
-          const targetLangName = this.getLanguageName(targetConfig?.language);
-
-          this.addJob({
-            type: 'tts-conversion',
-            epubPath: bilingualWorkflow.targetEpubPath,
-            workflowId: completedJob.workflowId,
-            parentJobId: completedJob.parentJobId,
-            metadata: {
-              title: `${targetLangName} TTS`,
-              author: 'Language Learning',
-              outputFilename: targetConfig.outputFilename,
-              bilingualWorkflow: {
-                role: 'target',
-                sourceSentencesDir,
-                assemblyConfig
-              }
-            },
-            config: {
-              type: 'tts-conversion',
-              useParallel: true,
-              parallelMode: 'sentences',
-              parallelWorkers: targetConfig.workerCount,
-              device: targetConfig.device,
-              language: targetConfig.language,
-              ttsEngine: targetConfig.ttsEngine,
-              fineTuned: targetConfig.voice,
-              speed: targetConfig.speed,
-              outputDir: targetOutputDir,
-              outputFilename: targetConfig.outputFilename,
-              skipAssembly: true,
-              sentencePerParagraph: true,
-              skipHeadings: true,
-              temperature: 0.75,
-              topP: 0.85,
-              topK: 50,
-              repetitionPenalty: 5.0,
-              enableTextSplitting: true
-            }
-          });
-        }
-      } else if (bilingualWorkflow.role === 'target' || bilingualWorkflow.role === 'solo') {
-        // TTS complete - chain bilingual assembly
-        // 'target': last TTS in source→target chain, sourceSentencesDir from earlier TTS
-        // 'solo': single TTS with cached partner, dirs pre-assigned by wizard
-        const isSolo = bilingualWorkflow.role === 'solo';
-        console.log(`[QUEUE] Bilingual ${isSolo ? 'solo' : 'target'} TTS complete, chaining assembly`);
-
-        const freshDir = result.outputPath || '';
-        let sourceSentencesDir: string;
-        let targetSentencesDir: string;
-
-        if (isSolo) {
-          // Solo: one dir is pre-filled (cached), the other gets the fresh TTS output
-          sourceSentencesDir = bilingualWorkflow.assemblySourceSentencesDir || freshDir;
-          targetSentencesDir = bilingualWorkflow.assemblyTargetSentencesDir || freshDir;
-        } else {
-          // Target role: source was set by source TTS completion
-          sourceSentencesDir = bilingualWorkflow.sourceSentencesDir || '';
-          targetSentencesDir = freshDir;
-        }
-
-        const assemblyConfig = bilingualWorkflow.assemblyConfig;
-
-        // Validate both sentence dirs exist
-        const electron = window.electron;
-        for (const [label, dir] of [['Source', sourceSentencesDir], ['Target', targetSentencesDir]] as const) {
-          let exists = false;
-          try {
-            exists = await electron?.fs?.exists?.(dir) ?? false;
-          } catch {
-            exists = false;
-          }
-          if (!exists) {
-            console.error(`[QUEUE] ${label} sentences directory does not exist, cannot create bilingual assembly:`, dir);
-            this._jobs.update(jobs =>
-              jobs.map(j => {
-                if (j.id !== completedJob.id) return j;
-                return {
-                  ...j,
-                  status: 'error' as JobStatus,
-                  error: `${label} TTS sentences not found at: ${dir}`
-                };
-              })
-            );
-            // MUST throw, not return: a bare `return` here exits handleJobComplete
-            // from inside the post-completion try (line ~1079) and skips the tail
-            // (clearRunningJob + processNext), leaving the exclusive lane holding
-            // this finished job forever — the queue freezes until app restart. The
-            // catch at ~1388 swallows this throw and lets the tail advance the queue.
-            throw new Error(`Bilingual assembly aborted: ${label} sentences not found at ${dir}`);
-          }
-        }
-
-        // Look for existing placeholder assembly job
-        const existingAssemblyJob = this._jobs().find(j =>
-          j.workflowId === completedJob.workflowId &&
-          j.type === 'bilingual-assembly' &&
-          j.status === 'pending' &&
-          (j.metadata as any)?.bilingualPlaceholder?.role === 'assembly'
-        );
-
-        if (existingAssemblyJob) {
-          // Update the placeholder with actual config
-          console.log('[QUEUE] Found placeholder assembly job, updating with config:', existingAssemblyJob.id);
-          this._jobs.update(jobs =>
-            jobs.map(j => {
-              if (j.id !== existingAssemblyJob.id) return j;
-              return {
-                ...j,
-                metadata: {
-                  ...j.metadata,
-                  bilingualPlaceholder: undefined, // Clear placeholder marker
-                  title: 'Assembly'
-                },
-                config: {
-                  type: 'bilingual-assembly',
-                  projectId: assemblyConfig.projectId,
-                  sourceSentencesDir,
-                  targetSentencesDir,
-                  sentencePairsPath: assemblyConfig.sentencePairsPath,
-                  outputDir: assemblyConfig.audiobooksDir,
-                  pauseDuration: assemblyConfig.pauseDuration,
-                  gapDuration: assemblyConfig.gapDuration,
-                  // Output naming with language suffix
-                  title: assemblyConfig.title,
-                  sourceLang: assemblyConfig.sourceLang,
-                  targetLang: assemblyConfig.targetLang,
-                  bfpPath: assemblyConfig.bfpPath,
-                  pattern: assemblyConfig.pattern
-                }
-              };
-            })
-          );
-        } else {
-          // Fallback: create new assembly job
-          console.log('[QUEUE] No placeholder assembly job found, creating new one');
-          this.addJob({
-            type: 'bilingual-assembly',
-            workflowId: completedJob.workflowId,
-            parentJobId: completedJob.parentJobId,  // Link to master language-learning job
-            metadata: {
-              title: 'Assembly'
-            },
-            config: {
-              type: 'bilingual-assembly',
-              projectId: assemblyConfig.projectId,
-              sourceSentencesDir,
-              targetSentencesDir,
-              sentencePairsPath: assemblyConfig.sentencePairsPath,
-              outputDir: assemblyConfig.audiobooksDir,
-              pauseDuration: assemblyConfig.pauseDuration,
-              gapDuration: assemblyConfig.gapDuration,
-              // Output naming with language suffix
-              title: assemblyConfig.title,
-              sourceLang: assemblyConfig.sourceLang,
-              targetLang: assemblyConfig.targetLang,
-              bfpPath: assemblyConfig.bfpPath,
-              pattern: assemblyConfig.pattern
-            }
-          });
-        }
-      }
-    }
-
-    } catch (postCompletionErr) {
-      console.error('[QUEUE] Error in post-completion tasks (session caching, linking, chaining):', postCompletionErr);
-    }
-
-    // Update master job progress when a child job completes
-    if (completedJob?.parentJobId && completedJob.workflowId) {
-      this.updateMasterJobProgress(completedJob.workflowId, completedJob.parentJobId);
-    }
-
-    // Check if this was a standalone job
-    const standaloneIds = this._standaloneJobIds();
-    if (standaloneIds.has(result.jobId)) {
-      // Standalone job completed - just remove from tracking, don't process next
-      const newSet = new Set(standaloneIds);
-      newSet.delete(result.jobId);
-      this._standaloneJobIds.set(newSet);
-      console.log(`[QUEUE] Standalone job ${result.jobId} completed, not processing next`);
-      return;
-    }
-
-    // Clear the completed job from whichever lane held it (may already be cleared
-    // or reassigned to the next job in that lane).
-    if (this._currentJobId() === result.jobId || this._currentCloudJobId() === result.jobId) {
-      this.clearRunningJob(result.jobId);
-      console.log(`[QUEUE] Cleared lane for completed job ${result.jobId}`);
-    } else {
-      console.log(`[QUEUE] Job ${result.jobId} completed, lanes are exclusive=${this._currentJobId()} cloud=${this._currentCloudJobId()} (already advanced or cleared)`);
-    }
-
-    // ALWAYS try to advance the queue. processNext() is idempotent — returns
-    // immediately if a job is already running. This ensures the queue advances
-    // even when _currentJobId was already cleared/reassigned by the safety net
-    // (e.g., TTS completion where session caching delays handleJobComplete).
-    if (this._isRunning()) {
-      console.log(`[QUEUE] Job ${result.jobId} completed, calling processNext`);
-      this.processNext();
-    } else {
-      console.log(`[QUEUE] Job ${result.jobId} completed but queue is paused, not processing next`);
-    }
-  }
-
-  /**
-   * Enqueue a planned processing run: a master row plus one child per pass, in
-   * the plan's order.
-   *
-   * The master exists for the ordering rule in processNext — a child job only
-   * waits for its earlier siblings when it has BOTH a workflowId and a
-   * parentJobId — and it is what makes the run one row that collapses in the UI.
-   * Without it the passes would be free to start in either lane and a cloud
-   * simplify could run beside the foundry pass whose output it needs.
-   */
-  async enqueueChain(plan: ProcessingChainPlan): Promise<void> {
-    const workflowId = this.generateId();
-    const master = await this.addJob({
-      type: 'audiobook',
-      epubPath: plan.bookEpubPath,
-      metadata: { title: plan.title },
-      config: { type: 'audiobook' },
-      bfpPath: plan.projectDir,
-      workflowId,
-    });
-
-    for (const planned of plan.jobs) {
-      await this.addJob({
-        type: planned.jobType,
-        // The row's file is the book the run is about, not the pass's working
-        // copy — a queue row saying "diff.json" would name the wrong thing.
-        epubPath: plan.bookEpubPath,
-        metadata: { title: planned.label },
-        config: { ...planned.config, type: planned.jobType },
-        projectDir: plan.projectDir,
-        bfpPath: plan.projectDir,
-        parentJobId: master.id,
-        workflowId,
+      const appended = await bridge.appendStep(composition.jobId, {
+        type: request.type,
+        label,
+        config,
+        parentStepId: composition.lastStepId ?? SOURCE_PARENT,
+        ...(composition.lastStepId ? {} : { sourceRef }),
       });
+      QueueService.settle(appended, `Adding ${label} to this run`);
+      composition.lastStepId = appended.data!.id;
+      return this.rowFor(appended.data!.id) ?? this.stubRow(appended.data!, request);
     }
 
-    // Narration and assembly ride in the SAME workflow, behind the passes, so the
-    // ordering rule in processNext holds them until the book they read has been
-    // written. They are staged by submitProcessingRun (see pendingChainFollowOn).
-    const followOn = this.takeChainFollowOn(plan.projectDir);
-    for (const request of followOn) {
-      await this.addJob({ ...request, parentJobId: master.id, workflowId });
+    // A row of its own. `parentJobId` naming a run the engine already knows is
+    // an append onto that run's last step — that is what chaining onto work
+    // which has not run yet MEANS, and it is a first-class act now.
+    if (parentToken) {
+      const parentJob = this._snapshot().jobs.find(j => j.id === parentToken);
+      if (parentJob) {
+        const last = parentJob.steps[parentJob.steps.length - 1];
+        const appended = await bridge.appendStep(parentJob.id, {
+          type: request.type,
+          label,
+          config,
+          parentStepId: last ? last.id : SOURCE_PARENT,
+          ...(last ? {} : { sourceRef }),
+        });
+        QueueService.settle(appended, `Adding ${label} to this run`);
+        return this.rowFor(appended.data!.id) ?? this.stubRow(appended.data!, request);
+      }
     }
 
-    const trailing = followOn.map(j => j.type);
-    console.log(`[QUEUE] Enqueued processing run for ${plan.title}: `
-      + [...plan.jobs.map(j => j.jobType), ...trailing].join(' → '));
-    void this.saveQueueState();
+    const created = await bridge.enqueue({
+      title: label,
+      projectId: request.bfpPath ?? request.projectDir,
+      documentPath: request.epubPath,
+      documentLabel: request.epubPath ? jobFileLabel(request.epubPath) : undefined,
+      steps: [{ type: request.type, label, config, sourceRef } as StepSpec],
+    });
+    QueueService.settle(created, 'Queueing this job');
+    return this.rowFor(created.data!.steps[0].id)
+      ?? projectStep(created.data!, created.data!.steps[0], false);
+  }
+
+  /** The mirrored row for a step id, once `queue:changed` has landed. */
+  private rowFor(stepId: string): QueueJob | undefined {
+    return this.jobs().find(j => j.id === stepId);
+  }
+
+  /** The row as the engine just described it, for the beat before the push lands. */
+  private stubRow(step: EngineStep, request: CreateJobRequest): QueueJob {
+    return {
+      id: step.id,
+      type: step.type,
+      epubPath: request.epubPath,
+      status: 'pending',
+      addedAt: new Date(step.addedAt),
+      metadata: request.metadata,
+      config: step.config as unknown as JobConfig,
+      bfpPath: request.bfpPath,
+      projectDir: request.projectDir,
+    };
   }
 
   /**
-   * Jobs to hang off the NEXT chain this service enqueues, and the project they
-   * belong to.
+   * The config a job runs with, validated at the door.
    *
-   * A pass run is planned in MAIN and arrives here as a `queue:enqueue-chain`
-   * event, so the caller that submitted it never sees the plan and has nothing to
-   * attach a follow-on job to. Rather than give the wizard a second way to build a
-   * workflow, it stages the jobs here immediately before submitting and this
-   * consumes them when the chain lands.
+   * A pass config is passed through UNTOUCHED: it came from planProcessingChain,
+   * which is the only thing allowed to decide what a pass does, and a config
+   * re-derived here could disagree with the plan the user was shown.
    */
-  private pendingChainFollowOn: { projectDir: string; jobs: CreateJobRequest[] } | null = null;
+  private buildJobConfig(request: CreateJobRequest): Record<string, unknown> {
+    if (PASS_JOB_TYPES.has(request.type)) {
+      const config = request.config as ProcessingPassJobConfig | undefined;
+      if (!config?.kind || !config.projectDir || !config.stageRelDir) {
+        throw new Error(
+          `A ${request.type} job was created without a planned config. Pass jobs come from `
+          + 'processing:submit-chain; nothing else may build one.',
+        );
+      }
+      return { ...config, type: request.type } as unknown as Record<string, unknown>;
+    }
+
+    if (request.type === 'vlm-convert') {
+      const built = buildConversionConfig(request.config as Partial<VlmConvertJobConfig>);
+      if (!built) {
+        throw new Error(
+          'This conversion request does not say which book it is for, so the queue would show a '
+          + 'row nobody can identify.',
+        );
+      }
+      return built as unknown as Record<string, unknown>;
+    }
+
+    const config = { ...(request.config ?? {}) } as Record<string, unknown>;
+    config['type'] = request.type;
+    // Where a job is filed and what its finished file is called travel WITH the
+    // config now: main has no `job.metadata` to consult, and a step module that
+    // re-derived either would be inventing a path.
+    if (request.bfpPath) config['bfpPath'] = request.bfpPath;
+    if (request.metadata) config['metadata'] = request.metadata;
+
+    if (request.resumeInfo && request.type === 'tts-conversion') {
+      const tts = config as unknown as TtsConversionConfig;
+      tts.resumeInfo = {
+        sessionId: request.resumeInfo.sessionId!,
+        sessionDir: request.resumeInfo.sessionDir!,
+        processDir: request.resumeInfo.processDir!,
+        totalSentences: request.resumeInfo.totalSentences!,
+        totalChapters: request.resumeInfo.totalChapters!,
+        chapters: request.resumeInfo.chapters ?? [],
+        language: tts.language,
+        voice: tts.fineTuned,
+        ttsEngine: tts.ttsEngine,
+        createdAt: new Date().toISOString(),
+      };
+      config['missingRanges'] = request.resumeInfo.missingRanges;
+    }
+    return config;
+  }
+
+  /** Patch a step's config before it runs — the one door the details panel uses. */
+  async updateJobConfig(jobId: string, configUpdate: Record<string, unknown>): Promise<void> {
+    const result = await this.requireBridge().updateStepConfig(jobId, configUpdate);
+    QueueService.settle(result, 'Changing this row\'s settings');
+  }
+
+  // ── Control ───────────────────────────────────────────────────────────────
+
+  async startQueue(): Promise<void> {
+    QueueService.settle(await this.requireBridge().start(), 'Starting the queue');
+  }
+
+  async pauseQueue(): Promise<void> {
+    QueueService.settle(await this.requireBridge().pause(), 'Pausing the queue');
+  }
 
   /**
-   * THE way to queue a pass run from the UI: main plans and validates it
-   * (`processing:submit-chain`), and `followOn` — TTS, enhancement, assembly —
-   * is queued behind it in the same workflow.
+   * Stop the queue AND what it is running.
    *
-   * The follow-on jobs must be fully built by the caller BEFORE this is called:
-   * anything that can fail while building them (a resume check, a missing voice)
-   * has to fail with nothing queued, not halfway through a workflow.
+   * Pause alone leaves the current run going, which is right for "let this finish
+   * and stop after it". Stop is the other gesture: you are taking the GPU back.
+   */
+  async stopQueue(): Promise<void> {
+    const bridge = this.requireBridge();
+    QueueService.settle(await bridge.pause(), 'Pausing the queue');
+    for (const row of this.jobs()) {
+      if (row.status !== 'processing' || row.type === 'audiobook') continue;
+      QueueService.settle(await bridge.cancel({ stepId: row.id }), `Stopping ${row.metadata?.title ?? row.type}`);
+    }
+  }
+
+  /** Resume ONE stopped row — the per-row ▶, which is the explicit gesture it needs. */
+  async resumeStoppedJob(jobId: string): Promise<void> {
+    QueueService.settle(await this.requireBridge().start({ stepId: jobId }), 'Resuming this job');
+  }
+
+  async cancelJob(jobId: string): Promise<boolean> {
+    const target = this.targetFor(jobId);
+    QueueService.settle(await this.requireBridge().cancel(target), 'Stopping this job');
+    return true;
+  }
+
+  async retryJob(jobId: string): Promise<boolean> {
+    QueueService.settle(await this.requireBridge().retry(this.targetFor(jobId)), 'Retrying');
+    return true;
+  }
+
+  async removeJob(jobId: string): Promise<boolean> {
+    const jobIdOfRow = this.jobIdOf(jobId);
+    if (!jobIdOfRow) return false;
+    const target = this.targetFor(jobId);
+    if (target.stepId) {
+      // Removing ONE step of a multi-step run cancels it; the run itself stays,
+      // because the steps beside it are other work the user still wants.
+      const run = this._snapshot().jobs.find(j => j.id === jobIdOfRow);
+      if (run && run.steps.length > 1) {
+        QueueService.settle(await this.requireBridge().cancel(target, 'Removed from the queue.'),
+          'Removing this step');
+        return true;
+      }
+    }
+    QueueService.settle(await this.requireBridge().remove(jobIdOfRow), 'Removing this run');
+    return true;
+  }
+
+  /**
+   * Run one row NOW.
+   *
+   * It used to mean "start this beside the queue, in its own lane". With one GPU
+   * slot that was never true of GPU work — two e2a worker sets on one card is
+   * two runs each taking twice as long — so it now means RELEASE this row and
+   * start the queue: it goes first among what is runnable, and shares the same
+   * slot rules as everything else.
+   */
+  async runJobStandalone(jobId: string): Promise<boolean> {
+    QueueService.settle(await this.requireBridge().start(this.targetFor(jobId)), 'Running this job');
+    return true;
+  }
+
+  async clearCompleted(): Promise<void> {
+    QueueService.settle(await this.requireBridge().clearFinished(), 'Clearing finished runs');
+  }
+
+  async clearAll(): Promise<void> {
+    const bridge = this.requireBridge();
+    QueueService.settle(await bridge.pause(), 'Pausing the queue');
+    for (const run of [...this._snapshot().jobs]) {
+      QueueService.settle(await bridge.remove(run.id), 'Removing a run');
+    }
+  }
+
+  /** Drag-and-drop, at RUN level: a step's position inside its run is its lineage. */
+  async reorderJobsById(fromId: string, toId: string): Promise<boolean> {
+    const from = this.jobIdOf(fromId);
+    const to = this.jobIdOf(toId);
+    if (!from || !to || from === to) return false;
+    QueueService.settle(await this.requireBridge().reorder(from, to), 'Reordering the queue');
+    return true;
+  }
+
+  /** Re-read the truth. Cheap, and the answer is always current — main holds it. */
+  async refreshFromBackend(): Promise<void> {
+    await this.seed();
+  }
+
+  /** Which run a row belongs to, whether the row is a master or a step. */
+  private jobIdOf(rowId: string): string | undefined {
+    for (const job of this._snapshot().jobs) {
+      if (job.id === rowId) return job.id;
+      if (job.steps.some(s => s.id === rowId)) return job.id;
+    }
+    return undefined;
+  }
+
+  private targetFor(rowId: string): { jobId?: string; stepId?: string } {
+    const isRun = this._snapshot().jobs.some(j => j.id === rowId);
+    return isRun ? { jobId: rowId } : { stepId: rowId };
+  }
+
+  // ── Processing runs ───────────────────────────────────────────────────────
+
+  /**
+   * THE way to queue a pass run from the UI: main plans and validates it, and
+   * `followOn` — narrate, enhance, assemble — is queued behind it in the same
+   * run, chained to the last pass.
+   *
+   * The follow-on jobs must be fully built BEFORE this is called: anything that
+   * can fail while building them (a resume check, a missing voice) has to fail
+   * with nothing queued, not halfway through a run.
    */
   async submitProcessingRun(
     request: ProcessingChainRequest,
-    followOn: CreateJobRequest[] = []
+    followOn: CreateJobRequest[] = [],
   ): Promise<{ success: boolean; plan?: ProcessingChainPlan; error?: string }> {
-    const projectDir = request.projectDir;
-    if (!projectDir && followOn.length > 0) {
-      throw new Error('A processing run with follow-on jobs needs projectDir: it is what pairs them with the chain.');
-    }
-    this.pendingChainFollowOn = followOn.length > 0 ? { projectDir: projectDir!, jobs: followOn } : null;
-    const result = await this.electron.submitProcessingChain(request);
-    // A refused plan queues nothing, so the staged jobs have no chain to ride and
-    // must not be picked up by whatever chain is submitted next.
-    if (!result.success) this.pendingChainFollowOn = null;
-    return result;
+    const specs: StepSpec[] = followOn.map(job => ({
+      type: job.type,
+      label: job.metadata?.title ?? job.type,
+      config: this.buildJobConfig(job),
+    }));
+    return this.electron.submitProcessingChain(request, specs);
   }
 
   /**
    * Run a pass chain NOW, in place, without a queue row.
    *
-   * ── Why this exists ─────────────────────────────────────────────────────────
+   * NOT a second implementation of a pass. It plans through the SAME planner and
+   * runs each planned job through the SAME main-process handler the step module
+   * invokes, with the same config object. A synchronous re-implementation of a
+   * pass is exactly what was deleted on 2026-08-10, and this must never become
+   * one.
    *
-   * Owen, 2026-08-10: "i ran footnote reference number removal on the working
-   * document. it ran in the queue. i should be able to run it from the modal if i
-   * want." Removing footnote references is a string replace over a zip that
-   * finishes in seconds; making the user go and watch a queue row for it is the
-   * queue getting in the way of the act.
-   *
-   * ── ONE implementation of a pass, two doors ─────────────────────────────────
-   *
-   * This is NOT a second way to perform a pass. It plans through the SAME planner
-   * (`processing:plan-chain` → `planProcessingChain`, so the refusals are the
-   * same sentences and the stage directories are numbered from the same history)
-   * and runs each planned job through the SAME main-process handler the queue row
-   * invokes (`electron.processing.runPass` → `queue:run-pass` →
-   * `runProcessingPass`). The queue's own arm hands that call `job.config`; this
-   * hands it `planned.config`, and they are the same object — the queue stores the
-   * plan's config verbatim and adds only the row's `type`.
-   *
-   * A synchronous re-implementation of the pass itself is exactly what was
-   * deliberately deleted on 2026-08-10 (`book:remove-footnote-references`), and
-   * this must never become one.
-   *
-   * ── In ORDER, and it stops at the first failure ─────────────────────────────
-   *
-   * Each pass rewrites the book the next one reads, so they run one at a time and
-   * a failure ends the run: continuing would apply pass three to the text pass two
-   * failed to produce. What ran is reported with what did not.
+   * In ORDER, stopping at the first failure: each pass rewrites the book the next
+   * one reads, so continuing would apply pass three to text pass two failed to
+   * produce. What ran is reported with what did not.
    */
   async runProcessingRunNow(request: ProcessingChainRequest): Promise<DirectPassRunResult> {
-    const electron = window.electron;
-    if (!electron?.processing?.runPass) {
+    const processing = window.electron?.processing;
+    if (!processing?.runPass) {
       throw new Error('Processing passes are not available (no Electron bridge)');
     }
-
     const planned = await this.electron.planProcessingChain(request);
     if (!planned.success || !planned.plan) {
       return { success: false, ran: [], failure: null, notes: [], error: planned.error };
     }
 
     const ran: string[] = [];
-    // Named by pass, because a run is several of them and "the ledger has no row
-    // for this" means nothing without knowing WHICH pass has none.
     const notes: string[] = [];
     for (const job of planned.plan.jobs) {
-      // The id a queue row would have carried. `runProcessingPass` uses it only
-      // to address its progress messages, and a run with no row has nowhere for
-      // them to land — which is honest for passes that report none anyway.
       const jobId = `direct-${Date.now()}-${ran.length}`;
-      const result = await electron.processing.runPass(jobId, job.config);
-      const data = result?.data;
+      const result = await processing.runPass(jobId, job.config);
+      const data = (result?.data ?? null) as PassJobResult | null;
       const ok = data?.success ?? result?.success ?? false;
-      for (const note of passResultNotes(data)) {
-        notes.push(`${job.label}: ${note}`);
-      }
+      for (const note of passResultNotes(data ?? undefined)) notes.push(`${job.label}: ${note}`);
       if (!ok) {
         return {
           success: false,
@@ -1781,3593 +749,12 @@ export class QueueService {
           notes,
           failure: {
             label: job.label,
-            error: data?.error || result?.error
-              || `${job.label} failed and gave no reason.`,
+            error: data?.error || result?.error || `${job.label} failed and gave no reason.`,
           },
         };
       }
       ran.push(job.label);
     }
     return { success: true, ran, failure: null, notes };
-  }
-
-  /** Consume the staged follow-on jobs, if they belong to this chain's project. */
-  private takeChainFollowOn(projectDir: string): CreateJobRequest[] {
-    const staged = this.pendingChainFollowOn;
-    this.pendingChainFollowOn = null;
-    if (!staged) return [];
-    if (staged.projectDir !== projectDir) {
-      console.warn(`[QUEUE] Discarding follow-on jobs staged for ${staged.projectDir}: `
-        + `the chain that arrived is for ${projectDir}.`);
-      return [];
-    }
-    return staged.jobs;
-  }
-
-  /**
-   * The file a queue row NAMES, as the user knows that file.
-   *
-   * A run's rows are built from `plan.bookEpubPath`, which is the project's own
-   * working copy — `source/<stem>.working`, an exploded directory. Taking the
-   * basename of it verbatim put ".working" in front of the user wherever
-   * `epubFilename` is read: the row labels in "this reset is blocked by…" named
-   * a file with an extension nobody has ever exported or opened, and the
-   * container the book happens to be kept in read as its format.
-   *
-   * So an exploded copy is named as the book it holds. This is a LABEL and only
-   * a label — nothing resolves a path from it (every job carries its own
-   * `epubPath`), which is why renaming it here cannot point work at a file that
-   * is not there.
-   */
-  private jobFileLabel(documentPath: string): string {
-    const parts = documentPath.replace(/\\/g, '/').split('/');
-    const name = parts[parts.length - 1];
-    return isExplodedBookPath(name)
-      ? `${name.slice(0, -WORKING_COPY_SUFFIX.length)}.epub`
-      : name;
-  }
-
-  /**
-   * Add a new job to the queue
-   * Automatically starts processing if queue is idle
-   */
-  async addJob(request: CreateJobRequest): Promise<QueueJob> {
-    // Determine filename based on job type
-    let filename = request.epubPath ? this.jobFileLabel(request.epubPath) : undefined;
-    if (!filename) {
-      if (request.type === 'bilingual-assembly') {
-        filename = 'Bilingual Assembly';
-      } else if (request.type === 'audiobook') {
-        filename = request.metadata?.title || 'Audiobook';
-      } else if (request.type === 'vlm-convert') {
-        // A conversion has no `epubPath` — the EPUB is what it is about to WRITE
-        // — so it named itself from the one field that is always absent and every
-        // row in an overnight batch read "unknown.epub" (Owen, Aug 8 2026). The
-        // book's name is in the config, where the row's own title already comes
-        // from, and a conversion request without it is refused at build time.
-        const config = request.config as Partial<VlmConvertJobConfig> | undefined;
-        if (!config?.sourceLabel) {
-          throw new Error(
-            'This conversion request does not say which book it is for, so the queue would show a '
-            + 'row nobody can identify. sourceLabel is required on a vlm-convert config.'
-          );
-        }
-        filename = config.sourceLabel;
-      } else {
-        filename = 'unknown.epub';
-      }
-    }
-
-    // The queue's row heading is `metadata.title` — not epubFilename, which no
-    // component renders. A conversion carried no metadata at all, so every row
-    // in the list said "Untitled" and an overnight batch was unreadable. The
-    // book's name is in the config; this reads it rather than inventing one, and
-    // an explicit title from the caller still wins.
-    const metadata = request.type === 'vlm-convert' && !request.metadata?.title
-      ? { ...request.metadata, title: filename }
-      : request.metadata;
-
-    const job: QueueJob = {
-      id: this.generateId(),
-      type: request.type,
-      epubPath: request.epubPath,
-      epubFilename: filename,
-      status: 'pending',
-      addedAt: new Date(),
-      metadata,
-      projectDir: request.projectDir,  // For LL jobs
-      parentJobId: request.parentJobId,  // For workflow grouping
-      workflowId: request.workflowId,    // For workflow grouping
-      config: this.buildJobConfig(request),
-      bfpPath: request.bfpPath  // For analytics saving
-    };
-
-    // Handle resume info if provided
-    if (request.resumeInfo && request.type === 'tts-conversion') {
-      job.isResumeJob = true;
-      job.resumeCompletedSentences = request.resumeInfo.completedSentences;
-      job.resumeMissingSentences = request.resumeInfo.missingSentences;
-
-      // Store resume info in config
-      const config = job.config as TtsConversionConfig;
-      if (config) {
-        config.resumeInfo = {
-          sessionId: request.resumeInfo.sessionId!,
-          sessionDir: request.resumeInfo.sessionDir!,
-          processDir: request.resumeInfo.processDir!,
-          totalSentences: request.resumeInfo.totalSentences!,
-          totalChapters: request.resumeInfo.totalChapters!,
-          chapters: request.resumeInfo.chapters || [],
-          language: config.language,
-          voice: config.fineTuned,
-          ttsEngine: config.ttsEngine,
-          createdAt: new Date().toISOString()
-        };
-        // Also store the missing ranges for the parallel bridge
-        (config as any).missingRanges = request.resumeInfo.missingRanges;
-      }
-
-      console.log('[QUEUE] Resume job added:', {
-        jobId: job.id,
-        completedSentences: job.resumeCompletedSentences,
-        missingSentences: job.resumeMissingSentences,
-        sessionId: request.resumeInfo.sessionId
-      });
-    }
-
-    console.log('[QUEUE] Job added:', {
-      jobId: job.id,
-      type: job.type,
-      config: job.config,
-      metadata: job.metadata,
-      'metadata.outputFilename': job.metadata?.outputFilename,
-      isResume: job.isResumeJob
-    });
-
-    this._jobs.update(jobs => {
-      // Child jobs: insert right after master + existing siblings to keep groups together
-      if (job.parentJobId) {
-        const newJobs = [...jobs];
-        // Find the last index occupied by the master or any sibling
-        let insertAfter = -1;
-        for (let i = 0; i < newJobs.length; i++) {
-          if (newJobs[i].id === job.parentJobId || newJobs[i].parentJobId === job.parentJobId) {
-            insertAfter = i;
-          }
-        }
-        if (insertAfter >= 0) {
-          newJobs.splice(insertAfter + 1, 0, job);
-          return newJobs;
-        }
-      }
-      return [...jobs, job];
-    });
-
-    // Don't auto-start - user must manually start the queue.
-    //
-    // ── Except a row that ATTACHES, which is not waiting for a turn ──────────
-    //
-    // The Start button governs work the queue would BEGIN: a GPU is about to be
-    // taken, and the user says when. An attaching row begins nothing. The
-    // conversion it names is already running — already holding the card, already
-    // reading pages — and the row is only where its progress is watched. Leaving
-    // it pending does not defer a cost; it hides a run that is happening anyway.
-    //
-    // Owen, 2026-08-10: "it went to the queue but it wasnt started, even though
-    // memory pressure went up. i hit start." Pressing Start on such a row is the
-    // user being made to authorise something that needed no authorisation, and —
-    // before the flag was carried onto the row at all — was how a SECOND
-    // conversion got ordered.
-    const built = job.config as Partial<VlmConvertJobConfig> | undefined;
-    if (job.type === 'vlm-convert' && built?.attachToRunning === true) {
-      this.followAttachedRows(`row ${job.id} was added attaching to the conversion of `
-        + `${built.sourceLabel} already in flight`);
-    }
-
-    return job;
-  }
-
-  /**
-   * Make sure the queue is processing, because a row is now waiting to FOLLOW a
-   * run that is already happening.
-   *
-   * The one implementation of the "revive" half of attaching, shared by the two
-   * ways a row comes to be attached: enqueued from a conversion in flight
-   * (`sendToQueue` → `addJob`), and re-attached on load to a stage main reports
-   * as still running (`reattachDocumentStages`). Both need exactly this and
-   * nothing more — a runner has to claim the row for it to re-subscribe to
-   * `document:stage-progress`, and `processNext` is what claims pending rows.
-   *
-   * Written once because the two paths disagreeing is precisely the class of bug
-   * this pair has already produced: attach worked on reload and not on enqueue
-   * for a whole release, because only one of them did the whole job.
-   */
-  private followAttachedRows(because: string): void {
-    console.log(`[QUEUE] Processing so an attached row can follow its run: ${because}.`);
-    this._isRunning.set(true);
-    void this.processNext();
-  }
-
-  /**
-   * Remove a job from the queue
-   * If the job is currently processing, it will be cancelled first
-   * If the job is a master job (has workflowId but no parentJobId), also removes child jobs
-   */
-  async removeJob(jobId: string): Promise<boolean> {
-    const job = this._jobs().find(j => j.id === jobId);
-    if (!job) return false;
-
-    const electron = window.electron;
-    const isMasterJob = job.workflowId && !job.parentJobId;
-
-    if (isMasterJob && electron?.queue) {
-      // Cancel ALL processing children by their own IDs (not the master's)
-      const children = this._jobs().filter(j => j.workflowId === job.workflowId && j.id !== jobId);
-      for (const child of children) {
-        if (child.status === 'processing') {
-          await electron.queue.cancelJob(child.id);
-        }
-      }
-    }
-
-    // Cancel this specific job if it's processing
-    if (job.status === 'processing' && electron?.queue) {
-      await electron.queue.cancelJob(jobId);
-    }
-    // A conversion is not one of main's queue jobs — it is a document stage, and
-    // `queue.cancelJob` knows nothing about it. Without this the row disappears
-    // from the list while foundry keeps reading pages and holding the GPU.
-    this.abortConversion(jobId);
-
-    // Clear either lane if a removed job was running in it
-    if (isMasterJob) {
-      const workflowJobs = this._jobs().filter(j => j.workflowId === job.workflowId);
-      for (const wj of workflowJobs) this.clearRunningJob(wj.id);
-      // Remove master and all children
-      this._jobs.update(jobs => jobs.filter(j =>
-        j.id !== jobId && j.workflowId !== job.workflowId
-      ));
-    } else {
-      this.clearRunningJob(jobId);
-      this._jobs.update(jobs => jobs.filter(j => j.id !== jobId));
-    }
-
-    // Clean up any resulting orphans (e.g. master with no children left)
-    this.cleanupOrphanedSubItems();
-
-    // Resume queue if it was running
-    if (this._isRunning()) {
-      await this.processNext();
-    }
-
-    return true;
-  }
-
-  /**
-   * Update a job's config (for modifying settings before job runs)
-   */
-  updateJobConfig(jobId: string, configUpdate: Partial<Record<string, any>>): void {
-    this._jobs.update(jobs => jobs.map(job => {
-      if (job.id !== jobId) return job;
-      return {
-        ...job,
-        config: job.config ? { ...job.config, ...configUpdate } as typeof job.config : undefined
-      };
-    }));
-  }
-
-  /**
-   * Normalize job array so child jobs are always grouped after their master.
-   * Fixes legacy state where children could be scattered in the array.
-   */
-  private normalizeJobGrouping(): void {
-    const jobs = this._jobs();
-    // Build a map: masterJobId -> child jobs (in their current order)
-    const childrenOf = new Map<string, QueueJob[]>();
-    const topLevel: QueueJob[] = [];
-
-    for (const j of jobs) {
-      if (j.parentJobId) {
-        const siblings = childrenOf.get(j.parentJobId) || [];
-        siblings.push(j);
-        childrenOf.set(j.parentJobId, siblings);
-      } else {
-        topLevel.push(j);
-      }
-    }
-
-    // Rebuild: for each top-level job, append its children right after it
-    const normalized: QueueJob[] = [];
-    for (const j of topLevel) {
-      normalized.push(j);
-      const children = childrenOf.get(j.id);
-      if (children) {
-        normalized.push(...children);
-        childrenOf.delete(j.id);
-      }
-    }
-
-    // Append any orphaned children (master not found) — cleanupOrphanedSubItems will handle them
-    for (const orphans of childrenOf.values()) {
-      normalized.push(...orphans);
-    }
-
-    if (normalized.length === jobs.length) {
-      this._jobs.set(normalized);
-    }
-  }
-
-  /**
-   * Clean up orphaned sub-items (sub-items whose master job doesn't exist)
-   * This can happen if the app crashes or if there's a bug in job removal
-   */
-  private cleanupOrphanedSubItems(): void {
-    const jobs = this._jobs();
-    const jobIds = new Set(jobs.map(j => j.id));
-
-    // Find sub-items whose parentJobId doesn't exist in the queue
-    const orphanedChildIds = jobs
-      .filter(j => j.parentJobId && !jobIds.has(j.parentJobId))
-      .map(j => j.id);
-
-    // Find orphaned masters (masters with no remaining children)
-    const orphanedMasterIds = jobs
-      .filter(j => j.workflowId && !j.parentJobId)
-      .filter(master => !jobs.some(j => j.parentJobId === master.id))
-      .map(j => j.id);
-
-    const allOrphanedIds = [...orphanedChildIds, ...orphanedMasterIds];
-
-    if (allOrphanedIds.length > 0) {
-      console.log(`[QUEUE] Removing ${allOrphanedIds.length} orphaned jobs (${orphanedChildIds.length} children, ${orphanedMasterIds.length} masters):`, allOrphanedIds);
-      this._jobs.update(jobs => jobs.filter(j => !allOrphanedIds.includes(j.id)));
-    }
-  }
-
-  /**
-   * Bubble a child job's progress to its master job.
-   * Called from progress handlers so the master bar tracks the active child.
-   * Throttled to avoid excessive signal updates (progress fires frequently).
-   */
-  private _lastMasterBubbleTime = 0;
-  private _pendingMasterBubble: ReturnType<typeof setTimeout> | null = null;
-  private bubbleProgressToMaster(childJobId: string): void {
-    const child = this._jobs().find(j => j.id === childJobId);
-    if (!child?.parentJobId || !child.workflowId) return;
-
-    const now = Date.now();
-    const workflowId = child.workflowId;
-    const masterJobId = child.parentJobId;
-
-    // Throttle: update master at most every 500ms
-    if (now - this._lastMasterBubbleTime >= 500) {
-      this._lastMasterBubbleTime = now;
-      if (this._pendingMasterBubble) {
-        clearTimeout(this._pendingMasterBubble);
-        this._pendingMasterBubble = null;
-      }
-      this.updateMasterJobProgress(workflowId, masterJobId);
-    } else if (!this._pendingMasterBubble) {
-      // Schedule a trailing update so we don't miss the last progress value
-      this._pendingMasterBubble = setTimeout(() => {
-        this._pendingMasterBubble = null;
-        this._lastMasterBubbleTime = Date.now();
-        this.updateMasterJobProgress(workflowId, masterJobId);
-      }, 500);
-    }
-  }
-
-  /**
-   * Update master job progress based on child job completion
-   */
-  private updateMasterJobProgress(workflowId: string, masterJobId: string): void {
-    const jobs = this._jobs();
-    const childJobs = jobs.filter(j => j.parentJobId === masterJobId);
-    const completedChildren = childJobs.filter(j => j.status === 'complete').length;
-    const errorChildren = childJobs.filter(j => j.status === 'error').length;
-    const totalChildren = childJobs.length;
-
-    if (totalChildren === 0) return;
-
-    // Calculate progress factoring in the active child's progress.
-    // e.g. 3 steps, 1 done, 1 at 50% → (1 + 0.5) / 3 = 50%
-    const processingChild = childJobs.find(j => j.status === 'processing');
-    // For TTS jobs, calculate progress from chunks (step.progress can be 0 during conversion)
-    let childProgress = processingChild?.progress || 0;
-    if (processingChild?.type === 'tts-conversion' && processingChild.totalChunksInJob) {
-      const chunkPct = ((processingChild.chunksCompletedInJob || 0) / processingChild.totalChunksInJob) * 100;
-      childProgress = Math.max(childProgress, chunkPct);
-    }
-    const processingFraction = processingChild ? childProgress / 100 : 0;
-    const progress = Math.round(((completedChildren + processingFraction) / totalChildren) * 100);
-
-    // Determine master job status
-    const stoppedChildren = childJobs.filter(j => j.status === 'stopped').length;
-    let masterStatus: JobStatus = 'processing';
-    if (completedChildren + errorChildren === totalChildren) {
-      // All children finished - master is complete (or error if any child errored)
-      masterStatus = errorChildren > 0 ? 'error' : 'complete';
-    } else if (stoppedChildren > 0 && !processingChild) {
-      // A child was explicitly stopped and nothing is running — the workflow is
-      // stopped, not processing. Start/▶ flips stopped → pending and revives it.
-      masterStatus = 'stopped';
-    }
-
-    // Calculate master ETA from child job estimates
-    const estimatedSecondsRemaining = this.computeMasterEta(childJobs);
-
-    // Update master job
-    this._jobs.update(jobs =>
-      jobs.map(job => {
-        if (job.id !== masterJobId) return job;
-        return {
-          ...job,
-          status: masterStatus,
-          progress,
-          estimatedSecondsRemaining: masterStatus === 'complete' ? undefined : estimatedSecondsRemaining,
-          // Show progress message
-          progressMessage: `${completedChildren}/${totalChildren} steps complete`,
-          completedAt: masterStatus === 'complete' ? new Date() : job.completedAt,
-          error: masterStatus === 'error' ? 'One or more steps failed' : undefined
-        };
-      })
-    );
-
-    console.log(`[QUEUE] Master job ${masterJobId} progress: ${completedChildren}/${totalChildren} (${progress}%)` +
-      (estimatedSecondsRemaining !== undefined ? `, ETA: ${estimatedSecondsRemaining}s` : ''));
-
-    // Start/stop periodic ETA refresh timer based on workflow state
-    if (masterStatus === 'processing') {
-      this.startMasterEtaTimer(workflowId, masterJobId);
-    } else {
-      this.stopMasterEtaTimer();
-    }
-  }
-
-  // --- Master ETA Timer ---
-  private masterEtaTimerInterval: ReturnType<typeof setInterval> | null = null;
-
-  private startMasterEtaTimer(workflowId: string, masterJobId: string): void {
-    // Already running — don't start another
-    if (this.masterEtaTimerInterval) return;
-
-    this.masterEtaTimerInterval = setInterval(() => {
-      this.ngZone.run(() => {
-        // Check if master job still processing
-        const masterJob = this._jobs().find(j => j.id === masterJobId);
-        if (!masterJob || masterJob.status !== 'processing') {
-          this.stopMasterEtaTimer();
-          return;
-        }
-        // Recompute ETA
-        this.updateMasterJobProgress(workflowId, masterJobId);
-      });
-    }, 15_000); // Every 15 seconds
-  }
-
-  private stopMasterEtaTimer(): void {
-    if (this.masterEtaTimerInterval) {
-      clearInterval(this.masterEtaTimerInterval);
-      this.masterEtaTimerInterval = null;
-    }
-  }
-
-  // --- Master ETA Computation ---
-
-  /**
-   * Compute the total estimated seconds remaining for a master/workflow job
-   * by summing estimates for the currently-running child and all pending children.
-   *
-   * Uses actual completed sibling durations (inherently model/engine-aware since the
-   * same workflow uses the same settings) and progress-based estimates for running children.
-   */
-  private computeMasterEta(childJobs: QueueJob[]): number | undefined {
-    const runningChild = childJobs.find(j => j.status === 'processing');
-    const pendingChildren = childJobs.filter(j => j.status === 'pending');
-    const completedChildren = childJobs.filter(j => j.status === 'complete');
-
-    // Need at least one running or pending child to estimate
-    if (!runningChild && pendingChildren.length === 0) return undefined;
-
-    let totalEta = 0;
-
-    // Estimate remaining time for the currently-running child
-    if (runningChild) {
-      const runningEta = this.estimateRunningChildEta(runningChild);
-      if (runningEta !== null) {
-        totalEta += runningEta;
-      } else {
-        // Can't estimate running child — return undefined rather than misleading partial ETA
-        return undefined;
-      }
-    }
-
-    // Estimate duration for each pending child
-    for (const pending of pendingChildren) {
-      totalEta += this.estimatePendingChildDuration(pending, completedChildren, runningChild);
-    }
-
-    return Math.round(totalEta);
-  }
-
-  /**
-   * Estimate remaining seconds for a currently-processing child job.
-   * Uses the same logic as job-progress.component.ts but computed server-side.
-   */
-  private estimateRunningChildEta(job: QueueJob): number | null {
-    // Ask the shared ETA engine first — it owns the per-chunk rate sample AND the
-    // stage-aware measurement, so whatever it says is exactly what the child's own
-    // row shows. Without this the two readouts contradicted each other: a reassembly
-    // child reporting 9m from its measured pace inside the Encoding stage sat under a
-    // total of 1m because this method fell straight through to elapsed/progress. That
-    // extrapolation assumes every percent costs the same, which is precisely wrong for
-    // a staged job — encoding an M4B is far slower per percent than combining chapters,
-    // so it under-reads badly near the end.
-    const measured = this.jobEta.etaSeconds(job, stagesFor(job));
-    if (measured !== null) return measured;
-
-    const progress = job.progress || 0;
-    if (progress <= 0 || !job.startedAt) return null;
-
-    const elapsed = (Date.now() - new Date(job.startedAt).getTime()) / 1000;
-    if (elapsed < 10) return null;
-
-    // For OCR/TTS jobs with chunk data, use chunk-based estimation (most accurate)
-    const chunksCompleted = job.chunksCompletedInJob || 0;
-    const totalChunks = job.totalChunksInJob || job.totalChunks || 0;
-    // Nullish, not ||: a real session count of 0 must not collapse to the cumulative count.
-    const chunksDoneInSession = job.chunksDoneInSession ?? chunksCompleted;
-
-    // Measure from the anchor, NOT startedAt: startedAt elapsed carries model load and
-    // pass-1 planning, which inflates time-per-chunk early and then dilutes as chunks
-    // accumulate, so an ETA built on it slides downward every refresh instead of holding.
-    // The window is [firstChunkCompletedAt, now] and contains exactly the completions
-    // since chunksAtFirstStamp — NOT (n - 1), which assumed progress arrives one chunk at
-    // a time and overstated batched engines by ~6x. Same convention as the job-progress
-    // component, so the master ETA and the child's ETA/speed can't contradict each other.
-    if (
-      totalChunks > 0 &&
-      job.firstChunkCompletedAt !== undefined &&
-      job.chunksAtFirstStamp !== undefined
-    ) {
-      const chunksInWindow = chunksDoneInSession - job.chunksAtFirstStamp;
-      const workElapsed = (Date.now() - job.firstChunkCompletedAt) / 1000;
-      if (chunksInWindow > 0 && workElapsed >= RATE_WINDOW_MIN_SECONDS) {
-        const avgTimePerChunk = workElapsed / chunksInWindow;
-        const remainingChunks = Math.max(0, totalChunks - chunksCompleted);
-        return remainingChunks * avgTimePerChunk;
-      }
-    }
-
-    // For progress-based estimation (reassembly, video-assembly, early-stage jobs)
-    if (progress > 2) {
-      const totalEstimate = elapsed / (progress / 100);
-      const remaining = totalEstimate - elapsed;
-      return remaining > 0 ? remaining : 0;
-    }
-
-    return null;
-  }
-
-  /**
-   * Estimate the TOTAL duration for a pending child job.
-   *
-   * Strategy (in order of preference):
-   * 1. Use completed sibling of the same type (same model/engine/settings by definition)
-   * 2. Use type-based ratio relative to the longest completed sibling
-   * 3. Use a percentage of the running child's estimated total duration
-   */
-  private estimatePendingChildDuration(
-    pendingJob: QueueJob,
-    completedChildren: QueueJob[],
-    runningChild: QueueJob | undefined
-  ): number {
-    // 1. Check for completed sibling of the same type
-    const sameSibling = completedChildren.find(c => c.type === pendingJob.type);
-    if (sameSibling?.startedAt && sameSibling?.completedAt) {
-      const duration = (new Date(sameSibling.completedAt).getTime() - new Date(sameSibling.startedAt).getTime()) / 1000;
-      if (duration > 0) return duration;
-    }
-
-    // 2. Use type-based heuristic ratios relative to completed work
-    // These ratios are empirically observed: reassembly and video-assembly are
-    // orders of magnitude faster than TTS or cleanup
-    const longestCompleted = this.getLongestCompletedDuration(completedChildren);
-    if (longestCompleted > 0) {
-      const ratio = this.getTypeSpeedRatio(pendingJob.type);
-      return longestCompleted * ratio;
-    }
-
-    // 3. If nothing has completed but something is running, estimate from the running child
-    if (runningChild?.startedAt && runningChild.progress && runningChild.progress > 5) {
-      const runningElapsed = (Date.now() - new Date(runningChild.startedAt).getTime()) / 1000;
-      const runningTotalEstimate = runningElapsed / (runningChild.progress / 100);
-      const ratio = this.getTypeSpeedRatio(pendingJob.type);
-      return runningTotalEstimate * ratio;
-    }
-
-    // No basis for estimation
-    return 0;
-  }
-
-  /**
-   * Get the duration of the longest completed child job.
-   */
-  private getLongestCompletedDuration(completedChildren: QueueJob[]): number {
-    let longest = 0;
-    for (const child of completedChildren) {
-      if (child.startedAt && child.completedAt) {
-        const dur = (new Date(child.completedAt).getTime() - new Date(child.startedAt).getTime()) / 1000;
-        if (dur > longest) longest = dur;
-      }
-    }
-    return longest;
-  }
-
-  /**
-   * Get a speed ratio for a job type relative to the slowest step (TTS).
-   * These represent how fast this step typically is relative to the slowest completed step.
-   *
-   * For example, reassembly typically takes ~3-5% of TTS duration.
-   * These are rough heuristics used only when no completed sibling exists.
-   */
-  private getTypeSpeedRatio(jobType: JobType): number {
-    switch (jobType) {
-      case 'reassembly':        return 0.05;  // ~5% of TTS duration
-      case 'rvc-enhancement':   return 0.40;  // RVC is per-sentence but faster than TTS
-      case 'video-assembly':    return 0.10;  // ~10% of TTS duration
-      case 'tts-conversion':    return 1.00;  // Baseline
-      default:                  return 0.20;  // Conservative default
-    }
-  }
-
-  /**
-   * Update language learning project status after workflow completion
-   */
-  private async updateLanguageLearningProjectStatus(projectId: string, status: string): Promise<void> {
-    const electron = window.electron as any;
-    if (!electron?.languageLearning?.loadProject || !electron?.languageLearning?.saveProject) {
-      console.warn('[QUEUE] Cannot update project status: language learning API not available');
-      return;
-    }
-
-    // Skip if projectId looks like an absolute path (a book project opened in the LL tab, not a native LL project)
-    if (projectId.includes('\\') || projectId.includes('/') || /^[A-Za-z]:/.test(projectId)) {
-      console.log(`[QUEUE] Skipping LL project status update — projectId is a BFP path: ${projectId}`);
-      return;
-    }
-
-    try {
-      // Load current project
-      const loadResult = await electron.languageLearning.loadProject(projectId);
-      if (!loadResult.success || !loadResult.project) {
-        console.warn(`[QUEUE] Failed to load project ${projectId}: ${loadResult.error}`);
-        return;
-      }
-
-      // Update status
-      const project = loadResult.project;
-      project.status = status;
-      project.modifiedAt = new Date().toISOString();
-
-      // Save updated project
-      const saveResult = await electron.languageLearning.saveProject(project);
-      if (saveResult.success) {
-        console.log(`[QUEUE] Updated project ${projectId} status to '${status}'`);
-      } else {
-        console.warn(`[QUEUE] Failed to save project ${projectId}: ${saveResult.error}`);
-      }
-    } catch (err) {
-      console.error(`[QUEUE] Error updating project status: ${err}`);
-    }
-  }
-
-  /**
-   * Clear completed/error jobs from the queue
-   */
-  clearCompleted(): void {
-    this._jobs.update(jobs =>
-      jobs.filter(j => j.status === 'pending' || j.status === 'processing')
-    );
-    // Also clean up any orphaned sub-items
-    this.cleanupOrphanedSubItems();
-  }
-
-  /**
-   * Force clear all jobs from the queue (use with caution)
-   */
-  clearAll(): void {
-    const electron = window.electron;
-
-    // Cancel the queue's current job(s) — both the exclusive and cloud lanes
-    for (const currentId of [this._currentJobId(), this._currentCloudJobId()]) {
-      if (currentId) {
-        electron?.queue?.cancelJob(currentId);
-        this.abortConversion(currentId);
-        this.clearRunningJob(currentId);
-      }
-    }
-
-    // Cancel any standalone jobs
-    const standaloneIds = this._standaloneJobIds();
-    if (standaloneIds.size > 0 && electron?.queue) {
-      for (const id of standaloneIds) {
-        electron.queue.cancelJob(id);
-      }
-      this._standaloneJobIds.set(new Set());
-    }
-
-    this._jobs.set([]);
-    this._isRunning.set(false);
-    console.log('[QUEUE] All jobs cleared');
-  }
-
-  /**
-   * Retry a failed or completed job.
-   * For workflow (master) jobs, only resets non-complete children — subtasks that
-   * already succeeded are left alone.
-   */
-  async retryJob(jobId: string): Promise<boolean> {
-    const job = this._jobs().find(j => j.id === jobId);
-    if (!job || (job.status !== 'error' && job.status !== 'complete')) return false;
-
-    // A "master" job is a container (type 'audiobook') that has children via parentJobId.
-    // LL wizard uses flat workflows (all peers share workflowId, no parentJobId) — not master/child.
-    const hasChildren = this._jobs().some(j => j.parentJobId === jobId);
-
-    if (hasChildren) {
-      // Master job: only reset children that didn't complete successfully
-      const childIdsToReset = new Set(
-        this._jobs()
-          .filter(j => j.parentJobId === jobId && j.status !== 'complete')
-          .map(j => j.id)
-      );
-      console.log(`[QUEUE] Retrying workflow ${jobId}: resetting master + ${childIdsToReset.size} non-complete child(ren)`);
-
-      this._jobs.update(jobs =>
-        jobs.map(j => {
-          if (j.id === jobId || childIdsToReset.has(j.id)) {
-            return {
-              ...j,
-              status: 'pending' as JobStatus,
-              error: undefined,
-              progress: undefined,
-              startedAt: undefined,
-              completedAt: undefined
-            };
-          }
-          return j;
-        })
-      );
-    } else {
-      // Single job, flat workflow peer, or child job: reset just this one
-      this._jobs.update(jobs =>
-        jobs.map(j => {
-          if (j.id !== jobId) return j;
-          return {
-            ...j,
-            status: 'pending' as JobStatus,
-            error: undefined,
-            progress: undefined,
-            startedAt: undefined,
-            completedAt: undefined
-          };
-        })
-      );
-
-      // If this is a child job, also reset the master so it tracks progress again
-      if (job.parentJobId) {
-        const masterId = job.parentJobId;
-        this._jobs.update(jobs =>
-          jobs.map(j => {
-            if (j.id !== masterId) return j;
-            return {
-              ...j,
-              status: 'pending' as JobStatus,
-              error: undefined,
-              progress: undefined,
-              startedAt: undefined,
-              completedAt: undefined
-            };
-          })
-        );
-      }
-    }
-
-    // Reposition the retried job to just after the currently processing job
-    // so it appears below the running item in the UI (not above it).
-    const processingIdx = this._jobs().findIndex(j => j.status === 'processing' && !j.parentJobId);
-    if (processingIdx >= 0) {
-      const retriedIdx = this._jobs().findIndex(j => j.id === jobId);
-      if (retriedIdx >= 0 && retriedIdx < processingIdx) {
-        this._jobs.update(jobs => {
-          const newJobs = [...jobs];
-          // Collect the retried job and any children that belong to it
-          const idsToMove = new Set([jobId]);
-          for (const j of newJobs) {
-            if (j.parentJobId === jobId) idsToMove.add(j.id);
-          }
-          const toMove = newJobs.filter(j => idsToMove.has(j.id));
-          const remaining = newJobs.filter(j => !idsToMove.has(j.id));
-          // Find the processing job in the remaining array and insert after it
-          const newProcessingIdx = remaining.findIndex(j => j.status === 'processing' && !j.parentJobId);
-          remaining.splice(newProcessingIdx + 1, 0, ...toMove);
-          return remaining;
-        });
-      }
-    }
-
-    // Try to process if queue is running — processNext fills whichever lane is free
-    if (this._isRunning()) {
-      await this.processNext();
-    }
-
-    return true;
-  }
-
-  /**
-   * Start/resume queue processing
-   */
-  async startQueue(): Promise<void> {
-    // Explicit Start = consent to resume: flip user-stopped jobs back to 'pending'
-    // so processNext can pick them up. They keep wasInterrupted, so TTS resumes from
-    // the cached sentences instead of starting fresh.
-    if (this._jobs().some(j => j.status === 'stopped')) {
-      console.log('[QUEUE] Start pressed — reviving stopped job(s) to pending');
-      this._jobs.update(jobs =>
-        jobs.map(j => j.status === 'stopped' ? { ...j, status: 'pending' as JobStatus } : j)
-      );
-    }
-    this._isRunning.set(true);
-    // processNext is lane-aware and idempotent — it fills each idle lane.
-    await this.processNext();
-  }
-
-  /**
-   * Pause queue processing (current job will complete)
-   */
-  pauseQueue(): void {
-    this._isRunning.set(false);
-  }
-
-  /**
-   * Resume ONE explicitly-stopped job (the per-job ▶ on a 'stopped' row). Flips just
-   * that job back to pending and starts the queue — the explicit user action that a
-   * stopped job requires. wasInterrupted is preserved, so TTS resumes from cache.
-   */
-  async resumeStoppedJob(jobId: string): Promise<void> {
-    const job = this._jobs().find(j => j.id === jobId);
-    if (!job || job.status !== 'stopped') return;
-    console.log(`[QUEUE] Resuming stopped job ${jobId} (explicit user action)`);
-    // Revive the job — and, for a workflow child, its stopped master too, so
-    // processNext can mark the master 'processing' again.
-    this._jobs.update(jobs =>
-      jobs.map(j => {
-        if (j.id === jobId) return { ...j, status: 'pending' as JobStatus };
-        if (job.parentJobId && j.id === job.parentJobId && j.status === 'stopped') {
-          return { ...j, status: 'pending' as JobStatus };
-        }
-        return j;
-      })
-    );
-    this._isRunning.set(true);
-    // processNext is lane-aware and idempotent — it fills each idle lane.
-    await this.processNext();
-  }
-
-  /**
-   * Stop queue processing immediately - kills current AI job and resets it to pending
-   */
-  async stopQueue(): Promise<void> {
-    this._isRunning.set(false);
-
-    // Stop BOTH lanes — the exclusive (GPU/local) job and the cloud (Claude/OpenAI) job.
-    const currentIds = [this._currentJobId(), this._currentCloudJobId()].filter((id): id is string => !!id);
-    if (currentIds.length === 0) return;
-
-    const electron = window.electron;
-    if (!electron?.queue) return;
-
-    for (const currentId of currentIds) {
-      // Snapshot the type BEFORE the await — the wasStopped completion event lands
-      // during it and may already have updated the job.
-      const currentJob = this._jobs().find(j => j.id === currentId);
-
-      // Cancel the job (this will unload the AI model)
-      await electron.queue.cancelJob(currentId);
-
-      // TTS jobs: handleJobComplete owns the final state ('stopped' + wasInterrupted,
-      // set by the backend's wasStopped event) — overwriting it to 'pending' here would
-      // make the job auto-pickable again. Other job types have no stop event, so reset
-      // them to 'stopped' too: toolbar Stop is an explicit user stop either way, and
-      // Start/▶ flips them back to pending.
-      if (currentJob && currentJob.type !== 'tts-conversion') {
-        this._jobs.update(jobs =>
-          jobs.map(j => {
-            if (j.id !== currentId) return j;
-            return {
-              ...j,
-              status: 'stopped' as JobStatus,
-              error: undefined,
-              progress: undefined,
-              startedAt: undefined
-            };
-          })
-        );
-      }
-
-      this.clearRunningJob(currentId);
-    }
-  }
-
-  /**
-   * Cancel the currently running job
-   */
-  async cancelCurrent(): Promise<boolean> {
-    const currentId = this._currentJobId();
-    if (!currentId) return false;
-    return this.cancelJob(currentId);
-  }
-
-  /**
-   * Cancel a specific job by ID (works for both queue and standalone jobs)
-   */
-  async cancelJob(jobId: string): Promise<boolean> {
-    const job = this._jobs().find(j => j.id === jobId);
-    if (!job || job.status !== 'processing') return false;
-
-    const electron = window.electron;
-    if (!electron?.queue) return false;
-
-    // Stop = the whole queue goes idle. Set BEFORE awaiting the backend stop: the
-    // wasStopped completion event arrives DURING the await, and handleJobComplete's
-    // tail must see isRunning=false so nothing auto-starts. (The old code left the
-    // queue running; the stopped job went back to 'pending' and processNext re-picked
-    // it in the same tick — a new GPU worker spawned against the dying one, which is
-    // what wedged WSL.) Standalone jobs run alongside the queue and don't touch it.
-    const isStandalone = this._standaloneJobIds().has(jobId);
-    if (!isStandalone) {
-      this._isRunning.set(false);
-    }
-
-    const result = await electron.queue.cancelJob(jobId);
-    if (result.success) {
-      // TTS jobs: the backend emits a wasStopped completion event and
-      // handleJobComplete owns the final state ('stopped' + wasInterrupted) — writing
-      // 'error' here would race/overwrite it. Other job types have no stop event with
-      // resume semantics, so mark them cancelled directly.
-      if (job.type !== 'tts-conversion') {
-        this._jobs.update(jobs =>
-          jobs.map(j => {
-            if (j.id !== jobId) return j;
-            return {
-              ...j,
-              status: 'error' as JobStatus,
-              error: 'Cancelled by user'
-            };
-          })
-        );
-      }
-
-      // Clean up standalone tracking if this was a standalone job
-      if (isStandalone) {
-        const newSet = new Set(this._standaloneJobIds());
-        newSet.delete(jobId);
-        this._standaloneJobIds.set(newSet);
-        console.log(`[QUEUE] Standalone job ${jobId} cancelled`);
-      } else {
-        this.clearRunningJob(jobId);
-        // Queue is now idle by design — no processNext. Toolbar Start (or the
-        // per-job ▶ on the stopped job) is the explicit consent to run again.
-      }
-    }
-
-    return result.success;
-  }
-
-  /**
-   * Start a specific job as standalone (doesn't chain to next job when complete)
-   * Can run alongside the queue - useful for running reassembly while TTS is processing
-   */
-  async runJobStandalone(jobId: string): Promise<boolean> {
-    const job = this._jobs().find(j => j.id === jobId);
-    if (!job) {
-      console.error(`[QUEUE] Job ${jobId} not found`);
-      return false;
-    }
-
-    if (job.status !== 'pending') {
-      console.error(`[QUEUE] Job ${jobId} is not pending (status: ${job.status})`);
-      return false;
-    }
-
-    // Mark job as standalone
-    this._jobs.update(jobs =>
-      jobs.map(j => {
-        if (j.id !== jobId) return j;
-        return { ...j, isStandalone: true };
-      })
-    );
-
-    // Track in standalone set
-    const newSet = new Set(this._standaloneJobIds());
-    newSet.add(jobId);
-    this._standaloneJobIds.set(newSet);
-
-    console.log(`[QUEUE] Starting standalone job ${jobId}`);
-
-    // Run the job (reuse existing runJob logic)
-    await this.runJob(job);
-
-    return true;
-  }
-
-  /**
-   * Move a job up in the queue
-   */
-  moveJobUp(jobId: string): boolean {
-    const jobs = this._jobs();
-    const index = jobs.findIndex(j => j.id === jobId);
-    if (index <= 0) return false;
-
-    const job = jobs[index];
-    if (job.status !== 'pending') return false;
-
-    // Find the previous pending job
-    let targetIndex = -1;
-    for (let i = index - 1; i >= 0; i--) {
-      if (jobs[i].status === 'pending') {
-        targetIndex = i;
-        break;
-      }
-    }
-    if (targetIndex === -1) return false;
-
-    const newJobs = [...jobs];
-    newJobs.splice(index, 1);
-    newJobs.splice(targetIndex, 0, job);
-    this._jobs.set(newJobs);
-    return true;
-  }
-
-  /**
-   * Move a job down in the queue
-   */
-  moveJobDown(jobId: string): boolean {
-    const jobs = this._jobs();
-    const index = jobs.findIndex(j => j.id === jobId);
-    if (index === -1 || index >= jobs.length - 1) return false;
-
-    const job = jobs[index];
-    if (job.status !== 'pending') return false;
-
-    // Find the next pending job
-    let targetIndex = -1;
-    for (let i = index + 1; i < jobs.length; i++) {
-      if (jobs[i].status === 'pending') {
-        targetIndex = i;
-        break;
-      }
-    }
-    if (targetIndex === -1) return false;
-
-    const newJobs = [...jobs];
-    newJobs.splice(index, 1);
-    newJobs.splice(targetIndex, 0, job);
-    this._jobs.set(newJobs);
-    return true;
-  }
-
-  /**
-   * Reorder jobs via drag-and-drop using job IDs
-   * This correctly handles filtered views (activeJobs vs full jobs array)
-   * Only pending jobs can be reordered
-   */
-  reorderJobsById(fromId: string, toId: string): boolean {
-    const jobs = this._jobs();
-    const fromJob = jobs.find(j => j.id === fromId);
-    if (!fromJob) return false;
-
-    // Collect the "block" to move: the job itself + any children (if it's a master)
-    const isMaster = fromJob.workflowId && !fromJob.parentJobId;
-    const blockIds = new Set<string>([fromId]);
-    if (isMaster) {
-      for (const j of jobs) {
-        if (j.parentJobId === fromId) blockIds.add(j.id);
-      }
-    }
-
-    // Split array: everything NOT in the block, and the block itself (preserving order)
-    const rest: QueueJob[] = [];
-    const block: QueueJob[] = [];
-    for (const j of jobs) {
-      if (blockIds.has(j.id)) {
-        block.push(j);
-      } else {
-        rest.push(j);
-      }
-    }
-
-    // Find target position in the rest array
-    const toIndex = rest.findIndex(j => j.id === toId);
-    if (toIndex === -1) return false;
-
-    // Insert block at target position
-    rest.splice(toIndex, 0, ...block);
-    this._jobs.set(rest);
-    return true;
-  }
-
-  /**
-   * @deprecated Use reorderJobsById instead - this has issues with filtered views
-   */
-  reorderJobs(fromIndex: number, toIndex: number): boolean {
-    const jobs = this._jobs();
-    if (fromIndex < 0 || fromIndex >= jobs.length) return false;
-    if (toIndex < 0 || toIndex >= jobs.length) return false;
-    if (fromIndex === toIndex) return false;
-
-    const job = jobs[fromIndex];
-    if (job.status !== 'pending') return false;
-
-    const newJobs = [...jobs];
-    newJobs.splice(fromIndex, 1);
-    newJobs.splice(toIndex, 0, job);
-    this._jobs.set(newJobs);
-    return true;
-  }
-
-  /**
-   * Handle inline job completion: clean up standalone tracking or advance the queue.
-   * Job types that handle completion inline (reassembly, bilingual-*, video-assembly)
-   * must call this instead of directly calling processNext(), so standalone jobs
-   * don't accidentally trigger the next queue item.
-   */
-  private async finishJob(jobId: string): Promise<void> {
-    const standaloneIds = this._standaloneJobIds();
-    if (standaloneIds.has(jobId)) {
-      const newSet = new Set(standaloneIds);
-      newSet.delete(jobId);
-      this._standaloneJobIds.set(newSet);
-      console.log(`[QUEUE] Standalone job ${jobId} completed, not processing next`);
-      return;
-    }
-
-    this.clearRunningJob(jobId);
-    if (this._isRunning()) {
-      await this.processNext();
-    }
-  }
-
-  // Job types that are pure cloud/network AI calls when their provider is a
-  // hosted API (Claude/OpenAI). These contend for nothing local (no GPU, no
-  // bundled llama, no Ollama runner), so they run in their own lane concurrently
-  // with a GPU/local job instead of waiting behind it. ollama/local providers
-  // stay in the exclusive lane — they DO share the GPU.
-  private static readonly CLOUD_CAPABLE_JOB_TYPES: ReadonlySet<string> = new Set([
-    'bilingual-cleanup', 'bilingual-translation', 'translation', 'book-analysis', 'simplify', 'translate-pass'
-  ]);
-
-  /**
-   * Which execution lane a job belongs to. 'cloud' jobs (hosted-API AI) can run
-   * concurrently with an 'exclusive' (GPU/CPU/local) job. Classification is stable
-   * for a given job (derived from its type + provider), so the lane a job starts
-   * in is the same lane it's cleared from.
-   */
-  private jobLane(job: QueueJob): 'cloud' | 'exclusive' {
-    if (QueueService.CLOUD_CAPABLE_JOB_TYPES.has(job.type)) {
-      const provider = (job.config as { aiProvider?: string } | undefined)?.aiProvider;
-      if (provider === 'claude' || provider === 'openai') return 'cloud';
-    }
-    return 'exclusive';
-  }
-
-  private laneBusy(lane: 'cloud' | 'exclusive'): boolean {
-    return lane === 'cloud' ? this._currentCloudJobId() !== null : this._currentJobId() !== null;
-  }
-
-  /** Mark a job as the running job in its lane. */
-  private setLaneCurrent(job: QueueJob): void {
-    if (this.jobLane(job) === 'cloud') {
-      this._currentCloudJobId.set(job.id);
-    } else {
-      this._currentJobId.set(job.id);
-    }
-  }
-
-  /** Clear a job from whichever lane currently holds it (no-op if it holds neither). */
-  private clearRunningJob(jobId: string): void {
-    if (this._currentJobId() === jobId) this._currentJobId.set(null);
-    if (this._currentCloudJobId() === jobId) this._currentCloudJobId.set(null);
-  }
-
-  /**
-   * Process the next pending job in the queue. Fills every idle lane: an idle
-   * exclusive (GPU/local) lane and an idle cloud lane can each pick up a job in
-   * the same pass, so a Claude/OpenAI job runs alongside a GPU job instead of
-   * waiting behind it. Idempotent — a busy lane is skipped.
-   */
-  private async processNext(): Promise<void> {
-    if (this.laneBusy('exclusive') && this.laneBusy('cloud')) {
-      console.log(`[QUEUE] processNext: both lanes busy (exclusive=${this._currentJobId()}, cloud=${this._currentCloudJobId()}), returning`);
-      return;
-    }
-
-    // Don't start work against a half-ready runtime. While the bundled env/e2a
-    // are still unpacking (first run), leave jobs pending; the runtime-ready
-    // effect in the constructor calls processNext() again once setup completes.
-    // Only the active 'preparing' state gates — an errored setup falls through
-    // so the job can run (and surface the real failure) instead of hanging.
-    if (this.runtimeService.preparing()) {
-      console.log('[QUEUE] processNext: runtime still preparing, deferring until ready');
-      return;
-    }
-
-    // Get pending jobs, but skip:
-    // - Master workflow jobs (they don't process themselves)
-    // - TTS placeholder jobs (waiting for translation to set epubPath)
-    // - Jobs whose workflow sibling is still processing (e.g., don't start reassembly while TTS is running)
-    const allJobs = this._jobs();
-    const pending = allJobs.filter(j => {
-      if (j.status !== 'pending') return false;
-      // Skip master workflow jobs (audiobook containers)
-      if (j.type === 'audiobook' && j.workflowId && !j.parentJobId) return false;
-      // Skip TTS placeholder jobs that are waiting for translation
-      if (j.type === 'tts-conversion' && (j.metadata as any)?.bilingualPlaceholder) return false;
-      // Skip bilingual assembly placeholder jobs that are waiting for TTS to complete
-      if (j.type === 'bilingual-assembly' && (j.metadata as any)?.bilingualPlaceholder) return false;
-      // Skip workflow jobs whose earlier siblings haven't completed yet.
-      // Workflows execute in array order (OCR → TTS → Reassembly), so a later
-      // step must not start until all preceding steps in the same workflow are complete.
-      if (j.parentJobId && j.workflowId) {
-        const hasIncompleteEarlierSibling = allJobs.some(s =>
-          s.id !== j.id &&
-          s.workflowId === j.workflowId &&
-          s.parentJobId === j.parentJobId &&
-          s.status !== 'complete' &&
-          allJobs.indexOf(s) < allJobs.indexOf(j)
-        );
-        if (hasIncompleteEarlierSibling) {
-          console.log(`[QUEUE] processNext: skipping ${j.type} job ${j.id} — has incomplete earlier sibling`);
-          return false;
-        }
-      }
-      return true;
-    });
-    // Pick up to one job per IDLE lane and start them concurrently. The first
-    // eligible job (in queue order) for each free lane is chosen, so ordering
-    // within a lane is preserved. A cloud (Claude/OpenAI) job and a GPU/local job
-    // can therefore start in the same pass.
-    const toStart: QueueJob[] = [];
-    if (!this.laneBusy('exclusive')) {
-      const j = pending.find(p => this.jobLane(p) === 'exclusive');
-      if (j) toStart.push(j);
-    }
-    if (!this.laneBusy('cloud')) {
-      const j = pending.find(p => this.jobLane(p) === 'cloud');
-      if (j) toStart.push(j);
-    }
-
-    if (toStart.length === 0) {
-      // Nothing startable right now. Only declare the queue drained (drop the
-      // running flag so the toolbar shows Start) when BOTH lanes are also idle —
-      // otherwise a still-running lane's completion will call processNext() again.
-      if (!this.laneBusy('exclusive') && !this.laneBusy('cloud')) {
-        console.log(`[QUEUE] processNext: no startable jobs and both lanes idle — queue drained (total: ${allJobs.length}, pending: ${pending.length})`);
-        this._isRunning.set(false);
-      } else {
-        console.log(`[QUEUE] processNext: no startable jobs for idle lane(s); a lane is still busy — waiting for its completion`);
-      }
-      return;
-    }
-
-    for (const job of toStart) {
-      console.log(`[QUEUE] processNext: starting ${this.jobLane(job)}-lane job: ${job.type} (${job.id})`);
-
-      // If this job is part of a workflow, ensure the master job is marked as processing
-      if (job.parentJobId) {
-        const masterJob = this._jobs().find(j => j.id === job.parentJobId);
-        if (masterJob && masterJob.status === 'pending') {
-          this._jobs.update(jobs =>
-            jobs.map(j => {
-              if (j.id !== masterJob.id) return j;
-              return {
-                ...j,
-                status: 'processing' as JobStatus,
-                startedAt: new Date(),
-                progress: 0,
-                progressMessage: 'Starting workflow...'
-              };
-            })
-          );
-        }
-      }
-
-      // Fire-and-forget so both lanes run concurrently — awaiting here would
-      // serialize them. Completion is driven by handleJobComplete/finishJob,
-      // which clear the lane and call processNext() again to refill. runJob has
-      // its own try/catch; guard the promise against unhandled rejections.
-      void this.runJob(job).catch(err => console.error(`[QUEUE] runJob(${job.id}) failed:`, err));
-    }
-  }
-
-  /**
-   * Run a specific job
-   */
-  private async runJob(job: QueueJob): Promise<void> {
-    const electron = window.electron;
-    if (!electron?.queue) {
-      this._jobs.update(jobs =>
-        jobs.map(j => {
-          if (j.id !== job.id) return j;
-          return { ...j, status: 'error' as JobStatus, error: 'Electron not available' };
-        })
-      );
-      return;
-    }
-
-    // Check if this is a standalone job (already tracked in _standaloneJobIds)
-    const isStandalone = this._standaloneJobIds().has(job.id);
-
-    // Only set as current job if not standalone — into the job's lane (cloud vs
-    // exclusive) so a Claude/OpenAI job and a GPU/local job track independently.
-    if (!isStandalone) {
-      this.setLaneCurrent(job);
-    }
-
-    // Update job status to processing, and drop everything the PREVIOUS run measured.
-    //
-    // A stop-then-resume reuses the row, so these fields arrive describing a session that
-    // is over. Two of them do real damage rather than merely going stale:
-    //
-    //  - completedAt is stamped on every terminal outcome, a user stop included. Beside a
-    //    freshly-stamped startedAt it makes (completedAt - startedAt) negative, and
-    //    taskElapsedSeconds clamps that at zero — so a resumed job read "ELAPSED 0s" for
-    //    the rest of its life, and the run total read 0s with it.
-    //  - the rate anchor times chunks against the window it opened in. Kept across the
-    //    gap, that window covers the previous run and the stopped time too. See
-    //    anchorIsFromThisRun().
-    //
-    // The session accumulators are re-sent on every progress tick, but they are cleared
-    // here anyway so the row never holds a count from one run beside an anchor from
-    // another — the pairing is what the arithmetic depends on.
-    this._jobs.update(jobs =>
-      jobs.map(j => {
-        if (j.id !== job.id) return j;
-        return {
-          ...j,
-          status: 'processing' as JobStatus,
-          startedAt: new Date(),
-          progress: 0,
-          completedAt: undefined,
-          firstChunkCompletedAt: undefined,
-          chunksAtFirstStamp: undefined,
-          chunksDoneInSession: undefined,
-          rawSentencesDoneInSession: undefined,
-          rawWordsDoneInSession: undefined,
-          rawCharsDoneInSession: undefined,
-          // Sampled from the rendered audio of ONE run, which is the whole claim the
-          // realtime factor makes. Absent until this run's probe has enough again — a
-          // state the readout already knows how to show.
-          audioSecondsPerChar: undefined,
-        };
-      })
-    );
-    // The held rate sample re-derives itself once the anchor changes, but the stage and
-    // master-ETA caches are keyed on the job id alone and would otherwise keep counting
-    // down from the previous run.
-    this.jobEta.forget(job.id);
-
-    // Persist the 'processing' status IMMEDIATELY (not on the 500ms debounce). If the
-    // app is hard-killed/crashes early in a job, the saved state must show 'processing'
-    // so loadQueueState marks it wasInterrupted → the job resumes (and is protected from
-    // cleanSession) instead of restarting fresh and destroying the rendered sentences.
-    void this.saveQueueState();
-
-    // Start the appropriate job type
-    try {
-      if (job.type === 'translation') {
-        const config = job.config as TranslationJobConfig | undefined;
-        if (!config) {
-          throw new Error('Translation configuration required');
-        }
-        if (!job.epubPath) {
-          throw new Error('EPUB path is required for translation');
-        }
-        // Build AI config from per-job settings
-        const aiConfig: AIProviderConfig = {
-          provider: config.aiProvider,
-          ollama: config.aiProvider === 'ollama' ? {
-            baseUrl: config.ollamaBaseUrl || 'http://localhost:11434',
-            model: config.aiModel
-          } : undefined,
-          claude: config.aiProvider === 'claude' ? {
-            apiKey: config.claudeApiKey || '',
-            model: config.aiModel
-          } : undefined,
-          openai: config.aiProvider === 'openai' ? {
-            apiKey: config.openaiApiKey || '',
-            model: config.aiModel
-          } : undefined
-        };
-        const translationConfig = {
-          chunkSize: config.chunkSize
-        };
-        console.log('[QUEUE] Calling runTranslation with:', {
-          jobId: job.id,
-          model: config.aiModel
-        });
-        const transResult = await electron.queue.runTranslation(job.id, job.epubPath, translationConfig, aiConfig);
-
-        // Handle completion inline via handleJobComplete (don't rely solely on queue:job-complete IPC event)
-        const transData = transResult?.data || {};
-        await this.handleJobComplete({
-          jobId: job.id,
-          success: transData.success ?? transResult?.success ?? false,
-          outputPath: transData.outputPath,
-          error: transData.error || transResult?.error,
-          // Chunks that failed translation and kept original (untranslated) text
-          translationFailedChunks: transData.failedChunkCount,
-          skippedChunksPath: transData.skippedChunksPath,
-          analytics: transData.analytics,
-        });
-
-      } else if (job.type === 'tts-conversion') {
-        const config = job.config as TtsConversionConfig | undefined;
-        if (!config) {
-          throw new Error('TTS configuration required');
-        }
-
-        // Check if parallel processing is enabled
-        if (config.useParallel && electron.parallelTts) {
-          // Determine worker count - auto-detect or use configured value
-          let workerCount = config.parallelWorkers;
-          if (!workerCount || workerCount <= 0) {
-            try {
-              const result = await electron.parallelTts.detectRecommendedWorkerCount();
-              workerCount = result.data?.count || 2;
-              console.log(`[QUEUE] Auto-detected ${workerCount} workers: ${result.data?.reason}`);
-            } catch {
-              workerCount = 2; // Default fallback
-            }
-          }
-
-          const parallelMode = config.parallelMode || 'sentences';
-          const resolvedOutputFilename = job.metadata?.outputFilename || config.outputFilename;
-          console.log(`[QUEUE] Starting parallel TTS conversion with ${workerCount} workers in ${parallelMode} mode`);
-          console.log(`[QUEUE] Output filename: ${resolvedOutputFilename}`);
-          console.log(`[QUEUE] Output dir from config: '${config.outputDir}'`);
-          console.log(`[QUEUE] skipAssembly from config: ${config.skipAssembly}`);
-          console.log(`[QUEUE] job.metadata:`, job.metadata);
-          console.log(`[QUEUE] config.outputFilename:`, config.outputFilename);
-          console.log(`[QUEUE] isResumeJob:`, job.isResumeJob);
-
-          // The EPUB is the one the job was created with. There is no search.
-          //
-          // This used to walk a candidate list — stages/02-translate/translated.epub,
-          // then stages/01-cleanup/simplified.epub, then cleaned.epub — and take
-          // whichever was newest, silently narrating a file the user had not chosen.
-          // Those stage copies are retired: a pass rewrites the book EPUB in place,
-          // so the book the wizard picked IS the latest, and a leftover cleaned.epub
-          // from a legacy project is an OLD reading of the book, not a newer one.
-          // A chained job still carries its predecessor's output on job.outputPath.
-          const epubPathForTts: string = job.outputPath || job.epubPath || '';
-
-          if (!epubPathForTts) {
-            throw new Error('EPUB path is required for parallel TTS conversion');
-          }
-
-          const parallelConfig = {
-            workerCount,
-            epubPath: epubPathForTts,
-            outputDir: config.outputDir || '',
-            parallelMode,
-            settings: {
-              device: config.device,
-              language: config.language,
-              ttsEngine: config.ttsEngine,
-              fineTuned: config.fineTuned,
-              temperature: config.temperature,
-              topP: config.topP,
-              topK: config.topK,
-              repetitionPenalty: config.repetitionPenalty,
-              speed: config.speed,
-              enableTextSplitting: config.enableTextSplitting,
-              // For language learning: preserve paragraph boundaries as sentences
-              sentencePerParagraph: config.sentencePerParagraph,
-              // For bilingual: skip reading heading tags as chapter titles
-              skipHeadings: config.skipHeadings,
-              // Test mode - only process first N sentences
-              testMode: config.testMode,
-              testSentences: config.testSentences
-            },
-            // Pass metadata for final audiobook (applied after assembly via ffmpeg)
-            // Use bookTitle/author for m4b tags (metadata.title is the queue display label)
-            metadata: {
-              title: job.metadata?.bookTitle || job.metadata?.title,
-              author: job.metadata?.author,
-              year: job.metadata?.year,
-              coverPath: job.metadata?.coverPath,
-              outputFilename: job.metadata?.outputFilename || config.outputFilename
-            },
-            // Bilingual mode for language learning audiobooks
-            bilingual: config.bilingual,
-            // Skip assembly for dual-voice workflows (assembly happens separately)
-            skipAssembly: config.skipAssembly,
-            // Temp folder workflow for Syncthing compatibility
-            bfpPath: job.bfpPath,
-            isArticle: !!(job.projectDir && job.projectDir.replace(/\\/g, '/').includes('/language-learning/projects/')),
-            // RVC voice enhancement (post-render, pre-assembly): re-render each
-            // sentence through the chosen enhancement voice, then assemble that set.
-            // Sourced from Pipeline Defaults; the backend resolves the voice id.
-            rvcEnhancement: (() => {
-              const pd = this.settingsService.getPipelineDefaults();
-              return pd.rvcEnhancementEnabled && pd.rvcEnhancementVoiceId
-                ? {
-                    enabled: true,
-                    voiceId: pd.rvcEnhancementVoiceId,
-                    indexRate: pd.rvcEnhancementIndexRate,
-                    protectRate: pd.rvcEnhancementProtectRate,
-                    nSemitones: pd.rvcEnhancementNSemitones,
-                  }
-                : undefined;
-            })(),
-            // Final-audio denoise: per-job choice from the wizard (default ON
-            // there for Orpheus). The bridge runs the block-based roformer pass
-            // over the rendered sentences before any RVC pass / assembly;
-            // false/absent = zero behavioral change.
-            finalDenoise: config.finalDenoise
-          };
-
-          // Resume logic — three modes:
-          // 1. Explicit resume (wizard "Continue" button): job.isResumeJob + config.resumeInfo
-          // 2. Interrupted job (app crash/close): job.wasInterrupted — check for existing session
-          // 3. Fresh start (default): clean old sessions and start new
-          let shouldResume = false;
-          let resumeCheckResult: ResumeCheckResult | null = null;
-
-          this.ttsDecisionLog('INFO', 'TTS resume decision: evaluating', {
-            jobId: job.id,
-            isResumeJob: !!job.isResumeJob,
-            hasResumeInfo: !!config.resumeInfo,
-            wasInterrupted: !!job.wasInterrupted,
-            startFresh: !!(config as TtsConversionConfig).startFresh,
-            language: config.language || null,
-            bfpPath: job.bfpPath || null,
-            projectDir: job.projectDir || null,
-            epubPath: epubPathForTts,
-          });
-
-          if (job.isResumeJob && config.resumeInfo) {
-            // Mode 1: Explicit resume from wizard "Continue" button
-            resumeCheckResult = {
-              success: true,
-              sessionId: config.resumeInfo.sessionId,
-              sessionDir: config.resumeInfo.sessionDir,
-              processDir: config.resumeInfo.processDir,
-              totalSentences: config.resumeInfo.totalSentences,
-              totalChapters: config.resumeInfo.totalChapters,
-              completedSentences: job.resumeCompletedSentences,
-              missingSentences: job.resumeMissingSentences,
-              missingRanges: (config as any).missingRanges,
-              chapters: config.resumeInfo.chapters
-            };
-            shouldResume = true;
-            this.ttsDecisionLog('INFO', 'TTS resume mode 1 matched: explicit resume from wizard Continue', {
-              jobId: job.id,
-              sessionDir: config.resumeInfo.sessionDir,
-              processDir: config.resumeInfo.processDir,
-              completedSentences: job.resumeCompletedSentences ?? null,
-              totalSentences: config.resumeInfo.totalSentences ?? null,
-            });
-          } else if (job.wasInterrupted || job.isResumeJob) {
-            // Mode 2: Job was interrupted by app close/crash/user stop — try to resume
-            // Also fires for stale isResumeJob=true (from a prior resume) with no config.resumeInfo
-            this.ttsDecisionLog('INFO', 'TTS resume mode 2: scanning scratch sessions for this EPUB', {
-              jobId: job.id,
-              epubPath: epubPathForTts,
-              bfpPath: job.bfpPath || null,
-              projectDir: job.projectDir || null,
-            });
-            resumeCheckResult = await this.checkBfpForResumableSession(job.bfpPath || job.projectDir || '', epubPathForTts);
-            if (resumeCheckResult?.success && !resumeCheckResult.complete) {
-              shouldResume = true;
-              this._jobs.update(jobs => jobs.map(j => {
-                if (j.id !== job.id) return j;
-                return {
-                  ...j,
-                  isResumeJob: true,
-                  resumeCompletedSentences: resumeCheckResult!.completedSentences,
-                  resumeMissingSentences: resumeCheckResult!.missingSentences
-                };
-              }));
-              this.ttsDecisionLog('INFO', 'TTS resume mode 2 matched: auto-resuming interrupted job from a scratch session', {
-                jobId: job.id,
-                completedSentences: resumeCheckResult.completedSentences ?? null,
-                totalSentences: resumeCheckResult.totalSentences ?? null,
-                sessionDir: resumeCheckResult.sessionDir ?? null,
-              });
-            } else {
-              this.ttsDecisionLog('WARN', 'TTS resume mode 2 did not match: no resumable scratch session', {
-                jobId: job.id,
-                epubPath: epubPathForTts,
-                reason: !resumeCheckResult
-                  ? 'no session found for this EPUB'
-                  : (resumeCheckResult.complete ? 'session is already complete' : (resumeCheckResult.error || 'unknown')),
-              });
-            }
-          }
-          // Explicit "Start fresh": the user chose New over Continue on the wizard's
-          // TTS page while a cached session existed. Skip the cached-session
-          // auto-resume below AND delete the per-language cache now, so the old
-          // render can't resurface later via interrupt-flush or auto-resume. An
-          // interrupted startFresh job (requeued with wasInterrupted) resumes its
-          // OWN partial work through Mode 2/2.5 as usual.
-          const explicitFresh = !!(config as TtsConversionConfig).startFresh
-            && !job.wasInterrupted && !job.isResumeJob;
-          if (explicitFresh && !shouldResume) {
-            const projectDirForFresh = job.bfpPath || job.projectDir || '';
-            const freshLang = (config.language || '').toLowerCase();
-            if (projectDirForFresh && freshLang && electron?.fs?.deleteDirectory) {
-              const cachedLangDir = `${projectDirForFresh}/stages/03-tts/sessions/${freshLang}`;
-              this.ttsDecisionLog('WARN', 'TTS start fresh: DELETING the cached TTS session (user chose New over Continue)', {
-                jobId: job.id, cachedLangDir, language: freshLang,
-              });
-              const del = await electron.fs.deleteDirectory(cachedLangDir);
-              if (!del?.success && del?.error) {
-                this.ttsDecisionLog('ERROR', 'TTS start fresh: failed to delete the cached session', {
-                  jobId: job.id, cachedLangDir, error: del.error,
-                });
-              }
-            }
-          }
-
-          // Mode 2.5: Check project-cached sessions before starting fresh.
-          // Sessions are cached in stages/03-tts/sessions/{lang}/ after TTS completes (or partial).
-          // If a partial session exists for this language, auto-resume it.
-          if (!shouldResume && !explicitFresh) {
-            const projectDirForResume = job.bfpPath || job.projectDir || '';
-            if (projectDirForResume && electron?.sessionCache?.scanProject && electron?.parallelTts?.checkResumeFromDir) {
-              try {
-                const scanResult = await electron.sessionCache.scanProject(projectDirForResume);
-                const jobLang = (config.language || '').toLowerCase();
-                this.ttsDecisionLog('INFO', 'TTS resume mode 2.5: scanned the project session cache', {
-                  jobId: job.id,
-                  scannedDir: `${projectDirForResume}/stages/03-tts/sessions`,
-                  language: jobLang,
-                  sessionsFound: (scanResult.sessions || []).map((s: any) => ({
-                    language: s.language, sentenceCount: s.sentenceCount, sessionDir: s.sessionDir,
-                  })),
-                });
-                if (scanResult.success && scanResult.sessions?.length) {
-                  // Find a session matching this job's language
-                  const matchingSession = scanResult.sessions.find(
-                    (s: any) => s.language.toLowerCase() === jobLang
-                  ) || (scanResult.sessions.length === 1 ? scanResult.sessions[0] : null);
-
-                  if (matchingSession) {
-                    const resumeResult = await electron.parallelTts.checkResumeFromDir(matchingSession.sessionDir);
-                    if (resumeResult.success && resumeResult.data?.success && !resumeResult.data.complete
-                        && (resumeResult.data.completedSentences ?? 0) > 0) {
-                      const data = resumeResult.data;
-                      resumeCheckResult = data;
-                      shouldResume = true;
-                      this._jobs.update(jobs => jobs.map(j => {
-                        if (j.id !== job.id) return j;
-                        return {
-                          ...j,
-                          isResumeJob: true,
-                          resumeCompletedSentences: data.completedSentences,
-                          resumeMissingSentences: data.missingSentences
-                        };
-                      }));
-                      this.ttsDecisionLog('INFO', 'TTS resume mode 2.5 matched: auto-resuming from the cached session', {
-                        jobId: job.id,
-                        language: matchingSession.language,
-                        sessionDir: matchingSession.sessionDir,
-                        completedSentences: data.completedSentences ?? null,
-                        totalSentences: data.totalSentences ?? null,
-                      });
-                    } else {
-                      this.ttsDecisionLog('INFO', 'TTS resume mode 2.5 did not match: the cached session is not resumable', {
-                        jobId: job.id,
-                        sessionDir: matchingSession.sessionDir,
-                        reason: !resumeResult.success || !resumeResult.data?.success
-                          ? (resumeResult.data?.error || resumeResult.error || 'resume check failed')
-                          : (resumeResult.data.complete ? 'session is already complete' : 'zero rendered sentences'),
-                      });
-                    }
-                  } else {
-                    this.ttsDecisionLog('INFO', 'TTS resume mode 2.5 did not match: no cached session for this language', {
-                      jobId: job.id, language: jobLang,
-                    });
-                  }
-                }
-              } catch (err) {
-                this.ttsDecisionLog('ERROR', 'TTS resume mode 2.5 errored while checking the cache', {
-                  jobId: job.id, error: (err as Error)?.message || String(err),
-                });
-              }
-            } else {
-              this.ttsDecisionLog('WARN', 'TTS resume mode 2.5 skipped: no project dir or cache APIs available', {
-                jobId: job.id,
-                projectDir: projectDirForResume || null,
-                hasScanProject: !!electron?.sessionCache?.scanProject,
-                hasCheckResumeFromDir: !!electron?.parallelTts?.checkResumeFromDir,
-              });
-            }
-          }
-
-          // Mode 3: Fresh start.
-          // cleanSession makes the bridge delete every scratch session matching this
-          // EPUB (deleteSessionsForEpub). Those scratch sessions are the crash-resume
-          // checkpoint for any run that died before it could be flushed to the project
-          // cache — so the ONLY submission that may set it is one where the user
-          // explicitly chose "Start fresh" over "Continue". It used to be set for every
-          // non-resuming, non-interrupted job, which is how a would-be resume that simply
-          // failed to FIND its checkpoint went on to destroy it. Tightened to the actual
-          // intent rather than guarded after the fact; scratch hygiene is the startup
-          // rescue-then-sweep's job (main.ts sweepDirContents).
-          if (!shouldResume) {
-            if (explicitFresh) {
-              (parallelConfig as any).cleanSession = true;
-              this.ttsDecisionLog('WARN', 'TTS mode 3: starting fresh, cleanSession=true (explicit Start fresh)', {
-                jobId: job.id, epubPath: epubPathForTts, language: config.language || null,
-              });
-            } else {
-              this.ttsDecisionLog('WARN', 'TTS mode 3: starting fresh WITHOUT cleanSession (preserving any scratch checkpoint)', {
-                jobId: job.id,
-                epubPath: epubPathForTts,
-                wasInterrupted: !!job.wasInterrupted,
-                isResumeJob: !!job.isResumeJob,
-              });
-            }
-          }
-
-          // Create a promise that resolves when TTS completes (inline completion handling)
-          // This prevents the race condition where the event-based onComplete fires
-          // but processNext() isn't called due to timing issues.
-          const ttsComplete = new Promise<{
-            success: boolean; outputPath?: string; error?: string;
-            sessionId?: string; sessionDir?: string;
-            analytics?: any; wasStopped?: boolean; stopInfo?: any;
-          }>((resolve) => {
-            const unsub = electron.parallelTts!.onComplete((data: any) => {
-              if (data.jobId !== job.id) return;
-              unsub();
-              resolve(data);
-            });
-          });
-
-          // Capture the invoke result so we can detect failures that occur BEFORE
-          // the bridge can emit parallel-tts:complete (e.g. missing outputDir, prep
-          // crash). Those used to leave the job hung in "running" forever because
-          // ttsComplete never resolved. The bridge now emits complete for those via
-          // emitJobFailure; this is the belt-and-suspenders inline fallback.
-          let invokeResult: { success: boolean; data?: any; error?: string };
-          if (shouldResume && resumeCheckResult) {
-            this.ttsDecisionLog('INFO', 'TTS entry point: resumeConversion', {
-              jobId: job.id,
-              completedSentences: resumeCheckResult.completedSentences ?? null,
-              totalSentences: resumeCheckResult.totalSentences ?? null,
-              processDir: resumeCheckResult.processDir ?? null,
-            });
-            invokeResult = await electron.parallelTts.resumeConversion(job.id, parallelConfig, resumeCheckResult);
-          } else {
-            // Start fresh conversion
-            this.ttsDecisionLog('WARN', 'TTS entry point: startConversion (renders from sentence 0)', {
-              jobId: job.id,
-              epubPath: epubPathForTts,
-              bfpPath: job.bfpPath || null,
-              language: config.language || null,
-              cleanSession: !!(parallelConfig as any).cleanSession,
-            });
-            invokeResult = await electron.parallelTts.startConversion(job.id, parallelConfig);
-          }
-
-          // `data` is the bridge's ParallelConversionResult ({ success, error? }).
-          const bridgeResult = invokeResult?.data ?? invokeResult;
-          if (invokeResult?.success === false || bridgeResult?.success === false) {
-            const errMsg = bridgeResult?.error || invokeResult?.error || 'TTS conversion failed to start';
-            console.warn(`[QUEUE] TTS invoke reported failure for jobId=${job.id}: ${errMsg}`);
-            // The bridge normally emits parallel-tts:complete for failures (handled by
-            // the constructor listener, which owns completion). Wait briefly; if the
-            // event never arrives (e.g. the IPC handler threw before the bridge could
-            // emit), finalize inline. handleJobComplete is idempotent if both fire.
-            const settled = await Promise.race([
-              ttsComplete,
-              new Promise(res => setTimeout(() => res(null), 3000))
-            ]);
-            if (!settled) {
-              await this.handleJobComplete({ jobId: job.id, success: false, error: errMsg });
-            }
-            return;
-          }
-
-          // Wait for TTS to actually finish (the invoke above returns immediately).
-          // The constructor listener (line ~382) handles all completion logic — session
-          // caching, status update, chaining, and processNext(). We only await here so
-          // processNext() doesn't fall through to the next job prematurely.
-          // Do NOT call handleJobComplete here — that caused a double-call race where the
-          // second invocation deleted the just-cached session and then failed mid-copy.
-          await ttsComplete;
-          console.log(`[QUEUE] Parallel TTS inline await resolved for jobId=${job.id}, _currentJobId=${this._currentJobId()}, isRunning=${this._isRunning()}`);
-
-          // Do NOT clear _currentJobId here. handleJobComplete (from the constructor
-          // listener) owns the entire completion flow: it marks the job complete, caches
-          // the TTS session to the project, and THEN clears _currentJobId + calls
-          // processNext(). Clearing _currentJobId here opened a race window where the
-          // job was marked complete and _currentJobId was null, allowing a premature
-          // processNext() to start reassembly before session caching finished.
-          // handleJobComplete always reaches lines 1207-1221 (outside try/catch),
-          // so _currentJobId will be cleared and processNext() called reliably.
-          return;
-
-        } else {
-          // Use sequential TTS conversion
-          // IMPORTANT: Use the EPUB path that was resolved when the job was created
-          // Do NOT override with hardcoded search logic - this breaks Language Learning pipeline
-          let seqEpubPath = job.epubPath || '';
-
-          // Only use outputPath if explicitly set (from previous job in chain)
-          if (job.outputPath) {
-            seqEpubPath = job.outputPath;
-            console.log(`[QUEUE] Sequential TTS: using output from previous job: ${seqEpubPath}`);
-          } else if (!seqEpubPath) {
-            throw new Error('EPUB path is required for TTS conversion');
-          } else {
-            console.log(`[QUEUE] Sequential TTS: using job's EPUB path: ${seqEpubPath}`);
-          }
-
-          const seqResult = await electron.queue.runTtsConversion(job.id, seqEpubPath, config);
-
-          // Handle completion inline via handleJobComplete (don't rely solely on queue:job-complete IPC event)
-          const seqData = seqResult?.data || {};
-          await this.handleJobComplete({
-            jobId: job.id,
-            success: seqData.success ?? seqResult?.success ?? false,
-            outputPath: seqData.outputPath,
-            error: seqData.error || seqResult?.error,
-            analytics: seqData.analytics,
-            sessionId: seqData.sessionId,
-            sessionDir: seqData.sessionDir,
-          });
-        }
-      } else if (job.type === 'rvc-enhancement') {
-        // RVC enhancement job — re-render the session's sentences through an RVC
-        // voice into a scratch dir, then hand that dir to the downstream
-        // reassembly job (same workflow) via rvcScratchByWorkflow. Its own queue
-        // step with a per-sentence ETA.
-        let config = job.config as RvcEnhancementJobConfig | undefined;
-        if (!config) {
-          throw new Error('RVC enhancement configuration required');
-        }
-        if (!electron.rvc) {
-          throw new Error('RVC enhancement not available');
-        }
-
-        // Runtime session discovery (same retry pattern as reassembly): when
-        // chained after TTS, the session is cached just before this job runs.
-        if (!config.sessionId && job.bfpPath) {
-          let sessionData: any = null;
-          const retryDelays = [0, 2000, 5000, 10000];
-          for (let attempt = 0; attempt < retryDelays.length; attempt++) {
-            if (attempt > 0) await new Promise(r => setTimeout(r, retryDelays[attempt]));
-            const sessionResult = await (electron.reassembly as any).getBfpSession(job.bfpPath);
-            if (sessionResult.success && sessionResult.data) { sessionData = sessionResult.data; break; }
-          }
-          if (sessionData) {
-            config = {
-              ...config,
-              sessionId: sessionData.sessionId,
-              sessionDir: sessionData.sessionDir,
-              processDir: sessionData.processDir,
-            };
-          } else {
-            throw new Error('No TTS session found for RVC enhancement — run TTS first');
-          }
-        }
-
-        const result = await electron.rvc.startEnhancement(job.id, config);
-        if (!result.success || !result.data?.scratchDir) {
-          throw new Error(result.error || 'RVC enhancement failed');
-        }
-
-        // Stash the enhanced set for the downstream reassembly job in this workflow.
-        if (job.workflowId) this.rvcScratchByWorkflow.set(job.workflowId, result.data.scratchDir);
-
-        // Mark complete inline (same pattern as reassembly), then advance the queue.
-        this._jobs.update(jobs =>
-          jobs.map(j => (j.id === job.id ? { ...j, status: 'complete' as JobStatus, progress: 100, completedAt: new Date() } : j))
-        );
-        console.log('[QUEUE] RVC enhancement complete:', result.data.scratchDir);
-        if (job.parentJobId && job.workflowId) {
-          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
-        }
-        await this.finishJob(job.id);
-
-      } else if (job.type === 'reassembly') {
-        // Reassembly job - reassemble incomplete e2a session
-        let config = job.config as ReassemblyJobConfig | undefined;
-        if (!config) {
-          throw new Error('Reassembly configuration required');
-        }
-
-        // Runtime session discovery — resolve session data from the project cache if not provided
-        // Retry with backoff because session caching (from TTS completion handler) may still
-        // be in-flight when this job starts — the TTS completion event can race with processNext
-        if (!config.sessionId && job.bfpPath) {
-          console.log('[QUEUE] Reassembly: discovering session from BFP cache...');
-          let sessionData: any = null;
-          const retryDelays = [0, 2000, 5000, 10000]; // immediate, then 2s, 5s, 10s
-          for (let attempt = 0; attempt < retryDelays.length; attempt++) {
-            if (attempt > 0) {
-              console.log(`[QUEUE] Reassembly: session not found, retrying in ${retryDelays[attempt]}ms (attempt ${attempt + 1}/${retryDelays.length})...`);
-              await new Promise(r => setTimeout(r, retryDelays[attempt]));
-            }
-            const sessionResult = await (electron.reassembly as any).getBfpSession(job.bfpPath);
-            if (sessionResult.success && sessionResult.data) {
-              sessionData = sessionResult.data;
-              break;
-            }
-          }
-          if (sessionData) {
-            config = {
-              ...config,
-              sessionId: sessionData.sessionId,
-              sessionDir: sessionData.sessionDir,
-              processDir: sessionData.processDir,
-              totalChapters: sessionData.chapters?.filter((ch: any) => !ch.excluded)?.length || 0,
-            };
-            console.log(`[QUEUE] Reassembly: found session ${sessionData.sessionId}, ${config.totalChapters} chapters`);
-          } else {
-            throw new Error('No TTS session found in project — run TTS first');
-          }
-        }
-
-        console.log('[QUEUE] Starting reassembly job:', {
-          sessionId: config.sessionId,
-          outputDir: config.outputDir
-        });
-
-        // Call the reassembly API
-        if (!electron.reassembly) {
-          throw new Error('Reassembly not available');
-        }
-
-        // RVC voice enhancement source. Preferred: a separate 'rvc-enhancement'
-        // job in this workflow already produced an enhanced sentence set under
-        // [library]/tmp — assemble THAT set (and the bridge deletes it after).
-        const rvcScratch = job.workflowId ? this.rvcScratchByWorkflow.get(job.workflowId) : undefined;
-        if (rvcScratch) {
-          config = { ...config, sentencesDir: rvcScratch };
-          this.rvcScratchByWorkflow.delete(job.workflowId!);
-        } else {
-          // Fallback (legacy callers with no upstream rvc-enhancement job in the
-          // workflow): run the inline RVC pass from Pipeline Defaults. Skipped when
-          // an rvc-enhancement sibling exists, so RVC never double-processes.
-          const hasRvcSibling = job.workflowId
-            ? this._jobs().some(j => j.workflowId === job.workflowId && j.type === 'rvc-enhancement')
-            : false;
-          if (!hasRvcSibling) {
-            const rvcPd = this.settingsService.getPipelineDefaults();
-            if (rvcPd.rvcEnhancementEnabled && rvcPd.rvcEnhancementVoiceId) {
-              config = {
-                ...config,
-                rvcEnhancement: {
-                  voiceId: rvcPd.rvcEnhancementVoiceId,
-                  indexRate: rvcPd.rvcEnhancementIndexRate,
-                  protectRate: rvcPd.rvcEnhancementProtectRate,
-                  nSemitones: rvcPd.rvcEnhancementNSemitones,
-                },
-              };
-            }
-          }
-        }
-
-        const result = await electron.reassembly.startReassembly(job.id, config);
-        if (!result.success) {
-          throw new Error(result.error || 'Reassembly failed');
-        }
-
-        // Mark job as complete
-        this._jobs.update(jobs =>
-          jobs.map(j => {
-            if (j.id !== job.id) return j;
-            return {
-              ...j,
-              status: 'complete' as JobStatus,
-              progress: 100,
-              completedAt: new Date(),
-              outputPath: result.data?.outputPath,
-            };
-          })
-        );
-
-        console.log('[QUEUE] Reassembly complete:', result.data?.outputPath);
-
-        // Save reassembly analytics
-        if (job.bfpPath && job.startedAt) {
-          const completedAt = new Date();
-          const durationSeconds = Math.round((completedAt.getTime() - new Date(job.startedAt).getTime()) / 1000);
-          this.saveProjectAnalytics(job.bfpPath, 'reassembly', {
-            jobId: job.id,
-            startedAt: new Date(job.startedAt).toISOString(),
-            completedAt: completedAt.toISOString(),
-            durationSeconds,
-            totalChapters: config.totalChapters || job.totalChapters || 0,
-            success: true,
-            outputPath: result.data?.outputPath
-          });
-        }
-
-        // Embed-only: the bridge embeds the transcript into the m4b; no sidecar copy.
-
-        // Link audio to the project
-        if (result.data?.outputPath?.endsWith('.m4b') && job.bfpPath) {
-          try {
-            const el = (window as any).electron;
-            if (el?.audiobook?.linkAudio) {
-              console.log('[QUEUE] Linking audio to BFP:', { bfpPath: job.bfpPath, outputPath: result.data.outputPath });
-              const linkResult = await el.audiobook.linkAudio(job.bfpPath, result.data.outputPath);
-              console.log('[QUEUE] linkAudio result:', linkResult);
-            } else {
-              console.warn('[QUEUE] linkAudio API not available');
-            }
-          } catch (err) {
-            console.error('[QUEUE] Failed to auto-link audio after reassembly:', err);
-          }
-        } else {
-          console.warn('[QUEUE] Skipping linkAudio:', {
-            outputPath: result.data?.outputPath,
-            endsWithM4b: result.data?.outputPath?.endsWith('.m4b'),
-            bfpPath: job.bfpPath
-          });
-        }
-
-        // Reload studio item (non-fatal — must not block master update or queue advance)
-        if (job.bfpPath) {
-          try {
-            await this.studioService.reloadItem(job.bfpPath);
-          } catch (err) {
-            console.error('[QUEUE] Failed to reload studio item after reassembly:', err);
-          }
-        }
-
-        // Update master job progress
-        if (job.parentJobId && job.workflowId) {
-          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
-        }
-
-        // Finish job (standalone-aware: won't advance queue for standalone jobs)
-        await this.finishJob(job.id);
-      } else if (job.type === 'bilingual-cleanup') {
-        // Language Learning Cleanup job
-        const config = job.config as BilingualCleanupJobConfig | undefined;
-        if (!config) {
-          throw new Error('Bilingual Cleanup configuration required');
-        }
-
-        console.log('[QUEUE] Starting bilingual-cleanup job:', {
-          projectId: config.projectId,
-          aiProvider: config.aiProvider,
-          aiModel: config.aiModel,
-          simplifyForLearning: config.simplifyForLearning,
-          cleanupPrompt: config.cleanupPrompt ? 'PROVIDED' : 'NOT PROVIDED'
-        });
-
-        if (!electron.bilingualCleanup) {
-          throw new Error('Bilingual Cleanup not available');
-        }
-
-        const result = await electron.bilingualCleanup.run(job.id, {
-          projectId: config.projectId,
-          projectDir: config.projectDir,
-          sourceEpubPath: config.sourceEpubPath,
-          sourceLang: config.sourceLang,
-          aiProvider: config.aiProvider,
-          aiModel: config.aiModel,
-          ollamaBaseUrl: config.ollamaBaseUrl,
-          claudeApiKey: config.claudeApiKey,
-          openaiApiKey: config.openaiApiKey,
-          cleanupPrompt: config.cleanupPrompt,
-          customInstructions: config.customInstructions,
-          simplifyForLearning: config.simplifyForLearning,
-          simplifyMode: config.simplifyMode,
-          testMode: config.testMode,
-          testModeChunks: config.testModeChunks
-        });
-
-        if (!result.success) {
-          throw new Error(result.error || 'Bilingual Cleanup failed');
-        }
-
-        // Mark cleanup job as complete
-        this._jobs.update(jobs =>
-          jobs.map(j => {
-            if (j.id !== job.id) return j;
-            return { ...j, status: 'complete' as JobStatus, progress: 100, outputPath: result.outputPath };
-          })
-        );
-
-        // Update master job progress
-        if (job.parentJobId && job.workflowId) {
-          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
-        }
-
-        // Finish job (standalone-aware: won't advance queue for standalone jobs)
-        await this.finishJob(job.id);
-
-      } else if (job.type === 'bilingual-translation') {
-        // Language Learning Translation job
-        const config = job.config as BilingualTranslationJobConfig | undefined;
-        if (!config) {
-          throw new Error('Bilingual Translation configuration required');
-        }
-
-        console.log('[QUEUE] Starting bilingual-translation job:', {
-          projectId: config.projectId,
-          targetLang: config.targetLang,
-          aiProvider: config.aiProvider,
-          aiModel: config.aiModel
-        });
-
-        if (!electron.bilingualTranslation) {
-          throw new Error('Bilingual Translation not available');
-        }
-
-        // If this workflow INCLUDED a cleanup step, translation must receive its
-        // cleaned EPUB. A missing cleanedEpubPath here means cleanup silently didn't
-        // produce output and we'd translate the RAW source — refuse loudly. Workflows
-        // with no cleanup step legitimately translate job.epubPath directly (the
-        // cleanedEpubPath field is optional by design; see queue.types.ts).
-        const workflowHadCleanup = job.workflowId
-          ? this._jobs().some(j => j.workflowId === job.workflowId && j.type === 'bilingual-cleanup')
-          : false;
-        if (workflowHadCleanup && !config.cleanedEpubPath) {
-          throw new Error('Bilingual translation expected a cleaned EPUB from the cleanup step, but none was provided — refusing to translate the uncleaned source. Re-run the workflow.');
-        }
-
-        const result = await electron.bilingualTranslation.run(job.id, {
-          projectId: config.projectId,
-          projectDir: config.projectDir,
-          cleanedEpubPath: config.cleanedEpubPath || job.epubPath,  // Use epubPath only when no cleanup step ran (guarded above)
-          sourceLang: config.sourceLang,
-          targetLang: config.targetLang,
-          title: config.title,
-          aiProvider: config.aiProvider,
-          aiModel: config.aiModel,
-          ollamaBaseUrl: config.ollamaBaseUrl,
-          claudeApiKey: config.claudeApiKey,
-          openaiApiKey: config.openaiApiKey,
-          translationPrompt: config.translationPrompt,
-          customInstructions: config.customInstructions,
-          testMode: config.testMode,
-          testModeChunks: config.testModeChunks
-        });
-
-        if (!result.success) {
-          throw new Error(result.error || 'Bilingual Translation failed');
-        }
-
-        // Persist translation analytics (this path finishes via finishJob, not
-        // handleJobComplete, so save the record directly here).
-        if ((result as any).analytics && job.bfpPath) {
-          this.saveProjectAnalytics(job.bfpPath, 'translation', (result as any).analytics);
-        }
-
-        // Mark translation job as complete
-        this._jobs.update(jobs =>
-          jobs.map(j => {
-            if (j.id !== job.id) return j;
-            return { ...j, status: 'complete' as JobStatus, progress: 100, outputPath: result.outputPath };
-          })
-        );
-
-        // Update master job progress
-        if (job.parentJobId && job.workflowId) {
-          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
-        }
-
-        // Check if translation returned dual EPUB paths for dual-voice TTS
-        // Check both result.nextJobConfig (old format) and result.data (new format from language-learning-jobs.ts)
-        const nextConfig = (result as any).nextJobConfig || (result as any).data;
-        console.log('[QUEUE] Translation complete, checking for TTS chaining:', {
-          hasSourceEpub: !!nextConfig?.sourceEpubPath,
-          hasTargetEpub: !!nextConfig?.targetEpubPath,
-          hasParentJobId: !!job.parentJobId,
-          parentJobId: job.parentJobId
-        });
-
-        if (nextConfig?.sourceEpubPath && nextConfig?.targetEpubPath && job.parentJobId && config.projectDir) {
-          // Get TTS settings from the master job (legacy workflow support)
-          const masterJob = this._jobs().find(j => j.id === job.parentJobId);
-          const masterConfig = masterJob?.config as any;
-
-          console.log('[QUEUE] Master job lookup:', {
-            found: !!masterJob,
-            hasConfig: !!masterConfig,
-            configType: masterConfig?.type
-          });
-
-          if (masterConfig) {
-            console.log('[QUEUE] Bilingual Translation complete with dual EPUBs, updating placeholder TTS jobs');
-
-            // Calculate paths - handle both article and book project structures
-            // Normalize backslashes for cross-platform path manipulation
-            const projectDir = config.projectDir.replace(/\\/g, '/');
-            let audiobooksDir: string;
-
-            // Book projects: projectDir is like /library/projects/bookname
-            // Output goes to projectDir/output/
-            if (projectDir.includes('/projects/')) {
-              audiobooksDir = `${projectDir}/output`;
-            } else {
-              // Fallback for other structures
-              audiobooksDir = `${projectDir}/output`;
-            }
-
-            // Get bfpPath from the job for book projects (needed to update bilingual paths later)
-            const bfpPath = job.bfpPath;
-
-            const workerCount = masterConfig.ttsEngine === 'orpheus' ? 1 : (masterConfig.workerCount || 4);
-
-            // Find existing placeholder TTS jobs created upfront
-            const workflowJobs = this._jobs().filter(j =>
-              j.workflowId === job.workflowId &&
-              j.type === 'tts-conversion' &&
-              j.status === 'pending'
-            );
-
-            const sourceTtsJob = workflowJobs.find(j =>
-              (j.metadata as any)?.bilingualPlaceholder?.role === 'source'
-            );
-            const targetTtsJob = workflowJobs.find(j =>
-              (j.metadata as any)?.bilingualPlaceholder?.role === 'target'
-            );
-
-            if (sourceTtsJob && targetTtsJob) {
-              console.log('[QUEUE] Found placeholder TTS jobs, updating with EPUB paths:', {
-                sourceJobId: sourceTtsJob.id,
-                targetJobId: targetTtsJob.id
-              });
-
-              // Update SOURCE TTS job with actual EPUB path and chaining metadata
-              this._jobs.update(jobs =>
-                jobs.map(j => {
-                  if (j.id === sourceTtsJob.id) {
-                    return {
-                      ...j,
-                      epubPath: nextConfig.sourceEpubPath,
-                      epubFilename: nextConfig.sourceEpubPath.replace(/\\/g, '/').split('/').pop() || 'source.epub',
-                      metadata: {
-                        ...j.metadata,
-                        bilingualPlaceholder: undefined, // Clear placeholder marker
-                        bilingualWorkflow: {
-                          role: 'source',
-                          targetEpubPath: nextConfig.targetEpubPath,
-                          targetConfig: {
-                            epubPath: nextConfig.targetEpubPath,
-                            title: (targetTtsJob.metadata as any)?.title || 'Target TTS',
-                            ttsEngine: masterConfig.ttsEngine,
-                            voice: masterConfig.targetVoice,
-                            device: masterConfig.device || 'cpu',
-                            speed: masterConfig.targetTtsSpeed,
-                            workerCount,
-                            language: masterConfig.targetLang,
-                            outputDir: audiobooksDir
-                          },
-                          assemblyConfig: {
-                            projectId: masterConfig.projectId,
-                            audiobooksDir,
-                            bfpPath: projectDir, // Use project dir as BFP for temp folder workflow
-                            sentencePairsPath: nextConfig.sentencePairsPath,
-                            pauseDuration: 0.3,
-                            gapDuration: 1.0,
-                            // Output naming with language suffix
-                            title: masterConfig.title,
-                            sourceLang: masterConfig.sourceLang,
-                            targetLang: masterConfig.targetLang
-                          }
-                        }
-                      },
-                      config: {
-                        ...j.config as TtsConversionConfig,
-                        outputDir: '', // Not needed - using bfpPath
-                        outputFilename: `${masterConfig.projectId}_source.m4b`
-                      },
-                      bfpPath: projectDir // Use project dir as BFP for temp folder workflow
-                    };
-                  }
-                  if (j.id === targetTtsJob.id) {
-                    // Update target TTS job with EPUB path (will be processed via chaining)
-                    return {
-                      ...j,
-                      epubPath: nextConfig.targetEpubPath,
-                      epubFilename: nextConfig.targetEpubPath.replace(/\\/g, '/').split('/').pop() || 'target.epub',
-                      metadata: {
-                        ...j.metadata,
-                        bilingualPlaceholder: undefined // Clear placeholder marker
-                      },
-                      config: {
-                        ...j.config as TtsConversionConfig,
-                        outputDir: '', // Not needed - using bfpPath
-                        outputFilename: `${masterConfig.projectId}_target.m4b`
-                      },
-                      bfpPath: projectDir // Use project dir as BFP for temp folder workflow
-                    };
-                  }
-                  return j;
-                })
-              );
-
-              console.log('[QUEUE] Updated placeholder TTS jobs, source TTS will process next');
-            } else {
-              // Fallback: No placeholder jobs found, create new ones (legacy behavior)
-              console.log('[QUEUE] No placeholder TTS jobs found, creating new ones');
-              const bilWorkflowId = `bilingual-${Date.now()}`;
-
-              await this.addJob({
-                type: 'tts-conversion',
-                epubPath: nextConfig.sourceEpubPath,
-                workflowId: bilWorkflowId,
-                parentJobId: job.parentJobId,
-                metadata: {
-                  title: `${masterConfig.projectId || 'LL'} Source TTS`,
-                  author: 'Language Learning',
-                  bilingualWorkflow: {
-                    role: 'source',
-                    targetEpubPath: nextConfig.targetEpubPath,
-                    targetConfig: {
-                      epubPath: nextConfig.targetEpubPath,
-                      title: `${masterConfig.projectId || 'LL'} Target TTS`,
-                      ttsEngine: masterConfig.ttsEngine,
-                      voice: masterConfig.targetVoice,
-                      device: masterConfig.device || 'cpu',
-                      speed: masterConfig.targetTtsSpeed,
-                      workerCount,
-                      language: masterConfig.targetLang,
-                      bfpPath: projectDir
-                    },
-                    assemblyConfig: {
-                      projectId: masterConfig.projectId,
-                      audiobooksDir,
-                      bfpPath: projectDir, // Use project dir as BFP for temp folder workflow
-                      sentencePairsPath: nextConfig.sentencePairsPath,
-                      pauseDuration: 0.3,
-                      gapDuration: 1.0,
-                      // Output naming with language suffix
-                      title: masterConfig.title,
-                      sourceLang: masterConfig.sourceLang,
-                      targetLang: masterConfig.targetLang
-                    }
-                  }
-                },
-                bfpPath: projectDir, // Use project dir as BFP for temp folder workflow
-                config: {
-                  type: 'tts-conversion',
-                  useParallel: true,
-                  parallelMode: 'sentences',
-                  parallelWorkers: workerCount,
-                  device: masterConfig.device || 'cpu',
-                  language: masterConfig.sourceLang,
-                  ttsEngine: masterConfig.ttsEngine,
-                  fineTuned: masterConfig.sourceVoice,
-                  speed: masterConfig.sourceTtsSpeed,
-                  outputDir: '', // Not needed - using bfpPath
-                  outputFilename: `${masterConfig.projectId}_source.m4b`,
-                  skipAssembly: true,
-                  temperature: 0.75,
-                  topP: 0.85,
-                  topK: 50,
-                  repetitionPenalty: 5.0,
-                  enableTextSplitting: true
-                }
-              });
-            }
-          }
-        }
-
-        // Finish job (standalone-aware: won't advance queue for standalone jobs)
-        await this.finishJob(job.id);
-
-      } else if (job.type === 'bilingual-assembly') {
-        // Bilingual Assembly job - combines source and target TTS outputs
-        const config = job.config as any;
-        if (!config) {
-          throw new Error('Bilingual Assembly configuration required');
-        }
-
-        console.log('[QUEUE] Starting bilingual-assembly job:', {
-          projectId: config.projectId,
-          sourceSentencesDir: config.sourceSentencesDir,
-          targetSentencesDir: config.targetSentencesDir
-        });
-
-        // Call the bilingual assembly API
-        const bilingualAssembly = (window.electron as any)?.bilingualAssembly;
-        if (!bilingualAssembly) {
-          throw new Error('Bilingual Assembly not available');
-        }
-
-        // Subscribe to progress updates to show assembly phases
-        const unsubscribeProgress = bilingualAssembly.onProgress((data: {
-          jobId: string;
-          progress: { phase: string; percentage: number; message: string }
-        }) => {
-          if (data.jobId !== job.id) return;
-
-          // Map phase to assemblySubPhase
-          const phaseMap: Record<string, 'combining' | 'vtt' | 'encoding' | 'metadata'> = {
-            'combining': 'combining',
-            'vtt': 'vtt',
-            'encoding': 'encoding',
-            'metadata': 'metadata'
-          };
-
-          this._jobs.update(jobs =>
-            jobs.map(j => {
-              if (j.id !== job.id) return j;
-              return {
-                ...j,
-                progress: data.progress.percentage,
-                progressMessage: data.progress.message,
-                assemblySubPhase: phaseMap[data.progress.phase] || j.assemblySubPhase,
-                assemblyProgress: data.progress.percentage
-              };
-            })
-          );
-        });
-
-        const result = await bilingualAssembly.run(job.id, {
-          projectId: config.projectId,
-          sourceSentencesDir: config.sourceSentencesDir,
-          targetSentencesDir: config.targetSentencesDir,
-          sentencePairsPath: config.sentencePairsPath,
-          outputDir: config.outputDir,
-          pauseDuration: config.pauseDuration,
-          gapDuration: config.gapDuration,
-          // Output naming with language suffix
-          outputName: config.outputName,
-          title: config.title || job.metadata?.title,
-          sourceLang: config.sourceLang,
-          targetLang: config.targetLang,
-          bfpPath: config.bfpPath
-        });
-
-        // Unsubscribe from progress
-        if (unsubscribeProgress) unsubscribeProgress();
-
-        if (!result.success) {
-          throw new Error(result.error || 'Bilingual Assembly failed');
-        }
-
-        // Mark job as complete
-        this._jobs.update(jobs =>
-          jobs.map(j => {
-            if (j.id !== job.id) return j;
-            return {
-              ...j,
-              status: 'complete' as JobStatus,
-              progress: 100,
-              outputPath: result.data?.audioPath
-            };
-          })
-        );
-
-        console.log('[QUEUE] Bilingual assembly complete:', {
-          audioPath: result.data?.audioPath,
-          vttPath: result.data?.vttPath,
-          projectDir: job.projectDir,
-          sentencePairsPath: config.sentencePairsPath
-        });
-
-        // Finalize output: copy to project dir, update manifest, copy to external audiobooks dir
-        if (result.data?.audioPath && job.projectDir) {
-          const bilingualAssembly = (window.electron as any)?.bilingualAssembly;
-          if (bilingualAssembly?.finalizeOutput) {
-            // Build metadata-based filename base: "{Title}. {Author}. (Year)"
-            // The finalize handler appends "(language learning, english-german)" with full language names
-            const title = config.title || config.projectId || 'Audiobook';
-            const author = (job.metadata as any)?.author || '';
-            const year = (job.metadata as any)?.year || '';
-            let metadataFilename = title;
-            if (author && !title.includes(author)) {
-              metadataFilename += `. ${author}`;
-            }
-            if (year) {
-              metadataFilename += `. (${year})`;
-            }
-            // Guard the "Last, First M." author case (e.g. "Green, Simon R.") whose
-            // trailing period collides with the ". (Year)" separator → "…R.. (Year)".
-            metadataFilename = collapseFilenameDots(metadataFilename);
-
-            const finalizeResult = await bilingualAssembly.finalizeOutput({
-              audioPath: result.data.audioPath,
-              vttPath: result.data.vttPath,
-              projectDir: job.projectDir,
-              projectId: config.projectId,
-              sourceLang: config.sourceLang || 'en',
-              targetLang: config.targetLang || 'de',
-              metadataFilename,
-              sentencePairsPath: config.sentencePairsPath,
-            });
-
-            if (finalizeResult?.success) {
-              console.log('[QUEUE] Bilingual assembly output finalized to project');
-              // Reload the book in StudioService so the Play button lights up
-              await this.studioService.reloadItem(job.projectDir);
-            } else {
-              console.error('[QUEUE] Failed to finalize bilingual assembly output:', finalizeResult?.error);
-            }
-          }
-        }
-
-        // Update master job progress
-        if (job.parentJobId && job.workflowId) {
-          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
-        }
-
-        // Finish job (standalone-aware: won't advance queue for standalone jobs)
-        await this.finishJob(job.id);
-
-      } else if (job.type === 'video-assembly') {
-        // Video Assembly job - renders subtitle MP4 from M4B + VTT
-        const config = job.config as any;
-        if (!config) {
-          throw new Error('Video Assembly configuration required');
-        }
-
-        console.log('[QUEUE] Starting video-assembly job:', {
-          mode: config.mode,
-          resolution: config.resolution,
-          bfpPath: config.bfpPath,
-        });
-
-        const videoAssembly = (window.electron as any)?.videoAssembly;
-        if (!videoAssembly) {
-          throw new Error('Video Assembly not available');
-        }
-
-        // Subscribe to progress
-        const unsubscribeProgress = videoAssembly.onProgress((data: {
-          jobId: string; phase: string; percentage: number; message: string;
-        }) => {
-          if (data.jobId !== job.id) return;
-          this._jobs.update(jobs =>
-            jobs.map(j => {
-              if (j.id !== job.id) return j;
-              return {
-                ...j,
-                progress: data.percentage,
-                progressMessage: data.message,
-              };
-            })
-          );
-        });
-
-        // Subscribe to completion
-        const videoComplete = new Promise<{ success: boolean; outputPath?: string; error?: string }>((resolve) => {
-          const unsub = videoAssembly.onComplete((data: {
-            jobId: string; success: boolean; outputPath?: string; error?: string;
-          }) => {
-            if (data.jobId !== job.id) return;
-            unsub();
-            resolve(data);
-          });
-        });
-
-        // Start the video assembly (async - returns immediately)
-        // No m4bPath/vttPath is forwarded: main resolves both from bfpPath/output at
-        // run time (see VideoAssemblyJobConfig). A job persisted by an older build may
-        // still carry them; they are ignored rather than trusted, because for the
-        // monolingual pipeline the value it carries is a name that was never written.
-        const startResult = await videoAssembly.run(job.id, {
-          projectId: config.projectId,
-          bfpPath: config.bfpPath,
-          mode: config.mode,
-          sentencePairsPath: config.sentencePairsPath,
-          title: config.title || job.metadata?.title,
-          sourceLang: config.sourceLang,
-          targetLang: config.targetLang,
-          resolution: config.resolution,
-          outputFilename: config.outputFilename || job.metadata?.outputFilename,
-        });
-
-        if (!startResult.success) {
-          if (unsubscribeProgress) unsubscribeProgress();
-          throw new Error(startResult.error || 'Failed to start video assembly');
-        }
-
-        // Wait for completion
-        const result = await videoComplete;
-        if (unsubscribeProgress) unsubscribeProgress();
-
-        if (!result.success) {
-          throw new Error(result.error || 'Video assembly failed');
-        }
-
-        // Mark complete
-        this._jobs.update(jobs =>
-          jobs.map(j => {
-            if (j.id !== job.id) return j;
-            return {
-              ...j,
-              status: 'complete' as JobStatus,
-              progress: 100,
-              outputPath: result.outputPath,
-            };
-          })
-        );
-
-        console.log('[QUEUE] Video assembly complete:', result.outputPath);
-
-        // Save video-assembly analytics
-        if (job.bfpPath && job.startedAt) {
-          const completedAt = new Date();
-          const durationSeconds = Math.round((completedAt.getTime() - new Date(job.startedAt).getTime()) / 1000);
-          this.saveProjectAnalytics(job.bfpPath, 'video-assembly', {
-            jobId: job.id,
-            startedAt: new Date(job.startedAt).toISOString(),
-            completedAt: completedAt.toISOString(),
-            durationSeconds,
-            resolution: config.resolution || 'unknown',
-            mode: config.mode || 'unknown',
-            success: true,
-            outputPath: result.outputPath
-          });
-        }
-
-        // Update master job progress
-        if (job.parentJobId && job.workflowId) {
-          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
-        }
-
-        // Finish job (standalone-aware: won't advance queue for standalone jobs)
-        await this.finishJob(job.id);
-
-      } else if (job.type === 'vlm-convert') {
-        // Scheduling only. The conversion is a document stage owned by main —
-        // this waits for it and reports it; it never touches the book.
-        const config = job.config as VlmConvertJobConfig;
-        if (!config?.projectDir) {
-          throw new Error('This conversion row has no project, so there is nothing to convert.');
-        }
-
-        const abort = new AbortController();
-        this.conversionAborts.set(job.id, abort);
-        try {
-          const result = await runConversionJob(
-            config,
-            {
-              jobId: job.id,
-              signal: abort.signal,
-              // The ETA rides IN the message ("… · 4.8s/page · 22m 10s left")
-              // rather than in a field of its own. QueueJob has no etaSeconds —
-              // the queue's ETA widget is JobEtaService, whose unit is TTS
-              // chunks — and adding one here would write a key into queue.json
-              // that nothing reads and every future build has to keep honouring.
-              report: ({ progress, message, stages }) => {
-                this._jobs.update(jobs => jobs.map(j => j.id === job.id
-                  // `stages` is the run's own phase breakdown — two bars on the
-                  // endpoint route, none on MLX, which reads each page as it
-                  // draws it. Written through as-is: `stagesFor` renders what
-                  // the run reported and invents nothing when it reports none.
-                  ? { ...j, progress, progressMessage: message, stages }
-                  : j));
-              },
-            },
-            {
-              convertPdfToEpub: (r) => this.electron.convertPdfToEpub(r),
-              onDocumentStageProgress: (cb) => this.electron.onDocumentStageProgress(cb),
-              onDocumentStageFinished: (cb) => this.electron.onDocumentStageFinished(cb),
-              cancelDocumentStage: (dir) => this.electron.documentCancelStage(dir),
-              listActiveStages: () => this.electron.documentActiveStages(),
-            },
-          );
-
-          this._jobs.update(jobs => jobs.map(j => j.id === job.id
-            ? { ...j, status: 'complete' as JobStatus, progress: 100, outputPath: result.epubPath }
-            : j));
-        } finally {
-          this.conversionAborts.delete(job.id);
-        }
-
-        await this.finishJob(job.id);
-
-      } else if (job.type === 'generate-sentences') {
-        // Generate-sentences job — transcribe an audiobook variant into a synced
-        // VTT with Whisper and link it to that variant.
-        const config = job.config as GenerateSentencesJobConfig;
-        if (!config) {
-          throw new Error('Generate sentences configuration required');
-        }
-
-        const generateSentences = (window.electron as any)?.generateSentences;
-        if (!generateSentences) {
-          throw new Error('Generate sentences not available');
-        }
-
-        const unsubscribeProgress = generateSentences.onProgress((data: {
-          jobId: string; percentage: number; message: string;
-          stages?: JobStageProgress[];
-        }) => {
-          if (data.jobId !== job.id) return;
-          this._jobs.update(jobs =>
-            jobs.map(j => j.id === job.id
-              ? { ...j, progress: data.percentage, progressMessage: data.message,
-                  // The whisper path reports no stages; keep whatever's there rather
-                  // than blanking bars an epub-align run already filled in.
-                  ...(data.stages ? { stages: data.stages } : {}) }
-              : j)
-          );
-        });
-
-        const done = new Promise<{ success: boolean; outputPath?: string; error?: string }>((resolve) => {
-          const unsub = generateSentences.onComplete((data: {
-            jobId: string; success: boolean; outputPath?: string; error?: string;
-          }) => {
-            if (data.jobId !== job.id) return;
-            unsub();
-            resolve(data);
-          });
-        });
-
-        const startResult = await generateSentences.run(job.id, {
-          projectId: config.projectId,
-          variantId: config.variantId,
-          m4bPath: config.m4bPath,
-          modelId: config.modelId,
-          language: config.language || 'auto',
-          method: config.method,
-          epubVariantId: config.epubVariantId,
-        });
-
-        if (!startResult.success) {
-          if (unsubscribeProgress) unsubscribeProgress();
-          throw new Error(startResult.error || 'Failed to start transcription');
-        }
-
-        const result = await done;
-        if (unsubscribeProgress) unsubscribeProgress();
-
-        if (!result.success) {
-          throw new Error(result.error || 'Transcription failed');
-        }
-
-        this._jobs.update(jobs =>
-          jobs.map(j => j.id === job.id
-            ? { ...j, status: 'complete' as JobStatus, progress: 100, outputPath: result.outputPath }
-            : j)
-        );
-
-        await this.finishJob(job.id);
-
-      } else if (job.type === 'book-analysis') {
-        // Book Analysis job — sends EPUB text to AI for content flagging
-        const config = job.config as BookAnalysisConfig;
-        const electron = window.electron;
-
-        if (!electron?.queue?.runBookAnalysis) {
-          throw new Error('Book Analysis not available');
-        }
-
-        // Build AI config from per-job settings
-        const aiConfig: AIProviderConfig & {
-          categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
-          testMode?: boolean;
-          testModeChunks?: number;
-          target?: { versionId: string; versionType: string; versionLabel: string };
-        } = {
-          provider: config.aiProvider,
-          ollama: config.aiProvider === 'ollama' ? {
-            baseUrl: config.ollamaBaseUrl || 'http://localhost:11434',
-            model: config.aiModel
-          } : undefined,
-          claude: config.aiProvider === 'claude' ? {
-            apiKey: config.claudeApiKey || '',
-            model: config.aiModel
-          } : undefined,
-          openai: config.aiProvider === 'openai' ? {
-            apiKey: config.openaiApiKey || '',
-            model: config.aiModel
-          } : undefined,
-          categories: config.categories,
-          testMode: config.testMode,
-          testModeChunks: config.testModeChunks,
-          target: config.target,
-        };
-
-        console.log('[QUEUE] Starting book analysis:', {
-          jobId: job.id,
-          provider: config.aiProvider,
-          model: config.aiModel,
-          categoryCount: config.categories?.length || 0,
-          testMode: config.testMode,
-        });
-
-        const analysisResult = await electron.queue.runBookAnalysis(job.id, config.source, aiConfig);
-
-        const analysisData = analysisResult?.data || {};
-        await this.handleJobComplete({
-          jobId: job.id,
-          success: analysisData.success ?? analysisResult?.success ?? false,
-          outputPath: analysisData.outputPath,
-          error: analysisData.error || analysisResult?.error,
-          contentSkipsDetected: analysisData.contentSkipsDetected,
-          contentSkipsAffected: analysisData.contentSkipsAffected,
-          skippedChunksPath: analysisData.skippedChunksPath,
-          analytics: analysisData.analytics,
-        });
-
-        // Update master job progress
-        if (job.parentJobId && job.workflowId) {
-          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
-        }
-
-        await this.finishJob(job.id);
-
-      } else if (PASS_JOB_TYPES.has(job.type)) {
-        // A processing pass. Every one of them — Tesseract, OCR correction,
-        // footnote removal, simplify, translate — runs through ONE main-process
-        // handler with the plan the chain already resolved; the renderer adds
-        // nothing to it, because a config re-derived here could disagree with the
-        // plan the user was shown.
-        const config = job.config as ProcessingPassJobConfig | undefined;
-        const electron = window.electron;
-        if (!config) throw new Error(`${job.type} job has no configuration`);
-        if (!electron?.processing?.runPass) {
-          throw new Error('Processing passes are not available (no Electron bridge)');
-        }
-
-        const passResult = await electron.processing.runPass(job.id, config);
-        const passData = passResult?.data;
-        // What the pass has to SAY carries onto the row, not just whether it
-        // worked. A pass that could record no ledger row succeeded and still owes
-        // the user that sentence — dropping it here is what made a correct refusal
-        // look like a missing button (shared/processing/pass-notes.ts).
-        const notes = passResultNotes(passData);
-        await this.handleJobComplete({
-          jobId: job.id,
-          success: passData?.success ?? passResult?.success ?? false,
-          outputPath: passData?.outputPath,
-          error: passData?.error || passResult?.error,
-          ...(notes.length > 0 ? { completionNotes: notes } : {}),
-        });
-
-        if (job.parentJobId && job.workflowId) {
-          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
-        }
-
-        await this.finishJob(job.id);
-      }
-    } catch (err) {
-      // Error starting job
-      this._jobs.update(jobs =>
-        jobs.map(j => {
-          if (j.id !== job.id) return j;
-          return {
-            ...j,
-            status: 'error' as JobStatus,
-            error: err instanceof Error ? err.message : 'Failed to start job'
-          };
-        })
-      );
-
-      // Cancel the rest of the workflow. Job types that report failure by throwing
-      // (rvc-enhancement, reassembly, bilingual-*, video-assembly, generate-sentences)
-      // land here instead of handleJobComplete, so without this their downstream
-      // siblings would sit pending forever and the master workflow would never finish.
-      this.cancelPendingWorkflowJobs(job);
-
-      // Update master job progress so workflow status reflects the error
-      if (job.parentJobId && job.workflowId) {
-        this.updateMasterJobProgress(job.workflowId, job.parentJobId);
-      }
-
-      // Check if this was a standalone job
-      const standaloneIds = this._standaloneJobIds();
-      if (standaloneIds.has(job.id)) {
-        // Remove from standalone tracking
-        const newSet = new Set(standaloneIds);
-        newSet.delete(job.id);
-        this._standaloneJobIds.set(newSet);
-        console.log(`[QUEUE] Standalone job ${job.id} failed to start`);
-      } else {
-        // Queue job - clear its lane and try next
-        this.clearRunningJob(job.id);
-        if (this._isRunning()) {
-          await this.processNext();
-        }
-      }
-    }
-  }
-
-  // Returns JobConfig rather than re-listing every member: the union is declared
-  // once in queue.types.ts, and a hand-copied second copy is how a new job type
-  // compiles everywhere except the one place that builds it.
-  private buildJobConfig(request: CreateJobRequest): JobConfig | undefined {
-    if (PASS_JOB_TYPES.has(request.type)) {
-      // Passed through untouched: this config came from planProcessingChain,
-      // which is the only thing allowed to decide what a pass does.
-      const config = request.config as ProcessingPassJobConfig | undefined;
-      if (!config?.kind || !config.projectDir || !config.stageRelDir) {
-        throw new Error(
-          `A ${request.type} job was created without a planned config. Pass jobs come from `
-          + 'processing:submit-chain; nothing else may build one.'
-        );
-      }
-      return config;
-    }
-
-    if (request.type === 'translation') {
-      const config = request.config as Partial<TranslationJobConfig>;
-      if (!config?.aiProvider || !config?.aiModel) {
-        return undefined; // AI provider and model are required
-      }
-      return {
-        type: 'translation',
-        chunkSize: config.chunkSize,
-        aiProvider: config.aiProvider,
-        aiModel: config.aiModel,
-        ollamaBaseUrl: config.ollamaBaseUrl,
-        claudeApiKey: config.claudeApiKey,
-        openaiApiKey: config.openaiApiKey
-      };
-    } else if (request.type === 'tts-conversion') {
-      const config = request.config as TtsConversionConfig;
-      if (!config) return undefined;
-      // Engine + voice are REQUIRED — never silently default them. These used to fall
-      // back to xtts/ScarlettJohansson, which silently overrode Orpheus (and every other
-      // voice) on resume jobs whose config omitted them. A missing engine/voice here is a
-      // real bug in the caller, so surface it instead of shipping the wrong voice. (NO FALLBACKS.)
-      if (!config.ttsEngine) {
-        throw new Error('TTS job config is missing ttsEngine — the caller must set it explicitly (no default).');
-      }
-      if (!config.fineTuned) {
-        throw new Error('TTS job config is missing a voice (fineTuned) — the caller must set it explicitly (no default).');
-      }
-      return {
-        type: 'tts-conversion',
-        device: config.device || 'cpu',
-        language: config.language || 'en',
-        ttsEngine: config.ttsEngine,
-        fineTuned: config.fineTuned,
-        temperature: config.temperature ?? 0.7,
-        topP: config.topP ?? 0.9,
-        topK: config.topK ?? 40,
-        repetitionPenalty: config.repetitionPenalty ?? 2.0,
-        speed: config.speed ?? 1.0,
-        enableTextSplitting: config.enableTextSplitting ?? false,
-        outputFilename: config.outputFilename,
-        outputDir: config.outputDir,
-        // Parallel processing options
-        parallelWorkers: config.parallelWorkers,
-        useParallel: config.useParallel ?? false,
-        parallelMode: config.parallelMode,
-        // Bilingual mode and skip assembly for dual-voice workflows
-        bilingual: config.bilingual,
-        skipAssembly: config.skipAssembly,
-        // Never use cleanSession - preserve session contents
-        // Explicit "Start fresh" choice from the wizard (suppresses cached-session
-        // auto-resume and clears the per-language project cache at job start)
-        startFresh: config.startFresh,
-        // Preserve paragraph boundaries (for language learning)
-        sentencePerParagraph: config.sentencePerParagraph,
-        // Skip reading heading tags as chapter titles (for bilingual)
-        skipHeadings: config.skipHeadings,
-        // Test mode - only process first N sentences
-        testMode: config.testMode,
-        testSentences: config.testSentences,
-        // Final-assembly denoise (per-job; default ON in the wizard for Orpheus)
-        finalDenoise: config.finalDenoise
-      };
-    } else if (request.type === 'rvc-enhancement') {
-      const config = request.config as Partial<RvcEnhancementJobConfig>;
-      // session* may be empty — filled at runtime via project session discovery.
-      // voiceId is required (which RVC voice to enhance through).
-      if (!config?.voiceId) {
-        return undefined;
-      }
-      return {
-        type: 'rvc-enhancement',
-        sessionId: config.sessionId || '',
-        sessionDir: config.sessionDir || '',
-        processDir: config.processDir || '',
-        voiceId: config.voiceId,
-        indexRate: config.indexRate,
-        protectRate: config.protectRate,
-        nSemitones: config.nSemitones,
-        // Final-audio denoise rides on this job so denoise runs BEFORE conversion
-        finalDenoise: config.finalDenoise,
-      };
-    } else if (request.type === 'reassembly') {
-      const config = request.config as Partial<ReassemblyJobConfig>;
-      // sessionId/sessionDir/processDir may be empty — filled at runtime via project session discovery
-      // outputDir is required — it's known at creation time from bfpPath
-      if (!config?.outputDir) {
-        return undefined;
-      }
-      return {
-        type: 'reassembly',
-        sessionId: config.sessionId || '',
-        sessionDir: config.sessionDir || '',
-        processDir: config.processDir || '',
-        outputDir: config.outputDir,
-        totalChapters: config.totalChapters,
-        metadata: config.metadata || { title: 'Unknown', author: 'Unknown' },
-        excludedChapters: config.excludedChapters || [],
-        // Final-assembly denoise (per-job; default ON in the wizard for Orpheus)
-        finalDenoise: config.finalDenoise,
-        // Assembly-time sentence-gap override; undefined → voice's models.json default
-        sentenceGap: config.sentenceGap
-      };
-    } else if (request.type === 'bilingual-cleanup') {
-      const config = request.config as Partial<BilingualCleanupJobConfig>;
-      if (!config?.projectId || !config?.projectDir || !config?.aiProvider || !config?.aiModel) {
-        return undefined;
-      }
-      return {
-        type: 'bilingual-cleanup',
-        projectId: config.projectId,
-        projectDir: config.projectDir,
-        sourceEpubPath: config.sourceEpubPath || request.epubPath,  // Fall back to request.epubPath
-        sourceLang: config.sourceLang || 'en',
-        aiProvider: config.aiProvider,
-        aiModel: config.aiModel,
-        ollamaBaseUrl: config.ollamaBaseUrl,
-        claudeApiKey: config.claudeApiKey,
-        openaiApiKey: config.openaiApiKey,
-        cleanupPrompt: config.cleanupPrompt,
-        simplifyForLearning: config.simplifyForLearning,
-        testMode: config.testMode,
-        testModeChunks: config.testModeChunks
-      };
-    } else if (request.type === 'bilingual-translation') {
-      const config = request.config as Partial<BilingualTranslationJobConfig>;
-      // Only aiProvider and aiModel are strictly required
-      if (!config?.aiProvider || !config?.aiModel) {
-        return undefined;
-      }
-      return {
-        type: 'bilingual-translation',
-        projectId: config.projectId,
-        projectDir: config.projectDir,
-        cleanedEpubPath: config.cleanedEpubPath || request.epubPath, // Fall back to epubPath
-        sourceLang: config.sourceLang || 'en',
-        targetLang: config.targetLang || 'de',
-        title: config.title,
-        aiProvider: config.aiProvider,
-        aiModel: config.aiModel,
-        ollamaBaseUrl: config.ollamaBaseUrl,
-        claudeApiKey: config.claudeApiKey,
-        openaiApiKey: config.openaiApiKey,
-        translationPrompt: config.translationPrompt,
-        customInstructions: config.customInstructions,
-        testMode: config.testMode,
-        testModeChunks: config.testModeChunks
-      };
-    } else if (request.type === 'bilingual-assembly') {
-      const config = request.config as Partial<BilingualAssemblyJobConfig>;
-      if (!config?.projectId || !config?.sourceSentencesDir || !config?.targetSentencesDir || !config?.sentencePairsPath || !config?.outputDir) {
-        return undefined;
-      }
-      return {
-        type: 'bilingual-assembly',
-        projectId: config.projectId,
-        sourceSentencesDir: config.sourceSentencesDir,
-        targetSentencesDir: config.targetSentencesDir,
-        sentencePairsPath: config.sentencePairsPath,
-        outputDir: config.outputDir,
-        pauseDuration: config.pauseDuration ?? 0.3,
-        gapDuration: config.gapDuration ?? 1.0
-      };
-    } else if (request.type === 'video-assembly') {
-      const config = request.config as Partial<VideoAssemblyJobConfig>;
-      // bfpPath is the whole requirement now: the M4B and the VTT are found under
-      // it at run time (see VideoAssemblyJobConfig), so there is nothing else here
-      // that could be checked without inventing it.
-      if (!config?.projectId || !config?.bfpPath) {
-        return undefined;
-      }
-      return {
-        type: 'video-assembly',
-        projectId: config.projectId,
-        bfpPath: config.bfpPath,
-        mode: config.mode || 'monolingual',
-        sentencePairsPath: config.sentencePairsPath,
-        title: config.title || 'Audiobook',
-        sourceLang: config.sourceLang || 'en',
-        targetLang: config.targetLang,
-        resolution: config.resolution || '1080p',
-        outputFilename: config.outputFilename,
-      };
-    } else if (request.type === 'audiobook') {
-      // Audiobook master jobs are containers - no config needed
-      return { type: 'audiobook' };
-    } else if (request.type === 'book-analysis') {
-      const config = request.config as Partial<BookAnalysisConfig>;
-      if (!config?.source || !config?.aiProvider || !config?.aiModel || !config?.categories) {
-        return undefined;
-      }
-      return {
-        type: 'book-analysis',
-        projectDir: config.projectDir || '',
-        source: config.source!,
-        aiProvider: config.aiProvider,
-        aiModel: config.aiModel,
-        ollamaBaseUrl: config.ollamaBaseUrl,
-        claudeApiKey: config.claudeApiKey,
-        openaiApiKey: config.openaiApiKey,
-        categories: config.categories,
-        testMode: config.testMode,
-        testModeChunks: config.testModeChunks,
-        target: config.target,
-      };
-    } else if (request.type === 'vlm-convert') {
-      // Validated by the job module, not here: the shape belongs beside the code
-      // that runs it, and a row built loosely fails at 3 a.m. in the middle of a
-      // batch rather than at the moment somebody could have fixed it.
-      return buildConversionConfig(request.config as Partial<VlmConvertJobConfig>);
-    } else if (request.type === 'generate-sentences') {
-      const config = request.config as Partial<GenerateSentencesJobConfig>;
-      if (!config?.projectId || !config?.variantId || !config?.m4bPath || !config?.modelId) {
-        return undefined;
-      }
-      return {
-        type: 'generate-sentences',
-        projectId: config.projectId,
-        variantId: config.variantId,
-        m4bPath: config.m4bPath,
-        modelId: config.modelId,
-        modelLabel: config.modelLabel,
-        language: config.language || 'auto',
-        method: config.method,
-        epubVariantId: config.epubVariantId,
-      };
-    }
-    return undefined;
-  }
-
-  private generateId(): string {
-    return `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-  }
-
-  /**
-   * Get human-readable language name from language code
-   */
-  private getLanguageName(code: string | undefined): string {
-    const languageNames: Record<string, string> = {
-      'en': 'English',
-      'de': 'German',
-      'es': 'Spanish',
-      'fr': 'French',
-      'it': 'Italian',
-      'pt': 'Portuguese',
-      'nl': 'Dutch',
-      'pl': 'Polish',
-      'ru': 'Russian',
-      'ja': 'Japanese',
-      'zh': 'Chinese',
-      'ko': 'Korean',
-      'ar': 'Arabic',
-      'hi': 'Hindi',
-      'tr': 'Turkish',
-      'vi': 'Vietnamese',
-      'th': 'Thai',
-      'sv': 'Swedish',
-      'da': 'Danish',
-      'no': 'Norwegian',
-      'fi': 'Finnish',
-    };
-    return code ? (languageNames[code] || code.toUpperCase()) : 'Unknown';
-  }
-
-  /**
-   * Refresh queue state by checking for active backend jobs.
-   * Used to re-sync UI after app rebuild when jobs are still running in background.
-   */
-  async refreshFromBackend(): Promise<void> {
-    // TWO kinds of work outlive a renderer, and each is asked about separately.
-    // They were one method that returned early when TTS was unavailable, which
-    // meant a document stage could only be re-synced on a build that also had
-    // parallel TTS — an accident of order, not a rule.
-    await this.refreshTtsFromBackend();
-    await this.reattachDocumentStages();
-  }
-
-  /** Live TTS sessions: main holds their progress, so ask it for the truth. */
-  private async refreshTtsFromBackend(): Promise<void> {
-    const electron = window.electron;
-    if (!electron?.parallelTts?.listActive) {
-      console.log('[QUEUE] No parallelTts.listActive available');
-      return;
-    }
-
-    try {
-      const result = await electron.parallelTts.listActive();
-      if (!result.success || !result.data) {
-        console.log('[QUEUE] No active sessions found');
-        return;
-      }
-
-      const activeSessions = result.data;
-      console.log(`[QUEUE] Found ${activeSessions.length} active backend sessions`);
-
-      for (const session of activeSessions) {
-        // Check if we have this job in our queue
-        const existingJob = this._jobs().find(j => j.id === session.jobId);
-
-        if (existingJob) {
-          // Update existing job with current progress
-          this._jobs.update(jobs =>
-            jobs.map(j => {
-              if (j.id !== session.jobId) return j;
-              return {
-                ...j,
-                status: 'processing' as JobStatus,
-                progress: session.progress.percentage,
-                progressMessage: session.progress.message,
-                parallelWorkers: session.progress.workers?.map(w => ({
-                  id: w.id,
-                  sentenceStart: w.sentenceStart,
-                  sentenceEnd: w.sentenceEnd,
-                  completedSentences: w.completedSentences,
-                  status: w.status,
-                  totalAssigned: (w as any).totalAssigned,
-                  actualConversions: (w as any).actualConversions
-                })),
-                startedAt: new Date(session.startTime),
-                // Re-attaching to a session main reports as LIVE, so the row cannot hold a
-                // completion. A stale one (from the stop that preceded this run) would sit
-                // behind the startedAt above and freeze the elapsed timer at zero.
-                //
-                // The rate anchor is deliberately NOT cleared here: after a renderer reload
-                // the persisted anchor may belong to this very session and is worth more
-                // than a fresh one, and firstChunkAnchor() discards it if it predates
-                // session.startTime.
-                completedAt: undefined
-              };
-            })
-          );
-          this._currentJobId.set(session.jobId);
-          this._isRunning.set(true);
-          console.log(`[QUEUE] Updated existing job ${session.jobId} with progress ${session.progress.percentage}%`);
-        } else {
-          // Create a placeholder job for the orphaned session
-          const filename = session.epubPath.replace(/\\/g, '/').split('/').pop() || 'Unknown';
-          const newJob: QueueJob = {
-            id: session.jobId,
-            type: 'tts-conversion',
-            epubPath: session.epubPath,
-            epubFilename: filename,
-            status: 'processing',
-            progress: session.progress.percentage,
-            progressMessage: session.progress.message,
-            parallelWorkers: session.progress.workers?.map(w => ({
-              id: w.id,
-              sentenceStart: w.sentenceStart,
-              sentenceEnd: w.sentenceEnd,
-              completedSentences: w.completedSentences,
-              status: w.status,
-              totalAssigned: (w as any).totalAssigned,
-              actualConversions: (w as any).actualConversions
-            })),
-            addedAt: new Date(session.startTime),
-            startedAt: new Date(session.startTime),
-            metadata: {
-              title: filename.replace(/\.epub$/i, '').replace(/_/g, ' ')
-            }
-          };
-          this._jobs.update(jobs => [...jobs, newJob]);
-          this._currentJobId.set(session.jobId);
-          this._isRunning.set(true);
-          console.log(`[QUEUE] Created placeholder job for orphaned session ${session.jobId}`);
-        }
-      }
-
-      if (activeSessions.length > 0) {
-        console.log('[QUEUE] Refresh complete - queue is now synced with backend');
-      }
-    } catch (err) {
-      console.error('[QUEUE] Error refreshing from backend:', err);
-    }
-  }
-
-  /**
-   * Put conversion rows back on the stage that is still running them.
-   *
-   * A `vlm-convert` row schedules work it does not own: main runs the stage and
-   * broadcasts every line, and the row listens. A renderer reload kills the
-   * listener and nothing else — the conversion carries on, unwatched, while the
-   * row keeps whatever percentage was on screen at the moment the reload landed
-   * and its elapsed timer keeps counting. That reads as a hung job, which is
-   * what Owen saw on Aug 8 2026.
-   *
-   * So on load every interrupted conversion is asked about by name:
-   *
-   *  - the project's stage is STILL RUNNING → the row goes back to 'processing'
-   *    with main's own last line, and re-attaches (`attachToRunning`) so it
-   *    follows the run to its finish instead of starting a second one that main
-   *    would refuse.
-   *  - the project has NO stage → the run died with the app. The row is FAILED,
-   *    saying that, rather than left pending for progress that can never arrive.
-   *    Converting again is one press of Start on a row that now says why.
-   */
-  private async reattachDocumentStages(): Promise<void> {
-    const interrupted = this._jobs().filter(j =>
-      j.type === 'vlm-convert' && j.wasInterrupted && j.status === 'pending');
-    if (interrupted.length === 0) return;
-
-    let stages: Awaited<ReturnType<ElectronService['documentActiveStages']>>;
-    try {
-      stages = await this.electron.documentActiveStages();
-    } catch (err) {
-      // Main could not be asked, so nothing here can be decided. The rows keep
-      // the pending state loadQueueState gave them; guessing "it died" would
-      // fail a conversion that is very likely still running.
-      console.error('[QUEUE] Could not ask main which document stages are running:', err);
-      return;
-    }
-
-    for (const job of interrupted) {
-      const config = job.config as VlmConvertJobConfig | undefined;
-      if (!config?.projectDir) continue;
-      const live = stages.find(s => samePath(s.projectDir, config.projectDir));
-
-      if (!live) {
-        this._jobs.update(jobs => jobs.map(j => j.id === job.id
-          ? {
-            ...j,
-            status: 'error' as JobStatus,
-            error: `The conversion of ${config.sourceLabel} was interrupted when the app reloaded, `
-              + 'and it is no longer running. Press Start to convert it again.',
-            wasInterrupted: false,
-          }
-          : j));
-        continue;
-      }
-
-      // The row stays PENDING, and that is the whole mechanism: `processNext`
-      // picks up pending rows and nothing else, and running this one is what
-      // re-subscribes it to `document:stage-progress`. Marking it 'processing'
-      // here would look right for one frame and then freeze exactly as before,
-      // because no runner would ever claim it.
-      //
-      // What is seeded is what the row SHOWS in the moment before the next line
-      // arrives: main's own last progress, so the percentage picks up where the
-      // run actually is instead of resetting to zero. `total` is 0 until foundry
-      // states the page count, and 0% is the honest reading of that.
-      const p = live.lastProgress;
-      const progress = p && p.total > 0 ? Math.min(Math.round((p.done / p.total) * 100), 100) : 0;
-      this._jobs.update(jobs => jobs.map(j => j.id === job.id
-        ? {
-          ...j,
-          progress,
-          progressMessage: p?.message ?? `${live.label} is running`,
-          // The phase bars too, from the same line — otherwise a reload would
-          // drop the breakdown until the next page turned, which during the
-          // rasterising pass is the whole of what there is to see.
-          stages: p ? stagesOf(p.render, p.done, p.total) : [],
-          startedAt: new Date(live.startedAt),
-          wasInterrupted: false,
-          // It must not START a conversion — one is already running, and main
-          // refuses a second by name. It attaches to the one in flight.
-          config: { ...config, attachToRunning: true },
-        }
-        : j));
-      console.log(`[QUEUE] Re-attaching conversion row ${job.id} to the running stage on ${config.projectDir} at ${progress}%`);
-    }
-
-    // A conversion is in flight and a row is now waiting to follow it, so the
-    // queue has to be running for its runner to claim it. Same treatment an
-    // enqueued attaching row gets, from the same place — see `followAttachedRows`.
-    if (stages.length > 0) {
-      this.followAttachedRows(`${stages.length} document stage(s) were still running when the app `
-        + 'reloaded');
-    }
-  }
-
-  /**
-   * Save queue state to disk for persistence across app restarts/rebuilds
-   */
-  private async saveQueueState(): Promise<void> {
-    const electron = window.electron;
-    if (!electron?.queue?.saveState) return;
-
-    try {
-      // Serialize jobs, converting Date objects to ISO strings
-      const jobs = this._jobs().map(job => ({
-        ...job,
-        addedAt: job.addedAt instanceof Date ? job.addedAt.toISOString() : job.addedAt,
-        startedAt: job.startedAt instanceof Date ? job.startedAt.toISOString() : job.startedAt,
-        completedAt: job.completedAt instanceof Date ? job.completedAt.toISOString() : job.completedAt
-      }));
-
-      const state = {
-        jobs,
-        isRunning: this._isRunning(),
-        currentJobId: this._currentJobId(),
-        savedAt: new Date().toISOString()
-      };
-
-      await electron.queue.saveState(JSON.stringify(state, null, 2));
-      console.log(`[QUEUE] Saved ${jobs.length} jobs to disk`);
-    } catch (err) {
-      console.error('[QUEUE] Error saving queue state:', err);
-    }
-  }
-
-  /**
-   * Save job analytics to the project folder ({projectDir}/job-analytics.json).
-   * Called once per job completion to avoid duplicate saves from component effects.
-   * Uses the appendAnalytics IPC handler which atomically handles read-dedupe-write.
-   * (bfpPath is the absolute project directory — the legacy ".bfp" naming is gone.)
-   */
-  private async saveProjectAnalytics(
-    bfpPath: string,
-    jobType: string,
-    analytics: { jobId: string; [key: string]: unknown }
-  ): Promise<void> {
-    const electron = window.electron as any;
-    if (!electron?.audiobook?.appendAnalytics) {
-      console.warn('[QUEUE] Cannot save analytics - electron.audiobook.appendAnalytics not available');
-      return;
-    }
-
-    // Validate job type
-    const validTypes = ['tts-conversion', 'reassembly', 'video-assembly', 'rvc', 'translation'];
-    if (!validTypes.includes(jobType)) {
-      console.log('[QUEUE] Unknown job type for analytics:', jobType);
-      return;
-    }
-
-    try {
-      // Use the atomic appendAnalytics handler which handles deduplication
-      const result = await electron.audiobook.appendAnalytics(bfpPath, jobType, analytics);
-      if (result.success) {
-        console.log(`[QUEUE] Saved ${jobType} analytics to BFP:`, analytics.jobId);
-      } else {
-        console.error('[QUEUE] Failed to save analytics to BFP:', result.error);
-      }
-    } catch (err) {
-      console.error('[QUEUE] Error saving analytics to BFP:', err);
-    }
-  }
-
-  /**
-   * Cache audio files after TTS completion for cached-language TTS jobs
-   */
-  private async cacheAudioAfterTts(
-    sentencesDir: string,
-    cacheDir: string,
-    language: string,
-    ttsSettings: {
-      engine: 'xtts' | 'orpheus';
-      voice: string;
-      speed: number;
-    }
-  ): Promise<void> {
-    const electron = window.electron as any;
-    if (!electron?.sentenceCache?.cacheAudio) {
-      console.warn('[QUEUE] Cannot cache audio - electron.sentenceCache.cacheAudio not available');
-      return;
-    }
-
-    try {
-      // Extract audiobook folder from cache dir (e.g., 'audiobooks/book/audio/en' -> 'audiobooks/book')
-      const audiobookFolder = cacheDir.replace(/\/audio\/[^/]+$/, '');
-
-      const result = await electron.sentenceCache.cacheAudio({
-        audiobookFolder,
-        language,
-        sentencesDir,
-        ttsSettings,
-      });
-
-      if (result.success) {
-        console.log(`[QUEUE] Cached ${result.fileCount} audio files for ${language}`);
-      } else {
-        console.error('[QUEUE] Failed to cache audio:', result.error);
-      }
-    } catch (err) {
-      console.error('[QUEUE] Error caching audio:', err);
-    }
-  }
-
-  /**
-   * Load queue state from disk on startup
-   */
-  private async loadQueueState(): Promise<void> {
-    const electron = window.electron;
-    if (!electron?.queue?.loadState) return;
-
-    try {
-      const result = await electron.queue.loadState();
-      if (!result.success) {
-        // Not the same as "no saved state": the file existed but couldn't be read.
-        // The main process preserved it as queue.json.corrupt-<ts> before we got
-        // here (otherwise our debounced auto-save would overwrite it with []).
-        const r = result as { error?: string; backupPath?: string };
-        console.error(`[QUEUE] Saved queue state was corrupt and could not be loaded${r.backupPath ? ` — preserved at ${r.backupPath}` : ''}:`, r.error);
-        return;
-      }
-      if (!result.data) {
-        console.log('[QUEUE] No saved queue state found');
-        return;
-      }
-
-      const state = result.data;
-      console.log(`[QUEUE] Loading ${state.jobs?.length || 0} jobs from disk`);
-
-      if (state.jobs && Array.isArray(state.jobs)) {
-        // Deserialize jobs, converting ISO strings back to Date objects
-        const jobs: QueueJob[] = state.jobs.map((job: any) => {
-          // Repair rows written by builds where a user stop landed in 'error'.
-          //
-          // The stop's progress event reported phase 'error', which wrote a terminal
-          // status that then swallowed the completion carrying wasStopped — so the job
-          // persisted as 'error' with 'Cancelled by user'. Nothing revives 'error':
-          // Start revives 'stopped', the line below revives 'processing'. Those jobs are
-          // fully resumable (their rendered sentences are still cached on disk), they
-          // just have no way back, so they are put in the state they should have reached.
-          //
-          // Narrow ON PURPOSE — TTS only, and only that exact error string, which no
-          // genuine failure produces. A broader rule would revive real failures as
-          // resumable and re-run them against whatever broke them.
-          const stuckStop = job.type === 'tts-conversion'
-            && job.status === 'error'
-            && job.error === 'Cancelled by user';
-          if (stuckStop) {
-            console.log(`[QUEUE] Repairing job ${job.id}: user stop persisted as 'error' — restoring 'stopped' (resumable)`);
-          }
-
-          // A row this build cannot run. queue.json outlives the code that wrote
-          // it, and a type nobody understands any more must not sit pending in a
-          // queue that quietly steps over it — it is failed HERE, with the
-          // sentence that says what replaced it. Terminal rows keep their history.
-          const retired = RETIRED_JOB_TYPES.get(job.type);
-          if (retired && job.status !== 'complete') {
-            console.warn(`[QUEUE] Job ${job.id} has retired type "${job.type}": ${retired}`);
-            return {
-              ...job,
-              addedAt: new Date(job.addedAt),
-              startedAt: job.startedAt ? new Date(job.startedAt) : undefined,
-              completedAt: job.completedAt ? new Date(job.completedAt) : undefined,
-              status: 'error' as JobStatus,
-              error: retired,
-            };
-          }
-
-          return {
-            ...job,
-            addedAt: new Date(job.addedAt),
-            startedAt: job.startedAt ? new Date(job.startedAt) : undefined,
-            completedAt: job.completedAt ? new Date(job.completedAt) : undefined,
-            // Reset processing jobs to pending (they were interrupted)
-            status: job.status === 'processing' ? 'pending'
-              : stuckStop ? 'stopped'
-              : job.status,
-            error: stuckStop ? undefined : job.error,
-            // Mark interrupted jobs so TTS can auto-resume instead of starting fresh
-            wasInterrupted: (job.status === 'processing' || stuckStop) ? true : job.wasInterrupted
-          };
-        });
-
-        this._jobs.set(jobs);
-
-        // Clean up orphaned sub-items, then normalize grouping
-        this.cleanupOrphanedSubItems();
-        this.normalizeJobGrouping();
-
-        // Don't restore isRunning - user should manually restart
-        // this._isRunning.set(state.isRunning || false);
-
-        // Check for active backend jobs and sync
-        await this.refreshFromBackend();
-      }
-    } catch (err) {
-      console.error('[QUEUE] Error loading queue state:', err);
-    }
   }
 }

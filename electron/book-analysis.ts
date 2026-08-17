@@ -9,6 +9,7 @@
  * checkpoint/resume, and cancellation.
  */
 
+import { publishBridgeEvent } from './bridge-events';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
@@ -709,6 +710,7 @@ export async function analyzeBook(
     currentChapter?: number;
     totalChapters?: number;
   }) => {
+    publishBridgeEvent('queue:progress', { jobId, type: 'book-analysis', ...data });
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('queue:progress', {
         jobId,
@@ -1365,6 +1367,7 @@ export async function analyzeAudiobook(
     currentChunk?: number;
     totalChunks?: number;
   }) => {
+    publishBridgeEvent('queue:progress', { jobId, type: 'book-analysis', ...data });
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('queue:progress', {
         jobId,

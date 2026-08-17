@@ -14,7 +14,6 @@ import { ElectronService } from './core/services/electron.service';
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
 import { SetupDownloadService } from './core/services/setup-download.service';
-import { NarrationHandoffService } from './core/services/narration-handoff.service';
 import { BookConversionService } from './features/studio/services/book-conversion.service';
 import { DialogService } from './creamsicle-desktop/services/dialog.service';
 
@@ -302,7 +301,6 @@ export class App implements OnInit {
   private readonly electron = inject(ElectronService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly setupDownloads = inject(SetupDownloadService);
-  private readonly narrationHandoff = inject(NarrationHandoffService);
   // The two halves of "queue this book's conversion": the service that knows how
   // to describe the run, and the one that schedules it. Injected here rather
   // than reached through Studio because the request arrives from another window
@@ -411,44 +409,18 @@ export class App implements OnInit {
   ngOnInit() {
     this.themeService.initializeTheme();
 
-    // A run was handed to the queue from somewhere else — usually the picker,
-    // which is its own window — and the user is coming with it. Main has already
-    // raised this window; this is the other half, putting the Queue in front of
-    // them so the hand-off is witnessed rather than inferred
-    // (docs/PIPELINE_V2_PLAN.md, ruled 2026-08-04).
-    //
-    // Only the main window is ever sent this: a standalone editor or listen
-    // window has no nav rail and no queue to route to.
-    const unsubscribe = this.electron.onShowQueue(() => {
-      void this.router.navigate(['/queue']);
-    });
-    this.destroyRef.onDestroy(unsubscribe);
-
-    // The picker reached the top of its ladder and handed the finished book to
-    // narration. Main has already raised this window (`app:show-narration`); the
-    // shell's half is exactly the one above — put Studio on screen — plus the
-    // request itself, because narration is Studio's Process TAB and not a route,
-    // so it needs to know which book. Studio is lazily loaded and may not be
-    // mounted yet, which is why the request is left with the service to be
-    // consumed rather than delivered to a listener that might not exist.
-    const unsubscribeNarration = this.electron.onShowNarration((projectDir: string) => {
-      this.narrationHandoff.request(projectDir);
-      void this.router.navigate(['/studio']);
-    });
-    this.destroyRef.onDestroy(unsubscribeNarration);
-
     // The picker was showing a project's archive PDF, which under the artifact
     // model is read-only, and the user pressed "Generate EPUB" on its banner.
     // The working copy of a PDF is what `foundry vlm-convert` writes — always,
     // even for a born-digital one, so there is one path and no converter choice —
     // and that is an hour of GPU, so it belongs in the queue.
     //
-    // It is enqueued HERE and nowhere else because the queue is this window's:
-    // QueueService is a renderer-side scheduler that persists its state through
-    // main, so a second window adding a job would write its own queue file over
-    // the one being watched. Main raised this window; this half does the work
-    // and then shows the user the queue, so the hand-off is witnessed rather
-    // than inferred — the same rule as the show-queue listener above.
+    // The hand-off used to be here because the queue was THIS WINDOW'S: a
+    // renderer-side scheduler persisting through main, so a second window adding
+    // a job would write its own queue file over the one being watched. That
+    // hazard is gone — the queue is main's and every window enqueues into the
+    // same one — and this listener is now only about SHOWING the user where the
+    // run went, which is still worth doing.
     const unsubscribeConversion = this.electron.onShowBookConversion((projectDir: string) => {
       void this.queueBookConversion(projectDir);
     });

@@ -12,6 +12,7 @@
  * 8. Bilingual assembly (interleave audio with pauses)
  */
 
+import { publishBridgeEvent } from './bridge-events';
 import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -121,6 +122,7 @@ function sendProgress(
   jobId: string,
   progress: ProcessingProgress
 ): void {
+  publishBridgeEvent('language-learning:progress', { jobId, progress });
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('language-learning:progress', {
       jobId,

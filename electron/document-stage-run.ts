@@ -26,11 +26,19 @@
 
 import { BrowserWindow } from 'electron';
 
+import { publishBridgeEvent } from './bridge-events';
 import { beginStage, recordStageProgress } from './document-stage-registry';
 import type { DocumentStageProgress } from './document-stages';
 
-/** Send a message to every live window. A project's files belong to no one window. */
+/**
+ * Send a message to every live window. A project's files belong to no one window.
+ *
+ * It is also published on the main-side bus, because the queue engine lives in
+ * THIS process now and a `webContents.send` cannot be heard here — a conversion
+ * step has to follow the same three channels the conversion dialog does.
+ */
 export function broadcastToAllWindows(channel: string, payload: unknown): void {
+  publishBridgeEvent(channel, payload);
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
   }

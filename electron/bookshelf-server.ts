@@ -3319,59 +3319,103 @@ export class BookshelfServer {
   // Queue Status
   // ─────────────────────────────────────────────────────────────────────────────
 
+  /**
+   * The queue, ASKED rather than read off the disk.
+   *
+   * This used to parse `userData/queue.json` — the renderer's persisted blob,
+   * written on a ~500 ms debounce. A phone watching the shelf therefore saw a
+   * queue up to half a second stale on a good day and arbitrarily stale on a bad
+   * one (the file is only written when the renderer is alive to write it), and a
+   * queue that had never been saved read as empty. The engine runs in THIS
+   * process; the answer is simply available.
+   *
+   * The wire shape is unchanged for the web UI: one row per STEP, plus the run's
+   * own row where a run has more than one step, exactly as the master/child list
+   * looked. Absolute paths are still stripped — this is served over the tailnet.
+   */
   private async getQueue(_req: Request, res: Response): Promise<void> {
     try {
-      if (!this.userDataPath) {
-        res.json({ jobs: [] });
-        return;
+      const engine = await import('./queue-engine.js');
+      const { jobStatus, jobPercent } = await import('../shared/queue/engine-types.js');
+      const snapshot = engine.snapshot();
+
+      const legacyStatus = (
+        step: { status: string; wasInterrupted?: boolean },
+      ): string => {
+        switch (step.status) {
+          case 'running': return 'processing';
+          case 'done': return 'complete';
+          case 'failed': case 'cancelled': return 'error';
+          case 'held': return step.wasInterrupted ? 'stopped' : 'pending';
+          default: return 'pending';
+        }
+      };
+
+      const rows: unknown[] = [];
+      let currentJobId: string | null = null;
+      for (const job of snapshot.jobs) {
+        const multi = job.steps.length > 1;
+        if (multi) {
+          rows.push({
+            id: job.id,
+            type: 'audiobook',
+            status: legacyStatus({ status: jobStatus(job) }),
+            progress: jobPercent(job),
+            progressMessage: null,
+            title: job.title,
+            author: null,
+            epubFilename: job.documentLabel ?? null,
+            addedAt: job.createdAt,
+            startedAt: job.startedAt ?? null,
+            completedAt: job.finishedAt ?? null,
+            error: null,
+            ttsPhase: null, ttsConversionProgress: null,
+            assemblyProgress: null, assemblySubPhase: null,
+            estimatedSecondsRemaining: null, parallelWorkers: null,
+            parentJobId: null, workflowId: job.id,
+            currentChunk: null, totalChunks: null,
+            currentChapter: null, totalChapters: null,
+          });
+        }
+        for (const step of job.steps) {
+          if (step.status === 'running') currentJobId = step.id;
+          rows.push({
+            id: step.id,
+            type: step.type,
+            status: legacyStatus(step),
+            progress: step.progress.percent ?? 0,
+            progressMessage: step.progress.message ?? null,
+            title: step.label,
+            author: null,
+            epubFilename: job.documentLabel ?? null,
+            addedAt: step.addedAt,
+            startedAt: step.startedAt ?? null,
+            completedAt: step.finishedAt ?? null,
+            error: step.error ?? null,
+            ttsPhase: step.metrics.ttsPhase ?? null,
+            ttsConversionProgress: step.metrics.ttsConversionProgress ?? null,
+            assemblyProgress: step.metrics.assemblyProgress ?? null,
+            assemblySubPhase: step.metrics.assemblySubPhase ?? null,
+            estimatedSecondsRemaining: null,
+            parallelWorkers: step.metrics.parallelWorkers
+              ? step.metrics.parallelWorkers.map((w) => ({
+                  id: w.id,
+                  completedSentences: w.completedSentences,
+                  status: w.status,
+                  totalAssigned: w.totalAssigned,
+                }))
+              : null,
+            parentJobId: multi ? job.id : null,
+            workflowId: multi ? job.id : null,
+            currentChunk: step.metrics.currentChunk ?? null,
+            totalChunks: step.metrics.totalChunks ?? null,
+            currentChapter: step.metrics.currentChapter ?? null,
+            totalChapters: step.metrics.totalChapters ?? null,
+          });
+        }
       }
 
-      const queueFile = path.join(this.userDataPath, 'queue.json');
-      if (!fsSync.existsSync(queueFile)) {
-        res.json({ jobs: [] });
-        return;
-      }
-
-      const content = await fs.readFile(queueFile, 'utf-8');
-      const state = JSON.parse(content);
-      const jobs: any[] = state.jobs || [];
-
-      // Sanitize: strip absolute paths, keep useful display fields
-      const sanitized = jobs.map(job => ({
-        id: job.id,
-        type: job.type,
-        status: job.status,
-        progress: job.progress ?? 0,
-        progressMessage: job.progressMessage || null,
-        title: job.metadata?.title || job.metadata?.bookTitle || null,
-        author: job.metadata?.author || null,
-        epubFilename: job.epubFilename || null,
-        addedAt: job.addedAt,
-        startedAt: job.startedAt || null,
-        completedAt: job.completedAt || null,
-        error: job.error || null,
-        ttsPhase: job.ttsPhase || null,
-        ttsConversionProgress: job.ttsConversionProgress ?? null,
-        assemblyProgress: job.assemblyProgress ?? null,
-        assemblySubPhase: job.assemblySubPhase || null,
-        estimatedSecondsRemaining: job.estimatedSecondsRemaining ?? null,
-        parallelWorkers: job.parallelWorkers
-          ? job.parallelWorkers.map((w: any) => ({
-              id: w.id,
-              completedSentences: w.completedSentences,
-              status: w.status,
-              totalAssigned: w.totalAssigned,
-            }))
-          : null,
-        parentJobId: job.parentJobId || null,
-        workflowId: job.workflowId || null,
-        currentChunk: job.currentChunk ?? null,
-        totalChunks: job.totalChunks ?? null,
-        currentChapter: job.currentChapter ?? null,
-        totalChapters: job.totalChapters ?? null,
-      }));
-
-      res.json({ jobs: sanitized, isRunning: state.isRunning ?? false, currentJobId: state.currentJobId ?? null });
+      res.json({ jobs: rows, isRunning: snapshot.running, currentJobId });
     } catch (err) {
       console.error('[BookshelfServer] Error reading queue:', err);
       res.status(500).json({ error: 'Failed to read queue' });

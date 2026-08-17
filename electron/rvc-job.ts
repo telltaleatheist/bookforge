@@ -12,6 +12,7 @@
  * On failure/cancel it's removed here. The startup tmp-wipe backstops either way.
  */
 
+import { publishBridgeEvent } from './bridge-events';
 import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -61,6 +62,7 @@ export interface RvcEnhancementResult {
 const activeAborts = new Map<string, AbortController>();
 
 function sendProgress(win: BrowserWindow | null, jobId: string, progress: RvcProgress): void {
+  publishBridgeEvent('rvc:progress', { jobId, progress });
   if (!win || win.isDestroyed()) return;
   win.webContents.send('rvc:progress', { jobId, progress });
 }

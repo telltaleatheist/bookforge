@@ -25,6 +25,20 @@ import type {
 } from '../shared/processing/pass-types';
 import type { BookResetSummary } from '../shared/processing/reset-book';
 import type {
+  QueueSnapshot,
+  QueueJob as QueueEngineJob,
+  QueueStep as QueueEngineStep,
+} from '../shared/queue/engine-types';
+import type {
+  AppendStepSpec as QueueAppendStepSpec,
+  JobSpec as QueueJobSpec,
+  StepFinished as QueueStepFinished,
+  StepSpec as QueueStepSpec,
+} from './queue-engine';
+
+/** Which run, or which step of one, a queue command is about. */
+interface QueueTarget { jobId?: string; stepId?: string }
+import type {
   VlmConvertRequest,
   VlmConvertResult,
   VlmEndpointCheck,
@@ -1297,15 +1311,17 @@ export interface ElectronAPI {
    * A processing run: an ordered list of passes over one project's book.
    *
    * `submitChain` is THE entry point — main plans it (it is the side that knows
-   * the manifest, the run directory and the page count) and pushes the plan back
-   * through `onEnqueueChain` for the queue, which lives here, to enqueue. Nothing
-   * else may build pass jobs by hand.
+   * the manifest, the run directory and the page count) and QUEUES it, because
+   * the queue is main's. `followOn` is the work that rides behind the passes in
+   * the same run — narrate, enhance, assemble — built by the caller so that
+   * anything which can fail while building it fails with nothing queued.
+   * Nothing else may build pass jobs by hand.
    */
   processing: {
     planChain: (request: ProcessingChainRequest) =>
       Promise<{ success: boolean; plan?: ProcessingChainPlan; error?: string }>;
-    submitChain: (request: ProcessingChainRequest) =>
-      Promise<{ success: boolean; plan?: ProcessingChainPlan; error?: string }>;
+    submitChain: (request: ProcessingChainRequest, followOn?: QueueStepSpec[]) =>
+      Promise<{ success: boolean; plan?: ProcessingChainPlan; jobId?: string; error?: string }>;
     runPass: (jobId: string, config: PassJobConfig) =>
       Promise<{ success: boolean; data?: PassJobResult; error?: string }>;
     listPassDiffs: (projectDir: string, familyId?: string) =>
@@ -1313,7 +1329,6 @@ export interface ElectronAPI {
     /** Start a book over. `preview: true` reports what WOULD go, writing nothing. */
     resetBook: (request: { projectDir: string; preview?: boolean }) =>
       Promise<{ success: boolean; summary?: BookResetSummary; error?: string }>;
-    onEnqueueChain: (callback: (plan: ProcessingChainPlan) => void) => () => void;
   };
   /**
    * The other route to a book (`foundry vlm-convert`), and the narration copy
@@ -1348,26 +1363,6 @@ export interface ElectronAPI {
     hide: () => Promise<{ success: boolean }>;
     close: () => Promise<{ success: boolean }>;
     /**
-     * Raise the MAIN window and put the Queue on it.
-     *
-     * The "run in background" hand-off. Called from whichever window backgrounded
-     * the run — usually a detached editor window, where the queue does not even
-     * live (`processing:submit-chain` sends the plan to the main window only).
-     */
-    showQueue: () => Promise<{ success: boolean; error?: string }>;
-    /** Main asked THIS window to show the Queue. Only the main window hears it. */
-    onShowQueue: (callback: () => void) => () => void;
-    /**
-     * Raise the MAIN window and open narration for this project.
-     *
-     * The picker's Next at the top of the ladder. It names the project because
-     * narration is Studio's Process tab rather than a route — a bare event would
-     * put the user on whichever book happened to be selected.
-     */
-    showNarration: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
-    /** Main asked THIS window to open narration for a project. Main window only. */
-    onShowNarration: (callback: (projectDir: string) => void) => () => void;
-    /**
      * Ask main to raise the main window and have it queue this project's
      * PDF→EPUB conversion. The queue lives in the main window; a second window
      * enqueueing into its own copy would overwrite the state the user watches.
@@ -1384,23 +1379,33 @@ export interface ElectronAPI {
     invoke: (pluginId: string, channel: string, ...args: unknown[]) => Promise<{ success: boolean; data?: unknown; error?: string }>;
     onProgress: (callback: (progress: PluginProgress) => void) => () => void;
   };
+  /**
+   * The queue, which is MAIN's.
+   *
+   * Every door here is a command or a question — nothing STARTS a job through
+   * this namespace any more. `runTtsConversion` / `runTranslation` /
+   * `runBookAnalysis` went with the renderer-side scheduler that called them: the
+   * work is started by a step module beside the bridge it calls, and asking a
+   * window to start a nine-hour render is the arrangement this replaced.
+   *
+   * `onChanged` carries the WHOLE list, to every window, on every change. The
+   * mirror replaces rather than patches, so it cannot drift by missing an event.
+   */
   queue: {
-    runTtsConversion: (jobId: string, epubPath: string, config: TtsJobConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
-    runTranslation: (jobId: string, epubPath: string, translationConfig: {
-      chunkSize?: number;
-    }, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
-    runBookAnalysis: (jobId: string, source: { kind: 'document'; epubPath: string } | { kind: 'audiobook'; projectId: string; variantId: string }, aiConfig: AIProviderConfig & {
-      categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
-      testMode?: boolean;
-      testModeChunks?: number;
-      target?: { versionId: string; versionType: string; versionLabel: string };
-    }) => Promise<{ success: boolean; data?: any; error?: string }>;
-    cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
-    saveState: (queueState: string) => Promise<{ success: boolean; error?: string }>;
-    loadState: () => Promise<{ success: boolean; data?: any; error?: string }>;
-    onProgress: (callback: (progress: QueueProgress) => void) => () => void;
-    onComplete: (callback: (result: QueueJobResult) => void) => () => void;
-    onRemoteControl: (callback: (action: 'start' | 'pause') => void) => () => void;
+    list: () => Promise<{ success: boolean; data?: QueueSnapshot; error?: string }>;
+    enqueue: (spec: QueueJobSpec) => Promise<{ success: boolean; data?: QueueEngineJob; error?: string }>;
+    appendStep: (jobId: string, spec: QueueAppendStepSpec) => Promise<{ success: boolean; data?: QueueEngineStep; error?: string }>;
+    release: (target?: QueueTarget) => Promise<{ success: boolean; error?: string }>;
+    start: (target?: QueueTarget) => Promise<{ success: boolean; error?: string }>;
+    pause: () => Promise<{ success: boolean; error?: string }>;
+    cancel: (target: QueueTarget, reason?: string) => Promise<{ success: boolean; error?: string }>;
+    retry: (target: QueueTarget) => Promise<{ success: boolean; error?: string }>;
+    remove: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+    reorder: (jobId: string, beforeJobId: string | null) => Promise<{ success: boolean; error?: string }>;
+    clearFinished: () => Promise<{ success: boolean; error?: string }>;
+    updateStepConfig: (stepId: string, patch: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>;
+    onChanged: (callback: (snapshot: QueueSnapshot) => void) => () => void;
+    onStepFinished: (callback: (event: QueueStepFinished) => void) => () => void;
   };
   diff: {
     loadComparison: (originalPath: string, cleanedPath: string) => Promise<{
@@ -2944,20 +2949,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('window:hide'),
     close: () =>
       ipcRenderer.invoke('window:close-main'),
-    showQueue: () =>
-      ipcRenderer.invoke('app:show-queue'),
-    onShowQueue: (callback: () => void) => {
-      const listener = () => callback();
-      ipcRenderer.on('app:show-queue', listener);
-      return () => { ipcRenderer.removeListener('app:show-queue', listener); };
-    },
-    showNarration: (projectDir: string) =>
-      ipcRenderer.invoke('app:show-narration', projectDir),
-    onShowNarration: (callback: (projectDir: string) => void) => {
-      const listener = (_e: any, projectDir: string) => callback(projectDir);
-      ipcRenderer.on('app:show-narration', listener);
-      return () => { ipcRenderer.removeListener('app:show-narration', listener); };
-    },
     showBookConversion: (projectDir: string) =>
       ipcRenderer.invoke('app:show-book-conversion', projectDir),
     onShowBookConversion: (callback: (projectDir: string) => void) => {
@@ -2989,51 +2980,31 @@ const electronAPI: ElectronAPI = {
     },
   },
   queue: {
-    runTtsConversion: (jobId: string, epubPath: string, config: TtsJobConfig) =>
-      ipcRenderer.invoke('queue:run-tts-conversion', jobId, epubPath, config),
-    runTranslation: (jobId: string, epubPath: string, translationConfig: {
-      chunkSize?: number;
-    }, aiConfig?: AIProviderConfig) =>
-      ipcRenderer.invoke('queue:run-translation', jobId, epubPath, translationConfig, aiConfig),
-    runBookAnalysis: (jobId: string, source: { kind: 'document'; epubPath: string } | { kind: 'audiobook'; projectId: string; variantId: string }, aiConfig: AIProviderConfig & {
-      categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
-      testMode?: boolean;
-      testModeChunks?: number;
-      target?: { versionId: string; versionType: string; versionLabel: string };
-    }) =>
-      ipcRenderer.invoke('queue:run-book-analysis', jobId, source, aiConfig),
-    cancelJob: (jobId: string) =>
-      ipcRenderer.invoke('queue:cancel-job', jobId),
-    saveState: (queueState: string) =>
-      ipcRenderer.invoke('queue:save-state', queueState),
-    loadState: () =>
-      ipcRenderer.invoke('queue:load-state'),
-    onProgress: (callback: (progress: QueueProgress) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, progress: QueueProgress) => {
-        callback(progress);
-      };
-      ipcRenderer.on('queue:progress', listener);
-      return () => {
-        ipcRenderer.removeListener('queue:progress', listener);
-      };
+    list: () => ipcRenderer.invoke('jobs:list'),
+    enqueue: (spec: QueueJobSpec) => ipcRenderer.invoke('jobs:enqueue', spec),
+    appendStep: (jobId: string, spec: QueueAppendStepSpec) =>
+      ipcRenderer.invoke('jobs:append-step', jobId, spec),
+    release: (target?: QueueTarget) => ipcRenderer.invoke('jobs:release', target),
+    start: (target?: QueueTarget) => ipcRenderer.invoke('jobs:start', target),
+    pause: () => ipcRenderer.invoke('jobs:pause'),
+    cancel: (target: QueueTarget, reason?: string) =>
+      ipcRenderer.invoke('jobs:cancel', target, reason),
+    retry: (target: QueueTarget) => ipcRenderer.invoke('jobs:retry', target),
+    remove: (jobId: string) => ipcRenderer.invoke('jobs:remove', jobId),
+    reorder: (jobId: string, beforeJobId: string | null) =>
+      ipcRenderer.invoke('jobs:reorder', jobId, beforeJobId),
+    clearFinished: () => ipcRenderer.invoke('jobs:clear-finished'),
+    updateStepConfig: (stepId: string, patch: Record<string, unknown>) =>
+      ipcRenderer.invoke('jobs:update-step-config', stepId, patch),
+    onChanged: (callback: (snapshot: QueueSnapshot) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, snapshot: QueueSnapshot) => callback(snapshot);
+      ipcRenderer.on('jobs:changed', listener);
+      return () => { ipcRenderer.removeListener('jobs:changed', listener); };
     },
-    onComplete: (callback: (result: QueueJobResult) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, result: QueueJobResult) => {
-        callback(result);
-      };
-      ipcRenderer.on('queue:job-complete', listener);
-      return () => {
-        ipcRenderer.removeListener('queue:job-complete', listener);
-      };
-    },
-    onRemoteControl: (callback: (action: 'start' | 'pause') => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, action: 'start' | 'pause') => {
-        callback(action);
-      };
-      ipcRenderer.on('queue:remote-control', listener);
-      return () => {
-        ipcRenderer.removeListener('queue:remote-control', listener);
-      };
+    onStepFinished: (callback: (event: QueueStepFinished) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, event: QueueStepFinished) => callback(event);
+      ipcRenderer.on('jobs:step-finished', listener);
+      return () => { ipcRenderer.removeListener('jobs:step-finished', listener); };
     },
   },
   ebookConvert: {
@@ -3093,21 +3064,14 @@ const electronAPI: ElectronAPI = {
   processing: {
     planChain: (request: ProcessingChainRequest) =>
       ipcRenderer.invoke('processing:plan-chain', request),
-    submitChain: (request: ProcessingChainRequest) =>
-      ipcRenderer.invoke('processing:submit-chain', request),
+    submitChain: (request: ProcessingChainRequest, followOn?: QueueStepSpec[]) =>
+      ipcRenderer.invoke('processing:submit-chain', request, followOn ?? []),
     runPass: (jobId: string, config: PassJobConfig) =>
       ipcRenderer.invoke('queue:run-pass', jobId, config),
     listPassDiffs: (projectDir: string, familyId?: string) =>
       ipcRenderer.invoke('processing:list-pass-diffs', projectDir, familyId),
     resetBook: (request: { projectDir: string; preview?: boolean }) =>
       ipcRenderer.invoke('processing:reset-book', request),
-    onEnqueueChain: (callback: (plan: ProcessingChainPlan) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, plan: ProcessingChainPlan) => callback(plan);
-      ipcRenderer.on('queue:enqueue-chain', listener);
-      return () => {
-        ipcRenderer.removeListener('queue:enqueue-chain', listener);
-      };
-    },
   },
   /**
    * The other route to a book, and the narration copy cut from it.

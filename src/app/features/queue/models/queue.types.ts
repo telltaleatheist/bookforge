@@ -54,37 +54,11 @@ export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
 ]);
 
 /**
- * Job types this build will not run, and what to tell the user about each.
- *
- * queue.json is persisted, so a queue written by an older build outlives the code
- * that understood it. A row whose type no longer exists cannot be reasoned about
- * — nothing knows what it would do — so it is FAILED on load with the sentence
- * that explains it, never left pending in a queue that silently steps over it.
+ * The retired job types moved to shared/queue/engine-types.ts with the queue
+ * itself: it is the ENGINE that meets a persisted row of a dead type, on load,
+ * in main, and fails it with the sentence that explains it. A second copy here
+ * would be a list the renderer could not act on and the two could disagree.
  */
-export const RETIRED_JOB_TYPES: ReadonlyMap<string, string> = new Map([
-  // Aug 2026: `foundry vlm-convert` became the only PDF\u2192EPUB conversion, and the
-  // whole Tesseract-era document pipeline was removed with it. A run today is
-  // Simplify and Translate over a book that already exists.
-  ['document-get-text', 'Get Text is gone: BookForge no longer casts a working PDF with '
-    + 'Tesseract. Converting a PDF to a book is one act now \u2014 Convert to EPUB. Remove this row.'],
-  ['document-blocks', 'Detect blocks is gone: the block model and the layout pipeline it '
-    + 'labelled for were retired when Convert to EPUB became the only PDF\u2192EPUB conversion. '
-    + 'Remove this row.'],
-  ['document-reflow', 'Build the book is gone: Convert to EPUB writes the book directly from the '
-    + 'pages, so there is no working document to reflow. Remove this row.'],
-  ['foundry-footnotes', 'The AI footnote pass is gone. Digits-only footnote references are now '
-    + 'removed deterministically as the narration copy is written, so nothing needs to be queued. '
-    + 'Remove this row.'],
-  // The scan-chain vocabulary that preceded the document pipeline.
-  ['foundry-scan', 'Tesseract is no longer part of this app: the pages are read by the document '
-    + 'vision model Convert to EPUB runs. Remove this row.'],
-  ['foundry-ocr-correct', 'OCR correction is gone with the Tesseract pipeline it repaired. '
-    + 'Remove this row.'],
-  ['foundry-ocr', 'OCR correction is gone with the Tesseract pipeline it repaired. Remove this '
-    + 'row.'],
-  ['foundry-detect', 'Detection is gone with the Tesseract pipeline it labelled. Remove this '
-    + 'row.'],
-]);
 
 // Job status
 // 'stopped' = explicitly stopped by the user. Stays in the queue with its cached
@@ -296,8 +270,10 @@ export interface QueueJob {
  * the plan, verbatim: a pass job is not re-planned when it runs.
  */
 export type ProcessingPassJobConfig = PassJobConfig & {
-  type: 'document-get-text' | 'document-blocks' | 'document-reflow'
-    | 'foundry-footnotes' | 'simplify' | 'translate-pass' | 'footnote-refs';
+  // The three that exist. The retired document-pipeline spellings were listed
+  // here long after shared/processing/pass-types.ts had narrowed them away, so
+  // the union claimed four members no code could produce.
+  type: 'simplify' | 'translate-pass' | 'footnote-refs';
 };
 
 // Job configuration union type

@@ -7,6 +7,7 @@
  * - OpenAI (ChatGPT API)
  */
 
+import { publishBridgeEvent } from './bridge-events';
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import path from 'path';
 import { promises as fsPromises } from 'fs';
@@ -4060,6 +4061,23 @@ export async function cleanupEpub(
     console.log(`[AI-CLEANUP] [${jobId.substring(0, 8)}] ${progress.phase.toUpperCase()} - Chunk ${progress.currentChunk}/${progress.totalChunks} (${progress.percentage}%) - ${progress.message || ''}${chunkInfo}`);
 
     if (onProgress) onProgress(progress);
+    // Main hears it too: the simplify PASS is scheduled by the queue engine in
+    // this process, and a webContents.send cannot be heard here. Same channel,
+    // same payload, so the renderer is unaffected. See electron/bridge-events.ts.
+    publishBridgeEvent('queue:progress', {
+      jobId,
+      phase: progress.phase,
+      progress: progress.percentage,
+      message: progress.message,
+      currentChunk: progress.currentChunk,
+      totalChunks: progress.totalChunks,
+      currentChapter: progress.currentChapter,
+      totalChapters: progress.totalChapters,
+      outputPath: progress.outputPath,
+      chunksCompletedInJob: progress.chunksCompletedInJob,
+      totalChunksInJob: progress.totalChunksInJob,
+      chunkCompletedAt: progress.chunkCompletedAt,
+    });
     if (mainWindow) {
       mainWindow.webContents.send('queue:progress', {
         jobId,

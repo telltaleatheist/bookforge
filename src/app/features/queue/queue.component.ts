@@ -600,19 +600,33 @@ export class QueueComponent implements OnInit, OnDestroy {
     // Cleanup handled by DestroyRef
   }
 
+  /**
+   * A queue command whose answer nobody is waiting for, with its refusal SAID.
+   *
+   * Every one of these is now a call into main (the queue lives there), so it
+   * can be refused — "that step has already started", "there is no run by that
+   * id". Dropped on the floor, the button would look like it did nothing, which
+   * is the failure mode this whole wave exists to remove.
+   */
+  private report(work: Promise<unknown>): void {
+    void work.catch((err: unknown) => {
+      console.error('[QUEUE]', err instanceof Error ? err.message : err);
+    });
+  }
+
   onToolbarAction(item: ToolbarItem): void {
     switch (item.id) {
       case 'start':
-        this.queueService.startQueue();
+        this.report(this.queueService.startQueue());
         break;
       case 'pause':
-        this.queueService.pauseQueue();
+        this.report(this.queueService.pauseQueue());
         break;
       case 'stop':
-        this.queueService.stopQueue();
+        this.report(this.queueService.stopQueue());
         break;
       case 'refresh':
-        this.queueService.refreshFromBackend();
+        this.report(this.queueService.refreshFromBackend());
         break;
     }
   }
@@ -647,16 +661,16 @@ export class QueueComponent implements OnInit, OnDestroy {
     // A retry reuses the job id, so the previous run's throughput measurement has to
     // go with it — otherwise the fresh run inherits the old run's speed and ETA.
     this.jobEta.forget(jobId);
-    this.queueService.retryJob(jobId);
+    this.report(this.queueService.retryJob(jobId));
   }
 
   cancelJob(jobId: string): void {
-    this.queueService.cancelJob(jobId);
+    this.report(this.queueService.cancelJob(jobId));
   }
 
   resumeStoppedJob(jobId: string): void {
     this.jobEta.forget(jobId);
-    this.queueService.resumeStoppedJob(jobId);
+    this.report(this.queueService.resumeStoppedJob(jobId));
   }
 
   async showInFolder(filePath: string): Promise<void> {
@@ -664,17 +678,17 @@ export class QueueComponent implements OnInit, OnDestroy {
   }
 
   reorderJobs(event: { fromId: string; toId: string }): void {
-    this.queueService.reorderJobsById(event.fromId, event.toId);
+    this.report(this.queueService.reorderJobsById(event.fromId, event.toId));
   }
 
   clearCompleted(): void {
     this.forgetEtaFor(this.finishedJobs());
-    this.queueService.clearCompleted();
+    this.report(this.queueService.clearCompleted());
   }
 
   clearAll(): void {
     this.forgetEtaFor(this.queueService.jobs());
-    this.queueService.clearAll();
+    this.report(this.queueService.clearAll());
   }
 
   /** Drop cached throughput/stage state for jobs leaving the queue. */
@@ -688,7 +702,7 @@ export class QueueComponent implements OnInit, OnDestroy {
   }
 
   startQueue(): void {
-    this.queueService.startQueue();
+    this.report(this.queueService.startQueue());
   }
 
   /**

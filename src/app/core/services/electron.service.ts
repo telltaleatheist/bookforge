@@ -1944,51 +1944,12 @@ export class ElectronService {
     }
   }
 
-  /**
-   * Raise the MAIN window and put the Queue on it — the "run in background"
-   * hand-off, witnessed rather than inferred.
-   *
-   * Throws main's own refusal. A hand-off that silently did nothing would leave
-   * the user looking at a picker with no run on it and no idea where it went,
-   * which is precisely the failure this exists to remove.
-   */
-  async showQueue(): Promise<void> {
-    if (!this.isElectron) return;
-    const result = await (window as any).electron.window.showQueue();
-    if (!result?.success) {
-      throw new Error(result?.error || 'Showing the Queue failed with no message.');
-    }
-  }
-
-  /** Main asked this window to show the Queue. Only the main window ever hears it. */
-  onShowQueue(callback: () => void): () => void {
-    if (!this.isElectron) return () => { /* nothing subscribed */ };
-    return (window as any).electron.window.onShowQueue(callback);
-  }
-
-  /**
-   * Raise the MAIN window and open narration for this project — the picker's
-   * hand-off at the top of the ladder.
-   *
-   * Throws main's own refusal, and the caller is expected to SAY it: the picker
-   * closes itself once this resolves, so a hand-off that failed quietly would
-   * shut the only window the user had and leave them nowhere.
-   */
-  async showNarration(projectDir: string): Promise<void> {
-    if (!this.isElectron) {
-      throw new Error('Narration opens in the BookForge desktop window, which is not running.');
-    }
-    const result = await (window as any).electron.window.showNarration(projectDir);
-    if (!result?.success) {
-      throw new Error(result?.error || 'Opening narration failed with no message.');
-    }
-  }
-
-  /** Main asked this window to open narration. Only the main window ever hears it. */
-  onShowNarration(callback: (projectDir: string) => void): () => void {
-    if (!this.isElectron) return () => { /* nothing subscribed */ };
-    return (window as any).electron.window.onShowNarration(callback);
-  }
+  // `showQueue` / `onShowQueue` / `showNarration` / `onShowNarration` are gone
+  // with the pdf-picker they were the hand-off from. They were documented as
+  // dead in main.ts for a release; what kept them alive as a CONSTRAINT was that
+  // the queue was a renderer scheduler living in the main window, so any other
+  // window had to ask that one to enqueue. The queue is main's now — every
+  // window can enqueue into the same queue — so there is nothing left to hand off.
 
   // AI operations
   async checkAIConnection(provider: 'ollama' | 'claude' | 'openai', apiKey?: string): Promise<{
@@ -2351,14 +2312,20 @@ export class ElectronService {
   }
 
   /**
-   * Queue a processing run. THE entry point: main plans it and hands the plan to
-   * the queue, so nothing else ever assembles pass jobs.
+   * Queue a processing run. THE entry point: main plans it AND queues it, so
+   * nothing else ever assembles pass jobs.
+   *
+   * `followOn` rides behind the passes in the same run — narrate, enhance,
+   * assemble — chained to the last pass, because each pass rewrites the book the
+   * next thing reads. Built by the caller before the call, so anything that can
+   * fail while building it fails with nothing queued.
    */
-  async submitProcessingChain(request: ProcessingChainRequest): Promise<{
-    success: boolean; plan?: ProcessingChainPlan; error?: string;
-  }> {
+  async submitProcessingChain(
+    request: ProcessingChainRequest,
+    followOn: unknown[] = [],
+  ): Promise<{ success: boolean; plan?: ProcessingChainPlan; error?: string }> {
     if (this.isElectron) {
-      return (window as any).electron.processing.submitChain(request);
+      return (window as any).electron.processing.submitChain(request, followOn);
     }
     return { success: false, error: 'Not running in Electron' };
   }

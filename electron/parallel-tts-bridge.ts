@@ -12,6 +12,7 @@
  * - --sentence_start / --sentence_end: Define worker's sentence range
  */
 
+import { publishBridgeEvent } from './bridge-events';
 import { spawn, ChildProcess, execSync, exec, spawnSync } from 'child_process';
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import * as path from 'path';
@@ -2811,6 +2812,10 @@ export function setMainWindow(window: BrowserWindow | null): void {
  * no-op once teardown has begun.
  */
 function rendererSend(channel: string, payload: unknown): void {
+  // Main hears it too: the queue engine lives on THIS side now, and a
+  // webContents.send cannot be heard here. Published first so a torn-down window
+  // does not cost the scheduler its progress. See electron/bridge-events.ts.
+  publishBridgeEvent(channel, payload);
   if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
   mainWindow.webContents.send(channel, payload);
 }

@@ -2,6 +2,7 @@
  * Reassembly Bridge - Scans e2a tmp folder for incomplete sessions and handles reassembly
  */
 
+import { publishBridgeEvent } from './bridge-events';
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
@@ -2491,6 +2492,7 @@ function sendProgress(
   jobId: string,
   progress: ReassemblyProgress
 ): void {
+  publishBridgeEvent('reassembly:progress', { jobId, progress });
   if (!mainWindow) return;
 
   mainWindow.webContents.send('reassembly:progress', { jobId, progress });

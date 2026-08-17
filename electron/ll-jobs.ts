@@ -7,6 +7,7 @@
  * 3. tts-conversion - Standard TTS (uses existing infrastructure)
  */
 
+import { publishBridgeEvent } from './bridge-events';
 import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -238,6 +239,7 @@ function sendProgress(
   jobId: string,
   progress: ProcessingProgress
 ): void {
+  publishBridgeEvent('ll-job:progress', { jobId, progress });
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('ll-job:progress', {
       jobId,

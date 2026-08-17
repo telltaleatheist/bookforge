@@ -8,6 +8,7 @@
  * 3. Convert to M4B format
  */
 
+import { publishBridgeEvent } from './bridge-events';
 import { spawn } from 'child_process';
 import { BrowserWindow } from 'electron';
 import * as path from 'path';
@@ -149,12 +150,14 @@ export function initBilingualAssemblyBridge(window: BrowserWindow): void {
 }
 
 function emitProgress(jobId: string, progress: BilingualAssemblyProgress): void {
+  publishBridgeEvent('bilingual-assembly:progress', { jobId, progress });
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('bilingual-assembly:progress', { jobId, progress });
   }
 }
 
 function emitComplete(jobId: string, result: BilingualAssemblyResult): void {
+  publishBridgeEvent('bilingual-assembly:complete', { jobId, ...result });
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('bilingual-assembly:complete', { jobId, ...result });
   }

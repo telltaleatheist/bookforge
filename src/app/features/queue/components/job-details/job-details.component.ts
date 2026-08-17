@@ -444,7 +444,13 @@ export class JobDetailsComponent {
 
   onAutoApproveAlignmentChange(job: QueueJob, event: Event): void {
     const checked = (event.target as HTMLInputElement).checked;
-    this.queueService.updateJobConfig(job.id, { autoApproveAlignment: checked });
+    // The config lives in main now, so a change to a row that has already
+    // started is REFUSED — a setting the user believes is in force against a
+    // process that never saw it is worse than a checkbox that says no.
+    void this.queueService.updateJobConfig(job.id, { autoApproveAlignment: checked })
+      .catch((err: unknown) => {
+        console.error('[QUEUE]', err instanceof Error ? err.message : err);
+      });
   }
 
   capitalizeEngine(engine: string): string {

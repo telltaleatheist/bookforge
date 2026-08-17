@@ -11,6 +11,7 @@
  * transcript onto an independently-recorded one — the bug this feature closes).
  */
 
+import { publishBridgeEvent } from './bridge-events';
 import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -73,6 +74,7 @@ export function sendProgress(
   /** Stacked stage bars for the epub-align pipeline (undefined for the whisper path). */
   stages?: JobStageProgress[],
 ): void {
+  publishBridgeEvent('generate-sentences:progress', { jobId, percentage, message, stages });
   if (win.isDestroyed()) return;
   win.webContents.send('generate-sentences:progress', { jobId, percentage, message, stages });
 }
@@ -96,6 +98,7 @@ function sendComplete(
   error?: string,
   warning?: string,
 ): void {
+  publishBridgeEvent('generate-sentences:complete', { jobId, success, outputPath, error, warning });
   if (win.isDestroyed()) return;
   win.webContents.send('generate-sentences:complete', { jobId, success, outputPath, error, warning });
 }

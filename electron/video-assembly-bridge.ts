@@ -5,6 +5,7 @@
  * them with FFmpeg into an MP4 alongside the existing M4B audio.
  */
 
+import { publishBridgeEvent } from './bridge-events';
 import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -312,6 +313,7 @@ function sendProgress(
   percentage: number,
   message: string
 ) {
+  publishBridgeEvent('video-assembly:progress', { jobId, phase, percentage, message });
   mainWindow.webContents.send('video-assembly:progress', {
     jobId,
     phase,
@@ -327,6 +329,7 @@ function sendComplete(
   outputPath?: string,
   error?: string
 ) {
+  publishBridgeEvent('video-assembly:complete', { jobId, success, outputPath, error });
   mainWindow.webContents.send('video-assembly:complete', {
     jobId,
     success,

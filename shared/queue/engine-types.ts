@@ -1,0 +1,434 @@
+/**
+ * The shape of the queue, as MAIN owns it.
+ *
+ * ── Why these types live in shared/ ─────────────────────────────────────────
+ *
+ * The queue used to be a renderer service that persisted its own blob, so its
+ * types lived beside the component that drew them and main knew nothing about
+ * them. That is upside down: a renderer reload could orphan ninety minutes of
+ * GPU, every extra window booted a second scheduler, and `queue.json` was
+ * written by whichever of them saved last. Main owns the queue now, the renderer
+ * holds a MIRROR, and both sides read the shape from HERE so they cannot drift.
+ *
+ * ── A job is a CHAIN OF STEPS with explicit lineage ─────────────────────────
+ *
+ * Every step names its parent. `parentStepId` is either another step's id or the
+ * literal SOURCE — a step that reads a file the user picked rather than a file
+ * an earlier step wrote. That single field replaces the old pair of
+ * (`workflowId`, `parentJobId`) plus an ordering rule that read "no earlier
+ * sibling may be incomplete", which could only express a straight line and
+ * inferred the line from array position.
+ *
+ * Naming the parent is what makes APPENDING A STEP TO WORK THAT HAS NOT RUN a
+ * first-class act rather than a race. The user chains Assemble onto a narration
+ * that is still queued; the assemble step is `waiting` until its parent is
+ * `done`, and when the parent lands the engine resolves the child's input from
+ * the parent's OUTPUT. Under the old model the child had to be given its input
+ * paths at enqueue time, before they existed — which is why reassembly rows
+ * carried an empty `sessionId` and re-discovered it at runtime with a retry
+ * ladder.
+ *
+ * ── The job's status is DERIVED ─────────────────────────────────────────────
+ *
+ * There is no job status field. A job is running when a step of it is running,
+ * failed when one failed, done when they all are — see `jobStatus`. A stored
+ * status is a second copy of a fact the steps already carry, and the two used to
+ * disagree: the old master row could sit 'processing' forever because the child
+ * that would have updated it had thrown instead of returning.
+ */
+
+/** Job types this queue can run. Retired vocabulary is listed separately below. */
+export type JobType =
+  | 'tts-conversion'
+  | 'translation'
+  | 'rvc-enhancement'
+  | 'reassembly'
+  | 'bilingual-cleanup'
+  | 'bilingual-translation'
+  | 'bilingual-assembly'
+  | 'video-assembly'
+  | 'book-analysis'
+  | 'generate-sentences'
+  | 'simplify'
+  | 'translate-pass'
+  | 'footnote-refs'
+  | 'vlm-convert';
+
+/** The job types that are processing passes, for a runtime membership test. */
+export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
+  'simplify', 'translate-pass', 'footnote-refs',
+]);
+
+/**
+ * What a step is doing.
+ *
+ * `held`   — composed, in the list, and released by nothing yet. The user has not
+ *            pressed Start for it. A user STOP also lands here: a stopped step is
+ *            precisely one that is present, will not be auto-picked, and needs an
+ *            explicit gesture to run again. (It carries `wasInterrupted`, so the
+ *            renderer can say "stopped" rather than "not started yet".)
+ * `queued` — released; runnable the moment its parent is done and a slot frees.
+ * `waiting`— released, but its parent has not produced the thing it reads.
+ * `running`— holding a resource slot right now.
+ * `done` / `failed` / `cancelled` — terminal.
+ */
+export type StepStatus =
+  | 'held' | 'queued' | 'waiting' | 'running' | 'done' | 'failed' | 'cancelled';
+
+/** Terminal states, for a membership test that cannot go stale. */
+export const TERMINAL_STEP_STATUSES: ReadonlySet<StepStatus> =
+  new Set<StepStatus>(['done', 'failed', 'cancelled']);
+
+/**
+ * Which pool a step contends for.
+ *
+ * `gpu` is the exclusive local resource — one at a time, whatever it is. e2a
+ * workers, RVC, whisper, the document vision model and an Ollama-backed pass all
+ * belong to it, because they all end up on the same card.
+ *
+ * `cpu` is the small pool for work that contends for nothing local: a pass whose
+ * provider is a hosted API is network latency and nothing else, and making it
+ * wait behind a nine-hour narration was the queue punishing a job for the
+ * company it kept.
+ */
+export type StepResource = 'gpu' | 'cpu';
+
+/** How many steps of each resource may run at once. */
+export const RESOURCE_SLOTS: Readonly<Record<StepResource, number>> = {
+  gpu: 1,
+  cpu: 2,
+};
+
+/**
+ * What a step reads and what it writes.
+ *
+ * Typed rather than "a path", so a chain that would hand an M4B to a step that
+ * reads EPUBs is refused when it is COMPOSED instead of failing an hour later
+ * inside a Python process.
+ */
+export type ArtifactKind =
+  | 'epub'
+  | 'audio-session'
+  | 'sentences'
+  | 'm4b'
+  | 'video'
+  | 'vtt'
+  | 'report'
+  | 'bilingual-epubs'
+  /** The step writes nothing another step can read. Not "unknown" — none. */
+  | 'none';
+
+export interface ArtifactRef {
+  kind: ArtifactKind;
+  /** The file or directory, absolute, when the artifact IS one. */
+  path?: string;
+  /** e2a session identity. Present exactly on kind 'audio-session'. */
+  sessionId?: string;
+  sessionDir?: string;
+  processDir?: string;
+  /**
+   * Identity the PRODUCING step declared and a consumer may read — the two EPUBs
+   * and the pairing file of a bilingual translation, the variant a transcript
+   * describes. Never invented on the reading side.
+   */
+  detail?: Record<string, unknown>;
+}
+
+/** `parentStepId` for a step that reads what the user picked, not what a step wrote. */
+export const SOURCE_PARENT = 'source';
+
+/**
+ * Per-stage progress for a step that reports one. Rendered as stacked bars, one
+ * per stage, each 0-100 within itself — see electron/job-stages.ts for the
+ * weighted-master model these come from.
+ */
+export type JobStageStatus = 'pending' | 'running' | 'complete';
+export interface JobStageProgress {
+  name: string;
+  label: string;
+  /** 0-100 within this stage. */
+  pct: number;
+  status: JobStageStatus;
+  /**
+   * Normalized share of the whole run (all stages sum to 1), when the bridge
+   * declares relative stage costs. Absent on stage lists derived from a step's
+   * phase fields, which carry no such information — those are equal-cost.
+   */
+  weight?: number;
+}
+
+/**
+ * Progress WITHIN the MLX batch a TTS worker is decoding right now. Mirrors
+ * ActiveBatchProgress in electron/mlx-batch-progress.ts.
+ *
+ * On Mac, Orpheus renders ~96 chunks as ONE atomic 5-7 minute decode whose files
+ * all land at the end, so the chunk bar is frozen for the whole batch. This is
+ * what moves during that window. Every field is what the engine actually
+ * reported — nothing is defaulted, and the whole object is absent when no batch
+ * is decoding.
+ */
+export interface ActiveBatchProgress {
+  rowsTotal: number;
+  rowsDone?: number;
+  tokenStep: number;
+  tokenCap?: number;
+  /** 0-1, monotone within a batch. Absent when the engine gave no basis for one. */
+  fraction?: number;
+  batchNo?: number;
+  batchCount?: number;
+}
+
+/** Per-worker progress for a parallel TTS render. */
+export type ParallelWorkerStatus = 'pending' | 'running' | 'complete' | 'error';
+export interface ParallelWorkerProgress {
+  id: number;
+  sentenceStart: number;
+  sentenceEnd: number;
+  completedSentences: number;
+  status: ParallelWorkerStatus;
+  error?: string;
+  /** Sentences assigned to this worker — less than the range on a resume. */
+  totalAssigned?: number;
+  /** TTS conversions actually performed (a resume skips what is already there). */
+  actualConversions?: number;
+}
+
+/** What a running step is SHOWING. */
+export interface StepProgress {
+  /** 0-100. Absent before the step has said anything. */
+  percent?: number;
+  message?: string;
+  /**
+   * What the running STAGE is doing when its own percentage cannot move for
+   * minutes — "Rendering 21 sentences together · 2,949 tokens".
+   */
+  detail?: string;
+  stages?: JobStageProgress[];
+  /**
+   * Live progress inside the MLX batch being decoded. Unlike `stages` this is
+   * BLANKED when the bridge reports none — a finished batch must not leave a
+   * full secondary bar sitting under the chunk bar.
+   */
+  activeBatch?: ActiveBatchProgress;
+}
+
+/**
+ * What the step has MEASURED, as opposed to what it is showing.
+ *
+ * Kept apart from StepProgress because these are the inputs to the throughput
+ * and ETA arithmetic, and mixing a measurement with a caption is how a display
+ * string came to be parsed for a number.
+ */
+export interface StepMetrics {
+  currentChunk?: number;
+  totalChunks?: number;
+  currentChapter?: number;
+  totalChapters?: number;
+  chunksCompletedInJob?: number;
+  totalChunksInJob?: number;
+  /** Real sentences across the whole book (a chunk holds a variable number). */
+  totalRawSentencesInJob?: number;
+  totalRawWordsInJob?: number;
+  totalRawCharsInJob?: number;
+  /** Timestamp (ms) of the last chunk completion. */
+  chunkCompletedAt?: number;
+  /**
+   * Timestamp (ms) of the FIRST chunk completion OF THIS RUN, and the session
+   * chunk count at that instant. Rate is measured over [stamp, now] containing
+   * (done - chunksAtFirstStamp) completions: measuring from startedAt would fold
+   * in model load, and measuring from the stamp WITHOUT its count assumes
+   * progress arrives one chunk at a time, which batched engines make false.
+   */
+  firstChunkCompletedAt?: number;
+  chunksAtFirstStamp?: number;
+  /** Counts for THIS session only — a resume must not divide prior work by new time. */
+  chunksDoneInSession?: number;
+  rawSentencesDoneInSession?: number;
+  rawWordsDoneInSession?: number;
+  rawCharsDoneInSession?: number;
+  /**
+   * Seconds of audio produced per character of text, sampled from this session's
+   * rendered FLACs. Times the measured chars/min it gives the realtime factor.
+   */
+  audioSecondsPerChar?: number;
+  parallelWorkers?: ParallelWorkerProgress[];
+  /** Mirrors AggregatedProgress.phase in parallel-tts-bridge. */
+  ttsPhase?: 'preparing' | 'converting' | 'assembling' | 'complete' | 'error' | 'stopped';
+  ttsConversionProgress?: number;
+  assemblyProgress?: number;
+  assemblySubPhase?: 'combining' | 'vtt' | 'encoding' | 'metadata';
+  /** Cleanup pass-1 phase; 'analyzing' is pre-chunk planning. */
+  cleanupPhase?: 'loading' | 'analyzing' | 'processing' | 'saving' | 'complete' | 'error';
+  /** Orpheus memory level this run resolved to, shown as a badge. Sticky. */
+  orpheusMemoryLevel?: string;
+  /** Sentences already rendered before a resume began. */
+  resumeCompletedSentences?: number;
+  resumeMissingSentences?: number;
+  /** Copyright / refusal counts an AI pass reported. */
+  copyrightIssuesDetected?: boolean;
+  copyrightChunksAffected?: number;
+  contentSkipsDetected?: boolean;
+  contentSkipsAffected?: number;
+  translationFailedChunks?: number;
+  skippedChunksPath?: string;
+}
+
+export interface QueueStep {
+  id: string;
+  type: JobType;
+  /** The row's heading — "Narrate", "Assemble", "Simplify". */
+  label: string;
+  /**
+   * The job-type configuration, verbatim as the caller built it. The engine
+   * never re-derives one: a config rebuilt on this side could disagree with the
+   * plan the user was shown.
+   */
+  config: Record<string, unknown>;
+  /** Another step's id, or SOURCE_PARENT. */
+  parentStepId: string;
+  /** What this step reads when its parent is SOURCE_PARENT. Required there. */
+  sourceRef?: ArtifactRef;
+  resource: StepResource;
+  status: StepStatus;
+  progress: StepProgress;
+  metrics: StepMetrics;
+  /** What the step wrote. Present exactly when status is 'done'. */
+  output?: ArtifactRef;
+  /** Why it failed / was cancelled. Present exactly on 'failed' and 'cancelled'. */
+  error?: string;
+  /**
+   * What a SUCCESSFUL step still owes the user in whole sentences — a ledger
+   * refusal, a narration-carry note. A step with these is complete, not failed.
+   */
+  completionNotes?: string[];
+  addedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  /**
+   * This step's work was cut short and can be picked up from what is on disk —
+   * a user stop, or an app exit mid-run. It is what tells TTS to resume rather
+   * than render from sentence zero.
+   */
+  wasInterrupted?: boolean;
+  /** Whatever the run produced for the analytics ledger, verbatim. */
+  analytics?: unknown;
+  /** The output path, as a string, for rows whose artifact is a file. */
+  outputPath?: string;
+}
+
+export interface QueueJob {
+  id: string;
+  /** The project directory this run is about. Absent for runs about no project. */
+  projectId?: string;
+  title: string;
+  /** The document the run is about, as the user knows it. */
+  documentPath?: string;
+  documentLabel?: string;
+  steps: QueueStep[];
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+/** The engine's whole published state. */
+export interface QueueSnapshot {
+  jobs: QueueJob[];
+  /**
+   * Whether the engine is claiming work. Pause stops it claiming; it never stops
+   * a step that is already running (you stop those one at a time, deliberately).
+   */
+  running: boolean;
+}
+
+/**
+ * A job's status, read off its steps.
+ *
+ * Order matters and each rung is a different fact:
+ *  - one step running ⇒ the job is running, whatever the others are doing.
+ *  - one step failed ⇒ the job failed, even if later steps were cancelled after
+ *    it (they were cancelled BECAUSE of it, and naming the cancellation instead
+ *    would hide the failure that caused it).
+ *  - everything terminal with a cancellation and no failure ⇒ cancelled.
+ *  - everything done ⇒ done.
+ *  - otherwise it has not started: `queued` if anything is released, else `held`.
+ */
+export function jobStatus(job: QueueJob): StepStatus {
+  const steps = job.steps;
+  if (steps.length === 0) {
+    throw new Error(`Queue job ${job.id} has no steps, so it has no status to read.`);
+  }
+  if (steps.some((s) => s.status === 'running')) return 'running';
+  if (steps.some((s) => s.status === 'failed')) return 'failed';
+  const allTerminal = steps.every((s) => TERMINAL_STEP_STATUSES.has(s.status));
+  if (allTerminal) {
+    if (steps.some((s) => s.status === 'cancelled')) return 'cancelled';
+    return 'done';
+  }
+  const live = steps.filter((s) => !TERMINAL_STEP_STATUSES.has(s.status));
+  if (live.every((s) => s.status === 'held')) return 'held';
+  if (live.some((s) => s.status === 'waiting') && !live.some((s) => s.status === 'queued')) {
+    return 'waiting';
+  }
+  return 'queued';
+}
+
+/** The job's overall percentage: the mean of its steps, a terminal step counting 100. */
+export function jobPercent(job: QueueJob): number {
+  const steps = job.steps;
+  if (steps.length === 0) return 0;
+  let total = 0;
+  for (const step of steps) {
+    if (step.status === 'done') total += 100;
+    else if (step.status === 'running') total += step.progress.percent ?? 0;
+    // failed / cancelled / not-started contribute what they got to, which for a
+    // step that never ran is nothing. A failed step is NOT credited 100.
+    else if (step.status === 'failed' || step.status === 'cancelled') {
+      total += step.progress.percent ?? 0;
+    }
+  }
+  return Math.round(total / steps.length);
+}
+
+/**
+ * Job types this build will not run, and what to tell the user about each.
+ *
+ * The queue is persisted, so a queue written by an older build outlives the code
+ * that understood it. A row whose type no longer exists cannot be reasoned about
+ * — nothing knows what it would do — so it is FAILED on load with the sentence
+ * that explains it, never left waiting in a queue that silently steps over it.
+ */
+export const RETIRED_JOB_TYPES: ReadonlyMap<string, string> = new Map([
+  ['document-get-text', 'Get Text is gone: BookForge no longer casts a working PDF with '
+    + 'Tesseract. Converting a PDF to a book is one act now — Convert to EPUB. Remove this row.'],
+  ['document-blocks', 'Detect blocks is gone: the block model and the layout pipeline it '
+    + 'labelled for were retired when Convert to EPUB became the only PDF→EPUB conversion. '
+    + 'Remove this row.'],
+  ['document-reflow', 'Build the book is gone: Convert to EPUB writes the book directly from the '
+    + 'pages, so there is no working document to reflow. Remove this row.'],
+  ['foundry-footnotes', 'The AI footnote pass is gone. Digits-only footnote references are now '
+    + 'removed deterministically as the narration copy is written, so nothing needs to be queued. '
+    + 'Remove this row.'],
+  ['foundry-scan', 'Tesseract is no longer part of this app: the pages are read by the document '
+    + 'vision model Convert to EPUB runs. Remove this row.'],
+  ['foundry-ocr-correct', 'OCR correction is gone with the Tesseract pipeline it repaired. '
+    + 'Remove this row.'],
+  ['foundry-ocr', 'OCR correction is gone with the Tesseract pipeline it repaired. Remove this '
+    + 'row.'],
+  ['foundry-detect', 'Detection is gone with the Tesseract pipeline it labelled. Remove this '
+    + 'row.'],
+  // The master container row. It never executed anything: it existed to group a
+  // workflow, which is the job itself now.
+  ['audiobook', 'This row was a container for the steps below it. Runs are one row with their '
+    + 'steps inside now, so it has nothing to do. Remove this row.'],
+]);
+
+/**
+ * Minimum span, in seconds, before a chunk-rate window is reported at all.
+ *
+ * Batched engines emit progress in bursts of 64, and consecutive bursts can land
+ * only ~25s apart when two batches' emits coalesce — timing that single gap
+ * gives 143 chunks/min for a job actually running at ~70. A window shorter than
+ * roughly one batch cycle cannot average out that quantization, so it is not
+ * shown.
+ */
+export const RATE_WINDOW_MIN_SECONDS = 45;

@@ -18,6 +18,9 @@ import {
 } from './quire-viewer-bridge';
 import { registerClipforgeIpc } from './clipforge-bridge';
 import { registerDocumentIpc } from './document-ipc';
+import * as queueEngine from './queue-engine';
+import { startQueueEngine } from './queue-ipc';
+import { setQueueMainWindow } from './queue-steps';
 // A project's files belong to no one window: the picker is its own BrowserWindow
 // and has to hear that the book changed just as much as the main one does.
 import { broadcastToAllWindows } from './document-stage-run';
@@ -1596,73 +1599,7 @@ function setupIpcHandlers(): void {
   // ClipForge: open its dedicated window (second app in this workspace).
   ipcMain.handle('clipforge:open-window', () => { openClipforgeWindow(); return { success: true }; });
 
-  /**
-   * "Run in background" — the hand-off, made visible.
-   *
-   * RULED 2026-08-04 (docs/PIPELINE_V2_PLAN.md): a job that moves to the queue
-   * moves the USER with it. "if the user hits the process in background button,
-   * it should move it to the queue and move focus from the current page (pdf
-   * picker) to the main page and jump to the queue so they can see it was moved
-   * there." A job that silently vanishes from one place and silently appears in
-   * another is how work gets lost.
-   *
-   * The picker was its own BrowserWindow, so "move focus to the main page" was
-   * literally that: raise the main window and route it. That window is gone and
-   * nothing calls this any more; it is kept because the queue still lives in the
-   * main window regardless (`processing:submit-chain` sends the plan only
-   * there), so any future background hand-off needs the same act.
-   */
-  ipcMain.handle('app:show-queue', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      return {
-        success: false,
-        error: 'BookForge has no main window open, so there is no Queue to show the run on.',
-      };
-    }
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-    mainWindow.webContents.send('app:show-queue');
-    return { success: true };
-  });
 
-  /**
-   * The picker's Next, at the top of the ladder — the book is built, so hand the
-   * user to narration.
-   *
-   * Same shape as `app:show-queue` above and for the same reason: the picker was
-   * always its own BrowserWindow, so "take them to the TTS page" was a
-   * main-process action — raise the MAIN window and tell it where to go. That
-   * window is gone and nothing calls this now; both handlers are kept as the
-   * hand-off any future second window would need.
-   *
-   * It carries the PROJECT, because narration is not a route: it is Studio's
-   * Process tab, which shows the wizard for whichever project is selected. A
-   * bare event would land the user on somebody else's book.
-   *
-   * The refusal matters as much as the success. A caller that closes itself on
-   * the answer needs a missing main window to come back as a failure it can say
-   * out loud, not as a window that shuts on a hand-off nobody caught.
-   */
-  ipcMain.handle('app:show-narration', (_e, projectDir: string) => {
-    if (typeof projectDir !== 'string' || projectDir.trim() === '') {
-      return {
-        success: false,
-        error: 'Opening narration needs the project it is for, and none was given.',
-      };
-    }
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      return {
-        success: false,
-        error: 'BookForge has no main window open, so there is nowhere to open narration.',
-      };
-    }
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-    mainWindow.webContents.send('app:show-narration', projectDir);
-    return { success: true };
-  });
 
   /**
    * A window asked for this project's pages to be read into a book.
@@ -7836,168 +7773,33 @@ function setupIpcHandlers(): void {
   // Processing Queue handlers
   // ─────────────────────────────────────────────────────────────────────────────
 
-  // Track running jobs for cancellation
-  const runningJobs = new Map<string, { cancel: () => void; model?: string }>();
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Book Analysis handler
-  // ─────────────────────────────────────────────────────────────────────────
-  ipcMain.handle('queue:run-book-analysis', async (
-    _event,
-    jobId: string,
-    source: { kind: 'document'; epubPath: string } | { kind: 'audiobook'; projectId: string; variantId: string },
-    aiConfig: {
-      provider: 'ollama' | 'claude' | 'openai';
-      ollama?: { baseUrl: string; model: string };
-      claude?: { apiKey: string; model: string };
-      openai?: { apiKey: string; model: string };
-      categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
-      testMode?: boolean;
-      testModeChunks?: number;
-      target?: { versionId: string; versionType: string; versionLabel: string };
-    }
-  ) => {
-    console.log('[IPC] queue:run-book-analysis received:', {
-      jobId,
-      provider: aiConfig?.provider,
-      categoryCount: aiConfig?.categories?.length || 0,
-      testMode: aiConfig?.testMode,
-      sourceKind: source?.kind,
-    });
-
-    if (!source || (source.kind !== 'document' && source.kind !== 'audiobook') || !aiConfig) {
-      const error = 'A valid source and aiConfig are required for book analysis';
-      console.error('[IPC] queue:run-book-analysis ERROR:', error);
-      if (mainWindow) {
-        mainWindow.webContents.send('queue:job-complete', { jobId, success: false, error });
-      }
-      return { success: false, error };
-    }
-
-    try {
-      const { analyzeBook, analyzeAudiobook, cancelAnalysisJob } = await import('./book-analysis.js');
-
-      // Register cancellation
-      const cancelFn = () => { cancelAnalysisJob(jobId); };
-      runningJobs.set(jobId, { cancel: cancelFn, model: aiConfig.ollama?.model || aiConfig.claude?.model || aiConfig.openai?.model });
-
-      // Document reports retain their existing canonical path. Audiobook reports
-      // resolve project + variant server-side and commit through the binding protocol.
-      let outputDir: string | undefined;
-      let projectRoot: string | null = null;
-      let result;
-      if (source.kind === 'audiobook') {
-        if (aiConfig.testMode) {
-          throw new Error('Test mode is not available for audiobook analysis');
-        }
-        projectRoot = manifestService.getProjectPath(source.projectId);
-        result = await analyzeAudiobook(
-          source.projectId,
-          source.variantId,
-          jobId,
-          mainWindow,
-          aiConfig,
-          {
-            categories: aiConfig.categories,
-            testMode: aiConfig.testMode || false,
-            testModeChunks: aiConfig.testModeChunks,
-          },
-        );
-      } else {
-        const epubPath = source.epubPath;
-        let searchDir = path.dirname(epubPath);
-        for (let i = 0; i < 5 && searchDir !== path.dirname(searchDir); i++) {
-          try {
-            await fs.access(path.join(searchDir, 'manifest.json'));
-            projectRoot = searchDir;
-            break;
-          } catch {
-            searchDir = path.dirname(searchDir);
-          }
-        }
-        if (projectRoot) {
-          outputDir = path.join(projectRoot, 'stages', '04-analysis');
-          console.log('[IPC] Manifest project detected, analysis output dir:', outputDir);
-        }
-        result = await analyzeBook(
-          epubPath,
-          jobId,
-          mainWindow,
-          aiConfig,
-          {
-            categories: aiConfig.categories,
-            testMode: aiConfig.testMode || false,
-            testModeChunks: aiConfig.testModeChunks,
-            outputDir,
-            target: aiConfig.target,
-          },
-        );
-      }
-
-      runningJobs.delete(jobId);
-
-      if (mainWindow) {
-        mainWindow.webContents.send('queue:job-complete', {
-          jobId,
-          success: result.success,
-          outputPath: result.outputPath,
-          error: result.error,
-          flagCount: result.flagCount,
-          contentSkipsDetected: result.contentSkipsDetected,
-          contentSkipsAffected: result.contentSkipsAffected,
-          skippedChunksPath: result.skippedChunksPath,
-          analytics: result.analytics,
-        });
-
-        if (projectRoot) {
-          broadcastToAllWindows('project:files-changed', projectRoot);
-        }
-      }
-
-      return { success: result.success, data: result };
-    } catch (err) {
-      runningJobs.delete(jobId);
-      const error = (err as Error).message;
-      if (mainWindow) {
-        mainWindow.webContents.send('queue:job-complete', { jobId, success: false, error });
-      }
-      return { success: false, error };
-    }
-  });
 
   // The synchronous footnote-refs door (`book:remove-footnote-references`) is
   // gone (2026-08-10): its only caller was the picker's rail entry, and the
   // rail's text passes moved to the versions page's modal, which queues every
   // pass through `processing:submit-chain` like the others.
 
-  // ── Processing passes ───────────────────────────────────────────────────
-  // ONE run handler for all five pass types: the pass kind is in the config, and
-  // every pass has the same contract (transform the project's book, leave a diff,
-  // record itself). See electron/processing-passes.ts.
+  // ── Running a pass WITHOUT a queue row ──────────────────────────────────
+  //
+  // The queue runs passes through the step module (electron/queue-steps/pass.ts),
+  // which calls this same runProcessingPass with the same planned config. This
+  // door is the OTHER one: the versions modal running a footnote strip that
+  // finishes in seconds, where making the user go and watch a queue row would be
+  // the queue getting in the way of the act.
+  //
+  // It is not a second implementation and must never become one. It broadcasts
+  // nothing: the caller awaits the result, and the fallback completion event it
+  // used to fire existed only because the QUEUE was on the far side of an IPC
+  // call. It no longer is.
   ipcMain.handle('queue:run-pass', async (
     _event, jobId: string, config: import('./processing-passes.js').PassJobConfig) => {
     try {
       const { runProcessingPass } = await import('./processing-passes.js');
-      const { passResultNotes } = await import('../shared/processing/pass-notes.js');
       const result = await runProcessingPass(jobId, config, mainWindow);
-      // The broadcast is the FALLBACK completion signal — the renderer's awaited
-      // return value is the usual one — so it carries the pass's sentences too.
-      // A pass whose ledger refusal reached the user down one path and not the
-      // other would make the explanation depend on which signal won the race.
-      const notes = passResultNotes(result);
-      mainWindow?.webContents.send('queue:job-complete', {
-        jobId,
-        success: result.success,
-        outputPath: result.outputPath,
-        error: result.error,
-        ...(notes.length > 0 ? { completionNotes: notes } : {}),
-      });
       if (result.success) broadcastToAllWindows('project:files-changed', config.projectDir);
       return { success: result.success, data: result };
     } catch (err) {
-      const error = (err as Error).message;
-      mainWindow?.webContents.send('queue:job-complete', { jobId, success: false, error });
-      return { success: false, error };
+      return { success: false, error: (err as Error).message };
     }
   });
 
@@ -8019,26 +7821,66 @@ function setupIpcHandlers(): void {
   /**
    * THE submission entry point for a processing run.
    *
-   * Main plans (it is the side that knows the manifest, the run directory and the
-   * page count) and the renderer enqueues, because the queue itself lives there —
-   * one `queue:enqueue-chain` message carrying the whole plan, so the jobs land
-   * in one batch and in order. A window that is not there is an error, not a
-   * silently dropped run.
+   * Main plans it — it is the side that knows the manifest, the run directory and
+   * the page count — and main QUEUES it, because the queue is main's now. It used
+   * to send the plan to the renderer on `queue:enqueue-chain` for the renderer's
+   * scheduler to lay out, which is why a run could only be submitted while the
+   * main window was open and why "BookForge has no open window to queue this run
+   * in" was a real refusal. It is not one any more.
+   *
+   * `followOn` is the work that rides BEHIND the passes in the same run —
+   * narrate, enhance, assemble. It arrives already built, because anything that
+   * can fail while building it (a missing voice, a resume check) has to fail with
+   * nothing queued rather than halfway through a chain. The passes chain to each
+   * other because each rewrites the book the next one reads; the follow-on chains
+   * to the last pass for the same reason.
    */
   ipcMain.handle('processing:submit-chain', async (
-    _event, request: import('./processing-chain.js').ProcessingChainRequest) => {
+    _event,
+    request: import('./processing-chain.js').ProcessingChainRequest,
+    followOn: import('./queue-engine.js').StepSpec[] = [],
+  ) => {
     try {
       const { planProcessingChain } = await import('./processing-chain.js');
+      const queueEngine = await import('./queue-engine.js');
       const plan = await planProcessingChain(request);
-      if (!mainWindow || mainWindow.isDestroyed()) {
-        throw new Error('BookForge has no open window to queue this run in.');
+
+      const steps: import('./queue-engine.js').StepSpec[] = [];
+      plan.jobs.forEach((planned) => {
+        steps.push({
+          type: planned.jobType as import('../shared/queue/engine-types.js').JobType,
+          label: planned.label,
+          config: planned.config as unknown as Record<string, unknown>,
+          ...(steps.length === 0
+            // The row's file is the BOOK the run is about, not a pass's working
+            // copy — a row naming "diff.json" would name the wrong thing.
+            ? { sourceRef: { kind: 'epub' as const, path: plan.bookEpubPath } }
+            : { parentIndex: steps.length - 1 }),
+        });
+      });
+      for (const spec of followOn) {
+        steps.push({
+          ...spec,
+          ...(steps.length === 0
+            ? { sourceRef: spec.sourceRef ?? { kind: 'epub' as const, path: plan.bookEpubPath } }
+            : { parentIndex: steps.length - 1 }),
+        });
       }
-      mainWindow.webContents.send('queue:enqueue-chain', plan);
-      return { success: true, plan };
+
+      const job = queueEngine.enqueue({
+        title: plan.title,
+        projectId: plan.projectDir,
+        documentPath: plan.bookEpubPath,
+        steps,
+      });
+      console.log(`[QUEUE] Queued ${plan.title}: `
+        + steps.map((s) => s.type).join(' → '));
+      return { success: true, plan, jobId: job.id };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
+
 
   /**
    * Start a book over: delete every trace of processing and leave the source.
@@ -8247,309 +8089,14 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Translation handler
-  ipcMain.handle('queue:run-translation', async (
-    _event,
-    jobId: string,
-    epubPath: string,
-    translationConfig: {
-      chunkSize?: number;
-    },
-    aiConfig?: {
-      provider: 'ollama' | 'claude' | 'openai';
-      ollama?: { baseUrl: string; model: string };
-      claude?: { apiKey: string; model: string };
-      openai?: { apiKey: string; model: string };
-    }
-  ) => {
-    console.log('[IPC] queue:run-translation received:', {
-      jobId,
-      aiConfig: aiConfig ? {
-        provider: aiConfig.provider,
-        ollamaModel: aiConfig.ollama?.model,
-        claudeModel: aiConfig.claude?.model,
-        openaiModel: aiConfig.openai?.model
-      } : 'MISSING - THIS IS A BUG'
-    });
 
-    // aiConfig is required
-    if (!aiConfig) {
-      const error = 'aiConfig is required for translation';
-      console.error('[IPC] queue:run-translation ERROR:', error);
-      if (mainWindow) {
-        mainWindow.webContents.send('queue:job-complete', {
-          jobId,
-          success: false,
-          error
-        });
-      }
-      return { success: false, error };
-    }
 
-    try {
-      const { translationBridge } = await import('./translation-bridge.js');
-
-      // Create cancellation token
-      let cancelled = false;
-      const cancelFn = () => {
-        cancelled = true;
-        translationBridge.cancelTranslationJob(jobId);
-      };
-      runningJobs.set(jobId, { cancel: cancelFn });
-
-      const result = await translationBridge.translateEpub(
-        epubPath,
-        jobId,
-        mainWindow,
-        (progress) => {
-          if (cancelled) return;
-          // Progress is sent via mainWindow.webContents.send in translateEpub
-        },
-        aiConfig,
-        translationConfig
-      );
-
-      // Remove from running jobs
-      runningJobs.delete(jobId);
-
-      // Send completion event
-      if (mainWindow && !cancelled) {
-        mainWindow.webContents.send('queue:job-complete', {
-          jobId,
-          success: result.success,
-          outputPath: result.outputPath,
-          error: result.error,
-          // Failed-chunk accounting: chunks that kept original (untranslated) text
-          translationFailedChunks: result.failedChunkCount,
-          skippedChunksPath: result.skippedChunksPath
-        });
-      }
-
-      return { success: result.success, data: result };
-    } catch (err) {
-      runningJobs.delete(jobId);
-      const error = (err as Error).message;
-
-      if (mainWindow) {
-        mainWindow.webContents.send('queue:job-complete', {
-          jobId,
-          success: false,
-          error
-        });
-      }
-
-      return { success: false, error };
-    }
-  });
-
-  ipcMain.handle('queue:run-tts-conversion', async (
-    _event,
-    jobId: string,
-    epubPath: string,
-    settings: {
-      device: 'gpu' | 'mps' | 'cpu';
-      language: string;
-      ttsEngine: string;
-      fineTuned: string;
-      temperature: number;
-      topP: number;
-      topK: number;
-      repetitionPenalty: number;
-      speed: number;
-      enableTextSplitting: boolean;
-      outputFilename?: string;
-      outputDir?: string;
-    }
-  ) => {
-    try {
-      const { ttsBridge } = await import('./tts-bridge.js');
-      ttsBridge.setMainWindow(mainWindow);
-
-      // Get output directory - use custom if provided, otherwise default
-      let outputDir: string;
-      if (settings.outputDir && settings.outputDir.trim()) {
-        outputDir = settings.outputDir;
-      } else {
-        const documentsPath = app.getPath('documents');
-        outputDir = path.join(documentsPath, 'BookForge', 'output');
-      }
-      await fs.mkdir(outputDir, { recursive: true });
-
-      // Create cancellation token
-      const cancelFn = () => { ttsBridge.stopConversion(); };
-      runningJobs.set(jobId, { cancel: cancelFn });
-
-      // Run TTS conversion with queue progress callback
-      const result = await ttsBridge.startConversion(epubPath, outputDir, settings, (progress) => {
-        console.log('[TTS->Queue] Forwarding progress:', progress.phase, progress.percentage + '%');
-        if (mainWindow) {
-          mainWindow.webContents.send('queue:progress', {
-            jobId,
-            type: 'tts-conversion',
-            phase: progress.phase,
-            progress: progress.percentage,
-            message: progress.message,
-            currentChunk: progress.currentChapter,
-            totalChunks: progress.totalChapters
-          });
-        }
-      }, settings.outputFilename);
-
-      // Remove from running jobs
-      runningJobs.delete(jobId);
-
-      // Send completion event
-      if (mainWindow) {
-        mainWindow.webContents.send('queue:job-complete', {
-          jobId,
-          success: result.success,
-          outputPath: result.outputPath,
-          error: result.error
-        });
-      }
-
-      return { success: result.success, data: result };
-    } catch (err) {
-      runningJobs.delete(jobId);
-      const error = (err as Error).message;
-
-      if (mainWindow) {
-        mainWindow.webContents.send('queue:job-complete', {
-          jobId,
-          success: false,
-          error
-        });
-      }
-
-      return { success: false, error };
-    }
-  });
-
-  ipcMain.handle('queue:cancel-job', async (_event, jobId: string) => {
-    console.log('[IPC] queue:cancel-job called for:', jobId);
-
-    let cancelled = false;
-
-    // Try to cancel AI cleanup job (uses abort controller for immediate cancellation)
-    try {
-      const { cancelCleanupJob } = await import('./ai-bridge.js');
-      if (cancelCleanupJob(jobId)) {
-        console.log('[IPC] AI cleanup job cancelled via abort controller:', jobId);
-        cancelled = true;
-      }
-    } catch (err) {
-      console.error('[IPC] Error cancelling AI cleanup job:', err);
-    }
-
-    // Try to cancel parallel TTS job. Use the CACHING stop so the sentences rendered
-    // so far are promoted to the durable project cache — that's the checkpoint the
-    // queue's auto-resume reads to continue where the user left off. The plain
-    // stopParallelConversion just kills the workers and would lose the progress.
-    try {
-      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
-      if (await parallelTtsBridge.stopAndCacheParallelConversion(jobId)) {
-        console.log('[IPC] Parallel TTS job stopped + cached for resume:', jobId);
-        cancelled = true;
-      }
-    } catch (err) {
-      console.error('[IPC] Error stopping parallel TTS job:', err);
-    }
-
-    // Try to cancel reassembly job
-    try {
-      const { stopReassembly } = await import('./reassembly-bridge.js');
-      if (stopReassembly(jobId)) {
-        console.log('[IPC] Reassembly job cancelled:', jobId);
-        cancelled = true;
-      }
-    } catch (err) {
-      console.error('[IPC] Error cancelling reassembly job:', err);
-    }
-
-    // Try to cancel RVC enhancement job
-    try {
-      const { stopRvcEnhancement, isRvcEnhancementActive } = await import('./rvc-job.js');
-      if (isRvcEnhancementActive(jobId)) {
-        stopRvcEnhancement(jobId);
-        console.log('[IPC] RVC enhancement job cancelled:', jobId);
-        cancelled = true;
-      }
-    } catch (err) {
-      console.error('[IPC] Error cancelling RVC enhancement job:', err);
-    }
-
-    // Try the legacy running jobs map
-    const job = runningJobs.get(jobId);
-    if (job) {
-      job.cancel();
-      runningJobs.delete(jobId);
-      console.log('[IPC] Legacy job cancelled:', jobId);
-      cancelled = true;
-
-      // If this was an Ollama job, unload the model to free memory
-      if (job.model) {
-        try {
-          await fetch('http://localhost:11434/api/generate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: job.model, keep_alive: 0 })
-          });
-          console.log('[IPC] Ollama model unloaded after cancel:', job.model);
-        } catch {
-          // Ollama might not be running, or this wasn't an Ollama job - ignore
-        }
-      }
-    }
-
-    if (cancelled) {
-      return { success: true };
-    }
-    return { success: false, error: 'Job not found or not running' };
-  });
 
   // Queue persistence handlers
   // Queue is system-specific (each machine has its own jobs), so store in app userData folder
   const getQueueFilePath = () => path.join(app.getPath('userData'), 'queue.json');
 
-  ipcMain.handle('queue:save-state', async (_event, queueState: string) => {
-    try {
-      const userDataPath = app.getPath('userData');
-      await fs.mkdir(userDataPath, { recursive: true });
-      const queueFile = getQueueFilePath();
-      await atomicWriteFile(queueFile, queueState);
-      return { success: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return { success: false, error: message };
-    }
-  });
 
-  ipcMain.handle('queue:load-state', async () => {
-    const queueFile = getQueueFilePath();
-    if (!fsSync.existsSync(queueFile)) {
-      return { success: true, data: null };
-    }
-    try {
-      const content = await fs.readFile(queueFile, 'utf-8');
-      return { success: true, data: JSON.parse(content) };
-    } catch (error) {
-      // The file EXISTS but couldn't be read/parsed. Preserve it BEFORE returning:
-      // the renderer starts with an empty queue and its debounced auto-save would
-      // overwrite this file within ~500ms, silently destroying the saved jobs
-      // (including interrupted-TTS wasInterrupted flags that protect session caches).
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      let backupPath: string | undefined;
-      try {
-        backupPath = `${queueFile}.corrupt-${Date.now()}`;
-        await fs.rename(queueFile, backupPath);
-        console.error(`[queue:load-state] queue.json is corrupt — preserved at ${backupPath}:`, message);
-      } catch (renameErr) {
-        console.error('[queue:load-state] queue.json is corrupt AND could not be backed up:', renameErr);
-        backupPath = undefined;
-      }
-      return { success: false, error: message, corrupted: true, backupPath };
-    }
-  });
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Logger IPC Handlers
@@ -9878,57 +9425,67 @@ function setupIpcHandlers(): void {
         return { success: false, error: `EPUB not found: ${epubPath}` };
       }
 
-      // Generate a job ID
-      const jobId = `cache-tts-${language}-${Date.now()}`;
-
-      // Import parallel TTS bridge
       const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
-      parallelTtsBridge.setMainWindow(mainWindow);
       await parallelTtsBridge.initializeLogger(getLibraryRoot());
 
       // Map engine to ttsEngine name
       const ttsEngine = ttsConfig.engine === 'orpheus' ? 'orpheus' : 'xtts';
 
-      // Build conversion config
-      const conversionConfig = {
-        workerCount: ttsConfig.workers,
-        epubPath,
-        outputDir: path.join(audiobookFolder, 'audiobook'),  // Temp, won't be used with skipAssembly
-        settings: {
-          device: ttsConfig.device,
-          language: language,
-          ttsEngine,
-          fineTuned: ttsConfig.voice,
-          temperature: 0.75,
-          topP: 0.85,
-          topK: 50,
-          repetitionPenalty: 5.0,
-          speed: ttsConfig.speed,
-          enableTextSplitting: false,
-          sentencePerParagraph: true,  // Important for chaptered EPUBs
-          skipHeadings: true,
-        },
-        parallelMode: 'sentences' as const,
-        skipAssembly: true,  // Get sentence audio, not final M4B
-        cleanSession: true,  // Start fresh for cached language TTS
-        metadata: {
-          title: `${path.basename(audiobookFolder)} (${language})`,
-        },
-      };
+      // ── Queued, not spawned behind the queue's back ────────────────────────
+      //
+      // This handler used to mint its own job id and call the TTS bridge
+      // directly. Nothing registered a cancel for it (FALLBACK_AUDIT.md:159), so
+      // the only way to stop a nine-hour render started here was to quit the app
+      // — and because the id was never in the queue, it also ran BESIDE whatever
+      // the queue was doing, two e2a worker sets on one card.
+      //
+      // It is a narration step now: one job, released immediately (the user
+      // pressed the button; there is nothing to hold for), scheduled against the
+      // same single GPU slot, cancellable by its step id like any other. The
+      // caller still receives an id and still listens for `parallel-tts:complete`
+      // — the bridge is called with the STEP id, so that event arrives exactly as
+      // it did.
+      const queueEngine = await import('./queue-engine.js');
+      const job = queueEngine.enqueue({
+        title: `${path.basename(audiobookFolder)} (${language})`,
+        projectId: audiobookFolder,
+        documentPath: epubPath,
+        release: true,
+        steps: [{
+          type: 'tts-conversion',
+          label: `Narrate ${language}`,
+          sourceRef: { kind: 'epub', path: epubPath },
+          config: {
+            device: ttsConfig.device,
+            language,
+            ttsEngine,
+            fineTuned: ttsConfig.voice,
+            temperature: 0.75,
+            topP: 0.85,
+            topK: 50,
+            repetitionPenalty: 5.0,
+            speed: ttsConfig.speed,
+            enableTextSplitting: false,
+            sentencePerParagraph: true,  // Important for chaptered EPUBs
+            skipHeadings: true,
+            parallelWorkers: ttsConfig.workers,
+            parallelMode: 'sentences',
+            outputDir: path.join(audiobookFolder, 'audiobook'),  // Unused with skipAssembly
+            skipAssembly: true,  // Sentence audio, not a final M4B
+            // A cached-language render is always fresh: the sentences it is
+            // about to write ARE the cache, so an older partial one is not a
+            // checkpoint to resume, it is the thing being replaced.
+            startFresh: true,
+            bfpPath: audiobookFolder,
+            metadata: { title: `${path.basename(audiobookFolder)} (${language})` },
+          },
+        }],
+      });
 
-      // Start conversion - this runs in the background
-      const result = await parallelTtsBridge.startParallelConversion(jobId, conversionConfig);
-
-      if (!result.success) {
-        return { success: false, error: result.error || 'Failed to start TTS conversion' };
-      }
-
-      // Return immediately - the TTS runs in background
-      // Frontend will listen for parallel-tts:complete events
       return {
         success: true,
-        jobId,
-        message: `TTS started for ${language}`,
+        jobId: job.steps[0].id,
+        message: `TTS queued for ${language}`,
         // The sentencesDir will be in the completion event outputPath
       };
     } catch (err) {
@@ -11286,6 +10843,12 @@ app.whenReady().then(async () => {
   setupAlignmentIpc();
   registerClipforgeIpc();
   registerDocumentIpc();
+  // The queue, before any window exists. It is main's now: its state is loaded
+  // (migrating the retired renderer blob on first run), its step modules are
+  // registered, and its doors are opened here — so a run survives every window
+  // being closed, and a second window is a second VIEW rather than a second
+  // scheduler writing over the first one's state file.
+  await startQueueEngine();
   // `electron . --clipforge` (the clipforge:electron:dev script) opens ONLY the
   // ClipForge window for a clean single-app dev session; otherwise BookForge.
   if (process.argv.includes('--clipforge')) {
@@ -11294,6 +10857,7 @@ app.whenReady().then(async () => {
     createWindow();
     if (mainWindow) {
       pdfWorkerProxy.setDefaultSender(mainWindow.webContents);
+      setQueueMainWindow(mainWindow);
     }
   }
 
@@ -11463,8 +11027,13 @@ app.whenReady().then(async () => {
   await autoStartBookshelf();
 
   // Bridge bookshelf server queue control to renderer process
+  // Straight to the engine. It used to be forwarded to the renderer for the
+  // renderer's scheduler to act on, which meant a Start pressed from a phone did
+  // nothing at all when no window was open — the one situation the bookshelf
+  // remote exists for.
   bookshelfServer.setQueueControlHandler((action) => {
-    mainWindow?.webContents.send('queue:remote-control', action);
+    if (action === 'start') queueEngine.start();
+    else queueEngine.pause();
   });
 
   // NOTE: the TTS API server is started by startRuntimeSetup() (the first-run
@@ -11742,6 +11311,12 @@ app.on('before-quit', async (event) => {
   cleanupDone = true;
 
   console.log('[MAIN] Running cleanup before quit...');
+
+  // FIRST, and it is one synchronous flag plus a file write: stop the queue
+  // claiming new work, and write the board. Everything below this line kills
+  // processes, and a queue that started the next narration while the sweep was
+  // running would be spawning workers into a teardown.
+  await queueEngine.shutdown();
 
   // The absolute backstop behind the per-step deadlines: if the whole chain has
   // not reached app.quit() in this long, something outside a deadline is stuck
