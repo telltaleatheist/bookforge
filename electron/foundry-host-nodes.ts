@@ -68,6 +68,15 @@ export interface HostNodeProgress {
 /** Which act a row is, which is what picks its icon on the tree. */
 export type HostOperationKind = 'narrate' | 'enhance' | 'assemble';
 
+/**
+ * WHAT A PERSON MAY DO TO ONE OF OUR ROWS THAT FAILED — Foundry's fixed pair.
+ *
+ * Not an open list and not ours to extend: the tree draws exactly these two
+ * buttons, named by Foundry, on a failed host node and only when the host
+ * registered `onNodeAction`. See foundry-app/shared/host-ops.ts.
+ */
+export type HostNodeAction = 'retry' | 'dismiss';
+
 export interface HostNode {
   id: string;
   parentStepId: string;
@@ -398,6 +407,74 @@ export function hostNodeSets(
  */
 export function isChainable(step: QueueStep): boolean {
   return !TERMINAL_STEP_STATUSES.has(step.status) || step.status === 'done';
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Retry and Dismiss
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * WHICH ENGINE CALL A PRESS ON A FAILED CARD IS — the whole of the decision,
+ * with none of the doing.
+ *
+ * `retry` targets the STEP and `dismiss` takes the RUN, and the asymmetry is the
+ * point rather than an oversight. A retry is about the one row that failed: the
+ * engine resets it and everything downstream of it and leaves the steps that
+ * already succeeded alone, which is what stops "the assembly failed" from
+ * re-narrating nine hours of book. A dismiss is about the whole run, because
+ * there is no such thing as removing one step — the queue's unit of forgetting
+ * is a job, and a job with its failed step deleted would be a run that claimed
+ * to have finished work nobody did.
+ *
+ * A RETRIED STEP COMES BACK HELD, NOT RUNNING, and that is the engine's own
+ * design (`retry`, queue-engine.ts: "re-running is a decision, and a failure the
+ * user has not looked at yet must not restart itself because the queue happened
+ * to be running"). The card therefore returns to the tree saying "not started ·
+ * press Start in BookForge" rather than going straight back to work, which is
+ * the honest reading of what just happened.
+ */
+export type HostNodeActionPlan =
+  | { readonly call: 'retry'; readonly stepId: string }
+  | { readonly call: 'remove'; readonly jobId: string };
+
+/**
+ * What to do about a press on a failed card, proved against the live queue.
+ *
+ * BOTH REFUSALS NAME WHAT WAS LOOKED FOR, because both are reached the same way
+ * — a tree drawing a row the queue has moved on from — and the rejection travels
+ * back over `host-ops:node-action` to be SAID AT THE BUTTON (foundry-app's
+ * `actOnHostNode`). A sentence about an id nobody can place is the one thing
+ * that must not arrive there, so the id is spelled out and the sentence says
+ * which of the two verbs could not be carried out.
+ *
+ * Pure, and takes the snapshot rather than reaching for the engine, for the same
+ * reason `hostNodeSets` does: the decision is worth defending from a keeper with
+ * a hand-built queue rather than only by running two applications.
+ */
+export function planNodeAction(
+  nodeId: string,
+  action: HostNodeAction,
+  snapshot: QueueSnapshot,
+): HostNodeActionPlan {
+  const decoded = decodeNodeId(nodeId);
+  if (decoded === null) {
+    throw new Error(
+      `BookForge cannot ${action} "${nodeId}": that is not one of the rows it is making. Retry `
+      + 'and Dismiss act on BookForge\'s own work, and this row belongs to something else.',
+    );
+  }
+  const job = snapshot.jobs.find((j) => j.id === decoded.jobId);
+  const step = job?.steps.find((s) => s.id === decoded.stepId);
+  if (job === undefined || step === undefined) {
+    throw new Error(
+      `BookForge's queue no longer holds the run "${decoded.jobId}" with the step `
+      + `"${decoded.stepId}", so there is nothing left to ${action}. It was cleared or removed `
+      + 'while this row was on screen.',
+    );
+  }
+  return action === 'retry'
+    ? { call: 'retry', stepId: step.id }
+    : { call: 'remove', jobId: job.id };
 }
 
 // ────────────────────────────────────────────────────────────────────────────

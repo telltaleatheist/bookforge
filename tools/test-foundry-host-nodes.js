@@ -289,6 +289,58 @@ test('a step that will never produce anything cannot be chained onto', () => {
   assert.strictEqual(nodes.isChainable(step({ status: 'cancelled' })), false);
 });
 
+// ── Retry and Dismiss ───────────────────────────────────────────────────────
+//
+// The pair Foundry draws on a failed card, which only exist because this host
+// registered `onNodeAction`. What is worth defending here is the ASYMMETRY —
+// retry targets the step, dismiss takes the whole run — and that both refusals
+// are whole sentences naming the id, because they are said AT THE BUTTON in
+// another application's window.
+
+test('retry targets the STEP the card is, not the run it belongs to', () => {
+  const live = snap([job([
+    step({ id: 'step_narr', type: 'tts-conversion', status: 'done' }),
+    step({ id: 'step_asm', type: 'reassembly', status: 'failed', parentStepId: 'step_narr' }),
+  ])]);
+  const plan = nodes.planNodeAction(
+    nodes.encodeNodeId('job_a1', 'step_asm'), 'retry', live);
+  // The engine resets this step and everything downstream of it and leaves the
+  // narration alone — which is what stops a failed assembly re-reading the book.
+  assert.deepStrictEqual(plan, { call: 'retry', stepId: 'step_asm' });
+});
+
+test('dismiss takes the RUN, because a queue has no way to forget one step', () => {
+  const live = snap([job([step({ id: 'step_asm', status: 'failed' })])]);
+  const plan = nodes.planNodeAction(
+    nodes.encodeNodeId('job_a1', 'step_asm'), 'dismiss', live);
+  assert.deepStrictEqual(plan, { call: 'remove', jobId: 'job_a1' });
+});
+
+test('an id that is not ours is refused by name, in both verbs', () => {
+  const live = snap([job([step()])]);
+  // A LEDGER step id — what a press on one of Foundry's own rows would carry.
+  assert.throws(
+    () => nodes.planNodeAction(LEDGER_STEP, 'retry', live),
+    (err) => err.message.includes(LEDGER_STEP) && /cannot retry/.test(err.message));
+  assert.throws(
+    () => nodes.planNodeAction('bf-node:only-one-part', 'dismiss', live),
+    (err) => err.message.includes('bf-node:only-one-part') && /cannot dismiss/.test(err.message));
+});
+
+test('a row the queue has moved on from names the run and the step it looked for', () => {
+  const live = snap([job([step({ id: 'step_here' })])]);
+  assert.throws(
+    () => nodes.planNodeAction(
+      nodes.encodeNodeId('job_gone', 'step_gone'), 'retry', live),
+    (err) => err.message.includes('job_gone') && err.message.includes('step_gone'));
+  // The run is right and the step is not: still a refusal, because the card is
+  // about a step and half a match is not the row somebody pressed.
+  assert.throws(
+    () => nodes.planNodeAction(
+      nodes.encodeNodeId('job_a1', 'step_gone'), 'dismiss', live),
+    (err) => err.message.includes('step_gone'));
+});
+
 (async () => {
   for (const { name, fn } of tests) {
     try {

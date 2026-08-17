@@ -1,297 +1,98 @@
 /**
- * The jobs one narration run is made of: read the book aloud, enhance the voice,
- * assemble the audiobook.
+ * The jobs one narration run is made of, in the shape THIS window's queue
+ * service speaks.
  *
- * ── Why these are built here rather than where they are ordered ─────────────
+ * ── The description moved; this is the door onto it ─────────────────────────
  *
- * Because they are ordered from two places now. The Process page has always
- * composed them out of its own controls; the TTS copy's Process button opens a
- * modal that composes the same three jobs out of the same choices, against a
- * file it was handed rather than one it looked up. Two callers writing the same
- * object literals is two answers to "what does a narration run consist of", and
- * they drift the day one of them gains a field — which is precisely how a run
- * ends up rendering at a default voice nobody chose.
+ * What a narration run consists of — which steps, in which order, carrying which
+ * fields — now lives in `shared/queue/narration-run.ts`, because a third caller
+ * arrived that is not a renderer at all: Foundry's window can order a narration,
+ * and the run is composed in BookForge's MAIN process with no renderer in the
+ * conversation (`bookforge.narrate`, electron/main.ts). Composing it again over
+ * there would be exactly the drift the description was written to prevent —
+ * "they drift the day one of them gains a field, which is precisely how a run
+ * ends up rendering at a default voice nobody chose."
  *
- * So the request shapes live here, once, and both callers ASK for them. Nothing
- * in this file queues anything or reads a signal: it is a description of work,
- * and whoever is submitting decides where it lands (behind a pass chain, under a
- * master row of its own) and stamps the workflow.
+ * So this file is now a MAPPING and nothing else: it takes the shared step plans
+ * and wraps each one in the `CreateJobRequest` `QueueService.addJob` takes. The
+ * wrapper is a fact about this window's door — main's door takes a `JobSpec` and
+ * wraps the same plans differently — which is precisely why it stayed behind
+ * while the description left.
  *
- * ── Everything that can fail, fails before anything is queued ───────────────
- *
- * A workflow half in the queue cannot be retried without double-queueing it. So
- * this refuses BY NAME — throwing, with nothing built — rather than emitting a
- * request with a hole in it. A missing voice is the case that matters: the queue
- * would otherwise fall back to a stock one and hand back an audiobook in the
- * wrong voice after an hour of GPU.
- *
- * ── What it deliberately does NOT cover ─────────────────────────────────────
- *
- * Resuming a partial session, reassembling a cached one, and the optional video.
- * Each of those is a run ABOUT something that already exists on disk — a session
- * the wizard found — rather than a run about a book, and the Process page owns
- * finding them. They stay in ll-wizard.component.ts, and are the seam a later
- * pass has to close before that page can go.
+ * The two callers (the Process page and the TTS copy's Process modal) see no
+ * change: the same three functions, the same types, the same refusals, thrown
+ * from the same place before anything is queued.
  */
-import type { CreateJobRequest, TtsConversionConfig } from '../models/queue.types';
+import type { CreateJobRequest } from '../models/queue.types';
+import {
+  buildNarrationSteps,
+  narrationReassemblyStep,
+  narrationRvcStep,
+  narrationTtsStep,
+  type NarrationRunBook,
+  type NarrationRunSettings,
+  type NarrationStepPlan,
+} from '@shared/queue/narration-run';
 
-/** The RVC pass, when the user asked for one. */
-export interface NarrationRvcSettings {
-  readonly voiceId: string;
-  readonly indexRate: number;
-  readonly protectRate: number;
-  readonly nSemitones: number;
-}
-
-/** WHICH file is narrated, and what the audiobook is called. */
-export interface NarrationRunBook {
-  /**
-   * THE document this run reads — absolute.
-   *
-   * Owen's law, 2026-08-09: "the tts pipeline knows exactly which file its
-   * working with because the user came to the tts page FROM the button on that
-   * document." It is carried here rather than derived, and it is checked,
-   * because a run that narrated the wrong file would look completely normal
-   * until somebody listened to it.
-   */
-  readonly epubPath: string;
-  /** The project the session, the enhancement and the assembly belong to. */
-  readonly projectDir: string;
-  /**
-   * WHICH VERSION of the book this document is — carried for the same reason
-   * the path is, and checked for the same reason.
-   *
-   * Owen, 2026-08-10: "if the user wants to process a specific TTS document then
-   * they click the process button next to it. no ambiguity, no confusion." A
-   * project may hold several versions of one book; the path says which FILE, and
-   * this says which of the project's version RECORDS that file is. It is the
-   * manifest variant id — the row the Process button was pressed on.
-   *
-   * It replaced `familyId` in Wave 1 (2026-08-16), when the working chain was
-   * retired: a run is about a version's file, and there is no chain of records
-   * behind it to name any more.
-   */
-  readonly variantId: string;
-  readonly title: string;
-  readonly author: string;
-  /** '' when the book states none — passed through as absent, never invented. */
-  readonly year: string;
-  readonly coverPath: string;
-  /** The M4B's filename, derived by the caller from the project's own record. */
-  readonly outputFilename: string;
-  /**
-   * An article rather than a book.
-   *
-   * The two carry the project directory in different fields — an article's jobs
-   * take `projectDir` and a book's take `bfpPath` — and that is not cosmetic:
-   * they are what the bridges resolve a session and an output folder from.
-   */
-  readonly isArticle: boolean;
-}
-
-/** Everything the user chose about HOW it is read and assembled. */
-export interface NarrationRunSettings {
-  readonly language: string;
-  readonly ttsEngine: string;
-  /** The voice. Empty is refused by name rather than defaulted. */
-  readonly voice: string;
-  readonly device: 'auto' | 'gpu' | 'mps' | 'cpu';
-  readonly temperature: number;
-  readonly topP: number;
-  readonly repetitionPenalty: number;
-  readonly speed: number;
-  readonly workers: number;
-  /** The library's audiobooks folder — where the finished M4B is filed. */
-  readonly outputDir: string;
-  readonly finalDenoise: boolean;
-  readonly applyDeRing: boolean;
-  /** The enhancement pass, or null for none. */
-  readonly rvc: NarrationRvcSettings | null;
-  /**
-   * Clear whatever half-rendered session is cached for this project first.
-   *
-   * TRUE exactly when the user was shown a Continue/Start-fresh choice and chose
-   * fresh. A run that was never offered the choice sends false, because clearing
-   * a cache nobody mentioned is an hour of GPU thrown away silently.
-   */
-  readonly startFresh: boolean;
-}
+/*
+ * Re-exported rather than redeclared: a caller that types a book or a settings
+ * object is typing the SHARED description, and a local copy of either would be a
+ * second answer to what a narration run is described by.
+ */
+export type {
+  NarrationRunBook,
+  NarrationRunSettings,
+  NarrationRvcSettings,
+} from '@shared/queue/narration-run';
 
 /**
- * `topK` is not a control anywhere in the app and never has been — it is stated
- * here so the one value both callers send is written down once instead of twice.
+ * One shared step plan, as this window's queue takes it.
+ *
+ * The `config` cast is the one place the two vocabularies meet. The plan's
+ * config types are declared as the exact set of fields the description sets
+ * (shared/queue/narration-run.ts), and `Partial<JobConfig>` is the union of
+ * every job's whole config — TypeScript will not narrow a union member from a
+ * structural subset, so the assignment is stated rather than inferred. It is
+ * checked on the other side: the shared config interfaces name the same fields
+ * with the same types as `TtsConversionConfig`, `RvcEnhancementJobConfig` and
+ * `ReassemblyJobConfig`, so a drift in either is a compile error there.
  */
-const TOP_K = 50;
-
-/** Refuse a run that cannot be described, naming the field that is missing. */
-function requireRun(book: NarrationRunBook, settings: NarrationRunSettings): void {
-  if (!book.epubPath) {
-    throw new Error(
-      'This narration run names no document, so there is nothing to read. The file comes from the '
-      + 'button that started the run and is never looked up.'
-    );
-  }
-  if (!book.projectDir) {
-    throw new Error(
-      `Cannot queue narration for ${book.epubPath}: it has no project directory, so there is `
-      + 'nowhere to put the rendered sentences or the finished audiobook.'
-    );
-  }
-  if (!book.variantId) {
-    throw new Error(
-      `Cannot queue narration for ${book.epubPath}: it does not say which version of the book it `
-      + 'is. The version comes from the Process button on that row, exactly as the file does — a '
-      + 'run that could not name it would ask the project about "the book" and act on whichever '
-      + 'version the code reached first.'
-    );
-  }
-  if (!settings.voice) {
-    throw new Error(
-      'No voice is selected, so this run would be rendered in whatever voice the queue happened to '
-      + 'default to. Pick a voice.'
-    );
-  }
-  if (!settings.ttsEngine) {
-    throw new Error('No TTS engine is selected, so there is nothing to render this book with.');
-  }
-}
-
-/** Where the assembled audiobook is written, inside the project. */
-function assemblyOutputDir(projectDir: string): string {
-  return `${projectDir.replace(/\\/g, '/')}/output`;
-}
-
-/** What the audiobook rows call themselves. One derivation, three jobs. */
-function audiobookMetadata(book: NarrationRunBook) {
+function asJobRequest(plan: NarrationStepPlan): CreateJobRequest {
   return {
-    title: book.title,
-    author: book.author,
-    ...(book.year ? { year: book.year } : {}),
+    type: plan.type,
+    ...(plan.epubPath === undefined ? {} : { epubPath: plan.epubPath }),
+    variantId: plan.variantId,
+    ...(plan.bfpPath === undefined ? {} : { bfpPath: plan.bfpPath }),
+    ...(plan.projectDir === undefined ? {} : { projectDir: plan.projectDir }),
+    metadata: { ...plan.metadata },
+    config: plan.config as CreateJobRequest['config'],
   };
 }
 
-/**
- * Read the book aloud.
- *
- * `skipAssembly` is TRUE whenever an assembly job follows: e2a would otherwise
- * combine the sentences itself, and BookForge reassembles them with its own
- * metadata, chapter markers and optional passes.
- */
+/** Read the book aloud. Refuses by name before anything is built. */
 export function narrationTtsRequest(
   book: NarrationRunBook,
   settings: NarrationRunSettings,
   assembleAfter: boolean,
 ): CreateJobRequest {
-  requireRun(book, settings);
-  const config: Partial<TtsConversionConfig> = {
-    type: 'tts-conversion',
-    device: settings.device,
-    language: settings.language,
-    ttsEngine: settings.ttsEngine,
-    fineTuned: settings.voice,
-    temperature: settings.temperature,
-    topP: settings.topP,
-    topK: TOP_K,
-    repetitionPenalty: settings.repetitionPenalty,
-    speed: settings.speed,
-    enableTextSplitting: true,
-    useParallel: true,
-    parallelMode: 'sentences',
-    parallelWorkers: settings.workers,
-    outputDir: settings.outputDir,
-    skipAssembly: assembleAfter,
-    // Only consumed when this job assembles inline, i.e. when nothing follows it.
-    finalDenoise: settings.finalDenoise,
-    startFresh: settings.startFresh,
-  };
-  return {
-    type: 'tts-conversion',
-    epubPath: book.epubPath,
-    // The version travels with the file, all the way to the row in the queue. It
-    // is the only thing that says which of a project's versions this render is.
-    variantId: book.variantId,
-    ...(book.isArticle ? { projectDir: book.projectDir } : { bfpPath: book.projectDir }),
-    metadata: {
-      title: 'TTS',
-      bookTitle: book.title,
-      author: book.author,
-      ...(book.year ? { year: book.year } : {}),
-      ...(book.coverPath ? { coverPath: book.coverPath } : {}),
-      outputFilename: book.outputFilename,
-    },
-    config,
-  };
+  return asJobRequest(narrationTtsStep(book, settings, assembleAfter));
 }
 
-/**
- * Re-render the sentences through an RVC voice model, before assembly.
- *
- * Its own queue row rather than a flag on the assembly, so it shows a distinct
- * job with a per-sentence ETA. The session fields are empty on purpose: this job
- * runs after the narration, and the queue discovers the session the narration
- * actually wrote rather than a path guessed an hour earlier.
- *
- * Denoise rides HERE rather than on the assembly so it runs first — denoise, then
- * conversion, then assembly — and the assembly sees a pre-enhanced set.
- */
+/** Re-render the sentences through an RVC voice model, or null for no pass. */
 export function narrationRvcRequest(
   book: NarrationRunBook,
   settings: NarrationRunSettings,
 ): CreateJobRequest | null {
-  if (settings.rvc === null) return null;
-  requireRun(book, settings);
-  if (!settings.rvc.voiceId) {
-    throw new Error(
-      'RVC enhancement is on but no enhancement voice is selected. Pick a voice or turn RVC off.'
-    );
-  }
-  return {
-    type: 'rvc-enhancement',
-    bfpPath: book.projectDir,
-    variantId: book.variantId,
-    config: {
-      type: 'rvc-enhancement',
-      // Filled at run time by session discovery — see the doc comment above.
-      sessionId: '', sessionDir: '', processDir: '',
-      voiceId: settings.rvc.voiceId,
-      indexRate: settings.rvc.indexRate,
-      protectRate: settings.rvc.protectRate,
-      nSemitones: settings.rvc.nSemitones,
-      finalDenoise: settings.finalDenoise,
-    },
-    metadata: audiobookMetadata(book),
-  };
+  const plan = narrationRvcStep(book, settings);
+  return plan === null ? null : asJobRequest(plan);
 }
 
-/** Combine the rendered sentences into the M4B, with its chapters and its cover. */
+/** Combine the rendered sentences into the M4B. */
 export function narrationReassemblyRequest(
   book: NarrationRunBook,
   settings: NarrationRunSettings,
 ): CreateJobRequest {
-  requireRun(book, settings);
-  return {
-    type: 'reassembly',
-    bfpPath: book.projectDir,
-    variantId: book.variantId,
-    config: {
-      type: 'reassembly',
-      // Filled at run time by session discovery, as above.
-      sessionId: '', sessionDir: '', processDir: '',
-      outputDir: assemblyOutputDir(book.projectDir),
-      metadata: {
-        title: book.title || '',
-        author: book.author || '',
-        ...(book.coverPath ? { coverPath: book.coverPath } : {}),
-        ...(book.year ? { year: book.year } : {}),
-        outputFilename: book.outputFilename,
-      },
-      excludedChapters: [],
-      // Two opt-in assembly passes, both default OFF.
-      finalDenoise: settings.finalDenoise,
-      applyDeRing: settings.applyDeRing,
-    },
-    metadata: audiobookMetadata(book),
-  };
+  return asJobRequest(narrationReassemblyStep(book, settings));
 }
 
 /**
@@ -305,15 +106,5 @@ export function buildNarrationJobs(
   settings: NarrationRunSettings,
   what: { narrate: boolean; assemble: boolean },
 ): CreateJobRequest[] {
-  if (!what.narrate && !what.assemble) {
-    throw new Error('There is nothing to queue: no narration and no assembly.');
-  }
-  const jobs: CreateJobRequest[] = [];
-  if (what.narrate) jobs.push(narrationTtsRequest(book, settings, what.assemble));
-  if (what.assemble) {
-    const rvc = narrationRvcRequest(book, settings);
-    if (rvc !== null) jobs.push(rvc);
-    jobs.push(narrationReassemblyRequest(book, settings));
-  }
-  return jobs;
+  return buildNarrationSteps(book, settings, what).map(asJobRequest);
 }

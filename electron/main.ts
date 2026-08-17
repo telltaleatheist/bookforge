@@ -76,9 +76,24 @@ import {
 import {
   decodeNodeId,
   isChainable,
+  planNodeAction,
   publishHostNodes,
   type HostNode,
+  type HostNodeAction,
 } from './foundry-host-nodes';
+// The narrate operation's dialog: the fields Foundry is asked to draw, and the
+// reading of the answers it hands back. Pure decisions, kept out of this file.
+import {
+  narrateFormFields,
+  readNarrateAnswers,
+  readNarrateSavedSettings,
+  type FoundryHostOpField,
+  type NarrateVoiceOption,
+} from './foundry-narrate-form';
+// The ONE description of what a narration run consists of — the same one the
+// narration modal asks. See shared/queue/narration-run.ts for why it is shared.
+import { buildNarrationSteps } from '../shared/queue/narration-run';
+import { mergeOrpheusVoices, narrationVoicesFor } from '../shared/tts/narration-voices';
 import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
@@ -151,6 +166,24 @@ interface FoundryExportLanding {
   readonly kind: string;
   /** The file's own name, as Foundry's tray announces it. */
   readonly title: string;
+  /**
+   * THE LEDGER STEP THIS EXPORT WAS CAST FROM, when Foundry knew one.
+   *
+   * Added to the announcement at foundry@a32c087, out of the gap this side has
+   * always named: `foundryNarrationTarget` can say what a project has exported
+   * and cannot say which step produced it, so two exports are a refusal.
+   *
+   * DECLARED AND NOT YET CONSUMED, deliberately. Making it useful means
+   * recording it on `FoundryVariantSource` so the versions page can match a
+   * press on a step to the file that step made, and that is a change to what
+   * BookForge writes about its own versions — a wave of its own. The field is
+   * mirrored now so the contract is complete here and the absence is visible as
+   * an unread field rather than as a fact nobody knew had arrived.
+   *
+   * ABSENT MEANS "I DO NOT KNOW", never "no step": every export that landed
+   * before the field existed has none.
+   */
+  readonly stepId?: string;
 }
 
 /**
@@ -194,8 +227,39 @@ interface FoundryHostOperation {
   readonly kind: 'narrate' | 'enhance' | 'assemble';
   /** What a node must PRODUCE for this to be offered from it: 'book' | 'audio'. */
   readonly appliesTo: 'book' | 'audio';
-  invoke(projectDir: string, nodeId: string): void | Promise<void>;
+  /**
+   * WHAT TO ASK THE PERSON BEFORE RUNNING IT, drawn by Foundry in its own window.
+   *
+   * ABSENT IS NOT EMPTY. An operation with no `form` invokes the instant it is
+   * pressed — which is what enhance and assemble below still do — and one with a
+   * form opens a dialog whose answers come back as `settings`. Foundry
+   * interprets nothing in here: it draws the controls, seeds a select with no
+   * default from its first option, OMITS a number the user emptied, and hands
+   * back what was chosen keyed by each field's own `key`.
+   *
+   * READ THROUGH `hostOperationOffers()` ON EVERY ASK rather than copied at
+   * mount, which is why the narrate operation declares this as a GETTER: the
+   * voice list is a fact about the machine, and a list captured at startup would
+   * be offering voices the user uninstalled an hour ago.
+   */
+  readonly form?: readonly FoundryHostOpField[];
+  /**
+   * `settings` is the answers to `form`, or `{}` for an operation with none —
+   * never undefined, so a host destructuring it does not have to guard.
+   */
+  invoke(
+    projectDir: string,
+    nodeId: string,
+    settings: Record<string, unknown>,
+  ): void | Promise<void>;
 }
+
+/*
+ * `FoundryHostOpField` — one question in a form — is declared in
+ * electron/foundry-narrate-form.ts, beside the only operation that has any, and
+ * imported here. Same rule as the shapes above (a mirror of the published
+ * contract, never the subtree's own type); it simply lives where it is built.
+ */
 
 interface FoundryHostRecord {
   /**
@@ -206,6 +270,25 @@ interface FoundryHostRecord {
   readonly libraryDir: string;
   onExport(landing: FoundryExportLanding): void;
   onImport?(landing: FoundryImportLanding): void;
+  /**
+   * A PERSON PRESSED RETRY OR DISMISS on one of our rows that failed.
+   *
+   * OPTIONAL, AND ITS ABSENCE IS DRAWN: Foundry asks whether this callback
+   * exists before it draws the pair, so a host that does not register it gets no
+   * buttons at all rather than buttons that refuse. Registering it is what turns
+   * them on.
+   *
+   * ITS REJECTION IS NOT SWALLOWED — this is with `hostOperations` and not with
+   * the two announcements above. `onExport` and `onImport` are Foundry telling
+   * us something that already happened; this is a BUTTON, and its rejection
+   * travels back over `host-ops:node-action` to be said where the button was. So
+   * every refusal it throws is a whole sentence a user can act on.
+   */
+  onNodeAction?(
+    projectDir: string,
+    nodeId: string,
+    action: 'retry' | 'dismiss',
+  ): void | Promise<void>;
   /**
    * The acts this host contributes to the tree. Recorded once, at mount;
    * `mountFoundry` runs exactly once, so a second registration is unreachable.
@@ -942,20 +1025,145 @@ async function foundryNarrationTarget(projectDir: string): Promise<FoundryNarrat
   };
 }
 
+// ── The saved narration settings, read from the one store that has them ─────
+//
+// `SettingsService` keeps the whole settings record in the MAIN WINDOW's
+// `localStorage`, under `bookforge-settings`, and there is no main-process
+// mirror of it — `invokeFoundryEnhance` below already says so, and it is why
+// that operation refuses rather than composing an enhancement.
+//
+// So this reads the store where the store IS, rather than keeping a second copy
+// of it in this process. A mirror pushed up from the renderer would be a value
+// that can be stale, can be missing because nobody happened to publish it, and
+// would need a channel and a keeper of its own; a read of the real thing is
+// current by construction and refuses honestly when there is nothing to read.
+// `executeJavaScript` on the main window is how this file already talks to the
+// page for the quit toast — one established mechanism, one new caller.
+
+/** The `pipelineDefaults` record as the renderer saved it, or null. */
+async function readSavedNarrationSettings(): Promise<unknown> {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    throw new Error(
+      'BookForge is not showing its own window, so its saved narration settings cannot be read. '
+      + 'Open BookForge and press Narrate again.');
+  }
+  const raw = await mainWindow.webContents.executeJavaScript(
+    'window.localStorage.getItem("bookforge-settings")',
+  ) as string | null;
+  if (raw === null) return null;
+  try {
+    return (JSON.parse(raw) as Record<string, unknown>)['pipelineDefaults'] ?? null;
+  } catch (err) {
+    throw new Error(
+      'BookForge\'s saved settings could not be read, so it does not know how this book should be '
+      + `narrated (${(err as Error).message}). Open BookForge, go to Settings → Pipeline `
+      + 'Defaults, set the narration defaults again, and press Narrate.');
+  }
+}
+
 /**
- * NARRATE — pressed on a ledger step, and it opens a modal rather than running.
+ * THE VOICES THIS ENGINE CAN BE ASKED FOR, from the same doors the modal asks.
  *
- * Owen's modal contract: a narration is a dozen decisions (engine, voice, speed,
- * workers, whether to enhance, whether to assemble) and this app has exactly one
- * surface that asks them. An operation that queued a run with defaults would be
- * a second, invisible set of answers to questions the user has a dialog for. So
- * the invoke resolves the BOOK and the FILE — the two things a press on a tree
- * knows and the modal cannot look up — raises the window, and hands over.
- *
- * The lineage rides along and comes back on the enqueue (`JobSpec.foundry`),
- * which is what makes the rows appear on the tree the press came from.
+ * `getAudiobookVoiceOptions` is what `voices:list-audiobook` answers with and
+ * `listOrpheusModels` is what `orpheus:list-models` answers with — the two calls
+ * `NarrationVoicesService.load()` makes. Nothing is enumerated a second time
+ * here: this calls the same functions the renderer's handlers call and folds
+ * them with the same rule (shared/tts/narration-voices.ts).
  */
-async function invokeFoundryNarrate(projectDir: string, nodeId: string): Promise<void> {
+async function narrateVoiceOptions(engine: string): Promise<readonly NarrateVoiceOption[]> {
+  const [{ getAudiobookVoiceOptions }, { listOrpheusModels }] = await Promise.all([
+    import('./components/installed-voices.js'),
+    import('./orpheus-models.js'),
+  ]);
+  const xtts = await getAudiobookVoiceOptions();
+  const orpheus = mergeOrpheusVoices(
+    listOrpheusModels().map((m) => ({ value: m.id, label: `${m.label} (Custom)` })),
+  );
+  return narrationVoicesFor(engine, { xtts, orpheus });
+}
+
+/**
+ * THE NARRATE FORM AS FOUNDRY LAST SAW IT, and why it is a snapshot.
+ *
+ * Foundry reads `form` off the registered operation SYNCHRONOUSLY, every time a
+ * window asks for the offers (`hostOperationOffers`). The list it has to carry is
+ * two disk reads and a read of the renderer's store, none of which can happen
+ * inside a property getter — so the fields are computed asynchronously and this
+ * holds the answer.
+ *
+ * IT IS REFRESHED WHENEVER THE FOUNDRY WINDOW IS OPENED, which is the moment the
+ * contract cares about ("values resolved live at mount time, so the voice list is
+ * current") and a better one than mount: at mount BookForge has not finished
+ * starting and its window has no settings loaded yet, while a press of Edit in
+ * Foundry happens with the app up and the store readable.
+ *
+ * NULL IS A REAL STATE and is drawn as no form at all. The operation then invokes
+ * on the press, with `{}`, and the invoke refuses in the sentence the refresh
+ * failed with — which is the loud version of "we could not ask you". It is never
+ * a form with an empty voice list, because a Start button whose one required
+ * choice is empty can only fail.
+ */
+let narrateFormSnapshot: readonly FoundryHostOpField[] | null = null;
+
+/**
+ * Recompute the narrate form. Called before the Foundry window comes up.
+ *
+ * Never throws at its caller: the reasons this fails (no saved settings, no
+ * installed voice) are the same reasons the INVOKE refuses, and refusing at the
+ * button — where somebody is looking — is where that sentence belongs. Opening
+ * the window is not the act to fail.
+ */
+async function refreshFoundryNarrateForm(): Promise<void> {
+  try {
+    const saved = readNarrateSavedSettings(await readSavedNarrationSettings());
+    narrateFormSnapshot = narrateFormFields(await narrateVoiceOptions(saved.ttsEngine), saved);
+  } catch (err) {
+    narrateFormSnapshot = null;
+    console.error(
+      `[foundry-host] Narrate will ask nothing in Foundry's window: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * NARRATE — pressed on a ledger step, asked about in Foundry's own window, and
+ * queued here.
+ *
+ * ── What this used to do, and why it stopped ────────────────────────────────
+ *
+ * It raised BookForge's main window and pushed `app:show-narration`, because a
+ * narration is a dozen decisions and this app had exactly one surface that asked
+ * them. Owen's ruling of 2026-08-18 replaced that: *"Owen wants the dialog in the
+ * Foundry window, like translate/simplify."* The socket grew `form`, so the
+ * questions now cross as a description, Foundry draws them, and the answers come
+ * back here as `settings`. Nobody is sent to another window to say how a book
+ * should be read.
+ *
+ * ── The three answers, and the dozen that are not asked ─────────────────────
+ *
+ * Voice, device and workers are asked. Engine, language, speed, sampling and the
+ * enhancement pass come from Settings → Pipeline Defaults — the same store the
+ * modal seeds every one of ITS controls from — so the two doors start from the
+ * same answers and neither invents one. A missing saved setting is a refusal
+ * naming the door that sets it (electron/foundry-narrate-form.ts), never a
+ * shipped default quietly standing in.
+ *
+ * ── The run itself is not composed here ─────────────────────────────────────
+ *
+ * `buildNarrationSteps` (shared/queue/narration-run.ts) is the ONE description of
+ * what a narration run consists of, and it is the same one the modal asks. This
+ * function turns its answer into the engine's shape — the first step becomes the
+ * job, the rest are appended to it — which is exactly what `QueueService.addJob`
+ * does on the renderer's side of the same description.
+ *
+ * The lineage is stamped on the JOB, because it is a fact about the run rather
+ * than about one of its steps, and it is what makes the rows appear back on the
+ * tree the press came from.
+ */
+async function invokeFoundryNarrate(
+  projectDir: string,
+  nodeId: string,
+  settings: Record<string, unknown>,
+): Promise<void> {
   if (decodeNodeId(nodeId) !== null) {
     // A node WE minted. Narrate applies to `book` and our nodes all produce
     // audio, so Foundry's own `offeredFrom` never offers it here — reaching this
@@ -964,6 +1172,9 @@ async function invokeFoundryNarrate(projectDir: string, nodeId: string): Promise
       'Narrate was pressed on a row BookForge is making, and a narration reads a book rather '
       + 'than audio. Press it on one of the book\'s own steps.');
   }
+  const answers = readNarrateAnswers(settings);
+  const saved = readNarrateSavedSettings(await readSavedNarrationSettings());
+
   let target: FoundryNarrationTarget;
   try {
     target = await foundryNarrationTarget(projectDir);
@@ -972,16 +1183,123 @@ async function invokeFoundryNarrate(projectDir: string, nodeId: string): Promise
     sayToUser('Nothing was queued', 'This step cannot be narrated yet', message);
     throw err;
   }
-  if (!raiseMainWindow()) {
+
+  const projectId = path.basename(target.bookDir);
+  const got = await manifestService.getManifest(projectId);
+  if (!got.manifest) {
     throw new Error(
-      'BookForge has no main window open, so there is nowhere to ask how this should be narrated.');
+      `${projectId} could not be read (${got.error || 'no reason given'}), so the book's title and `
+      + 'cover — which an audiobook is written with — are not known.');
   }
-  mainWindow!.webContents.send('app:show-narration', {
-    projectDir: target.bookDir,
-    variantId: target.variantId,
-    variantPath: target.variantPath,
-    foundry: { projectDir, parentStepId: nodeId },
+  const meta = got.manifest.metadata;
+
+  /*
+   * The enhancement pass is offered only when its environment is installed, on
+   * the modal's own gate (`rvcInstalled`): a run that named an RVC model with no
+   * rvc-env behind it would fail an hour in, inside the step, at the point the
+   * user has stopped watching.
+   */
+  const rvcInstalled = (await componentManager.listStatus())
+    .some((s) => s.component.id === 'rvc-env' && s.state === 'installed');
+
+  const steps = buildNarrationSteps(
+    {
+      epubPath: target.variantPath,
+      projectDir: target.bookDir,
+      variantId: target.variantId,
+      title: meta.title,
+      author: meta.author,
+      year: meta.year ?? '',
+      coverPath: meta.coverPath ?? '',
+      outputFilename: meta.outputFilename ?? '',
+      // A Foundry project is a book. Articles are never made in that window, and
+      // the manifest says which this is rather than this side assuming.
+      isArticle: got.manifest.projectType === 'article',
+    },
+    {
+      // The modal's one stated assumption, kept: narration reads the book in the
+      // book's own language, which the TTS bridge detects from the file itself.
+      language: 'en',
+      ttsEngine: saved.ttsEngine,
+      voice: answers.voice,
+      device: answers.device,
+      temperature: saved.ttsTemperature,
+      topP: saved.ttsTopP,
+      repetitionPenalty: saved.ttsRepetitionPenalty,
+      speed: saved.ttsSpeed,
+      workers: answers.workers,
+      // `<library>/projects` — what `LibraryService.audiobooksPath()` computes on
+      // the renderer's side, from the same root.
+      outputDir: `${getLibraryRoot().replace(/\\/g, '/')}/projects`,
+      // Both opt-in assembly passes stay OFF, exactly as the modal's own
+      // checkboxes start: neither is a saved setting, and running a de-ring
+      // filter nobody asked for would be a decision made in this function's name.
+      finalDenoise: false,
+      applyDeRing: false,
+      rvc: saved.rvcEnhancementEnabled && rvcInstalled
+        ? {
+            voiceId: saved.rvcEnhancementVoiceId,
+            indexRate: saved.rvcEnhancementIndexRate,
+            protectRate: saved.rvcEnhancementProtectRate,
+            nSemitones: saved.rvcEnhancementNSemitones,
+          }
+        : null,
+      // This door never offers Continue, so it never asks the queue to throw away
+      // a cached session — the same rule the modal states for itself.
+      startFresh: false,
+    },
+    // Read the book aloud and assemble it: the modal's own two checkboxes, both
+    // on by default, because a narration nobody assembles leaves rendered
+    // sentences and no audiobook.
+    { narrate: true, assemble: true },
+  );
+
+  /*
+   * One step per row, exactly as `QueueService.addJob` composes the same plans:
+   * the first becomes the JOB (with the source the user picked) and every later
+   * one is APPENDED to it, hanging off the step before — which is what lets an
+   * assembly be queued behind a narration that has not run yet.
+   *
+   * A row's LABEL is its metadata title and its config carries `bfpPath` and
+   * `metadata` beside the settings — the three lines `buildJobConfig` performs
+   * for every row the renderer queues (queue.service.ts). Said here rather than
+   * in the shared description because it is a fact about how a row reaches a
+   * door, and the two doors have to hand the engine the same thing.
+   */
+  const stepConfig = (step: (typeof steps)[number]): Record<string, unknown> => ({
+    ...step.config,
+    // Absent for an article, whose jobs carry `projectDir` instead — and which
+    // the renderer's own builder does not put on the config either.
+    ...(step.bfpPath === undefined ? {} : { bfpPath: step.bfpPath }),
+    metadata: { ...step.metadata },
   });
+
+  const first = steps[0]!;
+  const job = queueEngine.enqueue({
+    title: first.metadata.title,
+    projectId: target.bookDir,
+    foundry: { projectDir, parentStepId: nodeId },
+    documentPath: target.variantPath,
+    documentLabel: path.basename(target.variantPath),
+    steps: [{
+      type: first.type,
+      label: first.metadata.title,
+      config: stepConfig(first),
+      // The file the user picked, not a file a step will write — which is what
+      // makes this the run's source rather than its first link.
+      sourceRef: { kind: 'epub', path: target.variantPath },
+    }],
+  });
+  let parentStepId = job.steps[0]!.id;
+  for (const step of steps.slice(1)) {
+    const appended = queueEngine.appendStep(job.id, {
+      type: step.type,
+      label: step.metadata.title,
+      config: stepConfig(step),
+      parentStepId,
+    });
+    parentStepId = appended.id;
+  }
 }
 
 /**
@@ -1038,7 +1356,14 @@ function narrationStepOf(job: QueueJob): QueueStep {
  * against whichever model sorted first is the fallback this codebase does not
  * write.
  */
-async function invokeFoundryEnhance(_projectDir: string, nodeId: string): Promise<void> {
+async function invokeFoundryEnhance(
+  _projectDir: string,
+  nodeId: string,
+  // Declared and unread: this operation asks nothing, so Foundry hands it the
+  // empty object every formless operation gets. Named rather than omitted so the
+  // three-argument contract is visible at every one of its implementations.
+  _settings: Record<string, unknown>,
+): Promise<void> {
   const { job, step } = foundryChainTarget(nodeId);
   // An enhancement reads a narration's SESSION. The engine's own lineage check
   // would refuse anything else too (`rvc-enhancement` declares
@@ -1097,7 +1422,12 @@ async function invokeFoundryEnhance(_projectDir: string, nodeId: string): Promis
  * omitted rather than defaulted — an assembly that quietly ran a de-ring filter
  * nobody asked for would be a decision made in this function's name.
  */
-async function invokeFoundryAssemble(_projectDir: string, nodeId: string): Promise<void> {
+async function invokeFoundryAssemble(
+  _projectDir: string,
+  nodeId: string,
+  /** Empty: this operation declares no form. See `invokeFoundryEnhance`. */
+  _settings: Record<string, unknown>,
+): Promise<void> {
   const { job, step } = foundryChainTarget(nodeId);
   /*
    * An assembly reads RENDERED SENTENCES — a narration's session, or the
@@ -1153,6 +1483,45 @@ async function invokeFoundryAssemble(_projectDir: string, nodeId: string): Promi
 }
 
 /**
+ * RETRY / DISMISS, pressed on one of our rows that failed.
+ *
+ * ── Why the gesture lives here at all ───────────────────────────────────────
+ *
+ * Before foundry@a32c087 a failed narrate card offered chaining and no way out
+ * of it: the only way to clear a failure the user was looking at was to cross
+ * back to BookForge and press Clear finished, which is the wrong window for the
+ * gesture. Registering this is what draws the two buttons — Foundry asks whether
+ * the callback exists before it draws them, so an unregistered host gets none
+ * rather than a pair that silently does nothing.
+ *
+ * THE DECISION IS `planNodeAction` AND THE DOING IS HERE. The plan is a pure
+ * function of the node id and a queue snapshot (electron/foundry-host-nodes.ts),
+ * which is what makes both refusals and the retry/dismiss asymmetry defensible
+ * from a keeper; this end is two engine calls and a `void`.
+ *
+ * IT IS EXACTLY WHAT THE QUEUE TAB'S OWN BUTTONS DO — `jobs:retry` with a step
+ * and `jobs:remove` with a job (electron/queue-ipc.ts). Not a second
+ * implementation of either: the same engine, the same semantics, including that
+ * a retried step comes back HELD and waits for Start.
+ *
+ * `projectDir` is unread, and honestly so: the node id already names the run and
+ * the step, and re-deriving the project from it would be this side proving
+ * something the id has already said.
+ */
+async function actOnFoundryNode(
+  _projectDir: string,
+  nodeId: string,
+  action: HostNodeAction,
+): Promise<void> {
+  const plan = planNodeAction(nodeId, action, queueEngine.snapshot());
+  if (plan.call === 'retry') {
+    queueEngine.retry({ stepId: plan.stepId });
+    return;
+  }
+  await queueEngine.remove(plan.jobId);
+}
+
+/**
  * The three, as Foundry sees them. Ids are stable across mounts by contract —
  * `host-ops:invoke` names one, so changing an id changes the operation.
  */
@@ -1164,21 +1533,37 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
     // Consumes the book's TEXT, so it is offered from Foundry's own steps and
     // never from a row of ours.
     appliesTo: 'book',
-    invoke: (projectDir, nodeId) => invokeFoundryNarrate(projectDir, nodeId),
+    /*
+     * A GETTER, not a captured array — the same reason `libraryDir` is one at the
+     * mount call. Foundry reads this on every `host-ops:offers`, so a getter is a
+     * form that reflects the last refresh rather than whatever was installed at
+     * startup. `undefined` when there is nothing honest to ask (no saved
+     * settings, no installed voice) means Foundry invokes on the press and the
+     * invoke says why, which is louder than a dialog with an empty picker.
+     */
+    get form(): readonly FoundryHostOpField[] | undefined {
+      return narrateFormSnapshot ?? undefined;
+    },
+    invoke: (projectDir, nodeId, settings) =>
+      invokeFoundryNarrate(projectDir, nodeId, settings),
   },
   {
     id: 'bookforge.enhance',
     label: 'Enhance',
     kind: 'enhance',
     appliesTo: 'audio',
-    invoke: (projectDir, nodeId) => invokeFoundryEnhance(projectDir, nodeId),
+    // No `form`: it asks nothing, so it runs the instant it is pressed — the
+    // compatibility shape every operation had before forms existed.
+    invoke: (projectDir, nodeId, settings) =>
+      invokeFoundryEnhance(projectDir, nodeId, settings),
   },
   {
     id: 'bookforge.assemble',
     label: 'Assemble',
     kind: 'assemble',
     appliesTo: 'audio',
-    invoke: (projectDir, nodeId) => invokeFoundryAssemble(projectDir, nodeId),
+    invoke: (projectDir, nodeId, settings) =>
+      invokeFoundryAssemble(projectDir, nodeId, settings),
   },
 ];
 
@@ -1217,6 +1602,15 @@ function openFoundryWindowAndReconcileOnClose(
   projectDir?: string,
   opts?: { document?: string },
 ): void {
+  /*
+   * The narrate dialog's fields, recomputed now — the moment the contract calls
+   * for ("values resolved live at mount time, so the voice list is current") and
+   * the honest reading of it: this press is when BookForge is up, its window has
+   * its settings loaded, and the voices on disk are the ones the user will be
+   * offered. NOT awaited, because opening the window must not wait behind two
+   * disk reads, and the offers are asked for after the renderer has booted.
+   */
+  void refreshFoundryNarrateForm();
   const created: BrowserWindow[] = [];
   const capture = (_event: unknown, win: BrowserWindow): void => { created.push(win); };
   app.once('browser-window-created', capture);
@@ -11445,6 +11839,11 @@ app.whenReady().then(async () => {
     // swallowing anything, because neither ever rejects.
     onExport: (landing) => { void recordFoundryExportLanding(landing); },
     onImport: (landing) => { void announceFoundryImportLanding(landing); },
+    // Retry / Dismiss on a row of ours that failed. Registering it is what makes
+    // Foundry DRAW the pair — it probes for the callback first — and it is NOT
+    // wrapped for the same reason the operations are not: a rejection is a
+    // sentence that has to reach the button somebody just pressed.
+    onNodeAction: (projectDir, nodeId, action) => actOnFoundryNode(projectDir, nodeId, action),
     // Narrate / Enhance / Assemble, on the provenance tree. NOT wrapped, unlike
     // the two announcements above: an operation is a button the user pressed,
     // and its refusal has to reach the tree that asked.

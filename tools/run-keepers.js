@@ -41,6 +41,7 @@ const SUITES = [
   'test-vlm-convert-attach',
   'test-foundry-host',
   'test-foundry-host-nodes',
+  'test-foundry-narrate-form',
   'test-foundry-landing',
   'test-foundry-adopt',
   'test-legacy-migration',

@@ -26,11 +26,20 @@
  */
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { ComponentService } from '../../../core/services/component.service';
+/*
+ * The built-in Orpheus roster and the two catalog rules moved to `shared/` when
+ * the narrate operation Foundry draws had to offer the same choice out of
+ * BookForge's MAIN process — see that file. This service is still the door this
+ * window asks; what it is no longer is the only place the answer is written.
+ */
+import {
+  ORPHEUS_BUILTIN_VOICES,
+  mergeOrpheusVoices,
+  narrationVoicesFor,
+  type NarrationVoice,
+} from '@shared/tts/narration-voices';
 
-export interface NarrationVoice {
-  readonly value: string;
-  readonly label: string;
-}
+export type { NarrationVoice };
 
 @Injectable({ providedIn: 'root' })
 export class NarrationVoicesService {
@@ -50,16 +59,7 @@ export class NarrationVoicesService {
    * label. Custom models discovered in the models folder are appended by
    * `load()` and marked so they are distinguishable from the built-ins.
    */
-  private readonly orpheus = signal<readonly NarrationVoice[]>([
-    { value: 'leah', label: 'Leah (Female, American)' },
-    { value: 'tara', label: 'Tara (Female, American)' },
-    { value: 'zoe', label: 'Zoe (Female, American)' },
-    { value: 'mia', label: 'Mia (Female, American)' },
-    { value: 'jess', label: 'Jess (Female, American)' },
-    { value: 'zac', label: 'Zac (Male, American)' },
-    { value: 'dan', label: 'Dan (Male, Cockney)' },
-    { value: 'leo', label: 'Leo (Male, American)' },
-  ]);
+  private readonly orpheus = signal<readonly NarrationVoice[]>(ORPHEUS_BUILTIN_VOICES);
 
   /** Done once per app: the machine does not grow voices while a modal is open. */
   private loaded = false;
@@ -67,9 +67,9 @@ export class NarrationVoicesService {
   readonly xttsVoices = computed(() => this.xtts());
   readonly orpheusVoices = computed(() => this.orpheus());
 
-  /** The voices THIS engine can be asked for. */
+  /** The voices THIS engine can be asked for. The shared rule, over live lists. */
   voicesFor(engine: string): readonly NarrationVoice[] {
-    return engine === 'orpheus' ? this.orpheus() : this.xtts();
+    return narrationVoicesFor(engine, { xtts: this.xtts(), orpheus: this.orpheus() });
   }
 
   /** The installed RVC enhancement models, as the enhancement picker lists them. */
@@ -119,11 +119,9 @@ export class NarrationVoicesService {
       const custom: NarrationVoice[] = res.data.map(
         (m: { id: string; label: string }) => ({ value: m.id, label: `${m.label} (Custom)` }),
       );
-      // A custom folder of the same name IS that voice now, so the built-in it
-      // collides with is dropped rather than listed twice.
-      const customValues = new Set(custom.map((c) => c.value));
-      const builtins = this.orpheus().filter((v) => !customValues.has(v.value));
-      this.orpheus.set([...builtins, ...custom]);
+      // The collision rule (a custom folder of the same name IS that voice) is
+      // the shared one, so main's copy of this list cannot resolve it differently.
+      this.orpheus.set(mergeOrpheusVoices(custom));
     } catch {
       /* keep the built-ins — see the header */
     }
