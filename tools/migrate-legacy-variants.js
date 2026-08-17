@@ -199,51 +199,34 @@ function printProject(r) {
     + `  old root: ${OLD_ROOT}  (absolute paths under it are reported; only the ones whose file `
     + 'is provably here are repointed)\n');
 
-  const skippedByOnly = [];
+  // `only` NARROWS THE SWEEP, it does not filter the printing. Under `--apply`
+  // those are different acts: a run that wrote 385 manifests while showing one
+  // is the opposite of what asking for one project means.
   const { totals, reports } = await migration.sweepLegacyVariants(LIBRARY, {
     apply: APPLY,
     oldLibraryRoot: OLD_ROOT,
-    onProject: (r) => {
-      if (ONLY !== null && r.projectId !== ONLY) { skippedByOnly.push(r.projectId); return; }
-      printProject(r);
-    },
+    ...(ONLY === null ? {} : { only: ONLY }),
+    onProject: printProject,
   });
 
-  if (ONLY !== null && !reports.some((r) => r.projectId === ONLY)) {
+  if (ONLY !== null && reports.length === 0) {
     console.error(`${LIBRARY} has no project called "${ONLY}".`);
     process.exit(2);
   }
 
-  const counted = ONLY === null ? totals : (() => {
-    // `--only` still SWEEPS everything (the module has no per-project door that
-    // skips the read), so the totals it returns describe the library. Narrowing
-    // them to the one project asked about keeps the summary honest about what
-    // was printed.
-    const r = reports.find((x) => x.projectId === ONLY);
-    return {
-      visited: 1,
-      clean: r.outcome === 'clean' ? 1 : 0,
-      migrated: r.outcome === 'migrated' ? 1 : 0,
-      reportedOnly: r.outcome === 'reported-only' ? 1 : 0,
-      unreadable: r.outcome === 'unreadable' ? 1 : 0,
-      variants: r.minted.length,
-    };
-  })();
-
-  const shown = ONLY === null ? reports : reports.filter((r) => r.projectId === ONLY);
-  const clutter = shown.reduce((n, r) => n + r.clutter.length, 0);
-  const absolutes = shown.reduce((n, r) => n + r.absolutes.length, 0);
-  const repointed = shown.reduce((n, r) => n + r.absolutes.filter((a) => a.fixed).length, 0);
-  const repointable = shown.reduce(
+  const clutter = reports.reduce((n, r) => n + r.clutter.length, 0);
+  const absolutes = reports.reduce((n, r) => n + r.absolutes.length, 0);
+  const repointed = reports.reduce((n, r) => n + r.absolutes.filter((a) => a.fixed).length, 0);
+  const repointable = reports.reduce(
     (n, r) => n + r.absolutes.filter((a) => !a.fixed && a.wouldBecome !== null && a.targetExists).length, 0);
 
   console.log('─'.repeat(78));
   console.log(
-    `projects visited ${counted.visited}   clean ${counted.clean}   `
-    + `${APPLY ? 'migrated' : 'to migrate'} ${counted.migrated}   `
-    + `reported-only ${counted.reportedOnly}   unreadable ${counted.unreadable}`);
+    `projects visited ${totals.visited}   clean ${totals.clean}   `
+    + `${APPLY ? 'migrated' : 'to migrate'} ${totals.migrated}   `
+    + `reported-only ${totals.reportedOnly}   unreadable ${totals.unreadable}`);
   console.log(
-    `versions ${APPLY ? 'registered' : 'to register'}: ${counted.variants}`);
+    `versions ${APPLY ? 'registered' : 'to register'}: ${totals.variants}`);
   console.log(
     `absolute paths found: ${absolutes}  `
     + `(${APPLY ? `${repointed} repointed` : `${repointable} would be repointed`}, `

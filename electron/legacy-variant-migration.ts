@@ -778,17 +778,27 @@ export async function sweepLegacyVariants(
   opts: {
     apply: boolean;
     oldLibraryRoot: string;
+    /**
+     * ONE project, by id — a real narrowing of the sweep and not a filter on its
+     * printing. The two are not the same thing under `--apply`: a run that swept
+     * 385 projects while showing one would have written 384 manifests nobody
+     * looked at, which is the opposite of what asking for one project means.
+     */
+    only?: string;
     onProject?: (report: ProjectVariantReport) => void;
   },
 ): Promise<{ totals: LegacySweepTotals; reports: ProjectVariantReport[] }> {
   manifestService.setLibraryBasePath(libraryRoot);
+
+  const dirs = (await listProjectDirs(libraryRoot))
+    .filter((d) => opts.only === undefined || path.basename(d) === opts.only);
 
   const totals: LegacySweepTotals = {
     visited: 0, clean: 0, migrated: 0, reportedOnly: 0, unreadable: 0, variants: 0,
   };
   const reports: ProjectVariantReport[] = [];
 
-  for (const projectDir of await listProjectDirs(libraryRoot)) {
+  for (const projectDir of dirs) {
     let report: ProjectVariantReport;
     try {
       report = await migrateProjectVariants(projectDir, {

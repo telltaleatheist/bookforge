@@ -106,8 +106,8 @@ function makeLibrary() {
     bytes: (projectId) => fs.readFileSync(
       path.join(library, 'projects', projectId, 'manifest.json')),
     variants: (projectId) => manifestService.getVariants(api.read(projectId)).variants,
-    sweep: (apply = false) => migration.sweepLegacyVariants(library, {
-      apply, oldLibraryRoot: OLD_ROOT,
+    sweep: (apply = false, only) => migration.sweepLegacyVariants(library, {
+      apply, oldLibraryRoot: OLD_ROOT, ...(only === undefined ? {} : { only }),
     }),
     one: (projectId, apply = false) => migration.migrateProjectVariants(
       path.join(library, 'projects', projectId),
@@ -783,6 +783,27 @@ test('the totals account for every project visited', run(async (lib) => {
   assert.strictEqual(totals.clean, 1);
   assert.strictEqual(totals.unreadable, 1);
   assert.strictEqual(totals.migrated, 2);
+}));
+
+test('`only` NARROWS the sweep — the others are not even read, let alone written',
+  run(async (lib) => {
+    lib.project(GEN1, bareManifest(GEN1), GEN1_FILES);
+    lib.project(GEN2, bareManifest(GEN2), GEN2_FILES);
+    const untouched = lib.bytes(GEN2);
+    const { totals, reports } = await lib.sweep(true, GEN1);
+    assert.strictEqual(totals.visited, 1);
+    assert.deepStrictEqual(reports.map((r) => r.projectId), [GEN1]);
+    assert.deepStrictEqual(lib.bytes(GEN2), untouched,
+      'asking for one project must not write the other 384');
+  }));
+
+test('`only` naming nothing sweeps nothing rather than everything', run(async (lib) => {
+  lib.project(GEN1, bareManifest(GEN1), GEN1_FILES);
+  const before = lib.bytes(GEN1);
+  const { totals, reports } = await lib.sweep(true, 'No_Such_Project');
+  assert.strictEqual(totals.visited, 0);
+  assert.deepStrictEqual(reports, []);
+  assert.deepStrictEqual(lib.bytes(GEN1), before);
 }));
 
 test('a project directory outside the swept library is refused, never read', run(async (lib) => {
