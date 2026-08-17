@@ -35,6 +35,7 @@ import { NoticeService } from '../../core/services/notice.service';
 import { looseMatch } from '../../shared/search';
 import { samePath } from '@shared/document/same-path';
 import { isBookPath } from '@shared/document/book-path';
+import type { ShowNarrationRequest } from '@shared/queue/engine-types';
 
 /**
  * StudioComponent - Unified workspace for books and articles
@@ -360,6 +361,8 @@ import { isBookPath } from '@shared/document/book-path';
                       [projectDir]="selectedItem()?.projectDir || ''"
                       [item]="selectedItem()"
                       [refreshTrigger]="filesRefreshTrigger()"
+                      [narrateRequest]="versionsNarrateRequest()"
+                      (narrateHandled)="onVersionsNarrateHandled()"
                       (open)="openInFoundry($event)"
                       (exportDoc)="exportDocument($event)"
                       (exportAudio)="exportM4b($event)"
@@ -1740,11 +1743,27 @@ export class StudioComponent implements OnInit, OnDestroy {
    */
   private readonly narrationHandoffEffect = effect(() => {
     if (!this.itemsLoaded()) return;
-    const dir = this.narrationHandoff.pending();
-    if (dir === null) return;
+    const request = this.narrationHandoff.pending();
+    if (request === null) return;
     this.narrationHandoff.take();
-    void this.openNarrationFor(dir);
+    void this.openNarrationFor(request);
   }, { allowSignalWrites: true });
+
+  /**
+   * The narration hand-off, handed DOWN to the versions page.
+   *
+   * A signal rather than a call because `app-studio-versions` is created by the
+   * template when a book is selected — at the moment the hand-off arrives it may
+   * not exist yet, and it re-reads its rows asynchronously even once it does. So
+   * the request is put here and the versions page consumes it when its rows are
+   * in. Cleared on consumption (`narrateHandled`), so re-narrating the same
+   * version a second time is a change and fires again.
+   */
+  readonly versionsNarrateRequest = signal<ShowNarrationRequest | null>(null);
+
+  onVersionsNarrateHandled(): void {
+    this.versionsNarrateRequest.set(null);
+  }
 
   /**
    * A book was asked for from outside Studio — the queue's completion toast.
@@ -2239,43 +2258,51 @@ export class StudioComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * The picker handed a finished book over and the shell brought us here.
+   * Narrate was pressed on a book's provenance tree, and the shell brought us
+   * here.
    *
    * Selecting the project is the whole reason this is not just a route: the
-   * Process tab shows the wizard for the SELECTED book, so a hand-off that only
-   * switched tabs would narrate whichever book happened to be open.
+   * versions page draws the SELECTED book, so a hand-off that only switched tabs
+   * would open the dialog over whichever book happened to be open.
    *
-   * The list is re-read FIRST, every time. The book the picker is handing over
-   * was written moments ago, so whatever this window is holding predates it: the
-   * Process tab shows the wizard only when the project has a document
-   * (`currentEpubPath`), and a record read before the EPUB existed is exactly
-   * how a freshly built book arrives reading as a book with nothing to narrate.
-   * It also makes the missing-project message a measurement rather than a
-   * report about a list that was already old.
+   * IT LANDS ON THE VERSIONS PAGE, not on the Process wizard, because the
+   * narration DIALOG is what the operation promised: main already resolved the
+   * one version to read, and the wizard would ask that question again from the
+   * top. The request is handed down rather than acted on, because the versions
+   * page owns its rows and has to have read them before it can open a dialog
+   * over one — see `versionsNarrateRequest`.
+   *
+   * The list is re-read FIRST, every time. The book being handed over may have
+   * gained its exported EPUB moments ago, so whatever this window is holding
+   * predates it; it also makes the missing-project message a measurement rather
+   * than a report about a list that was already old.
    */
-  private async openNarrationFor(projectDir: string): Promise<void> {
+  private async openNarrationFor(request: ShowNarrationRequest): Promise<void> {
     await this.studioService.loadAll();
 
     // Archived books are searched too: being archived is not being gone, and a
-    // book the picker had open is one the user is plainly still working on.
-    // Matched with samePath because the two spellings come from different hands
-    // — main resolves with backslashes on Windows, the studio list joins with
-    // forward slashes — and two spellings of one directory are not two books.
+    // book somebody just pressed Narrate on is one the user is plainly still
+    // working on. Matched with samePath because the two spellings come from
+    // different hands — main resolves with backslashes on Windows, the studio
+    // list joins with forward slashes — and two spellings of one directory are
+    // not two books.
     const item = [...this.studioService.books(), ...this.studioService.archived()]
-      .find(b => !!b.projectDir && samePath(b.projectDir, projectDir));
+      .find(b => !!b.projectDir && samePath(b.projectDir, request.projectDir));
 
     if (!item) {
       void this.electronService.showMessageDialog({
         title: 'Could not open narration',
-        message: `BookForge has no project at ${projectDir}, so there is no book to narrate. `
-          + 'It may have been deleted or moved since the editor window was opened.',
+        message: `BookForge has no project at ${request.projectDir}, so there is no book to `
+          + 'narrate. It may have been deleted or moved since the Foundry window was opened.',
         type: 'error',
       });
       return;
     }
 
     this.openInWorkspace(item);
-    this.goToNarration();
+    this.mainTab.set('files');
+    this.versionsPanel.set('none');
+    this.versionsNarrateRequest.set(request);
   }
 
   /** Versions "Continue": open the Processing tab AND tell the wizard to enter Continue

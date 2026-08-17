@@ -40,6 +40,7 @@ const SUITES = [
   'test-vlm-convert-plan',
   'test-vlm-convert-attach',
   'test-foundry-host',
+  'test-foundry-host-nodes',
   'test-foundry-landing',
   'test-legacy-migration',
   'test-ipc-collision',

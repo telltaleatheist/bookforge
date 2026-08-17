@@ -19,6 +19,7 @@ import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-ta
 import type { PassDiffEntry } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
 import { samePath } from '@shared/document/same-path';
+import type { FoundryJobLineage, ShowNarrationRequest } from '@shared/queue/engine-types';
 import { latestPassByKind } from '@shared/document/version-family';
 import { StudioConvertModalComponent } from '../studio-convert-modal/studio-convert-modal.component';
 import { BookConversionService, type ConversionSource } from '../../services/book-conversion.service';
@@ -769,6 +770,7 @@ const AUDIO_EXTS = new Set([
         [coverPath]="item()?.coverPath || ''"
         [outputFilename]="item()?.outputFilename || ''"
         [isArticle]="item()?.type === 'article'"
+        [foundry]="file.foundry"
         (cancelled)="closeNarrationModal()"
         (moreOptions)="openProcessPage()"
         (queued)="onNarrationQueued()"
@@ -1179,6 +1181,16 @@ export class StudioVersionsComponent {
   readonly projectDir = input<string>('');
   readonly item = input<StudioItem | null>(null);
   readonly refreshTrigger = input<number>(0);
+  /**
+   * Narrate was pressed on this book's provenance tree in the Foundry window,
+   * and main resolved which version it means.
+   *
+   * HANDED DOWN rather than acted on by Studio, because the dialog opens over a
+   * ROW and the rows are this component's — and they load asynchronously, so a
+   * request can arrive before there is anything to open it over. The effect
+   * below waits for the row and then does exactly what the Process button does.
+   */
+  readonly narrateRequest = input<ShowNarrationRequest | null>(null);
 
   readonly open = output<string>();         // abs path of the row's file -> open it in Foundry
   readonly exportDoc = output<string>();    // version path -> export EPUB/PDF
@@ -1206,6 +1218,8 @@ export class StudioVersionsComponent {
   readonly changed = output<void>();        // after delete/edit -> tell Studio to refresh
   readonly compareActive = output<boolean>(); // Studio goes full-height while comparing
   readonly generateAnalysis = output<StudioAnalysisTarget>(); // opens the analysis modal, locked to this source
+  /** The narrate request was consumed — Studio clears it so the next one fires. */
+  readonly narrateHandled = output<void>();
 
   /**
    * The content-analysis report row, when this book has one.
@@ -1467,7 +1481,56 @@ export class StudioVersionsComponent {
    * it. no ambiguity, no confusion" — the row that was pressed is the only thing
    * that knows which version this is, so it says so and nothing looks it up.
    */
-  readonly narrationFile = signal<{ path: string; variantId: string } | null>(null);
+  readonly narrationFile = signal<{
+    path: string;
+    variantId: string;
+    /**
+     * The Foundry step this run was ordered from, when it was — carried onto the
+     * job so the rows BookForge pushes back land under that step. Null for the
+     * ordinary press, which belongs on nobody's tree.
+     */
+    foundry: FoundryJobLineage | null;
+  } | null>(null);
+
+  /**
+   * A Narrate from Foundry's tree, opened over the row it names.
+   *
+   * WAITS FOR THE ROWS OF THIS BOOK, in two parts, because they are two facts.
+   * `loadedForProjectDir` says the rows on screen belong to the requested
+   * project — without it the effect would run against the PREVIOUSLY selected
+   * book's rows in the window before the read lands — and `loading` says the
+   * read has finished, because that flag is raised in the same tick the project
+   * is claimed and the list is empty until it drops. Gating on "the list is not
+   * empty" instead would stall forever on a book that genuinely has none.
+   *
+   * Then it runs the same `processVariant` the Process button runs — the file is
+   * proved, the extension is checked, and the dialog opens over one row.
+   *
+   * A version id nothing matches is a REFUSAL and not a silent return: main
+   * resolved that id out of this book's own manifest a moment ago, so a row that
+   * is not here means the version was deleted in between, and the user pressed a
+   * button that would otherwise appear to do nothing.
+   */
+  private readonly narrateRequestEffect = effect(() => {
+    const request = this.narrateRequest();
+    if (request === null) return;
+    const loadedFor = this.loadedForProjectDir();
+    if (loadedFor === null || !samePath(loadedFor, request.projectDir)) return;
+    if (this.loading()) return;
+    const row = this.variants().find(v => v.id === request.variantId);
+    this.narrateHandled.emit();
+    if (!row) {
+      void this.electron.showMessageDialog({
+        title: 'Could not open narration',
+        message: `This book no longer has the version Foundry’s step exported `
+          + `(${request.variantPath}). It may have been deleted since. Export the book from `
+          + 'Foundry again, or press Process on the version you want read.',
+        type: 'error',
+      });
+      return;
+    }
+    void this.processVariant(row, request.foundry);
+  }, { allowSignalWrites: true });
 
   /**
    * Can this version be narrated? An EPUB, and only an EPUB.
@@ -1496,7 +1559,10 @@ export class StudioVersionsComponent {
    * Nothing is cut. Wave 1 (2026-08-16) retired the narration copy: a version's
    * EPUB is final, and it is what gets read.
    */
-  async processVariant(v: ResolvedProjectVariant): Promise<void> {
+  async processVariant(
+    v: ResolvedProjectVariant,
+    foundry: FoundryJobLineage | null = null,
+  ): Promise<void> {
     const abs = await this.variantFile(v, 'narrate this version');
     if (abs === null) return;
     if (!this.canNarrateVariant(v)) {
@@ -1505,7 +1571,7 @@ export class StudioVersionsComponent {
         + '(it is a .' + this.variantExtension(v) + '). Only EPUB versions carry that button.');
       return;
     }
-    this.narrationFile.set({ path: abs, variantId: v.id });
+    this.narrationFile.set({ path: abs, variantId: v.id, foundry });
   }
 
   closeNarrationModal(): void {

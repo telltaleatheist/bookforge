@@ -316,10 +316,79 @@ export interface QueueStep {
   outputPath?: string;
 }
 
+/**
+ * A run FOUNDRY ORDERED — which project, and which step of its ledger.
+ *
+ * ── Why the queue carries a fact about another application ──────────────────
+ *
+ * Because it is the only place the thread survives. The user pressed Narrate on
+ * a step of a book's provenance tree; that press became a job here, and the rows
+ * BookForge pushes back onto that tree (electron/foundry-host-nodes.ts) have to
+ * name the step they hang under. Nothing else in the chain remembers it: the
+ * modal closes, the window may close, and the run outlives both.
+ *
+ * BOTH FIELDS ARE FOUNDRY'S OWN SPELLING, recorded verbatim and never derived.
+ * `projectDir` is the folder Foundry handed to `invoke` (its own path, its own
+ * casing — Foundry folds the key on its side and re-spelling it here would be
+ * this side guessing at that fold), and `parentStepId` is a LEDGER step id from
+ * that project. Neither means anything to the engine, which is the point: it
+ * stores them and hands them back.
+ *
+ * ABSENT IS THE ORDINARY STATE. A narration started from the versions page has
+ * no foundry lineage and appears on no tree.
+ */
+export interface FoundryJobLineage {
+  /** The Foundry project folder, absolute, exactly as the invoke named it. */
+  projectDir: string;
+  /** The ledger step the act was ordered from. Foundry's id, never ours. */
+  parentStepId: string;
+}
+
+/**
+ * "Open the narration dialog on THIS version" — main's push to the main window.
+ *
+ * Sent by the Narrate host operation (electron/main.ts) after it has resolved
+ * the two things a press on Foundry's tree knows and the dialog cannot look up:
+ * which book of this library the Foundry project is, and which exported EPUB of
+ * it to read. Everything else the dialog asks for itself.
+ *
+ * `variantPath` travels beside `variantId` because the dialog is `required` on
+ * both — Owen's rule that the run's document is the one the press was on, never
+ * one looked up on the far side.
+ */
+export interface ShowNarrationRequest {
+  /** The BookForge project directory, absolute. */
+  projectDir: string;
+  /** The version to narrate, and its file. */
+  variantId: string;
+  variantPath: string;
+  /** Carried onto the job the dialog queues. See {@link FoundryJobLineage}. */
+  foundry: FoundryJobLineage;
+}
+
+/**
+ * Something the queue has to say about work it did NOT accept.
+ *
+ * `StepFinished` is news about a step that ran; this is news about a run that
+ * never became one. The tone is what decides whether it can time out: a failure
+ * toast does not auto-dismiss, because news the user was not looking at must not
+ * be able to disappear unseen.
+ */
+export interface QueueNotice {
+  tone: 'success' | 'failure';
+  /** The small uppercase line — "Nothing was queued". */
+  kicker: string;
+  title: string;
+  /** The sentence saying what happened and what to do about it. */
+  message: string;
+}
+
 export interface QueueJob {
   id: string;
   /** The project directory this run is about. Absent for runs about no project. */
   projectId?: string;
+  /** Set when Foundry ordered this run. See {@link FoundryJobLineage}. */
+  foundry?: FoundryJobLineage;
   title: string;
   /** The document the run is about, as the user knows it. */
   documentPath?: string;

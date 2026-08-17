@@ -453,6 +453,46 @@ test('the queue survives a restart, and a step that was running comes back inter
     'lineage survives the round trip');
 });
 
+test('a run Foundry ordered remembers which step it was ordered from, across a restart', async () => {
+  /*
+   * The lineage is the ONLY thread back to the provenance tree: the modal that
+   * captured it is long closed, and the rows BookForge pushes name a ledger step
+   * it has no other way to learn. A nine-hour narration outlives the app it was
+   * started in, so a field that did not survive the round trip would be a run
+   * that quietly stopped appearing on the tree it was started from.
+   */
+  const tts = fakeModule('tts-conversion', { produces: 'audio-session' });
+  const dir = await fresh('foundry-lineage', [tts]);
+  const lineage = { projectDir: 'E:\\lib\\foundry\\projects\\Twain-a1b2', parentStepId: 'step-7f3a' };
+  engine.enqueue({
+    title: 'Roughing It',
+    projectId: '/library/projects/twain',
+    foundry: lineage,
+    steps: [{
+      type: 'tts-conversion', label: 'Narrate', config: {},
+      sourceRef: { kind: 'epub', path: '/a.epub' },
+    }],
+  });
+  // A run with NO lineage must not acquire one — absence is the gate.
+  engine.enqueue({
+    title: 'Ordinary',
+    steps: [{
+      type: 'tts-conversion', label: 'Narrate', config: {},
+      sourceRef: { kind: 'epub', path: '/b.epub' },
+    }],
+  });
+  await engine.persist();
+
+  engine.clearStepModules();
+  engine.registerStepModule(fakeModule('tts-conversion', { produces: 'audio-session' }));
+  await engine.configure({ stateDir: dir });
+
+  const back = engine.snapshot().jobs;
+  assert.deepStrictEqual(back[0].foundry, lineage, 'verbatim, including its own spelling');
+  assert.strictEqual(back[1].foundry, undefined,
+    'a run nobody ordered from a tree stays off every tree');
+});
+
 test('a persisted step of a type this build does not have becomes a failed row that says so', async () => {
   const tts = fakeModule('tts-conversion', { produces: 'audio-session' });
   const dir = await fresh('unknown-type', [tts]);

@@ -43,6 +43,7 @@ import {
 import type {
   ArtifactRef,
   QueueJob as EngineJob,
+  QueueNotice,
   QueueSnapshot,
   QueueStep as EngineStep,
   StepStatus,
@@ -107,6 +108,8 @@ interface QueueBridge {
   updateStepConfig(stepId: string, patch: Record<string, unknown>): Promise<{ success: boolean; error?: string }>;
   onChanged(cb: (snapshot: QueueSnapshot) => void): () => void;
   onStepFinished(cb: (event: StepFinishedEvent) => void): () => void;
+  /** News about a run that never became one — see `QueueNotice`. */
+  onNotice(cb: (notice: QueueNotice) => void): () => void;
 }
 
 interface StepFinishedEvent {
@@ -470,6 +473,9 @@ export class QueueService {
         const created = await bridge.enqueue({
           title: master.metadata?.title ?? label,
           projectId: master.bfpPath ?? master.projectDir ?? request.bfpPath ?? request.projectDir,
+          // The MASTER's, never this step's: the lineage is a fact about the run,
+          // and the steps that follow are appended to this same job.
+          ...(master.foundry === undefined ? {} : { foundry: master.foundry }),
           documentPath: master.epubPath ?? request.epubPath,
           documentLabel: (master.epubPath ?? request.epubPath)
             ? jobFileLabel((master.epubPath ?? request.epubPath)!) : undefined,
@@ -514,6 +520,7 @@ export class QueueService {
     const created = await bridge.enqueue({
       title: label,
       projectId: request.bfpPath ?? request.projectDir,
+      ...(request.foundry === undefined ? {} : { foundry: request.foundry }),
       documentPath: request.epubPath,
       documentLabel: request.epubPath ? jobFileLabel(request.epubPath) : undefined,
       steps: [{ type: request.type, label, config, sourceRef } as StepSpec],

@@ -49,6 +49,7 @@ import {
 } from '../../../queue/jobs/narration-run';
 import { engineCaps, selectableEngines } from '../../../language-learning/models/tts-engine-registry';
 import type { TTSEngine } from '../../../language-learning/models/language-learning.types';
+import type { FoundryJobLineage } from '@shared/queue/engine-types';
 
 /** The basename of a path, for showing WHICH file without the whole path. */
 function fileName(fullPath: string): string {
@@ -324,6 +325,16 @@ export class NarrationModalComponent {
   readonly coverPath = input<string>('');
   readonly outputFilename = input<string>('');
   readonly isArticle = input<boolean>(false);
+  /**
+   * The Foundry ledger step this narration was ordered from, when it was.
+   *
+   * Null for every ordinary press. It is not a setting and this dialog never
+   * shows it — it is carried through to the queued run because that run is the
+   * only thing that survives to push rows back onto the tree the press came
+   * from (see `FoundryJobLineage`), and this dialog is the one point the two
+   * halves of that hand-off meet.
+   */
+  readonly foundry = input<FoundryJobLineage | null>(null);
 
   readonly cancelled = output<void>();
   /** Rows are in the queue. The host closes and tells the user where to watch. */
@@ -541,6 +552,10 @@ export class NarrationModalComponent {
         metadata: { title: book.title, author: book.author },
         config: { type: 'audiobook' },
         workflowId,
+        // On the MASTER, because the composition's first step is what becomes
+        // the engine's job — every later step is appended to it, and the lineage
+        // is a fact about the run rather than about one of its steps.
+        ...(this.foundry() === null ? {} : { foundry: this.foundry()! }),
       });
       for (const job of jobs) {
         await this.queue.addJob({ ...job, workflowId, parentJobId: master.id });

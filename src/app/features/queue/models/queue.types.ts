@@ -4,6 +4,7 @@
 
 import { AIProvider } from '../../../core/models/ai-config.types';
 import type { PassJobConfig } from '@shared/processing/pass-types';
+import type { FoundryJobLineage } from '@shared/queue/engine-types';
 
 /**
  * Minimum span, in seconds, before a chunk-rate window is reported at all.
@@ -855,4 +856,13 @@ export interface CreateJobRequest {
   // Job grouping for multi-step workflows
   parentJobId?: string;
   workflowId?: string;
+  /**
+   * Foundry ordered this run — which project, and which ledger step.
+   *
+   * Set only on the `type: 'audiobook'` MASTER of a composition (or on a
+   * standalone request), because it is a fact about the run: the engine records
+   * it on the JOB, and every step appended afterwards belongs to that same job.
+   * See {@link FoundryJobLineage}.
+   */
+  foundry?: FoundryJobLineage;
 }
