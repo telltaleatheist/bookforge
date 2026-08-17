@@ -58,6 +58,15 @@ import { addVariant, importAudiobookProject, promoteVariantToArchive, saveVarian
 // The export-landing act, shared with the tray sweep that files the exports no
 // announcement ever caught — see electron/foundry-export-sweep.ts.
 import { FOUNDRY_EXPORT_KINDS, fileFoundryExportAsVersion, sweepFoundryExportTrays } from './foundry-export-sweep';
+// The other half of the host-operations socket: the ids that come back on an
+// invoke, and the mapping that turns the queue into the rows Foundry draws.
+import {
+  decodeNodeId,
+  isChainable,
+  publishHostNodes,
+  type HostNode,
+} from './foundry-host-nodes';
+import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
@@ -151,6 +160,30 @@ interface FoundryImportLanding {
   readonly kind: string;
 }
 
+/**
+ * ONE ACT THIS APP CONTRIBUTES to Foundry's provenance tree.
+ *
+ * Declared here for the reason everything else in this block is: the subtree is
+ * built output and its types are not in our program. This is `HostOperation`
+ * from foundry-app/electron/host-ops.ts — the four fields the tree draws, plus
+ * the doing, which never crosses the preload because it is a function in this
+ * process.
+ *
+ * `invoke` MAY REJECT AND ITS REJECTION IS NOT SWALLOWED. Unlike `onExport`,
+ * this is a button the user just pressed: the rejection travels back over
+ * `host-ops:invoke` and the tree says our sentence where the button was. A
+ * button that silently does nothing is the one outcome the socket must not have,
+ * which is why every refusal below is thrown rather than logged.
+ */
+interface FoundryHostOperation {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: 'narrate' | 'enhance' | 'assemble';
+  /** What a node must PRODUCE for this to be offered from it: 'book' | 'audio'. */
+  readonly appliesTo: 'book' | 'audio';
+  invoke(projectDir: string, nodeId: string): void | Promise<void>;
+}
+
 interface FoundryHostRecord {
   /**
    * Where Foundry's projects/ root lives. Read LIVE by Foundry on every settings
@@ -160,6 +193,11 @@ interface FoundryHostRecord {
   readonly libraryDir: string;
   onExport(landing: FoundryExportLanding): void;
   onImport?(landing: FoundryImportLanding): void;
+  /**
+   * The acts this host contributes to the tree. Recorded once, at mount;
+   * `mountFoundry` runs exactly once, so a second registration is unreachable.
+   */
+  readonly hostOperations?: readonly FoundryHostOperation[];
 }
 
 interface FoundryMountModule {
@@ -189,6 +227,19 @@ interface FoundryMountModule {
    * between enqueue and Start tears its output exactly as a move mid-run would.
    */
   foundryBusy(): { windowOpen: boolean; jobsPending: number };
+  /**
+   * WHAT THIS HOST IS MAKING in a project, as of now — the push half of the
+   * host-operations socket.
+   *
+   * THE WHOLE SET, EVERY TIME, on `queue:changed`'s precedent: a diff protocol
+   * between two halves is a thing that goes wrong silently, and an absent node
+   * is a gone node, which is what makes removal free. An EMPTY list is a real
+   * statement ("nothing of mine is here any more") and is kept as one.
+   *
+   * Nothing pushed here is ever written to Foundry's ledger. A host node is a
+   * display row with the lifetime of OUR queue — see electron/foundry-host-nodes.ts.
+   */
+  setHostNodes(projectDir: string, nodes: readonly HostNode[]): void;
 }
 
 /**
@@ -848,6 +899,388 @@ async function reconcileFoundryExportTrays(occasion: string): Promise<void> {
       + 'that never landed are still only in their trays.');
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE HOST-OPERATIONS SOCKET — audio work, offered on Foundry's own tree
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Owen ruled that narrate / enhance / assemble belong ON the provenance tree
+// rather than on a page beside it, because "translate this, then narrate the
+// translation" is one pipeline and the tree is where a person is standing when
+// they decide it. Foundry does none of that work and knows nothing about it: it
+// takes three declarations at mount and draws whatever rows we push.
+//
+// TWO DIRECTIONS, AND THEY MEET AT THE QUEUE. Foundry calls `invoke` when a
+// button is pressed; that turns into a job (or a step appended to one) carrying
+// `foundry` lineage, and electron/foundry-host-nodes.ts turns every such job
+// back into the rows Foundry draws. Nothing else joins the two — there is no
+// registry to keep in sync, because the node id IS the (job, step) pair.
+
+/**
+ * Say something to the user about work that could not be started.
+ *
+ * ── Why this door exists at all ─────────────────────────────────────────────
+ *
+ * A host operation is a button in ANOTHER WINDOW. Its refusals travel back over
+ * `host-ops:invoke` and Foundry says them where the button was, which is right
+ * for "this cannot be done" — but the refusals below are about BookForge's own
+ * library ("export it first", "two versions look alike"), and the place to act
+ * on them is the BookForge window. So the sentence is said in BOTH: thrown, so
+ * the tree says it, and pushed here, so it is still on screen when the user
+ * comes back over.
+ *
+ * `jobs:notice` rather than a new family: this is the queue talking about a run
+ * it did not accept, and `jobs:` is the family the queue already owns (`queue:`
+ * is the hosted Foundry's — see electron/queue-ipc.ts). Tone 'failure' because
+ * ToastService does not auto-dismiss those, and news the user was not looking at
+ * must not be able to disappear unseen.
+ */
+function sayToUser(kicker: string, title: string, message: string): void {
+  broadcastToAllWindows('jobs:notice', { tone: 'failure', kicker, title, message });
+}
+
+/** Bring the main window forward — the raise every hand-off into it performs. */
+function raiseMainWindow(): boolean {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  return true;
+}
+
+/**
+ * THE BOOK a Foundry project belongs to, and the EPUB it has exported.
+ *
+ * ── What can be known, and what deliberately cannot ─────────────────────────
+ *
+ * The mapping from project to book is exact: a manifest records the project KEY
+ * and a key belongs to one book (`foundryProjectClaims`). What is NOT exact — and
+ * this is a gap in the socket rather than something to paper over here — is WHICH
+ * LEDGER STEP an export was made from. Foundry's `ExportLanding` carries "no
+ * bytes, no step, no ledger" by its own written design, an export is not a ledger
+ * action at all (`StepAction` has no `export` member), and `FoundryVariantSource`
+ * therefore records `projectKey` + `fileName` and nothing about a step.
+ *
+ * So this answers the question that CAN be answered — "what has this project
+ * exported as a book?" — and refuses by name when the answer is not unique. In
+ * the ordinary case it is: Foundry rewrites the same file in `final/` on every
+ * re-export and a landing that matches on key+name replaces that version in
+ * place, so a project the user has exported forty times still has exactly one
+ * EPUB version. Two means they exported under two names, and picking one of them
+ * because the press came from a particular step would be this side inventing the
+ * very linkage that does not exist.
+ */
+interface FoundryNarrationTarget {
+  /** The BookForge project directory, absolute. */
+  bookDir: string;
+  /** The exported EPUB's variant id, and its file. */
+  variantId: string;
+  variantPath: string;
+}
+
+async function foundryNarrationTarget(projectDir: string): Promise<FoundryNarrationTarget> {
+  const key = foundryLandingKey(projectDir);
+  const claims = await foundryProjectClaims();
+  const matches = claims.filter((c) => c.key !== null && c.key === key);
+  if (matches.length === 0) {
+    throw new Error(
+      `No book in this library is the Foundry project "${key}", so BookForge does not know what `
+      + 'to narrate. Open the book in Foundry once from its page in BookForge, so the two are '
+      + 'joined, and try again.');
+  }
+  if (matches.length > 1) {
+    throw new Error(
+      `${matches.length} books claim Foundry project "${key}" — `
+      + `${matches.map((m) => path.basename(m.dir)).join(', ')}. A project belongs to exactly one `
+      + 'book, so nothing was started; fix the duplicate mapping first.');
+  }
+  const bookDir = matches[0]!.dir;
+
+  const projectId = path.basename(bookDir);
+  const got = await manifestService.getManifest(projectId);
+  if (!got.manifest) {
+    throw new Error(
+      `${projectId} could not be read (${got.error || 'no reason given'}), so its versions could `
+      + 'not be looked at.');
+  }
+  /*
+   * EPUB EXPORTS OF THIS PROJECT, and only those. `foundrySource` is present
+   * exactly on versions an export landed (and is cleared when one is promoted to
+   * the user's own file), so this is the set of files Foundry made — never the
+   * book's own archive copy, which Foundry never wrote and which narrating here
+   * would silently substitute for the edit the user just made.
+   */
+  const exported = manifestService.getVariants(got.manifest).variants.filter((v) =>
+    v.foundrySource?.projectKey === key && v.format.toLowerCase() === 'epub');
+
+  if (exported.length === 0) {
+    /*
+     * NO AUTO-EXPORT, and that is a decision rather than an omission. Exporting
+     * is Foundry's act with Foundry's dialog choices — which format, from which
+     * step, under what name — and a host that ran one on the user's behalf would
+     * be guessing every one of them. The user is one button away from making the
+     * real choice.
+     */
+    throw new Error(
+      `${projectId} has no exported EPUB from this project, and narration reads a book file. `
+      + 'Export the book from Foundry first (it lands on the version list as a version), then '
+      + 'press Narrate again.');
+  }
+  if (exported.length > 1) {
+    throw new Error(
+      `This Foundry project has exported ${exported.length} EPUBs — `
+      + `${exported.map((v) => v.foundrySource!.fileName).join(', ')} — and nothing records which `
+      + 'step each came from, so BookForge cannot tell which one this is. Start the narration '
+      + `from the version you want on ${projectId}'s versions page.`);
+  }
+
+  const variant = exported[0]!;
+  return {
+    bookDir,
+    variantId: variant.id,
+    variantPath: normalizeFsPath(path.join(bookDir, ...variant.path.split('/'))),
+  };
+}
+
+/**
+ * NARRATE — pressed on a ledger step, and it opens a modal rather than running.
+ *
+ * Owen's modal contract: a narration is a dozen decisions (engine, voice, speed,
+ * workers, whether to enhance, whether to assemble) and this app has exactly one
+ * surface that asks them. An operation that queued a run with defaults would be
+ * a second, invisible set of answers to questions the user has a dialog for. So
+ * the invoke resolves the BOOK and the FILE — the two things a press on a tree
+ * knows and the modal cannot look up — raises the window, and hands over.
+ *
+ * The lineage rides along and comes back on the enqueue (`JobSpec.foundry`),
+ * which is what makes the rows appear on the tree the press came from.
+ */
+async function invokeFoundryNarrate(projectDir: string, nodeId: string): Promise<void> {
+  if (decodeNodeId(nodeId) !== null) {
+    // A node WE minted. Narrate applies to `book` and our nodes all produce
+    // audio, so Foundry's own `offeredFrom` never offers it here — reaching this
+    // means the two sides disagree about the offers, which is worth saying.
+    throw new Error(
+      'Narrate was pressed on a row BookForge is making, and a narration reads a book rather '
+      + 'than audio. Press it on one of the book\'s own steps.');
+  }
+  let target: FoundryNarrationTarget;
+  try {
+    target = await foundryNarrationTarget(projectDir);
+  } catch (err) {
+    const message = (err as Error).message;
+    sayToUser('Nothing was queued', 'This step cannot be narrated yet', message);
+    throw err;
+  }
+  if (!raiseMainWindow()) {
+    throw new Error(
+      'BookForge has no main window open, so there is nowhere to ask how this should be narrated.');
+  }
+  mainWindow!.webContents.send('app:show-narration', {
+    projectDir: target.bookDir,
+    variantId: target.variantId,
+    variantPath: target.variantPath,
+    foundry: { projectDir, parentStepId: nodeId },
+  });
+}
+
+/**
+ * The (job, step) a host node id names, proved against the live queue.
+ *
+ * Both refusals below are the same class of thing — a press on a row that has
+ * moved on — and both are said in words rather than left to the engine's own
+ * message about lineage, because the user is looking at a tree and not at a
+ * queue.
+ */
+function foundryChainTarget(nodeId: string): { job: QueueJob; step: QueueStep } {
+  const decoded = decodeNodeId(nodeId);
+  if (decoded === null) {
+    throw new Error(
+      'This can only be added to something BookForge is already making. Press it on the '
+      + 'narration row.');
+  }
+  const job = queueEngine.snapshot().jobs.find((j) => j.id === decoded.jobId);
+  const step = job?.steps.find((s) => s.id === decoded.stepId);
+  if (job === undefined || step === undefined) {
+    throw new Error(
+      'That run is no longer in BookForge\'s queue — it was cleared or removed — so there is '
+      + 'nothing to add this to.');
+  }
+  if (!isChainable(step)) {
+    throw new Error(
+      `${step.label} ${step.status === 'failed' ? 'failed' : 'was cancelled'}, so it will never `
+      + 'produce the audio this would read.');
+  }
+  return { job, step };
+}
+
+/** The narration step a chain hangs off — the one that names the run's settings. */
+function narrationStepOf(job: QueueJob): QueueStep {
+  const narrate = job.steps.find((s) => s.type === 'tts-conversion');
+  if (narrate === undefined) {
+    throw new Error('That run has no narration in it, so there is no audio to work from.');
+  }
+  return narrate;
+}
+
+/**
+ * ENHANCE — and the one operation that has to refuse in this wave.
+ *
+ * A voice-conversion pass is defined by its MODEL, and there is no honest place
+ * to get one from here: `TtsConfig` carries no RVC voice (the narration modal
+ * builds the enhancement as a separate settings object and never writes it onto
+ * the narration's config), the pipeline defaults live in the RENDERER's settings
+ * store, and the step itself refuses without one — "This enhancement row names no
+ * voice, so there is nothing to render through" (queue-steps/rvc-enhancement.ts).
+ *
+ * So it succeeds exactly when the narration's own config names a model, and
+ * otherwise says which door does have the question. Queueing an hour of GPU
+ * against whichever model sorted first is the fallback this codebase does not
+ * write.
+ */
+async function invokeFoundryEnhance(_projectDir: string, nodeId: string): Promise<void> {
+  const { job, step } = foundryChainTarget(nodeId);
+  // An enhancement reads a narration's SESSION. The engine's own lineage check
+  // would refuse anything else too (`rvc-enhancement` declares
+  // `consumes: 'audio-session'`), but its message is about artifact kinds and
+  // the user is looking at a tree, not at a queue.
+  if (step.type !== 'tts-conversion') {
+    throw new Error(
+      `${step.label} does not produce a narration session, so there is nothing here to enhance. `
+      + 'Press it on the narration.');
+  }
+  // The pressed step IS the narration, proved one line up — no lookup.
+  const narrate = step;
+  const declared = (narrate.config as {
+    rvcEnhancement?: {
+      voiceId?: string; indexRate?: number; protectRate?: number; nSemitones?: number;
+    };
+  }).rvcEnhancement;
+  const voiceId = typeof declared?.voiceId === 'string' && declared.voiceId.trim() !== ''
+    ? declared.voiceId.trim()
+    : null;
+  if (voiceId === null) {
+    const sentence =
+      'Enhancing a narration needs a voice-conversion model, and this run\'s settings name none. '
+      + 'Open the book on BookForge\'s versions page and start the enhancement from there, where '
+      + 'the model is chosen.';
+    sayToUser('Nothing was queued', 'This narration cannot be enhanced from here', sentence);
+    throw new Error(sentence);
+  }
+  queueEngine.appendStep(job.id, {
+    type: 'rvc-enhancement',
+    label: 'Enhance',
+    parentStepId: step.id,
+    config: {
+      // Left blank on purpose: the engine resolves the session from the parent's
+      // OUTPUT when it lands, which is the whole reason a step may be chained
+      // onto work that has not run (queue-engine.ts, `appendStep`).
+      sessionId: '', sessionDir: '', processDir: '',
+      voiceId,
+      ...(declared!.indexRate === undefined ? {} : { indexRate: declared!.indexRate }),
+      ...(declared!.protectRate === undefined ? {} : { protectRate: declared!.protectRate }),
+      ...(declared!.nSemitones === undefined ? {} : { nSemitones: declared!.nSemitones }),
+      ...(narrate.config['finalDenoise'] === undefined
+        ? {} : { finalDenoise: narrate.config['finalDenoise'] }),
+    } as unknown as Record<string, unknown>,
+  });
+}
+
+/**
+ * ASSEMBLE — the one follow-on that IS derivable, and every field says from what.
+ *
+ * Everything an assembly needs is already recorded by the narration it follows:
+ * the book's metadata is on the narration's own config (the versions page puts it
+ * there), the output folder is a pure function of the project, and the session
+ * paths are deliberately blank because the engine resolves them from the parent's
+ * output. The two opt-in passes (`applyDeRing`, and `excludedChapters`) are
+ * omitted rather than defaulted — an assembly that quietly ran a de-ring filter
+ * nobody asked for would be a decision made in this function's name.
+ */
+async function invokeFoundryAssemble(_projectDir: string, nodeId: string): Promise<void> {
+  const { job, step } = foundryChainTarget(nodeId);
+  /*
+   * An assembly reads RENDERED SENTENCES — a narration's session, or the
+   * enhanced set an RVC pass wrote. Refused here rather than by the engine
+   * because `reassembly` declares `consumes: null` (it legitimately takes either
+   * of two artifacts), so nothing downstream would catch an Assemble chained
+   * onto an Assemble; it would fail an hour later inside ffmpeg, handed an m4b.
+   */
+  if (step.type !== 'tts-conversion' && step.type !== 'rvc-enhancement') {
+    throw new Error(
+      `${step.label} makes a finished audiobook rather than the sentences an assembly reads, so `
+      + 'there is nothing here to assemble. Press it on the narration.');
+  }
+  const narrate = narrationStepOf(job);
+  const projectId = job.projectId;
+  if (projectId === undefined) {
+    throw new Error(
+      'That run is not about a project of this library, so there is nowhere to file the '
+      + 'audiobook it would make.');
+  }
+  const metadata = narrate.config['metadata'] as {
+    title?: string; bookTitle?: string; author?: string; year?: string;
+    coverPath?: string; outputFilename?: string;
+  } | undefined;
+  const title = metadata?.title ?? metadata?.bookTitle;
+  if (metadata === undefined || title === undefined || title === '') {
+    throw new Error(
+      'That narration records no title for the book, and an audiobook is written with one. '
+      + 'Assemble it from BookForge\'s versions page, where the book\'s details are known.');
+  }
+  queueEngine.appendStep(job.id, {
+    type: 'reassembly',
+    label: 'Assemble',
+    parentStepId: step.id,
+    config: {
+      sessionId: '', sessionDir: '', processDir: '',
+      outputDir: `${projectId.replace(/\\/g, '/')}/output`,
+      metadata: {
+        title,
+        // '' is what the versions page itself writes for a book with no author —
+        // it is the recorded answer, not a substitute for a missing one.
+        author: typeof metadata.author === 'string' ? metadata.author : '',
+        ...(metadata.year === undefined ? {} : { year: metadata.year }),
+        ...(metadata.coverPath === undefined ? {} : { coverPath: metadata.coverPath }),
+        ...(metadata.outputFilename === undefined
+          ? {} : { outputFilename: metadata.outputFilename }),
+      },
+      excludedChapters: [],
+      ...(narrate.config['finalDenoise'] === undefined
+        ? {} : { finalDenoise: narrate.config['finalDenoise'] }),
+    } as unknown as Record<string, unknown>,
+  });
+}
+
+/**
+ * The three, as Foundry sees them. Ids are stable across mounts by contract —
+ * `host-ops:invoke` names one, so changing an id changes the operation.
+ */
+const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
+  {
+    id: 'bookforge.narrate',
+    label: 'Narrate',
+    kind: 'narrate',
+    // Consumes the book's TEXT, so it is offered from Foundry's own steps and
+    // never from a row of ours.
+    appliesTo: 'book',
+    invoke: (projectDir, nodeId) => invokeFoundryNarrate(projectDir, nodeId),
+  },
+  {
+    id: 'bookforge.enhance',
+    label: 'Enhance',
+    kind: 'enhance',
+    appliesTo: 'audio',
+    invoke: (projectDir, nodeId) => invokeFoundryEnhance(projectDir, nodeId),
+  },
+  {
+    id: 'bookforge.assemble',
+    label: 'Assemble',
+    kind: 'assemble',
+    appliesTo: 'audio',
+    invoke: (projectDir, nodeId) => invokeFoundryAssemble(projectDir, nodeId),
+  },
+];
 
 /**
  * Open the Foundry window and RECONCILE WHEN IT CLOSES.
@@ -10980,8 +11413,27 @@ app.whenReady().then(async () => {
     // swallowing anything, because neither ever rejects.
     onExport: (landing) => { void recordFoundryExportLanding(landing); },
     onImport: (landing) => { void recordFoundryImportLanding(landing); },
+    // Narrate / Enhance / Assemble, on the provenance tree. NOT wrapped, unlike
+    // the two announcements above: an operation is a button the user pressed,
+    // and its refusal has to reach the tree that asked.
+    hostOperations: FOUNDRY_HOST_OPERATIONS,
   });
   logger.info('Hosted Foundry mounted', { libraryDir: foundryDataRoot() });
+
+  // ── The rows BookForge contributes to that tree ──────────────────────────
+  //
+  // AFTER the mount, because `setHostNodes` broadcasts through Foundry's window
+  // list and there is nothing registered to broadcast through until now. The
+  // engine is already up (`startQueueEngine` ran earlier in this startup), so
+  // the first push below is what draws a run that survived a restart — without
+  // it, a nine-hour narration would not appear on the tree until its next
+  // progress line.
+  queueEngine.onQueueChanged((snap) => {
+    publishHostNodes(snap, (dir, nodes) => foundryMount.setHostNodes(dir, nodes));
+  });
+  publishHostNodes(queueEngine.snapshot(), (dir, nodes) => {
+    foundryMount.setHostNodes(dir, nodes);
+  });
 
   // ── Reconcile the export trays with the versions pages ───────────────────
   //

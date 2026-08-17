@@ -14,6 +14,7 @@ import { ToastHostComponent } from './components/toast-host/toast-host.component
 import { QueueChipComponent } from './features/queue/components/queue-chip/queue-chip.component';
 import { QueueToastsService } from './features/queue/services/queue-toasts.service';
 import { isStandaloneWindow } from './core/window-role';
+import { NarrationHandoffService } from './core/services/narration-handoff.service';
 import { ElectronService } from './core/services/electron.service';
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
@@ -329,6 +330,9 @@ export class App implements OnInit {
   // left with a service instead of delivered to a listener.
   private readonly bookConversion = inject(BookConversionService);
   private readonly dialog = inject(DialogService);
+  // Where a Narrate pressed on Foundry's tree is left until Studio is mounted
+  // and can act on it. See NarrationHandoffService.
+  private readonly narrationHandoff = inject(NarrationHandoffService);
   // Started in ngOnInit, in EVERY window: which one actually speaks is decided
   // per event by the focus rule, not by the window's kind.
   private readonly queueToasts = inject(QueueToastsService);
@@ -459,6 +463,24 @@ export class App implements OnInit {
       void this.queueBookConversion(projectDir);
     });
     this.destroyRef.onDestroy(unsubscribeConversion);
+
+    // Narrate, pressed on a step of a book's provenance tree in the hosted
+    // Foundry window. Main resolved which book and which exported EPUB that step
+    // belongs to and raised this window; the request is LEFT WITH A SERVICE
+    // rather than acted on here, because Studio is lazily routed and is usually
+    // not mounted at this instant — see NarrationHandoffService. Routing is done
+    // here, because the shell owns the route.
+    //
+    // Main window only: `app:show-narration` is sent to the main window alone,
+    // and a standalone popup navigating to Studio would be a second copy of the
+    // library in a window that has no rail to leave it by.
+    if (!this.isStandaloneWindow()) {
+      const unsubscribeNarration = this.electron.onShowNarration((request) => {
+        this.narrationHandoff.request(request);
+        void this.router.navigate(['/studio']);
+      });
+      this.destroyRef.onDestroy(unsubscribeNarration);
+    }
 
     // The main process checks at startup whether any INSTALLED component is
     // behind what the catalog names (and whether foundry has published a release

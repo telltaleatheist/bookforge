@@ -28,7 +28,9 @@
 import { DestroyRef, Injectable, NgZone, inject } from '@angular/core';
 import { Router } from '@angular/router';
 
-import type { JobType, QueueJob as EngineJob, QueueStep as EngineStep } from '@shared/queue/engine-types';
+import type {
+  JobType, QueueJob as EngineJob, QueueNotice, QueueStep as EngineStep,
+} from '@shared/queue/engine-types';
 import { TERMINAL_STEP_STATUSES } from '@shared/queue/engine-types';
 
 import { ToastService } from '../../../core/services/toast.service';
@@ -52,6 +54,7 @@ interface StepFinishedEvent {
 
 interface QueueEventBridge {
   onStepFinished(cb: (event: StepFinishedEvent) => void): () => void;
+  onNotice(cb: (notice: QueueNotice) => void): () => void;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -92,6 +95,45 @@ export class QueueToastsService {
       });
     });
     this.destroyRef.onDestroy(stop);
+
+    /*
+     * Work that never became a run at all.
+     *
+     * `onStepFinished` is news about a step; this is news about a REFUSAL — a
+     * Narrate pressed on a Foundry step with nothing exported yet, an Enhance
+     * whose settings name no model. It lands here rather than in the shell for
+     * the reason everything else about queue news does: the focus rule, the
+     * card, and the tone are already decided in one place, and a second toast
+     * source in app.ts would be a second set of answers to the same questions.
+     */
+    const stopNotices = bridge.onNotice((notice) => {
+      this.zone.run(() => {
+        this.announceNotice(notice).catch((err) => {
+          console.error('[QUEUE] Could not announce a queue notice:', err);
+        });
+      });
+    });
+    this.destroyRef.onDestroy(stopNotices);
+  }
+
+  /**
+   * Say one refusal, in the window the user is looking at.
+   *
+   * No cover and no action, and neither is an omission: main refused before any
+   * run existed, so there is no job to draw a cover from and nowhere for a click
+   * to go. The sentence itself names what to do — it is composed in main, which
+   * is the only side that knows what was wrong.
+   */
+  private async announceNotice(notice: QueueNotice): Promise<void> {
+    if (!(await shouldAnnounceHere())) return;
+    this.toasts.show({
+      tone: notice.tone,
+      kicker: notice.kicker,
+      title: notice.title,
+      meta: notice.message,
+      cover: null,
+      action: null,
+    });
   }
 
   private async announce(event: StepFinishedEvent): Promise<void> {

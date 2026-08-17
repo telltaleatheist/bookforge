@@ -69,6 +69,7 @@ import {
   TERMINAL_STEP_STATUSES,
   type ArtifactKind,
   type ArtifactRef,
+  type FoundryJobLineage,
   type JobStageProgress,
   type JobType,
   type QueueJob,
@@ -202,6 +203,14 @@ export interface JobSpec {
   projectId?: string;
   documentPath?: string;
   documentLabel?: string;
+  /**
+   * Set when Foundry ordered this run — see {@link FoundryJobLineage}.
+   *
+   * CAPTURED AT COMPOSE TIME AND NEVER AFTERWARDS. The invoke that opened the
+   * narration modal is the only moment the ledger step is known; by the time a
+   * step is running there is nothing left to ask.
+   */
+  foundry?: FoundryJobLineage;
   steps: StepSpec[];
   /**
    * Release the steps immediately instead of holding them.
@@ -494,6 +503,9 @@ export function enqueue(spec: JobSpec): QueueJob {
   const job: QueueJob = {
     id: newId('job'),
     projectId: spec.projectId,
+    // Verbatim, and only when there is one: the field's absence is what tells
+    // the node pusher this run belongs on no tree.
+    ...(spec.foundry === undefined ? {} : { foundry: spec.foundry }),
     title: spec.title,
     documentPath: spec.documentPath,
     documentLabel: spec.documentLabel,

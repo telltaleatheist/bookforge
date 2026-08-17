@@ -25,7 +25,9 @@ import type {
 } from '../shared/processing/pass-types';
 import type { BookResetSummary } from '../shared/processing/reset-book';
 import type {
+  QueueNotice,
   QueueSnapshot,
+  ShowNarrationRequest,
   QueueJob as QueueEngineJob,
   QueueStep as QueueEngineStep,
 } from '../shared/queue/engine-types';
@@ -1371,6 +1373,19 @@ export interface ElectronAPI {
     /** Main asked THIS window to queue a conversion. Main window only. */
     onShowBookConversion: (callback: (projectDir: string) => void) => () => void;
     /**
+     * Main asked THIS window to open the narration dialog on a version.
+     *
+     * The other side of a press on Foundry's provenance tree: the operation
+     * resolved which book and which exported EPUB the step belongs to, raised
+     * this window, and handed the answer over — because a narration is a dozen
+     * decisions and this app has exactly one surface that asks them.
+     *
+     * `foundry` is the lineage the run has to carry back: it rides on the job so
+     * the rows BookForge pushes onto that tree name the step they hang under.
+     * Main window only.
+     */
+    onShowNarration: (callback: (request: ShowNarrationRequest) => void) => () => void;
+    /**
      * Does ANY BookForge window have focus? The completion toasts show in the
      * focused window only, and a renderer can see its own focus and nothing
      * else's — so the unfocused main window asks this before speaking for an app
@@ -1413,6 +1428,16 @@ export interface ElectronAPI {
     updateStepConfig: (stepId: string, patch: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>;
     onChanged: (callback: (snapshot: QueueSnapshot) => void) => () => void;
     onStepFinished: (callback: (event: QueueStepFinished) => void) => () => void;
+    /**
+     * The queue has something to say about work it did NOT accept.
+     *
+     * `onStepFinished` is news about a step; this is news about a run that never
+     * became one — a Narrate pressed on a Foundry step with nothing exported
+     * yet, an Enhance whose settings name no model. Those refusals are thrown
+     * back to the tree that asked as well, but the thing to DO about them is in
+     * a BookForge window, so they are said in both places.
+     */
+    onNotice: (callback: (notice: QueueNotice) => void) => () => void;
   };
   diff: {
     loadComparison: (originalPath: string, cleanedPath: string) => Promise<{
@@ -2964,6 +2989,11 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('app:show-book-conversion', listener);
       return () => { ipcRenderer.removeListener('app:show-book-conversion', listener); };
     },
+    onShowNarration: (callback: (request: ShowNarrationRequest) => void) => {
+      const listener = (_e: any, request: ShowNarrationRequest) => callback(request);
+      ipcRenderer.on('app:show-narration', listener);
+      return () => { ipcRenderer.removeListener('app:show-narration', listener); };
+    },
   },
   plugins: {
     list: () =>
@@ -3013,6 +3043,11 @@ const electronAPI: ElectronAPI = {
       const listener = (_event: Electron.IpcRendererEvent, event: QueueStepFinished) => callback(event);
       ipcRenderer.on('jobs:step-finished', listener);
       return () => { ipcRenderer.removeListener('jobs:step-finished', listener); };
+    },
+    onNotice: (callback: (notice: QueueNotice) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, notice: QueueNotice) => callback(notice);
+      ipcRenderer.on('jobs:notice', listener);
+      return () => { ipcRenderer.removeListener('jobs:notice', listener); };
     },
   },
   ebookConvert: {
