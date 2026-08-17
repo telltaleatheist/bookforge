@@ -74,6 +74,66 @@ export interface ProjectManifest {
    * Document analysis remains in pipeline.analysis.
    */
   audiobookAnalyses?: Record<string, AudiobookAnalysisManifestEntry>;
+
+  /**
+   * WHICH hosted-Foundry project is this book's, or absent — see
+   * FoundryProjectRef below. Absent is the ordinary state: no project yet.
+   */
+  foundryProject?: FoundryProjectRef;
+
+  /** What Foundry has exported for this book, oldest first, referenced in place. */
+  foundryExports?: FoundryExportRecord[];
+}
+
+/**
+ * The hosted Foundry project this book belongs to.
+ *
+ * MIRRORS `FoundryProjectRef` in electron/manifest-types.ts (the writing side);
+ * keep the two in step. `dir` is the project KEY — the folder name under
+ * `<libraryRoot>/foundry/projects/` — never a path, because a path names a
+ * volume and stops being true when the library moves. Main joins it; the
+ * renderer never does.
+ */
+export interface FoundryProjectRef {
+  dir: string;
+}
+
+/** What Foundry can hand back. The tray holds nothing else. */
+export type FoundryExportKind = 'epub' | 'txt' | 'pdf';
+
+/**
+ * ONE FILE Foundry exported for this book, referenced WHERE IT LIES.
+ *
+ * MIRRORS `FoundryExportRecord` in electron/manifest-types.ts; keep the two in
+ * step. The file stays in its foundry project's `final/` tray and is never
+ * copied here, so `path` is relative to the LIBRARY ROOT with forward slashes —
+ * `foundry/projects/<key>/final/<file>` — and deleting the record forgets the
+ * reference without touching the file.
+ */
+export interface FoundryExportRecord {
+  /** `fx-` and eight hex characters, minted once. Opaque, never derived. */
+  id: string;
+  /** Library-relative, forward slashes: `foundry/projects/<key>/final/<file>`. */
+  path: string;
+  kind: FoundryExportKind;
+  /** What the row says — Foundry's own name for the export. */
+  title: string;
+  /** ISO timestamp of the export this record describes. */
+  landedAt: string;
+}
+
+/**
+ * A foundry export as it arrives from `foundry-host:exports` — with its file
+ * already resolved.
+ *
+ * MIRRORS `ResolvedFoundryExport` in electron/manifest-types.ts. Same doctrine
+ * {@link ResolvedProjectVariant} states at length: `path` is library-relative
+ * and the renderer holds no library root, so main joins it in the call that
+ * produced the row and `exists` is that path stat'ed at list time.
+ */
+export interface ResolvedFoundryExport extends FoundryExportRecord {
+  absPath: string;  // absolute, platform-native, NFC-normalized
+  exists: boolean;  // absPath was a regular file when this list was produced
 }
 
 export interface AudiobookAnalysisManifestEntry {

@@ -82,6 +82,85 @@ export interface ProjectManifest {
    * against the current variant. Document analysis remains in pipeline.analysis.
    */
   audiobookAnalyses?: Record<string, AudiobookAnalysisManifestEntry>;
+
+  /**
+   * WHICH hosted-Foundry project is this book's, or absent.
+   *
+   * Absent is the ordinary state and a real one: this book has no Foundry
+   * project yet. It is never defaulted and never derived from the title or the
+   * projectId — a book gets a Foundry project when one is made for it, and until
+   * then the door says "Import via Foundry" rather than pointing at a directory
+   * nobody created.
+   */
+  foundryProject?: FoundryProjectRef;
+
+  /**
+   * What Foundry has EXPORTED for this book, oldest first, referenced in place.
+   *
+   * Append-only, and absent until the first export lands. See
+   * {@link FoundryExportRecord} for why the files are not copied into the
+   * project.
+   */
+  foundryExports?: FoundryExportRecord[];
+}
+
+/**
+ * The hosted Foundry project this book belongs to.
+ *
+ * `dir` is the project KEY — the folder name under
+ * `<libraryRoot>/foundry/projects/` — and not a path. An absolute path recorded
+ * here would name a volume rather than a project, and every one of them would
+ * be wrong the moment the user pointed the library setting at another drive.
+ * Main joins the key onto the live library root (`foundryProjectsDir()`), which
+ * is the only place the two meet.
+ */
+export interface FoundryProjectRef {
+  dir: string;
+}
+
+/** What Foundry can hand back. The tray holds nothing else. */
+export type FoundryExportKind = 'epub' | 'txt' | 'pdf';
+
+/**
+ * ONE FILE Foundry exported for this book, referenced WHERE IT LIES.
+ *
+ * The file stays in its foundry project's `final/` tray and is never copied into
+ * the BookForge project. Foundry owns that tray — it wrote the file, it can
+ * rewrite it, and a copy taken at landing time would be a second truth that goes
+ * stale the first time the user re-exports. So this record is a REFERENCE, and
+ * deleting it (the versions page's Delete) forgets the reference and leaves the
+ * file alone.
+ *
+ * `path` is relative to the LIBRARY ROOT with forward slashes —
+ * `foundry/projects/<key>/final/<file>` — for the same reason
+ * {@link FoundryProjectRef} holds a key: the library moves, and a record that
+ * named a volume would not survive the move. It is library-relative rather than
+ * project-relative because the file is not inside the project directory at all.
+ */
+export interface FoundryExportRecord {
+  /** `fx-` and eight hex characters, minted once. Opaque, never derived. */
+  id: string;
+  /** Library-relative, forward slashes: `foundry/projects/<key>/final/<file>`. */
+  path: string;
+  kind: FoundryExportKind;
+  /** What the row says — Foundry's own name for the export. */
+  title: string;
+  /** ISO timestamp of the export this record describes. */
+  landedAt: string;
+}
+
+/**
+ * A foundry export as handed to the RENDERER — with its file already resolved.
+ *
+ * The same discipline {@link ResolvedProjectVariant} states at length: `path` is
+ * library-relative and means nothing without the library root, so the join
+ * happens in main, in the call that produces the row, against the root the
+ * record was read under. `exists` is that path stat'ed at list time, so a row
+ * can refuse an action naming the missing file instead of failing deeper.
+ */
+export interface ResolvedFoundryExport extends FoundryExportRecord {
+  absPath: string;  // absolute, platform-native, NFC-normalized
+  exists: boolean;  // absPath was a regular file when this list was produced
 }
 
 export interface AudiobookAnalysisManifestEntry {
