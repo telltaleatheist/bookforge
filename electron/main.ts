@@ -7286,6 +7286,14 @@ function setupIpcHandlers(): void {
         const survivors = cur.variants.filter((v) => v.id !== variantId);
         mf.variants = survivors.filter((v) => recorded.has(v.id));
         if (mf.primaryVariantId === variantId) mf.primaryVariantId = survivors[0]?.id;
+        // The TTS mark is CLEARED rather than moved to a survivor, which is the
+        // opposite of what primary does one line up — deliberately. Primary is
+        // the book's identity and a project must have one, so it passes to
+        // whoever is left. The TTS mark is a STATED CHOICE about which file to
+        // read aloud; moving it to another version would put the shelf's Process
+        // button on a file the user never picked, under a mark they never made.
+        // Cleared, the shelf falls back to its own precedence, which is honest.
+        if (mf.ttsVariantId === variantId) delete mf.ttsVariantId;
         if (removed && mf.outputs?.audiobook?.path === removed.path) {
           const next = mf.variants.find((v) => v.kind === 'audiobook' && !v.id.startsWith('bilingual:'));
           if (next) mf.outputs.audiobook = { ...mf.outputs.audiobook, path: next.path, vttPath: next.vttPath };

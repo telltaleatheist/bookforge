@@ -2007,7 +2007,14 @@ export class ElectronService {
     if (this.isElectron) return (window as any).electron.foundryHost.project(projectDir);
     return { success: false, error: 'Not running in Electron' };
   }
-  /** What Foundry has exported for this book, oldest first. Empty is ordinary. */
+  /**
+   * What Foundry has exported for this book, oldest first. Empty is ordinary.
+   *
+   * RETIRED 2026-08-17 — no caller. An export lands as an ordinary version now,
+   * so the versions page reads `variantList` and there is no second list. This
+   * and `foundryHostForgetExport` stay while the records they read do; both go
+   * in the deletion wave.
+   */
   async foundryHostExports(projectDir: string): Promise<{ success: boolean; exports?: ResolvedFoundryExport[]; error?: string }> {
     if (this.isElectron) return (window as any).electron.foundryHost.exports(projectDir);
     return { success: false, error: 'Not running in Electron' };

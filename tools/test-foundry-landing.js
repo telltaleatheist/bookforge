@@ -269,6 +269,24 @@ test('marking a version that does not exist is refused', run(async (p) => {
   assert.match(res.error, /not found/);
 }, [ebookVariant('a', 'a.epub')]));
 
+test('a mark on a version that is deleted does not move to a survivor', run(async (p) => {
+  // The rule variant:delete carries: primary passes to whoever is left because
+  // a project must have one; the TTS mark is a STATED CHOICE and is cleared, so
+  // the shelf falls back to its own precedence rather than narrating a file the
+  // user never picked under a mark they never made. This pins the manifest side
+  // of it — the deletion itself lives in the variant:delete IPC handler.
+  await actions.setTtsVariant(PROJECT_ID, 'a');
+  const m = p.read();
+  m.variants = m.variants.filter((v) => v.id !== 'a');
+  if (m.ttsVariantId === 'a') delete m.ttsVariantId;
+  fs.writeFileSync(path.join(p.projectDir, 'manifest.json'), JSON.stringify(m, null, 2));
+
+  fs.writeFileSync(p.abs('archive/b.epub'), 'X');
+  const t = await target(p);
+  assert.strictEqual(t.rule, 'sole-epub', 'not "marked" — the mark went with the row');
+  assert.strictEqual(t.variantId, 'b');
+}, [ebookVariant('a', 'a.epub'), ebookVariant('b', 'b.epub')]));
+
 // ── The shelf's Process target ─────────────────────────────────────────────
 
 /** listProjects derives the target; this is the only door onto it. */

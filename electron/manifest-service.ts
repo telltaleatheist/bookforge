@@ -6608,11 +6608,21 @@ function sameFoundryExportPath(a: string, b: string): boolean {
 /**
  * Record an export Foundry landed in its project's `final/` tray.
  *
- * APPEND-ONLY, with one exception that is the whole point: a re-export of the
+ * ── RETIRED 2026-08-17. NOTHING CALLS THIS. ────────────────────────────────
+ *
+ * An export is copied into the project's `output/` and minted as an ordinary
+ * variant now — `addFoundryOutputVariant` in electron/library-actions.ts. Left
+ * standing, and still tested, only because the READ side is: a library may hold
+ * records this wrote, they are not migrated, and `readFoundryExports` should go
+ * on answering correctly for them until the whole group is deleted. Do not wire
+ * it back up.
+ *
+ * APPEND-ONLY, with one exception that was the whole point: a re-export of the
  * SAME file replaces that record's title and `landedAt` in place, keeping its id
  * and its position. Same path means same version row — appending a second record
  * would put two rows on the versions page for one file on disk, and the user
- * would have to guess which of them their next act addressed.
+ * would have to guess which of them their next act addressed. (The successor
+ * keeps that rule, keyed on (projectKey, fileName) instead of a path.)
  */
 export async function appendFoundryExport(
   projectDir: string,
