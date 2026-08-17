@@ -1285,38 +1285,6 @@ export interface ElectronAPI {
    * makes that unreachable.
    */
   document: {
-    state: (ref: DocumentRef) =>
-      Promise<{ success: boolean; state?: DocumentPipelineState; error?: string }>;
-    /**
-     * Which pipeline the ARCHIVE ORIGINAL belongs to, measured before any cast.
-     *
-     * `state` reports the class recorded in the working document's marker, which
-     * does not exist until the cast has run. This is the question a window has
-     * to answer the instant a book is opened, and its two answers are seconds
-     * versus minutes of work — so it is measured and never assumed.
-     */
-    measureClass: (ref: DocumentRef) =>
-      Promise<{ success: boolean; documentClass?: 'scanned' | 'text'; error?: string }>;
-    /**
-     * Mint `<Original>.working.pdf` — a copy of the archive original, marked.
-     *
-     * A copy and a marker, no foundry and no model: the archive original is
-     * immutable and curation is an append to a PDF, so there has to be a second
-     * file. A project that already has one is REFUSED by name — the existing one
-     * holds the user's markup — and the caller offers to open it instead.
-     */
-    createWorkingCopy: (ref: DocumentRef) => Promise<{
-      success: boolean;
-      error?: string;
-      workingPath?: string;
-      workingRelPath?: string;
-      documentClass?: 'scanned' | 'text';
-    }>;
-    readBlocks: (ref: DocumentRef) =>
-      Promise<{ success: boolean; error?: string } & Partial<DocumentBlocksPayload>>;
-    /** A batch of curation edits, landed as ONE incremental update. */
-    applyEdits: (ref: DocumentRef, edits: WorkingDocumentEdit[]) =>
-      Promise<{ success: boolean; bytes?: number; appended?: number; error?: string }>;
     cancelStage: (projectDir: string) => Promise<{ success: boolean; stopped?: boolean }>;
     /** Stages running right now, with the last line each emitted. */
     activeStages: () => Promise<{
@@ -1330,24 +1298,6 @@ export interface ElectronAPI {
           render?: { done: number; total: number }; at: number;
         } | null;
       }>;
-    }>;
-    resetTo: (ref: DocumentRef, target: ResetTarget) =>
-      Promise<{ success: boolean; error?: string }>;
-    discard: (ref: DocumentRef) => Promise<{ success: boolean; error?: string }>;
-    /**
-     * Delete the project's book EPUB, its provenance and the diffs that
-     * provenance pointed at. One act — see `document:delete-book`.
-     */
-    deleteBook: (projectDir: string) => Promise<{
-      success: boolean;
-      error?: string;
-      removed?: {
-        relPath: string;
-        fileRemoved: boolean;
-        droppedPasses: number;
-        removedPaths: string[];
-        bindingsCleared: number;
-      };
     }>;
     onStageProgress: (callback: (event: DocumentStageProgressEvent) => void) => () => void;
     onStageStarted: (callback: (event: { projectDir: string; stage: string }) => void) => () => void;
@@ -1401,413 +1351,6 @@ export interface ElectronAPI {
       success: boolean;
       wslRefusal?: string | null;
       server?: { running: boolean; url: string; model: string | null };
-      error?: string;
-    }>;
-    /**
-     * The project's working copy, made if it is not there yet. Refuses by name a
-     * project with nothing archive-grade to copy — a PDF whose pages have never
-     * been read.
-     */
-    ensureWorkingEpub: (projectDir: string, familyId?: string) =>
-      Promise<{ success: boolean; path?: string; relPath?: string; error?: string }>;
-    /**
-     * Erase changes made to this book, at one of two scopes: the working copy is
-     * deleted and a fresh one takes its place.
-     *
-     * The same act as deleting `<archive basename>.working.epub` by hand — one
-     * code path, deliberately (`book:erase-changes`). `source` says which
-     * archive-grade book the fresh copy came from, because "your original" and
-     * "the book cast from your pages" are different things to have gone back to.
-     *
-     * `'working-changes'` clears the user's records and KEEPS the passes recorded
-     * in the book's ledger, so the copy comes back from the last snapshot;
-     * `'everything'` throws the ledger away first, so the copy comes back
-     * byte-identical to the archive-grade book. `droppedLedger` and `keptLedger`
-     * name which passes went and which stood. The scope is required — an older
-     * build's call without one is refused rather than guessed.
-     */
-    eraseChanges: (
-      projectDir: string,
-      scope: 'everything' | 'working-changes',
-      /** Which chain's changes. Absent is the project's only one; several refuse. */
-      familyId?: string
-    ) => Promise<{
-      success: boolean;
-      path?: string;
-      relPath?: string;
-      remint?: WorkingCopyRemint;
-      source?: 'archive-epub' | 'generated-epub';
-      droppedLedger?: string[];
-      keptLedger?: string[];
-      error?: string;
-    }>;
-    /**
-     * Delete one entry from this book's ledger, and everything applied after it.
-     *
-     * The user's working changes are kept — they are records against the book
-     * rather than bytes in it, and a ledger pass may not move the elements they
-     * name. `deleted` lists every entry that went, oldest first: the one that was
-     * asked for is the first, and anything after it is the CASCADE, which the
-     * confirmation has to be able to name before the act runs.
-     */
-    deleteLedgerEntry: (projectDir: string, entryId: string, familyId?: string) => Promise<{
-      success: boolean;
-      path?: string;
-      relPath?: string;
-      message?: string;
-      deleted?: Array<{ id: string; kind: string; label: string; createdAt: string }>;
-      kept?: Array<{ id: string; kind: string; label: string; createdAt: string }>;
-      error?: string;
-    }>;
-    /**
-     * The two books a ledger entry sits between — for LOOKING at, side by side.
-     *
-     * `before` is the book the pass ran on (the previous entry's snapshot, or
-     * the chain's archive-grade source for the first pass) and `after` is the
-     * book it left, which is that entry's own snapshot. Read straight off
-     * `deriveWorkingCopy`'s contract; the argument is in manifest-service.
-     *
-     * A pure READ. It mints nothing, binds no project to either file and writes
-     * no record — which is the difference between this and the Open that was
-     * taken off ledger lines for destroying an evening of working changes.
-     */
-    comparePass: (projectDir: string, entryId: string, familyId?: string) => Promise<{
-      success: boolean;
-      comparison?: {
-        entryId: string;
-        passLabel: string;
-        createdAt: string;
-        before: { absPath: string; relPath: string; label: string };
-        after: { absPath: string; relPath: string; label: string };
-      };
-      error?: string;
-    }>;
-    /**
-     * Delete the book cast from this project's pages, and the working copy that
-     * could only have been minted from it. The heavy act: a re-cast is an hour
-     * of GPU, where erasing changes is a file copy.
-     */
-    deleteGeneratedEpub: (projectDir: string, familyId?: string) => Promise<{
-      success: boolean;
-      removed?: {
-        relPath: string;
-        fileRemoved: boolean;
-        workingCopyRelPath: string | null;
-        droppedPasses: number;
-      };
-      error?: string;
-    }>;
-    /**
-     * Delete the narration copy: its record first, then the file. The cheapest
-     * delete in the project — Export TTS copy cuts it again from the book and
-     * the strikes, which stay exactly as they are.
-     */
-    deleteTtsCopy: (projectDir: string, familyId?: string) => Promise<{
-      success: boolean;
-      removed?: { relPath: string; fileRemoved: boolean };
-      error?: string;
-    }>;
-    /**
-     * The file TTS reads — `<archive basename>.tts.epub` — cut from the working
-     * copy if there is none or the one on record is stale. Refuses a project
-     * with no working copy by name.
-     */
-    ensureNarrationEpub: (projectDir: string, familyId?: string) => Promise<{
-      success: boolean;
-      narration?: {
-        epubPath: string; relPath: string; removedElements: number; cutReason: string | null;
-      };
-      /**
-       * WHICH working chain answered. A caller that asked without naming one
-       * learns which it got, so the run it queues next can name it rather than
-       * asking the project again and risking a different answer.
-       */
-      familyId?: string;
-      error?: string;
-    }>;
-    narrationState: (projectDir: string, familyId?: string) =>
-      Promise<{ success: boolean; state?: NarrationState; error?: string }>;
-    saveNarrationDeletions: (projectDir: string, elements: string[], familyId?: string) =>
-      Promise<{ success: boolean; deletions?: NarrationDeletions; error?: string }>;
-    /** One gesture's worth of change — a difference, never a snapshot. */
-    editNarrationDeletions: (
-      projectDir: string, edit: { strike: string[]; unstrike: string[] }, familyId?: string
-    ) => Promise<{ success: boolean; deletions?: NarrationDeletions; error?: string }>;
-    /**
-     * Delete elements by pointing at them IN THE TTS COPY.
-     *
-     * The keys name elements of the COPY; main pairs them back to the book, puts
-     * the strike on the book's record, and cuts the copy again so the file on
-     * disk matches. Refuses by name — with nothing written — when the copy and
-     * the book have come apart.
-     */
-    strikeInNarrationCopy: (
-      projectDir: string, copyKeys: string[], familyId?: string) => Promise<{
-      success: boolean;
-      result?: {
-        struckInBook: string[];
-        epubPath: string; relPath: string;
-        removedElements: number; recutMs: number;
-      };
-      error?: string;
-    }>;
-    /**
-     * Fold a chapter's opening IN the working copy: the opening is rewritten to
-     * say the chapter's stored name and the folded elements come out of the
-     * markup. The archive original is never touched, and the manifest keeps what
-     * each element said before (`outputs.epub.bookEdits`).
-     */
-    mergeChapterOpening: (
-      projectDir: string, openerKey: string, foldedKeys: string[], familyId?: string
-    ) => Promise<{
-      success: boolean;
-      result?: {
-        name: string; file: string; foldedCount: number;
-        fromSha256: string; toSha256: string;
-        droppedStrikes: string[]; renumberedStrikes: number;
-      };
-      error?: string;
-    }>;
-    exportNarration: (
-      projectDir: string,
-      options?: { stripSupMarkers?: boolean },
-      familyId?: string
-    ) => Promise<{
-      success: boolean;
-      result?: {
-        epubPath: string; relPath: string;
-        removedElements: number; totalElements: number; removedSupMarkers: number;
-      };
-      error?: string;
-    }>;
-    /**
-     * What the book calls each of its chapters — `titles: null` for a project
-     * that has no book yet, which is most of them for most of their life.
-     */
-    chapterTitles: (projectDir: string, familyId?: string) =>
-      Promise<{ success: boolean; titles?: BookChapterTitles | null; error?: string }>;
-    /**
-     * Rename one chapter IN the book: its nav entry, its document's `<title>`,
-     * and its chapter OPENING — the print on the page follows the name it is
-     * given. `file` is the chapter document's zip entry name, the same identity
-     * a narration strike carries.
-     *
-     * `openingsNamed` is how many openings the book had rewritten as part of
-     * this rename (normally one; more if some earlier open had left any
-     * un-named). A window that sees it above zero is looking at a book whose
-     * markup has changed under it and must re-open to lay it out again.
-     *
-     * `openingUnnamed` is about THIS chapter and answers a different question:
-     * null when its opening now reads the new name, and otherwise the sentence
-     * saying why the page still prints the old heading
-     * (shared/document/chapter-opening-report.ts). The count cannot stand in for
-     * it — a rename that named three other chapters and declined this one
-     * reports three.
-     */
-    renameChapter: (projectDir: string, file: string, title: string, familyId?: string) =>
-      Promise<{
-        success: boolean;
-        result?: BookChapterRenameResult;
-        openingsNamed?: number;
-        openingUnnamed?: string | null;
-        rewrittenEntries?: string[];
-        error?: string;
-      }>;
-    /**
-     * LIST one of the book's documents as a chapter, under a name — the edit a
-     * rename is not.
-     *
-     * A rename replaces the text of an entry the table of contents already
-     * carries, and a document listed nowhere has none, so "rename the chapter to
-     * give it one" was advice nothing could follow. This inserts the entry, in
-     * spine order, into every list the book navigates by.
-     *
-     * The naming pass runs INSIDE the add rather than after it — a chapter given
-     * a name whose opening still prints the scan's heading is half an act — so
-     * the answer already describes the whole gesture.
-     */
-    addChapter: (projectDir: string, file: string, title: string, familyId?: string) =>
-      Promise<{
-        success: boolean;
-        result?: BookChapterAddResult;
-        openingsNamed?: number;
-        openingUnnamed?: string | null;
-        rewrittenEntries?: string[];
-        error?: string;
-      }>;
-    /**
-     * Say what one ELEMENT of the book is — a relabel, written into the working
-     * copy's own markup (`data-bf-user-cat`) so that the naming pass, the
-     * Chapter tab, the narration cut and every exporter read one answer.
-     * `elementKey` is the block's `bf_element`.
-     *
-     * `written: false` means the book already said this and no byte moved.
-     *
-     * `openingsNamed` and `openingUnnamed` carry the same two facts they carry
-     * for a rename: promoting a block to `chapter` makes it its document's
-     * opening, and an opening prints its chapter's stored name — so the same
-     * naming pass runs, the same count says whether the markup on screen is
-     * stale, and the same per-chapter sentence says why a page did not follow.
-     * `openingUnnamed` is only ever set for a promotion: for a demotion, "this
-     * document marks no chapter opening" is what was asked for.
-     *
-     * `chapterName` makes the promotion and the LISTING one gesture, for a
-     * document the table of contents does not name. Left out, such a document
-     * comes back with `needsChapterName` — the machine-readable half of
-     * `openingUnnamed`, which is what lets the window offer to supply the name
-     * instead of only reporting that the book states none.
-     */
-    setBlockCategory: (
-      projectDir: string, elementKey: string, categoryId: string, familyId?: string,
-      chapterName?: string
-    ) => Promise<{
-      success: boolean;
-      result?: {
-        file: string; elementKey: string;
-        categoryBefore: string | null; categoryAfter: string;
-        written: boolean; fromSha256: string; toSha256: string;
-      };
-      added?: BookChapterAddResult;
-      openingsNamed?: number;
-      openingUnnamed?: string | null;
-      needsChapterName?: string | null;
-      rewrittenEntries?: string[];
-      error?: string;
-    }>;
-
-    /**
-     * Say what a RUN of the book's elements are, as ONE gesture.
-     *
-     * The plural of `setBlockCategory`, and what a palette click on a SELECTION
-     * should call. One block at a time re-paid the whole fixed cost of a relabel
-     * per block — the book read whole, written, verified, measured twice,
-     * recorded, and the chapter-naming pass behind each — which measured ~500 ms
-     * per block on a 20-document book; batched, a second block costs a few
-     * milliseconds.
-     *
-     * ALL OR NOTHING: a category outside the palette, a key naming a picture, a
-     * document or nothing at all, or one element named twice refuses the whole
-     * gesture before any byte is written. A block the book ALREADY labels this
-     * way is not a refusal — it answers `written: false` and the rest stands.
-     *
-     * `results` is one answer per element IN THE ORDER ASKED, each carrying the
-     * `openingUnnamed` / `needsChapterName` sentences a `chapter` promotion
-     * earns. `rewrittenEntries` is the deduped list of documents whose bytes
-     * moved — the relabelled ones and whatever the naming pass touched — which
-     * is what the window lays out again instead of re-opening the book.
-     *
-     * No `chapterName`: a name belongs to one chapter and a batch has no one
-     * name to give. Promote a single block through `setBlockCategory` when its
-     * document also needs listing.
-     */
-    setBlockCategories: (
-      projectDir: string,
-      edits: Array<{ elementKey: string; categoryId: string }>,
-      familyId?: string
-    ) => Promise<{
-      success: boolean;
-      results?: Array<{
-        file: string; elementKey: string;
-        categoryBefore: string | null; categoryAfter: string;
-        written: boolean; fromSha256: string; toSha256: string;
-        openingUnnamed: string | null;
-        needsChapterName: string | null;
-      }>;
-      fromSha256?: string;
-      toSha256?: string;
-      openingsNamed?: number;
-      rewrittenEntries?: string[];
-      error?: string;
-    }>;
-
-    /**
-     * What one element of the book says right now, whole.
-     *
-     * What the text editor opens on. NOT the block's own text: a block is a
-     * page's worth of an element, so a paragraph that spans a page break would
-     * come back as its first half, and saving that would delete the second.
-     */
-    readBlockText: (projectDir: string, elementKey: string, familyId?: string) => Promise<{
-      success: boolean;
-      data?: { text: string; tag: string; file: string };
-      error?: string;
-    }>;
-
-    /**
-     * Make the book say what the reader typed, for one element.
-     *
-     * `newText` is the element's WHOLE text, collapsed the way it was shown.
-     * `written` comes back false when the book already read that way — a retype
-     * that changed only whitespace nobody can see — and then nothing moved and
-     * `rewrittenEntries` is empty. `refingerprinted` says a narration strike on
-     * this element was carried onto the new words.
-     */
-    setBlockText: (
-      projectDir: string, elementKey: string, newText: string, familyId?: string
-    ) => Promise<{
-      success: boolean;
-      result?: {
-        file: string; elementKey: string;
-        textBefore: string; textAfter: string;
-        written: boolean; refingerprinted: boolean;
-        fromSha256: string; toSha256: string;
-      };
-      rewrittenEntries?: string[];
-      error?: string;
-    }>;
-
-    /**
-     * Put a NEW chapter heading into the book, immediately before one of its
-     * elements — for the book that lost its chapter headers but kept the body
-     * text (Owen, 2026-08-12). Conversion-stamped books only: a publisher's
-     * book states its structure in its own markup, and an invented `<h1>`
-     * would be a guess about conventions BookForge did not write.
-     *
-     * The heading takes over `beforeElementKey`'s position (`insertedKey`
-     * answers with it) and every element after it is one index further on;
-     * the narration strike record is carried `+1` in the same manifest
-     * transaction, and a strike that cannot be carried refuses the whole
-     * insert before any byte. The chapter-naming pass runs behind it exactly
-     * as behind a promotion to `chapter`, so a listed document's new heading
-     * is rewritten to its stored name and an unlisted one comes back with
-     * `needsChapterName`.
-     */
-    insertChapterHeading: (
-      projectDir: string, beforeElementKey: string, title: string, familyId?: string
-    ) => Promise<{
-      success: boolean;
-      result?: {
-        file: string; beforeElementKey: string; insertedKey: string; title: string;
-        renumberedStrikes: number; rewrittenEntries: string[];
-        fromSha256: string; toSha256: string;
-      };
-      openingsNamed?: number;
-      openingUnnamed?: string | null;
-      needsChapterName?: string | null;
-      rewrittenEntries?: string[];
-      error?: string;
-    }>;
-
-    /**
-     * Remove an inserted chapter heading — the insert's exact inverse, for
-     * undo. Refuses anything that is not the shape the insert writes (it is
-     * deliberately not a general delete-element), and refuses by name when a
-     * narration strike sits on the heading itself: unstrike first. The strike
-     * record is carried `-1` in the same transaction.
-     */
-    removeInsertedHeading: (
-      projectDir: string, elementKey: string, familyId?: string
-    ) => Promise<{
-      success: boolean;
-      result?: {
-        file: string; elementKey: string; textBefore: string;
-        renumberedStrikes: number; rewrittenEntries: string[];
-        fromSha256: string; toSha256: string;
-      };
-      openingsNamed?: number;
-      openingUnnamed?: string | null;
-      needsChapterName?: string | null;
-      rewrittenEntries?: string[];
       error?: string;
     }>;
   };
@@ -2695,9 +2238,6 @@ export interface ElectronAPI {
     }>;
   };
   editor: {
-    openWindow: (projectPath: string, options?: { mode?: string }) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
-    openWindowWithBfp: (projectDir: string, sourcePath: string) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
-    closeWindow: (projectPath: string) => Promise<{ success: boolean }>;
     getVersions: (projectDir: string) => Promise<{
       success: boolean;
       error?: string;
@@ -2733,10 +2273,6 @@ export interface ElectronAPI {
     onWindowClosed: (callback: (projectPath: string) => void) => () => void;
     /** Returns the unsubscribe closure for THIS listener (see the impl). */
     onFilesChanged: (callback: (projectPath: string) => void) => () => void;
-    /** Main is holding a close open; the payload is the channel to answer on. */
-    onFlushBeforeClose: (callback: (replyChannel: string) => void) => () => void;
-    flushComplete: (replyChannel: string) => void;
-    saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) => Promise<{ success: boolean; error?: string }>;
   };
   analysis: {
     delete: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
@@ -3414,20 +2950,9 @@ const electronAPI: ElectronAPI = {
     },
   },
   document: {
-    state: (ref: DocumentRef) => ipcRenderer.invoke('document:state', ref),
-    measureClass: (ref: DocumentRef) => ipcRenderer.invoke('document:measure-class', ref),
-    createWorkingCopy: (ref: DocumentRef) =>
-      ipcRenderer.invoke('document:create-working-copy', ref),
-    readBlocks: (ref: DocumentRef) => ipcRenderer.invoke('document:read-blocks', ref),
-    applyEdits: (ref: DocumentRef, edits: WorkingDocumentEdit[]) =>
-      ipcRenderer.invoke('document:apply-edits', ref, edits),
     cancelStage: (projectDir: string) => ipcRenderer.invoke('document:cancel-stage', projectDir),
     /** Stages running right now and where they have got to — what a reloaded window asks for. */
     activeStages: () => ipcRenderer.invoke('document:active-stages'),
-    resetTo: (ref: DocumentRef, target: ResetTarget) =>
-      ipcRenderer.invoke('document:reset-to', ref, target),
-    discard: (ref: DocumentRef) => ipcRenderer.invoke('document:discard', ref),
-    deleteBook: (projectDir: string) => ipcRenderer.invoke('document:delete-book', projectDir),
     onStageProgress: (callback: (event: DocumentStageProgressEvent) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, event: DocumentStageProgressEvent) =>
         callback(event);
@@ -3634,137 +3159,6 @@ const electronAPI: ElectronAPI = {
     readingsBank: (request: VlmConvertRequest) =>
       ipcRenderer.invoke('vlm:readings-bank', request),
     readerStatus: () => ipcRenderer.invoke('vlm:reader-status'),
-    // `familyId` on each of these is WHICH working chain the row the user
-    // pressed belongs to. Absent means the project's only one; a project with
-    // several refuses rather than acting on whichever the code reached first.
-    ensureWorkingEpub: (projectDir: string, familyId?: string) =>
-      ipcRenderer.invoke('book:ensure-working-copy', projectDir, familyId),
-    eraseChanges: (projectDir: string, scope: 'everything' | 'working-changes', familyId?: string) =>
-      ipcRenderer.invoke('book:erase-changes', projectDir, scope, familyId),
-    deleteLedgerEntry: (projectDir: string, entryId: string, familyId?: string) =>
-      ipcRenderer.invoke('book:delete-ledger-entry', projectDir, entryId, familyId),
-    comparePass: (projectDir: string, entryId: string, familyId?: string) =>
-      ipcRenderer.invoke('book:compare-pass', projectDir, entryId, familyId),
-    deleteGeneratedEpub: (projectDir: string, familyId?: string) =>
-      ipcRenderer.invoke('book:delete-generated-epub', projectDir, familyId),
-    deleteTtsCopy: (projectDir: string, familyId?: string) =>
-      ipcRenderer.invoke('book:delete-tts-copy', projectDir, familyId),
-    // `familyId` on each of these is WHICH working chain the row the user acted
-    // from is on. Absent is the ordinary case and means the project's only one;
-    // a project with several refuses, naming them, rather than acting on a
-    // version the user is not looking at.
-    ensureNarrationEpub: (projectDir: string, familyId?: string) =>
-      ipcRenderer.invoke('narration:ensure-copy', projectDir, familyId),
-    narrationState: (projectDir: string, familyId?: string) =>
-      ipcRenderer.invoke('narration:state', projectDir, familyId),
-    saveNarrationDeletions: (projectDir: string, elements: string[], familyId?: string) =>
-      ipcRenderer.invoke('narration:save-deletions', projectDir, elements, familyId),
-    /**
-     * One gesture's worth of change, applied to the record in main.
-     *
-     * A DIFFERENCE, never a snapshot — the record is the state and the picker's
-     * deletion sets are a view of it (shared/vlm/narration-deletions.ts).
-     */
-    editNarrationDeletions: (
-      projectDir: string, edit: { strike: string[]; unstrike: string[] }, familyId?: string) =>
-      ipcRenderer.invoke('narration:edit-deletions', projectDir, edit, familyId),
-    /**
-     * One gesture made ON THE TTS COPY: the keys name elements of that file, and
-     * main translates them into the book's before recording them.
-     */
-    strikeInNarrationCopy: (projectDir: string, copyKeys: string[], familyId?: string) =>
-      ipcRenderer.invoke('narration:strike-in-copy', projectDir, copyKeys, familyId),
-    /**
-     * Fold a chapter's opening IN the book — the one gesture that edits the
-     * working copy's own elements. See electron/narration-export.ts for what is
-     * recorded about it and why the archive is never in the path.
-     */
-    mergeChapterOpening: (
-      projectDir: string, openerKey: string, foldedKeys: string[], familyId?: string) =>
-      ipcRenderer.invoke(
-        'book:merge-chapter-opening', projectDir, openerKey, foldedKeys, familyId),
-    exportNarration: (
-      projectDir: string, options?: { stripSupMarkers?: boolean }, familyId?: string) =>
-      ipcRenderer.invoke('narration:export', projectDir, options, familyId),
-    chapterTitles: (projectDir: string, familyId?: string) =>
-      ipcRenderer.invoke('book:chapter-titles', projectDir, familyId),
-    renameChapter: (projectDir: string, file: string, title: string, familyId?: string) =>
-      ipcRenderer.invoke('book:rename-chapter', projectDir, file, title, familyId),
-    /**
-     * List a document the table of contents does NOT name, under a name. The
-     * other half of a rename — see electron/book-chapters.ts, `addBookChapter`.
-     */
-    addChapter: (projectDir: string, file: string, title: string, familyId?: string) =>
-      ipcRenderer.invoke('book:add-chapter', projectDir, file, title, familyId),
-    /**
-     * Say what one element of the book IS — a relabel, written into the working
-     * copy's own markup so every derivation reads the same answer. See
-     * electron/book-categories.ts.
-     *
-     * `chapterName` makes a promotion to `chapter` in an unlisted document one
-     * gesture: the block becomes the opening AND the document is listed under
-     * that name. Left out, an unlisted document comes back with
-     * `needsChapterName`, which is the window's cue to ask for one.
-     */
-    setBlockCategory: (
-      projectDir: string, elementKey: string, categoryId: string, familyId?: string,
-      chapterName?: string) =>
-      ipcRenderer.invoke(
-        'book:set-block-category', projectDir, elementKey, categoryId, familyId, chapterName),
-
-    /**
-     * Say what a RUN of the book's elements are, as ONE gesture.
-     *
-     * What the palette should call when it labels a SELECTION. Sending the
-     * blocks one at a time re-paid the whole fixed cost of a relabel per block —
-     * the book read whole, written, verified, measured twice, recorded, and the
-     * chapter-naming pass behind each one; ~500 ms each on a 20-document book.
-     * Here all of that happens once and a second block costs a few milliseconds.
-     *
-     * Refuses the WHOLE batch, before any byte, on any bad element — a selection
-     * never lands half-applied. Blocks the book already labels this way come
-     * back `written: false` and do not refuse anything.
-     *
-     * Answers `results` in the order asked (one per element, each carrying the
-     * `openingUnnamed` / `needsChapterName` sentences a `chapter` promotion
-     * earns) plus the deduped `rewrittenEntries` for the relayout.
-     *
-     * No `chapterName` here: a name belongs to one chapter, and a batch has no
-     * one name to give. Promote a single block through `setBlockCategory` when
-     * the document also needs listing.
-     */
-    setBlockCategories: (
-      projectDir: string,
-      edits: Array<{ elementKey: string; categoryId: string }>,
-      familyId?: string) =>
-      ipcRenderer.invoke('book:set-block-categories', projectDir, edits, familyId),
-
-    /** What one element says right now — what the text editor opens on. */
-    readBlockText: (projectDir: string, elementKey: string, familyId?: string) =>
-      ipcRenderer.invoke('book:read-block-text', projectDir, elementKey, familyId),
-
-    /** Make the book say what the reader typed, for one element. */
-    setBlockText: (projectDir: string, elementKey: string, newText: string, familyId?: string) =>
-      ipcRenderer.invoke('book:set-block-text', projectDir, elementKey, newText, familyId),
-
-    /**
-     * Put a NEW chapter heading into the book, before `beforeElementKey` — for
-     * the book that lost its chapter headers but kept the body text. The
-     * strike record is carried `+1` in the same transaction, and the naming
-     * pass runs behind it exactly as behind a promotion to `chapter`.
-     */
-    insertChapterHeading: (
-      projectDir: string, beforeElementKey: string, title: string, familyId?: string) =>
-      ipcRenderer.invoke(
-        'book:insert-chapter-heading', projectDir, beforeElementKey, title, familyId),
-
-    /**
-     * Remove an inserted chapter heading — the insert's exact inverse, for
-     * undo. Not a general delete-element; refuses everything that is not the
-     * shape the insert writes.
-     */
-    removeInsertedHeading: (projectDir: string, elementKey: string, familyId?: string) =>
-      ipcRenderer.invoke('book:remove-inserted-heading', projectDir, elementKey, familyId),
   },
   play: {
     startSession: () =>
@@ -4747,22 +4141,20 @@ const electronAPI: ElectronAPI = {
   },
 
   editor: {
-    openWindow: (projectPath: string, options?: { mode?: string }) =>
-      ipcRenderer.invoke('editor:open-window', projectPath, options),
-    openWindowWithBfp: (projectDir: string, sourcePath: string) =>
-      ipcRenderer.invoke('editor:open-window-with-bfp', projectDir, sourcePath),
-    closeWindow: (projectPath: string) =>
-      ipcRenderer.invoke('editor:close-window', projectPath),
     getVersions: (projectDir: string) =>
       ipcRenderer.invoke('editor:get-versions', projectDir),
     // ── Per-listener subscriptions, as every other channel here does them ────
     //
     // These two used to be `on` + a bare `off` that called
     // `removeAllListeners`, which is a channel-wide act performed by one
-    // subscriber: Studio's teardown unsubscribed the picker, and there was no
-    // spelling of "unsubscribe me" that did not. So they return the closure that
-    // removes the listener that was just added — the `tts.onProgress` /
-    // `document.onStageProgress` shape — and there is no `off*` any more.
+    // subscriber: Studio's teardown unsubscribed the editor window, and there
+    // was no spelling of "unsubscribe me" that did not. So they return the
+    // closure that removes the listener that was just added — the
+    // `tts.onProgress` / `document.onStageProgress` shape — and there is no
+    // `off*` any more.
+    //
+    // `onFilesChanged` is misfiled rather than dead: it listens on
+    // `project:files-changed`, which every write handler still broadcasts.
     onWindowClosed: (callback: (projectPath: string) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, projectPath: string) =>
         callback(projectPath);
@@ -4775,24 +4167,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('project:files-changed', listener);
       return () => { ipcRenderer.removeListener('project:files-changed', listener); };
     },
-    /**
-     * Main is holding this window's close open until the editor says it is done.
-     *
-     * The payload is the channel to answer on — one per window, minted by main —
-     * so two editor windows closing at once cannot answer for each other.
-     */
-    onFlushBeforeClose: (callback: (replyChannel: string) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, replyChannel: string) =>
-        callback(replyChannel);
-      ipcRenderer.on('editor:flush-before-close', listener);
-      return () => { ipcRenderer.removeListener('editor:flush-before-close', listener); };
-    },
-    /** "Everything I had is written — you may close." */
-    flushComplete: (replyChannel: string) => {
-      ipcRenderer.send(replyChannel);
-    },
-    saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) =>
-      ipcRenderer.invoke('editor:save-epub', epubPath, epubData),
   },
   analysis: {
     delete: (projectDir: string) =>

@@ -521,10 +521,10 @@ export async function addVariant(
       const title = p.title || filename.replace(/\.[^.]+$/i, '');
       const author = p.authorFull || p.authorLast || 'Unknown';
       await fs.mkdir(path.join(projectDir, 'archive'), { recursive: true });
-      // The stems the project's working chains already own. An ebook version may
-      // be given a chain of its own (addVariantWithChain below), and a chain's
-      // files are named after its source's stem — landing this copy on a taken
-      // stem would make that chain unmintable, so the name steps around them.
+      // The stems the working chains of legacy projects already own. A chain's
+      // files are named after its source's stem, so landing this copy on a taken
+      // stem would collide with files a migrated manifest still records — the
+      // name steps around them.
       const chainStems = new Set(
         (await manifestService.readBookFamilies(projectDir))
           .map((f) => familyStem(f.source).toLowerCase()),
@@ -843,121 +843,5 @@ export async function promoteVariantToArchive(
   } catch (err) {
     console.error('[library-actions] promoteVariantToArchive:', err);
     return { success: false, error: (err as Error).message };
-  }
-}
-
-/**
- * "+ Add version", the whole act: the variant record PLUS — for an EPUB — a
- * working chain of its own, cut ready to narrate.
- *
- * ── RETIRED IN PLACE, Wave 1, 2026-08-16 ───────────────────────────────────
- *
- * NOTHING CALLS THIS ANY MORE. `variant:add` (electron/main.ts) and the CLI's
- * `--add-version` (cli/library.js) both went back to plain `addVariant` when the
- * versions page went flat: the Process button stands on the version row itself
- * now and reads that row's own file, so an imported EPUB does not need — and
- * must not silently acquire — a family, a working copy and a narration cut.
- *
- * It is left standing rather than deleted because the chain machinery it drives
- * is still standing: deleting the chain half is a later wave, after the Foundry
- * window is proven, and this function is one of the callers that has to go with
- * it. Do not wire it back up.
- *
- * Owen (2026-08-16): a book cleaned elsewhere (foundry's EPUB export) is
- * imported as a version and narrated as-is, so the version must carry the
- * Process button. That button lives on a chain's narration line and nowhere
- * else (Owen's identity law: the pipeline knows which file it reads because the
- * user came FROM that file's button) — so an imported EPUB gets the full ladder
- * at import time: family → working copy → narration copy. Each rung is the same
- * act the versions page performs from its own buttons; nothing here is a second
- * implementation, and a book the user then edits re-cuts through the same
- * staleness checks as any other.
- *
- * The chain half can refuse while the variant stands. That refusal is CARRIED
- * BACK, not thrown — the file is in the project either way, exactly as
- * vlm-convert's new-copy path reports it — and the caller shows the sentence
- * verbatim. Audio versions and non-EPUB ebooks return with no chain fields at
- * all: neither has a working chain to be given.
- */
-export async function addVariantWithChain(
-  projectId: string,
-  filePath: string,
-  opts?: { onProgress?: ImportProgress },
-): Promise<{
-  success: boolean; variantId?: string; variant?: ProjectVariant; error?: string;
-  familyId?: string | null; chainRefusal?: string | null;
-}> {
-  const projectDir = manifestService.getProjectPath(projectId);
-  // The families migration runs BEFORE the add, and the order carries two
-  // guarantees: the archive copy's name must step around the stems of chains
-  // the project is ABOUT to have (a legacy project mints its first chain right
-  // here), and a second chain recorded before the migration would strand the
-  // legacy `outputs.epub`/`outputs.ttsEpub` records forever — ensureBookFamilies
-  // early-returns the moment `families` is non-empty, so it must get its turn
-  // first. Its refusal ("this project has no book yet") is an ordinary state
-  // for a fresh project and is not one of ours to report; a WRITE failure is,
-  // and fails the add before any file is copied.
-  let migrationRefusal: string | null;
-  try {
-    migrationRefusal = (await manifestService.ensureBookFamilies(projectDir)).refusal;
-  } catch (err) {
-    console.error('[library-actions] addVariantWithChain migration:', err);
-    return { success: false, error: (err as Error).message };
-  }
-
-  const added = await addVariant(projectId, filePath, opts);
-  if (!added.success || !added.variant) return added;
-  if (added.variant.kind !== 'ebook' || added.variant.format !== 'epub') return added;
-
-  const absPath = path.join(projectDir, added.variant.path.split('/').join(path.sep));
-  try {
-    // A project whose book records still live at `outputs.*` and could not be
-    // migrated must not gain its FIRST family from this side door: the next
-    // migration would early-return past the legacy records and the project's
-    // own book would vanish from every listing that reads families.
-    if (migrationRefusal !== null) {
-      const legacy = (await manifestService.getManifest(projectId)).manifest?.outputs;
-      const families = await manifestService.readBookFamilies(projectDir);
-      if (families.length === 0 && (legacy?.epub || legacy?.ttsEpub)) {
-        throw new Error(
-          `This project still records its book the pre-chain way, and the migration could not run: `
-          + `${migrationRefusal} Minting a chain for the new version now would strand that book's `
-          + 'records, so the version was added without one.'
-        );
-      }
-    }
-
-    const family = await manifestService.addBookFamily(
-      projectDir, { absPath, kind: 'archive-epub' });
-    // The rest of the ladder, now rather than lazily: a chain draws on the
-    // versions page only through its working copy, and the Process button only
-    // through its narration line — a family alone would be an invisible chain.
-    // A first mint clears nothing (ensureBookEpub resets only on RE-mint), and
-    // the narration cut of an unedited copy is the book itself, sup-stripped.
-    await manifestService.ensureBookEpub(projectDir, family.id);
-    const { ensureNarrationEpub, stampElementIds } = await import('./narration-export.js');
-    // Identity BEFORE the cut, for two reasons. The open door normalizes only a
-    // project's SOLE chain — a multi-chain project skips the pass with a notice
-    // — so a second version stamped nowhere else would meet the picker with no
-    // element ids and every strike would refuse downstream. And the stamp
-    // writes bytes into the working copy, so cutting first would leave a
-    // narration copy that reads as stale the first time Process proves it.
-    // Chapter-opening NAMING is deliberately not run: the chapter records are
-    // project-global and belong to the archive original's chain — printing
-    // their names into a different edition would put one book's headings in
-    // another.
-    await stampElementIds(projectDir, family.id);
-    await ensureNarrationEpub(projectDir, undefined, family.id);
-    console.log(
-      `[library-actions] ${added.variant.path} was added with its own working chain, ${family.id}, `
-      + 'and its narration copy is cut.'
-    );
-    return { ...added, familyId: family.id, chainRefusal: null };
-  } catch (err) {
-    console.warn(
-      `[library-actions] ${added.variant.path} was added, but its working chain could not be made: `
-      + `${(err as Error).message}`
-    );
-    return { ...added, familyId: null, chainRefusal: (err as Error).message };
   }
 }
