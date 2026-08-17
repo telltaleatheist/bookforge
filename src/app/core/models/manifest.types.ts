@@ -261,6 +261,33 @@ export interface ResolvedProjectVariant extends ProjectVariant {
   vttExists: boolean;
 }
 
+/**
+ * What is known about one audiobook, and what main is still working out.
+ *
+ * MIRRORS `AudiobookFacts` in electron/versions-page-data.ts; keep the two in
+ * step. It arrives twice: once inside `versions:page-data` (the cached answers,
+ * with anything uncached marked `deriving`), and again on the
+ * `versions:audiobook-facts` push once the derivation lands.
+ *
+ * `deriving` is a THIRD state and the reason this is not a pair of booleans.
+ * Checking whether an m4b carries an embedded transcript means running ffmpeg
+ * over a file that can be three gigabytes, and a page that drew "not checked
+ * yet" as "has no transcript" would offer to generate one over a transcript
+ * that is already in there. Unknown is not ineligible — see
+ * StudioVersionsComponent.transcriptEligibilityKnown.
+ */
+export interface VersionsAudiobookFacts {
+  variantId: string;
+  /** Whether this audiobook has an authoritative transcript that parses. */
+  transcript: 'eligible' | 'ineligible' | 'deriving';
+  /** How many cues that transcript has. Null when there is not one. */
+  cueCount: number | null;
+  /** Whether the recorded content-analysis report still binds to these bytes. */
+  reportStatus: 'valid' | 'stale' | 'missing' | 'deriving';
+  analyzedAt: string | null;
+  flagCount: number | null;
+}
+
 export interface ArchiveEntry {
   path: string;           // Relative: "archive/Title. Author. (2022).pdf"
   role: 'original' | 'translation' | 'export' | 'audiobook';

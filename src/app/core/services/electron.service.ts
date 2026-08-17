@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
-import { FoundryExportRecord, ResolvedFoundryExport, ResolvedProjectVariant, TtsTarget } from '../models/manifest.types';
+import { FoundryExportRecord, ResolvedFoundryExport, ResolvedProjectVariant, TtsTarget, VersionsAudiobookFacts } from '../models/manifest.types';
 import type { AppliedPass } from '../models/manifest.types';
 import type { BlockCategoryProvenance } from '@shared/ocr/text-block';
 import type { TextLayerReport } from '@shared/pdf/text-layer';
@@ -1503,90 +1503,53 @@ export class ElectronService {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Get available versions for a project
-   * Returns all versions of the source document at different pipeline stages
+   * Everything the Versions page draws, in ONE call to main.
+   *
+   * Replaces `editorGetVersions` + `variantList` + `analysisListAudiobooks` on
+   * that page. The first and last are GONE from the app (their handlers had no
+   * other caller); `variantList` stays because other surfaces still ask it.
+   *
+   * Everything here is stat-level and comes back at once. The audiobook facts
+   * that are not — is there an authoritative transcript, does the analysis
+   * report still verify — are answered from main's derivation cache when it
+   * remembers them and reported as `deriving` when it does not; the finished
+   * answers arrive on {@link onVersionsAudiobookFacts}.
    */
-  async editorGetVersions(projectDir: string): Promise<{
+  async versionsPageData(projectId: string): Promise<{
     success: boolean;
     error?: string;
-    versions?: Array<{
-      id: string;
-      type: string;
-      label: string;
-      description: string;
+    variants?: ResolvedProjectVariant[];
+    primaryVariantId?: string;
+    ttsVariantId?: string;
+    /** The content-analysis report row, or null when this book has none. */
+    analysis?: {
+      /** The analyzed file, absolute. Empty string when the report is orphaned. */
       path: string;
-      extension: string;
-      language?: string;
-      modifiedAt?: string;
-      fileSize?: number;
-      editable: boolean;
-      icon: string;
-      /** The file the editor opens for this row, when it is not the row's own. */
-      openPath?: string;
-      /**
-       * The 'generated', 'exported' and 'narration' rows: WHICH working chain
-       * this row is on. Every act taken from the row hands it back, so a project
-       * with two versions acts on the one whose button was pressed.
-       */
-      familyId?: string;
-      /** The 'working' row only: the binding's recorded stage boundaries. */
-      stageBoundaries?: Array<{ stage: string; finishedAt: string }>;
-      /** The 'exported' row only: when Reflow wrote this book, if it was recorded. */
-      builtAt?: string;
-      analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
-      analysisFlagCount?: number;
-      analysisIsCheckpoint?: boolean;
-    }>;
-    /**
-     * The project's working chains — one book line each, in manifest order.
-     *
-     * Not derivable from the rows and not the other way round: a chain whose
-     * working copy has been removed has no row at all, and a page that inferred
-     * the list from the rows would simply stop drawing a book the user can still
-     * erase and re-mint.
-     */
-    families?: Array<{
-      id: string;
-      sourceKind: 'archive-epub' | 'generated-epub';
-      /** The source file's basename — this chain's custody, said in one word. */
-      sourceName: string;
-      /** The archive PDF this chain's book was read out of, or null. */
-      archiveRowId: string | null;
-      /**
-       * Whether erasing this chain's changes would erase anything — main
-       * measures it against the same list the erase clears, and it gates the
-       * working-changes line. See ChainFamily.hasWorkingChanges.
-       */
-      hasWorkingChanges: boolean;
-      /**
-       * Whether this chain's archive-grade book is on disk. It is the "before"
-       * of the chain's FIRST pass and of no other, so it decides whether that
-       * one ledger line can be compared. See ChainFamily.hasSource.
-       */
-      hasSource: boolean;
-    }>;
+      modifiedAt: string;
+      flagCount: number;
+      isCheckpoint: boolean;
+      target: { versionId: string | null; versionType: string; versionLabel: string };
+    } | null;
+    audiobooks?: VersionsAudiobookFacts[];
+    /** True when nothing above is still `deriving` — no push is coming. */
+    audiobookFactsComplete?: boolean;
   }> {
-    if (this.isElectron) {
-      return (window as any).electron.editor.getVersions(projectDir);
-    }
+    if (this.isElectron) return (window as any).electron.versions.pageData(projectId);
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async analysisListAudiobooks(projectId: string): Promise<{
-    success: boolean;
-    targets?: Array<{
-      projectId: string;
-      variantId: string;
-      label: string;
-      descriptor?: string;
-      reportStatus: 'missing' | 'valid' | 'stale';
-      analyzedAt?: string;
-      flagCount?: number;
-    }>;
-    error?: string;
-  }> {
-    if (this.isElectron) return (window as any).electron.analysis.listAudiobooks(projectId);
-    return { success: false, error: 'Not running in Electron' };
+  /**
+   * The audiobook facts main had to work out. Returns the unsubscribe closure.
+   *
+   * Fires once per project whose page-data answer carried a `deriving` fact.
+   * The listener must check the projectId: the broadcast goes to every window,
+   * and a book the user has already navigated away from still finishes.
+   */
+  onVersionsAudiobookFacts(
+    callback: (event: { projectId: string; audiobooks: VersionsAudiobookFacts[] }) => void,
+  ): () => void {
+    if (!this.isElectron) return () => { /* nothing subscribed */ };
+    return (window as any).electron.versions.onAudiobookFacts(callback);
   }
 
   /**

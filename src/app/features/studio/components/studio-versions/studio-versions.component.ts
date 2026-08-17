@@ -11,7 +11,9 @@ import { VariantImportService } from '../../services/variant-import.service';
 import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-view.component';
 import { MetadataEditorComponent, EpubMetadata } from '../../../audiobook/components/metadata-editor/metadata-editor.component';
 import { StudioItem } from '../../models/studio.types';
-import { AppliedPass, AppliedPassKind, ProjectVariant, ResolvedProjectVariant } from '../../../../core/models/manifest.types';
+import {
+  AppliedPass, AppliedPassKind, ProjectVariant, ResolvedProjectVariant, VersionsAudiobookFacts,
+} from '../../../../core/models/manifest.types';
 import { DesktopSelectComponent, DesktopSelectItems, DialogService } from '../../../../creamsicle-desktop';
 import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-target';
 import type { PassDiffEntry } from '@shared/processing/pass-types';
@@ -32,80 +34,23 @@ import { NarrationModalComponent } from '../narration-modal/narration-modal.comp
 import type { ChainPassRequest, ProcessingPassKind } from '@shared/processing/pass-types';
 import { BOOK_PASS_OPTIONS, type BookPassOption } from '@shared/processing/book-passes';
 
-interface VersionRow {
-  id: string; type: string; label: string; description: string;
-  path: string; extension: string; language?: string;
-  modifiedAt?: string; fileSize?: number; editable: boolean; icon: string;
-  diffRecordPath?: string;   // presence => this version has a pre-computed diff to review
-  diffOriginalPath?: string; // the original it was computed against (resolved locally, if it exists)
-  /** The file the editor is pointed at for this row, when it is not this row's own. */
-  openPath?: string;
-  /**
-   * The 'generated', 'exported' and 'narration' rows: WHICH working chain this
-   * row belongs to.
-   *
-   * Owen, 2026-08-10: "having the epub listed under documents instead of
-   * versions breaks the chain of custody." Every act this page performs from a
-   * row hands this back to main, which is what makes "press the button on the
-   * version you mean" a mechanism rather than an instruction.
-   */
-  familyId?: string;
-  /** The 'archive' row only: the manifest variant that IS this file. */
-  variantId?: string;
-  /** The 'archive' and 'working' rows: the archive original this family is bound to. */
-  primaryPath?: string;
-  /** The 'working' row only: the binding's recorded stage boundaries. */
-  stageBoundaries?: Array<{ stage: string; finishedAt: string }>;
-  /** The 'exported' row only: when Reflow wrote this book, if it was recorded. */
-  builtAt?: string;
-  /**
-   * The 'generated' row only: whether these bytes are the page reader's own
-   * output, or the working copy adopted when the project was migrated. It says
-   * which book erasing changes goes back to, so the confirmation can be true.
-   */
-  generatedOrigin?: 'cast' | 'adopted';
-  /**
-   * The 'exported' row only: the book's LEDGER, oldest first.
-   *
-   * The passes the user committed to, each owning a snapshot of the book as it
-   * left it and (when the pass recorded one) the diff frozen at that instant.
-   * These are the indented lines under the book; the working-changes line beside
-   * them is VIRTUAL and is deliberately not in this list.
-   */
-  ledger?: LedgerRowEntry[];
-  // Present only on the synthetic 'analysis' entry (its durable version pin):
-  analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
-  analysisFlagCount?: number;
-  analysisIsCheckpoint?: boolean;
-}
-
 /**
- * One ledger entry as `editor:get-versions` hands it over.
+ * The content-analysis report row, as `versions:page-data` hands it over.
  *
- * `hasReceipt` and `receiptPath` are both here and are not the same question:
- * the path is where the frozen diff WOULD be, and the boolean is whether main
- * found it. A pass that recorded no diff (translate does not) and a pass whose
- * diff went missing both come back with `hasReceipt: false`, and the Review
- * button is drawn disabled saying so rather than left off the line.
+ * This is all that survives of `editor:get-versions`. That handler measured the
+ * whole document CHAIN — archive, working copy, cast, book, ledger, narration —
+ * and Wave 1 (2026-08-16) stopped drawing every one of those rows; the flat page
+ * read exactly ONE synthetic entry out of its answer, and this is it. The
+ * handler was retired with the call on 2026-08-17.
  */
-interface LedgerRowEntry {
-  id: string;
-  kind: string;
-  label: string;
-  createdAt: string;
-  hasReceipt: boolean;
-  /** The book exactly as this pass left it — the entry opens and exports it. */
-  snapshotPath: string;
-  /**
-   * Whether that book is where the record says it is.
-   *
-   * The same shape as `hasReceipt` and asked of a different file, because the
-   * two affordances read different things: Review changes reads the frozen
-   * word-diff, Compare reads the book itself. A pass can have one and not the
-   * other — translate freezes no diff at all, and its snapshot is right there.
-   */
-  hasSnapshot: boolean;
-  receiptPath: string | null;
+interface AnalysisRow {
+  /** The analyzed file, absolute. Empty when the report is orphaned. */
+  path: string;
+  modifiedAt: string;
+  flagCount: number;
+  isCheckpoint: boolean;
+  /** The durable version this report is pinned to. `versionId: null` is orphaned. */
+  target: { versionId: string | null; versionType: string; versionLabel: string };
 }
 
 /** The TTS sentence cache for this project (per-sentence audio already rendered),
@@ -462,7 +407,7 @@ const AUDIO_EXTS = new Set([
             <div class="rinfo">
               <div class="rlabel">
                 Content analysis
-                @if (a.analysisIsCheckpoint) { <span class="ext">partial</span> }
+                @if (a.isCheckpoint) { <span class="ext">partial</span> }
               </div>
               <div class="rdesc">{{ analysisRowDesc(a) }}</div>
             </div>
@@ -1263,17 +1208,14 @@ export class StudioVersionsComponent {
   readonly generateAnalysis = output<StudioAnalysisTarget>(); // opens the analysis modal, locked to this source
 
   /**
-   * The rows `editor:get-versions` reports, as main measured them.
+   * The content-analysis report row, when this book has one.
    *
-   * Wave 1 (2026-08-16): the only one this page still draws is the synthetic
-   * `analysis` entry (see `analysisEntry`). The document rows — the archive,
-   * the working copy, the cast, the book and its narration copy — were the book
-   * CHAIN's, and the chain is not rendered any more; the versions the user sees
-   * are the manifest's own variant records. The answer's `families` half is not
-   * read at all, which is what makes a legacy project carrying `families[]` open
-   * as an ordinary flat page rather than crashing.
+   * A SIGNAL now rather than a find() over a list of document rows. Wave 1
+   * (2026-08-16) stopped drawing every other row `editor:get-versions` produced,
+   * so what was left was a twelve-field list searched for one entry; the
+   * consolidated `versions:page-data` sends that entry and nothing else.
    */
-  readonly versions = signal<VersionRow[]>([]);
+  readonly analysisEntry = signal<AnalysisRow | null>(null);
   readonly loading = signal(false);
   readonly cache = signal<SentenceCacheInfo | null>(null);
   // The TTS voice that rendered this project's audio (from the durable session's
@@ -2149,27 +2091,24 @@ export class StudioVersionsComponent {
   }
 
   // ── Content analysis (one report per book, pinned to a specific version) ────
-  /** The synthetic 'analysis' row from editor:get-versions, if a report exists. */
-  readonly analysisEntry = computed(() => this.versions().find(v => v.type === 'analysis') ?? null);
   /** The durable version id the report is pinned to (null when orphaned). */
-  readonly analysisTargetId = computed(() => this.analysisEntry()?.analysisTarget?.versionId ?? null);
+  readonly analysisTargetId = computed(() => this.analysisEntry()?.target.versionId ?? null);
 
   /** One-line summary for the Analysis item: flag count + which version it's pinned to. */
-  analysisRowDesc(a: VersionRow): string {
-    const flags = a.analysisFlagCount ?? 0;
-    const t = a.analysisTarget;
-    const attached = t?.versionId
+  analysisRowDesc(a: AnalysisRow): string {
+    const t = a.target;
+    const attached = t.versionId
       ? `on ${t.versionLabel || 'a version'}`
       : 'analyzed version no longer available';
-    const parts = [`${flags} flag${flags !== 1 ? 's' : ''} · ${attached}`];
+    const parts = [`${a.flagCount} flag${a.flagCount !== 1 ? 's' : ''} · ${attached}`];
     if (a.modifiedAt) parts.push(this.fmtDate(a.modifiedAt));
     return parts.join(' · ');
   }
 
   /** Re-run the analysis on the same version it's currently pinned to. */
-  regenerateAnalysis(a: VersionRow): void {
-    const t = a.analysisTarget;
-    if (!t || !t.versionId) return; // orphaned report — nothing to re-target
+  regenerateAnalysis(a: AnalysisRow): void {
+    const t = a.target;
+    if (!t.versionId) return; // orphaned report — nothing to re-target
     this.generateAnalysis.emit({
       kind: 'document', projectId: this.projectId(),
       versionId: t.versionId, versionType: t.versionType, versionLabel: t.versionLabel,
@@ -2187,10 +2126,6 @@ export class StudioVersionsComponent {
     const id = this.analysisTargetId();
     return !!id && v.id === id;
   }
-  docIsAnalysisTarget(v: VersionRow): boolean {
-    const id = this.analysisTargetId();
-    return !!id && v.id === id;
-  }
 
   async emitGenerateAnalysisVariant(v: ResolvedProjectVariant): Promise<void> {
     // The analysis job reads this exact file; queueing it against a path that isn't
@@ -2201,12 +2136,6 @@ export class StudioVersionsComponent {
       kind: 'document', projectId: this.projectId(),
       versionId: v.id, versionType: v.kind, versionLabel: this.variantTitle(v),
       path: abs,
-    });
-  }
-  emitGenerateAnalysisDoc(v: VersionRow): void {
-    this.generateAnalysis.emit({
-      kind: 'document', projectId: this.projectId(),
-      versionId: v.id, versionType: v.type, versionLabel: v.label, path: v.path,
     });
   }
 
@@ -2287,6 +2216,23 @@ export class StudioVersionsComponent {
     });
     inject(DestroyRef).onDestroy(unwatchExports);
 
+    // ── The slow audiobook facts, when main has finished working them out ────
+    //
+    // `versions:page-data` answers from the derivation cache and does not wait
+    // for a fact it does not have: it says `deriving` and works it out behind
+    // the page. This is where that answer arrives. Nothing else about the page
+    // is re-read — what changed is which audiobooks have a transcript, which is
+    // exactly what these two signals hold.
+    //
+    // The projectId is CHECKED. The broadcast goes to every window, and a book
+    // the user has already navigated away from still finishes its derivation;
+    // folding its answer in here would mark another book's audiobooks eligible.
+    const unwatchFacts = this.electron.onVersionsAudiobookFacts((event) => {
+      if (event.projectId !== this.projectId()) return;
+      this.applyAudiobookFacts(event.audiobooks);
+    });
+    inject(DestroyRef).onDestroy(unwatchFacts);
+
     // An export from a Foundry project no book of ours claims. Main recorded
     // NOTHING — said here rather than swallowed, because the file exists and the
     // user is entitled to know it went nowhere and why.
@@ -2308,6 +2254,26 @@ export class StudioVersionsComponent {
     return this.projectDir().split(/[\\/]/).filter(Boolean).pop() || '';
   }
 
+  /**
+   * The page's ONE entry call, and what it does with each half of the answer.
+   *
+   * Owen, 2026-08-17: "opening any book's versions page takes 5-10 seconds."
+   * This used to be two IPCs, and the second of them — `analysis:list-audiobooks`
+   * — SHA-256'd every multi-gigabyte audiobook in the book on every visit just to
+   * decide whether the Generate sentences button should be enabled. Measured on
+   * the real library that was 4.0-9.6 s of a 4.5-9.7 s page load.
+   *
+   * `versions:page-data` answers everything stat-level at once. The audiobook
+   * facts it cannot answer from main's derivation cache come back marked
+   * `deriving` and land later on the broadcast this component subscribes to in
+   * its constructor — so the rows are on screen immediately and the one button
+   * that depends on a slow fact says it is still checking, exactly as it did
+   * before, but for a second instead of ten.
+   *
+   * Still called `loadVariants` by every act that changes a variant (set primary,
+   * delete, save metadata) because that is still what it does for them: re-read
+   * this book's rows.
+   */
   private async loadVariants(): Promise<void> {
     const generation = ++this.variantLoadGeneration;
     const pid = this.projectId();
@@ -2315,44 +2281,60 @@ export class StudioVersionsComponent {
       this.variantList.set([]);
       this.primaryId.set(undefined);
       this.ttsId.set(undefined);
+      this.analysisEntry.set(null);
       this.transcriptEligibleVariantIds.set(new Set());
       this.transcriptEligibilityKnown.set(false);
       return;
     }
     this.transcriptEligibilityKnown.set(false);
     try {
-      const [res, analysisTargets] = await Promise.all([
-        this.electron.variantList(pid),
-        this.electron.analysisListAudiobooks(pid),
-      ]);
+      const res = await this.electron.versionsPageData(pid);
       if (generation !== this.variantLoadGeneration || this.projectId() !== pid) return;
-      if (res.success && res.variants) {
-        // Each row carries the absPath main resolved against THIS project's dir.
-        this.variantList.set(res.variants);
-        this.primaryId.set(res.primaryVariantId);
-        this.ttsId.set(res.ttsVariantId);
-      } else {
+      if (!res.success || !res.variants) {
         // A FAILED read (e.g. a transient manifest lock on a synced drive) is NOT
         // "this book has no versions" — do not wipe the list, or every version
-        // appears to vanish. Keep what's shown and log; the next refresh retries.
-        // This only ever keeps rows for the SAME project: the generation guard above
-        // discards a superseded load, and load() clears both lists synchronously
-        // when the selected book changes, so there is never another book's row left
-        // here to be kept.
-        console.warn('[studio-versions] variantList failed; keeping current list:', res.error);
+        // appears to vanish. Keep what's shown and say so; the next refresh
+        // retries. This only ever keeps rows for the SAME project: the generation
+        // guard above discards a superseded load, and load() clears the lists
+        // synchronously when the selected book changes, so there is never another
+        // book's row left here to be kept.
+        console.warn('[studio-versions] versionsPageData failed; keeping current list:', res.error);
+        this.versionsError.set(
+          `This book's versions could not be read, so what's below may be out of date: `
+          + `${res.error || 'no reason given'}`);
+        return;
       }
-      if (analysisTargets.success && analysisTargets.targets) {
-        this.transcriptEligibleVariantIds.set(new Set(analysisTargets.targets.map(target => target.variantId)));
-        this.transcriptEligibilityKnown.set(true);
-      } else {
-        // Without a successful authoritative check, do not offer Generate for a
-        // possibly embedded transcript and risk replacing it by mistake.
-        this.transcriptEligibleVariantIds.set(new Set());
-        console.warn('[studio-versions] transcript eligibility failed:', analysisTargets.error);
-      }
+      // Each row carries the absPath main resolved against THIS project's dir.
+      this.variantList.set(res.variants);
+      this.primaryId.set(res.primaryVariantId);
+      this.ttsId.set(res.ttsVariantId);
+      this.analysisEntry.set(res.analysis ?? null);
+      this.versionsError.set(null);
+      this.applyAudiobookFacts(res.audiobooks ?? []);
     } catch (err) {
-      console.warn('[studio-versions] variantList threw; keeping current list:', err);
+      console.warn('[studio-versions] versionsPageData threw; keeping current list:', err);
+      this.versionsError.set(
+        `This book's versions could not be read, so what's below may be out of date: `
+        + `${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  /**
+   * Fold main's audiobook facts into the two signals the buttons read.
+   *
+   * The rule this encodes, and the reason it is one function rather than two
+   * assignments at each call site: an audiobook whose transcript is still being
+   * checked is NOT an audiobook without one. It stays out of the eligible set
+   * (so nothing claims it has synced text) AND holds `transcriptEligibilityKnown`
+   * down (so the button is drawn disabled, saying the check is running, rather
+   * than offering to transcribe over a transcript that may already be inside the
+   * file). Only when every audiobook has a settled answer does the page act on
+   * what it knows.
+   */
+  private applyAudiobookFacts(facts: VersionsAudiobookFacts[]): void {
+    this.transcriptEligibleVariantIds.set(
+      new Set(facts.filter(f => f.transcript === 'eligible').map(f => f.variantId)));
+    this.transcriptEligibilityKnown.set(facts.every(f => f.transcript !== 'deriving'));
   }
 
   /** Who narrated an audiobook: its own narrator metadata (user-set, or from an
@@ -2760,7 +2742,7 @@ export class StudioVersionsComponent {
     // means the keep-the-list-on-failure policy below can only ever preserve rows
     // that belong to THIS book.
     if (this.loadedForProjectDir() !== dir) {
-      this.versions.set([]);
+      this.analysisEntry.set(null);
       this.variantList.set([]);
       this.primaryId.set(undefined);
       this.transcriptEligibleVariantIds.set(new Set());
@@ -2791,40 +2773,15 @@ export class StudioVersionsComponent {
     if (!dir) { this.loading.set(false); return; }
     this.loading.set(true);
     try {
-      const res = await this.electron.editorGetVersions(dir);
+      // The page's rows, FIRST and in one call. Everything after this is a
+      // detail hanging off a row that is already drawn — the sentence cache
+      // line, the provenance badges, whether Start over has anything to remove
+      // — so none of them stands between the user and the versions.
+      await this.loadVariants();
       if (superseded()) return;
-      if (res.success && res.versions) {
-        this.versions.set(res.versions as VersionRow[]);
-        // There is no `res.families` any more. It was the project's working
-        // chains, and Wave 1 (2026-08-16) stopped drawing them; the chain
-        // deletion wave stopped sending them. A legacy project that carries
-        // `families[]` in its manifest still opens as an ordinary flat page —
-        // main reads the array to PLACE this project's rows, no migration is
-        // performed, and nothing is written back.
-        this.versionsError.set(null);
-      } else {
-        // A FAILED read (e.g. a transient manifest lock on a synced drive) is NOT
-        // "this book has no documents" — do not wipe the list, or every version
-        // appears to vanish. Keep what's shown and log; the next refresh retries.
-        // Safe because the clear above already guaranteed anything still shown was
-        // loaded for THIS book. (Mirrors loadVariants below.)
-        //
-        // Kept, but no longer kept QUIETLY: a failure that persists leaves a
-        // stale or empty list with nothing on screen to explain it.
-        console.warn('[studio-versions] editorGetVersions failed; keeping current list:', res.error);
-        this.versionsError.set(
-          `This book's versions could not be read, so what's below may be out of date: `
-          + `${res.error || 'no reason given'}`);
-      }
-    } catch (err) {
-      if (superseded()) return;
-      console.warn('[studio-versions] editorGetVersions threw; keeping current list:', err);
-      this.versionsError.set(
-        `This book's versions could not be read, so what's below may be out of date: `
-        + `${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      // Only the load that still owns the UI may clear the spinner — otherwise this
-      // one's exit would say "done" about a newer book that is still loading.
+      // Only the load that still owns the UI may clear the spinner — otherwise
+      // this one's exit would say "done" about a newer book that is still loading.
       if (!superseded()) this.loading.set(false);
     }
     if (superseded()) return;
@@ -2833,8 +2790,6 @@ export class StudioVersionsComponent {
     await this.loadPassDiffs(dir, superseded);
     if (superseded()) return;
     await this.loadResetPlan(dir, superseded);
-    if (superseded()) return;
-    await this.loadVariants();
   }
 
   /**

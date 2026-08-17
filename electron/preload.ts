@@ -165,6 +165,24 @@ export interface PluginProgress {
   percentage?: number;
 }
 
+/**
+ * What is known about one audiobook, and what is still being worked out.
+ *
+ * `deriving` is a THIRD state and the whole reason this has one: an audiobook
+ * whose transcript has not been checked yet is not an audiobook without one, and
+ * the Versions page must never offer to overwrite a transcript it has not looked
+ * for. The shape is electron/versions-page-data.ts's `AudiobookFacts`, restated
+ * here because preload declares its own surface.
+ */
+export interface VersionsAudiobookFacts {
+  variantId: string;
+  transcript: 'eligible' | 'ineligible' | 'deriving';
+  cueCount: number | null;
+  reportStatus: 'valid' | 'stale' | 'missing' | 'deriving';
+  analyzedAt: string | null;
+  flagCount: number | null;
+}
+
 export interface SkippedChunk {
   chapterTitle: string;
   chunkIndex: number;
@@ -2219,30 +2237,6 @@ export interface ElectronAPI {
     }>;
   };
   editor: {
-    getVersions: (projectDir: string) => Promise<{
-      success: boolean;
-      error?: string;
-      versions?: Array<{
-        id: string;
-        type: string;
-        label: string;
-        description: string;
-        path: string;
-        extension: string;
-        language?: string;
-        modifiedAt?: string;
-        fileSize?: number;
-        editable: boolean;
-        icon: string;
-        diffRecordPath?: string;
-        diffOriginalPath?: string;
-        /** The 'generated'/'exported'/'narration' rows: which working chain. */
-        familyId?: string;
-        analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
-        analysisFlagCount?: number;
-        analysisIsCheckpoint?: boolean;
-      }>;
-    }>;
     /** Returns the unsubscribe closure for THIS listener (see the impl). */
     onWindowClosed: (callback: (projectPath: string) => void) => () => void;
     /** Returns the unsubscribe closure for THIS listener (see the impl). */
@@ -2250,19 +2244,35 @@ export interface ElectronAPI {
   };
   analysis: {
     delete: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
-    listAudiobooks: (projectId: string) => Promise<{
+  };
+  /**
+   * The Versions page's entry payload, and the push that finishes it.
+   *
+   * `pageData` is stat-level and returns immediately. Any audiobook fact it
+   * could not answer from the derivation cache comes back as `deriving` and
+   * arrives later on `onAudiobookFacts` — see electron/versions-page-data.ts.
+   */
+  versions: {
+    pageData: (projectId: string) => Promise<{
       success: boolean;
-      targets?: Array<{
-        projectId: string;
-        variantId: string;
-        label: string;
-        descriptor?: string;
-        reportStatus: 'missing' | 'valid' | 'stale';
-        analyzedAt?: string;
-        flagCount?: number;
-      }>;
       error?: string;
+      variants?: unknown[];
+      primaryVariantId?: string;
+      ttsVariantId?: string;
+      analysis?: {
+        path: string;
+        modifiedAt: string;
+        flagCount: number;
+        isCheckpoint: boolean;
+        target: { versionId: string | null; versionType: string; versionLabel: string };
+      } | null;
+      audiobooks?: VersionsAudiobookFacts[];
+      audiobookFactsComplete?: boolean;
     }>;
+    /** Returns the unsubscribe closure for THIS listener (see the impl). */
+    onAudiobookFacts: (
+      callback: (event: { projectId: string; audiobooks: VersionsAudiobookFacts[] }) => void,
+    ) => () => void;
   };
   pipeline: {
     deleteCleanup: (projectPath: string) => Promise<{
@@ -4115,8 +4125,6 @@ const electronAPI: ElectronAPI = {
   },
 
   editor: {
-    getVersions: (projectDir: string) =>
-      ipcRenderer.invoke('editor:get-versions', projectDir),
     // ── Per-listener subscriptions, as every other channel here does them ────
     //
     // These two used to be `on` + a bare `off` that called
@@ -4145,8 +4153,24 @@ const electronAPI: ElectronAPI = {
   analysis: {
     delete: (projectDir: string) =>
       ipcRenderer.invoke('analysis:delete', projectDir),
-    listAudiobooks: (projectId: string) =>
-      ipcRenderer.invoke('analysis:list-audiobooks', projectId),
+  },
+  versions: {
+    pageData: (projectId: string) =>
+      ipcRenderer.invoke('versions:page-data', projectId),
+    // The finished audiobook facts, once main has worked out what the cache did
+    // not already know. Per-listener unsubscribe, as everything else here does
+    // it — a bare removeAllListeners would take the page's subscription away
+    // from whichever window unmounted second.
+    onAudiobookFacts: (
+      callback: (event: { projectId: string; audiobooks: VersionsAudiobookFacts[] }) => void,
+    ) => {
+      const listener = (
+        _e: Electron.IpcRendererEvent,
+        event: { projectId: string; audiobooks: VersionsAudiobookFacts[] },
+      ) => callback(event);
+      ipcRenderer.on('versions:audiobook-facts', listener);
+      return () => { ipcRenderer.removeListener('versions:audiobook-facts', listener); };
+    },
   },
   pipeline: {
     deleteCleanup: (projectPath: string) =>
