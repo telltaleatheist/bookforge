@@ -547,6 +547,34 @@ test('sync-conflict and .bak manifests are reported and never opened', run(async
     'the real manifest is the truth; the conflict copy was never read');
 }));
 
+test('AppleDouble and OS droppings never become versions, whatever they shadow', run(async (lib) => {
+  lib.project(GEN1, bareManifest(GEN1), {
+    ...GEN1_FILES,
+    // `._<name>` passes every extension test of the file it shadows — the first
+    // dry run over the real library would have minted seven "PDF versions" that
+    // are 4 KB of resource-fork metadata each.
+    'archive/._A Book. Author, An. (2001).pdf': 'applesauce',
+    'archive/.DS_Store': 'finder',
+    'source/._exported.epub': 'applesauce',
+    'output/Thumbs.db': 'windows',
+  });
+  const r = await lib.one(GEN1, true);
+  const mintedPaths = r.minted.map((m) => m.variant.path);
+  for (const junk of mintedPaths.filter((p) => /(^|\/)(\._|\.DS_Store|Thumbs\.db)/.test(p))) {
+    assert.fail(`minted a version from OS junk: ${junk}`);
+  }
+  const junkSkips = r.skipped.filter((s) => s.reason === 'os-metadata').map((s) => s.relPath).sort();
+  assert.deepStrictEqual(junkSkips, [
+    'archive/.DS_Store',
+    'archive/._A Book. Author, An. (2001).pdf',
+    'output/Thumbs.db',
+    'source/._exported.epub',
+  ]);
+  for (const j of junkSkips) {
+    assert.ok(r.clutter.includes(j), `${j} should be listed as clutter for a person to sweep`);
+  }
+}));
+
 // ── The absolute-path scan ─────────────────────────────────────────────────
 
 test('an old-root path whose file IS here is repointed, project-relative', run(async (lib) => {

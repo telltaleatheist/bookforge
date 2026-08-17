@@ -144,6 +144,7 @@ const SKIP_WORDING = {
   sidecar: 'sidecar of',
   backup: 'backup copy',
   'not-a-book': 'not a book or a narration',
+  'os-metadata': 'macOS metadata junk',
   folder: 'a folder, not looked into',
 };
 

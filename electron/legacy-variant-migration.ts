@@ -164,6 +164,7 @@ export interface SkippedFile {
     | 'sidecar'                // <m4b>.vtt / .sidecars.json / .cover.* — travels with its m4b
     | 'backup'                 // .prebak / .preadremoval-bak
     | 'not-a-book'             // an extension this module does not claim to know
+    | 'os-metadata'            // ._AppleDouble / .DS_Store / Thumbs.db — junk that shadows a real extension
     | 'folder';                // a directory that is not an exploded working copy
   /** Which variant, for an already-listed file; which m4b, for a sidecar. */
   detail?: string;
@@ -451,6 +452,16 @@ async function readBookFolder(
     }
     if (!entry.isFile()) continue;
 
+    // macOS filesystem droppings, before ANY other test. An AppleDouble file is
+    // named `._<original>`, so it PASSES the extension test of whatever it
+    // shadows — the first dry run over the real library would have minted seven
+    // "PDF versions" that are 4 KB of resource-fork metadata. Junk by name, and
+    // clutter in the report so a person sees it can be swept away.
+    if (entry.name.startsWith('._') || entry.name === '.DS_Store' || entry.name === 'Thumbs.db') {
+      report.skipped.push({ relPath: rel, reason: 'os-metadata' });
+      report.clutter.push(rel);
+      continue;
+    }
     if (STRAY_MANIFEST.test(entry.name)) { report.clutter.push(rel); continue; }
     if (BACKUP_NAME.test(entry.name)) {
       report.skipped.push({ relPath: rel, reason: 'backup' });
