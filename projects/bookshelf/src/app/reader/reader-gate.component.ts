@@ -28,7 +28,11 @@ import { ReaderSummary } from '../models/types';
               <span class="name">Add reader</span>
             </button>
           </div>
-          @if (readers().length === 0 && loaded()) {
+          <!-- The error and the "none yet" hint are mutually exclusive on
+               purpose: a list we could not load must never read as an empty one. -->
+          @if (error()) {
+            <p class="error">{{ error() }}</p>
+          } @else if (readers().length === 0 && loaded()) {
             <p class="hint">No readers yet — add one to start tracking your listening.</p>
           }
           <!-- Profiles are analytics-only and the same books are available to
@@ -108,7 +112,15 @@ export class ReaderGateComponent implements OnInit {
   async ngOnInit(): Promise<void> {
     try {
       this.readers.set(await this.readerSvc.listReaders());
-    } catch { /* server unreachable */ }
+    } catch (e) {
+      // SHOW it. The list used to come back as [] whatever went wrong, so a
+      // server that could not read its reader store looked identical to a
+      // library nobody has an account on — and this screen then invited the
+      // user to create the account they already have.
+      this.error.set(
+        `Could not load the reader list: ${(e as Error).message}. `
+        + 'Existing readers are not shown — this is not "there are none".');
+    }
     this.loaded.set(true);
   }
 

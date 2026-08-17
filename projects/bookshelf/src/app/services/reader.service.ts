@@ -1,5 +1,5 @@
 import { computed, inject, Injectable, signal, WritableSignal } from '@angular/core';
-import { ApiService } from './api.service';
+import { ApiService, ReaderListError } from './api.service';
 import { ServerConfigService } from './server-config.service';
 import { ReaderSummary } from '../models/types';
 
@@ -57,10 +57,18 @@ export class ReaderService {
       this.addTo(this.readyServers, serverId);
       return;
     }
-    // A successful readers listing means the server supports profiles. (Older
-    // servers return the SPA index.html for unknown routes, which throws.)
+    // A successful readers listing means the server supports profiles. So does
+    // a FAILING one that answered in JSON — a store it could not read is a
+    // server that has profiles and is having trouble, not one without them.
+    // Only the SPA-index.html answer (ReaderListError.unsupported) is "no
+    // profiles here"; treating a 503 as that would silently drop the gate.
     let supported = false;
-    try { await this.api.listReaders(serverId); supported = true; } catch { supported = false; }
+    try {
+      await this.api.listReaders(serverId);
+      supported = true;
+    } catch (e) {
+      supported = !(e instanceof ReaderListError && e.unsupported);
+    }
     if (supported) this.addTo(this.supportedServers, serverId);
 
     const tok = this.tokens.get(serverId);

@@ -5,6 +5,19 @@ import { LocalLibraryService, LOCAL_SERVER_ID, isLocalPath, localIdOf } from './
 import { OfflineStoreService } from './offline-store.service';
 
 /**
+ * Why the reader list could not be produced. `unsupported` means this server
+ * has no profiles endpoint at all (an older build) — every other failure is a
+ * server that HAS one and could not answer, which the gate must show rather
+ * than draw as an empty list.
+ */
+export class ReaderListError extends Error {
+  constructor(message: string, readonly unsupported: boolean) {
+    super(message);
+    this.name = 'ReaderListError';
+  }
+}
+
+/**
  * Thin typed wrapper over the Bookshelf HTTP API. The web app runs in a phone
  * browser, so everything goes over fetch — there is no Electron IPC here.
  * Every URL is built through ServerConfigService so the native (Capacitor)
@@ -87,7 +100,15 @@ export class ApiService {
    *  HTTP-caches natively (instant, low-memory, no giant string to break into an
    *  "alt" placeholder). null → no cover yet; the caller shows the placeholder.
    *  Mirrors getCover()'s routing but yields a URL instead of a data: string. */
-  async coverSrc(book: Pick<Audiobook, 'projectId' | 'downloadPath' | 'originServerId'>): Promise<string | null> {
+  async coverSrc(
+    book: Pick<Audiobook, 'projectId' | 'downloadPath' | 'originServerId'>,
+    // The pixel width the caller will actually draw. The shelf asks for
+    // SHELF_COVER_WIDTH and gets a server-side thumbnail — measured on a
+    // 50-book shelf of Owen's real covers, 14.4 MB down to 1.5 MB. Omitted
+    // means the full-size art, which is what the player's full-bleed cover and
+    // the offline downloader both want.
+    width?: number,
+  ): Promise<string | null> {
     // The ladder, in order of preference: an already-cached cover → the art
     // embedded in the book's OWN on-device m4b → the origin server (only for a book
     // that came from one) → null (the caller's 🎧 placeholder, a true last resort).
@@ -108,6 +129,9 @@ export class ApiService {
       const params = new URLSearchParams();
       if (book.projectId) params.set('projectId', book.projectId);
       if (book.downloadPath) params.set('downloadPath', book.downloadPath);
+      // An older server ignores `w` and serves the original — the picture is
+      // right either way, only the bytes differ, so there is nothing to detect.
+      if (width) params.set('w', String(width));
       return this.u(`/api/cover-image?${params.toString()}`, book.originServerId);
     };
 
@@ -122,11 +146,12 @@ export class ApiService {
     return serverCover();
   }
 
-  async getEbookCover(relativePath: string, serverId?: string): Promise<string | null> {
+  async getEbookCover(relativePath: string, serverId?: string, width?: number): Promise<string | null> {
     if (serverId === LOCAL_SERVER_ID || isLocalPath(relativePath)) {
       return this.local.assetUrl(localIdOf(relativePath), 'cover');
     }
-    const res = await fetch(this.u(`/api/ebook-cover?path=${encodeURIComponent(relativePath)}`, serverId));
+    const w = width ? `&w=${width}` : '';
+    const res = await fetch(this.u(`/api/ebook-cover?path=${encodeURIComponent(relativePath)}${w}`, serverId));
     const data = await res.json();
     return data.cover ?? null;
   }
@@ -452,10 +477,34 @@ export class ApiService {
   // ── Readers + analytics ───────────────────────────────────────────────────────
   // Reader identity is PER SERVER — each of these takes an optional serverId so
   // the app can hold a distinct login on every connected server at once.
+  /**
+   * The sign-in list. An error is THROWN, never flattened into [].
+   *
+   * `data.readers ?? []` used to swallow the 503 the server sends when it
+   * cannot read the reader store, so an unreadable store looked exactly like a
+   * library nobody has an account on — and the gate offered to create one.
+   * `ReaderListError.unsupported` keeps the other case distinct: an older
+   * server answers unknown routes with the SPA's index.html, and that really is
+   * "this server has no profiles".
+   */
   async listReaders(serverId?: string): Promise<ReaderSummary[]> {
-    const res = await fetch(this.u('/api/readers', serverId));
-    const data = await res.json();
-    return data.readers ?? [];
+    let res: globalThis.Response;
+    try {
+      res = await fetch(this.u('/api/readers', serverId));
+    } catch (e) {
+      throw new ReaderListError((e as Error).message || 'the server could not be reached', false);
+    }
+    if (!(res.headers.get('content-type') || '').includes('application/json')) {
+      throw new ReaderListError('this server does not have reader profiles', true);
+    }
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new ReaderListError(data?.error || `/api/readers failed (HTTP ${res.status})`, false);
+    }
+    if (!Array.isArray(data?.readers)) {
+      throw new ReaderListError('/api/readers returned a malformed body (no readers array)', false);
+    }
+    return data.readers;
   }
 
   async createReader(name: string, pin?: string, serverId?: string): Promise<{ token: string; reader: ReaderSummary }> {

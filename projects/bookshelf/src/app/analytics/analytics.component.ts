@@ -318,8 +318,19 @@ export class AnalyticsComponent implements OnInit {
     return Math.round((seconds / max) * 100);
   }
 
-  bookName(path: string): string {
-    return path.split(/[/\\]/).pop()?.replace(/\.[^.]+$/, '') || 'Unknown';
+  /**
+   * A name for a row whose event carried no title. The key is now a variant
+   * anchor (`v:<projectId>/<variantId>`) on any server that has been migrated,
+   * and a library-relative path on one that has not — so read both. The
+   * project folder is the readable half of a variant key; its variant id
+   * ("audiobook") names nothing a person would recognise.
+   */
+  bookName(key: string): string {
+    if (key.startsWith('v:')) {
+      const projectId = key.slice(2).split('/')[0];
+      return projectId.replace(/_/g, ' ') || 'Unknown';
+    }
+    return key.split(/[/\\]/).pop()?.replace(/\.[^.]+$/, '') || 'Unknown';
   }
 
   private todayKey(): string {

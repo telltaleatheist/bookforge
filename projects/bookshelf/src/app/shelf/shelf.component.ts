@@ -18,6 +18,16 @@ import { BookActionsService } from '../services/book-actions.service';
 import { AnalyticsComponent } from '../analytics/analytics.component';
 import { Audiobook, AudiobookVersion, Ebook, EbookVersion, QueueData, QueueJob } from '../models/types';
 
+/**
+ * The width a shelf tile actually needs. Tiles are square and at most ~180 CSS
+ * px wide, so 480 covers a DPR-2.5 phone with room to spare — and the server
+ * serves a cached thumbnail at that width instead of the original art. Measured
+ * on a 50-book shelf sampled across Owen's real covers: 14.4 MB → 1.5 MB.
+ * Must be one of the widths electron/cover-thumbnails.ts allows; anything else
+ * is a 400 rather than a silent substitution.
+ */
+const SHELF_COVER_WIDTH = 480;
+
 type Tab = 'audiobooks' | 'ebooks' | 'articles' | 'queue' | 'analytics';
 type Sort = 'title' | 'date';
 type Narration = 'all' | 'professional' | 'ai';
@@ -2097,7 +2107,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
     const key = this.akey(book);
     if (this.requestedCovers.has(key)) return;
     this.requestedCovers.add(key);
-    let cover = await this.api.coverSrc(book); // routes to book.originServerId
+    let cover = await this.api.coverSrc(book, SHELF_COVER_WIDTH); // routes to book.originServerId
     // Self-heal a downloaded ("on device") book whose cached cover was lost. The
     // common iPhone case: WKWebView evicts the IndexedDB the sidecars lived in, so
     // the native audio survives but the cover (and sentences) vanish "out of
@@ -2113,7 +2123,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
       const identity = this.audioIdentity(book.downloadPath);
       if (server && !this.healedCovers.has(identity) && await this.offline.refreshSidecars(server)) {
         this.healedCovers.add(identity);
-        cover = await this.api.coverSrc(book);
+        cover = await this.api.coverSrc(book, SHELF_COVER_WIDTH);
       }
     }
     if (cover) this.setCover(key, cover);
@@ -2140,7 +2150,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
     const key = this.ekey(book);
     if (this.requestedCovers.has(key)) return;
     this.requestedCovers.add(key);
-    const cover = await this.api.getEbookCover(book.relativePath, book.originServerId);
+    const cover = await this.api.getEbookCover(book.relativePath, book.originServerId, SHELF_COVER_WIDTH);
     if (cover) this.setCover(key, cover);
   }
 
