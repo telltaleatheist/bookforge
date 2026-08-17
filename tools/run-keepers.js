@@ -41,6 +41,7 @@ const SUITES = [
   'test-vlm-convert-plan',
   'test-vlm-convert-attach',
   'test-picker-session-state',
+  'test-foundry-host',
 ];
 
 let failed = 0;

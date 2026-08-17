@@ -46,6 +46,8 @@ import type {
   InsertChapterHeadingEdit,
   RemoveInsertedHeadingEdit,
   SourceType,
+  FoundryExportRecord,
+  FoundryExportKind,
 } from './manifest-types.js';
 // The container seam. A book is a set of named entries, and whether those
 // entries live in a ZIP or in a directory is a fact about the path rather than
@@ -6415,6 +6417,180 @@ export async function listArchive(projectId: string): Promise<{ success: boolean
   } catch (error: any) {
     return { success: false, error: error.message };
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The hosted Foundry: which project a book has, and what it has exported
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Both records are REFERENCES into `<libraryRoot>/foundry`, which BookForge does
+// not own the contents of. Nothing here copies a file, moves one, or creates a
+// directory: the mapping says which project, the export list says which files,
+// and Foundry remains the only writer of either.
+//
+// Neither is defaulted. A book with no `foundryProject` has no Foundry project —
+// not "the one named after its projectId" — and a book with no `foundryExports`
+// has exported nothing.
+
+/**
+ * An export id: `fx-` and eight hex characters, from the same RNG family and
+ * ledger ids are minted with (see {@link mintFamilyId}).
+ *
+ * Not derived from the file's name or its position in the list. The tray is
+ * Foundry's and a re-export can rename what it writes; an id derived from the
+ * name would be a different id for the same row every time that happened.
+ */
+function mintFoundryExportId(): string {
+  return `fx-${crypto.randomBytes(4).toString('hex')}`;
+}
+
+/** Which hosted-Foundry project is this book's, by KEY, or null when it has none. */
+export async function readFoundryProject(projectDir: string): Promise<string | null> {
+  const manifest = await readManifestAt(projectDir);
+  return manifest.foundryProject?.dir ?? null;
+}
+
+/**
+ * Record which hosted-Foundry project this book's is.
+ *
+ * The KEY — the folder name under `<libraryRoot>/foundry/projects/` — and a path
+ * is refused by name rather than trimmed into one: a caller holding an absolute
+ * path has resolved the library root already, and storing the result is what
+ * makes every record wrong the next time the library moves.
+ */
+export async function setFoundryProject(projectDir: string, key: string): Promise<void> {
+  const trimmed = (key || '').trim();
+  if (!trimmed) {
+    throw new Error(
+      `Cannot record a Foundry project for ${path.basename(projectDir)}: no project key was given. `
+      + 'The key is the folder name under <library>/foundry/projects/.'
+    );
+  }
+  if (trimmed !== path.basename(trimmed) || trimmed === '.' || trimmed === '..') {
+    throw new Error(
+      `"${trimmed}" is not a Foundry project key — a key is a single folder name under `
+      + '<library>/foundry/projects/, never a path. A path recorded here names a volume rather '
+      + 'than a project, and stops being true when the library moves.'
+    );
+  }
+
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+  const saved = await modifyManifest(projectId, (m) => {
+    m.foundryProject = { dir: trimmed };
+  });
+  if (!saved.success) {
+    throw new Error(
+      `Recording Foundry project "${trimmed}" for ${path.basename(projectDir)} failed: ${saved.error}. `
+      + 'Nothing was changed.'
+    );
+  }
+}
+
+/** What Foundry has exported for this book, oldest first. Empty is ordinary. */
+export async function readFoundryExports(projectDir: string): Promise<FoundryExportRecord[]> {
+  return (await readManifestAt(projectDir)).foundryExports ?? [];
+}
+
+/** The one comparison that decides whether two records name the same file. */
+function sameFoundryExportPath(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * Record an export Foundry landed in its project's `final/` tray.
+ *
+ * APPEND-ONLY, with one exception that is the whole point: a re-export of the
+ * SAME file replaces that record's title and `landedAt` in place, keeping its id
+ * and its position. Same path means same version row — appending a second record
+ * would put two rows on the versions page for one file on disk, and the user
+ * would have to guess which of them their next act addressed.
+ */
+export async function appendFoundryExport(
+  projectDir: string,
+  entry: { path: string; kind: FoundryExportKind; title: string },
+): Promise<FoundryExportRecord> {
+  const rel = (entry.path || '').trim();
+  if (!rel) {
+    throw new Error(
+      `Cannot record a Foundry export for ${path.basename(projectDir)}: no file path was given.`
+    );
+  }
+  if (rel.includes('\\') || path.isAbsolute(rel) || /^[a-zA-Z]:/.test(rel)) {
+    throw new Error(
+      `"${rel}" cannot be recorded as a Foundry export: the path must be relative to the library `
+      + 'root with forward slashes (foundry/projects/<key>/final/<file>). An absolute path names a '
+      + 'volume, and stops being true when the library moves.'
+    );
+  }
+  if (rel.split('/').some((seg) => seg === '..')) {
+    throw new Error(
+      `"${rel}" cannot be recorded as a Foundry export: it climbs out of the library root.`
+    );
+  }
+  if (entry.kind !== 'epub' && entry.kind !== 'txt' && entry.kind !== 'pdf') {
+    throw new Error(
+      `"${entry.kind}" is not a kind of Foundry export. The tray holds epub, txt and pdf.`
+    );
+  }
+  const title = (entry.title || '').trim();
+  if (!title) {
+    throw new Error(
+      `Cannot record ${rel} as a Foundry export: it has no title, and the title is what the row says.`
+    );
+  }
+
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+  const landedAt = new Date().toISOString();
+  const existing = (manifest.foundryExports ?? []).find((r) => sameFoundryExportPath(r.path, rel));
+  const record: FoundryExportRecord = {
+    id: existing ? existing.id : mintFoundryExportId(),
+    path: rel,
+    kind: entry.kind,
+    title,
+    landedAt,
+  };
+
+  const saved = await modifyManifest(projectId, (m) => {
+    if (!m.foundryExports) m.foundryExports = [];
+    const at = m.foundryExports.findIndex((r) => sameFoundryExportPath(r.path, rel));
+    if (at >= 0) m.foundryExports[at] = record;
+    else m.foundryExports.push(record);
+  });
+  if (!saved.success) {
+    throw new Error(
+      `${rel} was exported, but recording it in ${path.basename(projectDir)}'s manifest failed: `
+      + `${saved.error}. The file is where Foundry left it; nothing lists it.`
+    );
+  }
+  return record;
+}
+
+/**
+ * Forget ONE export record. The FILE is not touched — it belongs to the foundry
+ * project's `final/` tray, and forgetting a reference is not deleting a file.
+ */
+export async function forgetFoundryExport(projectDir: string, exportId: string): Promise<FoundryExportRecord> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+  const record = (manifest.foundryExports ?? []).find((r) => r.id === exportId);
+  if (!record) {
+    throw new Error(
+      `${path.basename(projectDir)} records no Foundry export with id ${exportId}, so there is `
+      + 'nothing to forget. Reload the versions page.'
+    );
+  }
+  const saved = await modifyManifest(projectId, (m) => {
+    m.foundryExports = (m.foundryExports ?? []).filter((r) => r.id !== exportId);
+  });
+  if (!saved.success) {
+    throw new Error(
+      `Could not forget ${record.path} in ${path.basename(projectDir)}'s manifest: ${saved.error}. `
+      + 'Nothing was changed.'
+    );
+  }
+  return record;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
