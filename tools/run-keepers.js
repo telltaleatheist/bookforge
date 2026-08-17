@@ -43,6 +43,8 @@ const SUITES = [
   'test-ipc-collision',
   'test-derivation-cache',
   'test-versions-page-data',
+  'test-cover-thumbnails',
+  'test-bookshelf-ids',
 ];
 
 let failed = 0;
