@@ -87,7 +87,17 @@ export type MenuAction =
   | 'save'
   | 'save-as'
   | 'close-tab'
-  | 'split-right'
+  /*
+   * `split-right` WAS HERE, and it is the one name that left this union rather
+   * than outliving its menu item. It was View → Split right (Ctrl+\), the one
+   * DISCOVERABLE door onto the workspace's columns — and the columns are gone:
+   * *"i dont think we should have tabs in foundry… the solution is to have a
+   * single viewer window/single tab, and if the user wants to compare two steps,
+   * theres a compare button they can click"* (user, 2026-08-17). `save` and
+   * `save-as` stayed when their menu items went because the renderer still
+   * carries both out; nothing in the renderer splits anything, so there is
+   * nothing left to name.
+   */
   | 'toggle-documents'
   | 'undo'
   | 'redo';
@@ -156,7 +166,7 @@ export interface FoundryApi {
    *
    * ONE QUESTION FOR BOTH REASONS, and that is deliberate rather than
    * economical. This app has already ruled that stacking dialogs about one
-   * closing document is wrong (see `closeShowing` in tabs.service.ts): a person
+   * closing document is wrong (see `closeShowing` in core/documents.service.ts): a person
    * shutting a book should be asked once, about everything that closing it costs,
    * and a second card on top of the first is the app arguing with an answer it
    * already has. Main picks the wording from the flags — "the copy you chose is
@@ -488,6 +498,24 @@ export interface FoundryApi {
      */
     documentAt(projectDir: string): Promise<string | null>;
     /**
+     * THE SAME QUESTION ABOUT A ROW NOBODY IS STANDING ON — Compare's resolve.
+     *
+     * A comparison locks a second, read-only column to a step the person picked
+     * out of their own history, and the pointer is somewhere else by definition —
+     * that is what comparing means — so `documentAt` above cannot answer for it.
+     * Where the row's picture is the proof sheet this answers null and the column
+     * asks `book.loadAt` instead; where it is a FILE (the import, a rendering) this
+     * is the path, admitted to the viewer's allow-list on the way out exactly as
+     * `documentAt` admits its own.
+     *
+     * NULL IS ORDINARY AND MEANS TWO THINGS AT ONCE, deliberately: this row shows
+     * no file of its own, or the step has been deleted since the picker was drawn.
+     * The caller wants the same thing from both — draw the sheet, which says its
+     * own sentence if the step has gone — so telling them apart would be two empty
+     * states for one absence.
+     */
+    documentAtStep(projectDir: string, stepId: string): Promise<string | null>;
+    /**
      * What deleting this step would take — the facts for the confirm card.
      *
      * EVERY CASUALTY, NAMED, WITH ITS OWN COST SENTENCE. A delete cascades: a
@@ -563,6 +591,18 @@ export interface FoundryApi {
    */
   book: {
     load(projectDir: string): Promise<BookOutcome>;
+    /**
+     * THE BOOK AS OF A NAMED STEP — the same replay, resolved to a row instead of
+     * to the pointer.
+     *
+     * Compare's read (docs/PLAN.md §4, unit 8d). Everything `load` promises holds:
+     * no path crosses in either direction, it may spawn the engine on a library
+     * written before the book format existed, and it answers a failure as a
+     * sentence the sheet draws rather than rejecting one. A step id this project
+     * no longer holds is one of those sentences, because a delete can land between
+     * the picker being drawn and this being asked.
+     */
+    loadAt(projectDir: string, stepId: string): Promise<BookOutcome>;
     /**
      * THE STACK, WRITTEN DOWN — one Apply, one step, one file of ops.
      *

@@ -1339,6 +1339,7 @@ async function archiveOriginal(dir: string): Promise<string | null> {
  * about to rotate aside was also the file the run would read. That question is
  * now asked at the moment of rotating, in electron/job-queue.ts, and it is asked
  * there with the same case-folded resolve — the per-module path fold this
- * codebase keeps beside whoever needs it (electron/recents.ts has its own, so
- * does electron/overlays.ts). A copy left here would be a helper for nobody.
+ * codebase keeps beside whoever needs it (electron/recents.ts has its own;
+ * electron/overlays.ts had one too, until the overlay system went with
+ * docs/RENDERER.md §7). A copy left here would be a helper for nobody.
  */

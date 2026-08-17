@@ -8,7 +8,8 @@ import type { JobRequest } from '@shared/types';
 import { LedgerService } from '../../core/ledger.service';
 import { ProjectsService } from '../../core/projects.service';
 import { QueueService } from '../../core/queue.service';
-import { TabsService } from '../../core/tabs.service';
+import { OpenDocumentsService } from '../../core/documents.service';
+import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 import { api } from '../../core/foundry';
 
@@ -290,7 +291,8 @@ import { api } from '../../core/foundry';
 })
 export class OcrDialogComponent {
   protected readonly ui = inject(UiService);
-  private readonly tabs = inject(TabsService);
+  private readonly stage = inject(StageService);
+  private readonly documents = inject(OpenDocumentsService);
   private readonly queue = inject(QueueService);
   private readonly projects = inject(ProjectsService);
   /**
@@ -335,7 +337,7 @@ export class OcrDialogComponent {
 
   /** Every PDF open in the app, which is the set this dialog can queue from. */
   protected readonly sources = computed(
-    () => [...new Set(this.tabs.tabs().filter((tab) => tab.kind === 'pdf').map((tab) => tab.path))]);
+    () => [...new Set(this.documents.tabs().filter((tab) => tab.kind === 'pdf').map((tab) => tab.path))]);
 
   protected readonly source = computed(() => {
     const chosen = this.picked();
@@ -358,7 +360,7 @@ export class OcrDialogComponent {
    * right answer, which is what it looked like all along.
    */
   private readonly suggested = computed(() => {
-    const tab = this.tabs.activeDocument();
+    const tab = this.stage.activeDocument();
     return tab !== null && tab.kind === 'pdf' ? tab.path : null;
   });
 
@@ -473,7 +475,7 @@ export class OcrDialogComponent {
   }
 
   protected openDocument(): void {
-    void this.tabs.openViaDialog();
+    void this.documents.openViaDialog();
   }
 
   protected async add(): Promise<void> {

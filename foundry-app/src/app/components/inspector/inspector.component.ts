@@ -15,7 +15,8 @@ import type { Replayed } from '@shared/ops';
 
 import { LedgerService } from '../../core/ledger.service';
 import { ProjectsService } from '../../core/projects.service';
-import { TabsService, type BookStack } from '../../core/tabs.service';
+import { BookStacksService, type BookStack } from '../../core/book-stacks.service';
+import { StageService } from '../../core/stage.service';
 
 /**
  * The inspector — what the focused book IS, down the right-hand side.
@@ -31,7 +32,7 @@ import { TabsService, type BookStack } from '../../core/tabs.service';
  * viewer, so five open books were five copies of the same furniture eating 1300
  * pixels of a window whose whole job is showing pages. There is one of it now and it
  * follows the FOCUSED document — the same thing the rail, Ctrl+S and the menu
- * mean by "what I am working on" (`TabsService.activeDocument`).
+ * mean by "what I am working on" (`StageService.activeDocument`).
  *
  * ── WHAT IT KNOWS, WHICH IS ONE PANE'S OWN REPLAY ────────────────────────────
  *
@@ -131,7 +132,7 @@ import { TabsService, type BookStack } from '../../core/tabs.service';
           are new.
 
           EVERY ROW IS READ OUT OF THE PANE'S OWN REPLAY and every button pushes
-          onto the pane's own stack (\`BookStack\`, core/tabs.service.ts). This
+          onto the viewer's own stack (\`BookStack\`, core/book-stacks.service.ts). This
           component holds no copy of the book, no list of ops and no idea where
           any of it is kept: undo, redo and Apply take a decision made here back
           exactly as they take one made on the paper, because there is one stack.
@@ -792,7 +793,8 @@ import { TabsService, type BookStack } from '../../core/tabs.service';
   `],
 })
 export class InspectorComponent {
-  protected readonly tabs = inject(TabsService);
+  protected readonly stage = inject(StageService);
+  private readonly stacks = inject(BookStacksService);
   private readonly projects = inject(ProjectsService);
   private readonly ledger = inject(LedgerService);
 
@@ -826,8 +828,8 @@ export class InspectorComponent {
 
   /** The book pane in front, or null for every other kind of document. */
   protected readonly sheet = computed<BookStack | null>(() => {
-    const tab = this.tabs.activeDocument();
-    return tab === null || tab.kind !== 'book' ? null : this.tabs.bookStackFor(tab.id);
+    const tab = this.stage.activeDocument();
+    return tab === null || tab.kind !== 'book' ? null : this.stacks.bookStackFor(tab.id);
   });
 
   /**
@@ -1147,7 +1149,7 @@ export class InspectorComponent {
    * belongs to a viewer rather than to a book.
    */
   protected readonly projectDir = computed<string | null>(() => {
-    const tab = this.tabs.activeDocument();
+    const tab = this.stage.activeDocument();
     if (tab === null) return null;
     const project = this.projects.projectFor(tab.path);
     // A catalogue that will not parse has no history to draw and its refusal is

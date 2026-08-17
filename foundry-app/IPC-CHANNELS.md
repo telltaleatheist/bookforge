@@ -1,7 +1,8 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
 Every channel name this app owns, enumerated from `app/electron` rather than
-from memory, regenerated on 2026-08-17 (the host-operations socket). It exists
+from memory, regenerated on 2026-08-17 (Compare's two step-addressed reads). It
+exists
 because of the fifth thing Foundry owes BookForge before the first copy: *"A
 channel audit. Enumerate both apps' IPC names once before the copy; Foundry's
 are namespaced, so this is a check, not a design"*
@@ -55,7 +56,7 @@ family most likely to grow doors.
 
 ## Doors the renderer knocks on
 
-All 66 are `ipcMain.handle` — there is not one `ipcMain.on` in the app, on
+All 68 are `ipcMain.handle` — there is not one `ipcMain.on` in the app, on
 purpose: a renderer that cannot tell whether main heard it is a renderer that
 cannot report a failure. They are registered in one function, `registerIpc`
 (`app/electron/ipc.ts`), which `mountFoundry` calls.
@@ -69,6 +70,7 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `book:apply` | Land the proof sheet's stack of ops as a new edit step. |
 | `book:correct` | A corrected paragraph on a TRANSLATED position — a records correction, never an op. |
 | `book:load` | The book at a project's position, as blocks the renderer draws; may spawn the engine to make it. |
+| `book:load-at` | The same replay resolved to a NAMED step rather than to the pointer — Compare's read-only column. |
 | `book:view` | A finished export, exploded and returned read-only. |
 | `dialog:open-document` | File→Open's native dialog, and the open that follows it. |
 | `doctor:run` | `foundry doctor --json` — what this machine can and cannot do. |
@@ -90,6 +92,7 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `ledger:delete` | Delete a step and sweep its payload. |
 | `ledger:describe-delete` | What that step delete would take with it. |
 | `ledger:document-at` | The document the project's position resolves to; admits it to the allow-list. |
+| `ledger:document-at-step` | The document a NAMED step resolves to, for a compared row whose picture is a file; admits it too. |
 | `ledger:go` | Move the project's position to a step. |
 | `ledger:read` | The step ledger for a project. |
 | `ledger:stand-for` | Move the position to the step a given document belongs to. |

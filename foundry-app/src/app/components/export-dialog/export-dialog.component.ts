@@ -7,7 +7,8 @@ import type { ConversionKind, JobRequest } from '@shared/types';
 import { LedgerService } from '../../core/ledger.service';
 import { ProjectsService } from '../../core/projects.service';
 import { QueueService } from '../../core/queue.service';
-import { TabsService } from '../../core/tabs.service';
+import { OpenDocumentsService } from '../../core/documents.service';
+import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 import { api } from '../../core/foundry';
 
@@ -53,7 +54,8 @@ import { api } from '../../core/foundry';
  * it moving.
  *
  * AND THE RESULT OPENS ITSELF, which is the point: somebody exports an EPUB
- * precisely because they want to look at it. That is OPENS_ITSELF in TabsService.
+ * precisely because they want to look at it. That is OPENS_ITSELF in
+ * OpenDocumentsService.
  *
  * ── No reading yet ──────────────────────────────────────────────────────────
  *
@@ -401,7 +403,8 @@ import { api } from '../../core/foundry';
 })
 export class ExportDialogComponent {
   protected readonly ui = inject(UiService);
-  private readonly tabs = inject(TabsService);
+  private readonly stage = inject(StageService);
+  private readonly documents = inject(OpenDocumentsService);
   private readonly queue = inject(QueueService);
   private readonly projects = inject(ProjectsService);
   private readonly ledger = inject(LedgerService);
@@ -427,7 +430,7 @@ export class ExportDialogComponent {
    * pressed already.
    */
   protected readonly source = computed(() => {
-    const tab = this.tabs.activeDocument();
+    const tab = this.stage.activeDocument();
     if (tab === null) return null;
     const project = this.projects.projectFor(tab.path);
     if (project === null) return tab.kind === 'pdf' ? tab.path : null;
@@ -627,7 +630,7 @@ export class ExportDialogComponent {
   }
 
   protected openDocument(): void {
-    void this.tabs.openViaDialog();
+    void this.documents.openViaDialog();
   }
 
   /**

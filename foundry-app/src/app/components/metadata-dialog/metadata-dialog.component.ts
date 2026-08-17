@@ -7,7 +7,9 @@ import type { DocumentMetadata, ProjectLedger, StepRow } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
 import { ProjectsService } from '../../core/projects.service';
-import { TabsService, type Tab } from '../../core/tabs.service';
+import { OpenDocumentsService, type Tab } from '../../core/documents.service';
+import { PositionSyncService } from '../../core/position-sync.service';
+import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 import { api } from '../../core/foundry';
 
@@ -309,14 +311,16 @@ import { api } from '../../core/foundry';
 })
 export class MetadataDialogComponent {
   protected readonly ui = inject(UiService);
-  private readonly tabs = inject(TabsService);
+  private readonly documents = inject(OpenDocumentsService);
+  private readonly stage = inject(StageService);
+  private readonly positions = inject(PositionSyncService);
   private readonly projects = inject(ProjectsService);
   /**
    * The steps accordion's mirror — held here so that a save can hand it the
    * history main just wrote.
    *
    * DIRECTLY, AND NOT THROUGH THE TABS SERVICE. The commit path goes through
-   * `TabsService` because that side is holding the document's path; this dialog
+   * `OpenDocumentsService` because that side is holding the document's path; this dialog
    * already resolves its own document out of the position (`source` below), so a
    * second hop would be a message passed through a class that has nothing to add
    * to it. `adopt` is the public door and it is the same door the commit uses.
@@ -354,15 +358,15 @@ export class MetadataDialogComponent {
    * on taking the file.
    */
   protected readonly source = computed(() => {
-    const tab = this.tabs.activeDocument();
+    const tab = this.stage.activeDocument();
     if (tab === null) return null;
     const mine = tab.kind === 'pdf' ? tab : null;
     const project = this.projects.projectFor(tab.path);
     if (project === null) return mine;
-    const shown = this.tabs.documentShownFor(project.dir);
+    const shown = this.positions.documentShownFor(project.dir);
     if (shown === null) return mine;
     const at = fold(shown);
-    return this.tabs.tabs().find(
+    return this.documents.tabs().find(
       (candidate) => candidate.kind === 'pdf' && fold(candidate.path) === at) ?? mine;
   });
 
@@ -450,7 +454,7 @@ export class MetadataDialogComponent {
   });
 
   protected openDocument(): void {
-    void this.tabs.openViaDialog();
+    void this.documents.openViaDialog();
   }
 
   private async load(): Promise<void> {
@@ -573,7 +577,7 @@ export class MetadataDialogComponent {
       };
       const outcome = await api.meta.writePdf(tab.path, patch);
       if (!outcome.ok) { this.problem.set(outcome.reason); return; }
-      this.tabs.noteDocumentEdited(tab.id);
+      this.documents.noteDocumentEdited(tab.id);
       this.adopt(tab, outcome.landed);
       this.ui.closeMetadata();
     } catch (err) {

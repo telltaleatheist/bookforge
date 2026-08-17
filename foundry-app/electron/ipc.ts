@@ -29,6 +29,7 @@ import {
   applyBookOps,
   correctBookBlock,
   loadBook,
+  loadBookAt,
   viewExportedBook,
 } from './book';
 import { admit, admitted, openDocument, promptForDocument } from './documents';
@@ -50,6 +51,7 @@ import {
   describeStepDelete,
   documentAssets,
   documentAtPosition,
+  documentAtStep,
   goToStep,
   inspectProject,
   type ProjectInventory,
@@ -395,7 +397,7 @@ export function registerIpc(): void {
    * A book pane's unapplied changes are genuinely destroyed by closing, and a
    * book's filed copy can be out of date. They are two different losses and this
    * app has already ruled that a closing document is asked about once
-   * (`closeShowing`, tabs.service.ts): a second card on top of the first is the
+   * (`closeShowing`, core/documents.service.ts): a second card on top of the first is the
    * app arguing with an answer it already has.
    *
    * IT WAS THREE. The third — "no copy of this exists anywhere you chose" — went
@@ -492,7 +494,7 @@ export function registerIpc(): void {
    *
    * This function used to fork on `warning.unsaved` and say, for a book with no
    * copy anywhere the user chose, that nothing else on the machine knew about it.
-   * `questionBefore` (tabs.service.ts) no longer asks anything for a bare
+   * `questionBefore` (core/documents.service.ts) no longer asks anything for a bare
    * `unsaved`, so that branch became unreachable the moment the ruling landed —
    * and it was also, by then, untrue: the book is in its project, Home lists it,
    * and the way a copy leaves this app is the export modal (docs/WORKBENCH.md
@@ -1516,6 +1518,30 @@ export function registerIpc(): void {
     return resolved;
   });
   /*
+   * THE SAME ANSWER FOR A ROW NOBODY IS STANDING ON — Compare's document resolve.
+   *
+   * The column beside the live one is locked to a step the person picked, and a
+   * step whose picture is a FILE (the import, a rendering) needs that file's path
+   * before a viewer can be pointed at it. `document-at` cannot answer it: it reads
+   * the pointer, and the pointer is by definition somewhere else while a
+   * comparison is on screen.
+   *
+   * IT ADMITS WHAT IT ANSWERS, exactly as `document-at` does one door up and for
+   * the identical reason: the renderer is about to point pdf.js at this path, and
+   * a path the renderer named for itself is a path this process never agreed to
+   * serve. The allow-list is the only thing standing between a compare column and
+   * an arbitrary file, so the pairing — main resolves it, main admits it — is not
+   * a convenience here, it is the whole gate.
+   *
+   * NOT REMEMBERED AS A RECENT, on `document-at`'s own rule: nothing was opened,
+   * somebody put a second view on a row of a book they already have open.
+   */
+  ipcMain.handle('ledger:document-at-step', async (_event, projectDir: string, stepId: string) => {
+    const resolved = await documentAtStep(projectDir, stepId);
+    if (resolved !== null) admit(resolved);
+    return resolved;
+  });
+  /*
    * THE QUEUE'S HALF OF THE CORRECTION DOOR.
    *
    * A translation appends to its records file for hours and a correction swaps
@@ -1561,6 +1587,25 @@ export function registerIpc(): void {
    * not the book being unavailable.
    */
   ipcMain.handle('book:load', (_event, projectDir: string) => loadBook(projectDir));
+  /*
+   * THE BOOK AS OF A NAMED STEP — the read Compare is built on.
+   *
+   * EVERYTHING `book:load` SAYS APPLIES HERE WORD FOR WORD: no path crosses it in
+   * either direction, it may spawn the engine, it answers a failure rather than
+   * rejecting one, and the single thing that still rejects is a directory that is
+   * not one of Home's projects. The only difference is which row the replay is
+   * resolved to, and that difference is a parameter the machinery underneath has
+   * carried since translations began materialising at the landing — see
+   * `loadBookAt` (electron/book.ts) for why this is one replay asked twice rather
+   * than two replays.
+   *
+   * A STALE STEP ID IS A SENTENCE, not a rejection. The picker is drawn from a
+   * ledger this window read a moment ago, and a delete can land in between; the
+   * compare column has a sheet to put that sentence on, which is the same contract
+   * every other failure of this family has.
+   */
+  ipcMain.handle('book:load-at', (_event, projectDir: string, stepId: string) =>
+    loadBookAt(projectDir, stepId));
   /*
    * AND THE OTHER DIRECTION — the pane's stack, landed as a step.
    *

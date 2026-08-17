@@ -640,7 +640,8 @@ export interface Job {
    *
    * ── Why the SHELF has to be able to tell, and not only the landing ─────────
    *
-   * Because a finished `epub` job OPENS ITSELF (`OPENS_ITSELF`, TabsService), and
+   * Because a finished `epub` job OPENS ITSELF (`OPENS_ITSELF`,
+   * OpenDocumentsService), and
    * that rule was written about the two `epub` jobs that existed: a Generate and
    * the cast after a reading, both of which somebody asked for and wants to look
    * at. A per-step cast is neither. A save's is made by pressing Apply — a gesture

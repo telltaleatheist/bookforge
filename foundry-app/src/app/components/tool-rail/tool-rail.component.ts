@@ -4,7 +4,8 @@ import { Router, RouterLink, RouterLinkActive } from '@angular/router';
 import { hosted } from '../../core/foundry';
 import { LedgerService } from '../../core/ledger.service';
 import { ProjectsService } from '../../core/projects.service';
-import { TabsService } from '../../core/tabs.service';
+import { OpenDocumentsService } from '../../core/documents.service';
+import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 
 /**
@@ -41,7 +42,7 @@ import { UiService } from '../../core/ui.service';
         @if (!hosted()) {
           <button
             class="rail-item"
-            [class.active]="tabs.activeId() === null"
+            [class.active]="stage.active() === null"
             title="Home"
             (click)="home()"
           >
@@ -57,7 +58,7 @@ import { UiService } from '../../core/ui.service';
         <button
           class="rail-item"
           [class.active]="documentsUp()"
-          [disabled]="tabs.tabs().length === 0"
+          [disabled]="documents.tabs().length === 0"
           title="Show or hide the open documents (Ctrl+B)"
           (click)="ui.toggleDocuments()"
         >
@@ -321,21 +322,22 @@ import { UiService } from '../../core/ui.service';
 export class ToolRailComponent {
   protected readonly hosted = hosted;
   protected readonly ui = inject(UiService);
-  protected readonly tabs = inject(TabsService);
+  protected readonly documents = inject(OpenDocumentsService);
+  protected readonly stage = inject(StageService);
   private readonly projects = inject(ProjectsService);
   private readonly ledger = inject(LedgerService);
   private readonly router = inject(Router);
 
   /** Lit when the panel is actually on screen, which needs both halves of it. */
   protected readonly documentsUp = computed(() =>
-    this.ui.documentsShown() && this.tabs.tabs().length > 0);
+    this.ui.documentsShown() && this.documents.tabs().length > 0);
 
   protected home(): void {
     void this.router.navigateByUrl('/');
     // The dock's Home is leaving on purpose: the held project lets go, so an
     // empty workspace shows the library rather than the room just left.
-    this.tabs.releaseProject();
-    this.tabs.goHome();
+    this.stage.releaseProject();
+    this.stage.goHome();
   }
 
   /**
@@ -366,7 +368,7 @@ export class ToolRailComponent {
    * on every repaint of the dock.
    */
   protected ocrWaiting(): boolean {
-    const tab = this.tabs.activeDocument();
+    const tab = this.stage.activeDocument();
     if (tab === null) return false;
     return this.projects.projectFor(tab.path)?.reading.needed === true;
   }
@@ -432,7 +434,7 @@ export class ToolRailComponent {
    * shut on a guess.
    */
   protected canExport(): boolean {
-    const tab = this.tabs.activeDocument();
+    const tab = this.stage.activeDocument();
     if (tab === null) return false;
     const project = this.projects.projectFor(tab.path);
     if (project === null) return true;
@@ -467,7 +469,7 @@ export class ToolRailComponent {
    * behind it has none.
    */
   protected canTranslate(): boolean {
-    const tab = this.tabs.activeDocument();
+    const tab = this.stage.activeDocument();
     if (tab === null) return false;
     const project = this.projects.projectFor(tab.path);
     if (project === null) return false;
@@ -528,7 +530,7 @@ export class ToolRailComponent {
    * gone. Named here rather than left as a silently dead button.
    */
   protected canEditMetadata(): boolean {
-    const tab = this.tabs.activeDocument();
+    const tab = this.stage.activeDocument();
     if (tab === null) return false;
     if (tab.kind !== 'pdf') return false;
     const project = this.projects.projectFor(tab.path);

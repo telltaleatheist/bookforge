@@ -24,7 +24,10 @@ import { replayOps, struckNotes, unwritten, type BookOp, type ReplayedRow } from
 
 import { api } from '../../core/foundry';
 import { LedgerService } from '../../core/ledger.service';
-import { TabsService, type BookStack, type Tab } from '../../core/tabs.service';
+import { ComparePickerComponent } from '../compare/compare-picker.component';
+import { BookStacksService, type BookStack } from '../../core/book-stacks.service';
+import { type Tab } from '../../core/documents.service';
+import { NoticeService } from '../../core/notice.service';
 import { editionFlow, editionPieces } from './edition';
 import { chapterOrder, flowNeighbours, seamJoins, sharedAnchor } from './flow';
 
@@ -69,7 +72,7 @@ import { chapterOrder, flowNeighbours, seamJoins, sharedAnchor } from './flow';
  * two, Ctrl+J joins two blocks a person picked, and a double-click on a chapter
  * chip renames the division in place. The panels in the shell mint the rest —
  * link, restore-furniture and the four other chapter verbs — onto this same
- * stack, through the registry (`BookStack`, core/tabs.service.ts).
+ * stack, through the registry (`BookStack`, core/book-stacks.service.ts).
  *
  * TWO GESTURES ARE DEFERRED OUT LOUD and their ops exist regardless: dragging a
  * block to repair reading order (`move`) and dragging a chapter rule to another
@@ -79,7 +82,7 @@ import { chapterOrder, flowNeighbours, seamJoins, sharedAnchor } from './flow';
  * ── The undo chord is ROUTED here, never listened for ───────────────────────
  *
  * Ctrl+Z is a menu accelerator main swallows, and the renderer decides which of
- * its three undos a chord meant (`MenuAction`, shared/api.ts). `TabsService.replay`
+ * its three undos a chord meant (`MenuAction`, shared/api.ts). `BookStacksService.replay`
  * is where that decision lives; this component registers a `BookStack` with it and
  * adds no key listener of its own, because two answers to one keypress is how a
  * text field and a book both take something back.
@@ -88,7 +91,8 @@ import { chapterOrder, flowNeighbours, seamJoins, sharedAnchor } from './flow';
  *
  * It is not a fact about the book, it is in no undo stack, nothing on disk
  * records it and a reload starts with nothing selected — the same ruling the
- * frame selection has always had (`FrameSelection`, core/tabs.service.ts). It
+ * frame selection has always had — a set of block ids and the category they
+ * share, held by the surface that draws them. It
  * lives here rather than in the service because nothing outside this pane can
  * act on it yet; the day the inspector can, it moves up, and moving it before
  * then would be a wire with nothing on either end.
@@ -291,7 +295,7 @@ const SCROLL_SETTLE_MS = 400;
 
 @Component({
   selector: 'app-book-view',
-  imports: [NgTemplateOutlet],
+  imports: [NgTemplateOutlet, ComparePickerComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <!--
@@ -478,6 +482,106 @@ const SCROLL_SETTLE_MS = 400;
       trays, the marquee's coordinates — would be measuring a different thing
       depending on a mode.
     -->
+    <!--
+      THE TWO REGISTERS — *"a two-segment control … \`Workbench | Edition\`,
+      styled like the app's existing acts"* (RENDERER-DESIGN.md §5).
+
+      ABOVE THE SCROLLER AND NOT IN IT, which reverses where this control
+      stood and is the user's own ruling (2026-08-17): the head used to open
+      the sheet's column and stick to the scrollport's top edge, and a stuck
+      tray is a tray the words pass UNDER — *"the workspace/final version
+      buttons at the top cover the file when i scroll down."* So the register
+      stands in a row of the host's own column above the pair, the book
+      scrolls in the box below it, and nothing the sheet says can arrive
+      beneath these buttons because they are not over the sheet at all. The
+      BOTTOM tray keeps its sticky edge: Apply is a verb somebody reaches for
+      mid-page, and it should ride the scroll; the head is a REGISTER — a
+      fact about the page rather than a verb on it — and a fact can hold
+      still.
+
+      A GROUP OF TWO BUTTONS AND NOT A CHECKBOX. \`aria-pressed\` on each says
+      which one is in force in the one vocabulary a screen reader already has
+      for a segmented control, and buttons are reachable, pressable and
+      focusable from a keyboard with nothing added.
+    -->
+    <!--
+      AN EXPORT VIEW HAS NO HEAD AT ALL: one register, no pair, no verbs —
+      a control whose every segment is refused is furniture explaining
+      itself, and the absence says "this is the finished file" better. A
+      problem and a load still in flight have none either, now that the head
+      stands outside the sheet's own column: a register over a bench holding
+      only a sentence would be a claim about a book that is not there.
+    -->
+    @if (!problem() && !loading()) {
+      <div class="tray head" [style.display]="viewing() ? 'none' : null">
+        <!--
+          COMPARE SITS IN THE HEAD ROW, beside the registers, because this row is
+          already the answer to "what am I looking at, and how" — and a second
+          step beside this one is one more answer to that. It is drawn only where
+          this viewer is the LIVE one: the head is hidden entirely while
+          \`viewing()\` (an export view, and a compare column), so the control
+          cannot appear inside the very column it opens.
+        -->
+        <app-compare-picker />
+        <div class="segments" role="group" aria-label="How this book is shown">
+          <button
+            type="button"
+            class="act segment"
+            [class.on]="!edition()"
+            [attr.aria-pressed]="!edition()"
+            (click)="show('workbench')"
+          >Workbench</button>
+          <button
+            type="button"
+            class="act segment"
+            [class.on]="edition()"
+            [attr.aria-pressed]="edition()"
+            (click)="show('edition')"
+          >Final version</button>
+        </div>
+        <!--
+          AND THE SECOND CONTROL, WHICH IS NOT A THIRD SEGMENT.
+
+          \`Workbench | Edition\` is the REGISTER — what kind of thing this page
+          is — and Aligned is not a third kind of page: it composes with the
+          workbench (chrome on the live column, the source beside it) and is
+          meaningless against the edition, which is the finished book and has one
+          column. A third segment would have said the three were alternatives and
+          put "the finished book, with a working column beside it" on the list of
+          things a person could ask for.
+
+          IT IS ONLY THERE ON A TRANSLATED POSITION. There is no source to set
+          beside a book in its own language, and a control that was permanently
+          dimmed on every ordinary book would be furniture nobody could ever use.
+
+          REFUSED RATHER THAN DISABLED. \`aria-disabled\` and not \`disabled\`,
+          because a control that cannot be reached cannot say why it cannot be
+          used: the title is for a pointer that pauses, and a PRESS puts the same
+          sentence on the window's notice strip, where the rest of this app says
+          what it would not do.
+        -->
+        @if (translation() !== null) {
+          <div class="segments" role="group" [attr.aria-label]="'Where the source of this ' + pass() + ' is shown'">
+            <button
+              type="button"
+              class="act segment"
+              [class.on]="!aligned()"
+              [attr.aria-pressed]="!aligned()"
+              (click)="align('alone')"
+            >Alone</button>
+            <button
+              type="button"
+              class="act segment"
+              [class.on]="aligned()"
+              [attr.aria-pressed]="aligned()"
+              [attr.aria-disabled]="alignRefusal() !== null ? 'true' : null"
+              [attr.title]="alignRefusal()"
+              (click)="align('aligned')"
+            >Aligned</button>
+          </div>
+        }
+      </div>
+    }
     <div class="pair" [class.aligned]="aligned()">
       @if (aligned()) {
         <!--
@@ -548,88 +652,6 @@ const SCROLL_SETTLE_MS = 400;
             </ul>
           </div>
         }
-        <!--
-          THE TWO REGISTERS — *"a two-segment control … \`Workbench | Edition\`,
-          styled like the app's existing acts"* (RENDERER-DESIGN.md §5).
-
-          IT IS AT THE HEAD OF THE SHEET'S OWN COLUMN, mirroring the tray at the
-          foot of it, because this pane has no toolbar and the tray is the whole
-          of the grammar it does have: the app's dark \`.act\` on the bench, in
-          the paper's own measure, pinned to the column's edge and never on the
-          paper (§5 keeps the paper vocabulary on the paper). The tray holds the
-          VERB and the head holds the REGISTER — what this is, against what to do
-          with it — and the two of them bracket the sheet rather than crowding one
-          corner of it.
-
-          A GROUP OF TWO BUTTONS AND NOT A CHECKBOX. \`aria-pressed\` on each says
-          which one is in force in the one vocabulary a screen reader already has
-          for a segmented control, and buttons are reachable, pressable and
-          focusable from a keyboard with nothing added.
-        -->
-        <!--
-          AN EXPORT VIEW HAS NO HEAD AT ALL: one register, no pair, no verbs —
-          a control whose every segment is refused is furniture explaining
-          itself, and the absence says "this is the finished file" better.
-        -->
-        <div class="tray head" [style.display]="viewing() ? 'none' : null">
-          <div class="segments" role="group" aria-label="How this book is shown">
-            <button
-              type="button"
-              class="act segment"
-              [class.on]="!edition()"
-              [attr.aria-pressed]="!edition()"
-              (click)="show('workbench')"
-            >Workbench</button>
-            <button
-              type="button"
-              class="act segment"
-              [class.on]="edition()"
-              [attr.aria-pressed]="edition()"
-              (click)="show('edition')"
-            >Final version</button>
-          </div>
-          <!--
-            AND THE SECOND CONTROL, WHICH IS NOT A THIRD SEGMENT.
-
-            \`Workbench | Edition\` is the REGISTER — what kind of thing this page
-            is — and Aligned is not a third kind of page: it composes with the
-            workbench (chrome on the live column, the source beside it) and is
-            meaningless against the edition, which is the finished book and has one
-            column. A third segment would have said the three were alternatives and
-            put "the finished book, with a working column beside it" on the list of
-            things a person could ask for.
-
-            IT IS ONLY THERE ON A TRANSLATED POSITION. There is no source to set
-            beside a book in its own language, and a control that was permanently
-            dimmed on every ordinary book would be furniture nobody could ever use.
-
-            REFUSED RATHER THAN DISABLED. \`aria-disabled\` and not \`disabled\`,
-            because a control that cannot be reached cannot say why it cannot be
-            used: the title is for a pointer that pauses, and a PRESS puts the same
-            sentence on the window's notice strip, where the rest of this app says
-            what it would not do.
-          -->
-          @if (translation() !== null) {
-            <div class="segments" role="group" [attr.aria-label]="'Where the source of this ' + pass() + ' is shown'">
-              <button
-                type="button"
-                class="act segment"
-                [class.on]="!aligned()"
-                [attr.aria-pressed]="!aligned()"
-                (click)="align('alone')"
-              >Alone</button>
-              <button
-                type="button"
-                class="act segment"
-                [class.on]="aligned()"
-                [attr.aria-pressed]="aligned()"
-                [attr.aria-disabled]="alignRefusal() !== null ? 'true' : null"
-                [attr.title]="alignRefusal()"
-                (click)="align('aligned')"
-              >Aligned</button>
-            </div>
-          }
-        </div>
         <!--
           \`tabindex="-1"\` so the sheet can HOLD focus without being a tab stop.
           The Delete key has to reach a selection that a marquee made over empty
@@ -720,39 +742,63 @@ const SCROLL_SETTLE_MS = 400;
             }
             @if (line.chapter; as title) {
               <div class="chapter">
-                @if (renaming() === line.row.id) {
-                  <!--
-                    *"Double-click the chip to rename in place"* — §4, and the chip
-                    itself is the field, exactly as the block itself is the editor
-                    one level down. \`plaintext-only\` for the same reason: a title
-                    is characters, and a rich contenteditable would let a paste
-                    bring markup into one.
-                  -->
-                  <span
-                    class="chapter-chip naming"
-                    contenteditable="plaintext-only"
-                    (pointerdown)="$event.stopPropagation()"
-                    (blur)="commitChapter(line.row.id, title, $event)"
-                    (keydown.enter)="commitChapter(line.row.id, title, $event)"
-                    (keydown.escape)="abandonChapter(title, $event)"
-                  >{{ title }}</span>
-                } @else {
-                  <!--
-                    Drag to move the division (§4: the rule lifts, the candidate
-                    seams glow, the drop settles it) — pointer-captured on the
-                    chip, engaged past the same slop that separates a click from
-                    a marquee, so the double-click rename underneath survives.
-                  -->
-                  <span
-                    class="chapter-chip"
-                    [class.grabbed]="draggingRule()?.id === line.row.id"
-                    (pointerdown)="grabRule($event, line.row.id)"
-                    (pointermove)="dragRule($event)"
-                    (pointerup)="dropRule($event)"
-                    (pointercancel)="dropRule($event)"
-                    (dblclick)="rename(line.row.id, $event)"
-                  >{{ title }}</span>
-                }
+                <div class="chapter-head">
+                  @if (renaming() === line.row.id) {
+                    <!--
+                      *"Double-click the chip to rename in place"* — §4, and the chip
+                      itself is the field, exactly as the block itself is the editor
+                      one level down. \`plaintext-only\` for the same reason: a title
+                      is characters, and a rich contenteditable would let a paste
+                      bring markup into one.
+                    -->
+                    <span
+                      class="chapter-chip naming"
+                      contenteditable="plaintext-only"
+                      (pointerdown)="$event.stopPropagation()"
+                      (blur)="commitChapter(line.row.id, title, $event)"
+                      (keydown.enter)="commitChapter(line.row.id, title, $event)"
+                      (keydown.escape)="abandonChapter(title, $event)"
+                    >{{ title }}</span>
+                  } @else {
+                    <!--
+                      Drag to move the division (§4: the rule lifts, the candidate
+                      seams glow, the drop settles it) — pointer-captured on the
+                      chip, engaged past the same slop that separates a click from
+                      a marquee, so the double-click rename underneath survives.
+                    -->
+                    <span
+                      class="chapter-chip"
+                      [class.grabbed]="draggingRule()?.id === line.row.id"
+                      (pointerdown)="grabRule($event, line.row.id)"
+                      (pointermove)="dragRule($event)"
+                      (pointerup)="dropRule($event)"
+                      (pointercancel)="dropRule($event)"
+                      (dblclick)="rename(line.row.id, $event)"
+                    >{{ title }}</span>
+                    <!--
+                      THE MARKER'S OWN ✕ — *"the green dotted line can have an X
+                      next to the text"* (user ruling, 2026-08-17). Removing a
+                      division used to live only in the Chapters panel, which made
+                      the one place a person SEES the rule the one place they could
+                      not take it away. Revealed on hover of the rule rather than
+                      always drawn, because the paper's marks stay quiet until the
+                      hand is near them — and the space is held either way, so
+                      nothing shifts under the pointer. \`pointerdown\` is stopped
+                      for the chip's own reason: a press on the sheet takes pointer
+                      capture, and a captured pointer retargets the click that
+                      follows to the sheet, where it would arrive with no idea
+                      which rule it had been about.
+                    -->
+                    <button
+                      type="button"
+                      class="chapter-x"
+                      aria-label="Remove this chapter marker — the text stays; the division goes"
+                      title="Remove this chapter marker"
+                      (pointerdown)="$event.stopPropagation()"
+                      (click)="dropChapter(line.row.id)"
+                    >✕</button>
+                  }
+                </div>
               </div>
             }
             <!--
@@ -1015,6 +1061,22 @@ const SCROLL_SETTLE_MS = 400;
             <span class="swatch" [style.background]="open.colour"></span>
             Edit this block
           </button>
+          <!--
+            *"right-click a block and hit 'add chapter marker', and itll add a
+            chapter break above that block"* (user ruling, 2026-08-17). The
+            second block-scoped verb, beside Edit — the panel's "chapter starts
+            here" button said the same thing about a block picked on the paper,
+            and this is that verb offered where the block already is, without
+            the trip through a selection. The swatch wears the chapter ink
+            rather than the category's, because the verb is about the green
+            world of divisions and not about what kind of block this is.
+          -->
+          @if (!open.chapter) {
+            <button role="menuitem" (click)="chapterFromMenu()">
+              <span class="swatch" style="background: var(--ink-chapter)"></span>
+              Add a chapter marker above this block
+            </button>
+          }
           <button role="menuitem" (click)="selectSimilar()">
             <span class="swatch" [style.background]="open.colour"></span>
             Select {{ open.ids.length === 1 ? 'the 1' : 'all ' + open.ids.length }} {{ open.plural }}
@@ -1059,9 +1121,16 @@ const SCROLL_SETTLE_MS = 400;
       --t-fast:       120ms;
       --t-med:        180ms;
 
-      display: block;
+      /* A COLUMN NOW: the head row first, the pair filling the rest. The
+         bench ground is painted on the host itself because the head row is
+         narrower than the pane — the strip either side of it would otherwise
+         be the viewer's own darker sunken tone showing through a surface
+         that is meant to read as one bench. */
+      display: flex;
+      flex-direction: column;
       width: 100%;
       height: 100%;
+      background: var(--bench);
       /*
        * WHAT LETS A BLOCK COLLAPSE FROM THE HEIGHT IT HAPPENS TO HAVE. §6 asks
        * that things which leave the document collapse, and a block's height is
@@ -1145,7 +1214,7 @@ const SCROLL_SETTLE_MS = 400;
 
     /* ── §5 The pair ──────────────────────────────────────────────────────── */
 
-    .pair { display: flex; width: 100%; height: 100%; }
+    .pair { display: flex; width: 100%; flex: 1 1 0; min-height: 0; }
     /*
      * *"Both sheets narrow to fit: min(38rem, 46%) each."* — the lead's measure,
      * written here against the COLUMN because that is the box a sheet is centred
@@ -1546,10 +1615,18 @@ const SCROLL_SETTLE_MS = 400;
       margin: 2rem 0 1.25rem;
       border-top: 2px dashed color-mix(in srgb, var(--ink-chapter) 65%, transparent);
     }
-    .chapter-chip {
+    /* The chip and its ✕ ride the rule together: the group carries the
+       absolute anchoring the chip used to carry alone, so the ✕ sits beside
+       the title wherever the title ends without arithmetic about its width. */
+    .chapter-head {
       position: absolute;
       top: -0.8em;
       left: calc(var(--gutter) * -1 + 0.9rem);
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+    }
+    .chapter-chip {
       padding: 0.1rem 0.45rem;
       border: 1px solid color-mix(in srgb, var(--ink-chapter) 45%, transparent);
       border-radius: 999px;
@@ -1580,6 +1657,23 @@ const SCROLL_SETTLE_MS = 400;
       box-shadow: 0 1px 3px rgb(0 0 0 / .25);
       touch-action: none;
     }
+    /* The marker's ✕ — quiet until the hand is near the rule, and the space
+       held either way so nothing shifts under the pointer on its way to it. */
+    .chapter-x {
+      padding: 0 0.32rem;
+      border: 1px solid color-mix(in srgb, var(--ink-chapter) 45%, transparent);
+      border-radius: 999px;
+      background: var(--paper-high);
+      color: var(--ink-chapter);
+      font-size: 10px;
+      line-height: 1.5;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity var(--t-fast) var(--ease);
+    }
+    .chapter:hover .chapter-x, .chapter-x:focus-visible { opacity: 1; }
+    .chapter-x:hover { background: color-mix(in srgb, var(--ink-chapter) 12%, var(--paper-high)); }
+    .chapter-x:focus-visible { outline: 2px solid var(--ink-select); outline-offset: 2px; }
     .block.drop-target::before {
       content: '';
       position: absolute;
@@ -1656,9 +1750,11 @@ const SCROLL_SETTLE_MS = 400;
 
     /* ── §5 The register, at the head of the column the tray closes ────────── */
 
-    /* The tray's own rule, turned over: same measure, same sticky edge-of-column
-       placement, the other edge. */
-    .head { top: 0; bottom: auto; padding: 0 0 0.75rem; }
+    /* The tray's measure without the tray's stickiness: the head stands
+       OUTSIDE the scroller now (the template's own comment carries the
+       ruling), a row of the host's column above the pair, so \`position\`
+       goes back to static and the paper below cannot pass under it. */
+    .head { position: static; flex: 0 0 auto; padding: 0.75rem 0; }
 
     /* Two acts made one control: the seam between them is a shared hairline
        (the second pulled back a pixel onto the first's border) and only the
@@ -1838,9 +1934,27 @@ const SCROLL_SETTLE_MS = 400;
 })
 export class BookViewComponent {
   readonly tab = input.required<Tab>();
+  /**
+   * THE STEP THIS VIEWER IS LOCKED TO, or null for the ordinary case — the
+   * position.
+   *
+   * Compare's one wire into this component (docs/PLAN.md §4, unit 8d). Set, it
+   * changes exactly three things and nothing else: the book is read through
+   * `book:load-at` for the named row instead of `book:load` for the pointer,
+   * `viewing()` goes true so the whole read-only projection the export view has
+   * used for months applies, and no stack is registered — see each of the three.
+   *
+   * IT IS AN INPUT AND NOT A FLAG ON THE TAB, because a compare column's tab is
+   * synthetic (`CompareColumnComponent`) and `Tab` is the shape of a document the
+   * window HAS OPEN. Putting a step id on it would make every real tab carry a
+   * field that is meaningless for it, and would invite something in the documents
+   * service to start meaning something by it.
+   */
+  readonly atStep = input<string | null>(null);
 
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
-  private readonly tabs = inject(TabsService);
+  private readonly stacks = inject(BookStacksService);
+  private readonly notices = inject(NoticeService);
   private readonly ledger = inject(LedgerService);
   /** For `afterNextRender` from an event handler — see `edit`. */
   private readonly injector = inject(Injector);
@@ -1881,7 +1995,7 @@ export class BookViewComponent {
    * A LIFO in memory and nowhere else (docs/RENDERER.md §0, ruling 5). Undo pops
    * the last one onto `undone`; redo puts it back; Apply writes the whole list as
    * a step and empties both. Closing scraps it, which is what the closing question
-   * is about (`BookStack`, core/tabs.service.ts).
+   * is about (`BookStack`, core/book-stacks.service.ts).
    *
    * IT IS A SIGNAL BECAUSE THE VIEW IS A FUNCTION OF IT. Every gesture on this
    * surface ends as a push here, and the sheet is `replayOps` over the chain and
@@ -1950,7 +2064,8 @@ export class BookViewComponent {
    * no stack, no Apply, no register toggle, and every door that would edit
    * says where editing lives instead.
    */
-  protected readonly viewing = computed(() => this.tab().viewOnly === true);
+  protected readonly viewing = computed(() =>
+    this.tab().viewOnly === true || this.atStep() !== null);
 
   /**
    * WHETHER THE SOURCE STANDS BESIDE THE TRANSLATION — the second control, and
@@ -2167,18 +2282,30 @@ export class BookViewComponent {
        * tab's path is the PROJECT directory and never changes; what changes when
        * somebody clicks a row in Steps is which book `book:load` would answer with
        * — a different reading, or the same reading with a different chain of
-       * applied changes over it. `TabsService.showBook` bumps this on a genuine
+       * applied changes over it. `PositionSyncService.showBook` bumps this on a genuine
        * position move and on nothing else, which is what keeps clicking the row you
        * are already standing on free.
        */
       this.tab().revision;
+      /*
+       * AND THE COMPARED STEP, which is the same fact one door along. A compare
+       * column's tab never moves — its path is the project and its revision is
+       * frozen at zero — so `atStep` is the only thing that says which book this
+       * instance is about, and picking a second row without leaving compare mode
+       * has to reach the load. Reading it HERE rather than only inside `load` is
+       * what makes that true of the component rather than of the way its host
+       * happens to be written: the compare column does destroy and rebuild this
+       * viewer between steps today, and a correctness that depends on somebody
+       * else's re-render is a correctness that ends the day they optimise it.
+       */
+      this.atStep();
       // Untracked, because the load writes the signals this component draws from,
       // and an effect that reads its own writes is a loop waiting for a disk.
       untracked(() => void this.load(dir));
     });
 
     /*
-     * THE STACK, ANNOUNCED — see `BookStack` (core/tabs.service.ts) for the whole
+     * THE STACK, ANNOUNCED — see `BookStack` (core/book-stacks.service.ts) for the whole
      * argument. Four things outside this pane need it now: the undo chord, which
      * main swallows as a menu accelerator and the window routes; the closing
      * question, asked once per tab about everything closing costs; and the Notes,
@@ -2191,7 +2318,7 @@ export class BookViewComponent {
      * this book says — there is nothing to keep in step, because there is only one
      * of it.
      */
-    const tabs = this.tabs;
+    const stacks = this.stacks;
     const stack: BookStack = {
       pending: () => this.waiting(),
       canUndo: () => this.pending().length > 0,
@@ -2216,16 +2343,26 @@ export class BookViewComponent {
     let registered: string | null = null;
     effect(() => {
       const id = this.tab().id;
+      /*
+       * A COMPARED COLUMN REGISTERS NOTHING. The registry answers "which book
+       * viewer is in this tab" for the undo chord and the closing question, and a
+       * compare column is neither: it has no tab in the list to be closed, and
+       * Ctrl+Z means the document in front of the person, which is the OTHER
+       * column. Registering under a synthetic id would put an entry in the map
+       * that nothing can reach and that a future reader would have to work out is
+       * unreachable.
+       */
+      if (this.atStep() !== null) return;
       untracked(() => {
         if (registered === id) return;
-        if (registered !== null) tabs.releaseBookStack(registered);
-        tabs.registerBookStack(id, stack);
+        if (registered !== null) stacks.releaseBookStack(registered);
+        stacks.registerBookStack(id, stack);
         registered = id;
       });
     });
     const destroy = inject(DestroyRef);
     destroy.onDestroy(() => {
-      if (registered !== null) tabs.releaseBookStack(registered);
+      if (registered !== null) stacks.releaseBookStack(registered);
       /*
        * UNWRITTEN WORK RIDES THE TAB, NOT THE COMPONENT. This pane dies every
        * time its pane shows another tab — a glance at the scan — and the stack
@@ -2237,7 +2374,7 @@ export class BookViewComponent {
        */
       if (registered !== null
         && (this.waiting() > 0 || this.undone().length > 0)) {
-        tabs.parkBookStack(registered, {
+        stacks.parkBookStack(registered, {
           revision: this.tab().revision,
           landed: this.landedOps(),
           pending: this.pending(),
@@ -2403,7 +2540,7 @@ export class BookViewComponent {
     const scrapped = this.landed ? 0 : this.waiting();
     this.landed = false;
     if (scrapped > 0) {
-      this.tabs.notice.set(
+      this.notices.notice.set(
         scrapped === 1
           ? 'The change waiting on the book was not applied, so moving to another step let it go.'
           : `The ${scrapped} changes waiting on the book were not applied, so moving to another step `
@@ -2411,9 +2548,24 @@ export class BookViewComponent {
       );
     }
     try {
-      const loaded = this.viewing()
-        ? await api.book.view(projectDir)
-        : await api.book.load(projectDir);
+      /*
+       * THREE DOORS ONTO ONE SHEET, and which one is asked is decided here.
+       *
+       * A COMPARED STEP goes first, because it is the narrowest: `atStep` names a
+       * row of this project's own history and `book:load-at` replays the chain to
+       * it. It is tested before `viewing()` even though it turns `viewing()` on —
+       * an export view is a FILE and a compared step is a POSITION in a project,
+       * and the two reach entirely different books.
+       *
+       * AN EXPORT VIEW is a finished file exploded read-only; the position is
+       * everything else, which is every ordinary open of this viewer.
+       */
+      const at = this.atStep();
+      const loaded = at !== null
+        ? await api.book.loadAt(projectDir, at)
+        : this.viewing()
+          ? await api.book.view(projectDir)
+          : await api.book.load(projectDir);
       if (ticket !== this.asked) return;
       if (loaded.ok) {
         this.book.set(loaded);
@@ -2449,7 +2601,7 @@ export class BookViewComponent {
          * load's re-parsed ones. When it does not, the loss is said out loud;
          * silence here would be indistinguishable from a successful return.
          */
-        const parked = this.tabs.claimBookStack(this.tab().id);
+        const parked = this.stacks.claimBookStack(this.tab().id);
         if (parked !== null) {
           const same = parked.revision === this.tab().revision
             && JSON.stringify(parked.landed) === JSON.stringify(tip);
@@ -2459,7 +2611,7 @@ export class BookViewComponent {
             this.undone.set([...parked.undone]);
           } else if (unwritten(parked.landed, parked.pending) > 0) {
             const lost = unwritten(parked.landed, parked.pending);
-            this.tabs.notice.set(
+            this.notices.notice.set(
               lost === 1
                 ? 'The change waiting on this book was let go — the book here changed while you '
                   + 'were looking at another tab.'
@@ -2909,7 +3061,7 @@ export class BookViewComponent {
     if (which === 'aligned') {
       const refused = this.alignRefusal();
       if (refused !== null) {
-        this.tabs.notice.set(refused);
+        this.notices.notice.set(refused);
         return;
       }
     }
@@ -3548,7 +3700,7 @@ export class BookViewComponent {
      * app keeps refusing to ship.
      */
     if (this.viewing()) {
-      this.tabs.notice.set(
+      this.notices.notice.set(
         'This tab shows a finished export. To change the book, open it from its step in the tree '
         + 'and export again.',
       );
@@ -3577,7 +3729,7 @@ export class BookViewComponent {
   }
 
   /**
-   * Ctrl+Z, routed from `TabsService.replay`. Pops one op; never touches a disk.
+   * Ctrl+Z, routed from `BookStacksService.replay`. Pops one op; never touches a disk.
    *
    * ── THE CHORD FLIPS TO THE BENCH FIRST, AND THAT WAS A CHOICE ──────────────
    *
@@ -3626,7 +3778,7 @@ export class BookViewComponent {
    * Main writes the ops file, lands an `edit` step as a child of the position and
    * moves the pointer onto it (`applyBookOps`, electron/book.ts). Adopting the
    * answer is all this does: `LedgerService.adopt` paints the history main handed
-   * back, the position effect in `TabsService` notices a picture it has not shown
+   * back, the position effect in `PositionSyncService` notices a picture it has not shown
    * (`positionPicture` carries the edit chain for exactly this), and that bumps
    * this tab's revision — which reloads the book with the ops on its CHAIN and
    * clears the stack on the way. Clearing it here as well would be this component
@@ -3675,7 +3827,7 @@ export class BookViewComponent {
       this.ledger.adopt(this.tab().path, history);
       return true;
     } catch (err) {
-      this.tabs.notice.set(err instanceof Error ? err.message : String(err));
+      this.notices.notice.set(err instanceof Error ? err.message : String(err));
       return false;
     } finally {
       this.applying.set(false);
@@ -3901,7 +4053,7 @@ export class BookViewComponent {
      * machine's words is the failure this whole door exists to prevent.
      */
     if (this.correcting) {
-      this.tabs.notice.set(
+      this.notices.notice.set(
         'The last corrected paragraph is still being written into this translation\'s records, so '
         + 'this one was not — it is showing its recorded words again. Make the edit once more.',
       );
@@ -3926,7 +4078,7 @@ export class BookViewComponent {
       return false;
     } catch (err) {
       if (ticket !== this.asked) return false;
-      this.tabs.notice.set(err instanceof Error ? err.message : String(err));
+      this.notices.notice.set(err instanceof Error ? err.message : String(err));
       return false;
     } finally {
       this.correcting = false;
@@ -3999,8 +4151,16 @@ export class BookViewComponent {
   protected readonly context = signal<{
     x: number;
     y: number;
-    /** The block under the pointer — the menu's one block-scoped verb, Edit. */
+    /** The block under the pointer — the menu's block-scoped verbs act on it. */
     id: string;
+    /**
+     * True when a division already starts at this block, so the menu does not
+     * offer to add one that is already there. \`set\` would legally retitle it
+     * (ChapterSetOp says so on purpose), but a menu item that RENAMES under a
+     * label that says ADD is the kind of quiet lie the chip's own double-click
+     * rename exists to make unnecessary.
+     */
+    chapter: boolean;
     colour: string;
     plural: string;
     ids: string[];
@@ -4019,6 +4179,7 @@ export class BookViewComponent {
       x: event.clientX,
       y: event.clientY,
       id: line.row.id,
+      chapter: line.chapter !== null,
       colour: line.colour,
       // "Text" pluralises into nonsense; every other category reads naturally.
       plural: line.row.category === 'Text' ? 'text blocks' : `${line.label.toLowerCase()}s`,
@@ -4033,6 +4194,36 @@ export class BookViewComponent {
     this.context.set(null);
     if (open === null) return;
     this.beginEditing(open.id);
+  }
+
+  /**
+   * The menu's "add a chapter marker": a division above the block, titled with
+   * the block's own first line.
+   *
+   * THE SEED IS THE PANEL'S SEED, deliberately (`makeSheetChapter`,
+   * inspector.component.ts): it is right far more often than any other guess,
+   * it is exactly what the detection would have called it, and it is a starting
+   * point rather than a rule — the chip is renameable the moment it appears.
+   * One op, so Ctrl+Z takes the whole gesture back.
+   */
+  protected chapterFromMenu(): void {
+    const open = this.context();
+    this.context.set(null);
+    if (open === null || open.chapter) return;
+    const row = this.view()?.rows.find((one) => one.id === open.id);
+    if (row === undefined) return;
+    const words = row.text.split('\n')[0]?.trim() ?? '';
+    this.push({ op: 'chapter', set: open.id, title: words.slice(0, 120) });
+  }
+
+  /**
+   * The chip's ✕ — the division above this block, taken away where it is drawn.
+   * The op the Chapters panel's remove has always pushed (`dropSheetChapter`),
+   * said from the paper: the block stays, the rule goes, and undo brings it
+   * back title and all because the title travels with the op it reverses.
+   */
+  protected dropChapter(id: string): void {
+    this.push({ op: 'chapter', remove: id });
   }
 
   /** The selection becomes the category — rails up, chips up, Delete waiting. */
@@ -4129,7 +4320,7 @@ export class BookViewComponent {
     if (replayed === null) return;
     const picked = [...this.chosen()];
     if (picked.length !== 2) {
-      this.tabs.notice.set(
+      this.notices.notice.set(
         'Joining is a decision about two blocks: pick the paragraph that ends and the one that '
         + 'carries on from it, then press it again.',
       );
@@ -4137,7 +4328,7 @@ export class BookViewComponent {
     }
     const pair = flowNeighbours(replayed.rows, picked[0]!, picked[1]!);
     if (pair === null) {
-      this.tabs.notice.set(
+      this.notices.notice.set(
         'Those two blocks do not sit next to each other in the book, and joining them would put '
         + 'words from either side of whatever stands between them into one paragraph.',
       );
@@ -4146,7 +4337,7 @@ export class BookViewComponent {
     const held = new Map(replayed.rows.map((row) => [row.id, row] as const));
     const note = [pair.earlier, pair.later].some((id) => held.get(id)?.category === 'Footnote');
     if (note) {
-      this.tabs.notice.set(
+      this.notices.notice.set(
         'A note is one piece of apparatus, printed whole at the foot of its page. Joining one to '
         + 'anything is not a repair this program offers.',
       );
@@ -4196,14 +4387,14 @@ export class BookViewComponent {
     const said = editor.textContent ?? '';
     const at = caretOffsetIn(editor);
     if (at === null) {
-      this.tabs.notice.set(
+      this.notices.notice.set(
         'A paragraph is cut where the caret is, and there are words selected rather than a caret '
         + 'in them. A cut cannot also delete what is highlighted.',
       );
       return;
     }
     if (at <= 0 || at >= said.length) {
-      this.tabs.notice.set(
+      this.notices.notice.set(
         `The caret is at the very ${at <= 0 ? 'start' : 'end'} of this paragraph, and cutting there `
         + 'would leave one of the two halves with nothing in it.',
       );
@@ -4314,7 +4505,7 @@ export class BookViewComponent {
     if (said === was) return;
     if (said.length === 0) {
       chip.textContent = was;
-      this.tabs.notice.set(
+      this.notices.notice.set(
         'A chapter chip with no words on it could not be double-clicked again, so the division kept '
         + 'the name it had. Take the division away in the panel if the book should not divide there.',
       );

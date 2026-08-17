@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **ec1edda** — *"feat(renderer): the library is the pipeline composer — cards on a drawn spine, and what can be made from here"* |
-| Copied on | 2026-08-17 |
-| Copied by | `git -C <foundry> archive ec1edda app \| tar -x --strip-components=1` |
+| Source sha | **6925d21** — *"fix(renderer): the book scrolls again — the viewer stops overriding its child's own display"* |
+| Copied on | 2026-08-18 |
+| Copied by | `git -C <foundry> archive 6925d21 app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -31,9 +31,15 @@ the `host-ops:` channel family — three handles and one push, a family
 BookForge owns nothing in, so collision-safety is structural) — and
 `ec1edda` itself, the provenance-tree redesign (cards on a drawn spine,
 plain-sentence titles, host nodes drawn in the same grammar; the composer
-of Owen's pipeline ruling). Each refresh changed only the files its commits
-name and was hash-verified against the source tree (86/86 blobs at
-ec1edda).
+of Owen's pipeline ruling). `6925d21` brought Owen's viewer rewrite: `7f7bd8e`
+(a contents entry pointing inside a chapter is a heading, not a division),
+`e6a736c` (the register stands above the paper), `7d34935` (chapter marker at
+the hand — an X on the rule, right-click starts one), `370fafc` (ONE VIEWER,
+NO TABS — columns, strips and pins retire), `218f0b2` (TabsService becomes
+five services), `1858041` (Compare — a second read-only column locked to a
+chosen step), `7eb10da` (Wave 6 closes), and `6925d21` itself (the book
+scrolls again). Each refresh changed only the files its commits name and was
+hash-verified against the source tree (92/92 blobs at 6925d21).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

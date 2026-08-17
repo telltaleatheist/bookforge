@@ -140,6 +140,8 @@ const api: FoundryApi = {
     standFor: (projectDir, filePath) =>
       ipcRenderer.invoke('ledger:stand-for', projectDir, filePath),
     documentAt: (projectDir) => ipcRenderer.invoke('ledger:document-at', projectDir),
+    documentAtStep: (projectDir, stepId) =>
+      ipcRenderer.invoke('ledger:document-at-step', projectDir, stepId),
     describeDelete: (projectDir, stepId) =>
       ipcRenderer.invoke('ledger:describe-delete', projectDir, stepId),
     delete: (projectDir, stepId) => ipcRenderer.invoke('ledger:delete', projectDir, stepId),
@@ -147,6 +149,7 @@ const api: FoundryApi = {
 
   book: {
     load: (projectDir) => ipcRenderer.invoke('book:load', projectDir),
+    loadAt: (projectDir, stepId) => ipcRenderer.invoke('book:load-at', projectDir, stepId),
     apply: (projectDir, ops) => ipcRenderer.invoke('book:apply', projectDir, ops),
     amend: (projectDir, ops) => ipcRenderer.invoke('book:amend', projectDir, ops),
     view: (target) => ipcRenderer.invoke('book:view', target),

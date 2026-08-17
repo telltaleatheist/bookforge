@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { Router } from '@angular/router';
 
 import { typeLabel } from '@shared/documents';
@@ -6,7 +6,8 @@ import type { ProjectSummary } from '@shared/types';
 
 import { api, hosted } from '../../core/foundry';
 import { ProjectsService } from '../../core/projects.service';
-import { TabsService } from '../../core/tabs.service';
+import { OpenDocumentsService } from '../../core/documents.service';
+import { NoticeService } from '../../core/notice.service';
 import { UiService } from '../../core/ui.service';
 
 /**
@@ -55,21 +56,19 @@ import { UiService } from '../../core/ui.service';
  * one confirmation in this app, and it looks the same wherever the thing being
  * ended is — which is what stops a second, softer one being invented later.
  *
- * IT IS ALSO WHAT AN EMPTY COLUMN SHOWS. Ctrl+\ makes a column with nothing in
- * it, and the useful thing to put in a column with nothing in it is the library
- * — so opening a book from this list lands in the column you are looking at.
- * When it is drawn as a column rather than as the whole window it carries a ✕,
- * because a column you asked for and changed your mind about has to be a column
- * you can put away; the ✕ closes the COLUMN and never a document.
+ * IT IS ALWAYS THE WHOLE WINDOW NOW, and that is the single-viewer ruling
+ * reaching this file (docs/PLAN.md §4, unit 8b). It used to be two things: the
+ * app's first screen, AND what an empty COLUMN showed — Ctrl+\ made a column with
+ * nothing in it, and the useful thing to put in one was the library. Drawn as a
+ * column it carried a ✕ of its own, because a column you asked for and changed
+ * your mind about has to be a column you can put away. There are no columns, so
+ * there is no ✕ and no `pane` input: this screen appears when nothing is on
+ * screen and no project is held, and it fills the window it appears in.
  */
 @Component({
   selector: 'app-home',
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    @if (closable()) {
-      <button class="close-column" title="Close this column" (click)="closeColumn()">✕</button>
-    }
-
     <div class="home">
       <div class="hero">
         <div class="mark">⬙</div>
@@ -81,7 +80,7 @@ import { UiService } from '../../core/ui.service';
         </div>
 
         <div class="actions">
-          <button class="primary" (click)="tabs.openViaDialog()">Open a document…</button>
+          <button class="primary" (click)="documents.openViaDialog()">Open a document…</button>
           <button class="ghost" (click)="ui.openOcr()">OCR…</button>
           <button class="ghost" (click)="settings()">Settings</button>
         </div>
@@ -184,23 +183,6 @@ import { UiService } from '../../core/ui.service';
   `,
   styles: [`
     :host { position: relative; display: block; height: 100%; overflow-y: auto; background: var(--bg-base); }
-
-    /* Sticky rather than absolute: this host scrolls, and a corner button that
-       scrolled away with the hero would be missing exactly when a long recents
-       list made the column feel permanent. */
-    .close-column {
-      position: sticky;
-      top: 8px;
-      float: right;
-      margin-right: 8px;
-      z-index: 1;
-      background: transparent; border: none; cursor: pointer;
-      color: var(--text-tertiary); font-size: 11px;
-      padding: 4px 6px; border-radius: var(--radius-sm);
-      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  color 100ms cubic-bezier(0, 0, 0.2, 1);
-    }
-    .close-column:hover { background: var(--bg-hover); color: var(--text-primary); }
 
     .home {
       max-width: 720px;
@@ -354,33 +336,11 @@ import { UiService } from '../../core/ui.service';
 export class HomeComponent {
   protected readonly hosted = hosted;
 
-  /**
-   * The column this is filling, when it is filling one.
-   *
-   * Null — the default — is Home as the WHOLE WINDOW, which is what the app is
-   * with nothing open. The input exists only so the ✕ knows what it would be
-   * closing; everything else on this screen is the same either way.
-   */
-  readonly pane = input<string | null>(null);
-
   protected readonly projects = inject(ProjectsService);
-  protected readonly tabs = inject(TabsService);
+  protected readonly documents = inject(OpenDocumentsService);
+  private readonly notices = inject(NoticeService);
   protected readonly ui = inject(UiService);
   private readonly router = inject(Router);
-
-  /**
-   * Only with a neighbour to go back to. Closing the only column would leave
-   * zero columns, which draws this same screen across the same window — a
-   * button whose whole effect is invisible is a button that teaches people the
-   * app does not respond.
-   */
-  protected readonly closable = computed(() =>
-    this.pane() !== null && this.tabs.panes().length > 1);
-
-  protected closeColumn(): void {
-    const id = this.pane();
-    if (id !== null) this.tabs.closePane(id);
-  }
 
   constructor() {
     // Re-read every time Home is constructed, which is every time it comes back
@@ -444,9 +404,9 @@ export class HomeComponent {
      * THE PROJECT DOOR AND NOT THE FILE DOOR: the row is a book, and opening a
      * book means landing where its position stands — the proof sheet, for any
      * project with edits or a reading — with the original adopted underneath it
-     * exactly as before. `TabsService.openProject` owns the reasoning.
+     * exactly as before. `OpenDocumentsService.openProject` owns the reasoning.
      */
-    void this.tabs.openProject(project.dir, original.path, original.managed);
+    void this.documents.openProject(project.dir, original.path, original.managed);
   }
 
   /**
@@ -493,7 +453,7 @@ export class HomeComponent {
      * specific book got "Open a PDF first" over the book they had just pointed
      * at, and the only way out was to close the dialog and press it again.
      */
-    await this.tabs.openFile(original.path, original.managed);
+    await this.documents.openFile(original.path, original.managed);
     this.ui.openOcr();
   }
 
@@ -525,9 +485,9 @@ export class HomeComponent {
    * which is where this app says what it just did.
    */
   protected async remove(project: ProjectSummary): Promise<void> {
-    const open = this.tabs.tabs().find((tab) => within(project.dir, tab.path));
+    const open = this.documents.tabs().find((tab) => within(project.dir, tab.path));
     if (open !== undefined) {
-      this.tabs.notice.set(
+      this.notices.notice.set(
         `“${open.title}” is open from this project, so it cannot be deleted while you are `
         + 'reading it — the delete would leave this tab showing files that no longer exist. '
         + 'Close it, then try again.',
@@ -536,9 +496,9 @@ export class HomeComponent {
     }
     try {
       const said = await this.projects.remove(project);
-      if (said !== null) this.tabs.notice.set(said);
+      if (said !== null) this.notices.notice.set(said);
     } catch (err) {
-      this.tabs.notice.set(err instanceof Error ? err.message : String(err));
+      this.notices.notice.set(err instanceof Error ? err.message : String(err));
     }
   }
 

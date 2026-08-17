@@ -777,7 +777,67 @@ export async function materializeTranslation(recordsPath: string): Promise<void>
  * things from the person looking at them.
  */
 export async function loadBook(projectDir: string): Promise<BookOutcome> {
-  const read = await openBookAtPosition(projectDir);
+  return await bookFrom(projectDir, null);
+}
+
+/**
+ * THE BOOK AS OF A NAMED STEP — Compare's read, and the only new question this
+ * unit asks of main.
+ *
+ * ── It is `loadBook` with the row named instead of pointed at ───────────────
+ *
+ * Every piece of machinery this needs already existed and already took the
+ * parameter: `openBookAtPosition` has carried a `from: LedgerStep | null` since
+ * translations began materialising their derived books at the LANDING rather than
+ * at the pointer, and `bookAtPosition` and `editsSinceTransform` take it for the
+ * same reason. All that was missing was a door that turns an id into that step. So
+ * this is not a second replay — it is the replay, asked about a different row, and
+ * `bookFrom` below is the body both doors share so that it cannot become two.
+ *
+ * WHY THE COMPARISON NEEDS IT AT ALL. The compared column is locked to a step the
+ * person picked out of their own history, and the position is somewhere else by
+ * definition — that is what comparing means. `book:load` would answer with the
+ * book at the POINTER, which is the book they are already looking at in the other
+ * column, and the feature would draw the same page twice.
+ *
+ * A STEP THIS PROJECT DOES NOT HOLD IS A SENTENCE, NOT A THROW, because every
+ * other way this call fails is a sentence the sheet draws (`BookOutcome`) and a
+ * stale id is the ordinary consequence of a delete landing between the picker
+ * being drawn and the answer arriving. The one thing that still rejects is the
+ * directory gate, which is `bookAtPosition`'s and refuses before a byte is read.
+ */
+export async function loadBookAt(projectDir: string, stepId: string): Promise<BookOutcome> {
+  /*
+   * PROVEN FIRST, AND BY THE GATE THE REST OF THE FAMILY USES. `bookAtPosition`
+   * runs `deletableProjectDir` before it touches the disk, so asking it for the
+   * project is how this door refuses a directory that is not one of Home's — the
+   * same refusal, in the same place, rather than a second check written here that
+   * could come to disagree with it.
+   */
+  const at = await bookAtPosition(projectDir);
+  const step = ledgerOf(at.manifest).steps.find((row) => row.id === stepId) ?? null;
+  if (step === null) {
+    return {
+      ok: false,
+      reason: 'That step is not in this book\'s history any more, so there is nothing to compare '
+        + 'against. It was probably deleted while this column was open.',
+    };
+  }
+  return await bookFrom(projectDir, step);
+}
+
+/**
+ * The body `loadBook` and `loadBookAt` share — everything from the replay to the
+ * pair, with the row it is about handed in.
+ *
+ * `from === null` IS THE POSITION and is what every viewer in the app asks for;
+ * a step is Compare's read-only column. Nothing below branches on which of the two
+ * it was, and that is the point: a compared step gets the same figures prefix, the
+ * same unplaced sentences and the same aligned pair as standing on it would,
+ * because it IS standing on it — read-only, in the other column.
+ */
+async function bookFrom(projectDir: string, from: LedgerStep | null): Promise<BookOutcome> {
+  const read = await openBookAtPosition(projectDir, from);
   if (!read.ok) return read;
   const { at, parsed, ops, tip, transform } = read.opened;
   const unplaced = read.opened.unplaced ?? [];

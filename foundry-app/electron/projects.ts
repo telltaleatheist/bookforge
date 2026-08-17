@@ -1181,14 +1181,16 @@ function originLedger(payload: string, label: string, createdAt: number): Projec
  * `<project>/curations/` — the frozen snapshots of the block editor's overlay.
  *
  * A SEVENTH SIBLING, on `overlays/`'s precedent and NOT inside it, which is the
- * decision worth writing down. `overlays/` is the live pair and its archive
- * folders, and everything that walks it — `countAmendments` for the delete card,
- * the archive-on-generation-mismatch machinery — treats what it finds there as
- * one book's current curation and its discarded predecessors. A snapshot is
- * neither: it is a RETAINED PAYLOAD, named by a step, deleted only when that step
+ * decision worth writing down. `overlays/` held the live pair and its archive
+ * folders, and everything that walked it treated what it found there as one
+ * book's current curation and its discarded predecessors — the
+ * archive-on-generation-mismatch machinery went with the overlay system
+ * (docs/RENDERER.md §7), and `countAmendments` still walks the legacy folder so
+ * the delete card counts a v1 project's work. A snapshot is neither of those
+ * things: it is a RETAINED PAYLOAD, named by a step, deleted only when that step
  * is, and never archived aside because it was never bound to the live file's
- * fate. Filing it under `overlays/` would put it in the path of a sweep whose
- * entire premise is that what it finds there is disposable.
+ * fate. Filing it under `overlays/` would have put it in the path of a sweep
+ * whose entire premise was that what it finds there is disposable.
  *
  * `<uuid>.json` rather than a name anybody reads: the step's LABEL is what a
  * person sees ("Applied changes (23)"), and a filename that tried to say the
@@ -2474,9 +2476,68 @@ export async function bookAtPosition(dir: string, at: LedgerStep | null = null):
 export async function documentAtPosition(dir: string): Promise<string | null> {
   const resolved = deletableProjectDir(dir);
   const manifest = await readManifest(resolved);
-  const ledger = ledgerOf(manifest);
-  const view = positionView(ledger);
+  const view = positionView(ledgerOf(manifest));
   if (view.step === null) return null;
+  return await documentOfStep(resolved, manifest, view.step);
+}
+
+/**
+ * THE SAME QUESTION ASKED OF A NAMED STEP — Compare's half of the resolve.
+ *
+ * ── Why a second door and not a second implementation ───────────────────────
+ *
+ * Compare (docs/PLAN.md §4, unit 8d) puts a READ-ONLY column beside the live one,
+ * locked to a step the person picked out of the ledger's own rows. For a row whose
+ * picture is the proof sheet that column asks `book:load-at`; for a row that has a
+ * DOCUMENT — the import, a rendering — it needs the path, which is exactly what
+ * `documentAtPosition` answers for the position. So the two share `documentOfStep`
+ * below and differ only in how they name the row: one reads the pointer, one is
+ * handed an id. A second copy of that table would be two answers to "what does
+ * this row show", and the way that goes wrong is that Compare draws a different
+ * document from the one clicking the row would have opened.
+ *
+ * A STEP THIS PROJECT DOES NOT HOLD IS NULL rather than a throw, and the
+ * difference from `deletableStep` is deliberate. That gate is for a call that
+ * DESTROYS something and refuses the origin by name; this one is a read, and an id
+ * that has gone stale is the ordinary consequence of a delete landing between the
+ * picker being drawn and the answer being asked for. Null is what the renderer
+ * already treats as "this row names no document of its own", so a vanished step
+ * and a sheet-shaped one take the same path and neither is a failure to report.
+ *
+ * THE ORIGIN IS ANSWERABLE HERE, which `deletableStep` would have refused: the
+ * import row is the single most useful thing to compare a later step against —
+ * *"is this what the scan actually said?"* — and it is a read, so nothing about
+ * the retention rule is in question.
+ */
+export async function documentAtStep(dir: string, stepId: string): Promise<string | null> {
+  const resolved = deletableProjectDir(dir);
+  const manifest = await readManifest(resolved);
+  const step = ledgerOf(manifest).steps.find((row) => row.id === stepId) ?? null;
+  if (step === null) return null;
+  return await documentOfStep(resolved, manifest, step);
+}
+
+/**
+ * WHAT THIS ROW SHOWS, when it shows a file at all.
+ *
+ * The body `documentAtPosition` grew, lifted out whole when Compare needed to ask
+ * it about a row nobody is standing on. Every branch below was written for the
+ * position and every word of its reasoning survives the move unchanged, because
+ * none of it was ever about the POINTER: it is about what a row of this action,
+ * with this payload, in this project, is a picture of.
+ *
+ * `A_BOOK_OF_ITS_OWN` IS THE TEST, read here rather than taken off `positionView`.
+ * That is the same table `view.own` is composed from (shared/ledger.ts), asked
+ * directly because this function is handed a step and has no position to compose a
+ * view around — and asking the table is what keeps the two doors from drifting
+ * apart the day an action changes sides.
+ */
+async function documentOfStep(
+  resolved: string,
+  manifest: ProjectManifest,
+  step: LedgerStep,
+): Promise<string | null> {
+  const view = { step, own: A_BOOK_OF_ITS_OWN[step.action] };
 
   if (view.own) {
     /*

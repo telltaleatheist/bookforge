@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 
-import { TabsService } from '../../core/tabs.service';
+import { NoticeService } from '../../core/notice.service';
 
 /**
  * The one line that says what went wrong out here, rather than inside a tab.
@@ -19,10 +19,10 @@ import { TabsService } from '../../core/tabs.service';
   selector: 'app-notice-bar',
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    @if (tabs.notice(); as message) {
+    @if (notices.notice(); as message) {
       <div class="notice" role="status">
         <span>{{ message }}</span>
-        <button class="x" (click)="tabs.notice.set(null)" title="Dismiss">✕</button>
+        <button class="x" (click)="notices.notice.set(null)" title="Dismiss">✕</button>
       </div>
     }
   `,
@@ -50,5 +50,5 @@ import { TabsService } from '../../core/tabs.service';
   `],
 })
 export class NoticeBarComponent {
-  protected readonly tabs = inject(TabsService);
+  protected readonly notices = inject(NoticeService);
 }

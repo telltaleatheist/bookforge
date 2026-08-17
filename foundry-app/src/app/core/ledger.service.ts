@@ -115,7 +115,7 @@ export class LedgerService {
    *
    * A DELETE IS THE OTHER THING ENTIRELY. It unlinks payloads, and an open block
    * editor is drawing a bank that may have just stopped existing. So this bumps,
-   * `TabsService` hears it, and the panes showing that project read their state
+   * `PositionSyncService` hears it, and the viewer showing that project reads its state
    * again — which is where they find out, with main's own sentence, that there is
    * nothing behind them any more.
    */
@@ -354,7 +354,7 @@ export class LedgerService {
 
   /**
    * A history that arrived from somewhere other than this class — the answer to a
-   * curation commit, which `TabsService` makes because it is the side holding the
+   * curation commit, which the renderer makes because it is the side holding the
    * document's path.
    *
    * ONE ANSWER, PAINTED WHOLE. It used to paint and then re-read, because a commit

@@ -32,7 +32,8 @@ import {
   type RenderTask,
 } from 'pdfjs-dist/legacy/build/pdf.mjs';
 
-import { TabsService, type Tab } from '../../core/tabs.service';
+import { ComparePickerComponent } from '../compare/compare-picker.component';
+import { OpenDocumentsService, type Tab } from '../../core/documents.service';
 import { api } from '../../core/foundry';
 
 /**
@@ -117,6 +118,7 @@ import { api } from '../../core/foundry';
  */
 @Component({
   selector: 'app-pdf-view',
+  imports: [ComparePickerComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="pdf">
@@ -127,18 +129,39 @@ import { api } from '../../core/foundry';
              it), so a title here is the same word twice, one row apart, on a
              row that already has to fit a search box, a zoom group and a page
              counter. -->
-        <button
-          class="ghost"
-          [class.on]="tab().layerView"
-          [disabled]="doc() === null"
-          (click)="tabs.toggleLayerView(tab().id)"
-        >{{ tab().layerView ? 'Hide text layer' : 'Text layer' }}</button>
-        <button
-          class="ghost"
-          [class.on]="tab().thumbnails"
-          [disabled]="doc() === null"
-          (click)="tabs.toggleThumbnails(tab().id)"
-        >Thumbnails</button>
+        <!--
+          THE TWO VIEW MODES, AND THE COMPARE CONTROL, ARE THE THREE THINGS A
+          COMPARE COLUMN HAS NO USE FOR. Both toggles write through the tab id
+          (\`toggleLayerView\`, \`toggleThumbnails\`) and a compare column's tab
+          is synthetic — not in the documents list, so the write would land
+          nowhere and the buttons would be dead. Compare itself is worse than
+          dead there: it would offer a third column from inside the second.
+          Everything else on this row — the search, the zoom, the page counter —
+          is exactly what somebody comparing a scan wants, and stays.
+        -->
+        @if (!readOnly()) {
+          <button
+            class="ghost"
+            [class.on]="tab().layerView"
+            [disabled]="doc() === null"
+            (click)="documents.toggleLayerView(tab().id)"
+          >{{ tab().layerView ? 'Hide text layer' : 'Text layer' }}</button>
+          <button
+            class="ghost"
+            [class.on]="tab().thumbnails"
+            [disabled]="doc() === null"
+            (click)="documents.toggleThumbnails(tab().id)"
+          >Thumbnails</button>
+          <!--
+            AND A SCAN GETS COMPARE TOO. The question *"is this what the page
+            actually said?"* is asked at least as often over a photograph of a
+            page as over the book reflowed from it, and a control that existed
+            only on the book would make the answer depend on which face of the
+            project happened to be up. This toolbar is its natural home: it is
+            the row that already carries what-am-I-looking-at-and-how.
+          -->
+          <app-compare-picker />
+        }
         <!--
           ── THERE IS NO BLOCKS BUTTON AND THERE IS NO BLOCK LAYER ──
 
@@ -457,8 +480,19 @@ import { api } from '../../core/foundry';
 })
 export class PdfViewComponent implements OnDestroy {
   readonly tab = input.required<Tab>();
+  /**
+   * DRAWN WITHOUT THE CONTROLS THAT WRITE — Compare's second column.
+   *
+   * A PDF viewer has nothing to edit, so this is smaller than the book's
+   * `viewing()`: what it takes away is the two VIEW-MODE toggles, which live on
+   * the tab and are written by id, and the Compare control, which would offer a
+   * third column from inside the second. The pages, the zoom, the search and the
+   * page counter are all reads and all stay — a comparison you cannot scroll or
+   * zoom is a picture, not a viewer.
+   */
+  readonly readOnly = input(false);
 
-  protected readonly tabs = inject(TabsService);
+  protected readonly documents = inject(OpenDocumentsService);
 
   protected readonly doc = signal<PDFDocumentProxy | null>(null);
   protected readonly problem = signal<string | null>(null);

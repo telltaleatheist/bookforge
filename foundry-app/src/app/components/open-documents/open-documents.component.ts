@@ -19,7 +19,9 @@ import { api } from '../../core/foundry';
 import { HostOpsService } from '../../core/host-ops.service';
 import { LedgerService } from '../../core/ledger.service';
 import { ProjectsService } from '../../core/projects.service';
-import { TabsService, type Tab } from '../../core/tabs.service';
+import { OpenDocumentsService, type Tab } from '../../core/documents.service';
+import { NoticeService } from '../../core/notice.service';
+import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 
 /**
@@ -106,7 +108,7 @@ import { UiService } from '../../core/ui.service';
  * the POSITION, so standing first is the whole of "aimed at this node".
  *
  * WHY A FOOTER RATHER THAN A MENU. The right-click menu is still there and still
- * carries the destructive and arranging acts (split, delete, reveal). What the
+ * carries the destructive acts (delete, reveal). What the
  * footer carries is the MAKING acts, and those are the ones a person has to be
  * able to SEE from the node they are standing on — a right-click is a gesture
  * with nothing on screen to suggest it, which is the same argument that put a ✕
@@ -185,13 +187,13 @@ import { UiService } from '../../core/ui.service';
  * ── A STEP NODE IS NOT A TAB, and does not wear a tab's marks ────────────────
  *
  * No ✕ — the root is the single exception, and what its ✕ closes is the BOOK
- * rather than the step, which is the next section — no middle-click close, no
- * column badge, no accent bar for "on screen".
+ * rather than the step, which is the next section — no middle-click close and no
+ * accent bar for "on screen".
  * A step is a POSITION — clicking it moves where the project stands and the
- * panes follow — and the panel's statement about it is `.standing`, one card in
- * the tree drawn in the accent. Marking step cards as "showing in column 3" as
- * well would put the second selector straight back: *"Tabs are windows onto the
- * selection, never a second selector"* (§6c). The rows that ARE tabs — exports,
+ * viewer follows — and the panel's statement about it is `.standing`, one card in
+ * the tree drawn in the accent. Marking step cards as "this is what is on screen"
+ * as well would put the second selector straight back: *"Tabs are windows onto
+ * the selection, never a second selector"* (§6c). The rows that ARE tabs — exports,
  * HTML faces, copies, loose files — keep every one of those marks, because for
  * them the mark is the truth.
  *
@@ -246,15 +248,23 @@ import { UiService } from '../../core/ui.service';
  * A row dragged WITHIN this list reorders the loose files — the only place a
  * document's order still exists. Rows inside a project cannot be reordered:
  * their order is the ledger's and the catalogue's, and a line drawn above one
- * would promise a move the next redraw undoes. A row dragged onto the workspace
- * lands in a column (the workspace owns that half of the gesture). Step and host
- * cards are not draggable at all: there is no tab to carry.
+ * would promise a move the next redraw undoes. Step and host cards are not
+ * draggable at all: there is no tab to carry.
  *
- * Native HTML5 drag and drop, with the same custom MIME the strips used, and the
- * window's own file-drop veil still tells the two apart by looking for `Files`
- * in the payload (see App). `dataTransfer.types` is the only part of a drag
- * readable before the drop, which is what that test is for and why the id itself
- * can only be read when the drop happens.
+ * A DRAG OUT OF THIS LIST NO LONGER MEANS ANYTHING, and that is the single-viewer
+ * ruling (docs/PLAN.md §4, unit 8b). A row dropped on the workspace used to land
+ * in a column — the middle of a pane to show it there, an edge band to split one
+ * off — and the workspace owned that half of the gesture, including the sheet of
+ * glass it had to lay over every pane so that a drop could reach an <iframe> at
+ * all. There is one viewer, so the only place a drop could land is the place a
+ * CLICK already lands, and this list's click has always meant "put this in front
+ * of me".
+ *
+ * Native HTML5 drag and drop, with the custom MIME kept for the reorder that
+ * survives, and the window's own file-drop veil still tells the two apart by
+ * looking for `Files` in the payload (see App). `dataTransfer.types` is the only
+ * part of a drag readable before the drop, which is what that test is for and
+ * why the id itself can only be read when the drop happens.
  */
 @Component({
   selector: 'app-open-documents',
@@ -357,7 +367,7 @@ import { UiService } from '../../core/ui.service';
              library — and Final Cut's word for the same shelf, which is where
              the whole arrangement comes from (docs/WORKBENCH.md §6c). -->
         <span class="label">Library</span>
-        <span class="count">{{ tabs.tabs().length }}</span>
+        <span class="count">{{ documents.tabs().length }}</span>
       </header>
 
       <!--
@@ -457,8 +467,7 @@ import { UiService } from '../../core/ui.service';
             [class.selected]="row.key === picked()"
             [class.stale]="row.stale"
             [class.inert]="row.tab === null && row.openable === false"
-            [class.on]="row.column !== null"
-            [class.focused]="row.focused"
+            [class.on]="row.focused"
             [class.available]="row.kind === 'export' && row.tab === null"
             [class.before]="before() === row.key"
             [class.pending]="row.dot === 'queued'"
@@ -531,18 +540,14 @@ import { UiService } from '../../core/ui.service';
                 <span class="pencil" title="Edited since it was last saved">✎</span>
               }
               <!--
-                WHICH column it is in, and only once there are two. With one
-                column open the number is the only number it could be, and a
+                A COLUMN BADGE USED TO SIT HERE — the number of the column this
+                document was showing in, drawn only once two were open, because a
                 badge that always says 1 is a badge that teaches people to stop
-                reading it.
-
-                NEVER ON A STEP CARD: a step is a position and not a tab, and a
-                column number on one would be the second selector this tree
-                exists to abolish.
+                reading it. There is one viewer now, so "which column" has no
+                answer worth drawing; what remains is the accent bar (.on /
+                .focused), which says the one thing a person still asks: is this
+                the document I am looking at.
               -->
-              @if (row.column !== null && multi()) {
-                <span class="column" [title]="'Showing in column ' + row.column">{{ row.column }}</span>
-              }
               <!--
                 ONE GLYPH, THREE JOBS, AND EVERY ONE OF THEM SAID IN WORDS ON
                 HOVER. The root's closes the BOOK; a file's inside a project
@@ -638,7 +643,7 @@ import { UiService } from '../../core/ui.service';
         a second IPC round trip per row.
 
         FOUR MENUS IN ONE CARD, because a row's kind decides entirely what can be
-        done to it: a book can be closed, a step can be split out or deleted, an
+        done to it: a book can be closed, a step can be deleted, an
         export and a copy can be revealed or erased. Offering all of them and
         greying most would be a card whose shape says nothing about what it is
         over. A HOST'S NODE HAS NO MENU AT ALL — none of these four acts is
@@ -668,13 +673,17 @@ import { UiService } from '../../core/ui.service';
             <button role="menuitem" (click)="fromMenu(open.row, 'reveal')">Show in file manager</button>
           } @else if (open.row.kind === 'step') {
             <!--
-              *"they can right-click a different step and click open, and itll
-              split the screens between the one they just opened and the one they
-              already had open."* The ordinary click already stands there and
-              shows the document; what the menu adds is the arrangement —
-              beside, rather than instead.
+              "OPEN IN SPLIT" WAS THE FIRST ITEM HERE — *"they can right-click a
+              different step and click open, and itll split the screens between
+              the one they just opened and the one they already had open."* It
+              went with the columns (docs/PLAN.md §4, unit 8b): the ordinary
+              click already stands on the step and shows what it shows, and what
+              the menu added was the ARRANGEMENT, which there is no longer a
+              window shape to arrange. The user's own reading of the same need is
+              a Compare button on the viewer that picks a step to put beside the
+              live one (unit 8d) — a door on the surface being compared, rather
+              than a right-click nothing on screen suggests.
             -->
-            <button role="menuitem" (click)="fromMenu(open.row, 'split')">Open in split</button>
             <button class="danger" role="menuitem" (click)="fromMenu(open.row, 'discard')">Delete this step…</button>
           } @else {
             <button role="menuitem" (click)="fromMenu(open.row, 'reveal')">Show in file manager</button>
@@ -701,23 +710,33 @@ import { UiService } from '../../core/ui.service';
   `,
   styles: [`
     /*
-      WIDER THAN IT WAS, and the width is the redesign's one real cost. 220px
-      held an indented line of text; a card holds a sentence, a lineage line
-      under it and a state on the right, and at 220 the titles this panel now
-      writes ("Translated into German") would ellipse into "Translated int…" —
-      which is the old notation with worse manners. 288 is what fits the longest
-      ordinary title at 12.5px with the dot column and one level of indent, and
-      the panel is still put away with one click on the corner button.
+      WIDER THAN IT WAS, TWICE OVER.
+
+      220px held an indented line of text. The card redesign needed more — a card
+      holds a sentence, a lineage line under it and a state on the right, and at
+      220 the titles this panel writes ("Translated into German") ellipsed into
+      "Translated int…", which is the old notation with worse manners — so it went
+      to 288, the width that fits the longest ordinary title at 12.5px with the
+      dot column and one level of indent.
+
+      346 IS THE USER ASKING FOR ROOM RATHER THAN A MEASUREMENT: *"lets make the
+      library list on the left side nav bigger. it only takes up a sliver right
+      now. lets expand its width by about 20% of what it is now to make a bit more
+      room for the tree by default"* (2026-08-17). 288 was the FLOOR under which
+      a card stops reading, and a floor is not a default — a tree four levels deep
+      spends 72 of those pixels on lanes before a word of a title. So the number
+      is 288 plus the fifth the user asked for, and the panel is still put away
+      with one click on the corner button.
     */
     :host {
       display: block;
-      width: 288px;
-      min-width: 288px;
+      width: 346px;
+      min-width: 346px;
       height: 100%;
     }
     /* Collapsed, the HOST narrows to the stub's width, because the shell's flex
        row measures the host and not the panel inside it — a stub drawn inside a
-       288px host would be 30 pixels of button beside 258 of nothing. The class
+       346px host would be 30 pixels of button beside 316 of nothing. The class
        is put on by the shell (see App's template) rather than by a host binding
        here, so the element carrying it is invalidated by the same change
        detection pass that reads the flag. */
@@ -972,33 +991,36 @@ import { UiService } from '../../core/ui.service';
 
     /*
       AN EXPORT NOBODY HAS OPENED — dimmed and nothing else. The list's language
-      for "on screen" is the accent bar (.on / .focused), so the honest opposite
-      is simply not having it.
+      for "on screen" is the accent bar (.on), so the honest opposite is simply
+      not having it.
     */
     .card.available .name { color: var(--text-secondary); }
     .card.available:hover .name { color: var(--text-primary); }
 
     /*
-      ON SCREEN SOMEWHERE, and in the FOCUSED column, are two different facts
-      and get two different strengths: the rail, the menu and Ctrl+S all act on
-      the focused one, so which it is has to be visible without being loud.
+      THE DOCUMENT YOU ARE LOOKING AT — one mark, where there were two.
+
+      "On screen somewhere" and "in the FOCUSED column" were two different facts
+      and got two different strengths, because the rail, the menu and Ctrl+S all
+      acted on the focused column and which it was had to be visible without
+      being loud. One viewer makes them one fact, so the card takes the STRONGER
+      of the two marks: the accent bar and the faint wash, which is what a person
+      was reading anyway when they wanted to know where a chord would land.
     */
-    .card.on { box-shadow: inset 2px 0 0 0 var(--border-strong); }
-    .card.on .name { color: var(--text-primary); }
-    .card.on.focused {
+    .card.on {
       background: var(--accent-faint);
       box-shadow: inset 2px 0 0 0 var(--accent);
     }
+    .card.on .name { color: var(--text-primary); }
 
     /*
       The insertion point: a line along the edge the dragged row would land on.
-      Spelled out against the on-screen selectors as well, because they set the
+      Spelled out against the on-screen selector as well, because it sets the
       same property at a higher specificity — without this the line would be
       invisible on exactly the cards a person is most likely to be dragging.
     */
     .card.before,
-    .card.on.before,
-    .card.on.focused.before { box-shadow: inset 0 2px 0 0 var(--accent); }
+    .card.on.before { box-shadow: inset 0 2px 0 0 var(--accent); }
 
     /*
       ── THE THREE HOST STATES ─────────────────────────────────────────────────
@@ -1115,14 +1137,6 @@ import { UiService } from '../../core/ui.service';
 
     .mark-dot { flex: 0 0 auto; color: var(--accent); font-size: 9px; line-height: 1; }
     .pencil { flex: 0 0 auto; color: var(--warn); font-size: 11px; line-height: 1; }
-    .column {
-      flex: 0 0 auto;
-      min-width: 12px;
-      color: var(--text-tertiary);
-      font-size: 10px;
-      font-variant-numeric: tabular-nums;
-      text-align: right;
-    }
 
     /*
       Hidden until the card is under the pointer or the button is keyboard-focused.
@@ -1170,7 +1184,9 @@ import { UiService } from '../../core/ui.service';
   `],
 })
 export class OpenDocumentsComponent {
-  protected readonly tabs = inject(TabsService);
+  protected readonly documents = inject(OpenDocumentsService);
+  private readonly stage = inject(StageService);
+  private readonly notices = inject(NoticeService);
   protected readonly projects = inject(ProjectsService);
   private readonly ledger = inject(LedgerService);
   /**
@@ -1194,7 +1210,7 @@ export class OpenDocumentsComponent {
      * re-trigger the effect that asked for it.
      */
     effect(() => {
-      this.tabs.tabs().map((tab) => tab.path).join(' ');
+      this.documents.tabs().map((tab) => tab.path).join('\u0000');
       void this.projects.refresh();
     });
 
@@ -1205,7 +1221,7 @@ export class OpenDocumentsComponent {
      * Until this panel drew trees, the only surfaces that needed a ledger were
      * the inspector — which asks for the FOCUSED document's project — and the
      * block editor, which asks when the mode comes up (`loadBlockView`,
-     * tabs.service.ts). Neither of those covers this one: five books can be open
+     * position-sync.service.ts). Neither of those covers this one: five books can be open
      * with one focused, and the four unfocused ones would have drawn a root with
      * nothing under it until somebody clicked into them. So the library asks for
      * its own, for every book it is about to draw.
@@ -1260,8 +1276,6 @@ export class OpenDocumentsComponent {
    */
   private readonly collapsed = signal<ReadonlySet<string>>(new Set());
 
-  protected readonly multi = computed(() => this.tabs.panes().length > 1);
-
   /**
    * The books this panel is about: a project is OPEN while one of its documents
    * is, which is the existing ruling and unchanged (docs/WORKBENCH.md §6c,
@@ -1272,39 +1286,33 @@ export class OpenDocumentsComponent {
    * tabs and main's catalogue and nothing else.
    */
   private readonly openProjects = computed<readonly ProjectSummary[]>(() => {
-    const paths = this.tabs.tabs().map((tab) => tab.path);
+    const paths = this.documents.tabs().map((tab) => tab.path);
     // The held project draws even with no tab open: closing the last document
     // keeps the window in the project, and this tree is the door back into it
-    // (`TabsService.heldProject`). One project, not a history — the hold is
+    // (`StageService.heldProject`). One project, not a history — the hold is
     // where you ARE, not where you have been.
-    const held = this.tabs.heldProject();
+    const held = this.stage.heldProject();
     return this.projects.items().filter((project) => project.problem === null
       && (paths.some((path) => inProject(path, project.dir))
         || (held !== null && inProject(held, project.dir))));
   });
 
   /**
-   * Every open tab as a drawable row, with its editor tucked under it.
+   * Every open tab as a drawable row.
    *
-   * The column number is the pane's INDEX, which is what Ctrl+1…5 counts and
-   * what a person reads off the screen left to right — not the pane's id, which
-   * is an implementation detail that survives a reorder.
+   * ON SCREEN IS ONE BOOLEAN NOW. It used to be two facts drawn at two
+   * strengths — which COLUMN a document was showing in, and whether that column
+   * was the focused one — because the rail, the menu and Ctrl+S all acted on the
+   * focused column and which it was had to be visible. With one viewer there is
+   * one document in front of the person and every one of those acts means it, so
+   * `focused` is simply "this is the one on screen" and the card's `.on.focused`
+   * pair collapses onto it.
    */
   protected readonly rows = computed<Row[]>(() => {
-    const tabs = this.tabs.tabs();
-    const panes = this.tabs.panes();
-    const focusedPaneId = this.tabs.focusedPaneId();
+    const tabs = this.documents.tabs();
+    const on = this.stage.active();
     const out: Row[] = [];
     const emit = (tab: Tab, indent: boolean): void => {
-      /*
-       * THE COLUMN A DOCUMENT IS SHOWING IN, and showing is the word: with the
-       * strips back a tab can be in a column's stack without being the one on
-       * screen, and the accent bar here has always meant "you are looking at
-       * this". A tab waiting in a strip is drawn as an ordinary card — its strip
-       * already says where it is, and marking it on screen as well would be two
-       * surfaces disagreeing about what "on screen" means.
-       */
-      const at = panes.findIndex((pane) => pane.activeTabId === tab.id);
       out.push({
         ...blank,
         key: tab.id,
@@ -1316,8 +1324,7 @@ export class OpenDocumentsComponent {
         dot: 'file',
         tooltip: this.tooltip(tab),
         depth: indent ? 1 : 0,
-        column: at < 0 ? null : at + 1,
-        focused: at >= 0 && panes[at]!.id === focusedPaneId,
+        focused: tab.id === on,
       });
     };
     for (const tab of tabs) emit(tab, false);
@@ -1499,7 +1506,6 @@ export class OpenDocumentsComponent {
            * not admit to is worse than one it will not open.
            */
           openable: made.kind === 'pdf',
-          column: already?.column ?? null,
           focused: already?.focused ?? false,
         });
       }
@@ -1550,7 +1556,7 @@ export class OpenDocumentsComponent {
           ...blank,
           key: `${project.key}:facsimile:${made.file}`,
           // A FILE ROW AND NOT A FIFTH KIND. Everything the row does — open on
-          // click, wear the column badge, offer a delete behind the danger ✕ — is
+          // click, wear the on-screen bar, offer a delete behind the danger ✕ — is
           // what this kind already means, and a `RowKind` per product would be
           // four template branches to say one thing.
           kind: 'export',
@@ -1568,7 +1574,6 @@ export class OpenDocumentsComponent {
           dir: project.dir,
           managed: true,
           openable: true,
-          column: already?.column ?? null,
           focused: already?.focused ?? false,
         });
       }
@@ -1600,7 +1605,7 @@ export class OpenDocumentsComponent {
         /*
          * THE BOOK IS THE READ STEP, and the read step is already a card up
          * there — the one called "The book", which is what standing on it opens
-         * (`showBook`, core/tabs.service.ts). It cannot be claimed by the
+         * (`showBook`, core/position-sync.service.ts). It cannot be claimed by the
          * catalogue test below because it is not a file in the catalogue: its
          * path is the PROJECT's own directory, which is the whole of how a tab
          * for something that is not a file names what it is about. Without this
@@ -1824,7 +1829,7 @@ export class OpenDocumentsComponent {
    */
   protected pick(tab: Tab): void {
     void this.router.navigateByUrl('/');
-    this.tabs.reveal(tab.id, true);
+    this.stage.reveal(tab.id);
   }
 
   /**
@@ -1848,14 +1853,18 @@ export class OpenDocumentsComponent {
    * side both cards say "put this in front of me", and whether that costs a tab
    * or merely a focus change is bookkeeping, not their question.
    *
-   * ── AND IT REPLACES WHAT THE COLUMN WAS SHOWING ─────────────────────────────
+   * ── AND IT REPLACES WHAT THE VIEWER WAS SHOWING ─────────────────────────────
    *
    * *"clicking another file will automatically close the one i was looking at and
    * open the one i just clicked, unless i pin the file by right-clicking the
    * chrome-style tab at the top."* This panel is the list that ruling is about,
-   * so the `replace` flag is passed HERE and nowhere else. A drop, a finished job
-   * and a step's own document all join the strip instead, because none of them is
-   * a person saying "that one instead of this one".
+   * and it used to be the only caller that passed a `replace` flag — everything
+   * else (a drop, a finished job, a step's own document) joined the column's
+   * strip instead, because none of them is a person saying "that one instead of
+   * this one". With one viewer, replacing what is on screen is the only thing any
+   * of them can do, so the flag is gone and the rule is the app's. What went with
+   * it is the exception the sentence names: there is no pin, because there is no
+   * strip for a pin to protect a place in.
    */
   protected pickRow(row: Row): void {
     if (row.kind === 'host') {
@@ -1897,7 +1906,7 @@ export class OpenDocumentsComponent {
          * has no book inside it to show.
          */
         if (row.path.toLowerCase().endsWith('.epub')) {
-          this.tabs.openExportView(row.path, row.title);
+          this.documents.openExportView(row.path, row.title);
         } else {
           void api?.reveal(row.path);
         }
@@ -1905,7 +1914,7 @@ export class OpenDocumentsComponent {
       return;
     }
     void this.router.navigateByUrl('/');
-    void this.tabs.openFromList(row.path, row.managed === true);
+    void this.documents.openFromList(row.path, row.managed === true);
   }
 
   /**
@@ -1942,7 +1951,7 @@ export class OpenDocumentsComponent {
       const nodeId = row.node !== null ? row.node.id : row.step?.id ?? null;
       if (nodeId === null) return;
       void this.hostOps.invoke(act.host, row.dir, nodeId).catch((err: unknown) => {
-        this.tabs.notice.set(err instanceof Error ? err.message : String(err));
+        this.notices.notice.set(err instanceof Error ? err.message : String(err));
       });
       return;
     }
@@ -1976,7 +1985,7 @@ export class OpenDocumentsComponent {
       // Main's words. It refuses an id this project does not hold, which means
       // the two sides are looking at different ledgers — not something to smooth
       // over.
-      this.tabs.notice.set(err instanceof Error ? err.message : String(err));
+      this.notices.notice.set(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -2003,7 +2012,7 @@ export class OpenDocumentsComponent {
    * loop would be reading a list that is being emptied underneath.
    */
   protected closeProject(group: Group): void {
-    for (const id of [...group.tabIds]) void this.tabs.close(id);
+    for (const id of [...group.tabIds]) void this.documents.close(id);
   }
 
   /**
@@ -2046,53 +2055,33 @@ export class OpenDocumentsComponent {
          * do it: tabs are the renderer's, and main's own reader is only told
          * about EPUBs.
          */
-        // Without asking: see `TabsService.close`. The delete's own card is the
+        // Without asking: see `OpenDocumentsService.close`. The delete's own card is the
         // question, and it has already been answered yes. RETURNED rather than
         // voided, so the delete waits for this window to let go of the file.
         if (row.tab === null) return undefined;
-        return this.tabs.close(row.tab.id, false);
+        return this.documents.close(row.tab.id, false);
       });
-      if (said !== null) this.tabs.notice.set(said);
+      if (said !== null) this.notices.notice.set(said);
     } catch (err) {
-      this.tabs.notice.set(err instanceof Error ? err.message : String(err));
+      this.notices.notice.set(err instanceof Error ? err.message : String(err));
     }
   }
 
-  /**
-   * "Open in split" — stand on that step, and put what it shows in a column of
-   * its own beside what is already there. Moved here from the inspector's Steps
-   * section with its reasoning intact (docs/WORKBENCH.md §6c).
+  /*
+   * `openInSplit` LIVED HERE — the right-click's "Open in split", moved in from
+   * the inspector's Steps section and built as two acts arriving as one: leave an
+   * intention with the tabs service, move the pointer, and let the answer main sends
+   * back (which only arrives asynchronously, inside the effect that watches the
+   * position) open into a NEW COLUMN instead of into the one in front. There was
+   * a second door for the card you were already standing on, because `go` on your
+   * own position moves nothing and the intention would have been inherited by the
+   * next step somebody clicked.
    *
-   * ── Two acts that have to arrive as one ─────────────────────────────────────
-   *
-   * WHAT A STEP SHOWS IS NOT KNOWN HERE. Main resolves it (`ledger:document-at`)
-   * and only for the position the project is standing ON, so there is no way to
-   * ask "what would that card show" without moving there first. So the intention
-   * is left with `TabsService` before the pointer moves, and the answer — which
-   * arrives asynchronously, inside the effect that watches the position — picks
-   * it up and opens into a new column instead of into the one in front.
-   *
-   * THE CARD ALREADY BEING CURRENT IS THE CASE THAT NEEDS SAYING. `go` on the
-   * position you are on produces the same ledger and the same picture, so nothing
-   * moves and nothing would ever consume that intention — the menu would appear
-   * to do nothing and then split the NEXT step somebody clicked. So that row asks
-   * the service to do it outright, and the flag is dropped rather than left lying
-   * for a move it was not set for.
+   * All of it is gone with the columns (docs/PLAN.md §4, unit 8b). The need it
+   * served comes back as Compare on the viewer (unit 8d), and the awkward part —
+   * "what does that step even show?" — is answered there by main the same way,
+   * without an intention having to survive a round trip.
    */
-  private async openInSplit(row: Row): Promise<void> {
-    if (row.dir === null || row.step === null) return;
-    if (row.current) {
-      await this.tabs.splitAtPosition(row.dir);
-      return;
-    }
-    this.tabs.splitNextIn(row.dir);
-    try {
-      await this.ledger.go(row.dir, row.step.id);
-    } catch (err) {
-      this.tabs.forgetSplitIn(row.dir);
-      this.tabs.notice.set(err instanceof Error ? err.message : String(err));
-    }
-  }
 
   /**
    * Delete this step. Main says what it costs, the app's own card asks, main
@@ -2118,16 +2107,16 @@ export class OpenDocumentsComponent {
        * refusal one line after the user said yes. Main cannot do it: tabs are
        * the renderer's.
        */
-      await this.ledger.remove(row.dir, row.step.id, (files) => this.tabs.closeShowing(files));
+      await this.ledger.remove(row.dir, row.step.id, (files) => this.documents.closeShowing(files));
     } catch (err) {
-      this.tabs.notice.set(err instanceof Error ? err.message : String(err));
+      this.notices.notice.set(err instanceof Error ? err.message : String(err));
     }
   }
 
   /**
    * Right-click: whatever this kind of card can be asked to do.
    *
-   * NOTHING, ON A HOST'S NODE. Split, delete, reveal and close are all acts on
+   * NOTHING, ON A HOST'S NODE. Delete, reveal and close are all acts on
    * something Foundry owns; a job in another application's queue is none of
    * those, and a menu that opened with nothing safe in it would be worse than no
    * menu. The default browser menu is suppressed either way, so a right-click
@@ -2148,23 +2137,20 @@ export class OpenDocumentsComponent {
         return;
       case 'save-copy':
         void api?.saveExport(row.path).catch((err: unknown) => {
-          this.tabs.notice.set(err instanceof Error ? err.message : String(err));
+          this.notices.notice.set(err instanceof Error ? err.message : String(err));
         });
         return;
       case 'view':
-        this.tabs.openExportView(row.path, row.title);
+        this.documents.openExportView(row.path, row.title);
         return;
       case 'close':
-        if (row.tab !== null) void this.tabs.close(row.tab.id);
+        if (row.tab !== null) void this.documents.close(row.tab.id);
         return;
       case 'close-project': {
         const group = this.groups().find((one) => fold(one.dir) === fold(row.path));
         if (group !== undefined) this.closeProject(group);
         return;
       }
-      case 'split':
-        void this.openInSplit(row);
-        return;
       case 'discard':
         void this.discard(row);
         return;
@@ -2178,22 +2164,22 @@ export class OpenDocumentsComponent {
     // Without this the click also lands on the card and reveals what is about to
     // be closed, which flashes the document on screen for one frame.
     event.stopPropagation();
-    void this.tabs.close(tab.id);
+    void this.documents.close(tab.id);
   }
 
   /** Middle-click. `auxclick` and not `mousedown`, so a middle-drag scroll is not a close. */
   protected onAux(event: MouseEvent, tab: Tab | null): void {
     if (tab === null || event.button !== 1) return;
     event.preventDefault();
-    void this.tabs.close(tab.id);
+    void this.documents.close(tab.id);
   }
 
   // ── Dragging a row ───────────────────────────────────────────────────────
 
   protected onDragStart(event: DragEvent, tab: Tab | null): void {
-    // A step or host card has no tab to carry, and the workspace's drop handler
-    // is written against a tab id. Standing on the step is what puts it on
-    // screen; a host's job has nothing to put anywhere.
+    // A step or host card has no tab to carry, and the drop handler below is
+    // written against a tab id. Standing on the step is what puts it on screen;
+    // a host's job has nothing to put anywhere.
     if (tab === null) {
       event.preventDefault();
       return;
@@ -2206,16 +2192,22 @@ export class OpenDocumentsComponent {
     // outright by some platforms before a drop can happen at all.
     event.dataTransfer?.setData('text/plain', tab.title);
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
-    // The workspace shields its panes while this is on: a rendered chapter is an
-    // <iframe>, and a drag over one is delivered to the frame rather than to the
-    // pane the user is aiming at. See TabsService.draggingDocument.
-    this.tabs.draggingDocument.set(true);
+    /*
+     * IT USED TO RAISE A SHIELD OVER THE WORKSPACE — a `draggingDocument`
+     * signal on the old tabs service, a transparent sheet over every pane,
+     * because a rendered
+     * chapter is an <iframe> and a drag over one is delivered to the frame rather
+     * than to the pane the user is aiming at. The drop it existed for (a row onto
+     * a column) has nowhere to land now that there is one viewer, so the shield
+     * and the signal that raised it are both gone (docs/PLAN.md §4, unit 8b) and
+     * nothing in this app ever has a sheet of glass over it. What is left of this
+     * drag is entirely inside this panel: the loose files' reorder.
+     */
   }
 
   protected onDragEnd(): void {
     this.before.set(null);
     this.landing.set(false);
-    this.tabs.draggingDocument.set(false);
   }
 
   /**
@@ -2270,9 +2262,9 @@ export class OpenDocumentsComponent {
    * A DOCUMENT IN A BOOK CANNOT EITHER, and for the same reason one step out.
    * Its position is the ledger's and the catalogue's, and that order is redrawn
    * from the project on every change, so a reorder would be undone before the
-   * pointer was lifted. The gesture that IS available is the one that goes
-   * somewhere else: dragging it onto the workspace still puts it in a column,
-   * because the workspace reads the same drag and nothing here refuses that half.
+   * pointer was lifted. The refusal used to end by naming the gesture that WAS
+   * available — dragging it onto the workspace to open it in a column — and with
+   * one viewer that gesture is a click, which is what the sentence says now.
    */
   protected onDrop(event: DragEvent, row: Row | null): void {
     const id = event.dataTransfer?.getData(DOCUMENT_MIME);
@@ -2285,18 +2277,18 @@ export class OpenDocumentsComponent {
     if (!id) return;
     event.preventDefault();
     event.stopPropagation();
-    const moving = this.tabs.byId(id);
+    const moving = this.documents.byId(id);
     if (moving === null) return;
     if ((onto !== null && onto.dir !== null) || this.inBook(moving.id)) {
-      this.tabs.notice.set(
+      this.notices.notice.set(
         'Documents in a book are listed in the order it holds them, so they cannot be reordered '
-        + 'here. Drag one onto a column to open it there.',
+        + 'here. Click one to open it.',
       );
       return;
     }
     // No navigation: a reorder is bookkeeping about the list, not a request to
     // look at something, so it leaves a person on Settings where they were.
-    this.tabs.reorder(id, target);
+    this.documents.reorder(id, target);
   }
 
   /** Is this open tab one of a book's, rather than a loose file? */
@@ -2370,7 +2362,7 @@ export class OpenDocumentsComponent {
 }
 
 /** What a right-click can offer, across the four kinds of row that have one. */
-type MenuAction = 'reveal' | 'save-copy' | 'view' | 'close' | 'delete' | 'close-project' | 'split' | 'discard';
+type MenuAction = 'reveal' | 'save-copy' | 'view' | 'close' | 'delete' | 'close-project' | 'discard';
 
 /**
  * ONE ACT OFFERED IN A CARD'S FOOTER — ours or the host's, drawn identically and
@@ -2479,9 +2471,14 @@ interface Row {
   openable?: boolean;
   /** File rows only: whether the tab it opens wears the unsaved dot. */
   managed?: boolean;
-  /** 1…5 while it is on screen, counted left to right. Null when it is not. */
-  column: number | null;
-  /** True when that column is the focused one. */
+  /**
+   * True while this is the document IN THE VIEWER.
+   *
+   * It had a `column` beside it — 1…5, counted left to right, null when the
+   * document was in none — and the two together were how the panel said "on
+   * screen somewhere" and "on screen where a chord will land". One viewer makes
+   * them one fact (docs/PLAN.md §4, unit 8b).
+   */
   focused: boolean;
   // ── The drawn lineage, filled in by `drawLineage` once the group is whole ──
   /** One per ancestor level, outermost first. */
@@ -2531,7 +2528,6 @@ const blank = {
   stale: false,
   planned: false,
   expanded: null,
-  column: null,
   focused: false,
   lanes: [],
   up: false,
@@ -2679,7 +2675,7 @@ function drawLineage(rows: Row[]): Row[] {
  * Is this open document inside this project — or IS it this project?
  *
  * THE SECOND HALF IS THE BOOK TAB, and it is the one tab in this app whose path
- * is a directory rather than a file (`TabKind`, core/tabs.service.ts). Every
+ * is a directory rather than a file (`TabKind`, core/documents.service.ts). Every
  * other row here is a file somewhere under the project, so the prefix test with
  * the separator appended is the whole rule — and the separator is what stops
  * `Kershaw-a1b2c3d4` from claiming the documents of `Kershaw-a1b2c3d4-notes`
@@ -2979,10 +2975,15 @@ function fold(target: string): string {
 }
 
 /**
- * Ours, so a document drag and a file drag can never be mistaken for each other.
+ * Ours, so a row drag and a file drag can never be mistaken for each other.
  *
- * The same type the tab strips used, kept deliberately: the workspace reads it
- * on the other end of the same gesture, and App's file-drop veil is written
- * against the fact that our drags do not carry `Files`.
+ * NOT EXPORTED ANY MORE, and the export is what it lost rather than the type.
+ * The workspace read it on the other end of the same gesture — a row dragged out
+ * of this list and dropped on a column — and there are no columns
+ * (docs/PLAN.md §4, unit 8b), so both ends of every drag that carries this are
+ * now in this file: the loose files' reorder, and nothing else. The string itself
+ * is unchanged because App's file-drop veil is still written against the fact
+ * that our drags do not carry `Files`, and a renamed type would be a second thing
+ * to keep true for no gain.
  */
-export const DOCUMENT_MIME = 'application/x-foundry-tab';
+const DOCUMENT_MIME = 'application/x-foundry-tab';

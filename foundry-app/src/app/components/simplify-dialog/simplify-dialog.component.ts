@@ -11,7 +11,8 @@ import type { RewriteMode, TranslateRequest } from '@shared/types';
 import { LedgerService } from '../../core/ledger.service';
 import { ProjectsService } from '../../core/projects.service';
 import { QueueService } from '../../core/queue.service';
-import { TabsService } from '../../core/tabs.service';
+import { OpenDocumentsService } from '../../core/documents.service';
+import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 import { api } from '../../core/foundry';
 
@@ -323,7 +324,8 @@ const REWRITES: readonly { mode: RewriteMode; name: string; what: string }[] = [
 })
 export class SimplifyDialogComponent {
   protected readonly ui = inject(UiService);
-  private readonly tabs = inject(TabsService);
+  private readonly stage = inject(StageService);
+  private readonly documents = inject(OpenDocumentsService);
   private readonly queue = inject(QueueService);
   private readonly projects = inject(ProjectsService);
   private readonly ledger = inject(LedgerService);
@@ -342,7 +344,7 @@ export class SimplifyDialogComponent {
    * it and materialises the position's own book for itself.
    */
   protected readonly source = computed(() => {
-    const tab = this.tabs.activeDocument();
+    const tab = this.stage.activeDocument();
     if (tab === null) return null;
     const project = this.projects.projectFor(tab.path);
     if (project === null) return null;
@@ -357,7 +359,7 @@ export class SimplifyDialogComponent {
     const input = this.source();
     if (input === null) return '';
     const at = fold(input);
-    const showing = this.tabs.tabs().find((tab) => fold(tab.path) === at);
+    const showing = this.documents.tabs().find((tab) => fold(tab.path) === at);
     return showing?.title ?? this.projects.nameFor(input);
   });
 
@@ -386,7 +388,7 @@ export class SimplifyDialogComponent {
   }
 
   protected openDocument(): void {
-    void this.tabs.openViaDialog();
+    void this.documents.openViaDialog();
   }
 
   protected async add(): Promise<void> {

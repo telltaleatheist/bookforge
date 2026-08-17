@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, input } from '@angular/core';
 
 import { BookViewComponent } from '../book-view/book-view.component';
 import { PdfViewComponent } from '../pdf-view/pdf-view.component';
-import type { Tab } from '../../core/tabs.service';
+import type { Tab } from '../../core/documents.service';
 
 /**
  * Whatever the tab holds, filling its pane.
@@ -73,7 +73,17 @@ import type { Tab } from '../../core/tabs.service';
   `,
   styles: [`
     :host { display: block; width: 100%; height: 100%; background: var(--bg-sunken); }
-    app-book-view, app-pdf-view { display: block; width: 100%; height: 100%; }
+    /*
+     * NO \`display\` ON THE CHILDREN, and the absence is a lesson paid for. A
+     * parent's element rule compiles at higher specificity than the child's own
+     * \`:host\`, so the \`display: block\` that used to sit here silently overrode
+     * app-book-view's \`display: flex\` — the column that holds the register row
+     * above the scrolling pair never engaged, the bench grew to the height of
+     * the whole book, and the workspace clipped it: a book nobody could scroll
+     * (user report, 2026-08-17). Each viewer declares its own display on its
+     * own \`:host\`, where nothing outguns it; this rule only sizes the box.
+     */
+    app-book-view, app-pdf-view { width: 100%; height: 100%; }
     .waiting { width: 100%; height: 100%; background: var(--bg-sunken); }
   `],
 })

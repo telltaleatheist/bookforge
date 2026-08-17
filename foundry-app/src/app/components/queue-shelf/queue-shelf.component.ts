@@ -8,7 +8,8 @@ import type { Job } from '@shared/types';
 
 import { ProjectsService } from '../../core/projects.service';
 import { QueueService } from '../../core/queue.service';
-import { TabsService } from '../../core/tabs.service';
+import { OpenDocumentsService } from '../../core/documents.service';
+import { NoticeService } from '../../core/notice.service';
 import { UiService } from '../../core/ui.service';
 import { api } from '../../core/foundry';
 
@@ -419,7 +420,8 @@ import { api } from '../../core/foundry';
 export class QueueShelfComponent {
   protected readonly queue = inject(QueueService);
   protected readonly ui = inject(UiService);
-  private readonly tabs = inject(TabsService);
+  private readonly documents = inject(OpenDocumentsService);
+  private readonly notices = inject(NoticeService);
   /** Only ever asked what a book is called. See `label`. */
   private readonly projects = inject(ProjectsService);
 
@@ -652,7 +654,7 @@ export class QueueShelfComponent {
     try {
       await api?.saveExport(job.outputPath);
     } catch (err) {
-      this.tabs.notice.set(err instanceof Error ? err.message : String(err));
+      this.notices.notice.set(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -661,10 +663,10 @@ export class QueueShelfComponent {
    *
    * `managed: true` — the book is still only in the workspace, so the tab gets
    * the unsaved dot. Re-opening one that is already open just focuses its tab
-   * (TabsService), so this button is safe to press twice.
+   * (OpenDocumentsService), so this button is safe to press twice.
    */
   protected open(job: Job): void {
-    void this.tabs.openFile(job.outputPath, true);
+    void this.documents.openFile(job.outputPath, true);
   }
 }
 
