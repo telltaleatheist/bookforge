@@ -13351,8 +13351,13 @@ app.whenReady().then(async () => {
    * below wants the page (reload it, clear its cache, zoom it), so each one asks
    * here and does nothing at all when the focused window has no page to act on,
    * rather than reaching for a `webContents` that may not exist.
+   *
+   * Typed `unknown` rather than `Electron.BaseWindow` because that name does not
+   * exist in Electron 29's type set — and this tree must compile against 29's
+   * types (an installed node_modules that predates the 33 bump) and 33's alike.
+   * The instanceof check is the whole contract either way.
    */
-  const pageWindow = (win: Electron.BaseWindow | undefined): BrowserWindow | null =>
+  const pageWindow = (win: unknown): BrowserWindow | null =>
     win instanceof BrowserWindow ? win : null;
 
   // Set up application menu
