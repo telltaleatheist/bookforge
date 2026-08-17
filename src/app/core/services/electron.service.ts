@@ -2011,9 +2011,14 @@ export class ElectronService {
    * Open the Foundry window on this book. `opened` says which door it was:
    * `'project'` deep-linked into the book's Foundry project, `'bare'` the
    * Import-via-Foundry window for a book that has none yet.
+   *
+   * `documentPath` names ONE FILE to land on — an absolute path to a file that
+   * exists, refused by name otherwise. Pass it when the press was made on a
+   * FILE (a versions row); leave it off when the press is about the BOOK (Edit
+   * in Foundry), which opens the project itself.
    */
-  async foundryHostOpen(projectDir: string): Promise<{ success: boolean; opened?: 'bare' | 'project'; error?: string }> {
-    if (this.isElectron) return (window as any).electron.foundryHost.open(projectDir);
+  async foundryHostOpen(projectDir: string, documentPath?: string): Promise<{ success: boolean; opened?: 'bare' | 'project'; error?: string }> {
+    if (this.isElectron) return (window as any).electron.foundryHost.open(projectDir, documentPath);
     return { success: false, error: 'Not running in Electron' };
   }
   /** Foundry filed an export onto a book. Every window hears it. */

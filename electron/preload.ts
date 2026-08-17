@@ -3383,7 +3383,8 @@ const electronAPI: ElectronAPI = {
     exports: (projectDir: string) => ipcRenderer.invoke('foundry-host:exports', projectDir),
     forgetExport: (projectDir: string, exportId: string) =>
       ipcRenderer.invoke('foundry-host:forget-export', projectDir, exportId),
-    open: (projectDir: string) => ipcRenderer.invoke('foundry-host:open', projectDir),
+    open: (projectDir: string, documentPath?: string) =>
+      ipcRenderer.invoke('foundry-host:open', projectDir, documentPath),
     onExportsChanged: (callback: (event: { projectDir: string }) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, event: { projectDir: string }) =>
         callback(event);
