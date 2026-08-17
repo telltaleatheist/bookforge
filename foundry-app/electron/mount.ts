@@ -49,6 +49,7 @@ import { pathToFileURL } from 'node:url';
 import { net, protocol, session } from 'electron';
 
 import { bookFigureFile } from './book';
+import { openDocument } from './documents';
 import { type FoundryHost, recordHost } from './host';
 import { registerIpc } from './ipc';
 import * as queue from './job-queue';
@@ -311,8 +312,36 @@ export function mountFoundry(host?: FoundryHost): void {
  * that is not in the library gets a console line and a plain window: it opened
  * something, which is better than a host press that appears to do nothing.
  */
-export function openFoundryWindow(projectDir?: string): void {
+export function openFoundryWindow(
+  projectDir?: string,
+  opts?: { document?: string },
+): void {
   const win = openWindow();
+  /*
+   * ── A DOCUMENT NAMED IS THE LANDING ─────────────────────────────────────────
+   *
+   * The host's other button: not "edit this book" but "open THIS file" — a
+   * version row's Open, pointing at an export in some project's `final/`. It
+   * goes through `openDocument`, THE single door (documents.ts): the same
+   * admission the menu, a drop and argv get, announced to the renderer as
+   * `document:opened` exactly as theirs are — so a host can never open a file
+   * a drop would have refused. The project context comes free, because a file
+   * inside a project adopts into it; `project:open` is not also sent, since a
+   * button named Open should land on the file and not on the proof sheet
+   * beside it. A refusal is a console line, not a throw: the host pressed a
+   * button about a file, and the file said no.
+   */
+  const document = opts?.document;
+  if (document !== undefined) {
+    whenRendererReady(win, () => {
+      void openDocument(document).then((opened) => {
+        if (opened === null) {
+          console.error(`[mount] ${document} is not a file this app opens.`);
+        }
+      });
+    });
+    return;
+  }
   if (projectDir === undefined) return;
   // `whenRendererReady` rather than `once('did-finish-load')`, because the
   // second press of Edit-in-Foundry finds a window that loaded minutes ago and

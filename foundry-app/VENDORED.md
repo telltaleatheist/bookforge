@@ -10,16 +10,17 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **c805bd6** — *"feat(mount): foundryBusy() — the host's idle probe"* |
-| Copied on | 2026-08-16 |
-| Copied by | `git -C <foundry> archive c805bd6 app \| tar -x --strip-components=1` |
+| Source sha | **4071d77** — *"feat(mount): openFoundryWindow can name a document — the per-file deep-link"* |
+| Copied on | 2026-08-17 |
+| Copied by | `git -C <foundry> archive 4071d77 app \| tar -x --strip-components=1` |
 
-The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` (one commit
-later) added the optional `onImport` half of the host contract, and `c805bd6`
-(one further) added the `foundryBusy()` export that gates BookForge's
-library-move door. Each refresh changed only contract-adjacent files and was
-hash-verified against the source tree. `docs/IPC-CHANNELS.md` is byte-identical
-across all three shas (`foundryBusy` is a mount export, not a channel).
+The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
+optional `onImport` half of the host contract, `c805bd6` added the
+`foundryBusy()` export that gates BookForge's library-move door, and `4071d77`
+added the `opts.document` deep-link so an Open button lands ON a file (same
+admission rules as a drop). Each refresh changed only contract-adjacent files
+and was hash-verified against the source tree. `docs/IPC-CHANNELS.md` is
+byte-identical across all four shas (mount exports, not channels).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the
