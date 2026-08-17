@@ -314,6 +314,38 @@ export function registerIpc(): void {
   });
 
   /**
+   * The window, closed from inside it — the ✕ pressed by the page rather than
+   * by a person.
+   *
+   * ── Why the renderer needs a door at all ────────────────────────────────────
+   *
+   * Because HOSTED, RUNNING OUT OF TABS IS THE END OF THE WINDOW. Standalone,
+   * closing the last document leaves the workbench standing in the project it
+   * was in, and Home under that is where the app legitimately begins; hosted,
+   * the book list is BookForge's and falling through to a second project picker
+   * is the workbench turning into a copy of the app around it (user ruling,
+   * 2026-08-16). The moment is the renderer's — main knows which files were ever
+   * opened, not which documents are open NOW, the same asymmetry `window:closing`
+   * exists for — and the act is main's, because a page cannot close the window
+   * it is drawn in.
+   *
+   * IT IS THE ✕'S OWN PATH AND NOT A SHORTCUT PAST IT. `close()` re-enters the
+   * window's `close` handler, which runs `letTheWindowGo` and asks the documents
+   * through `window:closing` exactly as a pointer on the ✕ would. With nothing
+   * open that answer is yes and arrives immediately; if something is still open
+   * — anything that ever calls this with tabs left — the question is asked, and
+   * a person who says keep it keeps their window.
+   *
+   * NO WINDOW IS NOT AN ERROR HERE. A page invoking this during teardown, after
+   * the window it was drawn in has already gone, is asking for a state that has
+   * arrived; `foundryWindow()` is null in exactly that case and the door is a
+   * no-op rather than a throw into a renderer that is being destroyed.
+   */
+  ipcMain.handle('window:close', () => {
+    foundryWindow()?.close();
+  });
+
+  /**
    * The warning before a tab with something to lose closes.
    *
    * Worded around what is ACTUALLY at risk. Closing a tab deletes nothing on

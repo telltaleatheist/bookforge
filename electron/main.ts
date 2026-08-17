@@ -4450,7 +4450,12 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
-  ipcMain.handle('window:close', () => {
+  // 'window:close-main', not 'window:close' — the vendored Foundry subtree
+  // claimed 'window:close' at foundry 82a3763 (hosted, the last tab closing
+  // takes its window with it), and a duplicate ipcMain.handle throws at
+  // registration. The collision keeper (tools/test-ipc-collision.js) caught
+  // this one; per its ruling the sealed subtree keeps the name and OURS moves.
+  ipcMain.handle('window:close-main', () => {
     if (mainWindow) {
       mainWindow.close();
     }

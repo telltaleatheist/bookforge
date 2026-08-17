@@ -8,7 +8,7 @@ import type { JobKind } from '@shared/types';
 import { LedgerService } from './ledger.service';
 import { ProjectsService } from './projects.service';
 import { QueueService } from './queue.service';
-import { api } from './foundry';
+import { api, hosted } from './foundry';
 
 /**
  * The open documents — the list down the left, and the one place that knows
@@ -792,12 +792,16 @@ export class TabsService {
      * viewer of one, and because two panes onto one project must not each decide
      * separately what that book is standing on.
      *
-     * THE FIRST SIGHTING RECORDS AND ACTS ON NOTHING. Opening a document must
-     * not be read as a move. A pointer move is a
+     * THE FIRST SIGHTING RECORDS, AND MOVES NOTHING EXCEPT ONTO THE SHEET.
+     * Opening a document must not be read as a move: a pointer move is a
      * DIFFERENCE from what this window was last showing, and a project it has
      * never seen has no difference to be. The entry is dropped again when the last
      * tab of that project closes, so a reopen baselines afresh rather than
      * inheriting a picture from a session nobody is in any more.
+     *
+     * BUT A SHEET POSITION IS NOT A DIFFERENCE — IT IS THE PICTURE. See
+     * `openTheSheet` below for the complaint, and for why the exception is exactly
+     * the sheet and nothing wider.
      */
     effect(() => {
       const moves: PositionMove[] = [];
@@ -854,6 +858,7 @@ export class TabsService {
              * answer.
              */
             void this.baselineShown(move.dir, move.key);
+            this.openTheSheet(move);
             continue;
           }
           void this.showPosition(move);
@@ -1476,6 +1481,56 @@ export class TabsService {
   }
 
   /**
+   * A PROJECT MET FOR THE FIRST TIME OPENS ON THE PICTURE ITS POSITION NAMES,
+   * where that picture is the SHEET.
+   *
+   * ── The complaint ───────────────────────────────────────────────────────────
+   *
+   * *"when i open a file, it has the latest changes selected (applied changes,
+   * simplify, whatever i did last) but it has the original file opened in the main
+   * tab. i have to click to the original file and back to the applied changes to
+   * get it to pull up the current system. it should start on the latest change,
+   * not on the original file."*
+   *
+   * Two selectors, one of them right. The rail reads the ledger the moment the
+   * history lands and highlights the tip correctly; the pane is whatever file the
+   * open gesture named, which for every door in this app is the project's ORIGINAL.
+   * Nothing reconciled them, because the first-sighting rule above (correctly)
+   * refuses to read "a tab appeared" as a pointer move — so the pane sat on the
+   * import while the rail said Applied changes, and the two clicks the user
+   * describes are them driving the position effect by hand to make it act.
+   *
+   * ── Why the sheet is the whole of the exception ─────────────────────────────
+   *
+   * Because the sheet is not a DOCUMENT the position resolves to — it is the
+   * picture the position IS. `showDocument`'s cases all swap or open a file, which
+   * on a first sighting would mean an open gesture that named a file answering with
+   * a different one; the hosted "open THIS file" door (electron/mount.ts) is
+   * exactly that gesture, and it is entitled to land where it was pointed. The
+   * sheet takes nothing away: the original's tab is still open, still in the strip,
+   * still one click off. So the correction ADDS the surface the position names and
+   * never removes the one that was asked for.
+   *
+   * `positionView.sheet` is the same test `showPosition` asks (read, edit, curate,
+   * translate, and an EPUB's own import row), asked in the same place, so there is
+   * no second opinion about which rows have a sheet.
+   *
+   * ── It is `openProject`'s patch, generalised ────────────────────────────────
+   *
+   * Home's row click carried this correction on its own — the one door with a
+   * project directory in hand — which is why opening a book from the library had
+   * always been right and opening the same book by dropping it, by File→Open, by a
+   * click in the documents panel or by the host's deep link had not. Every one of
+   * those funnels through a tab in a project, which is what this effect keys on, so
+   * moving the rule here is what makes the guarantee the app's rather than one
+   * caller's.
+   */
+  private openTheSheet(move: PositionMove): void {
+    if (!move.now.view.sheet) return;
+    this.showBook(move);
+  }
+
+  /**
    * Put the project's BOOK on screen — the proof sheet, not a file.
    *
    * ── One per project, forever ────────────────────────────────────────────────
@@ -1882,10 +1937,15 @@ export class TabsService {
    * grouped in the documents nav where flipping to it is one click. So the
    * original opens exactly as it always has, and then, WHERE THE POSITION'S
    * PICTURE IS THE SHEET, the book tab goes on top: the same end state the user
-   * was building by hand, in one click. `document:opened` is announced before
-   * `openPath` resolves (electron/documents.ts), so the original's tab has already
-   * been adopted and focused by the time the sheet is revealed over it — the
-   * ordering cannot race.
+   * was building by hand, in one click.
+   *
+   * THAT SECOND HALF IS NO LONGER SPELLED HERE. It is `openTheSheet`, on the
+   * position effect's first sighting, because every other door into a project —
+   * a drop, File→Open, a click in the documents panel, the host's deep link —
+   * owed the same correction and none of them had a project directory to write it
+   * against. What this method still owes is the REFRESH: the effect has no picture
+   * to obey until somebody has read the history, and a project opened from Home
+   * has usually never been seen by this window's ledger mirror.
    *
    * A project standing on the import keeps today's behaviour: the position's
    * surface IS the document, and `view.sheet` is false there for a scan. An
@@ -1894,12 +1954,7 @@ export class TabsService {
    */
   async openProject(projectDir: string, originalPath: string, managed = false): Promise<void> {
     await this.openFile(originalPath, managed);
-    // The history is read before the decision, not guessed at: a project opened
-    // from Home has usually never been seen by this window's ledger mirror.
     if (this.ledger.historyFor(projectDir) === null) await this.ledger.refresh(projectDir);
-    const picture = this.pictureIn(projectDir);
-    if (picture === null || !picture.view.sheet) return;
-    this.reveal(this.bookTabIn(projectDir));
   }
 
   /** Open a path this window already knows about: Home's list, the shelf's Open. */
@@ -2572,6 +2627,7 @@ export class TabsService {
     if (this.focused() === paneId) {
       this.focused.set(kept[Math.min(at, kept.length - 1)]?.id ?? null);
     }
+    this.leaveIfHostedAndEmpty();
   }
 
   /**
@@ -2969,6 +3025,42 @@ export class TabsService {
     if (focusAt >= 0) {
       this.focused.set(kept[Math.min(focusAt, kept.length - 1)]?.id ?? null);
     }
+    this.leaveIfHostedAndEmpty();
+  }
+
+  /**
+   * HOSTED, THE LAST COLUMN GOING TAKES THE WINDOW WITH IT.
+   *
+   * *"when I closed the tabs it brought me to the 'foundry home', which is a
+   * project picker. It shouldn't bring me there. It should just close the window
+   * if it runs out of tabs."* (User ruling, 2026-08-16.) Hosted, the books are
+   * BookForge's and Home is a second answer to "what books do I have" — the same
+   * rule that already takes the dock's Home button and Home's own recents away
+   * (`hosted`, core/foundry.ts). The held bench above it is no better: it offers
+   * a tree and a way back to a library this window is not the app for.
+   *
+   * STANDALONE NOTHING CHANGES, and that is not a concession — Home is where the
+   * app legitimately begins, and the bench that keeps the project past its last
+   * tab is last month's ruling about being thrown out of the room you were
+   * working in (see the constructor's `heldProject` effect).
+   *
+   * ASKED ONLY WHERE A CLOSE EMPTIED THE COLUMNS, never from an effect on the
+   * count. A hosted window has no columns for the moment between loading and the
+   * document it was opened for arriving (`openFoundryWindow`, electron/mount.ts),
+   * and a watcher on "no columns" would shut the window before the file got
+   * there. Both callers here are gestures — the last document closed, and the ✕
+   * on the last empty column — which is what "runs out of tabs" means.
+   *
+   * IT IS THE ✕'S OWN PATH. `closeWindow` re-enters the window's close handler in
+   * main, so the documents are asked what closing costs exactly as they always
+   * are — an answer of yes, immediately, with nothing left open.
+   */
+  private leaveIfHostedAndEmpty(): void {
+    if (!hosted() || this.columns().length > 0) return;
+    // `hosted()` is only ever true because main answered `app:hosted`, so there
+    // is a bridge here by construction. The `?.` is this file's spelling for
+    // reaching main, not a second opinion about whether one exists.
+    void api?.closeWindow();
   }
 
   async closeActive(): Promise<void> {

@@ -19,6 +19,7 @@ import * as path from 'node:path';
 
 import { app } from 'electron';
 
+import { hosted } from './host';
 import type {
   DocumentMetadata,
   DoctorResult,
@@ -54,6 +55,13 @@ let cached: EngineCommand | null = null;
  *
  * (3) is derived from __dirname rather than hardcoded, so a clone anywhere
  * works. When foundry ships a binary with the installer, only (2) changes.
+ *
+ * HOSTED, (3) IS REFUSED. This file is vendored into the host's tree, so
+ * "three levels up" is the host's checkout — the cli.ts there is somebody
+ * else's code or nobody's, and spawning it would be the silent wrong-engine
+ * failure that is worse than no engine at all. A host owes us FOUNDRY_BIN or
+ * a packaged binary (docs/BOOKFORGE-HANDOFF.md); missing both is its bug,
+ * and this throw is the sentence that names it.
  */
 export function engineCommand(): EngineCommand {
   if (cached) return cached;
@@ -71,9 +79,18 @@ export function engineCommand(): EngineCommand {
     return cached;
   }
 
+  const cliPath = path.join(repoRoot(), 'src', 'cli.ts');
+  if (hosted()) {
+    throw new Error(
+      `no engine: FOUNDRY_BIN is unset and no packaged binary was found, and ` +
+      `the dev-checkout fallback (${cliPath}) resolves inside the host's ` +
+      `repository, not foundry's. The host must set FOUNDRY_BIN before ` +
+      `mountFoundry().`,
+    );
+  }
   cached = {
     command: 'bun',
-    args: ['run', path.join(repoRoot(), 'src', 'cli.ts')],
+    args: ['run', cliPath],
     source: 'dev checkout',
   };
   return cached;

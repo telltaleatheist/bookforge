@@ -826,6 +826,12 @@ export async function loadBook(projectDir: string): Promise<BookOutcome> {
         // `translated` declares it from this very field — and this is the side of
         // the pair that is a fact about the STEP rather than about a file.
         language: transform.params?.language?.trim() ?? parsed.header.language,
+        // AND WHICH REWRITE, WHERE THERE WAS ONE. A simplify is a translate step
+        // carrying a mode, so this is the only thing on the step that says which
+        // of the two acts the person actually ordered — and the pane has sentences
+        // that name it. Absent is a translation, which is what `readParams`
+        // guarantees: a `rewrite` that survived parsing is one this build can name.
+        ...(transform.params?.rewrite !== undefined ? { rewrite: transform.params.rewrite } : {}),
         source: await sourceOfTranslation(at.dir, ledgerOf(at.manifest), transform),
       },
   };
@@ -887,8 +893,13 @@ async function sourceOfTranslation(
     console.error(`[book] the source under ${transform.id} could not be materialised: ${err.message}`);
     return {
       ok: false,
+      // NAMED BY THE ACT THAT WAS ORDERED, because a simplify is a translate step
+      // and this sentence is read on the very sheet the pair is drawn on: telling
+      // somebody their rewrite was "translated from" a book is the pane's own
+      // vocabulary failure in main's voice. The label already says which it was.
       reason: `The changes recorded above “${transform.label}” could not be replayed onto the book it `
-        + `was translated from, so its source cannot be set beside it: ${err.message}`,
+        + `was ${transform.params?.rewrite === undefined ? 'translated' : 'simplified'} from, so its `
+        + `source cannot be set beside it: ${err.message}`,
     };
   }
   /*

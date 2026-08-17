@@ -16,6 +16,10 @@ import {
 
 import { PDF_BLOCK_CATEGORIES, pdfCategoryColour, pdfCategoryLabel } from '@shared/categories';
 import type { BookLoad, BookRow } from '@shared/book';
+// The reader's words for the three rewrites, and the only copy of them: the
+// dialog's cards, the queue's row and this pane's sentences all print the same
+// table, so a mode cannot be one thing in the history and another on a tooltip.
+import { REWRITE_LABELS } from '@shared/ledger';
 import { replayOps, struckNotes, unwritten, type BookOp, type ReplayedRow } from '@shared/ops';
 
 import { api } from '../../core/foundry';
@@ -606,7 +610,7 @@ const SCROLL_SETTLE_MS = 400;
             what it would not do.
           -->
           @if (translation() !== null) {
-            <div class="segments" role="group" aria-label="Where the source of this translation is shown">
+            <div class="segments" role="group" [attr.aria-label]="'Where the source of this ' + pass() + ' is shown'">
               <button
                 type="button"
                 class="act segment"
@@ -1968,6 +1972,23 @@ export class BookViewComponent {
   protected readonly translation = computed(() => this.book()?.translation ?? null);
 
   /**
+   * WHAT THAT PASS IS CALLED — "translation" or "simplification", the one noun
+   * every sentence about the pair uses.
+   *
+   * A simplify is a translate step carrying a mode (shared/types.ts,
+   * `RewriteMode`), which is what let this pane draw the aligned view for one
+   * without being told about it — and is exactly why the copy was wrong: three
+   * sentences said "translation" to somebody who had pressed Simplify, and being
+   * told your own act was a different act is worse than being told nothing.
+   *
+   * READ ONLY WHERE THERE IS A PASS. Every string built from this is drawn under
+   * `translation() !== null`, so the null case is not a state anything says out
+   * loud; it is a computed nobody reads on a book in its own language.
+   */
+  protected readonly pass = computed<'translation' | 'simplification'>(() =>
+    this.translation()?.rewrite === undefined ? 'translation' : 'simplification');
+
+  /**
    * The pane's own width and the root's font size, in pixels, measured.
    *
    * NEITHER IS ASSUMED. The width comes from a `ResizeObserver` on this host —
@@ -2003,7 +2024,7 @@ export class BookViewComponent {
     }
     if (!this.roomy()) {
       return 'There is not room here for two columns of book. Widen the window and the source can '
-        + 'stand beside the translation.';
+        + `stand beside the ${this.pass()}.`;
     }
     return null;
   });
@@ -2730,8 +2751,28 @@ export class BookViewComponent {
    * translation changes the question and a re-run answers it fresh. What this
    * sheet has to say is therefore not a refusal but a direction — the words are
    * editable, one step up, and this is where they were read from.
+   *
+   * AND IT NAMES THE ACT THAT WAS ORDERED. Every sentence here used to say
+   * "translation" because a simplify IS a translate step and this pane could not
+   * see the difference — so a person who had pressed Simplify hovered their own
+   * source column and was told their book had been translated. `pass` is the noun,
+   * off the step's own `rewrite` (`BookTranslation.rewrite`), and it is the same
+   * field the rail's row is printed from.
    */
   protected readonly sourceTitle = computed<string>(() => {
+    /*
+     * A SIMPLIFY SAYS THE MODE AND NEVER SAYS A LANGUAGE, which is `labelFor`'s
+     * own ruling about the same act (shared/ledger.ts): a rewrite happens IN the
+     * book's own language, so the tag is not what tells one from another — the
+     * three modes are, and the mode is what somebody who pressed Simplify is
+     * looking at when they hover the column they wrote it from.
+     */
+    const rewrite = this.translation()?.rewrite;
+    if (rewrite !== undefined) {
+      return `The book this simplification — ${REWRITE_LABELS[rewrite]} — was made from. To change `
+        + 'these words, stand on the step above the simplification and edit them there; simplifying '
+        + 'again answers with the new ones.';
+    }
     const language = this.book()?.translation?.language ?? '';
     return language.length === 0
       ? 'The book this translation was made from. To change these words, stand on the step above '

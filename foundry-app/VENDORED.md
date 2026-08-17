@@ -10,17 +10,23 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **4071d77** — *"feat(mount): openFoundryWindow can name a document — the per-file deep-link"* |
+| Source sha | **6a9d31c** — *"fix(renderer): a project opens on the picture its position names, not on the file the gesture named"* |
 | Copied on | 2026-08-17 |
-| Copied by | `git -C <foundry> archive 4071d77 app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 6a9d31c app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
 `foundryBusy()` export that gates BookForge's library-move door, and `4071d77`
 added the `opts.document` deep-link so an Open button lands ON a file (same
-admission rules as a drop). Each refresh changed only contract-adjacent files
-and was hash-verified against the source tree. `docs/IPC-CHANNELS.md` is
-byte-identical across all four shas (mount exports, not channels).
+admission rules as a drop). `6a9d31c` brought Owen's first-smoke fixes:
+`74c20c8` (hosted, the dev-checkout engine fallback refuses out loud),
+`911eab9` (the aligned view says "simplification" when the pass was a
+simplify), `82a3763` (hosted, closing the last tab closes the window instead
+of falling through to Foundry Home — this one added the `window:close`
+channel, the first channel change since the copy began), and `6a9d31c` itself
+(a project opens showing the latest change its position names, not the
+original file). Each refresh changed only the files its commits name and was
+hash-verified against the source tree.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

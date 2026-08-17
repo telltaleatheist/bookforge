@@ -922,4 +922,20 @@ export interface FoundryApi {
   onWindowClosing(listener: () => void): () => void;
   /** The answer to `onWindowClosing`. True lets the window go. */
   letWindowClose(go: boolean): Promise<void>;
+  /**
+   * Close this window — the ✕, pressed from inside the page.
+   *
+   * HOSTED, IT IS WHAT RUNNING OUT OF TABS MEANS. Standalone the last close
+   * leaves the workbench standing in its project with Home under that, which is
+   * where the app begins; hosted the library is the host's, so an emptied window
+   * that fell through to a project picker would be Foundry answering a question
+   * BookForge already answers (§8's rule, in the shape it takes at the end of a
+   * session rather than the start of one).
+   *
+   * IT ASKS THE DOCUMENTS ON THE WAY OUT. Main re-enters the ✕'s own path, so
+   * `onWindowClosing` is pushed and `letWindowClose` is owed exactly as it would
+   * be for a pointer — this is not a way past the question, only another way to
+   * ask it. The promise settles when main has heard, not when the window is gone.
+   */
+  closeWindow(): Promise<void>;
 }

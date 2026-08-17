@@ -50,6 +50,7 @@
  */
 
 import type { BookOp } from './ops';
+import type { RewriteMode } from './types';
 
 /** The format this program reads. A file declaring anything else is refused. */
 export const BOOK_FILE_VERSION = 3;
@@ -346,6 +347,19 @@ export interface BookFile {
 export interface BookTranslation {
   /** The language the words at this position are IN — the translate step's own. */
   language: string;
+  /**
+   * WHICH REWRITE, WHERE THIS PASS WAS A SIMPLIFY — the step's own `params.rewrite`,
+   * and absent for every ordinary translation.
+   *
+   * A simplify IS a translate step (shared/types.ts, `RewriteMode`): same pipeline,
+   * same records file, same pair of columns. That is what makes the aligned view
+   * work for one without being told about it — and it is also why the pane could
+   * not tell the two apart, and told somebody who had pressed Simplify that their
+   * book had been translated. One field carried beside the language settles it at
+   * the same place the language is settled, off the same step, so the sentence the
+   * pane says and the row `labelFor` prints cannot disagree.
+   */
+  rewrite?: RewriteMode;
   /**
    * The parent book AS THE RECORDS ANSWERED IT — the translate step's parent
    * position, materialised: its nearest ancestor book file with the chain up to

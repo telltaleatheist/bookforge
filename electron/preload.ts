@@ -3451,7 +3451,7 @@ const electronAPI: ElectronAPI = {
     hide: () =>
       ipcRenderer.invoke('window:hide'),
     close: () =>
-      ipcRenderer.invoke('window:close'),
+      ipcRenderer.invoke('window:close-main'),
     showQueue: () =>
       ipcRenderer.invoke('app:show-queue'),
     onShowQueue: (callback: () => void) => {

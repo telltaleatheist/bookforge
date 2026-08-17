@@ -234,6 +234,7 @@ const api: FoundryApi = {
   // says only that the question is now due.
   onWindowClosing: (listener) => subscribe<void>('window:closing', () => listener()),
   letWindowClose: (go) => ipcRenderer.invoke('window:let-go', go),
+  closeWindow: () => ipcRenderer.invoke('window:close'),
 };
 
 contextBridge.exposeInMainWorld('foundry', api);
