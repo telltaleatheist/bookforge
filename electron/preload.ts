@@ -11,6 +11,7 @@ import type { StartupUpgradeReport } from './components/startup-upgrade-check';
 import type { StarterStatus } from './update/starter-library';
 import type { OrpheusBatchConfig } from './orpheus-batch';
 import type { EpubPreservingEdits } from './epub-processor';
+import type { FoundryExportRecord, ResolvedFoundryExport } from './manifest-types';
 import type { WhisperModelStatus, WhisperDownloadProgress } from './whisper-models';
 import type { CorrectSentencesSession, GenerateCandidatesResult } from './correct-sentences-bridge';
 import type { JobStageProgress } from './job-stages';
@@ -1231,6 +1232,24 @@ export interface ElectronAPI {
   };
   foundry: {
     version: () => Promise<{ ok: boolean; path?: string; version?: string; commit?: string | null; error?: string }>;
+  };
+  /**
+   * BookForge's OWN records about the hosted Foundry — the project mapping and
+   * the export list. Its own family, deliberately not `foundry:*`: that name
+   * belongs to the foundry CLI, and the hosted window brings its own IPC.
+   *
+   * Every row arrives with `absPath` already resolved by main against the live
+   * library root; nothing here joins a path (see ResolvedFoundryExport).
+   */
+  foundryHost: {
+    /** The project KEY and its resolved directory, or nulls when the book has none. */
+    project: (projectDir: string) =>
+      Promise<{ success: boolean; key?: string | null; dir?: string | null; error?: string }>;
+    exports: (projectDir: string) =>
+      Promise<{ success: boolean; exports?: ResolvedFoundryExport[]; error?: string }>;
+    /** Forget the RECORD. The file stays in the foundry project's final/ tray. */
+    forgetExport: (projectDir: string, exportId: string) =>
+      Promise<{ success: boolean; forgotten?: FoundryExportRecord; error?: string }>;
   };
   /**
    * The document pipeline: a book's working PDF and the book itself.
@@ -3338,6 +3357,12 @@ const electronAPI: ElectronAPI = {
   },
   foundry: {
     version: () => ipcRenderer.invoke('foundry:version'),
+  },
+  foundryHost: {
+    project: (projectDir: string) => ipcRenderer.invoke('foundry-host:project', projectDir),
+    exports: (projectDir: string) => ipcRenderer.invoke('foundry-host:exports', projectDir),
+    forgetExport: (projectDir: string, exportId: string) =>
+      ipcRenderer.invoke('foundry-host:forget-export', projectDir, exportId),
   },
   document: {
     state: (ref: DocumentRef) => ipcRenderer.invoke('document:state', ref),

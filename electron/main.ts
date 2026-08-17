@@ -38,7 +38,7 @@ import { normalizeFsPath, toAsciiSlug } from './path-utils';
 // Type-only: the module itself is loaded lazily like every other epub-processor
 // use here, so importing its types costs nothing at runtime.
 import type { EpubPreservingEdits } from './epub-processor.js';
-import type { ExportProvenance, ResolvedProjectVariant } from './manifest-types';
+import type { ExportProvenance, ResolvedProjectVariant, ResolvedFoundryExport } from './manifest-types';
 import type { WorkingCopyRemint } from '../shared/document/working-copy-remint';
 // The listing-shaped half of the family rules: one chain is an answer, anything
 // else is null, and it never throws. Everything that ACTS on a book goes through
@@ -409,6 +409,33 @@ function getLibraryRoot(): string {
     return customLibraryRoot;
   }
   return path.join(app.getPath('documents'), 'BookForge');
+}
+
+/**
+ * Where the hosted Foundry keeps everything it owns — `<library>/foundry`.
+ *
+ * DERIVED on every call and never stored. The library root is a user setting
+ * that moves (to another drive, to a synced folder), and a captured copy of this
+ * path would keep the hosted window writing to the old volume while every other
+ * part of BookForge had already followed the move. Deriving it is what makes the
+ * Foundry data a part of the library rather than a second thing beside it.
+ *
+ * The directory is NOT created here, and nothing creates it at startup: a
+ * library with no Foundry project has no reason to carry an empty folder. The
+ * mount wave mkdirs at first use.
+ */
+function foundryDataRoot(): string {
+  return path.join(getLibraryRoot(), 'foundry');
+}
+
+/**
+ * Where a hosted Foundry PROJECT lives — `<library>/foundry/projects/<key>`.
+ *
+ * A manifest records the KEY (`foundryProject.dir`), never a path, so this is
+ * the one place the two are joined. Same lazy-creation rule as the root above.
+ */
+function foundryProjectsDir(): string {
+  return path.join(foundryDataRoot(), 'projects');
 }
 
 /**
@@ -7008,6 +7035,67 @@ function setupIpcHandlers(): void {
       if (!saved?.success) return { success: false, error: saved?.error || 'Failed to update project source pointer.' };
       return { success: true, sourcePath: sourceAbs, projectDir };
     } catch (err) { console.error('[variant:send-to-pipeline]', err); return { success: false, error: (err as Error).message }; }
+  });
+
+  // ─── The hosted Foundry, as the versions page sees it ─────────────────────
+  //
+  // Its own channel family. `foundry:*` is one legacy channel about the foundry
+  // CLI's version, and the hosted window arrives with a whole IPC surface of its
+  // own; a shared prefix would make "which side answers this" a question of load
+  // order. These are BookForge's doors onto BookForge's records — the mapping and
+  // the export list — and they read the manifest and nothing else.
+
+  /**
+   * Which hosted-Foundry project this book has, or null. Null is not a failure —
+   * it is the ordinary state of a book nobody has taken into Foundry yet.
+   *
+   * `dir` is the key joined onto the LIVE library root, done here for the same
+   * reason `variant:list` resolves its rows here: the renderer holds no library
+   * root, and a stored absolute path is the thing the key exists to avoid.
+   */
+  ipcMain.handle('foundry-host:project', async (_event, projectDir: string) => {
+    try {
+      if (!projectDir || !fsSync.existsSync(projectDir)) return { success: false, error: 'Project not found' };
+      const key = await manifestService.readFoundryProject(projectDir);
+      return { success: true, key, dir: key === null ? null : path.join(foundryProjectsDir(), key) };
+    } catch (err) { console.error('[foundry-host:project]', err); return { success: false, error: (err as Error).message }; }
+  });
+
+  /**
+   * What Foundry has exported for this book, each row with its file ALREADY
+   * RESOLVED — the same rule `variant:list` states: the record's path is
+   * library-relative, so the join happens here, against the library root the
+   * record was read under, and never in the renderer against a live selection.
+   */
+  ipcMain.handle('foundry-host:exports', async (_event, projectDir: string) => {
+    try {
+      if (!projectDir || !fsSync.existsSync(projectDir)) return { success: false, error: 'Project not found' };
+      const records = await manifestService.readFoundryExports(projectDir);
+      const libraryRoot = getLibraryRoot();
+      const resolved: ResolvedFoundryExport[] = await Promise.all(records.map(async (r) => {
+        // Split on '/' — the record is slash-separated by contract, so the
+        // segments go to path.join individually to come out platform-native.
+        const absPath = normalizeFsPath(path.join(libraryRoot, ...r.path.split('/')));
+        let exists = false;
+        try {
+          exists = (await fs.stat(absPath)).isFile();
+        } catch {
+          // Missing is a legitimate answer — Foundry's tray is not ours, and the
+          // user can have moved or deleted what it left. Reported, never guessed.
+        }
+        return { ...r, absPath, exists };
+      }));
+      return { success: true, exports: resolved };
+    } catch (err) { console.error('[foundry-host:exports]', err); return { success: false, error: (err as Error).message }; }
+  });
+
+  /** Forget one export RECORD. The file stays in the foundry project's final/ tray. */
+  ipcMain.handle('foundry-host:forget-export', async (_event, projectDir: string, exportId: string) => {
+    try {
+      if (!projectDir || !fsSync.existsSync(projectDir)) return { success: false, error: 'Project not found' };
+      const record = await manifestService.forgetFoundryExport(projectDir, exportId);
+      return { success: true, forgotten: record };
+    } catch (err) { console.error('[foundry-host:forget-export]', err); return { success: false, error: (err as Error).message }; }
   });
 
   // ─── Archive IPC Handlers ─────────────────────────────────────────────────

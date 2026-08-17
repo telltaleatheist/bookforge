@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
-import { ResolvedProjectVariant } from '../models/manifest.types';
+import { FoundryExportRecord, ResolvedFoundryExport, ResolvedProjectVariant } from '../models/manifest.types';
 import type { AppliedPass } from '../models/manifest.types';
 import type { BlockCategoryProvenance } from '@shared/ocr/text-block';
 import type { TextLayerReport } from '@shared/pdf/text-layer';
@@ -1983,6 +1983,28 @@ export class ElectronService {
   }
   async variantSendToPipeline(projectId: string, variantId: string): Promise<{ success: boolean; sourcePath?: string; projectDir?: string; error?: string }> {
     if (this.isElectron) return (window as any).electron.variant.sendToPipeline(projectId, variantId);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  // ── The hosted Foundry: this book's project, and what it has exported ──────
+  //
+  // BookForge's own records about Foundry, on their own channel family. The
+  // hosted window brings its own IPC; `foundry:*` is the foundry CLI's. Rows
+  // arrive with `absPath` already resolved by main — nothing here joins a path.
+
+  /** The project KEY and its resolved directory; both null when the book has none. */
+  async foundryHostProject(projectDir: string): Promise<{ success: boolean; key?: string | null; dir?: string | null; error?: string }> {
+    if (this.isElectron) return (window as any).electron.foundryHost.project(projectDir);
+    return { success: false, error: 'Not running in Electron' };
+  }
+  /** What Foundry has exported for this book, oldest first. Empty is ordinary. */
+  async foundryHostExports(projectDir: string): Promise<{ success: boolean; exports?: ResolvedFoundryExport[]; error?: string }> {
+    if (this.isElectron) return (window as any).electron.foundryHost.exports(projectDir);
+    return { success: false, error: 'Not running in Electron' };
+  }
+  /** Forget the RECORD. The file stays in the foundry project's final/ tray. */
+  async foundryHostForgetExport(projectDir: string, exportId: string): Promise<{ success: boolean; forgotten?: FoundryExportRecord; error?: string }> {
+    if (this.isElectron) return (window as any).electron.foundryHost.forgetExport(projectDir, exportId);
     return { success: false, error: 'Not running in Electron' };
   }
 
