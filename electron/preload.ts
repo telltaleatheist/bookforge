@@ -1370,6 +1370,13 @@ export interface ElectronAPI {
     showBookConversion: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
     /** Main asked THIS window to queue a conversion. Main window only. */
     onShowBookConversion: (callback: (projectDir: string) => void) => () => void;
+    /**
+     * Does ANY BookForge window have focus? The completion toasts show in the
+     * focused window only, and a renderer can see its own focus and nothing
+     * else's — so the unfocused main window asks this before speaking for an app
+     * nobody is looking at.
+     */
+    anyFocused: () => Promise<{ focused: boolean }>;
   };
   plugins: {
     list: () => Promise<{ success: boolean; data?: PluginInfo[]; error?: string }>;
@@ -2951,6 +2958,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('window:close-main'),
     showBookConversion: (projectDir: string) =>
       ipcRenderer.invoke('app:show-book-conversion', projectDir),
+    anyFocused: () => ipcRenderer.invoke('window:any-focused'),
     onShowBookConversion: (callback: (projectDir: string) => void) => {
       const listener = (_e: any, projectDir: string) => callback(projectDir);
       ipcRenderer.on('app:show-book-conversion', listener);

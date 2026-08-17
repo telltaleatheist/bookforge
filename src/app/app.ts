@@ -10,6 +10,10 @@ import { NavRailComponent, NavRailItem } from './components/nav-rail/nav-rail.co
 import { SetupDownloadDockComponent } from './components/setup-download-dock/setup-download-dock.component';
 import { UpdateBannerComponent } from './components/update-banner/update-banner.component';
 import { NoticeBannerComponent } from './components/notice-banner/notice-banner.component';
+import { ToastHostComponent } from './components/toast-host/toast-host.component';
+import { QueueChipComponent } from './features/queue/components/queue-chip/queue-chip.component';
+import { QueueToastsService } from './features/queue/services/queue-toasts.service';
+import { isStandaloneWindow } from './core/window-role';
 import { ElectronService } from './core/services/electron.service';
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
@@ -28,7 +32,9 @@ import { DialogService } from './creamsicle-desktop/services/dialog.service';
     NavRailComponent,
     SetupDownloadDockComponent,
     UpdateBannerComponent,
-    NoticeBannerComponent
+    NoticeBannerComponent,
+    ToastHostComponent,
+    QueueChipComponent
   ],
   template: `
     <!-- First-run setup overlay: blocks ONLY on a setup ERROR (needs attention).
@@ -67,6 +73,17 @@ import { DialogService } from './creamsicle-desktop/services/dialog.service';
           <div class="titlebar-spacer"></div>
         </ng-container>
 
+        <!-- The queue's face. In EVERY window — main and the standalone
+             listen/editor/alignment popups alike — because the queue is main's
+             and every window mirrors it. Deliberately NOT suppressed with the
+             nav rail: the rail is navigation this window has no use for, and
+             this is a readout every window has a use for. It sits in the
+             titlebar-right slot, which the window chrome already marks
+             no-drag for its buttons. -->
+        <ng-container titlebar-right>
+          <app-queue-chip />
+        </ng-container>
+
         <!-- Main content area with nav rail -->
         <div class="app-layout">
           <!-- Navigation Rail (hidden on standalone alignment window) -->
@@ -102,6 +119,10 @@ import { DialogService } from './creamsicle-desktop/services/dialog.service';
          destructive confirm, a refusal, or a stopping error says itself here
          instead of interrupting. -->
     <app-notice-banner />
+
+    <!-- Completion news: a run's last step landing, or any step failing. Shown
+         in whichever window has focus (see QueueToastsService). -->
+    <app-toast-host />
 
     <!-- First-run engine setup: slim progress bar pinned to the bottom while the
          bundled runtime unpacks. The user is kept on the Setup page (redirect in
@@ -308,6 +329,9 @@ export class App implements OnInit {
   // left with a service instead of delivered to a listener.
   private readonly bookConversion = inject(BookConversionService);
   private readonly dialog = inject(DialogService);
+  // Started in ngOnInit, in EVERY window: which one actually speaks is decided
+  // per event by the focus rule, not by the window's kind.
+  private readonly queueToasts = inject(QueueToastsService);
 
   // Lets the user dismiss the setup overlay (only reachable in the error state).
   private readonly setupDismissed = signal(false);
@@ -358,12 +382,11 @@ export class App implements OnInit {
     this.setupDismissed.set(true);
   }
 
-  // Hide nav rail for standalone popup windows (alignment, editor, etc.)
-  // App uses hash routing, so the route is in the hash fragment, not pathname
-  readonly isStandaloneWindow = computed(() => {
-    const hash = window.location.hash;
-    return hash.startsWith('#/alignment') || hash.startsWith('#/editor') || hash.startsWith('#/listen');
-  });
+  // Hide nav rail for standalone popup windows (alignment, editor, etc.).
+  // The test itself lives in core/window-role.ts now: it is a fact about the
+  // WINDOW, and the queue mirror needs the same answer to keep once-per-event
+  // effects from running once per window.
+  readonly isStandaloneWindow = computed(() => isStandaloneWindow());
 
   // Navigation items for the nav rail
   readonly navItems: NavRailItem[] = [
@@ -373,12 +396,6 @@ export class App implements OnInit {
       icon: '\u{1F4DA}', // Books emoji
       label: 'Library',
       route: '/studio'
-    },
-    {
-      id: 'queue',
-      icon: '\u{23F3}', // Hourglass emoji
-      label: 'Queue',
-      route: '/queue'
     },
     {
       id: 'live-tts',
@@ -391,6 +408,18 @@ export class App implements OnInit {
       icon: '\u{2728}', // Sparkles emoji
       label: 'Enhance',
       route: '/enhance'
+    },
+    {
+      // DEMOTED (2026-08-17). The queue tab is the DETAIL view now — the whole
+      // queue is readable from the title-bar chip in every window, and the
+      // tray's "Open queue details →" is the front door to this page. It kept
+      // the slot directly under Library while it was the only way to see the
+      // queue at all; sitting there now would say the queue is a place you go
+      // to rather than something that is always on screen.
+      id: 'queue',
+      icon: '\u{23F3}', // Hourglass emoji
+      label: 'Queue',
+      route: '/queue'
     },
     {
       id: 'settings',
@@ -408,6 +437,11 @@ export class App implements OnInit {
 
   ngOnInit() {
     this.themeService.initializeTheme();
+
+    // Completion toasts. Every window listens; the focus rule decides which one
+    // says it, so a Listen window in front gets the news and the main window
+    // behind it stays quiet.
+    this.queueToasts.start();
 
     // The picker was showing a project's archive PDF, which under the artifact
     // model is read-only, and the user pressed "Generate EPUB" on its banner.

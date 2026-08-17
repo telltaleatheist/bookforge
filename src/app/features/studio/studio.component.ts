@@ -1746,6 +1746,29 @@ export class StudioComponent implements OnInit, OnDestroy {
     void this.openNarrationFor(dir);
   }, { allowSignalWrites: true });
 
+  /**
+   * A book was asked for from outside Studio — the queue's completion toast.
+   *
+   * Same shape and same reason as the narration hand-off above: the request is
+   * left with StudioService because this component is lazily routed and is
+   * usually not mounted when the toast is clicked, and it is TAKEN so a later
+   * visit does not re-open a book the user has since moved on from. Gated on
+   * `itemsLoaded` because a book cannot be looked up in a list that has not been
+   * read yet.
+   */
+  private readonly openRequestEffect = effect(() => {
+    if (!this.itemsLoaded()) return;
+    const id = this.studioService.openRequest();
+    if (id === null) return;
+    this.studioService.takeOpenRequest();
+    const item = this.studioService.getItem(id);
+    if (!item) {
+      console.error(`[studio] Asked to open "${id}", which is not in this library's project list.`);
+      return;
+    }
+    this.openInWorkspace(item);
+  }, { allowSignalWrites: true });
+
   // Watch selectedItem changes to check for cached sessions
   private readonly cachedSessionEffect = effect(() => {
     const item = this.selectedItem();
