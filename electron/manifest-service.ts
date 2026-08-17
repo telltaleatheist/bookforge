@@ -62,6 +62,7 @@ import {
   type EpubContainerKind,
 } from './epub-container';
 import { bookDigest } from './sidecar-binding';
+import { withManifestFileLock } from './library-lock';
 import {
   bookDigestAlgorithm,
   bookDigestAlgorithmChange,
@@ -144,10 +145,20 @@ const manifestLocks = new Map<string, Promise<any>>();
 /**
  * Serialize async operations on the same project's manifest.
  * Concurrent calls for the same projectId are queued; different projects run in parallel.
+ *
+ * TWO LOCKS, ONE SPAN. The promise chain serializes writers within THIS
+ * process; `withManifestFileLock` then serializes across machines — Owen's
+ * library lives on a Samba share both the PC and the Mac mount, and a manifest
+ * read-modify-write racing between them is the one way this library can lose a
+ * registration (library-lock.ts has the whole story). The order matters: the
+ * in-process chain goes first so one process never queues against its own
+ * lock file, and the on-disk lock wraps the read as well as the write, because
+ * a read-modify-write that reads outside the lock is not locked at all.
  */
 function acquireLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+  const locked = () => withManifestFileLock(getProjectPath(projectId), fn);
   const prev = manifestLocks.get(projectId) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
+  const next = prev.then(locked, locked);
   // Keep the chain alive but swallow errors so a failed write doesn't block future writes
   manifestLocks.set(projectId, next.then(() => {}, () => {}));
   return next;
@@ -5974,13 +5985,18 @@ export async function renameProjectFolder(
   // calls recreate a ghost folder at the old path. Propagate the failure so
   // the rename is treated as not-fully-applied rather than silently succeeding.
   try {
-    const raw = await fs.promises.readFile(manifestPath, 'utf-8');
-    const manifest = JSON.parse(raw);
-    if (manifest.projectId !== newProjectId) {
-      manifest.projectId = newProjectId;
-      await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
-      console.log(`[ManifestService] Updated projectId in manifest: ${manifest.projectId}`);
-    }
+    // Under the cross-machine lock like every other manifest read-modify-write
+    // — the folder just moved, so the in-process chain (keyed by the OLD id)
+    // is no protection for the file at its NEW path.
+    await withManifestFileLock(targetPath, async () => {
+      const raw = await fs.promises.readFile(manifestPath, 'utf-8');
+      const manifest = JSON.parse(raw);
+      if (manifest.projectId !== newProjectId) {
+        manifest.projectId = newProjectId;
+        await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
+        console.log(`[ManifestService] Updated projectId in manifest: ${manifest.projectId}`);
+      }
+    });
   } catch (err) {
     throw new Error(
       `Project folder was renamed to ${newProjectId} but its manifest projectId could not be updated: ${(err as Error).message}`,

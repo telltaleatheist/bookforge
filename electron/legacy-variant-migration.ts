@@ -462,6 +462,11 @@ async function readBookFolder(
       report.clutter.push(rel);
       continue;
     }
+    // The cross-machine manifest lock (library-lock.ts). Transient by design —
+    // present only while a writer holds it, or left behind by a crash, in which
+    // case the next writer's stale takeover removes it. Never a version, and
+    // not worth a clutter line for a file that deletes itself.
+    if (entry.name === '.manifest.lock') { continue; }
     if (STRAY_MANIFEST.test(entry.name)) { report.clutter.push(rel); continue; }
     if (BACKUP_NAME.test(entry.name)) {
       report.skipped.push({ relPath: rel, reason: 'backup' });
