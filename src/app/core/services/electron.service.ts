@@ -2277,6 +2277,20 @@ export class ElectronService {
     return null;
   }
 
+  /**
+   * The library root AND whether it is a persisted choice or main's default.
+   *
+   * The boot flow needs the distinction ({@link LibraryService}'s loadSettings):
+   * a persisted root is adopted, a default means the renderer's stored copy is
+   * pushed once. `getLibraryRoot` above keeps its old shape for its callers.
+   */
+  async getLibraryRootState(): Promise<{ path: string | null; persisted: boolean } | null> {
+    if (this.isElectron) {
+      return (window as any).electron.library.getRoot();
+    }
+    return null;
+  }
+
   // Media operations - external image storage
   /**
    * Save a base64 image to the media folder, returns relative path

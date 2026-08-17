@@ -3473,7 +3473,14 @@ function setupIpcHandlers(): void {
 
   // IPC handler to get current library root
   ipcMain.handle('library:get-root', async () => {
-    return { path: getLibraryRoot() };
+    // `persisted` says whether this path is a RECORDED choice (library-root.json)
+    // or getLibraryRoot()'s Documents default. The renderer's boot flow needs the
+    // difference: a persisted root is adopted as the one truth, a default means
+    // main knows nothing and the renderer's stored copy (if any) is pushed once.
+    // Without this flag the two stores fight — the renderer used to push its
+    // localStorage copy over the persisted file on every boot, which is how a
+    // library switch could silently revert (seen live 2026-08-16).
+    return { path: getLibraryRoot(), persisted: customLibraryRoot !== null };
   });
 
   const getProjectsFolder = () => path.join(getLibraryRoot(), 'projects');

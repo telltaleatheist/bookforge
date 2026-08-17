@@ -95,19 +95,42 @@ export class LibraryService {
     try {
       const stored = localStorage.getItem(this.STORAGE_KEY);
       this.logToMain(`[LibraryService] localStorage raw value: ${stored}`);
+      const settings: LibrarySettings | null = stored ? JSON.parse(stored) : null;
 
-      if (stored) {
-        const settings: LibrarySettings = JSON.parse(stored);
-        this.logToMain(`[LibraryService] Parsed settings: libraryPath=${settings.libraryPath}, onboardingComplete=${settings.onboardingComplete}`);
+      // MAIN OWNS THE LIBRARY ROOT AT BOOT. Its persisted choice
+      // (library-root.json) is the one truth, and this store is a MIRROR of it —
+      // adopted here, rewritten to match, never pushed over it. The old flow
+      // pushed localStorage at main on every boot, which meant two owners: a
+      // switch that main persisted could be silently reverted seconds later by a
+      // renderer still holding the previous path (seen live 2026-08-16, and the
+      // reason a Settings switch to a new library did not survive its restart).
+      //
+      // The renderer's copy is pushed in exactly one boot case: main has NO
+      // persisted root (fresh userData, or the file was deleted by hand) while
+      // this mirror still has one — the recovery direction, where the mirror is
+      // the only record left.
+      const root = this.electronService.isRunningInElectron
+        ? await this.electronService.getLibraryRootState()
+        : null;
 
-        // Validate and sync library path to main process
-        if (settings.libraryPath) {
-          await this.validateAndSyncPath(settings);
-        } else {
-          this.logToMain('[LibraryService] No libraryPath in settings');
-          this._libraryPath.set(null);
-          this._onboardingComplete.set(settings.onboardingComplete);
+      if (root?.persisted && root.path) {
+        this._libraryPath.set(root.path);
+        // A persisted root IS a completed onboarding — it can only have been
+        // written by a first-run or Settings choice.
+        this._onboardingComplete.set(true);
+        if (!settings || settings.libraryPath !== root.path || !settings.onboardingComplete) {
+          this.logToMain(`[LibraryService] Adopting main's persisted root: ${root.path}`
+            + (settings?.libraryPath && settings.libraryPath !== root.path
+              ? ` (mirror held ${settings.libraryPath} — realigned)` : ''));
+          this.saveSettings();
         }
+      } else if (settings?.libraryPath) {
+        this.logToMain('[LibraryService] Main has no persisted root; pushing the mirror\'s once');
+        await this.validateAndSyncPath(settings);
+      } else if (settings) {
+        this.logToMain('[LibraryService] No libraryPath in settings');
+        this._libraryPath.set(null);
+        this._onboardingComplete.set(settings.onboardingComplete);
       } else {
         this.logToMain('[LibraryService] No settings in localStorage');
       }
@@ -219,10 +242,25 @@ export class LibraryService {
   async setLibraryPath(path: string): Promise<{ success: boolean; error?: string }> {
     this.logToMain(`[LibraryService] setLibraryPath called with: ${path}`);
     try {
-      // Ensure the path is valid and create folders if needed
-      const result = await this.ensureLibraryFolders(path);
+      // MAIN FIRST. `library:set-root` is the act — it validates the path,
+      // persists the choice and repoints every main-side consumer — and its
+      // refusal (a busy Foundry queue, a missing drive) must stop the whole
+      // switch with its own sentence, not be swallowed after this store already
+      // called the move done. The old order ensured folders FIRST — via a call
+      // that read main's still-unchanged root, so it ensured the OLD library —
+      // and then synced through a helper that logged failures and returned
+      // nothing, which is how a refused switch could leave the UI showing the
+      // new path while the file on disk still named the old one.
+      const synced = await this.electronService.setLibraryRoot(path);
+      if (!synced.success) {
+        this.logToMain(`[LibraryService] library:set-root refused: ${synced.error}`);
+        return { success: false, error: synced.error };
+      }
+
+      // Now that main answers the NEW root, ensure its folder skeleton.
+      const result = await this.electronService.projectsEnsureFolder();
       if (!result.success) {
-        this.logToMain(`[LibraryService] ensureLibraryFolders failed: ${result.error}`);
+        this.logToMain(`[LibraryService] projectsEnsureFolder failed: ${result.error}`);
         return { success: false, error: result.error };
       }
 
@@ -230,36 +268,10 @@ export class LibraryService {
       this._onboardingComplete.set(true);
       this.saveSettings();
 
-      // Sync to main process
-      await this.syncLibraryPathToMain(path);
-
       this.logToMain(`[LibraryService] setLibraryPath complete`);
       return { success: true };
     } catch (e) {
       this.logToMain(`[LibraryService] setLibraryPath error: ${(e as Error).message}`);
-      return { success: false, error: (e as Error).message };
-    }
-  }
-
-  /**
-   * Ensure all library subfolders exist
-   */
-  private async ensureLibraryFolders(basePath: string): Promise<{ success: boolean; error?: string }> {
-    if (!this.electronService.isRunningInElectron) {
-      // In browser mode, just accept the path
-      return { success: true };
-    }
-
-    try {
-      // Use the existing projects:ensure-folder pattern but with custom path
-      // For now, we'll use the default BookForge folder structure
-      const result = await this.electronService.projectsEnsureFolder();
-      if (!result.success) {
-        return { success: false, error: result.error };
-      }
-
-      return { success: true };
-    } catch (e) {
       return { success: false, error: (e as Error).message };
     }
   }
