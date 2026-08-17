@@ -1016,6 +1016,7 @@ const AUDIO_EXTS = new Set([
       overflow: hidden;
     }
     .vrow.open { border-color: var(--accent-primary, #06b6d4); }
+    .vhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 12px; cursor: pointer; }
     /* A version Foundry made, drawn UNDER the version it was made from: indented,
        lighter, and a size smaller. Owen, 2026-08-17: "visually be smaller
        indented line items under their parent file". The left rule is what carries
