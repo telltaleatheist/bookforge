@@ -348,6 +348,18 @@ let progressDirty = false;
 let progressTimer: ReturnType<typeof setTimeout> | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * Admission is the one refusal nothing else re-triggers. Every other "not yet"
+ * resolves through a state change that calls pump() — a step lands, a slot
+ * frees, the user presses Start. The external GPU lock and a foreign arbiter
+ * holder clear WITHOUT touching this engine: the training chain deletes its
+ * lock file and nothing here hears it. So a pump that refused a step on
+ * admission arms a recheck, and the recheck disarms itself the first time
+ * nothing is being held back.
+ */
+let admissionRecheckMs = 15_000;
+let admissionRecheckTimer: ReturnType<typeof setTimeout> | null = null;
+
 function publish(): void {
   const snap = snapshot();
   for (const listener of listeners) {
@@ -899,6 +911,7 @@ function slotsInUse(resource: StepResource): number {
  */
 export function pump(): void {
   if (!running) return;
+  let admissionBlocked = false;
 
   // A `waiting` step whose parent has landed becomes runnable. Done here rather
   // than at completion so there is ONE place that decides what is runnable.
@@ -921,6 +934,7 @@ export function pump(): void {
         if (!admission.ok) {
           // Said on the row, not swallowed. A queue that appears to be doing
           // nothing is indistinguishable from a broken one.
+          admissionBlocked = true;
           if (step.progress.message !== admission.reason) {
             step.progress = { ...step.progress, message: admission.reason };
             touchProgress();
@@ -930,6 +944,20 @@ export function pump(): void {
       }
       void launch(job, step);
     }
+  }
+
+  // The lock file's deletion is invisible to this engine — see the constant.
+  if (admissionBlocked) {
+    if (!admissionRecheckTimer) {
+      admissionRecheckTimer = setTimeout(() => {
+        admissionRecheckTimer = null;
+        pump();
+      }, admissionRecheckMs);
+      if (typeof admissionRecheckTimer.unref === 'function') admissionRecheckTimer.unref();
+    }
+  } else if (admissionRecheckTimer) {
+    clearTimeout(admissionRecheckTimer);
+    admissionRecheckTimer = null;
   }
 }
 
@@ -1149,6 +1177,8 @@ function firstChunkAnchor(
 export interface ConfigureOptions extends EngineConfig {
   /** Where the GPU holder is read from. main passes gpu-arbiter's `gpuHolder`. */
   gpuHolder?: () => string | null;
+  /** How often a pump refused on admission re-checks. Tests shorten it. */
+  admissionRecheckMs?: number;
 }
 
 /**
@@ -1162,6 +1192,7 @@ export interface ConfigureOptions extends EngineConfig {
 export async function configure(options: ConfigureOptions): Promise<void> {
   config = { stateDir: options.stateDir, legacyQueueFile: options.legacyQueueFile };
   if (options.gpuHolder) gpuHolderProbe = options.gpuHolder;
+  if (options.admissionRecheckMs !== undefined) admissionRecheckMs = options.admissionRecheckMs;
   jobs = [];
   running = false;
   runningSteps.clear();

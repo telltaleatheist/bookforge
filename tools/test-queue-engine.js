@@ -94,14 +94,14 @@ function fakeModule(type, opts = {}) {
 }
 
 /** A fresh engine: no modules, no state, no lock, in its own directory. */
-async function fresh(name, mods) {
+async function fresh(name, mods, configureExtra = {}) {
   engine.clearStepModules();
   for (const mod of mods) engine.registerStepModule(mod);
   engine.setGpuLockProbe(() => null);
   engine.setGpuHolderProbe(() => null);
   const dir = path.join(SCRATCH, name);
   fs.mkdirSync(dir, { recursive: true });
-  await engine.configure({ stateDir: dir });
+  await engine.configure({ stateDir: dir, ...configureExtra });
   return dir;
 }
 
@@ -258,6 +258,29 @@ test('an external GPU lock holds the queue, and the row says why', async () => {
   engine.pump();
   await settle();
   assert.strictEqual(gpu.runs.length, 1, 'and it starts the moment the lock is gone');
+});
+
+test('the lock clearing is NOTICED — nothing else calls pump for it', async () => {
+  // The training chain deletes its lock file and touches nothing in this
+  // engine. The refused pump must arm its own recheck, or the queue waits
+  // forever on a lock that is no longer there.
+  const gpu = fakeModule('tts-conversion');
+  await fresh('gpu-lock-recheck', [gpu], { admissionRecheckMs: 40 });
+  engine.setGpuLockProbe(() => 'external render');
+  engine.enqueue({
+    title: 'Book',
+    release: true,
+    steps: [{ type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } }],
+  });
+  engine.start();
+  await settle();
+  assert.strictEqual(gpu.runs.length, 0);
+
+  engine.setGpuLockProbe(() => null);
+  // Deliberately NO pump() here. Wait out the recheck instead.
+  await new Promise((r) => setTimeout(r, 200));
+  await settle();
+  assert.strictEqual(gpu.runs.length, 1, 'the recheck alone must start the step');
 });
 
 test('another holder of the arbiter holds the queue too', async () => {
