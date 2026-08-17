@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
-import { FoundryExportRecord, ResolvedFoundryExport, ResolvedProjectVariant, TtsTarget, VersionsAudiobookFacts } from '../models/manifest.types';
+import { ResolvedProjectVariant, TtsTarget, VersionsAudiobookFacts } from '../models/manifest.types';
 import type { AppliedPass } from '../models/manifest.types';
 import type { BlockCategoryProvenance } from '@shared/ocr/text-block';
 import type { TextLayerReport } from '@shared/pdf/text-layer';
@@ -23,39 +23,6 @@ import type {
 } from '@shared/vlm/chapter-titles';
 import type { DocumentStageProgressEvent } from '@shared/document/pipeline-types';
 import type { PassDiffFile } from '../models/diff.types';
-import type { QuirePageMount } from '../../../../packages/quire/src/types';
-
-/**
- * What comes back when a book already on screen is laid out again around the
- * documents an edit rewrote — `electron/quire-viewer-bridge.ts`.
- *
- * `documents` is the whole new mount set, not just the relaid ones: a document
- * that gained a page moves every page number after it, so every later mount's
- * first page has changed even though its markup has not.
- */
-export interface QuireRelayoutAnswer {
-  /** Where this book's page map lives. The same value before and after an edit. */
-  cacheKey: string;
-  /** Spine documents measured again. */
-  relaid: string[];
-  /**
-   * Spine documents whose new bytes were taken WITHOUT measuring — the edit
-   * changed a `data-bf-*` attribute and nothing else, and main proved no
-   * stylesheet selects on it, so every page is where it was. Their frames are
-   * deliberately not remounted.
-   */
-  restated: string[];
-  /** Rewritten entries with no pages — a nav document, an NCX — that were only re-stamped. */
-  restampedOnly: string[];
-  documents: QuirePageMount[];
-  pageCount: number;
-  /** One entry per page, all the same box — main's own description of a page. */
-  pageDimensions: Array<{ width: number; height: number; originX: number; originY: number }>;
-  /** Pages the book gained, or lost when negative. */
-  pageDelta: number;
-  relayoutMs: number;
-  totalMs: number;
-}
 
 // Lightweight match rectangle for custom category highlights
 interface MatchRect {
@@ -378,81 +345,6 @@ interface BrowseResult {
   items: Array<{ name: string; path: string; type: string; size: number | null }>;
 }
 
-interface PdfAnalyzeResult {
-  success: boolean;
-  data?: {
-    blocks: Array<{
-      id: string;
-      page: number;
-      x: number;
-      y: number;
-      width: number;
-      height: number;
-      text: string;
-      font_size: number;
-      font_name: string;
-      char_count: number;
-      region: string;
-      category_id: string;
-      is_bold: boolean;
-      is_italic: boolean;
-      is_superscript: boolean;
-      is_image: boolean;
-      line_count: number;
-    }>;
-    categories: Record<string, {
-      id: string;
-      name: string;
-      description: string;
-      color: string;
-      block_count: number;
-      char_count: number;
-      font_size: number;
-      region: string;
-      sample_text: string;
-    }>;
-    page_count: number;
-    page_dimensions: Array<{ width: number; height: number }>;
-    pdf_name: string;
-    warnings?: string[];
-  };
-  error?: string;
-}
-
-interface PdfAnalyzeQuickResult {
-  success: boolean;
-  data?: {
-    page_count: number;
-    page_dimensions: Array<{ width: number; height: number }>;
-    pdf_name: string;
-    textReady: boolean;
-    blocks?: any[];
-    categories?: Record<string, any>;
-    spans?: any[];
-    warnings?: string[];
-  };
-  error?: string;
-}
-
-interface PdfAnalyzeTextResult {
-  success: boolean;
-  data?: {
-    blocks: any[];
-    categories: Record<string, any>;
-    spans?: any[];
-    warnings?: string[];
-    /** Where the blocks' categories came from — the book's markup, or the classifier. */
-    categoryProvenance?: BlockCategoryProvenance;
-    /**
-     * The digest of the file that was analyzed. Present on the EPUB path, which
-     * computes it for its own cache key; a caller that needs it must say so
-     * rather than carry on without one.
-     */
-    sourceSha256?: string;
-  };
-  error?: string;
-}
-
 interface PdfRenderResult {
   success: boolean;
   data?: { image: string };
@@ -767,24 +659,6 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  // PDF operations (pure TypeScript - no Python!)
-  async analyzePdf(pdfPath: string, maxPages?: number): Promise<PdfAnalyzeResult> {
-    if (this.isElectron) {
-      return (window as any).electron.pdf.analyze(pdfPath, maxPages);
-    }
-
-    // HTTP fallback for browser mode
-    console.warn('PDF analyze not available in browser mode');
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async analyzePdfQuick(pdfPath: string, maxPages?: number): Promise<PdfAnalyzeQuickResult> {
-    if (this.isElectron) {
-      return (window as any).electron.pdf.analyzeQuick(pdfPath, maxPages);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
   /**
    * Does this PDF carry text of its own?
    *
@@ -798,13 +672,6 @@ export class ElectronService {
   ): Promise<{ success: boolean; data?: TextLayerReport; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.pdf.measureTextLayer(pdfPath, maxSamples);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async analyzePdfText(pdfPath: string, maxPages?: number): Promise<PdfAnalyzeTextResult> {
-    if (this.isElectron) {
-      return (window as any).electron.pdf.analyzeText(pdfPath, maxPages);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -882,57 +749,6 @@ export class ElectronService {
       return (window as any).electron.pdf.onRenderProgress(callback);
     }
     return () => {};
-  }
-
-  /**
-   * Subscribe to PDF analysis progress updates.
-   * Returns unsubscribe function.
-   */
-  /**
-   * Open an EPUB for the live-DOM viewer — the mounts it shows the book with.
-   *
-   * Nothing here renders anything. What comes back is `partition` plus one
-   * `quire://` mount per spine document, loadable ONLY inside a frame on the
-   * book's own session, which is what keeps a stranger's markup off BookForge's
-   * origin. The handle must be given back to `quireCloseBook`: an open book owns
-   * an offscreen window and a session until it is.
-   */
-  async quireOpenBook(
-    epubPath: string,
-    geometry?: { width: number; height: number; fontSize: number },
-  ): Promise<{ success: boolean; data?: any; error?: string }> {
-    if (!this.isElectron) {
-      return { success: false, error: 'A book can only be opened inside the desktop app.' };
-    }
-    return (window as any).electron.quire.openBook(epubPath, geometry);
-  }
-
-  async quireCloseBook(handle: string): Promise<{ success: boolean; error?: string }> {
-    if (!this.isElectron) return { success: true };
-    return (window as any).electron.quire.closeBook(handle);
-  }
-
-  /**
-   * Lay the documents an edit rewrote out again, in the book already open under
-   * `handle`.
-   *
-   * `entries` are zip entry names, and they come from the code that performed
-   * the edit — main tells the window which files it rewrote. Nothing here works
-   * them out from a count or a page number: relaying out the wrong document
-   * would leave the book paginated for markup it does not have.
-   *
-   * A refusal is a refusal of the whole gesture. There is no reopen behind it:
-   * the caller shows the sentence and leaves the book as it was.
-   */
-  async quireRelayoutEntries(
-    handle: string,
-    bookPath: string,
-    entries: string[],
-  ): Promise<{ success: boolean; data?: QuireRelayoutAnswer; error?: string }> {
-    if (!this.isElectron) {
-      return { success: false, error: 'A book can only be laid out again inside the desktop app.' };
-    }
-    return (window as any).electron.quire.relayoutEntries(handle, bookPath, entries);
   }
 
   onAnalyzeProgress(callback: (progress: { phase: string; message: string }) => void): () => void {
@@ -1078,44 +894,11 @@ export class ElectronService {
     return 0;
   }
 
-  async exportPdfText(enabledCategories: string[]): Promise<{ text: string; char_count: number } | null> {
-    if (this.isElectron) {
-      const result = await (window as any).electron.pdf.exportText(enabledCategories);
-      if (result.success && result.data) {
-        return result.data;
-      }
-      console.error('Failed to export text:', result.error);
-      return null;
-    }
-    return null;
-  }
-
   async exportTextOnlyEpub(pdfPath: string, metadata?: { title?: string; author?: string }): Promise<{ success: boolean; data?: string; error?: string }> {
     if (this.isElectron) {
       return await (window as any).electron.pdf.exportTextOnlyEpub(pdfPath, metadata);
     }
     return { success: false, error: 'Not running in Electron' };
-  }
-
-  async exportCleanPdf(
-    pdfPath: string,
-    deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>,
-    ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>,
-    deletedPages?: number[],
-    chapters?: Array<{ title: string; page: number; level: number }>
-  ): Promise<{ pdfBase64: string; warnings: string[] }> {
-    if (this.isElectron) {
-      const result: PdfExportResult = await (window as any).electron.pdf.exportPdf(pdfPath, deletedRegions, ocrBlocks, deletedPages, chapters);
-      if (result.success && result.data?.pdf_base64) {
-        // warnings = non-fatal export problems (e.g. "exported without
-        // bookmarks") that callers must surface to the user
-        return { pdfBase64: result.data.pdf_base64, warnings: result.data.warnings || [] };
-      }
-      const errorMsg = result.error || 'Unknown error';
-      console.error('Failed to export PDF:', errorMsg);
-      throw new Error(errorMsg);
-    }
-    throw new Error('PDF export not available in browser mode');
   }
 
   /**
@@ -1164,17 +947,6 @@ export class ElectronService {
       throw new Error(errorMsg);
     }
     throw new Error('PDF export not available in browser mode');
-  }
-
-  async findSimilarBlocks(blockId: string): Promise<{ similar_ids: string[]; count: number } | null> {
-    if (this.isElectron) {
-      const result = await (window as any).electron.pdf.findSimilar(blockId);
-      if (result.success && result.data) {
-        return result.data;
-      }
-      return null;
-    }
-    return null;
   }
 
   // Sample mode operations for custom category creation
@@ -1355,14 +1127,6 @@ export class ElectronService {
     return null;
   }
 
-  async saveProjectToPath(filePath: string, projectData: unknown): Promise<ProjectSaveResult> {
-    if (this.isElectron) {
-      return (window as any).electron.project.saveToPath(filePath, projectData);
-    }
-    // Browser mode has no project directory to write a manifest into.
-    return { success: false, error: 'Saving a project requires the desktop app' };
-  }
-
   // Native file dialog for opening PDFs
   async openPdfDialog(): Promise<OpenPdfResult> {
     if (this.isElectron) {
@@ -1418,29 +1182,6 @@ export class ElectronService {
       return (window as any).electron.projects.getFolder();
     }
     return { path: '' };
-  }
-
-  /**
-   * Resolve an existing MANIFEST project directory for a just-loaded source file,
-   * matching by content hash (primary) or original filename. Returns the absolute
-   * project directory when found so the editor can bind to it instead of minting a
-   * phantom legacy .bfp file.
-   */
-  async findManifestProjectBySource(
-    fileHash: string | undefined,
-    sourcePath: string | undefined,
-  ): Promise<{ found: boolean; projectPath?: string; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.projects.findManifestBySource(fileHash, sourcePath);
-    }
-    return { found: false, error: 'Not running in Electron' };
-  }
-
-  async projectsLoadFromPath(filePath: string): Promise<ProjectLoadResult> {
-    if (this.isElectron) {
-      return (window as any).electron.projects.loadFromPath(filePath);
-    }
-    return { success: false, error: 'Not running in Electron' };
   }
 
   /**
@@ -1572,49 +1313,6 @@ export class ElectronService {
   onProjectFilesChanged(callback: (projectPath: string) => void): () => void {
     if (!this.isElectron) return () => {};
     return (window as any).electron.editor.onFilesChanged(callback);
-  }
-
-  // Library operations - copy files to library folder
-  async libraryImportFile(sourcePath: string): Promise<{
-    success: boolean;
-    libraryPath?: string;
-    hash?: string;
-    alreadyExists?: boolean;
-    error?: string;
-  }> {
-    if (this.isElectron) {
-      return (window as any).electron.library.importFile(sourcePath);
-    }
-    // In browser mode, just return the original path
-    return { success: true, libraryPath: sourcePath, alreadyExists: false };
-  }
-
-  /**
-   * Resolve a project's source file path - finds file in current library by hash or filename
-   * Used when opening projects from another machine where paths don't match
-   */
-  async libraryResolveSource(options: {
-    libraryPath?: string;
-    sourcePath?: string;
-    fileHash?: string;
-    sourceName?: string;
-  }): Promise<{ success: boolean; resolvedPath?: string; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.library.resolveSource(options);
-    }
-    // In browser mode, just return the library path or source path
-    return { success: true, resolvedPath: options.libraryPath || options.sourcePath };
-  }
-
-  /**
-   * Translate a cross-platform library path to the current platform.
-   * Handles projects synced between Mac and Windows (e.g., via Syncthing).
-   */
-  async libraryTranslatePath(inputPath: string): Promise<{ success: boolean; translated: string | null }> {
-    if (this.isElectron) {
-      return (window as any).electron.library.translatePath(inputPath);
-    }
-    return { success: false, translated: null };
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1800,23 +1498,6 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
   /**
-   * What Foundry has exported for this book, oldest first. Empty is ordinary.
-   *
-   * RETIRED 2026-08-17 — no caller. An export lands as an ordinary version now,
-   * so the versions page reads `variantList` and there is no second list. This
-   * and `foundryHostForgetExport` stay while the records they read do; both go
-   * in the deletion wave.
-   */
-  async foundryHostExports(projectDir: string): Promise<{ success: boolean; exports?: ResolvedFoundryExport[]; error?: string }> {
-    if (this.isElectron) return (window as any).electron.foundryHost.exports(projectDir);
-    return { success: false, error: 'Not running in Electron' };
-  }
-  /** Forget the RECORD. The file stays in the foundry project's final/ tray. */
-  async foundryHostForgetExport(projectDir: string, exportId: string): Promise<{ success: boolean; forgotten?: FoundryExportRecord; error?: string }> {
-    if (this.isElectron) return (window as any).electron.foundryHost.forgetExport(projectDir, exportId);
-    return { success: false, error: 'Not running in Electron' };
-  }
-  /**
    * Open the Foundry window on this book. `opened` says which door it was:
    * `'project'` deep-linked into the book's Foundry project, `'bare'` the
    * Import-via-Foundry window for a book that has none yet.
@@ -1849,25 +1530,6 @@ export class ElectronService {
   // ─────────────────────────────────────────────────────────────────────────────
   // Direct EPUB Save (saves edited EPUB back to source file)
   // ─────────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Save EPUB data to a user-chosen location via Save As dialog.
-   * No library restriction — for exporting EPUBs for external use.
-   */
-  async saveEpubAs(
-    epubData: ArrayBuffer,
-    defaultName?: string
-  ): Promise<{
-    success: boolean;
-    canceled?: boolean;
-    filePath?: string;
-    error?: string;
-  }> {
-    if (this.isElectron) {
-      return (window as any).electron.epub.saveAsDialog(epubData, defaultName);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
 
   /**
    * Get the audiobook folder path for a project
@@ -2274,13 +1936,6 @@ export class ElectronService {
   onDocumentStageFinished(callback: (e: { projectDir: string; stage: string }) => void): () => void {
     if (!this.isElectron) return () => { /* nothing subscribed */ };
     return (window as any).electron.document.onStageFinished(callback);
-  }
-
-  // Window control operations
-  async windowHide(): Promise<void> {
-    if (this.isElectron) {
-      await (window as any).electron.window.hide();
-    }
   }
 
   async windowClose(): Promise<void> {
@@ -2830,15 +2485,6 @@ export class ElectronService {
     return { success: false };
   }
 
-  // Ebook conversion operations (Calibre CLI integration)
-  async isEbookConvertAvailable(): Promise<boolean> {
-    if (this.isElectron) {
-      const result = await (window as any).electron.ebookConvert.isAvailable();
-      return result.success && result.data?.available === true;
-    }
-    return false;
-  }
-
   async getEbookSupportedExtensions(): Promise<string[]> {
     if (this.isElectron) {
       const result = await (window as any).electron.ebookConvert.getSupportedExtensions();
@@ -2871,21 +2517,6 @@ export class ElectronService {
   }> {
     if (this.isElectron) {
       const result = await (window as any).electron.ebookConvert.convert(inputPath, outputDir);
-      if (result.success && result.data) {
-        return { success: true, outputPath: result.data.outputPath };
-      }
-      return { success: false, error: result.error || 'Conversion failed' };
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async convertEbookToLibrary(inputPath: string): Promise<{
-    success: boolean;
-    outputPath?: string;
-    error?: string;
-  }> {
-    if (this.isElectron) {
-      const result = await (window as any).electron.ebookConvert.convertToLibrary(inputPath);
       if (result.success && result.data) {
         return { success: true, outputPath: result.data.outputPath };
       }
@@ -3005,18 +2636,6 @@ export class ElectronService {
       return (window as any).electron.epub.exportPreservingMarkup(
         projectDir, epubSourcePath, savePathOverride, edits, deletedBlockExamples, familyId,
       );
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async showSaveEpubDialog(defaultName?: string): Promise<{
-    success: boolean;
-    canceled?: boolean;
-    filePath?: string;
-    error?: string;
-  }> {
-    if (this.isElectron) {
-      return (window as any).electron.dialog.saveEpub(defaultName);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -4244,20 +3863,6 @@ export class ElectronService {
       return (window as any).electron.manifest.getAllTags();
     }
     return [];
-  }
-
-  /**
-   * List project summaries (lightweight)
-   */
-  async manifestListSummaries(filter?: { type?: 'book' | 'article' }): Promise<{
-    success: boolean;
-    summaries?: any[];
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.manifest) {
-      return (window as any).electron.manifest.listSummaries(filter);
-    }
-    return { success: false, error: 'Not running in Electron' };
   }
 
   /**

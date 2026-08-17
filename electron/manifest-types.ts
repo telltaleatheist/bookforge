@@ -113,30 +113,22 @@ export interface ProjectManifest {
    */
   foundryProject?: FoundryProjectRef;
 
-  /**
-   * What Foundry has EXPORTED for this book, oldest first, referenced in place.
-   *
-   * ── RETIRED 2026-08-17. NO NEW RECORDS ARE WRITTEN. ────────────────────────
-   *
-   * Owen's ruling: "I think exports should go to the project as a version." An
-   * export is now COPIED into the project's `output/` folder and minted as an
-   * ordinary {@link ProjectVariant} carrying {@link FoundryVariantSource}
-   * provenance — see `addFoundryOutputVariant` (electron/library-actions.ts).
-   * A version is a thing the user can narrate, promote, rename and delete; a
-   * reference to a file in somebody else's tray was none of those.
-   *
-   * The records a library already holds are NOT migrated. There is at most a
-   * night's worth of them (the field shipped 2026-08-16), each naming a file
-   * that is still in Foundry's `final/` tray, and re-exporting from Foundry
-   * lands each one properly as a version. Migrating would mean copying files on
-   * behalf of a user who never asked, to heal a day-old field.
-   *
-   * The READ machinery (`readFoundryExports`, `foundry-host:exports`,
-   * `foundry-host:forget-export`) still compiles and still answers, so nothing
-   * that holds these records is left unable to see them. All of it dies in the
-   * deletion wave.
-   */
-  foundryExports?: FoundryExportRecord[];
+  // `foundryExports?: FoundryExportRecord[]` was declared here from 2026-08-16
+  // to 2026-08-17 — a list of REFERENCES into Foundry's own `final/` tray.
+  //
+  // Owen's ruling retired it: "I think exports should go to the project as a
+  // version." An export is COPIED into the project's `output/` and minted as an
+  // ordinary {@link ProjectVariant} carrying {@link FoundryVariantSource}
+  // provenance (`addFoundryOutputVariant`, electron/library-actions.ts). A
+  // version can be narrated, promoted, renamed and deleted; a reference to a
+  // file in somebody else's tray was none of those.
+  //
+  // The records a library still holds are NOT migrated and are no longer read.
+  // They are at most a night's worth, each naming a file still sitting in
+  // Foundry's tray, and re-exporting lands each one properly as a version.
+  // Undeclared is not erased: `modifyManifest` round-trips the JSON, so the key
+  // survives on disk untouched, and `legacy-variant-migration`'s
+  // LIBRARY_RELATIVE_TRAILS still classifies its paths correctly if one turns up.
 }
 
 /**
@@ -201,51 +193,6 @@ export interface FoundryVariantSource {
   parentVariantId: string | null;
   /** ISO timestamp of the landing this record describes; refreshed on re-export. */
   landedAt: string;
-}
-
-/** What Foundry can hand back. The tray holds nothing else. */
-export type FoundryExportKind = 'epub' | 'txt' | 'pdf';
-
-/**
- * ONE FILE Foundry exported for this book, referenced WHERE IT LIES.
- *
- * The file stays in its foundry project's `final/` tray and is never copied into
- * the BookForge project. Foundry owns that tray — it wrote the file, it can
- * rewrite it, and a copy taken at landing time would be a second truth that goes
- * stale the first time the user re-exports. So this record is a REFERENCE, and
- * deleting it (the versions page's Delete) forgets the reference and leaves the
- * file alone.
- *
- * `path` is relative to the LIBRARY ROOT with forward slashes —
- * `foundry/projects/<key>/final/<file>` — for the same reason
- * {@link FoundryProjectRef} holds a key: the library moves, and a record that
- * named a volume would not survive the move. It is library-relative rather than
- * project-relative because the file is not inside the project directory at all.
- */
-export interface FoundryExportRecord {
-  /** `fx-` and eight hex characters, minted once. Opaque, never derived. */
-  id: string;
-  /** Library-relative, forward slashes: `foundry/projects/<key>/final/<file>`. */
-  path: string;
-  kind: FoundryExportKind;
-  /** What the row says — Foundry's own name for the export. */
-  title: string;
-  /** ISO timestamp of the export this record describes. */
-  landedAt: string;
-}
-
-/**
- * A foundry export as handed to the RENDERER — with its file already resolved.
- *
- * The same discipline {@link ResolvedProjectVariant} states at length: `path` is
- * library-relative and means nothing without the library root, so the join
- * happens in main, in the call that produces the row, against the root the
- * record was read under. `exists` is that path stat'ed at list time, so a row
- * can refuse an action naming the missing file instead of failing deeper.
- */
-export interface ResolvedFoundryExport extends FoundryExportRecord {
-  absPath: string;  // absolute, platform-native, NFC-normalized
-  exists: boolean;  // absPath was a regular file when this list was produced
 }
 
 export interface AudiobookAnalysisManifestEntry {
@@ -1417,24 +1364,6 @@ export interface MigrationProgress {
   failedProjects: Array<{ path: string; error: string }>;
 }
 
-export interface ProjectSummary {
-  projectId: string;
-  projectType: ProjectType;
-  title: string;
-  author: string;
-  coverPath?: string;
-  coverData?: string;
-  language: string;
-  createdAt: string;
-  modifiedAt: string;
-  hasCleanup: boolean;
-  hasTranslations: string[];
-  hasTTS: string[];
-  hasAudiobook: boolean;
-  hasBilingualAudiobooks: string[];
-  sourceUrl?: string;
-  wordCount?: number;
-}
 
 /**
  * A patch for `updateManifest`. The sub-objects it merges — source, metadata,

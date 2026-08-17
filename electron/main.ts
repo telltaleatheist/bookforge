@@ -37,7 +37,7 @@ import { normalizeFsPath, toAsciiSlug } from './path-utils';
 // Type-only: the module itself is loaded lazily like every other epub-processor
 // use here, so importing its types costs nothing at runtime.
 import type { EpubPreservingEdits } from './epub-processor.js';
-import type { ExportProvenance, ResolvedProjectVariant, ResolvedFoundryExport } from './manifest-types';
+import type { ExportProvenance, ResolvedProjectVariant } from './manifest-types';
 import type { WorkingCopyRemint } from '../shared/document/working-copy-remint';
 // The listing-shaped half of the family rules: one chain is an answer, anything
 // else is null, and it never throws. Everything that ACTS on a book goes through
@@ -7280,33 +7280,14 @@ function setupIpcHandlers(): void {
     } catch (err) { console.error('[foundry-host:project]', err); return { success: false, error: (err as Error).message }; }
   });
 
-  /**
-   * What Foundry has exported for this book, each row with its file ALREADY
-   * RESOLVED — the same rule `variant:list` states: the record's path is
-   * library-relative, so the join happens here, against the library root the
-   * record was read under, and never in the renderer against a live selection.
-   */
-  ipcMain.handle('foundry-host:exports', async (_event, projectDir: string) => {
-    try {
-      if (!projectDir || !fsSync.existsSync(projectDir)) return { success: false, error: 'Project not found' };
-      const records = await manifestService.readFoundryExports(projectDir);
-      const libraryRoot = getLibraryRoot();
-      const resolved: ResolvedFoundryExport[] = await Promise.all(records.map(async (r) => {
-        // Split on '/' — the record is slash-separated by contract, so the
-        // segments go to path.join individually to come out platform-native.
-        const absPath = normalizeFsPath(path.join(libraryRoot, ...r.path.split('/')));
-        let exists = false;
-        try {
-          exists = (await fs.stat(absPath)).isFile();
-        } catch {
-          // Missing is a legitimate answer — Foundry's tray is not ours, and the
-          // user can have moved or deleted what it left. Reported, never guessed.
-        }
-        return { ...r, absPath, exists };
-      }));
-      return { success: true, exports: resolved };
-    } catch (err) { console.error('[foundry-host:exports]', err); return { success: false, error: (err as Error).message }; }
-  });
+  // `foundry-host:exports` and `foundry-host:forget-export` stood here until
+  // 2026-08-17. They read `manifest.foundryExports` — a list of REFERENCES into
+  // Foundry's own `final/` tray — and the versions page drew a "Made in Foundry"
+  // section from it. An export is copied into the book's `output/` and minted as
+  // an ordinary variant now (`addFoundryOutputVariant`), so the version machinery
+  // draws, opens, exports and deletes it and there is no second list. The records
+  // a library still holds are not migrated: they name files that are still in
+  // Foundry's tray, and re-exporting lands each one properly as a version.
 
   /**
    * THE DOOR: open the Foundry window on this book.
@@ -7378,15 +7359,6 @@ function setupIpcHandlers(): void {
       );
       return { success: true, opened: 'project' as const };
     } catch (err) { console.error('[foundry-host:open]', err); return { success: false, error: (err as Error).message }; }
-  });
-
-  /** Forget one export RECORD. The file stays in the foundry project's final/ tray. */
-  ipcMain.handle('foundry-host:forget-export', async (_event, projectDir: string, exportId: string) => {
-    try {
-      if (!projectDir || !fsSync.existsSync(projectDir)) return { success: false, error: 'Project not found' };
-      const record = await manifestService.forgetFoundryExport(projectDir, exportId);
-      return { success: true, forgotten: record };
-    } catch (err) { console.error('[foundry-host:forget-export]', err); return { success: false, error: (err as Error).message }; }
   });
 
   // ─── Archive IPC Handlers ─────────────────────────────────────────────────
@@ -10142,11 +10114,6 @@ function setupIpcHandlers(): void {
   // List all projects
   ipcMain.handle('manifest:list', async (_event, filter?: { type?: 'book' | 'article' }) => {
     return manifestService.listProjects(filter);
-  });
-
-  // List project summaries (lightweight)
-  ipcMain.handle('manifest:list-summaries', async (_event, filter?: { type?: 'book' | 'article' }) => {
-    return manifestService.listProjectSummaries(filter);
   });
 
   // Delete a project

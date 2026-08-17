@@ -2620,12 +2620,12 @@ export class StudioVersionsComponent {
   // second set of anything.
   //
   // The READ machinery on the main side (`foundry-host:exports`,
-  // `foundry-host:forget-export`, `readFoundryExports`, the `foundryExports[]`
-  // manifest field) is still there and still compiles. Nothing writes it any
-  // more, and the records a fresh library already holds are NOT migrated — there
-  // is at most a night's worth of them, they name files that are still in
-  // Foundry's tray, and re-exporting from Foundry lands each one properly as a
-  // version. That machinery dies in the deletion wave.
+  // `foundry-host:forget-export`, `readFoundryExports`, `appendFoundryExport`,
+  // `forgetFoundryExport` and the `foundryExports[]` manifest field) went with
+  // it in the deletion wave. The records a library already holds are NOT
+  // migrated and are no longer read — there is at most a night's worth of them,
+  // they name files that are still in Foundry's tray, and re-exporting from
+  // Foundry lands each one properly as a version.
 
   // ── Adding versions ───────────────────────────────────────────────────────
 

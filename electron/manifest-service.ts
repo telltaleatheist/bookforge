@@ -23,7 +23,6 @@ import type {
   ManifestSaveResult,
   ManifestCreateResult,
   ManifestListResult,
-  ProjectSummary,
   ManifestUpdate,
   ArchiveEntry,
   ProjectVariant,
@@ -48,8 +47,6 @@ import type {
   InsertChapterHeadingEdit,
   RemoveInsertedHeadingEdit,
   SourceType,
-  FoundryExportRecord,
-  FoundryExportKind,
 } from './manifest-types.js';
 // The container seam. A book is a set of named entries, and whether those
 // entries live in a ZIP or in a directory is a fact about the path rather than
@@ -220,7 +217,7 @@ export function resolveManifestPath(projectId: string, relativePath: string): st
  * Convert an absolute OS path to a relative manifest path
  * Result uses forward slashes regardless of platform
  */
-export function toManifestPath(projectId: string, absolutePath: string): string {
+function toManifestPath(projectId: string, absolutePath: string): string {
   const projectDir = path.join(getProjectsPath(), projectId);
   const relativePath = path.relative(projectDir, absolutePath);
   // Always use forward slashes in manifest
@@ -919,7 +916,7 @@ export { WORKING_COPY_SUFFIX };
  * onto a directory's name, and the container migration, which reads a project's
  * archived working copy in order to explode it. Nothing MINTS one any more.
  */
-export const ARCHIVED_WORKING_COPY_SUFFIX = '.working.epub';
+const ARCHIVED_WORKING_COPY_SUFFIX = '.working.epub';
 
 /**
  * The suffix that marks the book a page reader cast out of a PDF.
@@ -929,7 +926,7 @@ export const ARCHIVED_WORKING_COPY_SUFFIX = '.working.epub';
  * book cast from its pages (`<name>.generated.epub`), the file you edit
  * (`<name>.working.epub`), the file narration reads (`<name>.tts.epub`).
  */
-export const GENERATED_EPUB_SUFFIX = '.generated.epub';
+const GENERATED_EPUB_SUFFIX = '.generated.epub';
 
 /**
  * The project's archive original — the file the user handed us, whatever format
@@ -954,7 +951,7 @@ function archiveOriginalEntry(manifest: ProjectManifest): ArchiveEntry | null {
  * format nothing here can open, and it is returned verbatim so a refusal can
  * name it.
  */
-export async function archiveOriginalFormat(projectDir: string): Promise<string | null> {
+async function archiveOriginalFormat(projectDir: string): Promise<string | null> {
   const manifest = await readManifestAt(projectDir);
   const entry = archiveOriginalEntry(manifest);
   if (entry) return (entry.format || '').toLowerCase();
@@ -965,7 +962,7 @@ export async function archiveOriginalFormat(projectDir: string): Promise<string 
 }
 
 /** Where the archive original is, and which format the user handed it over in. */
-export interface ArchiveOriginalLocation {
+interface ArchiveOriginalLocation {
   /** Project-relative, forward slashes — as the manifest records it. */
   relPath: string;
   absPath: string;
@@ -989,7 +986,7 @@ export interface ArchiveOriginalLocation {
  * gone is a state the caller has to be able to see rather than have collapsed
  * into "there is none".
  */
-export async function readArchiveOriginal(
+async function readArchiveOriginal(
   projectDir: string
 ): Promise<ArchiveOriginalLocation | null> {
   const manifest = await readManifestAt(projectDir);
@@ -1106,7 +1103,7 @@ export function exportEpubRelPath(manifest: ProjectManifest): string {
  * family's source IS the archive original, or the book cast from it — which is
  * why the migration renames nothing.
  */
-export function familyEpubRelPath(family: BookFamily, manifest: ProjectManifest): string {
+function familyEpubRelPath(family: BookFamily, manifest: ProjectManifest): string {
   const component = requireLegalComponent(
     `${familyStem(family.source)}${WORKING_COPY_SUFFIX}`, manifest);
   return `source/${component}`;
@@ -1121,7 +1118,7 @@ export function familyEpubRelPath(family: BookFamily, manifest: ProjectManifest)
  * once, and the naming migration settles the stem before the container migration
  * looks for an archive to explode.
  */
-export function familyArchivedEpubRelPath(
+function familyArchivedEpubRelPath(
   family: BookFamily,
   manifest: ProjectManifest
 ): string {
@@ -1245,7 +1242,7 @@ export async function bookForAct(
  * `requireLegalComponent` check, because it is a declaration of the same thing —
  * which archive file this book came out of.
  */
-export function generatedEpubRelPath(manifest: ProjectManifest): string {
+function generatedEpubRelPath(manifest: ProjectManifest): string {
   const component = requireLegalComponent(
     `${workingEpubStem(manifest)}${GENERATED_EPUB_SUFFIX}`, manifest);
   return `source/${component}`;
@@ -1259,7 +1256,7 @@ export async function generatedEpubTarget(projectDir: string): Promise<ExportEpu
 }
 
 /** Where the generated book is, and what kind of bytes they are. */
-export interface GeneratedEpubLocation extends ExportEpubLocation {
+interface GeneratedEpubLocation extends ExportEpubLocation {
   origin: GeneratedEpubOutput['origin'];
   sha256: string;
 }
@@ -1274,7 +1271,7 @@ export interface GeneratedEpubLocation extends ExportEpubLocation {
  * has gone is a state somebody has to be told about, and collapsing it into
  * "there is none" is how it would be silently replaced instead.
  */
-export async function readGeneratedEpub(projectDir: string): Promise<GeneratedEpubLocation | null> {
+async function readGeneratedEpub(projectDir: string): Promise<GeneratedEpubLocation | null> {
   const manifest = await readManifestAt(projectDir);
   const recorded = manifest.outputs?.generatedEpub;
   if (!recorded?.path) return null;
@@ -2232,9 +2229,9 @@ export async function requireFamily(
  * This went through `requireFamily`, which mints a chain for a legacy project at
  * the chokepoint. That made every read a write: opening the versions page ran
  * `pass:list-diffs` and the reset preview, and four projects' manifests were
- * rewritten by the act of being LOOKED AT (measured 2026-08-17). A read that
- * writes is a read that can fail, that takes the manifest lock, that invents a
- * record nobody asked for, and that reorders itself against a concurrent act.
+ * rewritten by the act of being LOOKED AT (measured 2026-08-17). A read that writes is a read that can
+ * fail, that takes the manifest lock, that invents a record nobody asked for,
+ * and that reorders itself against a concurrent act.
  *
  * So absence is the answer here, and it is a true one: a project with no chain
  * recorded has had nothing done to a book, which is exactly what the listing
@@ -2675,7 +2672,7 @@ export async function requireWorkingCopySource(projectDir: string): Promise<Work
  * while this asks a NAMED chain what its own source is. A project with two
  * chains has two answers, and only this form can give the right one.
  */
-export async function requireFamilySource(
+async function requireFamilySource(
   projectDir: string,
   familyId?: string
 ): Promise<WorkingCopySource> {
@@ -5648,33 +5645,6 @@ export async function clearProcessingRecords(projectDir: string, familyId?: stri
   return { hadEpubRecord, appliedPasses, clearedSourceKeys };
 }
 
-/**
- * The project's cover image as an absolute path, or null when it has none.
- *
- * `metadata.coverPath` is library-relative (covers live in `{library}/media/`),
- * so it resolves against the library root, not the project. A book without a
- * cover is ordinary — this returns null rather than throwing.
- */
-export async function resolveProjectCover(projectDir: string): Promise<string | null> {
-  const manifest = await readManifestAt(projectDir);
-
-  const recorded = manifest.metadata?.coverPath;
-  if (recorded) {
-    const abs = path.join(getLibraryBasePath(), recorded.split('/').join(path.sep));
-    if (fs.existsSync(abs)) return abs;
-    console.warn(`[ManifestService] manifest.metadata.coverPath points at a missing file: ${abs}`);
-  }
-
-  const sourceDir = path.join(projectDir, 'source');
-  try {
-    const names = await fs.promises.readdir(sourceDir);
-    const cover = names.find((n) => /^cover\.(jpe?g|png)$/i.test(n));
-    if (cover) return path.join(sourceDir, cover);
-  } catch { /* no source dir */ }
-
-  return null;
-}
-
 export async function registerAudiobookOutput(
   m4bAbsPath: string,
   opts?: { narrator?: string; professionallyRead?: boolean },
@@ -5904,40 +5874,6 @@ export async function listProjects(filter?: { type?: ProjectType }): Promise<Man
       error: error.message,
     };
   }
-}
-
-/**
- * Get project summaries (lightweight, for list views)
- */
-export async function listProjectSummaries(filter?: { type?: ProjectType }): Promise<{ success: boolean; summaries?: ProjectSummary[]; error?: string }> {
-  const result = await listProjects(filter);
-  if (!result.success || !result.projects) {
-    return { success: false, error: result.error };
-  }
-
-  const summaries: ProjectSummary[] = result.projects.map(manifest => ({
-    projectId: manifest.projectId,
-    projectType: manifest.projectType,
-    title: manifest.metadata.title,
-    author: manifest.metadata.author,
-    coverPath: manifest.metadata.coverPath,
-    language: manifest.metadata.language,
-    createdAt: manifest.createdAt,
-    modifiedAt: manifest.modifiedAt,
-    hasCleanup: manifest.pipeline.cleanup?.status === 'complete',
-    hasTranslations: Object.entries(manifest.pipeline.translations || {})
-      .filter(([_, stage]) => stage.status === 'complete')
-      .map(([lang]) => lang),
-    hasTTS: Object.entries(manifest.pipeline.tts || {})
-      .filter(([_, stage]) => stage.status === 'complete')
-      .map(([lang]) => lang),
-    hasAudiobook: !!manifest.outputs.audiobook?.path,
-    hasBilingualAudiobooks: Object.keys(manifest.outputs.bilingualAudiobooks || {}),
-    sourceUrl: manifest.source.url,
-    wordCount: manifest.metadata.wordCount,
-  }));
-
-  return { success: true, summaries };
 }
 
 /**
@@ -6219,29 +6155,25 @@ export async function listArchive(projectId: string): Promise<{ success: boolean
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The hosted Foundry: which project a book has, and what it has exported
+// The hosted Foundry: which project a book has
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Both records are REFERENCES into `<libraryRoot>/foundry`, which BookForge does
+// The record is a REFERENCE into `<libraryRoot>/foundry`, which BookForge does
 // not own the contents of. Nothing here copies a file, moves one, or creates a
-// directory: the mapping says which project, the export list says which files,
-// and Foundry remains the only writer of either.
+// directory: the mapping says which project, and Foundry remains its only
+// writer.
 //
-// Neither is defaulted. A book with no `foundryProject` has no Foundry project —
-// not "the one named after its projectId" — and a book with no `foundryExports`
-// has exported nothing.
-
-/**
- * An export id: `fx-` and eight hex characters, from the same RNG family and
- * ledger ids are minted with (see {@link mintFamilyId}).
- *
- * Not derived from the file's name or its position in the list. The tray is
- * Foundry's and a re-export can rename what it writes; an id derived from the
- * name would be a different id for the same row every time that happened.
- */
-function mintFoundryExportId(): string {
-  return `fx-${crypto.randomBytes(4).toString('hex')}`;
-}
+// It is not defaulted. A book with no `foundryProject` has no Foundry project —
+// not "the one named after its projectId".
+//
+// The EXPORT LIST that stood beside it (`foundryExports`, `readFoundryExports`,
+// `appendFoundryExport`, `forgetFoundryExport`) was retired on 2026-08-17 and is
+// deleted here. An export is copied into the book's `output/` and minted as an
+// ordinary variant — `addFoundryOutputVariant`, electron/library-actions.ts —
+// so a version is a thing the user can narrate, promote, rename and delete,
+// which a reference into somebody else's tray never was. Records a library still
+// holds are not migrated and not read: the files they name are still in
+// Foundry's tray, and re-exporting lands each one properly as a version.
 
 /** Which hosted-Foundry project is this book's, by KEY, or null when it has none. */
 export async function readFoundryProject(projectDir: string): Promise<string | null> {
@@ -6312,122 +6244,6 @@ export async function setFoundryProject(
       + 'Nothing was changed.'
     );
   }
-}
-
-/** What Foundry has exported for this book, oldest first. Empty is ordinary. */
-export async function readFoundryExports(projectDir: string): Promise<FoundryExportRecord[]> {
-  return (await readManifestAt(projectDir)).foundryExports ?? [];
-}
-
-/** The one comparison that decides whether two records name the same file. */
-function sameFoundryExportPath(a: string, b: string): boolean {
-  return a.toLowerCase() === b.toLowerCase();
-}
-
-/**
- * Record an export Foundry landed in its project's `final/` tray.
- *
- * ── RETIRED 2026-08-17. NOTHING CALLS THIS. ────────────────────────────────
- *
- * An export is copied into the project's `output/` and minted as an ordinary
- * variant now — `addFoundryOutputVariant` in electron/library-actions.ts. Left
- * standing, and still tested, only because the READ side is: a library may hold
- * records this wrote, they are not migrated, and `readFoundryExports` should go
- * on answering correctly for them until the whole group is deleted. Do not wire
- * it back up.
- *
- * APPEND-ONLY, with one exception that was the whole point: a re-export of the
- * SAME file replaces that record's title and `landedAt` in place, keeping its id
- * and its position. Same path means same version row — appending a second record
- * would put two rows on the versions page for one file on disk, and the user
- * would have to guess which of them their next act addressed. (The successor
- * keeps that rule, keyed on (projectKey, fileName) instead of a path.)
- */
-export async function appendFoundryExport(
-  projectDir: string,
-  entry: { path: string; kind: FoundryExportKind; title: string },
-): Promise<FoundryExportRecord> {
-  const rel = (entry.path || '').trim();
-  if (!rel) {
-    throw new Error(
-      `Cannot record a Foundry export for ${path.basename(projectDir)}: no file path was given.`
-    );
-  }
-  if (rel.includes('\\') || path.isAbsolute(rel) || /^[a-zA-Z]:/.test(rel)) {
-    throw new Error(
-      `"${rel}" cannot be recorded as a Foundry export: the path must be relative to the library `
-      + 'root with forward slashes (foundry/projects/<key>/final/<file>). An absolute path names a '
-      + 'volume, and stops being true when the library moves.'
-    );
-  }
-  if (rel.split('/').some((seg) => seg === '..')) {
-    throw new Error(
-      `"${rel}" cannot be recorded as a Foundry export: it climbs out of the library root.`
-    );
-  }
-  if (entry.kind !== 'epub' && entry.kind !== 'txt' && entry.kind !== 'pdf') {
-    throw new Error(
-      `"${entry.kind}" is not a kind of Foundry export. The tray holds epub, txt and pdf.`
-    );
-  }
-  const title = (entry.title || '').trim();
-  if (!title) {
-    throw new Error(
-      `Cannot record ${rel} as a Foundry export: it has no title, and the title is what the row says.`
-    );
-  }
-
-  const manifest = await readManifestAt(projectDir);
-  const projectId = requireLibraryProjectId(projectDir, manifest);
-  const landedAt = new Date().toISOString();
-  const existing = (manifest.foundryExports ?? []).find((r) => sameFoundryExportPath(r.path, rel));
-  const record: FoundryExportRecord = {
-    id: existing ? existing.id : mintFoundryExportId(),
-    path: rel,
-    kind: entry.kind,
-    title,
-    landedAt,
-  };
-
-  const saved = await modifyManifest(projectId, (m) => {
-    if (!m.foundryExports) m.foundryExports = [];
-    const at = m.foundryExports.findIndex((r) => sameFoundryExportPath(r.path, rel));
-    if (at >= 0) m.foundryExports[at] = record;
-    else m.foundryExports.push(record);
-  });
-  if (!saved.success) {
-    throw new Error(
-      `${rel} was exported, but recording it in ${path.basename(projectDir)}'s manifest failed: `
-      + `${saved.error}. The file is where Foundry left it; nothing lists it.`
-    );
-  }
-  return record;
-}
-
-/**
- * Forget ONE export record. The FILE is not touched — it belongs to the foundry
- * project's `final/` tray, and forgetting a reference is not deleting a file.
- */
-export async function forgetFoundryExport(projectDir: string, exportId: string): Promise<FoundryExportRecord> {
-  const manifest = await readManifestAt(projectDir);
-  const projectId = requireLibraryProjectId(projectDir, manifest);
-  const record = (manifest.foundryExports ?? []).find((r) => r.id === exportId);
-  if (!record) {
-    throw new Error(
-      `${path.basename(projectDir)} records no Foundry export with id ${exportId}, so there is `
-      + 'nothing to forget. Reload the versions page.'
-    );
-  }
-  const saved = await modifyManifest(projectId, (m) => {
-    m.foundryExports = (m.foundryExports ?? []).filter((r) => r.id !== exportId);
-  });
-  if (!saved.success) {
-    throw new Error(
-      `Could not forget ${record.path} in ${path.basename(projectDir)}'s manifest: ${saved.error}. `
-      + 'Nothing was changed.'
-    );
-  }
-  return record;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

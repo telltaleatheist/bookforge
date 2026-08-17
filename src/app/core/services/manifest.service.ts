@@ -7,7 +7,6 @@ import type {
   ManifestSource,
   ManifestMetadata,
   ManifestUpdate,
-  ProjectSummary,
   MigrationProgress,
   ManifestCreateResult,
   ManifestGetResult,
@@ -30,7 +29,6 @@ export class ManifestService {
 
   // Reactive state
   private readonly _projects = signal<ProjectManifest[]>([]);
-  private readonly _summaries = signal<ProjectSummary[]>([]);
   private readonly _loading = signal<boolean>(false);
   private readonly _error = signal<string | null>(null);
   private readonly _migrationProgress = signal<MigrationProgress | null>(null);
@@ -38,16 +36,10 @@ export class ManifestService {
 
   // Public computed signals
   readonly projects = computed(() => this._projects());
-  readonly summaries = computed(() => this._summaries());
   readonly loading = computed(() => this._loading());
   readonly error = computed(() => this._error());
   readonly migrationProgress = computed(() => this._migrationProgress());
   readonly needsMigration = computed(() => this._needsMigration());
-
-  // Filtered views
-  readonly books = computed(() => this._summaries().filter(p => p.projectType === 'book'));
-  readonly articles = computed(() => this._summaries().filter(p => p.projectType === 'article'));
-  readonly totalCount = computed(() => this._summaries().length);
 
   constructor() {
     // Set up migration progress listener
@@ -79,12 +71,7 @@ export class ManifestService {
     }
 
     try {
-      const result = await (window as any).electron.manifest.create(projectType, source, metadata);
-      if (result.success) {
-        // Refresh the project list
-        await this.loadSummaries();
-      }
-      return result;
+      return await (window as any).electron.manifest.create(projectType, source, metadata);
     } catch (e) {
       return { success: false, error: (e as Error).message };
     }
@@ -114,12 +101,7 @@ export class ManifestService {
     }
 
     try {
-      const result = await (window as any).electron.manifest.update(update);
-      if (result.success) {
-        // Refresh to get updated data
-        await this.loadSummaries();
-      }
-      return result;
+      return await (window as any).electron.manifest.update(update);
     } catch (e) {
       return { success: false, error: (e as Error).message };
     }
@@ -138,7 +120,6 @@ export class ManifestService {
       if (result.success) {
         // Remove from local cache
         this._projects.update(projects => projects.filter(p => p.projectId !== projectId));
-        this._summaries.update(summaries => summaries.filter(s => s.projectId !== projectId));
       }
       return result;
     } catch (e) {
@@ -149,29 +130,6 @@ export class ManifestService {
   // ─────────────────────────────────────────────────────────────────────────────
   // Loading and Listing
   // ─────────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Load all project summaries (lightweight)
-   */
-  async loadSummaries(filter?: { type?: ProjectType }): Promise<void> {
-    if (!this.electronService.isRunningInElectron) return;
-
-    this._loading.set(true);
-    this._error.set(null);
-
-    try {
-      const result = await (window as any).electron.manifest.listSummaries(filter);
-      if (result.success && result.summaries) {
-        this._summaries.set(result.summaries);
-      } else {
-        this._error.set(result.error || 'Failed to load projects');
-      }
-    } catch (e) {
-      this._error.set((e as Error).message);
-    } finally {
-      this._loading.set(false);
-    }
-  }
 
   /**
    * Load full project manifests
@@ -330,9 +288,7 @@ export class ManifestService {
         this._migrationProgress.set(null);
       }, 2000);
 
-      // Refresh project list
       if (result.success || result.migrated.length > 0) {
-        await this.loadSummaries();
         this._needsMigration.set(false);
       }
 
@@ -352,13 +308,6 @@ export class ManifestService {
   // ─────────────────────────────────────────────────────────────────────────────
   // Utilities
   // ─────────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Get a summary by project ID
-   */
-  getSummary(projectId: string): ProjectSummary | undefined {
-    return this._summaries().find(s => s.projectId === projectId);
-  }
 
   /**
    * Clear error state
