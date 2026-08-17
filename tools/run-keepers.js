@@ -43,6 +43,7 @@ const SUITES = [
   'test-picker-session-state',
   'test-foundry-host',
   'test-foundry-landing',
+  'test-legacy-migration',
   'test-ipc-collision',
 ];
 
