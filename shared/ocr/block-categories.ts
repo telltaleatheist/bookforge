@@ -28,9 +28,9 @@
  * shows. `electron/pdf-analyzer.ts` derives CATEGORY_TYPE_COLORS from this list
  * rather than mirroring it, for the same reason.
  *
- * Keep the id list in step with `BLOCKS_CATEGORIES_V3` in
- * `src/app/features/pdf-picker/services/blocks-encoder.ts`, CATEGORIES in
- * tools/aligner/build-sft-dataset.mjs and LABEL_SET in tools/aligner/align-core.mjs.
+ * Keep the id list in step with CATEGORIES in tools/aligner/build-sft-dataset.mjs
+ * and LABEL_SET in tools/aligner/align-core.mjs. (It used to have to track
+ * `BLOCKS_CATEGORIES_V3` in the picker's blocks-encoder too; the picker is gone.)
  */
 import type { Category } from './text-block';
 

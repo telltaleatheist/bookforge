@@ -190,7 +190,7 @@ export interface LayoutKeyedRecordCensus {
  *   blockMerges          `[{ mergedBlockId, sourceBlockIds: ["<block id>"] }]`
  *   historyBlocks        `{ "<block id>": TextBlock }` — the table the undo and
  *                        redo stacks, the splits and the merges all name their
- *                        blocks in (shared/document/editor-history.ts)
+ *                        blocks in
  *   ocrBlocks            whole blocks, each with an id and a page
  *   customCategories     highlight rectangles, each on a page
  *

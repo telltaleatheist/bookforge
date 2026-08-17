@@ -31,7 +31,6 @@ import type {
   VlmEndpointCheck,
   VlmEndpointConfig,
 } from '../shared/vlm/conversion';
-import type { WorkingCopyRemint } from '../shared/document/working-copy-remint';
 import type { VlmReadingsBank } from '../shared/vlm/readings-bank';
 import type { NarrationDeletions, NarrationState } from '../shared/vlm/narration-deletions';
 import type {
@@ -884,23 +883,12 @@ export interface ElectronAPI {
     exportInfo: (projectDir: string, familyId?: string) => Promise<{
       success: boolean;
       /**
-       * WHICH working chain everything below is about — echoed back so a window
-       * can quote it in every act it performs afterwards rather than asking
-       * again and possibly being answered about a different version.
+       * WHICH working chain the answer is about — echoed back so a caller can
+       * quote it in every act it performs afterwards rather than asking again
+       * and possibly being answered about a different version.
        */
-      familyId?: string;
-      target?: { relPath: string; absPath: string };
+      familyId?: string | null;
       exported?: { relPath: string; absPath: string; modifiedAt?: string } | null;
-      /**
-       * The book cast from this project's PDF, when it has one on disk. Null for
-       * an EPUB-native project, which never had pages read: its archive original
-       * IS the book its working copy is a copy of.
-       */
-      generated?: {
-        relPath: string; absPath: string; modifiedAt?: string;
-        origin: 'cast' | 'adopted'; sha256: string;
-      } | null;
-      coverPath?: string | null;
       error?: string;
     }>;
   };
@@ -2253,13 +2241,6 @@ export interface ElectronAPI {
         analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
         analysisFlagCount?: number;
         analysisIsCheckpoint?: boolean;
-      }>;
-      /** The project's working chains — one book line each, in manifest order. */
-      families?: Array<{
-        id: string;
-        sourceKind: 'archive-epub' | 'generated-epub';
-        sourceName: string;
-        archiveRowId: string | null;
       }>;
     }>;
     /** Returns the unsubscribe closure for THIS listener (see the impl). */

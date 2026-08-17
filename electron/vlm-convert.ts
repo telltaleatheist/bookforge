@@ -379,12 +379,13 @@ function languageOf(manifest: { metadata?: { language?: string } }): string {
  * DOCUMENT, which is the only thing that knows.
  *
  * A page deletion is `/FoundryPageDeleted` on the page itself, written at the
- * gesture that made it (electron/working-document-writer.ts). The manifest also
- * carries a `source.deletedPages` mirror, written when the picker SAVES the
- * project, and it is deliberately not what is read here: it is a copy that can be
- * a session behind the file, and a conversion that left a page in because a save
- * had not happened yet would be ninety minutes producing a book the user can see
- * is wrong. One authority, and it is the file the button names.
+ * gesture that made it — by the picker's working-document writer, which is gone;
+ * what remains is every mark it ever wrote, still on the documents. The manifest
+ * also carries a `source.deletedPages` mirror, and it is deliberately not what is
+ * read here: it is a copy that can be a session behind the file, and a conversion
+ * that left a page in because a save had not happened yet would be ninety minutes
+ * producing a book the user can see is wrong. One authority, and it is the file
+ * the button names.
  *
  * A missing working copy is a refusal rather than an empty list. The caller asked
  * for the book as curated; there is no curation, and quietly converting the

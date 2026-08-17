@@ -1,16 +1,12 @@
 /**
- * The block model the picker edits and the manifest stores.
+ * The block model the manifest stores.
  *
- * These three types used to be declared in
- * `src/app/features/pdf-picker/services/pdf.service.ts`, which put them out of
- * reach of the main process and the CLI even though the stored `ocrBlocks`
- * is exactly an array of `TextBlock`. They live under `shared/` so the one
- * program that produces those blocks (the OCR post-processor) and the two
- * programs that persist and re-load them (the renderer's project save, the CLI's
- * `--project` write) all describe them with the same declaration.
- *
- * `pdf.service.ts` re-exports all three, so every existing import site is
- * unchanged.
+ * These types were once declared in the picker's `pdf.service.ts`, which put
+ * them out of reach of the main process and the CLI even though the stored
+ * `ocrBlocks` is exactly an array of `TextBlock`. They live under `shared/` so
+ * the program that produces those blocks (the OCR post-processor) and the
+ * programs that persist and re-load them all describe them with the same
+ * declaration — which is why they outlived the picker unchanged.
  */
 
 export interface TextBlock {

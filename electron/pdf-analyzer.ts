@@ -252,9 +252,9 @@ export interface TextBlock {
   parent_block_id?: string;     // If this is a marker extracted from a parent block
   line_count: number;
   // This block's place in the book's READING ORDER, stated rather than implied
-  // by array order — see the full declaration in shared/ocr/text-block.ts, and
-  // `mergeRefusal` in shared/document/block-merge.ts, which refuses a merge
-  // whose members have no place or a gap between their places. Absent on a PDF
+  // by array order — see the full declaration in shared/ocr/text-block.ts. The
+  // picker's merge rule refused a merge whose members had no place or a gap
+  // between their places; it is gone, but the order it needed is real. Absent on a PDF
   // analyzed from its text layer, which has only page order; present on every
   // block of an EPUB, from the enumeration of the book's own elements.
   seq?: number;
@@ -1013,9 +1013,9 @@ export class PDFAnalyzer {
         // NOT laid out: mupdf's reflow of the whole book is minutes of dead
         // work for a document whose page facts are quire's (the cached
         // analysis above was built from the quire map), whose outline is read
-        // from the quire map (`extractOutline`), and whose raster view the
-        // picker refuses to show (pdf-picker.component.ts, the two
-        // startOnDemandRendering gates).
+        // from the quire map (`extractOutline`), and which no surface renders
+        // as rasters at all — the picker that could was the only one, and it
+        // refused EPUBs even then.
         //
         // An EXPLODED book is not opened at all: mupdf takes bytes and there are
         // none to give it for a directory. Nothing on the EPUB path wants it —

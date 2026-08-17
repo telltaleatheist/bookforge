@@ -9,10 +9,10 @@
  * route this app can be pointed at, holding its own state, talking to one
  * narrow IPC pair.
  *
- * It owns the halves of the picker the viewer deliberately does NOT own:
- * selection, deletion and the zoom/layout controls all live up here, because
- * they live in `pdf-picker.component.ts` for the raster viewer too. The viewer
- * emits gestures; the thing above it decides what they mean.
+ * It owns the halves the viewer deliberately does NOT own: selection, deletion
+ * and the zoom/layout controls all live up here, as they did in the picker that
+ * used to host the viewer. The viewer emits gestures; the thing above it decides
+ * what they mean — and with the picker gone this bench is the only host left.
  *
  * Deliberately not wired into the app's navigation. It is a bench.
  */

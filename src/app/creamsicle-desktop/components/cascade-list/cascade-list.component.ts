@@ -457,10 +457,9 @@ export class CascadeListComponent {
     }
   }
 
-  /** True when the event target is a text-entry element. Same test as the
-   *  picker's `isTextInputTarget` (pdf-picker:3578) — the contenteditable arm
-   *  matters because a rich-text field is where Delete and Enter are ordinary
-   *  typing, and this listener is on `document`. */
+  /** True when the event target is a text-entry element. The contenteditable
+   *  arm matters because a rich-text field is where Delete and Enter are
+   *  ordinary typing, and this listener is on `document`. */
   private isTextInputTarget(target: EventTarget | null): boolean {
     return target instanceof HTMLInputElement
       || target instanceof HTMLTextAreaElement

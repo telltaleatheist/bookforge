@@ -14,8 +14,9 @@
  * Tesseract, Blocks labelled it with a 4B model, Footnotes rewrote its text
  * layer, and Reflow exported the book out of it. Reading the pages is one act
  * now — electron/vlm-convert.ts — and it produces a BOOK, not a document to
- * curate. The working copy is minted by electron/working-copy.ts, which is a
- * file copy and a marker, and nothing else ever writes to it except the picker.
+ * curate. The working PDF used to be minted by electron/working-copy.ts — a file
+ * copy and a marker — for the picker to curate; both went in the chain-deletion
+ * wave, and nothing mints one now.
  *
  * ── WHAT THE STATE FIELDS MEAN NOW ──────────────────────────────────────────
  *

@@ -10,7 +10,6 @@ import type {
   ProcessingChainRequest,
 } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
-import type { WorkingCopyRemint } from '@shared/document/working-copy-remint';
 import type {
   VlmConvertRequest,
   VlmConvertResult,
@@ -481,79 +480,32 @@ interface ProjectSaveResult {
 }
 
 /**
- * A project's export EPUB, as main resolves it. The file is named after the
- * book, so `manifest.outputs.epub` is the only thing that can point at it and
- * the renderer never builds the name.
+ * A project's exported EPUB, as main resolves it.
+ *
+ * The file is named after the book, so `manifest.outputs.epub` is the only
+ * thing that can point at it and the renderer never builds the name.
+ *
+ * This used to carry the whole of what the picker needed to OPEN a project —
+ * the next export's target path, the cast book, the archive original, the
+ * cover, the applied passes, and the working-copy re-mint that answering the
+ * ask had performed. The picker is gone and the three callers left ask one
+ * read-only question, so main no longer mints anything to answer it and the
+ * fields nothing read are gone.
  */
 export interface ProjectExportInfo {
   /**
-   * WHICH working chain everything here is about.
+   * WHICH working chain this answer is about.
    *
-   * Main resolves it and hands it back, so a window that opened without saying
-   * which version it wanted still learns which one it got — and quotes it in
-   * every act it performs afterwards rather than asking again and being answered
-   * about a different one.
+   * Main resolves it and hands it back, so a caller that asked without saying
+   * which version it wanted still learns which one it got.
    *
    * NULL for a project with no working chain yet — a bare PDF nobody has
-   * converted. That project still opens (its pages are scannable); there is
-   * simply no chain to quote, and every act that needs one refuses downstream
-   * in its own words.
+   * converted. That is an ordinary state, not an error; every act that needs a
+   * chain refuses downstream in its own words.
    */
   familyId: string | null;
-  /**
-   * Where the NEXT export must be written — derived from the manifest's title.
-   * Null exactly when `familyId` is: a book that cannot exist yet has no place
-   * it must be written to.
-   */
-  target: { relPath: string; absPath: string } | null;
   /** The existing export, or null when the project has never exported. */
   exported: { relPath: string; absPath: string; modifiedAt?: string } | null;
-  /**
-   * The book a page reader cast out of this project's PDF, or null.
-   *
-   * Null for an EPUB-native project — nothing generated a book, because the user
-   * handed us one — and null for a PDF whose pages have never been read. It is a
-   * separate artifact from `exported`: the working copy is a byte-identical copy
-   * OF this, and this is what nothing may write to.
-   */
-  generated: {
-    relPath: string; absPath: string; modifiedAt?: string;
-    origin: 'cast' | 'adopted'; sha256: string;
-  } | null;
-  /**
-   * The archive original ON DISK — the file the user handed us, in whatever
-   * format they handed it over in — or null when the project records none.
-   *
-   * It travels with the other two because the three together are one answer to
-   * one question: which of this project's files is the window looking at. That
-   * is what decides whether an open lands where it was pointed or on the working
-   * copy (`shared/document/artifact-open.ts`), and it must be main's answer —
-   * deriving an artifact's identity from its filename is how two surfaces come
-   * to disagree about one file.
-   */
-  archive: { relPath: string; absPath: string; format: string } | null;
-  /** Absolute JPEG/PNG cover, or null for a book without one. */
-  coverPath: string | null;
-  /**
-   * What has been done to that book — `manifest.outputs.epub.appliedPasses`, in
-   * execution order.
-   *
-   * Empty when there is no book, and empty when the book has had nothing run
-   * over it: both are real states, and neither is guessed at from the files. It
-   * travels with the export record because every caller that wants to know
-   * which passes a book carries is already asking where the book IS.
-   */
-  appliedPasses: AppliedPass[];
-  /**
-   * Set when answering this ask MADE the working copy again — i.e. the manifest
-   * recorded a book and the file it named was not on disk.
-   *
-   * Null in every other case, including the first copy a project ever gets: only
-   * a re-mint is evidence that a file somebody was editing has gone, and it is
-   * the one thing a window has to say out loud. See
-   * `shared/document/working-copy-remint.ts`.
-   */
-  remint: WorkingCopyRemint | null;
 }
 
 interface ProjectLoadResult {
@@ -1522,30 +1474,19 @@ export class ElectronService {
     if (!result.success) {
       throw new Error(result.error || 'Could not resolve the project\'s export path.');
     }
-    // NULL familyId + NULL target is one coherent answer: a bare PDF with no
-    // working chain yet — the project opens, there is simply no chain to quote
-    // and no place a book must be written to. They are null TOGETHER or present
-    // together; half of each is a broken main. `undefined` familyId is the
-    // older-build case the original check existed for, kept as its own arm.
-    // (This wrapper used to require both unconditionally, which made every
-    // bare-PDF open die with "Could not resolve the project's export path" —
-    // found live 2026-08-10 on the first bare project opened after the
-    // chain-less answer shipped.)
+    // A NULL familyId is a coherent answer: a bare PDF with no working chain
+    // yet. UNDEFINED is not — it means main never said which chain it answered
+    // about, and every act performed afterwards would be about a version
+    // nothing named. (This check once also required an export `target`, which
+    // made every bare-PDF open die; the target field is gone with the picker.)
     if (result.familyId === undefined) {
       throw new Error(
-        'The project opened without saying which working chain it opened. Reload the window — '
-        + 'this is an older build of main, and every act this window performs afterwards would be '
-        + 'about a version nothing named.'
+        'The project answered without saying which working chain it answered about. Reload the '
+        + 'window — this is an older build of main.'
       );
     }
-    const chainless = result.familyId === null;
-    if (chainless !== (result.target === null || result.target === undefined)) {
-      throw new Error(
-        'The project answered with half a chain — a working-chain id and an export target must '
-        + 'both be present or both be absent. Reload the window and report this if it recurs.'
-      );
-    }
-    if (!chainless && (typeof result.familyId !== 'string' || result.familyId.length === 0)) {
+    if (result.familyId !== null
+      && (typeof result.familyId !== 'string' || result.familyId.length === 0)) {
       throw new Error(
         'The project named a working chain with an empty id. Reload the window and report this '
         + 'if it recurs.'
@@ -1553,27 +1494,7 @@ export class ElectronService {
     }
     return {
       familyId: result.familyId,
-      target: result.target ?? null,
       exported: result.exported ?? null,
-      // Main sends null for every project that has no generated book on disk,
-      // which is every EPUB-native one and every unconverted PDF. Absent means
-      // the same thing from a main that predates the field.
-      generated: result.generated ?? null,
-      // Null for a project with no archive record, and null from a main that
-      // predates the field. Both mean the same thing to the one caller that
-      // reads it: there is no original here to recognise, so nothing is
-      // redirected away from — the read-only banner is what such a window gets,
-      // exactly as it did before.
-      archive: result.archive ?? null,
-      coverPath: result.coverPath ?? null,
-      // Main sends the list whenever there is a book; a project with none sends
-      // nothing, which is "no book has any passes" rather than a value missing.
-      appliedPasses: result.appliedPasses ?? [],
-      // Main sends null on every ask that did not re-mint the working copy, and
-      // that is the overwhelming majority of them. An older main that predates
-      // the field sends nothing at all, which reads the same and correctly: it
-      // has no re-mint to report.
-      remint: result.remint ?? null,
     };
   }
 
@@ -3210,10 +3131,10 @@ export class ElectronService {
     return { confirmed };
   }
 
-  /** Clear ALL persisted pdf-picker editor state for a project's source
-   *  (deletions, corrections, splits/merges, chapter markers, crops, category
-   *  learning, undo/redo). The archive/source file itself is untouched. Any open
-   *  editor window for the project is torn down so it can't re-save stale state. */
+  /** Clear ALL persisted editor state for a project's source (deletions,
+   *  corrections, splits/merges, chapter markers, crops, category learning,
+   *  undo/redo) — the records the retired picker wrote, which migrated projects
+   *  still carry. The archive/source file itself is untouched. */
   async resetEditorState(
     projectPath: string,
     /**

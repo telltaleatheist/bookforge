@@ -1277,8 +1277,8 @@ export interface ManifestEditorState {
   /**
    * `{ "<block id>": TextBlock }` — the ONE table the undo/redo stacks, the
    * splits and the merges name their blocks in, holding only the blocks the
-   * document cannot produce again on the next open (see
-   * shared/document/editor-history.ts). Every record above is ids alone.
+   * document could not produce again on the next open. Every record above is
+   * ids alone. Kept so migrated manifests still PARSE; nothing writes it now.
    */
   historyBlocks?: unknown;
   /** Crop rectangles, each on a page of the layout. */

@@ -2616,8 +2616,9 @@ function setupIpcHandlers(): void {
           // The block table the two stacks (and blockSplits/blockMerges below)
           // name their blocks in — every record there is an id, and this is
           // where the blocks themselves live. Holds only what the document
-          // cannot produce again on the next open, so it is usually absent; see
-          // shared/document/editor-history.ts.
+          // could not produce again on the next open, so it is usually absent.
+          // Read-only now: the picker that wrote these is gone, and this path
+          // exists to migrate what old projects still carry.
           editorState.historyBlocks = mergedData.history_blocks || undefined;
           editorState.blockEdits = mergedData.block_edits || undefined;
           editorState.customCategories = mergedData.custom_categories || undefined;
@@ -4194,27 +4195,33 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Everything the renderer may need to know about a project's export EPUB:
-  // where the NEXT one must be written (`target`), where the existing one IS
-  // (`exported`, null when it has never exported), and the cover to embed.
-  //
-  // The renderer asks rather than composing a path: the name comes from the
-  // manifest (the book's title) and the cover from the library root, neither of
-  // which the renderer is the authority on. A project with no cover answers
-  // coverPath null — that is an ordinary book, not an error.
   /**
-   * `familyId` names WHICH working chain the picker is opening.
+   * Where this project's exported EPUB IS, and which working chain it is on.
    *
-   * The picker arrives here from a row on the versions page, which knows the
-   * chain it drew (`editor:get-versions` puts the id on it). Absent is the
+   * ── What this used to also do, and why it stopped ───────────────────────────
+   *
+   * This was the picker's open call, and opening was where a project silently
+   * acquired things: `ensureGeneratedEpub` adopted a cast book,
+   * `migrateWorkingEpubNaming` renamed an old copy onto the archive-stem
+   * convention, and `ensureBookEpub` MINTED the working copy — a mint that
+   * cleared every record made against a copy the user had deleted and reported
+   * the loss in `remint`. All of it was invisible-by-design because a window was
+   * about to show the result.
+   *
+   * There is no such window any more. The three callers left — the LL wizard,
+   * the LL epub resolver and Studio's project-files panel — are all asking one
+   * read-only question ("is there an exported book, and where"), and a read that
+   * mints a file and clears records is a side effect none of them asked for. So
+   * the answer is now `exported` and `familyId` and nothing else: `target`,
+   * `generated`, `archive`, `coverPath`, `appliedPasses` and `remint` had no
+   * reader once the picker went.
+   *
+   * `familyId` names WHICH working chain the answer is about. Absent is the
    * ordinary case and means the project's only chain; a project with several
-   * refuses rather than opening whichever book it reached first — which would
-   * put the user's edits into a version they were not looking at.
-   *
-   * `askedPath` is the FILE the window is opening, and it is the second way a
-   * multi-chain project resolves: the file says which chain it is on
-   * (`familyForOpen`). Without either, several chains still refuse — a caller
-   * that neither names a chain nor stands on a file has nothing to resolve by.
+   * refuses rather than answering about whichever book it reached first.
+   * `askedPath` is the second way a multi-chain project resolves — the file says
+   * which chain it is on (`familyForOpen`). Null familyId is an ordinary answer:
+   * a project that has pages and no chain yet.
    */
   ipcMain.handle('projects:export-info', async (
     _event,
@@ -4223,128 +4230,19 @@ function setupIpcHandlers(): void {
     askedPath?: string
   ) => {
     try {
-      // ── The working copy is made here, invisibly, because this is where the
-      // book is asked for ──────────────────────────────────────────────────────
-      //
-      // Owen's model, 2026-08-08: "the user should just know 'I'm editing the
-      // book Killing America'… one working copy per archive file… fully
-      // seamless." So the two acts that used to need a button are done as the
-      // picker opens:
-      //
-      //  1. A book named before the `<archive basename>.working.epub` convention
-      //     is renamed onto it and the manifest repointed, so every project
-      //     declares which archive file it is the copy of.
-      //  2. A project that has an archive-grade book and no working copy yet
-      //     gets one — an instant byte copy. Its narration strikes and its
-      //     editor deletions come with it for free, because the copy IS those
-      //     bytes: the strikes are stamped with the sha256 the copy also has,
-      //     and the block ids are minted from the laid-out content.
-      //
-      // BOTH origins get (2) now. An EPUB-native project is copied from the file
-      // the user handed us; a PDF-origin one from the book a page reader cast out
-      // of it, which is kept as its own archive-grade file
-      // (`ensureGeneratedEpub` gives that book to the projects that predate it).
-      // A PDF whose pages have NEVER been read still gets nothing, and that is
-      // the same rule as before: casting one costs an hour of GPU and is never a
-      // side effect of opening a window. The picker shows the archive with a
-      // banner offering to start it.
-      //
-      // A copy made AGAIN is not invisible, and it is not silent about what it
-      // cost. `ensureBookEpub` CLEARS every record made against the copy that is
-      // gone — Owen's model, 2026-08-09: "if i delete the working copy, all of
-      // its deletions and changes should go with it" — and answers with the
-      // counts of what went. That answer travels back with the path: this is the
-      // call the picker makes as the project opens, so it is the one place a
-      // window is looking when the fact is discovered. Nobody downstream
-      // re-derives it; there is nothing left to derive it from.
-      let remint: WorkingCopyRemint | null = null;
-      const adoption = await manifestService.ensureGeneratedEpub(projectDir);
-      if (adoption.missing !== null) console.warn(`[projects:export-info] ${adoption.missing}`);
-      // WHICH chain this ask is about — the OPEN resolver: a named id first, a
-      // sole chain as the theorem, and on a multi-chain project the asked FILE
-      // says which (familyForOpen). Null means every chain-scoped step below is
-      // skipped and the answer carries no familyId — the honest shape of a
-      // project that has pages and nothing else (found live 2026-08-10: "Could
-      // not open this book … has no working chain yet" on a project whose PDF
-      // opens fine), and now also of an asked file that is on no chain. A
-      // caller that NAMES a familyId still gets the refusal for a chain that
-      // is not there.
-      //
-      // Every chain-scoped call below is handed the RESOLVED id, never the raw
-      // argument: the resolution may have been made by path, and asking again
-      // with `undefined` would put the multi-chain refusal right back.
       const resolvedChain = await manifestService.familyForOpen(projectDir, askedPath, familyId);
-      const chainId = resolvedChain === null ? undefined : resolvedChain.family.id;
-      if (resolvedChain !== null) await manifestService.migrateWorkingEpubNaming(projectDir, chainId);
-      // Guarded on the resolution, like everything chain-scoped here: with no
-      // chain resolved there is no record to read, and the reader itself would
-      // refuse a multi-chain project asked without an id.
-      const recordedBefore = resolvedChain === null
-        ? null
-        : await manifestService.readExportEpub(projectDir, chainId);
-      if (!recordedBefore || !fsSync.existsSync(recordedBefore.absPath)) {
-        // Asked as "is there something to copy", not as "did it work": a project
-        // with nothing archive-grade behind it is an ordinary state here (a PDF
-        // nobody has converted), and minting is simply not one of the things
-        // opening it does.
-        //
-        // A multi-chain project whose asked file resolved to NO chain mints
-        // nothing: the mint would have to guess which book, which is the exact
-        // ambiguity the resolution above exists to remove.
-        const unresolvedAmongSeveral = resolvedChain === null
-          && (await manifestService.readBookFamilies(projectDir)).length > 1;
-        if (!unresolvedAmongSeveral
-          && await manifestService.workingCopySource(projectDir) !== null) {
-          remint = (await manifestService.ensureBookEpub(projectDir, chainId)).remint;
-          await nameOpeningsOfRemintedCopy(projectDir, remint, chainId);
-        }
-      }
-
-      // Null when the project has no chain: a book that cannot exist yet has no
-      // place it must be written to, and inventing one would derive a name from
-      // a source the project does not record.
-      const target = resolvedChain === null
-        ? null
-        : await manifestService.exportEpubTarget(projectDir, chainId);
+      // Guarded on the resolution: with no chain resolved there is no record to
+      // read, and the reader itself would refuse a multi-chain project asked
+      // without an id.
       const record = resolvedChain === null
         ? null
-        : await manifestService.readExportEpub(projectDir, chainId);
+        : await manifestService.readExportEpub(projectDir, resolvedChain.family.id);
+      // A record naming a file that is not there describes a book that has been
+      // moved away; "there is no export" is the honest reading of it.
       const exported = record && fsSync.existsSync(record.absPath) ? record : null;
-      // The book cast from this project's pages, when it has one ON DISK. The
-      // picker needs it to tell that artifact apart from the archive original:
-      // both are read-only, and they are read-only for different reasons that a
-      // user is owed in different words.
-      const generatedRecord = await manifestService.readGeneratedEpub(projectDir);
-      const generated = generatedRecord && fsSync.existsSync(generatedRecord.absPath)
-        ? generatedRecord
-        : null;
-      // The file the user handed us, so the picker can RECOGNISE it. Opening a
-      // project's archive original now lands on the working copy instead
-      // (shared/document/artifact-open.ts), and the window cannot decide which
-      // file that is by looking at its name — the manifest is where an
-      // artifact's identity is settled, and this is the seam that carries it.
-      // Same existence rule as the two above: a record naming a file that is not
-      // there describes an original that has been moved away, and nothing should
-      // be redirected on the strength of it.
-      const archiveRecord = await manifestService.readArchiveOriginal(projectDir);
-      const archive = archiveRecord && fsSync.existsSync(archiveRecord.absPath)
-        ? archiveRecord
-        : null;
-      const coverPath = await manifestService.resolveProjectCover(projectDir);
-      // What has been done to that book travels with where it is: the picker's
-      // rail lights its pass entries from this, and asking twice — once for the
-      // path, once for the provenance — is how two surfaces come to disagree
-      // about the same book.
-      const appliedPasses = resolvedChain === null
-        ? []
-        : await manifestService.readAppliedPasses(projectDir, chainId);
-      // WHICH chain everything above is about, handed back so the window that
-      // opened can quote it in every act it performs afterwards rather than
-      // asking again and possibly being answered about a different version.
-      // Null for a project with no chain yet — there is nothing to quote, and
-      // every act that needs one refuses downstream in its own words.
       return {
-        success: true, target, exported, generated, archive, coverPath, appliedPasses, remint,
+        success: true,
+        exported,
         familyId: resolvedChain === null ? null : resolvedChain.family.id,
       };
     } catch (err) {
@@ -7037,7 +6935,8 @@ function setupIpcHandlers(): void {
     // a working chain, a working copy and a narration cut behind every imported
     // EPUB — the ladder the Process button used to stand on. The versions page
     // is flat now and Process stands on the version row itself, so an import is
-    // an import: a file, a record, and nothing else.
+    // an import: a file, a record, and nothing else. That function was deleted
+    // with the rest of the chain machinery; do not reintroduce it.
     return addVariant(projectId, filePath, { onProgress: emitImportProgress });
   });
 
@@ -11171,21 +11070,15 @@ function setupIpcHandlers(): void {
         icon: string;
         diffRecordPath?: string;   // <name>.diff.json sitting next to this version (if any)
         diffOriginalPath?: string; // the original this diff was computed against (resolved, if it exists locally)
-        // The file the EDITOR is pointed at when this row is opened, when that is
-        // not the row's own file. Set on the working-copy row: opening
-        // `<Original>.working.pdf` standalone would give it no project, no binding
-        // and no annotations — a window that looks like the book and answers no
-        // gesture. The project's PDF primary opens the PROJECT, and the picker
-        // lands on the furthest station it has (which is the working copy).
+        // The file this row is OPENED on, when that is not the row's own file.
         //
-        // Set on the ARCHIVE and GENERATED rows too, as of 2026-08-09, and for
-        // the law rather than the mechanism: opening either archive-grade file
-        // lands on the working copy (Owen: "if they open an archive epub, it
-        // just opens a new working copy seamlessly"). The picker redirects those
-        // opens on its own (shared/document/artifact-open.ts) — that is the
-        // SAFETY NET, and naming the copy here is the statement of intent, so a
-        // reader of this handler can see where the button goes without having to
-        // know the picker redirects at all.
+        // Set on the working-copy row, and on the ARCHIVE and GENERATED rows as
+        // of 2026-08-09: opening either archive-grade file lands on the working
+        // copy (Owen: "if they open an archive epub, it just opens a new working
+        // copy seamlessly"). The picker used to enforce that redirect itself and
+        // this field was the statement of intent behind it; the picker is gone,
+        // so this field is now the ONLY place the redirect is expressed — a row
+        // that names an openPath is a row whose button must go there.
         openPath?: string;
         // Present on the 'generated', 'exported' and 'narration' rows: WHICH
         // WORKING CHAIN this row belongs to.
@@ -11901,53 +11794,14 @@ function setupIpcHandlers(): void {
         }
       }
 
-      // ── The chains themselves, so the page can draw one per version ─────────
-      //
-      // The rows say which chain each file is on; this says which chains there
-      // ARE, and what each one is a chain OF. Both are needed and neither can be
-      // derived from the other: a chain whose working copy is missing has no row
-      // at all and would simply vanish from a page that inferred the list from
-      // the rows, and the arrangement would have no way to draw the book line of
-      // a chain the user can still erase and re-mint.
-      //
-      // `archiveRowId` is the PDF this chain's book was read out of, when it was
-      // one. A project holds exactly one archive original, and a cast book is
-      // the reading of THAT file — so the link is looked up rather than guessed,
-      // and is null when the original is not a PDF with a row of its own.
-      const archivePdfRowId = archiveOriginal !== null
-        && projectPdfs.some(
-          (pdf) => pdf.relPath.toLowerCase() === archiveOriginal.relPath.toLowerCase())
-        ? `archive:${archiveOriginal.relPath}`
-        : null;
-      // Whether each chain has anything an erase would remove — what gates the
-      // working-changes line. Measured against the same list the erase clears
-      // (`workingChangesByFamily` mirrors `resetEditorRecords`), because a line
-      // drawn for the copy's mere existence survives its own successful delete:
-      // the erase re-mints the copy on the spot.
-      const erasableByFamily = await manifestService.workingChangesByFamily(projectDir);
-      const chains = families.map((chain) => ({
-        id: chain.id,
-        sourceKind: chain.source.kind,
-        // The basename the user would recognise this version by. The page states
-        // the chain of custody in it — with two book lines on screen it is the
-        // only thing that tells them apart.
-        sourceName: chain.source.path.split('/').pop() ?? chain.source.path,
-        archiveRowId: chain.source.kind === 'generated-epub' ? archivePdfRowId : null,
-        // `=== true` rather than a lookup with a default: the map was built from
-        // the same manifest one read ago, so an absent id means the family list
-        // changed between the two reads — false draws less, and the change that
-        // raced us will broadcast its own refresh.
-        hasWorkingChanges: erasableByFamily[chain.id] === true,
-        // Whether this chain's archive-grade book is where the record says. It
-        // is the "before" of the FIRST pass and of no other, so it gates that
-        // one line's Compare — measured with the same `existsSync`
-        // `requireFamilySource` refuses on, so the button and the act that
-        // follows it cannot disagree about whether the file is there.
-        hasSource: fsSync.existsSync(
-          path.resolve(projectDir, chain.source.path.split('/').join(path.sep))),
-      }));
-
-      return { success: true, versions, families: chains };
+      // The `families` half of this answer — one entry per working chain, with
+      // the erase/compare gates the chain lines needed — is GONE. Wave 1
+      // (2026-08-16) stopped drawing chain lines, and the versions page has
+      // never read the field since; the chain-deletion wave removed the erase
+      // and compare doors it gated. A project's `families[]` is still READ above
+      // to place this project's working, exported and narration rows, which is
+      // the whole of what a migrated legacy manifest is asked for now.
+      return { success: true, versions };
     } catch (err) {
       console.error('[EDITOR:GET-VERSIONS] Error:', err);
       return { success: false, error: (err as Error).message };

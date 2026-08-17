@@ -2795,10 +2795,12 @@ export class StudioVersionsComponent {
       if (superseded()) return;
       if (res.success && res.versions) {
         this.versions.set(res.versions as VersionRow[]);
-        // `res.families` is deliberately not read. It is the project's working
-        // chains, and Wave 1 (2026-08-16) stopped drawing them: a legacy project
-        // that carries them opens as an ordinary flat page, and no migration is
-        // performed and nothing is written back.
+        // There is no `res.families` any more. It was the project's working
+        // chains, and Wave 1 (2026-08-16) stopped drawing them; the chain
+        // deletion wave stopped sending them. A legacy project that carries
+        // `families[]` in its manifest still opens as an ordinary flat page —
+        // main reads the array to PLACE this project's rows, no migration is
+        // performed, and nothing is written back.
         this.versionsError.set(null);
       } else {
         // A FAILED read (e.g. a transient manifest lock on a synced drive) is NOT

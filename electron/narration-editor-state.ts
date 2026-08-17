@@ -76,13 +76,12 @@ interface AnalyzedBlock {
 }
 
 /**
- * The book, laid out, as the picker sees it.
+ * The book, laid out.
  *
  * Through the worker proxy for the two reasons every other analysis goes that
- * way (see `working-copy.ts`): mupdf's WASM heap stays out of the main process,
- * and the result lands in the analysis cache under the file's sha256 — the same
- * cache the picker's own `analyzeQuick` reads — so nothing lays this book out
- * twice.
+ * way: mupdf's WASM heap stays out of the main process, and the result lands in
+ * the analysis cache under the file's sha256 — the same cache every other
+ * quick analysis reads — so nothing lays this book out twice.
  */
 export async function readBookBlockLayer(
   bookAbsPath: string

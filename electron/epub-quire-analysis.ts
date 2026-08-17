@@ -446,10 +446,10 @@ export async function analyzeEpubWithQuire(
   }
 
   // `seq` is a total order over the BLOCKS, not over the elements: two fragments
-  // of one paragraph would otherwise claim one place, and `mergeRefusal`
-  // (shared/document/block-merge.ts) treats that as an error rather than a
-  // tiebreak. It also refuses a merge whose members have a GAP in `seq`, so the
-  // order has to run page by page: page first, then the walk's own enumeration
+  // of one paragraph would otherwise claim one place, and the picker's merge
+  // rule treated that as an error rather than a tiebreak. It also refused a
+  // merge whose members had a GAP in `seq`, so the order has to run page by
+  // page: page first, then the walk's own enumeration
   // index, which makes one page's blocks a contiguous run of `seq` by
   // construction. Within a page that index is document order, which is flow
   // order — with a document's pictures after its text, because that is what the
