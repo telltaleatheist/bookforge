@@ -15,10 +15,24 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-/** Where a dev checkout of foundry compiles its host binary. */
+/**
+ * Where a dev checkout of foundry compiles its host binary.
+ *
+ * The name is the BUILD's spelling, not Node's: foundry's release-build.sh
+ * writes `foundry-windows-x64.exe` (the bun target is `windows` and Windows
+ * binaries carry `.exe`), while `process.platform` says `win32` and no
+ * extension. The old candidates used the latter, so on Windows this prime
+ * NEVER found the freshly built engine and the resolver fell through to the
+ * installed component — a months-old release whose engine predates `vlm-read`,
+ * which is exactly the stale binary the hosted Foundry window then spawned
+ * (found live 2026-08-17, first hosted import).
+ */
+const DEV_BINARY_NAME = process.platform === 'win32'
+  ? `foundry-windows-${process.arch}.exe`
+  : `foundry-${process.platform}-${process.arch}`;
 const DEV_CLI_CANDIDATES = [
-  path.join('/Volumes/Callisto/Projects/foundry', 'dist', `foundry-${process.platform}-${process.arch}`),
-  path.join(os.homedir(), 'Projects', 'foundry', 'dist', `foundry-${process.platform}-${process.arch}`),
+  path.join('/Volumes/Callisto/Projects/foundry', 'dist', DEV_BINARY_NAME),
+  path.join(os.homedir(), 'Projects', 'foundry', 'dist', DEV_BINARY_NAME),
 ];
 
 /**
