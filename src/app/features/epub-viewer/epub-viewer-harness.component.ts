@@ -21,7 +21,7 @@ import { CommonModule } from '@angular/common';
 import { ActivatedRoute } from '@angular/router';
 import type { LaidOutBlock, LaidOutBook } from '@shared/document/laid-out-book';
 import { BLOCK_CATEGORIES, toCategory } from '@shared/ocr/block-categories';
-import type { Category } from '../../services/pdf.service';
+import type { Category } from '@shared/ocr/text-block';
 import { EpubViewerComponent, type EpubViewerSource } from './epub-viewer.component';
 
 interface Opening {
@@ -136,7 +136,7 @@ interface Opening {
     </div>
   `,
   styles: [`
-    @use '../../../../creamsicle-desktop/styles/variables' as *;
+    @use '../../creamsicle-desktop/styles/variables' as *;
 
     :host { display: flex; flex-direction: column; height: 100vh; background: var(--bg-sunken); }
 

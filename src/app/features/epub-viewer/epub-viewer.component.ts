@@ -57,15 +57,15 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import type { LaidOutBlock, LaidOutBook } from '@shared/document/laid-out-book';
-import type { Category } from '../../services/pdf.service';
+import type { Category } from '@shared/ocr/text-block';
 import { blockCategoryColor } from '@shared/ocr/block-categories';
 // Relative, not aliased: the package is outside `src/` and outside the Angular
 // build's `include`, and `mount.ts` is written to be importable from a renderer
 // (it imports nothing — see its header).
-import { mountQuirePage, type MountedQuirePage } from '../../../../../../packages/quire/src/mount';
+import { mountQuirePage, type MountedQuirePage } from '../../../../packages/quire/src/mount';
 import {
   QUIRE_ID_ATTRIBUTE, QUIRE_ID_SEPARATOR, QUIRE_PAGE_MARGIN, type QuirePageMount,
-} from '../../../../../../packages/quire/src/types';
+} from '../../../../packages/quire/src/types';
 import {
   applyMarksScript, arrangeScript, flowArrangeScript, flowZoomScript, zoomScript,
   type QuireFlowArrangement, type QuireFrameArrangement, type QuireFrameElement,
@@ -332,7 +332,7 @@ const GRID_BASE_WIDTH = 200;
     }
   `,
   styles: [`
-    @use '../../../../creamsicle-desktop/styles/variables' as *;
+    @use '../../creamsicle-desktop/styles/variables' as *;
 
     :host {
       flex: 1;

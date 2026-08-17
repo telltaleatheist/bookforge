@@ -27,7 +27,7 @@ import {
   type PassAiChoice,
   type PassOptionsKind,
   type PassOptionsResult,
-} from '../../../pdf-picker/components/pass-options-modal/pass-options-modal.component';
+} from '../pass-options-modal/pass-options-modal.component';
 import { NarrationModalComponent } from '../narration-modal/narration-modal.component';
 import type { ChainPassRequest, ProcessingPassKind } from '@shared/processing/pass-types';
 import { BOOK_PASS_OPTIONS, type BookPassOption } from '@shared/processing/book-passes';
@@ -1135,9 +1135,6 @@ const AUDIO_EXTS = new Set([
        .chapter-content never gets a bounded height and can't scroll. Let the
        component set its own display:flex; we only make it a fill flex item. */
     app-diff-view { flex: 1; min-height: 0; }
-    /* Same rule, same reason: the compare surface sets its own display:flex and
-       this only makes it a filling flex item. */
-    app-pass-compare { flex: 1; min-height: 0; }
     .compare-opening {
       margin: 8px 4px; padding: 14px 16px; border-radius: 8px;
       border: 1px solid var(--border-default); background: var(--bg-elevated);

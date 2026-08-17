@@ -65,14 +65,6 @@ export const routes: Routes = [
     loadComponent: () => import('./features/first-run-setup/first-run-setup.component').then(m => m.FirstRunSetupComponent)
   },
   {
-    // Editor window - opens in separate Electron window.
-    // Unreachable since 2026-08-16 (Owen's ruling: Foundry is the one editing
-    // surface); deleted in the chain-deletion wave. Nothing in the renderer
-    // navigates here and no main-side flow loads it any more.
-    path: 'editor',
-    loadComponent: () => import('./features/studio/components/editor-window/editor-window.component').then(m => m.EditorWindowComponent)
-  },
-  {
     // Listen window (Play / Stream player) - opens in separate Electron window
     path: 'listen',
     loadComponent: () => import('./features/studio/components/listen-window/listen-window.component').then(m => m.ListenWindowComponent)
@@ -80,12 +72,13 @@ export const routes: Routes = [
   {
     // A bench for the live-DOM EPUB viewer, not part of the app's navigation.
     // `/#/epub-viewer-harness?book=<path>` opens a real EPUB through quire and
-    // drives the component with the picker's gesture vocabulary. Phase C is what
-    // puts the viewer on the picker's own open path; until then this is how it
-    // is exercised against a real book.
+    // drives the component directly. The picker that used to host the viewer is
+    // gone (Foundry is the one editing surface); this bench is now the only
+    // renderer-side driver of `quire-viewer-bridge`, and it is how the viewer is
+    // exercised against a real book.
     path: 'epub-viewer-harness',
     loadComponent: () => import(
-      './features/pdf-picker/components/epub-viewer/epub-viewer-harness.component'
+      './features/epub-viewer/epub-viewer-harness.component'
     ).then(m => m.EpubViewerHarnessComponent)
   },
   {
