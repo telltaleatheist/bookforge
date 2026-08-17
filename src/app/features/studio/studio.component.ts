@@ -297,16 +297,14 @@ import { isBookPath } from '@shared/document/book-path';
                   <span class="listen-glyph">▶</span> Listen
                 </button>
 
-                <!-- The door to the hosted Foundry window, which does not exist
-                     yet. Disabled, and the tooltip says WHY rather than leaving
-                     the user to guess at a dead button; the label is already
-                     honest per book (Edit vs Import) because the mapping is read
-                     from the manifest, so the day the window lands only the
-                     disabled state and a click handler change. -->
+                <!-- The door to the hosted Foundry window. Two acts, and the
+                     label and the tooltip both say which: a book with a Foundry
+                     project is opened standing IN it, and a book without one
+                     gets the bare window to import itself through. -->
                 <button
                   class="btn-foundry"
-                  disabled
-                  title="The Foundry window arrives with the next update."
+                  [title]="foundryButtonTitle()"
+                  (click)="openInFoundry()"
                 >{{ foundryButtonLabel() }}</button>
 
                 <!-- Finalize button for articles on Content tab only -->
@@ -1813,8 +1811,19 @@ export class StudioComponent implements OnInit, OnDestroy {
   // manifest record, and the only thing that can answer "has this book been into
   // Foundry" is the manifest.
   readonly foundryProjectKey = signal<string | null>(null);
+  /**
+   * Bumped when main says a mapping changed, to make the effect below re-read.
+   *
+   * First contact happens INSIDE the Foundry window: the user presses Import via
+   * Foundry, imports their book there, and Foundry announces the project key it
+   * minted. Nothing in this window did anything, so nothing here would know to
+   * look again — and the button would keep saying "Import via Foundry" for a
+   * book that now has a project. The event is what closes that.
+   */
+  private readonly foundryMappingTrigger = signal(0);
   private readonly foundryProjectEffect = effect(() => {
     const dir = this.selectedItem()?.projectDir ?? '';
+    this.foundryMappingTrigger();
     if (!dir) { this.foundryProjectKey.set(null); return; }
     void this.electronService.foundryHostProject(dir).then(res => {
       // Drop a stale read: the selection can move while this is in flight, and a
@@ -1838,6 +1847,32 @@ export class StudioComponent implements OnInit, OnDestroy {
    */
   readonly foundryButtonLabel = computed(() =>
     this.foundryProjectKey() === null ? 'Import via Foundry' : 'Edit in Foundry');
+
+  readonly foundryButtonTitle = computed(() =>
+    this.foundryProjectKey() === null
+      ? 'Import this book into Foundry'
+      : "Edit this book's text in Foundry");
+
+  /**
+   * Open the Foundry window on the selected book.
+   *
+   * Main decides which door — deep link or bare window — because the mapping is
+   * a manifest record and this window holds a cached read of it. Pressing again
+   * while the window is open raises it; that too is main's (really Foundry's)
+   * rule, so nothing is tracked here.
+   */
+  async openInFoundry(): Promise<void> {
+    const dir = this.selectedItem()?.projectDir ?? '';
+    if (!dir) return;
+    const res = await this.electronService.foundryHostOpen(dir);
+    if (!res.success) {
+      await this.electronService.showMessageDialog({
+        title: 'Could not open Foundry',
+        message: res.error || 'The Foundry window could not be opened. See the log for why.',
+        type: 'error',
+      });
+    }
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Computed
@@ -2019,6 +2054,18 @@ export class StudioComponent implements OnInit, OnDestroy {
         this.refreshProjectFiles();
       }
     });
+
+    // First contact: an import made inside the Foundry window taught main which
+    // project this book has. Re-read the mapping so the door's label stops
+    // saying "Import via Foundry" for a book that now has a project.
+    //
+    // Not filtered to the selected book here: the re-read is one IPC call for
+    // whichever book is selected NOW, and a mapping learned for another book is
+    // still a reason to re-read — the user may have switched selection while the
+    // Foundry window was up.
+    this.unwatchFoundryMapping = this.electronService.onFoundryProjectChanged(() => {
+      this.foundryMappingTrigger.update(v => v + 1);
+    });
   }
 
   /** Any click anywhere dismisses the context menu. Named so it can be removed. */
@@ -2027,6 +2074,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   /** Unsubscribe closures for the two main-process channels this page reads. */
   private unwatchEditorClosed: (() => void) | null = null;
   private unwatchFilesChanged: (() => void) | null = null;
+  private unwatchFoundryMapping: (() => void) | null = null;
 
   ngOnDestroy(): void {
     document.removeEventListener('click', this.documentClickListener);
@@ -2034,6 +2082,8 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.unwatchEditorClosed = null;
     this.unwatchFilesChanged?.();
     this.unwatchFilesChanged = null;
+    this.unwatchFoundryMapping?.();
+    this.unwatchFoundryMapping = null;
     if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer);
   }
 

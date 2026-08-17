@@ -2007,6 +2007,30 @@ export class ElectronService {
     if (this.isElectron) return (window as any).electron.foundryHost.forgetExport(projectDir, exportId);
     return { success: false, error: 'Not running in Electron' };
   }
+  /**
+   * Open the Foundry window on this book. `opened` says which door it was:
+   * `'project'` deep-linked into the book's Foundry project, `'bare'` the
+   * Import-via-Foundry window for a book that has none yet.
+   */
+  async foundryHostOpen(projectDir: string): Promise<{ success: boolean; opened?: 'bare' | 'project'; error?: string }> {
+    if (this.isElectron) return (window as any).electron.foundryHost.open(projectDir);
+    return { success: false, error: 'Not running in Electron' };
+  }
+  /** Foundry filed an export onto a book. Every window hears it. */
+  onFoundryExportsChanged(callback: (event: { projectDir: string }) => void): () => void {
+    if (!this.isElectron) return () => { /* nothing subscribed */ };
+    return (window as any).electron.foundryHost.onExportsChanged(callback);
+  }
+  /** A book's Foundry project mapping was learned or corrected (first contact). */
+  onFoundryProjectChanged(callback: (event: { projectDir: string }) => void): () => void {
+    if (!this.isElectron) return () => { /* nothing subscribed */ };
+    return (window as any).electron.foundryHost.onProjectChanged(callback);
+  }
+  /** An export landed from a Foundry project no book claims. Nothing was recorded. */
+  onFoundryUnmatchedExport(callback: (event: { key: string; title: string }) => void): () => void {
+    if (!this.isElectron) return () => { /* nothing subscribed */ };
+    return (window as any).electron.foundryHost.onUnmatchedExport(callback);
+  }
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Direct EPUB Save (saves edited EPUB back to source file)

@@ -2106,6 +2106,38 @@ export class StudioVersionsComponent {
       void this.load();
     });
     inject(DestroyRef).onDestroy(unsubscribe);
+
+    // ── What the Foundry window files, while it is filing it ────────────────
+    //
+    // An export made in the Foundry window is recorded by main against the book
+    // it belongs to, and this page is very likely open on that book at the time
+    // — the user pressed Edit in Foundry from here. So the row appears when the
+    // file does, without a reload and without this page polling anything.
+    //
+    // Only the EXPORTS are re-read, not the whole page: `load()` re-measures the
+    // project folder, closes an open compare and drops the open row, and doing
+    // all that because a file landed in Foundry's tray would yank the page out
+    // from under whatever the user was doing in it.
+    const unwatchExports = this.electron.onFoundryExportsChanged((event) => {
+      const dir = this.projectDir();
+      if (dir === '') return;
+      if (!samePath(event.projectDir, dir)) return;
+      const generation = this.loadGeneration;
+      void this.loadFoundryExports(
+        dir, () => generation !== this.loadGeneration || this.projectDir() !== dir);
+    });
+    inject(DestroyRef).onDestroy(unwatchExports);
+
+    // An export from a Foundry project no book of ours claims. Main recorded
+    // NOTHING — said here rather than swallowed, because the file exists and the
+    // user is entitled to know it went nowhere and why.
+    const unwatchUnmatched = this.electron.onFoundryUnmatchedExport((event) => {
+      this.notices.notify(
+        `Foundry exported “${event.title}” from a project (${event.key}) that no book in this `
+        + 'library is linked to, so it was not added to any book. Open the book with '
+        + '“Import via Foundry” once so the link is made, then export again.');
+    });
+    inject(DestroyRef).onDestroy(unwatchUnmatched);
   }
 
   // ── Book variants ───────────────────────────────────────────────────────
