@@ -1250,6 +1250,26 @@ export interface ElectronAPI {
     /** Forget the RECORD. The file stays in the foundry project's final/ tray. */
     forgetExport: (projectDir: string, exportId: string) =>
       Promise<{ success: boolean; forgotten?: FoundryExportRecord; error?: string }>;
+    /**
+     * Open the Foundry window on this book — deep-linked into its project, or
+     * bare when it has none yet (the Import-via-Foundry door). `opened` says
+     * which happened. A second press raises the window already open.
+     */
+    open: (projectDir: string) =>
+      Promise<{ success: boolean; opened?: 'bare' | 'project'; error?: string }>;
+    /**
+     * Foundry filed an export onto a book. Broadcast to EVERY window — the
+     * versions page can be open in more than one, and the export was started
+     * somewhere else entirely.
+     */
+    onExportsChanged: (callback: (event: { projectDir: string }) => void) => () => void;
+    /** A book's Foundry project mapping was learned or corrected (first contact). */
+    onProjectChanged: (callback: (event: { projectDir: string }) => void) => () => void;
+    /**
+     * An export landed from a Foundry project no book of ours claims. Nothing
+     * was recorded; this exists so the user is told rather than left wondering.
+     */
+    onUnmatchedExport: (callback: (event: { key: string; title: string }) => void) => () => void;
   };
   /**
    * The document pipeline: a book's working PDF and the book itself.
@@ -3363,6 +3383,25 @@ const electronAPI: ElectronAPI = {
     exports: (projectDir: string) => ipcRenderer.invoke('foundry-host:exports', projectDir),
     forgetExport: (projectDir: string, exportId: string) =>
       ipcRenderer.invoke('foundry-host:forget-export', projectDir, exportId),
+    open: (projectDir: string) => ipcRenderer.invoke('foundry-host:open', projectDir),
+    onExportsChanged: (callback: (event: { projectDir: string }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, event: { projectDir: string }) =>
+        callback(event);
+      ipcRenderer.on('foundry-host:exports-changed', listener);
+      return () => { ipcRenderer.removeListener('foundry-host:exports-changed', listener); };
+    },
+    onProjectChanged: (callback: (event: { projectDir: string }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, event: { projectDir: string }) =>
+        callback(event);
+      ipcRenderer.on('foundry-host:project-changed', listener);
+      return () => { ipcRenderer.removeListener('foundry-host:project-changed', listener); };
+    },
+    onUnmatchedExport: (callback: (event: { key: string; title: string }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, event: { key: string; title: string }) =>
+        callback(event);
+      ipcRenderer.on('foundry-host:unmatched-export', listener);
+      return () => { ipcRenderer.removeListener('foundry-host:unmatched-export', listener); };
+    },
   },
   document: {
     state: (ref: DocumentRef) => ipcRenderer.invoke('document:state', ref),

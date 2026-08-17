@@ -82,6 +82,136 @@ import { getStarterStatus, installStarterLibrary } from './update/starter-librar
 // MUST run before the first app.getPath('userData') (next at line ~225).
 app.setName('BookForge');
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The hosted Foundry — loaded HERE, at module scope, before anything ready
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Foundry is a second Electron app that BookForge runs inside its own process:
+// the whole of its `app/` folder is vendored at `foundry-app/` (see
+// foundry-app/VENDORED.md) and everything the host has to touch is four
+// functions in one compiled module.
+//
+// LOADED AT MODULE SCOPE AND NOT LAZILY FROM THE BUTTON'S HANDLER. Importing
+// `mount.js` runs `protocol.registerSchemesAsPrivileged` for `foundry-file://`,
+// which Electron refuses after the ready event — a lazy require would throw the
+// first time a user pressed Edit in Foundry, in a handler, with the window
+// already up. Importing it does nothing else at all; `mountFoundry` below is
+// what registers the IPC and wires the callbacks.
+//
+// (Three privileged-scheme registrations now happen in this process: this one,
+// BookForge's own near the bottom of this file, and quire's. That is already the
+// shipped arrangement — quire has registered a third scheme alongside the app's
+// since the paginator landed — so mount.js joins a pattern rather than starting
+// one.)
+//
+// REQUIRED RATHER THAN IMPORTED, deliberately: the subtree is BUILT OUTPUT of a
+// separate program with its own tsconfig and its own Angular major, and a static
+// `import` would drag it into BookForge's own type program — exactly the merge
+// the sealed-subtree rule exists to prevent. So the shapes below are declared
+// against the published contract (Foundry's docs/BOOKFORGE-HANDOFF.md
+// §"the mount contract, in its exact spelling") rather than inferred from the
+// subtree's sources, and a change on their side that breaks the contract shows
+// up here as a compile or runtime error naming the function, not as a silent
+// mismatch.
+
+/** An export Foundry landed in a project's `final/` tray. Its exact spelling. */
+interface FoundryExportLanding {
+  /** The project folder, absolute. Its basename is the project KEY. */
+  readonly projectDir: string;
+  /** The file, absolute, inside `<projectDir>/final/`. */
+  readonly path: string;
+  /** `'epub' | 'txt' | 'pdf'` — a string on the wire; validated before it is recorded. */
+  readonly kind: string;
+  /** The file's own name, as Foundry's tray announces it. */
+  readonly title: string;
+}
+
+/**
+ * FIRST CONTACT: a file from outside the library just became a Foundry project.
+ *
+ * The announcement that makes the bare Import-via-Foundry window work. Foundry
+ * mints the project key, so without this the host would never learn which key
+ * belongs to which of its books, and every later export landing from that
+ * project would arrive unmatched. Fires only for imports from OUTSIDE Foundry's
+ * own library, after the project's catalogue is durably written, and
+ * deliberately again on a re-import of the same book (same content key, same
+ * project) so a lost mapping heals itself.
+ */
+interface FoundryImportLanding {
+  /** The project the import minted or resolved to, absolute. */
+  readonly projectDir: string;
+  /** The file the user imported, absolute, at its own home outside the library. */
+  readonly originalPath: string;
+  /** `'pdf' | 'epub'`. */
+  readonly kind: string;
+}
+
+interface FoundryHostRecord {
+  /**
+   * Where Foundry's projects/ root lives. Read LIVE by Foundry on every settings
+   * read (`hostedLibraryDir()`), so this is a getter rather than a captured
+   * string — see the mount call.
+   */
+  readonly libraryDir: string;
+  onExport(landing: FoundryExportLanding): void;
+  onImport?(landing: FoundryImportLanding): void;
+}
+
+interface FoundryMountModule {
+  /** Register everything Foundry owns in this main process. Once, after ready. */
+  mountFoundry(host?: FoundryHostRecord): void;
+  /** Open the Foundry window, or raise the one already open. */
+  openFoundryWindow(projectDir?: string): void;
+  /** Stop the queue and the reading server. Idempotent; awaited on quit. */
+  stopFoundry(): Promise<void>;
+  /** The library root Foundry is answering with, or null when unmounted. */
+  hostedLibraryDir(): string | null;
+}
+
+/**
+ * Where the compiled seam sits, relative to this file's own compiled location.
+ *
+ * DEV LAYOUT ONLY, and knowingly so: from `dist/electron/main.js` the subtree is
+ * two levels up at `foundry-app/dist/electron/mount.js`. A packaged build puts
+ * `dist/` inside an asar and the subtree wherever the packaging wave decides to
+ * stage it, so RESOLVING THIS IN THE PACKAGED LAYOUT IS AN EXPLICIT ITEM FOR THE
+ * PACKAGING WAVE — it is not done here, and it is not papered over with a search
+ * of candidate paths either, because a mount silently loaded from the wrong
+ * place is worse than one that refuses.
+ */
+const FOUNDRY_MOUNT_PATH = path.join(__dirname, '..', '..', 'foundry-app', 'dist', 'electron', 'mount.js');
+
+/**
+ * Load the seam, or refuse to start.
+ *
+ * NO FALLBACK, and no degraded mode. A BookForge that came up without the mount
+ * would look completely normal until the user pressed Edit in Foundry, and the
+ * failure would then be a dead button rather than the one true fact, which is
+ * that the vendored subtree was never built. So the refusal happens at startup,
+ * it names the build step, and it says it in a dialog as well as the log because
+ * the console is not where a user is looking.
+ */
+function loadFoundryMount(): FoundryMountModule {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require(FOUNDRY_MOUNT_PATH) as FoundryMountModule;
+  } catch (err) {
+    const sentence =
+      'BookForge cannot start: the hosted Foundry window has not been built. Its mount module is '
+      + `not at ${FOUNDRY_MOUNT_PATH}. Build the vendored subtree — run `
+      + '`cd foundry-app && npm install && npm run build` — and start BookForge again. '
+      + `(${(err as Error).message})`;
+    console.error(`[foundry-mount] ${sentence}`);
+    // Before ready on Windows and macOS this still draws; on Linux it logs. Either
+    // way the exit below is what actually stops the launch.
+    try { dialog.showErrorBox('Foundry is not built', sentence); } catch { /* pre-ready platform */ }
+    app.exit(1);
+    throw new Error(sentence);
+  }
+}
+
+const foundryMount: FoundryMountModule = loadFoundryMount();
+
 let mainWindow: BrowserWindow | null = null;
 
 // First-run runtime readiness. Packaged builds unpack the bundled Python env +
@@ -436,6 +566,194 @@ function foundryDataRoot(): string {
  */
 function foundryProjectsDir(): string {
   return path.join(foundryDataRoot(), 'projects');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// What the hosted Foundry announces, and what BookForge does about it
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Two callbacks, and between them they are the whole of the host's side of the
+// conversation. Foundry catches whatever they throw — an export that landed on
+// disk must not become a failed job because the host mishandled the news — so
+// both are written to say what went wrong rather than to rely on that catch, and
+// both are called through a `void` because Foundry's contract is synchronous
+// while every record BookForge keeps is a file.
+//
+// NEITHER GUESSES. A landing that names no book of ours is reported by name and
+// written nowhere; that is the entire policy, and it is why the mapping is
+// allowed to be authoritative when it does match.
+
+/**
+ * A landing's project KEY — the folder name under `<library>/foundry/projects/`.
+ *
+ * The key is what a manifest stores (`foundryProject.dir`), never a path, so
+ * this is the one conversion the announcements need.
+ */
+function foundryLandingKey(projectDir: string): string {
+  return path.basename(normalizeFsPath(projectDir));
+}
+
+/**
+ * Every BookForge book, with the Foundry project key it claims.
+ *
+ * ONE PASS OVER THE LIBRARY PER LANDING. `listProjects` reads each manifest
+ * exactly once, concurrently, which is the same read the Studio list does on
+ * every load — so matching a landing costs one library sweep rather than one
+ * manifest read per project per landing. It is deliberately NOT cached: an
+ * import that just landed changed a manifest this instant, and a cache would
+ * answer with the library as it stood before the thing being announced.
+ */
+async function foundryProjectClaims(): Promise<{ dir: string; key: string | null }[]> {
+  const listed = await manifestService.listProjects();
+  if (!listed.success || !listed.projects) {
+    throw new Error(
+      `the library could not be listed: ${listed.error || 'no reason given'}`);
+  }
+  return listed.projects.map((m) => ({
+    dir: manifestService.getProjectPath(m.projectId),
+    key: m.foundryProject?.dir ?? null,
+  }));
+}
+
+/** Is `child` inside `parent`? Windows-safe: normalized, and case-insensitively. */
+function isInside(parent: string, child: string): boolean {
+  const rel = path.relative(normalizeFsPath(parent), normalizeFsPath(child));
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/**
+ * An export landed in a Foundry project's tray: file it onto the right book's
+ * versions page, or say why it could not be.
+ */
+async function recordFoundryExportLanding(landing: FoundryExportLanding): Promise<void> {
+  const key = foundryLandingKey(landing.projectDir);
+  let claims: { dir: string; key: string | null }[];
+  try {
+    claims = await foundryProjectClaims();
+  } catch (err) {
+    console.error(
+      `[foundry-host] "${landing.title}" was exported by Foundry project "${key}", but `
+      + `${(err as Error).message}. The file is where Foundry left it; nothing lists it.`);
+    return;
+  }
+
+  const matches = claims.filter((c) => c.key !== null && c.key === key);
+
+  if (matches.length === 0) {
+    // A landing from a project no book of ours claims. Ordinary the first time a
+    // user imports a stray file inside the Foundry window — and, for a book of
+    // ours, healed by the onImport announcement rather than guessed at here.
+    console.error(
+      `[foundry-host] Foundry exported "${landing.title}" from project "${key}", and no book in `
+      + 'this library claims that project. Nothing was recorded. Open the book in Foundry once '
+      + '(Import via Foundry) so the mapping is announced, then export again.');
+    broadcastToAllWindows('foundry-host:unmatched-export', { key, title: landing.title });
+    return;
+  }
+
+  if (matches.length > 1) {
+    // Keys are one-to-one by construction — a project belongs to one book — so
+    // this is a corrupted library rather than an ambiguity to resolve. Refused
+    // by name, because picking one of them would silently file a version under
+    // whichever book happened to sort first.
+    console.error(
+      `[foundry-host] "${landing.title}" cannot be recorded: ${matches.length} books claim Foundry `
+      + `project "${key}" — ${matches.map((m) => path.basename(m.dir)).join(', ')}. A project `
+      + 'belongs to exactly one book. Nothing was recorded; fix the duplicate mapping first.');
+    return;
+  }
+
+  const matchDir = matches[0]!.dir;
+
+  if (landing.kind !== 'epub' && landing.kind !== 'txt' && landing.kind !== 'pdf') {
+    console.error(
+      `[foundry-host] "${landing.title}" was exported as kind "${landing.kind}", which is not a `
+      + `kind the versions page holds (epub, txt, pdf). Nothing was recorded for `
+      + `${path.basename(matchDir)}.`);
+    return;
+  }
+
+  // The record is LIBRARY-RELATIVE with forward slashes, for the reason every
+  // other path in a manifest is: an absolute path names a volume, and stops
+  // being true the day the library moves.
+  const libraryRoot = getLibraryRoot();
+  if (!isInside(libraryRoot, landing.path)) {
+    console.error(
+      `[foundry-host] "${landing.title}" cannot be recorded: Foundry left it at ${landing.path}, `
+      + `which is not inside this library (${libraryRoot}). Only files inside the library can be `
+      + 'referenced by a version row. Nothing was recorded.');
+    return;
+  }
+  const rel = path.relative(normalizeFsPath(libraryRoot), normalizeFsPath(landing.path))
+    .split(path.sep).join('/');
+
+  try {
+    await manifestService.appendFoundryExport(matchDir, {
+      path: rel, kind: landing.kind, title: landing.title,
+    });
+  } catch (err) {
+    console.error(`[foundry-host] ${(err as Error).message}`);
+    return;
+  }
+  // Every window: the versions page can be open in more than one, and the row
+  // must appear where the user is rather than where the export was started.
+  broadcastToAllWindows('foundry-host:exports-changed', { projectDir: matchDir });
+}
+
+/**
+ * FIRST CONTACT: an import inside the Foundry window minted a project. Learn
+ * which of our books it belongs to, from the file the user opened.
+ *
+ * `originalPath` is the thread. The bare Import-via-Foundry window is opened
+ * FROM a book of ours, the user then drops or opens that book's own file, and
+ * that file lives inside its BookForge project — so a landing whose original is
+ * under one of our project folders names that book and no other.
+ *
+ * THE ANNOUNCEMENT IS AUTHORITATIVE, including over a mapping already recorded:
+ * Foundry has just told us which project this file is, and a stored key that
+ * disagrees is a stale one. That overwrite is the healing path the re-import
+ * re-fire exists for, so it is taken rather than refused — loudly, because a
+ * mapping CHANGING is worth a line in the log where first contact is routine.
+ */
+async function recordFoundryImportLanding(landing: FoundryImportLanding): Promise<void> {
+  const key = foundryLandingKey(landing.projectDir);
+  let claims: { dir: string; key: string | null }[];
+  try {
+    claims = await foundryProjectClaims();
+  } catch (err) {
+    console.error(
+      `[foundry-host] Foundry imported ${landing.originalPath} as project "${key}", but `
+      + `${(err as Error).message}. The mapping was not recorded; re-import to try again.`);
+    return;
+  }
+
+  const owner = claims.find((c) => isInside(c.dir, landing.originalPath));
+  if (owner === undefined) {
+    // Legitimate: somebody imported a stray file inside the Foundry window. It is
+    // a Foundry project with no BookForge book, which is a thing that may exist.
+    console.log(
+      `[foundry-host] Foundry imported ${landing.originalPath} as project "${key}". It is not a `
+      + 'file of any book in this library, so no mapping was recorded.');
+    return;
+  }
+
+  if (owner.key === key) return; // already recorded, and a re-import says the same thing
+
+  const changing = owner.key !== null;
+  try {
+    await manifestService.setFoundryProject(owner.dir, key);
+  } catch (err) {
+    console.error(`[foundry-host] ${(err as Error).message}`);
+    return;
+  }
+  console.log(
+    changing
+      ? `[foundry-host] ${path.basename(owner.dir)} now points at Foundry project "${key}" `
+        + `(it pointed at "${owner.key}"). Foundry's own announcement is the authority.`
+      : `[foundry-host] ${path.basename(owner.dir)} is Foundry project "${key}".`);
+  // The door's label is read from this mapping, so it flips from
+  // "Import via Foundry" to "Edit in Foundry" without a reload.
+  broadcastToAllWindows('foundry-host:project-changed', { projectDir: owner.dir });
 }
 
 /**
@@ -7089,6 +7407,46 @@ function setupIpcHandlers(): void {
     } catch (err) { console.error('[foundry-host:exports]', err); return { success: false, error: (err as Error).message }; }
   });
 
+  /**
+   * THE DOOR: open the Foundry window on this book.
+   *
+   * A book WITH a project is deep-linked into it — `openFoundryWindow(dir)`
+   * pushes `project:open` once the renderer is listening, and Foundry lands on
+   * the step its ledger says the book stands on. A second press raises the
+   * window that is already open rather than making another; that is Foundry's
+   * rule, not ours, and it is why nothing here tracks a window.
+   *
+   * A book WITHOUT one gets the BARE window — the Import-via-Foundry door. There
+   * is no project to deep-link into, and one cannot be minted from this side:
+   * Foundry chooses the key (it is derived from the file's own content), so the
+   * user imports their book inside the window and Foundry announces the key it
+   * minted. That announcement — `onImport` / `recordFoundryImportLanding` — is
+   * what records the mapping, so the NEXT press of this button deep-links, and a
+   * later export landing matches by key.
+   *
+   * 2026-08-16: that flow is the answer to what used to be an open question here
+   * ("how does the host learn a new project's key?"), settled with Foundry's
+   * first-contact callback. The unknown-key refusal in the export handler stays
+   * as the backstop for landings from genuinely alien projects — a stray file
+   * somebody imported inside the window, which belongs to no book of ours.
+   */
+  ipcMain.handle('foundry-host:open', async (_event, projectDir: string) => {
+    try {
+      if (!projectDir || !fsSync.existsSync(projectDir)) return { success: false, error: 'Project not found' };
+      // LAZILY, here rather than at startup: a library with no Foundry project
+      // has no reason to carry an empty folder, and this is the first moment one
+      // is genuinely wanted. Recursive, so pressing the button twice is nothing.
+      await fs.mkdir(foundryProjectsDir(), { recursive: true });
+      const key = await manifestService.readFoundryProject(projectDir);
+      if (key === null) {
+        foundryMount.openFoundryWindow();
+        return { success: true, opened: 'bare' as const };
+      }
+      foundryMount.openFoundryWindow(path.join(foundryProjectsDir(), key));
+      return { success: true, opened: 'project' as const };
+    } catch (err) { console.error('[foundry-host:open]', err); return { success: false, error: (err as Error).message }; }
+  });
+
   /** Forget one export RECORD. The file stays in the foundry project's final/ tray. */
   ipcMain.handle('foundry-host:forget-export', async (_event, projectDir: string, exportId: string) => {
     try {
@@ -13320,6 +13678,58 @@ app.whenReady().then(async () => {
   // yet, so any leftovers are from prior/failed/interrupted runs.
   void cleanE2aTmpDir();
 
+  // ── Mount the hosted Foundry ─────────────────────────────────────────────
+  //
+  // HERE, and not earlier in this function, because `foundryDataRoot()` is
+  // `<library>/foundry` and the persisted library root was only restored a few
+  // lines up. Mounting before that would hand Foundry the default Documents
+  // location while every other part of BookForge used the real one.
+  //
+  // ONCE, with no guard. `mountFoundry` throws on a second call (ipcMain.handle
+  // refuses a duplicate channel), and that is the failure we want: a second
+  // mount is a bug in this startup, and a flag that quietly skipped it would
+  // hide two Foundries fighting over one queue.
+
+  // The engine is a spawned CLI, and Foundry resolves it from `FOUNDRY_BIN`
+  // before falling back to a binary beside the app or its dev checkout. We
+  // already know where this machine's foundry is (the component registry, or the
+  // user's own FOUNDRY_CLI_PATH), so we say so — but only if the environment has
+  // not already spoken, because an explicitly-set FOUNDRY_BIN is a developer
+  // pointing at a specific build and must win.
+  if (!process.env['FOUNDRY_BIN']) {
+    try {
+      const { resolveFoundryPath } = await import('./foundry-bridge.js');
+      const bin = resolveFoundryPath();
+      if (bin) {
+        process.env['FOUNDRY_BIN'] = bin;
+        logger.info('Hosted Foundry engine', { bin });
+      } else {
+        // Left unset on purpose: Foundry then resolves its own dev checkout,
+        // which is the right answer on a developer's machine and an honest
+        // failure on anyone else's.
+        logger.info('Hosted Foundry engine: none installed — FOUNDRY_BIN left unset.');
+      }
+    } catch (err) {
+      logger.warn('Could not resolve the foundry engine for the hosted window', {
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  foundryMount.mountFoundry({
+    // A GETTER, not a captured string. Foundry answers `readAppSettings()` from
+    // this property on every read (`hostedLibraryDir()`), so a live one means
+    // moving the library moves the hosted window's data with it — the same rule
+    // `foundryDataRoot()` itself is written to.
+    get libraryDir(): string { return foundryDataRoot(); },
+    // Fire-and-forget on purpose: the contract is synchronous, and everything
+    // these do is file I/O. Each reports its own failures — the `void` is not
+    // swallowing anything, because neither ever rejects.
+    onExport: (landing) => { void recordFoundryExportLanding(landing); },
+    onImport: (landing) => { void recordFoundryImportLanding(landing); },
+  });
+  logger.info('Hosted Foundry mounted', { libraryDir: foundryDataRoot() });
+
   // ── Move every project's editor state out of its manifest ────────────────
   //
   // `manifest:list` reads and parses EVERY manifest on every Studio load, and
@@ -13647,6 +14057,29 @@ app.on('before-quit', async (event) => {
       + 'is what hung.');
     app.exit(1);
   }, 120_000);
+
+  // ── The hosted Foundry goes first ────────────────────────────────────────
+  //
+  // FIRST in the chain, and that order is load-bearing. `stopFoundry()` drains
+  // Foundry's queue and SIGTERMs its reading server — a vLLM process inside WSL
+  // holding ~20 GB of the card — then waits for the CUDA device to come back.
+  // BookForge's own TTS block below ends with `gracefulWslShutdown()`, a GLOBAL
+  // sweep of the same distro; running that first would kill Foundry's server out
+  // from under its own cooperative stop, which is exactly the SIGKILL-a-guest-
+  // GPU-process shape that wedges the WSL VM until a reboot. Foundry stops its
+  // own process, cleanly, and only then does the sweep run.
+  //
+  // Deadlined like every other step, for this file's own reason: a stop that
+  // never settles must become a named log line rather than an invisible
+  // windowless process. `stopFoundry` is idempotent, so an abandoned wait
+  // leaves nothing half-done — the SIGTERM was sent either way.
+  await quitStepWithDeadline('stop the hosted Foundry (queue + reading server)', 45_000, async () => {
+    try {
+      await foundryMount.stopFoundry();
+    } catch (err) {
+      console.error('[MAIN] Stopping the hosted Foundry failed:', (err as Error).message);
+    }
+  });
 
   // Every open quire document owns an offscreen BrowserWindow and a session
   // partition. Neither outlives the app, so both are closed by name.
