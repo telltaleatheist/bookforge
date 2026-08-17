@@ -142,10 +142,44 @@ async function assertFutureRealPathWithinProject(projectDir: string, filePath: s
   }
 }
 
-export async function resolveAudiobookAnalysisSource(
+/**
+ * Everything {@link ResolvedAudiobookAnalysisSource} is, except the two facts
+ * that cost a full read of a multi-gigabyte file.
+ *
+ * Split out on 2026-08-17 because the Versions page asks a much smaller question
+ * than the analyzer does — "does this audiobook have an authoritative transcript
+ * at all" — and was paying the analyzer's price for it. Measured on the real
+ * library: the transcript half of the work is 0.5–1.3 s, the sha256 half is
+ * 3.7–8.3 s, and a page that only needs to decide whether to enable a button
+ * needs none of the second half.
+ */
+export interface ResolvedAudiobookTranscriptSource {
+  projectId: string;
+  projectDir: string;
+  variant: ProjectVariant;
+  m4bPath: string;
+  m4bRelativePath: string;
+  vttPath: string;
+  vttContent: string;
+  viaTemp: boolean;
+  cues: AudiobookAnalysisCue[];
+  transcriptSha256: string;
+}
+
+/**
+ * The audiobook and its authoritative transcript, checked and parsed.
+ *
+ * THE one place the rules live: the variant must exist exactly once, be an m4b,
+ * resolve inside its own project through its real path, and carry a transcript
+ * that parses strictly. A caller that gets a value back has all of that; a
+ * caller that wants only the eligibility question asks this and throws the value
+ * away. Nothing re-implements the checks — that was the whole reason to split it
+ * rather than write a second, looser resolver beside it.
+ */
+export async function resolveAudiobookTranscriptSource(
   projectId: string,
   variantId: string,
-): Promise<ResolvedAudiobookAnalysisSource> {
+): Promise<ResolvedAudiobookTranscriptSource> {
   if (!projectId || !variantId) throw new Error('projectId and variantId are required');
   assertSafeProjectId(projectId);
   const result = await getManifest(projectId);
@@ -173,7 +207,6 @@ export async function resolveAudiobookAnalysisSource(
     }
     const vttContent = await fs.promises.readFile(readable.path, 'utf8');
     const cues = parseAudiobookVttStrict(vttContent);
-    const m4b = await sha256File(m4bPath);
     return {
       projectId,
       projectDir,
@@ -184,8 +217,6 @@ export async function resolveAudiobookAnalysisSource(
       vttContent,
       viaTemp: readable.viaTemp,
       cues,
-      m4bSha256: m4b.sha256,
-      m4bSizeBytes: m4b.size,
       transcriptSha256: digestAudiobookCues(cues),
     };
   } finally {
@@ -193,6 +224,27 @@ export async function resolveAudiobookAnalysisSource(
       try { await fs.promises.unlink(readable.path); } catch { /* OS cleanup remains safe */ }
     }
   }
+}
+
+/**
+ * The transcript source AND the audiobook's own byte identity.
+ *
+ * The sha256 is what binds a written report to the exact audio it describes, so
+ * it is read from the file every time — never from a cache, never from a record.
+ * That is the point of the binding, and it is why the split above hands the
+ * cheap half to callers that are not writing or verifying a report.
+ */
+export async function resolveAudiobookAnalysisSource(
+  projectId: string,
+  variantId: string,
+): Promise<ResolvedAudiobookAnalysisSource> {
+  const source = await resolveAudiobookTranscriptSource(projectId, variantId);
+  const m4b = await sha256File(source.m4bPath);
+  return {
+    ...source,
+    m4bSha256: m4b.sha256,
+    m4bSizeBytes: m4b.size,
+  };
 }
 
 export async function createAudiobookAnalysisBinding(
