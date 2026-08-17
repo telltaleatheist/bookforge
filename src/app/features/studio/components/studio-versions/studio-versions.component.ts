@@ -364,8 +364,8 @@ const AUDIO_EXTS = new Set([
                       }
                     </div>
                     <div class="slot">
-                      @if (canOpenInEditor(v)) {
-                        <button class="act" (click)="openVariant(v)" title="Open this file in the editor">Open</button>
+                      @if (canOpenInFoundry(v)) {
+                        <button class="act" (click)="openVariant(v)" title="Open in Foundry">Open</button>
                       }
                     </div>
                     <div class="slot">
@@ -440,7 +440,9 @@ const AUDIO_EXTS = new Set([
               </div>
               <div class="ractions">
                 <div class="specials"></div>
-                <div class="slot"></div>
+                <div class="slot">
+                  <button class="act" (click)="openFoundryExport(fx)" title="Open in Foundry">Open</button>
+                </div>
                 <div class="slot">
                   <button class="act" (click)="exportFoundryExport(fx)"
                           title="Save a copy to your computer">Export</button>
@@ -476,12 +478,13 @@ const AUDIO_EXTS = new Set([
                           title="Re-run the content analysis on the same version">Regenerate</button>
                 }
               </div>
-              <div class="slot">
-                @if (a.path) {
-                  <button class="act" (click)="viewAnalysis.emit({ path: a.path })"
-                          title="Open the analyzed version with the flags highlighted">View</button>
-                }
-              </div>
+              <!-- No View. Reading the report meant opening the analyzed file in
+                   the legacy picker, which is where the flag highlighting lived,
+                   and that window is unreachable since 2026-08-16 (Owen's ruling:
+                   Foundry is the one editing surface). Foundry has no flag view to
+                   route this to, so the act is gone rather than rerouted; Export
+                   still gets the analyzed file out. -->
+              <div class="slot"></div>
               <div class="slot">
                 @if (a.path) {
                   <button class="act" (click)="exportDoc.emit(a.path)"
@@ -1223,7 +1226,7 @@ export class StudioVersionsComponent {
   readonly item = input<StudioItem | null>(null);
   readonly refreshTrigger = input<number>(0);
 
-  readonly open = output<string>();         // book-variant abs path -> open standalone in the editor
+  readonly open = output<string>();         // abs path of the row's file -> open it in Foundry
   readonly exportDoc = output<string>();    // version path -> export EPUB/PDF
   readonly exportAudio = output<string>();  // abs path of the audiobook variant -> export the M4B
   readonly listen = output<string>();       // abs path of the audiobook variant to play
@@ -1248,7 +1251,6 @@ export class StudioVersionsComponent {
   readonly correctSentences = output<void>(); // regenerate individual bad sentences, then rebuild
   readonly changed = output<void>();        // after delete/edit -> tell Studio to refresh
   readonly compareActive = output<boolean>(); // Studio goes full-height while comparing
-  readonly viewAnalysis = output<{ path: string }>();  // open this version's file with analysis flags highlighted
   readonly generateAnalysis = output<StudioAnalysisTarget>(); // opens the analysis modal, locked to this source
 
   /**
@@ -2259,10 +2261,34 @@ export class StudioVersionsComponent {
     return v.absPath;
   }
 
-  /** Open this version's own file in the editor (standalone, not the pipeline source). */
+  /**
+   * Open this version's own file in Foundry — the one editing surface since
+   * 2026-08-16.
+   *
+   * The row names a FILE, so the press lands on that file: the same
+   * `variantFile`-proved absolute path Process carries, handed to Foundry's
+   * document deep-link. A file that lies inside the book's Foundry project
+   * adopts into it there; one that does not is still opened, through the same
+   * admission door a drop uses.
+   */
   async openVariant(v: ResolvedProjectVariant): Promise<void> {
     const abs = await this.variantFile(v, 'open this version');
     if (abs) this.open.emit(abs);
+  }
+
+  /** Open a file Foundry exported, back in Foundry, at the path Foundry left it. */
+  async openFoundryExport(fx: ResolvedFoundryExport): Promise<void> {
+    if (!fx.exists) {
+      console.error(`[studio-versions] export missing on disk: ${fx.absPath}`);
+      await this.electron.showMessageDialog({
+        title: 'Could not open this file',
+        message: `“${fx.title}” is not on disk where Foundry left it — see the log for the path. `
+          + 'It may have been moved or deleted from the Foundry project.',
+        type: 'error',
+      });
+      return;
+    }
+    this.open.emit(fx.absPath);
   }
 
   /** Save a copy of this version's file somewhere else. */
@@ -2283,9 +2309,9 @@ export class StudioVersionsComponent {
     if (abs) this.exportAudio.emit(abs);
   }
 
-  /** The editor renders mupdf-backed documents — EPUB and PDF. Audio (m4b) and
-   *  other formats have no editor view, so no Open button for them. */
-  canOpenInEditor(v: ProjectVariant): boolean {
+  /** Foundry edits documents — EPUB and PDF. Audio (m4b) and other formats have
+   *  nothing to open there, so no Open button for them. */
+  canOpenInFoundry(v: ProjectVariant): boolean {
     if (v.kind !== 'ebook') return false;
     const ext = this.variantExtension(v);
     return ext === 'epub' || ext === 'pdf';

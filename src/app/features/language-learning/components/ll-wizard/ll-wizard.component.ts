@@ -435,6 +435,7 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                       <desktop-button
                         variant="secondary"
                         size="sm"
+                        title="Open in Foundry"
                         [disabled]="openingNarration()"
                         (click)="openNarrationCopy()"
                       >{{ openingNarration() ? 'Opening…' : 'Open' }}</desktop-button>
@@ -4008,11 +4009,11 @@ export class LLWizardComponent implements OnInit {
   /**
    * Put the narration copy on screen so the user can see what will be read.
    *
-   * Navigation, not viewer work: the picker already knows this file is not the
-   * working copy and shows it read-only under a banner offering the way back
-   * (`artifactBanner`). Opening the PROJECT and naming the file inside it is all
-   * there is to do — the same call the versions page's own Open makes, so a file
-   * opened from here arrives with the project's state exactly as it does there.
+   * Navigation, not viewer work — and it goes through the same door as the
+   * versions page's Open, since 2026-08-16 (Owen's ruling: Foundry is the one
+   * editing surface). The file is NAMED, so Foundry lands on it rather than on
+   * the project's proof sheet, and a file inside the book's Foundry project
+   * adopts into it there.
    */
   async openNarrationCopy(): Promise<void> {
     const projectDir = this.effectiveProjectDir();
@@ -4021,13 +4022,13 @@ export class LLWizardComponent implements OnInit {
 
     this.openingNarration.set(true);
     try {
-      const result = await this.electronService.editorOpenWindowWithBfp(projectDir, narrationPath);
+      const result = await this.electronService.foundryHostOpen(projectDir, narrationPath);
       if (!result.success) {
-        throw new Error(result.error || 'The narration copy could not be opened.');
+        throw new Error(result.error || 'The Foundry window could not be opened.');
       }
     } catch (err) {
       await this.dialog.alert({
-        title: 'Could not open the narration copy',
+        title: 'Could not open Foundry',
         message: err instanceof Error ? err.message : String(err),
         type: 'error',
       });
