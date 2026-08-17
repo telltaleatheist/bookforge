@@ -1017,16 +1017,15 @@ const AUDIO_EXTS = new Set([
     }
     .vrow.open { border-color: var(--accent-primary, #06b6d4); }
     .vhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 12px; cursor: pointer; }
-    /* A version Foundry made, drawn UNDER the version it was made from: indented,
-       lighter, and a size smaller. Owen, 2026-08-17: "visually be smaller
-       indented line items under their parent file". The left rule is what carries
-       the relationship down a run of several exports — the indent alone reads as
-       a stray margin once the parent has scrolled off. */
+    /* A version Foundry made, drawn UNDER the version it was made from: indented
+       and a size smaller. Owen, 2026-08-17: "visually be smaller indented line
+       items under their parent file". SAME background and border as every other
+       row — the first cut swapped in --bg-base (near-black in dark theme, a hole
+       in the page) and a 2px --border-strong left rule with shrunken corner
+       radii, and Owen called the result out on sight. The indent and the smaller
+       type are the whole of the distinction. */
     .vrow.nested {
       margin-left: 26px;
-      background: var(--bg-base);
-      border-left: 2px solid var(--border-strong, var(--border-default, rgba(255,255,255,0.07)));
-      border-top-left-radius: 4px; border-bottom-left-radius: 4px;
     }
     .vrow.nested .vhead { padding: 7px 12px; }
     .vrow.nested .ricon { font-size: 1.05rem; }
