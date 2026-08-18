@@ -10,7 +10,7 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **1430bef** — *"feat(renderer): no longer a nav rail — an action menu, one thing you can do per row"* |
+| Source sha | **fd99b39** — *"fix(renderer): the host's form stops splitting lines — a toggle reads across, numbers pair up"* |
 | Copied on | 2026-08-18 |
 | Copied by | `git -C <foundry> archive 1430bef app \| tar -x --strip-components=1` |
 
@@ -76,7 +76,15 @@ navigation, then the pipeline in run order (Read, Translate, Simplify,
 Export, Metadata, audio acts last), then Settings under a divider; graying
 unchanged. Renderer-internal rename: ToolRailComponent → ActionMenuComponent
 (`components/action-menu/`); no channel, shared type, or preload surface
-moved (94/94 blobs at 1430bef).
+moved (94/94 blobs at 1430bef). `fd99b39` is Owen's verdict on the first
+formed dialog ("looks ridiculous, things are all over the place, splitting
+lines"): the host-op dialog's body now lays a runtime form out by RULE over
+the four field kinds — a toggle is one line of prose with its checkbox
+beside it, adjacent numbers pair two to a row (the translate dialog's
+`.pair`, as `.row.two`), selects/text stay full-width, help notes live in a
+per-field `.cell` under the half they explain, card 460→520px. One file,
+renderer-internal; no channel, shared type, or preload surface moved (94/94
+blobs at fd99b39).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the
