@@ -572,6 +572,70 @@ export function getAudiobookDirFromBfp(bfpPath: string): string {
 }
 
 /**
+ * Whether WSL can see this Windows drive under /mnt.
+ *
+ * WSL auto-mounts FIXED drives only: C: is /mnt/c the moment the distro boots,
+ * but a NETWORK drive — the titan library at Z: — has no /mnt entry at all, and
+ * `mkdir -p /mnt/z` inside the guest is "Permission denied", not a mount (hit
+ * live 2026-08-18, the first titan narration's copy-out; the same asymmetry the
+ * INPUT side hit first, which is why prepareSession stages the ebook INTO WSL).
+ */
+async function wslSeesDrive(driveLetter: string): Promise<boolean> {
+  const distro = getWslDistro();
+  const probe = `test -d /mnt/${driveLetter.toLowerCase()}`;
+  const args = distro ? ['-d', distro, 'bash', '-c', probe] : ['bash', '-c', probe];
+  return await new Promise<boolean>((resolve) => {
+    const proc = spawn('wsl.exe', args, { shell: false });
+    proc.on('close', (code) => resolve(code === 0));
+    proc.on('error', () => resolve(false));
+  });
+}
+
+/**
+ * COPY A DIRECTORY OUT OF WSL onto a Windows path, choosing the road by what
+ * WSL can actually reach.
+ *
+ * The ext4 → /mnt/<letter> copy inside the guest is much faster than reading
+ * the session through the \\wsl$ 9p mount, so it is taken exactly when the
+ * destination's drive IS mounted in WSL. A destination WSL cannot see — any
+ * network drive — is copied by WINDOWS instead: read through \\wsl$, written
+ * to the share natively. Nothing is lost on that road: both sides of a
+ * network destination cross the wire regardless of who drives the copy.
+ *
+ * This is a ROUTING DECISION on a probed fact, not a fallback — the wrong road
+ * fails loudly (the guest's mkdir cannot create /mnt/z), it never substitutes.
+ */
+async function copyDirOutOfWsl(sourceUnc: string, destDir: string): Promise<void> {
+  const drive = /^([A-Za-z]):[\\/]/.exec(destDir);
+  const mounted = drive !== null && await wslSeesDrive(drive[1]!);
+  if (!mounted) {
+    console.log(
+      `[PARALLEL-TTS] WSL cannot see the destination drive (no /mnt entry); Windows copies `
+      + `through \\\\wsl$ instead: ${sourceUnc} -> ${destDir}`);
+    await fs.mkdir(path.dirname(destDir), { recursive: true });
+    await fs.cp(sourceUnc, destDir, { recursive: true });
+    return;
+  }
+  const wslSrc = uncToWslPath(sourceUnc);
+  const wslDest = windowsToWslPath(destDir);
+  const wslDestParent = windowsToWslPath(path.dirname(destDir));
+  const cmd = `mkdir -p ${shellQuote(wslDestParent)} && cp -r ${shellQuote(wslSrc)} ${shellQuote(wslDest)}`;
+  const distro = getWslDistro();
+  const wslArgs = distro ? ['-d', distro, 'bash', '-c', cmd] : ['bash', '-c', cmd];
+  console.log(`[PARALLEL-TTS] WSL copy: wsl.exe ${wslArgs.join(' ')}`);
+  await new Promise<void>((resolve, reject) => {
+    const proc = spawn('wsl.exe', wslArgs, { shell: false });
+    let stderr = '';
+    proc.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
+    proc.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`WSL copy failed (code ${code}): ${stderr}`));
+    });
+    proc.on('error', reject);
+  });
+}
+
+/**
  * Cache the full TTS session folder from e2a tmp into the project for permanent storage.
  * After caching, the original session in e2a tmp is removed.
  *
@@ -606,31 +670,10 @@ export async function cacheSessionToBfp(
     const isWslSession = isWslUncPath(sessionDir);
 
     if (isWslSession && process.platform === 'win32') {
-      // WSL session: use wsl.exe to copy within WSL filesystem to /mnt/ destination
-      const wslSourcePath = uncToWslPath(sessionDir);
-      const wslTempDestPath = windowsToWslPath(tempDestDir);
-
-      // Ensure parent exists in WSL
-      const wslDestParent = windowsToWslPath(sessionParent);
-      const mkdirCmd = `mkdir -p ${shellQuote(wslDestParent)}`;
-      const copyCmd = `cp -r ${shellQuote(wslSourcePath)} ${shellQuote(wslTempDestPath)}`;
-      const distro = getWslDistro();
-      const wslArgs = distro
-        ? ['-d', distro, 'bash', '-c', `${mkdirCmd} && ${copyCmd}`]
-        : ['bash', '-c', `${mkdirCmd} && ${copyCmd}`];
-
-      console.log(`[PARALLEL-TTS] WSL copy: wsl.exe ${wslArgs.join(' ')}`);
-
-      await new Promise<void>((resolve, reject) => {
-        const proc = spawn('wsl.exe', wslArgs, { shell: false });
-        let stderr = '';
-        proc.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
-        proc.on('close', (code) => {
-          if (code === 0) resolve();
-          else reject(new Error(`WSL copy failed (code ${code}): ${stderr}`));
-        });
-        proc.on('error', reject);
-      });
+      // WSL session: routed copy-out — inside the guest when the destination
+      // drive is mounted there, through \\wsl$ on the Windows side when it is
+      // not (network drives never are).
+      await copyDirOutOfWsl(sessionDir, tempDestDir);
     } else {
       // Native session: use Node.js recursive copy
       await fs.cp(sessionDir, tempDestDir, { recursive: true });
@@ -772,28 +815,10 @@ export async function cacheSessionToProject(
     const isWslSession = isWslUncPath(sessionDir);
 
     if (isWslSession && process.platform === 'win32') {
-      const wslSourcePath = uncToWslPath(sessionDir);
-      const wslTempDestPath = windowsToWslPath(tempDestDir);
-      const wslDestParent = windowsToWslPath(langSessionParent);
-      const mkdirCmd = `mkdir -p ${shellQuote(wslDestParent)}`;
-      const copyCmd = `cp -r ${shellQuote(wslSourcePath)} ${shellQuote(wslTempDestPath)}`;
-      const distro = getWslDistro();
-      const wslArgs = distro
-        ? ['-d', distro, 'bash', '-c', `${mkdirCmd} && ${copyCmd}`]
-        : ['bash', '-c', `${mkdirCmd} && ${copyCmd}`];
-
-      console.log(`[PARALLEL-TTS] WSL copy: wsl.exe ${wslArgs.join(' ')}`);
-
-      await new Promise<void>((resolve, reject) => {
-        const proc = spawn('wsl.exe', wslArgs, { shell: false });
-        let stderr = '';
-        proc.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
-        proc.on('close', (code) => {
-          if (code === 0) resolve();
-          else reject(new Error(`WSL copy failed (code ${code}): ${stderr}`));
-        });
-        proc.on('error', reject);
-      });
+      // Routed copy-out: guest-side to a mounted drive, \\wsl$ read on the
+      // Windows side to a drive the guest cannot see (network drives never
+      // appear under /mnt — the titan library's Z: is the live case).
+      await copyDirOutOfWsl(sessionDir, tempDestDir);
     } else {
       // Clone-on-write where the filesystem supports it (APFS/ReFS) — with the
       // scratch dir on the library volume this is near-instant regardless of
@@ -4715,21 +4740,11 @@ async function normalizeWslSessionToWindows(
       const folderName = path.basename(prep.sessionDir); // ebook-{id}
       const destParent = getDefaultE2aTmpPath();          // Windows NTFS
       winSessionDir = path.join(destParent, folderName);
-      const wslSrc = uncToWslPath(prep.sessionDir);
-      const wslDest = windowsToWslPath(winSessionDir);
-      const wslDestParent = windowsToWslPath(destParent);
       await fs.rm(winSessionDir, { recursive: true, force: true }).catch(() => {});
-      const cmd = `mkdir -p ${shellQuote(wslDestParent)} && cp -r ${shellQuote(wslSrc)} ${shellQuote(wslDest)}`;
-      const distro = getWslDistro();
-      const wslArgs = distro ? ['-d', distro, 'bash', '-c', cmd] : ['bash', '-c', cmd];
-      console.log(`[PARALLEL-TTS] Normalizing Orpheus session WSL→Windows: wsl.exe ${wslArgs.join(' ')}`);
-      await new Promise<void>((resolve, reject) => {
-        const proc = spawn('wsl.exe', wslArgs, { shell: false });
-        let stderr = '';
-        proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
-        proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`WSL copy failed (${code}): ${stderr}`)));
-        proc.on('error', reject);
-      });
+      console.log(`[PARALLEL-TTS] Normalizing Orpheus session WSL→Windows: ${prep.sessionDir} -> ${winSessionDir}`);
+      // Routed copy-out — with the library (and so the e2a tmp cache) on a
+      // network drive, the guest has no /mnt for it and Windows drives the copy.
+      await copyDirOutOfWsl(prep.sessionDir, winSessionDir);
       // Point e2a's session-state.json at the new Windows location.
       await rewriteSessionStatePaths(winSessionDir);
       const winProcessDir = findE2aProcessDir(winSessionDir);
