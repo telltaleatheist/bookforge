@@ -19,7 +19,7 @@
  * bag of `unknown`s from another application's dialog is allowed to mean. The
  * wiring in main.ts is left holding the disk reads and the enqueue.
  *
- * ── OWEN'S RULING OF 2026-08-16, which rewrote this file ────────────────────
+ * ── OWEN'S RULING OF 2026-08-17, which rewrote this file ────────────────────
  *
  * The first version of this form asked three questions — voice, device, workers —
  * and its header argued that the omissions were the design, on the grounds that a

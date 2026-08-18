@@ -1170,7 +1170,7 @@ async function refreshFoundryNarrateForm(): Promise<void> {
  * ── What the dialog asks now, and the two things it still does not ──────────
  *
  * It used to ask three questions — voice, device, workers — and everything else
- * came from the saved settings. Owen's ruling of 2026-08-16 changed both halves:
+ * came from the saved settings. Owen's ruling of 2026-08-17 changed both halves:
  *
  *  - WORKER COUNT IS DEPRECATED. A run always uses one worker, so the question is
  *    gone and `workers: 1` below is not a default this function chose but the only
@@ -1309,7 +1309,7 @@ async function invokeFoundryNarrate(
       repetitionPenalty: answers.repetitionPenalty,
       speed: answers.speed,
       /*
-       * ALWAYS ONE. Owen's ruling of 2026-08-16: worker count is deprecated and a
+       * ALWAYS ONE. Owen's ruling of 2026-08-17: worker count is deprecated and a
        * run always uses a single worker, so the dialog no longer asks and this is
        * not a default standing in for an answer — it is the only value there is.
        */
