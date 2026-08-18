@@ -366,7 +366,6 @@ import { isBookPath } from '@shared/document/book-path';
                       (skipped)="versionsPanel.set('skipped')"
                       (continueJob)="onContinueJob()"
                       (assemble)="goToProcessing()"
-                      (process)="goToNarration($event.path)"
                       (correctSentences)="startCorrectSentences()"
                       (changed)="onFileChanged()"
                       (compareActive)="versionsComparing.set($event)"
@@ -2316,8 +2315,8 @@ export class StudioComponent implements OnInit, OnDestroy {
     if (!target.exists) {
       this.notices.notify(
         `“${target.title}” is not on disk any more, so there is nothing to narrate. If it was a `
-        + 'file Foundry made, it lived in this book\'s output folder — export it from Foundry '
-        + 'again, or open the book and press Process on the version you want read.');
+        + 'file Foundry made, it lived in this book\'s output folder — open the book in Foundry '
+        + 'and export it again, then narrate it from there.');
       return;
     }
     this.openInWorkspace(item);

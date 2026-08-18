@@ -23,16 +23,6 @@ import { latestPassByKind } from '@shared/document/version-family';
 import { StudioConvertModalComponent } from '../studio-convert-modal/studio-convert-modal.component';
 import { BookConversionService, type ConversionSource } from '../../services/book-conversion.service';
 import type { VlmConvertDestination } from '@shared/vlm/conversion';
-import { SettingsService } from '../../../../core/services/settings.service';
-import {
-  PassOptionsModalComponent,
-  type PassAiChoice,
-  type PassOptionsKind,
-  type PassOptionsResult,
-} from '../pass-options-modal/pass-options-modal.component';
-import { NarrationModalComponent } from '../narration-modal/narration-modal.component';
-import type { ChainPassRequest, ProcessingPassKind } from '@shared/processing/pass-types';
-import { BOOK_PASS_OPTIONS, type BookPassOption } from '@shared/processing/book-passes';
 
 /**
  * The content-analysis report row, as `versions:page-data` hands it over.
@@ -142,7 +132,7 @@ const AUDIO_EXTS = new Set([
   standalone: true,
   imports: [
     CommonModule, FormsModule, DiffViewComponent, MetadataEditorComponent, DesktopSelectComponent,
-    StudioConvertModalComponent, PassOptionsModalComponent, NarrationModalComponent,
+    StudioConvertModalComponent,
   ],
   host: { '[class.comparing]': '!!comparing()' },
   template: `
@@ -202,16 +192,6 @@ const AUDIO_EXTS = new Set([
         @if (passDiffError(); as e) {
           <div class="pass-err">{{ e }}</div>
         }
-        <!--
-          Said, never only logged. The list below is kept when a read fails —
-          right for a transient lock on a synced drive — but a permanent failure
-          (a binding record that will not parse) would otherwise leave a stale or
-          empty list on screen with no explanation, which is the exact experience
-          of work that has no door.
-        -->
-        @if (versionsError(); as e) {
-          <div class="pass-err">{{ e }}</div>
-        }
 
         <!-- Book versions (variants) -->
         <div class="section-head">
@@ -227,6 +207,17 @@ const AUDIO_EXTS = new Set([
              (dragover)="onVDragOver($event)"
              (dragleave)="onVDragLeave($event)"
              (drop)="onVDrop($event)">
+          <!--
+            Said, never only logged — and said INSIDE the list it is about. The
+            rows below are kept when a read fails (right for a transient lock on
+            a synced drive), but a permanent failure would otherwise leave a
+            stale or empty list on screen with no explanation. It stood above the
+            "Book versions" head until 2026-08-18, where a failure to read the
+            versions read as a failure of the whole page.
+          -->
+          @if (versionsError(); as e) {
+            <div class="pass-err">{{ e }}</div>
+          }
           @if (importProgress(); as ip) {
             <div class="vconvert">
               <span class="vc-label" [title]="ip.name">Converting “{{ ip.name }}” to M4B…</span>
@@ -285,63 +276,54 @@ const AUDIO_EXTS = new Set([
                        special buttons, depending on whether the file is capable
                        of running the commands." The three standing acts are in
                        fixed columns so they line up down the page; a row that
-                       cannot perform one leaves its column EMPTY. -->
+                       cannot perform one leaves its column EMPTY.
+
+                       Owen, 2026-08-18, on what the specials are now that
+                       Foundry is the one place text is made: "the user should be
+                       opening from one location: the parent file… no more
+                       convert to epub button. Thats done inside foundry. Tts
+                       should be done from inside foundry as well." So the acts
+                       that STARTED work here — Convert to EPUB, Process, Mark as
+                       TTS file, Generate analysis — are gone from these rows.
+                       Their machinery is untouched; what changed is where the
+                       user asks for them. -->
                   <div class="ractions" (click)="$event.stopPropagation()">
                     <div class="specials">
                       @if (!isPrimary(v)) {
                         <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
                       }
-                      @if (canAnalyzeVariant(v) && !variantIsAnalysisTarget(v)) {
-                        <button class="act" (click)="emitGenerateAnalysisVariant(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
-                      }
-                      <!-- The pages of a PDF version, read into a book. It lands
-                           as another VERSION of this book, on a row of its own
-                           beside this one. -->
+                      <!-- A conversion started elsewhere (the book banner, the
+                           queue) still has to be watchable from the row whose
+                           pages are being read. Nothing STARTS one here. -->
                       @if (conversion() && variantStartedConversion(v)) {
                         <button class="act" (click)="showConversion()"
                                 title="Watch the conversion, or stop it">Show progress</button>
-                      } @else if (canConvertVariant(v)) {
-                        <button class="act primary" [disabled]="!!conversion()"
-                                [title]="conversionBusyTitle() ?? 'Read every page of this PDF into an EPUB. It is added as another version of this book.'"
-                                (click)="startVariantConversion(v)">Convert to EPUB</button>
                       }
-                      <!-- The TTS door. Owen's identity law, 2026-08-09: "the tts
-                           pipeline knows exactly which file its working with
-                           because the user came to the tts page FROM the button
-                           on that document." This row IS a version of the book,
-                           its file is final, and both travel into the dialog as
-                           inputs — nothing on the far side looks either up. -->
-                      @if (canNarrateVariant(v)) {
-                        <button class="act" (click)="processVariant(v)"
-                                title="Narrate this version — opens the narration dialog on this exact file">Process</button>
-                      }
-                      <!-- WHICH file this book gets narrated from, when the user
-                           says. At most one per book: the manifest holds one
-                           pointer, so marking another clears this one. It is
-                           what the shelf's Process button reads. -->
-                      @if (canMarkTts(v)) {
-                        <button class="act" (click)="toggleTtsVariant(v)"
-                                [title]="isTtsVariant(v)
-                                  ? 'This is the file the shelf narrates. Click to unmark it.'
-                                  : 'Mark this as the file to narrate. The book gets a Process button on the shelf.'"
-                        >{{ isTtsVariant(v) ? 'Unmark TTS file' : 'Mark as TTS file' }}</button>
-                      }
-                      <!-- Promote a Foundry export to one of the book's own
-                           files. It moves out of output/ (which is cleared when
-                           a book's output is deleted) into the protected
-                           archive/, and stops being drawn under its parent. -->
+                      <!-- Owen, 2026-08-18: "change add to archive to something
+                           like 'keep file'… the user is being asked if this
+                           should be a definitive, final version of a file or if
+                           it's a throwaway after tts is done."
+
+                           That IS the question: output/ is cleared when a book's
+                           output is deleted, so a Foundry export lives there
+                           until the user says it is one of the book's own files.
+                           Keeping it moves the file into the protected archive/
+                           and un-nests the row. -->
                       @if (isFoundryExport(v)) {
                         <button class="act" (click)="addToArchive(v)"
-                                title="Keep this as one of the book's own files. It moves out of output/ into the archive, at the top level.">Add to archive</button>
+                                title="Keep this file for good. Exports live in output/, which is cleared when this book's output is deleted — keeping it moves the file into the archive as one of the book's own versions.">Keep permanently</button>
                       }
                     </div>
                     <div class="slot">
-                      @if (canOpenInFoundry(v)) {
+                      <!-- ONE door into Foundry, and it is the PARENT file's.
+                           An export opened in Foundry would start a second
+                           project from a file that came out of the first. -->
+                      @if (canOpenInFoundry(v) && !row.nested) {
                         <button class="act" (click)="openVariant(v)" title="Open in Foundry">Open</button>
                       }
                     </div>
                     <div class="slot">
-                      <button class="act" (click)="exportVariant(v)" title="Save a copy to your computer">Export</button>
+                      <button class="act" (click)="exportVariant(v)" title="Save a copy to your computer">Save as…</button>
                     </div>
                     <div class="slot">
                       <button class="act danger" (click)="remove(v)" title="Delete this version">Delete</button>
@@ -412,23 +394,25 @@ const AUDIO_EXTS = new Set([
               <div class="rdesc">{{ analysisRowDesc(a) }}</div>
             </div>
             <div class="ractions">
-              <div class="specials">
-                @if (analysisTargetId()) {
-                  <button class="act" (click)="regenerateAnalysis(a)"
-                          title="Re-run the content analysis on the same version">Regenerate</button>
-                }
-              </div>
-              <!-- No View. Reading the report meant opening the analyzed file in
-                   the legacy picker, which is where the flag highlighting lived,
-                   and that window is unreachable since 2026-08-16 (Owen's ruling:
-                   Foundry is the one editing surface). Foundry has no flag view to
-                   route this to, so the act is gone rather than rerouted; Export
-                   still gets the analyzed file out. -->
+              <!-- No Regenerate and no View. Reading the report meant opening the
+                   analyzed file in the legacy picker, which is where the flag
+                   highlighting lived, and that window is unreachable since
+                   2026-08-16 (Owen's ruling: Foundry is the one editing surface).
+                   Owen, 2026-08-18: "Analysis is dead technically but i want to
+                   revive it down the line. We can remove the button but leave the
+                   logic. We'll rework it and add a button for it in the foundry
+                   window later, next to translate and simplify."
+
+                   So this row REPORTS what exists and lets it be saved or
+                   removed. Nothing here starts an analysis — generateAnalysis
+                   and its handlers are all still wired for the Foundry-side
+                   button that replaces this one. -->
+              <div class="specials"></div>
               <div class="slot"></div>
               <div class="slot">
                 @if (a.path) {
                   <button class="act" (click)="exportDoc.emit(a.path)"
-                          title="Save a copy of the analyzed file">Export</button>
+                          title="Save a copy of the analyzed file">Save as…</button>
                 }
               </div>
               <div class="slot">
@@ -495,12 +479,11 @@ const AUDIO_EXTS = new Set([
                 <div class="ractions" (click)="$event.stopPropagation()">
                   <div class="specials">
                     <button class="act" [class.active]="isProfessional(v)" (click)="setProfessional(v, !isProfessional(v))" [title]="isProfessional(v) ? 'Marked professionally read — click to unset' : 'Mark as professionally read'">{{ isProfessional(v) ? '★ Professional' : 'Mark professional' }}</button>
-                    @if (canRegenerateSentences(v)) {
-                      <button class="act" type="button" (click)="emitGenerateAudiobookAnalysis(v)"
-                              title="Add analysis of this audiobook’s synced sentences to the queue">
-                        Generate analysis
-                      </button>
-                    }
+                    <!-- Analysis of the synced sentences stood here. It goes with
+                         the document analysis for the same reason (2026-08-18):
+                         the feature is being reworked and its door will be in
+                         Foundry. emitGenerateAudiobookAnalysis and the queue
+                         step behind it are untouched. -->
                     <!-- Owen: "generate sentences on every audio file. its been an
                          extremely important and useful tool." EVERY audio row
                          carries it. While the transcript check is still running
@@ -517,7 +500,7 @@ const AUDIO_EXTS = new Set([
                   </div>
                   <div class="slot">
                     <button class="act" (click)="exportAudioVariant(v)"
-                            title="Save a copy to your computer">Export</button>
+                            title="Save a copy to your computer">Save as…</button>
                   </div>
                   <div class="slot">
                     <button class="act danger" (click)="remove(v)"
@@ -671,109 +654,18 @@ const AUDIO_EXTS = new Set([
                                 (close)="convertModalOpen.set(false)" />
     }
 
-    <!-- What can be done to this book. Owen, 2026-08-09: "the
-         translate/simplify/footnotes options are available from a modal that
-         appears if the user hits process on the archive files."
+    <!-- The passes modal ("What should be done to this book?" — translate,
+         simplify, footnotes, OCR repair, queue-or-run-now) stood here until
+         2026-08-18, together with its options dialog and the narration dialog
+         the Process button opened.
 
-         The list is DATA (shared/processing/book-passes.ts) — a pass added to
-         the pipeline appears here without this template changing.
-
-         WHEN it runs is the user's, as of 2026-08-10. Owen: "i ran footnote
-         reference number removal on the working document. it ran in the queue. i
-         should be able to run it from the modal if i want." The queue is still
-         the default — most of these are hours of model time and a run that is
-         not a row cannot be watched or cancelled — but "Run it now" is offered
-         beside it, and it goes through the SAME pass handler the queue row calls
-         (QueueService.runProcessingRunNow). -->
-    @if (passesModalOpen()) {
-      <div class="gs-backdrop" (click)="closePassesModal()">
-        <div class="gs-modal" (click)="$event.stopPropagation()">
-          <h3 class="gs-title">What should be done to this book?</h3>
-          <p class="gs-note">
-            Each of these rewrites the book itself. Your own changes are kept — they are recorded
-            against the book rather than written into it — and every pass becomes a line under the
-            book that you can take back on its own.
-          </p>
-          <div class="gs-when">
-            <button type="button" class="gs-when-choice" [class.on]="passRunMode() === 'queue'"
-                    [disabled]="passRunning() !== null"
-                    (click)="passRunMode.set('queue')"
-                    title="Put it in the queue, where it can be watched and cancelled">
-              <span class="gs-choice-name">Add to the queue</span>
-              <span class="gs-choice-note">Runs when the queue reaches it. Watch it on the Queue tab.</span>
-            </button>
-            <button type="button" class="gs-when-choice" [class.on]="passRunMode() === 'now'"
-                    [disabled]="passRunning() !== null"
-                    (click)="passRunMode.set('now')"
-                    title="Run it here, straight away. The window waits for it.">
-              <span class="gs-choice-name">Run it now</span>
-              <span class="gs-choice-note">Runs here and this window waits. Good for the quick ones;
-                a Simplify or a Translate is hours of model time.</span>
-            </button>
-          </div>
-          <div class="gs-list">
-            @for (p of bookPasses; track p.kind) {
-              <button class="gs-choice" type="button" [disabled]="passRunning() !== null"
-                      (click)="choosePass(p)">
-                <span class="gs-choice-name">{{ p.label }}</span>
-                <span class="gs-choice-note">{{ p.note }}</span>
-              </button>
-            }
-          </div>
-          @if (passRunning(); as running) {
-            <div class="pass-running">{{ running }} — running now. This window is waiting for it.</div>
-          }
-          @if (passError(); as e) { <div class="pass-err">{{ e }}</div> }
-          <!-- The run SUCCEEDED and still has something to say. Shown whole and
-               held on screen until dismissed — the sentence that was invisible is
-               the entire bug this exists to fix. -->
-          @if (passNotes().length > 0) {
-            <div class="pass-notes">
-              @for (note of passNotes(); track note) {
-                <div class="pass-note">&#9888; {{ note }}</div>
-              }
-            </div>
-          }
-          <div class="gs-actions">
-            <button class="act" [disabled]="passRunning() !== null" (click)="closePassesModal()">
-              {{ passNotes().length > 0 ? 'Close' : 'Cancel' }}
-            </button>
-          </div>
-        </div>
-      </div>
-    }
-
-    <!-- The two passes that cannot start from a button alone: a simplify with no
-         mode, or a translate with no languages, is a run nobody specified. The
-         SAME dialog the picker uses, so one pass is configured one way. -->
-    @if (passOptionsKind(); as kind) {
-      <app-pass-options-modal
-        [kind]="kind"
-        [ai]="passAiChoice()"
-        (cancel)="passOptionsKind.set(null)"
-        (confirmed)="onPassOptionsConfirmed($event)"
-      />
-    }
-
-    <!-- Narration. Opened by the Process button on a VERSION row, and handed
-         THAT row's file AND THAT ROW'S VERSION ID — the identity law, as inputs
-         rather than a lookup. Everything it collects goes to the queue. -->
-    @if (narrationFile(); as file) {
-      <app-narration-modal
-        [epubPath]="file.path"
-        [variantId]="file.variantId"
-        [projectDir]="projectDir()"
-        [title]="item()?.title || ''"
-        [author]="item()?.author || ''"
-        [year]="item()?.year || ''"
-        [coverPath]="item()?.coverPath || ''"
-        [outputFilename]="item()?.outputFilename || ''"
-        [isArticle]="item()?.type === 'article'"
-        (cancelled)="closeNarrationModal()"
-        (moreOptions)="openProcessPage()"
-        (queued)="onNarrationQueued()"
-      />
-    }
+         Nothing opened the passes modal any more: Foundry is where text is made,
+         and Owen ruled the same day that narration starts there too ("Tts should
+         be done from inside foundry as well"). What is gone is this page's
+         DOORS; every handler behind them still exists — the pass IPC, the queue
+         steps, QueueService.submitProcessingRun / runProcessingRunNow, and
+         NarrationModalComponent itself — so the Foundry-side buttons that
+         replace them call the same code. -->
   `,
   styles: [`
     /* A layout component: fill the tab width as a block (don't rely on the
@@ -1186,21 +1078,13 @@ export class StudioVersionsComponent {
   readonly skipped = output<void>();        // open the skipped-chunks report panel
   readonly continueJob = output<void>();    // resume the partial render (routes to the Processing wizard)
   readonly assemble = output<void>();       // assemble the cached sentences (routes to the Processing wizard)
-  /**
-   * Narrate THIS FILE — the Process button, and it names its document.
-   *
-   * It used to carry nothing, on the reasoning that a project has one book and
-   * the host could look it up. Owen ruled that out on 2026-08-09: "the tts
-   * pipeline knows exactly which file its working with because the user came to
-   * the tts page FROM the button on that document." A lookup on the far side is
-   * a second answer to "which file", and the two can disagree — a project holds
-   * several versions of one book, and the button that names one must not hand
-   * over another.
-   *
-   * So the path travels with the press, and the host binds it as the Process
-   * wizard's document rather than re-deriving one.
+  /*
+   * `process` (the Process wizard's document) was emitted by this page's Process
+   * button and by the narration dialog's "More options". Both were retired on
+   * 2026-08-18 — narration is Foundry's door now — so nothing emits it and the
+   * output is gone. The Process wizard is still reached from the shelf card,
+   * which carries its own resolved target (`ttsTarget`).
    */
-  readonly process = output<{ path: string }>();
   readonly correctSentences = output<void>(); // regenerate individual bad sentences, then rebuild
   readonly changed = output<void>();        // after delete/edit -> tell Studio to refresh
   readonly compareActive = output<boolean>(); // Studio goes full-height while comparing
@@ -1386,46 +1270,21 @@ export class StudioVersionsComponent {
     return !!this.ttsId() && v.id === this.ttsId();
   }
 
-  /**
-   * Can this version be marked as the book's TTS file?
-   *
-   * An EPUB, and only an EPUB — the same test the Process button uses, for the
-   * same reason. Owen: "I think the user should be able to send any EPUB through
-   * tts." A mark on a PDF would put a Process button on the shelf for a file
-   * narration cannot read.
+  /*
+   * "Mark as TTS file" stood here (`canMarkTts` / `toggleTtsVariant`, both
+   * removed 2026-08-18 with the button). The manifest pointer it wrote is still
+   * read — see `isTtsVariant` above and `resolveTtsTarget` in main — so a book
+   * marked before today still narrates the file it was pointed at.
    */
-  canMarkTts(v: ProjectVariant): boolean {
-    return v.kind === 'ebook' && this.variantExtension(v) === 'epub';
-  }
 
   /**
-   * Mark this version as the book's TTS file, or clear the mark.
-   *
-   * At most one per book, enforced by the manifest holding ONE pointer — so
-   * marking a second version clears the first without this having to find it.
-   */
-  async toggleTtsVariant(v: ProjectVariant): Promise<void> {
-    const pid = this.projectId();
-    if (!pid) return;
-    const res = await this.electron.variantSetTts(pid, this.isTtsVariant(v) ? null : v.id);
-    if (!res.success) {
-      await this.electron.showMessageDialog({
-        title: 'Could not change the TTS file',
-        message: res.error || 'The mark was not changed. Try again.',
-        type: 'error',
-      });
-      return;
-    }
-    await this.loadVariants();
-    // The shelf draws its Process button off this mark, so it has to re-read.
-    this.changed.emit();
-  }
-
-  /**
-   * "Add to archive": promote a Foundry export to a top-level version.
+   * "Keep permanently" (called "Add to archive" until 2026-08-18): promote a
+   * Foundry export to a top-level version.
    *
    * Owen, 2026-08-17: "an 'add to archive' button or something that moves it to
-   * the top level." It MOVES the file out of output/ — which delete-output wipes
+   * the top level." Renamed to say what it ASKS (Owen, 2026-08-18: "the user is
+   * being asked if this should be a definitive, final version of a file or if
+   * it's a throwaway after tts is done"); the act is unchanged. It MOVES the file out of output/ — which delete-output wipes
    * — into the protected archive/, and the version stops being drawn nested
    * because its provenance is cleared. No confirm: it is a move within the
    * project, Delete is still there, and the row does not go anywhere.
@@ -1453,353 +1312,30 @@ export class StudioVersionsComponent {
    *  whether uploaded via "+ Add version" or produced by TTS. */
   readonly audiobookVariants = computed(() => this.variantList().filter(v => v.kind === 'audiobook'));
 
-  // ── Narration, configured here and queued from here ────────────────────────
-
-  /**
-   * The document the narration dialog is open on, or null.
-   *
-   * The PATH AND ITS VERSION rather than a boolean: together they ARE the
-   * dialog's subject, and holding them here means there is exactly one place the
-   * run's document can come from. Owen, 2026-08-10: "if the user wants to
-   * process a specific TTS document then they click the process button next to
-   * it. no ambiguity, no confusion" — the row that was pressed is the only thing
-   * that knows which version this is, so it says so and nothing looks it up.
-   */
-  readonly narrationFile = signal<{
-    path: string;
-    variantId: string;
-  } | null>(null);
-
-  /**
-   * Can this version be narrated? An EPUB, and only an EPUB.
-   *
-   * Narration reads a book. A PDF version has pages rather than text and must be
-   * converted first; an audiobook version is already read. Neither gets the
-   * button — a Process that queued an hour of work and failed inside the job is
-   * worse than a button that is not there.
-   */
-  canNarrateVariant(v: ProjectVariant): boolean {
-    return v.kind === 'ebook' && this.variantExtension(v) === 'epub';
-  }
-
-  /**
-   * Take THIS version to narration.
-   *
-   * Owen's law, 2026-08-09: "the tts pipeline knows exactly which file its
-   * working with because the user came to the tts page FROM the button on that
-   * document." So the path travels with the press, together with the version it
-   * belongs to — and BOTH are proved before the dialog opens: `variantFile`
-   * refuses a row whose file main could not resolve or could not find on disk,
-   * naming which, and the extension is checked because the button is only drawn
-   * on an EPUB and a row that reached here as anything else is a bug worth
-   * saying out loud.
-   *
-   * Nothing is cut. Wave 1 (2026-08-16) retired the narration copy: a version's
-   * EPUB is final, and it is what gets read.
-   */
-  async processVariant(v: ResolvedProjectVariant): Promise<void> {
-    const abs = await this.variantFile(v, 'narrate this version');
-    if (abs === null) return;
-    if (!this.canNarrateVariant(v)) {
-      console.error(
-        `[studio-versions] Process was pressed on "${this.variantTitle(v)}", which is not an EPUB `
-        + '(it is a .' + this.variantExtension(v) + '). Only EPUB versions carry that button.');
-      return;
-    }
-    this.narrationFile.set({ path: abs, variantId: v.id });
-  }
-
-  closeNarrationModal(): void {
-    this.narrationFile.set(null);
-  }
-
-  /**
-   * The rows are in. Say where to watch them, in the same words the passes use.
-   *
-   * Nothing is synthesized onto this page from the answer: the audiobook appears
-   * as a line when it exists, which is what `document:stage-finished` and
-   * `project:files-changed` already bring.
-   */
-  async onNarrationQueued(): Promise<void> {
-    this.closeNarrationModal();
-    this.notices.notify('Added to the queue — it runs when the queue reaches it. Watch it on the Queue tab.');
-    this.changed.emit();
-  }
-
-  /**
-   * Take this file to the full Process page instead.
-   *
-   * The dialog covers a run about a BOOK. Resuming a half-rendered session and
-   * reassembling a cached one are runs about something already on disk, and the
-   * Process page still owns finding those — so the door to it stays open, and it
-   * carries the same path, so crossing over cannot change which file is read.
-   */
-  openProcessPage(): void {
-    const file = this.narrationFile();
-    this.closeNarrationModal();
-    if (file) this.process.emit({ path: file.path });
-  }
-
-  // ── The book passes, offered from the book and queued from here ────────────
-
-  private readonly settings = inject(SettingsService);
-
-  /** The passes this build offers, as data (shared/processing/book-passes.ts). */
-  readonly bookPasses: readonly BookPassOption[] = BOOK_PASS_OPTIONS;
-  readonly passesModalOpen = signal(false);
-  /** The options dialog is open for this pass, or null. */
-  readonly passOptionsKind = signal<PassOptionsKind | null>(null);
-  /** Why the last submission was refused. Main's own sentence, shown verbatim. */
-  readonly passError = signal<string | null>(null);
-  /**
-   * What the passes that just ran HERE had to say, each named by its pass.
-   *
-   * Not errors — every one of these came off a pass that succeeded. A pass can
-   * rewrite the book correctly and still be unable to record a ledger row for
-   * itself, and then the book gains no line to review or take back; the sentence
-   * saying why is the only thing between that and a bug report (2026-08-12).
-   *
-   * These keep the modal OPEN. The banner would have been the tidier place and is
-   * the wrong one: it dismisses itself after eight seconds, and a run whose whole
-   * outcome needs explaining must not have its explanation time out.
-   */
-  readonly passNotes = signal<string[]>([]);
-  /**
-   * WHEN the chosen pass runs — the queue, or here and now.
-   *
-   * Owen, 2026-08-10: "i ran footnote reference number removal on the working
-   * document. it ran in the queue. i should be able to run it from the modal if i
-   * want." The queue stays the default because most passes are hours of model
-   * time and a run with no row cannot be watched or cancelled; the choice is
-   * offered because some of them finish in seconds and making the user go and
-   * find a row for those is the queue getting in the way.
-   *
-   * Both doors end in the same `runProcessingPass`. See
-   * `QueueService.runProcessingRunNow`.
-   */
-  readonly passRunMode = signal<'queue' | 'now'>('queue');
-  /** The pass being run inline, by label, or null. Locks the modal while it runs. */
-  readonly passRunning = signal<string | null>(null);
-
-  openPassesModal(): void {
-    this.passError.set(null);
-    this.passNotes.set([]);
-    this.passesModalOpen.set(true);
-  }
-
-  closePassesModal(): void {
-    // Never while a pass is mid-run: closing would leave the user with no
-    // statement of what happened to their book, which is the whole difference
-    // between running here and running in a queue row.
-    if (this.passRunning() !== null) return;
-    this.passesModalOpen.set(false);
-    this.passError.set(null);
-    this.passNotes.set([]);
-  }
-
-  /**
-   * A pass was chosen. Either it needs its options, or it is performed.
-   *
-   * WHICH DOOR is `passRunMode` — the queue, or here and now. Both end in the
-   * same `runProcessingPass` in main; see `submitPasses`.
-   */
-  async choosePass(option: BookPassOption): Promise<void> {
-    if (option.needsOptions) {
-      // The two passes nobody can start from a button alone. The dialog is the
-      // picker's own, so a simplify is configured the same way wherever it is
-      // ordered from.
-      this.passesModalOpen.set(false);
-      this.passOptionsKind.set(option.kind as PassOptionsKind);
-      return;
-    }
-    // A pass that takes no choices. The KIND is carried as the planner spells
-    // it; a kind this build's planner does not know is refused BY NAME and that
-    // refusal is shown below, which is the honest outcome for an offer this
-    // build cannot keep (see shared/processing/book-passes.ts).
-    await this.submitPasses([{ kind: option.kind as ProcessingPassKind }], option.label);
-  }
-
-  onPassOptionsConfirmed(result: PassOptionsResult): void {
-    this.passOptionsKind.set(null);
-    void this.submitPasses(
-      [result.kind === 'simplify'
-        ? { kind: 'simplify', simplify: result.simplify }
-        : { kind: 'translate', translate: result.translate }],
-      result.kind === 'simplify' ? 'Simplify' : 'Translate');
-  }
-
-  /**
-   * Who runs a text pass: the provider and model from Settings → Pipeline
-   * Defaults, plus whatever credentials the AI settings hold.
-   *
-   * Read here rather than in the dialog so the dialog stays presentational, and
-   * an empty model is passed through AS an empty model — the dialog refuses it
-   * by name, which is the only useful thing to do with "no model chosen".
-   */
-  readonly passAiChoice = computed<PassAiChoice>(() => {
-    const kind = this.passOptionsKind();
-    const defaults = this.settings.getPipelineDefaults();
-    const ai = this.settings.getAIConfig();
-    const provider = kind === 'translate' ? defaults.translateProvider : defaults.simplifyProvider;
-    const model = kind === 'translate' ? defaults.translateModel : defaults.simplifyModel;
-    return {
-      provider,
-      model,
-      ...(ai.ollama?.baseUrl ? { ollamaBaseUrl: ai.ollama.baseUrl } : {}),
-      ...(ai.claude?.apiKey ? { claudeApiKey: ai.claude.apiKey } : {}),
-      ...(ai.openai?.apiKey ? { openaiApiKey: ai.openai.apiKey } : {}),
-    };
-  });
-
-  /**
-   * Perform these passes — through whichever door the user chose.
-   *
-   * TWO DOORS, ONE PASS. The queue arm submits the chain (`processing:submit-chain`),
-   * which plans it in main and hands the plan to the queue; the run-now arm plans
-   * it through the SAME planner and calls the SAME `queue:run-pass` handler each
-   * queue row calls. Neither arm knows what a pass IS — that lives in
-   * electron/processing-passes.ts and nowhere else, which is the rule the deleted
-   * synchronous footnote door (`book:remove-footnote-references`, 2026-08-10)
-   * broke and this must not re-break.
-   */
-  private async submitPasses(passes: ChainPassRequest[], label: string): Promise<void> {
-    // A new submission clears the last one's notes: they were about a pass that
-    // has already happened, and leaving them under a fresh run would read as its.
-    this.passNotes.set([]);
-    if (this.passRunMode() === 'now') {
-      await this.runPassesNow(passes, label);
-      return;
-    }
-    await this.queuePasses(passes);
-  }
-
-  /**
-   * Run these passes here and now, and say what happened.
-   *
-   * The modal stays open and locked for the duration: a run with no queue row has
-   * no other place to report from, so this window IS the report. What ran is
-   * named, and a failure carries main's own sentence — including the footnote
-   * pass's "there were none left", which is a refusal rather than a breakage.
-   */
-  private async runPassesNow(passes: ChainPassRequest[], label: string): Promise<void> {
-    const dir = this.projectDir();
-    if (!dir) {
-      this.passError.set('A pass rewrites this project\'s book, and no project is selected.');
-      this.passesModalOpen.set(true);
-      return;
-    }
-    this.passError.set(null);
-    this.passNotes.set([]);
-    this.passesModalOpen.set(true);
-    // The name the user pressed, carried in rather than looked back up from the
-    // kind: the button that was pressed is the only thing that knows it.
-    this.passRunning.set(label);
-    let result: DirectPassRunResult;
-    try {
-      result = await this.queue.runProcessingRunNow({ projectDir: dir, passes });
-    } catch (err) {
-      this.passRunning.set(null);
-      this.passError.set(err instanceof Error ? err.message : String(err));
-      return;
-    }
-    this.passRunning.set(null);
-
-    // A PLANNER refusal: nothing ran, and the modal keeps the sentence beside
-    // the choices so the user can pick another one.
-    if (result.error) {
-      this.passError.set(result.error);
-      return;
-    }
-    if (result.failure) {
-      // Whatever ran BEFORE the failure really did rewrite the book, so the
-      // sentence says so — "nothing happened" would be false. What those passes
-      // had to say goes beside it rather than into it: it is not part of the
-      // failure, it is about the rewrite that really happened.
-      this.passError.set(result.ran.length === 0
-        ? result.failure.error
-        : `${result.ran.join(', ')} ran and ${result.failure.label} did not: `
-          + result.failure.error);
-      this.passNotes.set(result.notes);
-      await this.load();
-      this.changed.emit();
-      return;
-    }
-
-    // A pass succeeded and still has something to say — most of all that it could
-    // record no ledger row, which is why the book below is about to gain no line
-    // to review. The modal stays open holding that sentence, because the banner
-    // dismisses itself and the reassurance below would contradict it.
-    if (result.notes.length > 0) {
-      this.passNotes.set(result.notes);
-      await this.load();
-      this.changed.emit();
-      return;
-    }
-
-    this.passesModalOpen.set(false);
-    // Long work that finished — a banner, not a modal. The reload below puts
-    // each pass on the page as its own line, which is the receipt.
-    this.notices.notify(
-      `${result.ran.join(', ')} rewrote this book just now. Each one is a line under the book that `
-      + 'you can review and take back on its own. Your own changes are untouched.',
-    );
-    await this.load();
-    this.changed.emit();
-  }
-
-  /**
-   * Send passes to the queue through the ONE door — `processing:submit-chain`,
-   * which plans them against this project and refuses by name.
-   *
-   * The refusal is main's own sentence, shown verbatim: it names the missing
-   * model, the book that is not there, the kind it cannot plan. Never
-   * paraphrased into "that did not work".
-   */
-  private async queuePasses(passes: ChainPassRequest[]): Promise<void> {
-    const dir = this.projectDir();
-    if (!dir) {
-      this.passError.set('A pass rewrites this project\'s book, and no project is selected.');
-      return;
-    }
-    try {
-      const result = await this.queue.submitProcessingRun({ projectDir: dir, passes });
-      if (!result.success) {
-        this.passError.set(result.error || 'The run was refused and no reason was given.');
-        this.passesModalOpen.set(true);
-        return;
-      }
-    } catch (err) {
-      this.passError.set(err instanceof Error ? err.message : String(err));
-      this.passesModalOpen.set(true);
-      return;
-    }
-    this.closePassesModal();
-    this.notices.notify(
-      'Added to the queue — it runs when the queue reaches it. When it finishes it becomes a line '
-      + 'under this book that you can review and take back on its own.',
-    );
-    await this.load();
-    this.changed.emit();
-  }
-
-  /** What a stage boundary is called, for the Start-over preview's sentence. */
-  private readonly BOUNDARY_LABELS: Record<string, string> = {
-    'get-text': 'Cast',
-    blocks: 'Blocks detected',
-    footnotes: 'Footnotes removed',
-  };
-
-  // ── Making the book ────────────────────────────────────────────────────────
+  // ── Narration and the book passes (DOORS RETIRED 2026-08-18) ──────────────
   //
-  // Owen's design, 2026-08-07: a PDF becomes a book HERE, on the versions page,
-  // and the original is never written to on the way. One button, on the PDF
-  // VERSION's own row, and one machine underneath it (`foundry vlm-convert`).
+  // The Process button, the narration dialog it opened, the "Mark as TTS file"
+  // pointer, and the whole passes modal used to live here. Owen ruled that
+  // Foundry is where a book is worked on: "Tts should be done from inside
+  // foundry as well. We can get rid of the mark as tts file button."
   //
-  // Wave 1 (2026-08-16) moved it off the book chain's archive line, which is
-  // where it used to stand, and took the second button ("Create EPUB", reading a
-  // legacy working PDF minus its deleted pages) with the chain. What a
-  // conversion produces is another VERSION of this book, on a row beside the
-  // PDF it was read from — not a working copy, and not a chain.
+  // None of the machinery moved. The narration modal component, the pass IPC,
+  // the queue steps and `QueueService.submitProcessingRun` /
+  // `runProcessingRunNow` are all still there for the Foundry-side buttons.
+  // `ttsVariantId` is still read (the shelf's Process button prefers a marked
+  // version, then the newest Foundry export, then a sole EPUB) — this page just
+  // no longer offers to set it.
+
+  // ── Watching the book being made ───────────────────────────────────────────
+  //
+  // A PDF became a book HERE until 2026-08-18, from a "Convert to EPUB" button
+  // on the PDF version's own row. Owen: "no more convert to epub button. Thats
+  // done inside foundry."
+  //
+  // What stays is the WINDOW onto a conversion, because a run started elsewhere
+  // (the book banner, a queue row) is still this project's and still belongs on
+  // the row whose pages are being read. Nothing here starts one; the machinery
+  // (`BookConversionService`, `vlm:convert`, the queue step) is untouched.
 
   private readonly conversions = inject(BookConversionService);
 
@@ -1811,70 +1347,6 @@ export class StudioVersionsComponent {
   /** The version's format, lowercased, from the record main resolved it into. */
   variantExtension(v: ProjectVariant): string {
     return ((v.format || '') || this.variantFilename(v).split('.').pop() || '').toLowerCase();
-  }
-
-  /**
-   * Can this version's pages be read into a book?
-   *
-   * A PDF has pages to read and nothing else does. An EPUB version is already a
-   * book, and offering to convert it would promise a second one.
-   */
-  canConvertVariant(v: ProjectVariant): boolean {
-    return v.kind === 'ebook' && this.variantExtension(v) === 'pdf';
-  }
-
-  /**
-   * Start reading this version's pages, and open the window that watches it.
-   *
-   * The refusal is asked FIRST — before the window, before anything spawns —
-   * because "no machine here can read pages" is a sentence about a setting and
-   * showing it inside a progress modal would dress a configuration problem up as
-   * a failed run.
-   */
-  async startVariantConversion(v: ResolvedProjectVariant): Promise<void> {
-    const dir = this.projectDir();
-    if (!dir || !this.canConvertVariant(v)) return;
-    const abs = await this.variantFile(v, 'convert this version');
-    if (abs === null) return;
-
-    const refusal = await this.conversions.refusal();
-    if (refusal !== null) {
-      await this.dialog.alert({
-        title: 'Nothing here can read the pages',
-        message: refusal,
-        type: 'warning',
-      });
-      return;
-    }
-
-    this.convertModalOpen.set(true);
-    // PREPARED, not started. The window opens on a conversion that has not
-    // spawned anything, so there is a moment in which to say "queue this
-    // instead" — which is what queueing a shelf of books overnight is made of.
-    // Start and Add to queue are both in that window; closing it discards.
-    const refused = await this.conversions.prepare({
-      projectDir: dir,
-      // Every page of the version the user pressed. The other source a run could
-      // have ('working', a legacy working PDF minus its deleted pages) went with
-      // the chain in Wave 1 — there is no such document any more.
-      from: 'archive',
-      sourceLabel: this.variantTitle(v),
-      // WHICH document, said exactly: the version's own id, so a project holding
-      // two PDFs never has to be asked which one this is, and so the row that
-      // draws the progress bar is the row that was pressed.
-      variantId: v.id,
-      // Beside the version it was read from, never over this project's book:
-      // 'replace' meant "replace the chain's book", and there is no chain.
-      destination: 'new-copy',
-    });
-    if (refused !== null) {
-      this.convertModalOpen.set(false);
-      await this.dialog.alert({
-        title: 'Nothing here can read the pages',
-        message: refused,
-        type: 'warning',
-      });
-    }
   }
 
   /** Re-open the window onto a conversion that is already running. */
@@ -1891,15 +1363,6 @@ export class StudioVersionsComponent {
   variantStartedConversion(v: ProjectVariant): boolean {
     const run = this.conversion();
     return run !== null && run.variantId === v.id;
-  }
-
-  /** Why Convert is locked right now, or null. Shown instead of the ordinary hint. */
-  conversionBusyTitle(): string | null {
-    const run = this.conversion();
-    return run === null
-      ? null
-      : `${run.sourceLabel} is being converted right now. A project converts one document at a `
-        + 'time — two conversions would be two writers on one book.';
   }
 
   /** How far along, for the row's own slim bar. -1 while there is no count yet. */
