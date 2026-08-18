@@ -4,6 +4,15 @@ import { Router } from '@angular/router';
 
 import { typeLabel } from '@shared/documents';
 import { CHAINABLE_FROM, PRODUCES_OF } from '@shared/host-ops';
+/*
+ * WHAT IS POSSIBLE FROM A STAGE — one function per act, shared with the dock's
+ * buttons and with the dialogs' own refusals (shared/stages.ts). The footer is
+ * drawn by the same tests the acts refuse by, which is Owen's ruling made
+ * structural rather than repeated.
+ */
+import {
+  canExportFrom, canReadPages, canSimplifyFrom, canTranslateFrom,
+} from '@shared/stages';
 import type { HostNodeAction } from '@shared/host-ops';
 import { languageNameFor } from '@shared/languages';
 import type {
@@ -1556,16 +1565,21 @@ export class OpenDocumentsComponent {
            * `narrate` — it IS the file narration consumes."* (BookForge →
            * Foundry, 2026-08-18.)
            *
-           * IT PRODUCES A BOOK, which is the honest answer to `offeredFrom`'s
-           * question and the whole of what makes host acts appear here: an act
-           * declaring `appliesTo: 'book'` consumes the words, and this row is the
-           * finished file of them. What it does NOT get is Foundry's own three —
-           * see `acts`, where Translate, Simplify and Export are gated on the row
-           * being a POSITION rather than on what it produces. An export is
-           * terminal in this app's own pipeline and a source in the host's, and
-           * this field is the only place those two facts meet.
+           * IT PRODUCES AN `export`, WHICH IS ITS OWN CURRENCY as of Wave 10 —
+           * and the change from `'book'` is Owen's ruling landing in one word.
+           * Saying `book` here put every `appliesTo: 'book'` act on this row AND
+           * on every ledger step, so Narrate appeared on "Applied changes" where
+           * it could only refuse: *"The only options that exist are the ones that
+           * are possible for that stage."* A ledger step produces the WORDS; this
+           * row is the finished FILE of them; an act that reads a file declares
+           * `export` and lands here alone (`NodeOutput`, shared/types.ts).
+           *
+           * What it does NOT get is Foundry's own acts — see `acts`, where they
+           * are gated on the row being a POSITION. An export is terminal in this
+           * app's own pipeline and a source in the host's, and this field is the
+           * only place those two facts meet.
            */
-          produces: 'book',
+          produces: 'export',
           // Its provenance, where the catalogue recorded one (`ProjectFinal.stepId`).
           madeFrom: made.stepId ?? null,
         });
@@ -1832,15 +1846,42 @@ export class OpenDocumentsComponent {
   /**
    * WHAT CAN BE DONE FROM THE SELECTED CARD — the "from here" footer's contents.
    *
-   * ── Foundry's own acts, and the host's, gated by one rule ───────────────────
+   * ── ONLY THE POSSIBLE IS OFFERED, which is the whole of Owen's ruling ───────
    *
-   * A node PRODUCES something (`Row.produces`): the book's words, or a host's
-   * audio. Translate, Simplify and Export consume the words, so they are offered
-   * from a `book` node and from nothing else; the host declares what each of its
-   * operations consumes (`HostOperationOffer.appliesTo`) and the same comparison
-   * settles those. That single rule is what stops Translate appearing on a
-   * narration and Assemble appearing on a chapter of text — no special cases,
-   * and none to forget when a fourth act arrives.
+   *   *"just put 'export EPUB' as the only option on things that aren't capable
+   *   of narration or whatever. The only options that exist are the ones that
+   *   are possible for that stage."* (2026-08-17 20:30, via the bridge.)
+   *
+   * A BUTTON WHOSE ONLY POSSIBLE OUTCOME IS A REFUSAL IS NOT DRAWN. What he had
+   * hit was the host's Narrate on a step that had nothing exported, but the same
+   * complaint was true of this app's own three: an unread scan's import row is a
+   * stage where Translate, Simplify and Export can each only refuse, and the
+   * footer drew all three anyway — or, where `produces` had already gone null,
+   * drew NOTHING and left a stage with one obvious next act looking like a dead
+   * end.
+   *
+   * ── Each act is gated on the predicate the act itself refuses by ────────────
+   *
+   * `shared/stages.ts` holds one function per act — `canReadPages`,
+   * `canTranslateFrom`, `canSimplifyFrom`, `canExportFrom` — and the dock's
+   * buttons, the dialogs' own refusals and this footer all read the same one. The
+   * point is not tidiness: it is that a button here and a sentence in a card
+   * cannot come to different answers about what a stage can do, which is exactly
+   * the failure the ruling names.
+   *
+   * ASKED ABOUT THE ROW, NOT ABOUT THE POSITION. Pressing an act in this footer
+   * STANDS on the row first and then opens the dialog (`run`), so the honest
+   * question for a card is "would this be possible if I were standing here" —
+   * the same predicate with the row's own step in it. The dock asks the identical
+   * function about the step the book is actually standing on.
+   *
+   * ── And the host's acts are still gated by what the node produces ───────────
+   *
+   * `Row.produces` is the currency (`NodeOutput`): the words of a book, a
+   * finished export, or a host's audio. The host declares what each of its
+   * operations consumes and `offeredFrom` is one comparison — which is what stops
+   * Assemble appearing on a chapter of text, and, since Wave 10, what stops an
+   * act that reads a finished FILE appearing on a ledger step.
    *
    * COMPUTED FOR THE SELECTED CARD ONLY, because that is the only card that
    * draws it: this reads `picked()`, so it is recomputed when the selection
@@ -1850,35 +1891,84 @@ export class OpenDocumentsComponent {
     const key = this.picked();
     if (key === null) return NO_ACTS;
     const row = this.groups().flatMap((group) => group.rows).find((one) => one.key === key) ?? null;
-    if (row === null || row.dir === null || row.produces === null) return NO_ACTS;
+    if (row === null || row.dir === null) return NO_ACTS;
+    const dir = row.dir;
     const out: Act[] = [];
     /*
-     * FOUNDRY'S OWN THREE ARE OFFERED FROM A POSITION, and that test used to be
-     * `produces === 'book'` because until export rows produced anything, the two
-     * were the same set. They are not any more (9b): an export row produces a
-     * book for the HOST to consume and is terminal for this app — Translate,
-     * Simplify and Export all act on the POSITION, and offering them on an export
-     * would be offering to make a new book out of a finished file by standing
-     * somewhere the card cannot stand.
+     * FOUNDRY'S OWN ACTS ARE OFFERED FROM A POSITION — a root or a step, never an
+     * export row and never a host's node. An export is terminal in this app's own
+     * pipeline (*"it wont go into the working files as a step because it isnt the
+     * base for new steps"*), and offering Translate there would be offering to
+     * make a new book out of a finished file by standing somewhere the card
+     * cannot stand.
+     *
+     * IT NO LONGER TESTS `produces`, and that is Wave 10 landing. `produces` is a
+     * fact about what the HOST may chain onto; whether THIS app can act is a
+     * different question with four different answers, and conflating them is what
+     * made an unread scan's import row offer three impossible acts (or, once
+     * `produces` went null there, offer nothing at all — including the one act
+     * that WAS possible).
      */
-    if (row.produces === 'book' && (row.kind === 'root' || row.kind === 'step')) {
+    if (row.kind === 'root' || row.kind === 'step') {
+      const project = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
       /*
-       * THE SAME THREE THE DOCK OFFERS, in the dock's own order, opening the
-       * dock's own dialogs. Metadata is deliberately NOT here: it is a record
-       * ABOUT the position rather than a thing made FROM it — the pointer does
-       * not even move for it (`StepAction`) — so "from here" is the wrong
-       * sentence for it, and the dock keeps it.
+       * THE STEP THIS CARD IS, which is what the predicates are asked about — see
+       * the docblock: pressing stands here first, so the question is what would be
+       * possible from this row.
        */
-      out.push(
-        { id: 'translate', label: 'Translate', icon: 'ft-globe', audio: false, host: null,
-          form: false, hint: 'Translate what this node holds into another language' },
-        { id: 'simplify', label: 'Simplify', icon: 'ft-spark', audio: false, host: null,
+      const at = row.step;
+      /*
+       * READ COMES FIRST BECAUSE IT COMES FIRST. On a scan nobody has read, this
+       * is the only possible act and everything else is waiting on it — which is
+       * exactly the stage Owen was looking at when he ruled. The dock has always
+       * said the same thing by lighting its OCR button; this is that sentence
+       * said where the person is actually standing.
+       *
+       * IT DISAPPEARS THE MOMENT A BANK LANDS. `canReadPages` is main's own
+       * `reading.needed`, false for a project that arrived as an EPUB (no pages
+       * to read) and false once a reading is done — so this is not a permanent
+       * fixture of the root, it is the one act a book still owes.
+       */
+      if (canReadPages(project)) {
+        out.push({
+          id: 'read', label: 'Read the pages', icon: 'ft-scan', audio: false, host: null,
           form: false,
-          hint: 'Say this again in its own language: plainer, more natural, or for a learner' },
-        { id: 'export', label: 'Export', icon: 'ft-out', audio: false, host: null,
-          form: false, hint: 'Make the finished book from this node' },
-      );
+          hint: 'Read this book\u2019s pages with the vision model \u2014 everything else is made from it',
+        });
+      }
+      /*
+       * AND THE THREE THAT CONSUME THE WORDS, each on its own predicate. They
+       * agree today (all three are `hasBookAt`) and are asked separately anyway,
+       * because they are three acts with three dialogs and a shared name is what
+       * lets one of them grow a condition later without the other two silently
+       * inheriting it.
+       *
+       * METADATA IS DELIBERATELY NOT HERE, unchanged: it is a record ABOUT the
+       * position rather than a thing made FROM it — the pointer does not even
+       * move for it (`StepAction`) — so "from here" is the wrong sentence for it,
+       * and the dock keeps it.
+       */
+      if (canTranslateFrom(project, at)) {
+        out.push({ id: 'translate', label: 'Translate', icon: 'ft-globe', audio: false, host: null,
+          form: false, hint: 'Translate what this node holds into another language' });
+      }
+      if (canSimplifyFrom(project, at)) {
+        out.push({ id: 'simplify', label: 'Simplify', icon: 'ft-spark', audio: false, host: null,
+          form: false,
+          hint: 'Say this again in its own language: plainer, more natural, or for a learner' });
+      }
+      if (canExportFrom(project, at)) {
+        out.push({ id: 'export', label: 'Export', icon: 'ft-out', audio: false, host: null,
+          form: false, hint: 'Make the finished book from this node' });
+      }
     }
+    /*
+     * A ROW THAT PRODUCES NOTHING HAS NO HOST ACTS, which is where the old
+     * `produces === null` guard at the top of this function went. It could not
+     * stay there: it would have refused the whole footer for exactly the stage
+     * this wave exists to give an offer to.
+     */
+    if (row.produces === null) return out;
     /*
      * AND NOTHING CHAINS OFF A NODE THAT FAILED.
      *
@@ -2055,7 +2145,8 @@ export class OpenDocumentsComponent {
     }
     void this.stand(row).then(() => {
       void this.router.navigateByUrl('/');
-      if (act.id === 'translate') this.ui.openTranslate();
+      if (act.id === 'read') this.ui.openOcr();
+      else if (act.id === 'translate') this.ui.openTranslate();
       else if (act.id === 'simplify') this.ui.openSimplify();
       else this.ui.openExport();
     });

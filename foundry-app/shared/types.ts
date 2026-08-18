@@ -1312,7 +1312,7 @@ export interface ImportLanding {
 }
 
 /**
- * WHAT A NODE IN THE TREE PRODUCES — the two currencies the pipeline trades in.
+ * WHAT A NODE IN THE TREE PRODUCES — the currencies the pipeline trades in.
  *
  * `book` is Foundry's: the words of a book at some position, which a translate,
  * a simplify or an export consumes. `audio` is a host's: a narration, an
@@ -1322,12 +1322,42 @@ export interface ImportLanding {
  * of special cases — a Translate is not offered on a narration, and an Assemble
  * is not offered on a book, by the same one rule in both directions.
  *
- * TWO MEMBERS AND NOT AN OPEN STRING, because the tree has to be able to gate on
- * it. A host inventing a third currency would be a host asking Foundry to draw
+ * ── `export` IS THE THIRD, AND IT IS OWEN'S RULING MADE EXPRESSIBLE ─────────
+ *
+ * *"just put 'export EPUB' as the only option on things that aren't capable of
+ * narration or whatever. The only options that exist are the ones that are
+ * possible for that stage."* (2026-08-17 20:30, via the bridge.) What he had hit
+ * was Narrate offered on "Applied changes" — a ledger step, which produces the
+ * WORDS — while narration reads a finished FILE, so on a project with nothing
+ * exported the press could only ever refuse.
+ *
+ * The two currencies could not tell those apart. A ledger step and an export row
+ * both produced `book`, so one comparison put an `appliesTo: 'book'` operation on
+ * both, and there was no spelling for "this act consumes the exported file and
+ * only that". `export` is that spelling: EXPORT ROWS PRODUCE IT AND LEDGER STEPS
+ * NEVER DO, so an operation declaring it lands on `final/` rows alone.
+ *
+ * ── The compatibility this shape exists to preserve ────────────────────────
+ *
+ * A TWO-MEMBER HOST KEEPS WORKING UNCHANGED. `offeredFrom` is still one
+ * comparison, so an operation still saying `appliesTo: 'book'` still lands on
+ * every book-producing step exactly as it did — which is the state BookForge's
+ * current vendored injection is in, and it must not break in the interim before
+ * their next re-vendor moves narrate onto the new member. Growing a union is
+ * only safe when the old spellings keep their old meanings, and this one does:
+ * nothing that was offered before is offered differently now, and one thing that
+ * was offered in two places can now be asked for in one.
+ *
+ * A CLOSED SET AND NOT AN OPEN STRING, because the tree has to be able to gate on
+ * it. A host inventing a fourth currency would be a host asking Foundry to draw
  * something it cannot reason about; the honest way to grow this is to add the
- * member here, in the same commit as whatever understands it.
+ * member here, IN THE SAME COMMIT as whatever understands it — which is the rule
+ * this member was itself added under. `PRODUCES_OF` is deliberately untouched:
+ * what host operation KINDS produce is unchanged (narrate, enhance and assemble
+ * all still make audio); it is only what an operation may declare it CONSUMES
+ * that grew.
  */
-export type NodeOutput = 'book' | 'audio';
+export type NodeOutput = 'book' | 'audio' | 'export';
 
 /**
  * WHICH ACT A HOST OPERATION IS — the field that picks the icon, and the field

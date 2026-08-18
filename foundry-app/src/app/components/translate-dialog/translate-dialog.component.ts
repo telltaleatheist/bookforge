@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { LANGUAGE_CHOICES, languageNameFor, tagForLanguageName } from '@shared/languages';
 import { languageTagFor, translationInEffect } from '@shared/ledger';
 import { fold } from '@shared/original';
+import { canTranslateFrom } from '@shared/stages';
 import {
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
   DEFAULT_TRANSLATE_MODEL as DEFAULT_MODEL,
@@ -414,10 +415,16 @@ export class TranslateDialogComponent {
     const tab = this.stage.activeDocument();
     if (tab === null) return null;
     const project = this.projects.projectFor(tab.path);
+    /*
+     * THE SAME PREDICATE THE BUTTON WAS DRAWN BY — see shared/stages.ts. This
+     * test used to be spelled out here, in the dock, and in the other dialog:
+     * four copies of one rule, which is four chances for a button to offer what
+     * a card then refuses. Owen's ruling is that the offer and the possibility
+     * are one fact (*"The only options that exist are the ones that are possible
+     * for that stage"*), and one fact wants one function.
+     */
     if (project === null) return null;
-    const arrived = this.projects.arrivedAsBook(project);
-    if (!project.reading.done && !arrived) return null;
-    if (!arrived && this.ledger.standingIn(project.dir)?.action === 'import') return null;
+    if (!canTranslateFrom(project, this.ledger.standingIn(project.dir))) return null;
     return this.projects.originalOf(project)?.path ?? null;
   });
 

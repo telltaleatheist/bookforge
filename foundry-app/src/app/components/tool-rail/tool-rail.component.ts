@@ -2,6 +2,16 @@ import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/c
 import { Router, RouterLink, RouterLinkActive } from '@angular/router';
 
 import type { HostOperationOffer } from '@shared/host-ops';
+/*
+ * THE POSSIBILITY PREDICATES, shared with the dialogs that refuse and with the
+ * tree that offers — see shared/stages.ts. This dock held the original of three
+ * of them and they were copied into two dialogs; they are one function each now,
+ * so a button here and a refusal there cannot come to different answers about
+ * what a stage can do.
+ */
+import {
+  canExportFrom, canReadPages, canSimplifyFrom, canTranslateFrom,
+} from '@shared/stages';
 import { fold } from '@shared/original';
 
 import { hosted } from '../../core/foundry';
@@ -403,7 +413,19 @@ export class ToolRailComponent {
    */
   protected readonly railActs = computed(() => {
     if (this.target() === null) return NO_ACTS;
-    return this.hostOps.offersFor('book').filter((offer) => offer.form !== undefined);
+    /*
+     * BOTH SPELLINGS OF "ACTS ON THE FINISHED BOOK" REACH THE DOCK, and that is
+     * not a hedge — it is what this button already aims at. The rail resolves its
+     * target to the project's EXPORT (per 9a/9b: the export's own step where the
+     * catalogue recorded one), so an act declaring `export` is precisely on
+     * subject here, and an act still declaring `book` — which is every host that
+     * has not re-vendored since the member was added — must keep reaching the
+     * button it reached yesterday. The tree is where the two spellings genuinely
+     * separate, because there a `book` op belongs on the steps and an `export` op
+     * belongs on the `final/` rows.
+     */
+    return [...this.hostOps.offersFor('book'), ...this.hostOps.offersFor('export')]
+      .filter((offer) => offer.form !== undefined);
   });
 
   /**
@@ -517,7 +539,7 @@ export class ToolRailComponent {
   protected ocrWaiting(): boolean {
     const tab = this.stage.activeDocument();
     if (tab === null) return false;
-    return this.projects.projectFor(tab.path)?.reading.needed === true;
+    return canReadPages(this.projects.projectFor(tab.path));
   }
 
   /**
@@ -584,10 +606,7 @@ export class ToolRailComponent {
     const tab = this.stage.activeDocument();
     if (tab === null) return false;
     const project = this.projects.projectFor(tab.path);
-    if (project === null) return true;
-    const arrived = this.projects.arrivedAsBook(project);
-    if (!project.reading.done && !arrived) return false;
-    return arrived || this.ledger.standingIn(project.dir)?.action !== 'import';
+    return canExportFrom(project, project === null ? null : this.ledger.standingIn(project.dir));
   }
 
   protected openExport(): void {
@@ -619,10 +638,7 @@ export class ToolRailComponent {
     const tab = this.stage.activeDocument();
     if (tab === null) return false;
     const project = this.projects.projectFor(tab.path);
-    if (project === null) return false;
-    const arrived = this.projects.arrivedAsBook(project);
-    if (!project.reading.done && !arrived) return false;
-    return arrived || this.ledger.standingIn(project.dir)?.action !== 'import';
+    return canTranslateFrom(project, project === null ? null : this.ledger.standingIn(project.dir));
   }
 
   protected translate(): void {
@@ -636,7 +652,10 @@ export class ToolRailComponent {
    * keeping a second copy of a test that has already gone stale once.
    */
   protected canSimplify(): boolean {
-    return this.canTranslate();
+    const tab = this.stage.activeDocument();
+    if (tab === null) return false;
+    const project = this.projects.projectFor(tab.path);
+    return canSimplifyFrom(project, project === null ? null : this.ledger.standingIn(project.dir));
   }
 
   protected simplify(): void {

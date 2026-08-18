@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **a32c087** — *"feat(mount): host-ops round 2 — the step behind an export, forms in the window, and a way out of failed"* |
+| Source sha | **1c7d6c9** — *"feat(renderer): only the possible is offered — 'export' joins NodeOutput, and every act's button shares its refusal's test"* |
 | Copied on | 2026-08-17 |
-| Copied by | `git -C <foundry> archive a32c087 app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 1c7d6c9 app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -46,8 +46,16 @@ form dialog (`HostOperationOffer.form: HostOpField[]`, `invoke` grew a third
 'book' ops, failed nodes withhold chaining ops (CHAINABLE_FROM table) and
 render Retry/Dismiss when the host registers `FoundryHost.onNodeAction`
 (new handle `host-ops:node-action`; 69 total). `host-ops:offers` now answers
-`{operations, nodeActions}`. Each refresh changed only the files its commits
-name and was hash-verified against the source tree (93/93 blobs at a32c087).
+`{operations, nodeActions}`. `1c7d6c9` is Owen's per-stage ruling ("the only
+options that exist are the ones that are possible for that stage"), Wave 10:
+`NodeOutput` grew `'export'` — export rows produce it, ledger steps never do,
+`offeredFrom` stays one comparison — so BookForge's narrate moved to
+`appliesTo: 'export'` in the SAME commit as this refresh (at 1c7d6c9 a narrate
+still saying 'book' would draw on steps only, the exact inverse of the
+ruling); Foundry's own offers now gate per act on shared possibility
+predicates (new `shared/stages.ts`), and the delta also carried `0fc3bfd`
+(docs-only date corrections). Each refresh changed only the files its commits
+name and was hash-verified against the source tree (94/94 blobs at 1c7d6c9).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the
@@ -60,7 +68,7 @@ committed to regenerating it from source on every wave.
 directory is lost the next time the subtree is refreshed, and worse, it makes
 the two copies disagree while both look authoritative. If something in here is
 wrong, it is wrong in Foundry — say so on the message channel
-(`C:\tmp\bookforge-to-foundry.md`) and take the next sha.
+(`E:\agent-bridge\bookforge-to-foundry.md`) and take the next sha.
 
 The one exception is this file, which is BookForge's own note about the copy.
 

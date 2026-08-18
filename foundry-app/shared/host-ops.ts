@@ -106,6 +106,15 @@ export function offeredFrom(
   offers: readonly HostOperationOffer[],
   produces: NodeOutput,
 ): readonly HostOperationOffer[] {
+  /*
+   * STILL ONE COMPARISON after the union grew to three, and keeping it one is
+   * what made the growth safe. A member added here as a SPECIAL CASE — "export
+   * rows also get the book ops" — would have been the old behaviour preserved by
+   * an exception rather than by a rule, and the exception would have had to be
+   * remembered at every future member. Export rows produce `export`; a host that
+   * wants an act there declares `export`; a host still declaring `book` reaches
+   * exactly what it always reached.
+   */
   return offers.filter((offer) => offer.appliesTo === produces);
 }
 
@@ -137,12 +146,25 @@ export interface HostOperationOffer {
   /**
    * WHAT A NODE MUST PRODUCE for this operation to be offered from it.
    *
-   * A narration consumes the book's text, so it applies to `book`; an assemble
-   * consumes the narrated audio, so it applies to `audio`. This is the whole of
-   * the chaining rule — see `offeredFrom` — and it is declared by the host
-   * rather than derived from `kind`, because a host that grew an operation
-   * consuming audio and producing audio (an enhance) and one consuming text and
-   * producing audio (a narrate) needs to say which is which.
+   * An assemble consumes the narrated audio, so it applies to `audio`. This is
+   * the whole of the chaining rule — see `offeredFrom` — and it is declared by
+   * the host rather than derived from `kind`, because a host that grew an
+   * operation consuming audio and producing audio (an enhance) and one consuming
+   * text and producing audio (a narrate) needs to say which is which.
+   *
+   * ── `book` AND `export` ARE TWO DIFFERENT ASKS, AND THAT IS THE POINT ──────
+   *
+   * `book` is offered from every LEDGER STEP that has words behind it — a
+   * reading, a save, a translation. `export` is offered from `final/` rows and
+   * nowhere else. An operation that reads a finished FILE (a narration does)
+   * should say `export`, or it will be offered on stages where the only possible
+   * outcome is a refusal — which is the ruling this member was added for
+   * (`NodeOutput`, shared/types.ts).
+   *
+   * A HOST STILL SAYING `book` IS NOT BROKEN and is not corrected here. Its
+   * operation lands on ledger steps exactly as it always has; this app does not
+   * second-guess a declaration, because the host is the only side that knows what
+   * its own act consumes.
    */
   appliesTo: NodeOutput;
   /**

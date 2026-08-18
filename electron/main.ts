@@ -226,8 +226,15 @@ interface FoundryHostOperation {
   readonly id: string;
   readonly label: string;
   readonly kind: 'narrate' | 'enhance' | 'assemble';
-  /** What a node must PRODUCE for this to be offered from it: 'book' | 'audio'. */
-  readonly appliesTo: 'book' | 'audio';
+  /**
+   * What a node must PRODUCE for this to be offered from it.
+   *
+   * 'export' arrived with foundry 1c7d6c9 (Owen's per-stage ruling: "the only
+   * options that exist are the ones that are possible for that stage"): export
+   * rows produce it and ledger steps never do, so an operation that reads a
+   * book FILE — narrate — is drawn only where the file exists.
+   */
+  readonly appliesTo: 'book' | 'audio' | 'export';
   /**
    * WHAT TO ASK THE PERSON BEFORE RUNNING IT, drawn by Foundry in its own window.
    *
@@ -1622,9 +1629,17 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
     id: 'bookforge.narrate',
     label: 'Narrate',
     kind: 'narrate',
-    // Consumes the book's TEXT, so it is offered from Foundry's own steps and
-    // never from a row of ours.
-    appliesTo: 'book',
+    /*
+     * EXPORT ROWS ONLY, since foundry 1c7d6c9. Narration reads a book FILE, and
+     * the exported EPUB is the only node that IS one — a Narrate drawn on a
+     * ledger step could only refuse ("no exported EPUB from this project"),
+     * which is the button Owen ruled out of existence: "the only options that
+     * exist are the ones that are possible for that stage." Foundry's export
+     * rows produce 'export' now, its steps never do, and this flip and that
+     * re-vendor land in the same commit because at 1c7d6c9 a narrate still
+     * saying 'book' would appear on steps ONLY — the exact inverse.
+     */
+    appliesTo: 'export',
     /*
      * A GETTER, not a captured array — the same reason `libraryDir` is one at the
      * mount call. Foundry reads this on every `host-ops:offers`, so a getter is a

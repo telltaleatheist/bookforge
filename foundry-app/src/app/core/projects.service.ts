@@ -1,6 +1,7 @@
 import { Injectable, effect, inject, signal } from '@angular/core';
 
 import { spokenName } from '@shared/documents';
+import { arrivedAsBook } from '@shared/stages';
 import { bookRow, fold, originalOf } from '@shared/original';
 import type { ProjectDocument, ProjectSummary } from '@shared/types';
 
@@ -223,8 +224,15 @@ export class ProjectsService {
    * refusal names that case in words, which is the better door.
    */
   arrivedAsBook(project: ProjectSummary | null): boolean {
-    if (project === null || project.problem !== null) return false;
-    return bookRow(project.documents)?.kind === 'epub' && !project.reading.done;
+    /*
+     * THE BODY MOVED TO `shared/stages.ts` and this is now the service's door
+     * onto it. Three surfaces that hold a `ProjectSummary` need this answer —
+     * the dock, the library tree and two dialogs — and only some of them inject
+     * this service; a question about a record belongs in a function over that
+     * record. Kept as a method because every existing caller reaches it this way
+     * and a rename would be churn in files this unit has no other business in.
+     */
+    return arrivedAsBook(project);
   }
 
   /**
