@@ -105,7 +105,8 @@ CHIP — the one surface a host may draw there: `HostStatus {headline,
 detail?, percent?, pending?}` in shared/host-ops.ts, `setHostStatus(status |
 null)` through the mount seam (per process, not per project), optional
 `FoundryHost.onStatusOpen` making the chip clickable, three new channels
-`host-ops:status` / `status-changed` / `status-open` (72 total). Standalone
+`host-ops:status` / `status-changed` / `status-open` — 71 invoke handles now,
+`status-changed` being a push in the push table, not a handle. Standalone
 Foundry draws nothing — the chip's host element is display:none until a host
 pushes, so the un-hosted window is unchanged in every pixel (95/95 blobs at
 8691110).
