@@ -922,15 +922,6 @@ function sayToUser(kicker: string, title: string, message: string): void {
   broadcastToAllWindows('jobs:notice', { tone: 'failure', kicker, title, message });
 }
 
-/** Bring the main window forward — the raise every hand-off into it performs. */
-function raiseMainWindow(): boolean {
-  if (!mainWindow || mainWindow.isDestroyed()) return false;
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.show();
-  mainWindow.focus();
-  return true;
-}
-
 /**
  * THE BOOK a Foundry project belongs to, and the EPUB it has exported.
  *
