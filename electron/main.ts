@@ -84,10 +84,11 @@ import {
 // The narrate operation's dialog: the fields Foundry is asked to draw, and the
 // reading of the answers it hands back. Pure decisions, kept out of this file.
 import {
-  narrateFormFields,
+  narrateFormOffer,
   readNarrateAnswers,
   readNarrateSavedSettings,
   type FoundryHostOpField,
+  type NarrateOffer,
   type NarrateVoiceOption,
 } from './foundry-narrate-form';
 // The ONE description of what a narration run consists of — the same one the
@@ -1093,8 +1094,26 @@ async function narrateVoiceOptions(engine: string): Promise<readonly NarrateVoic
  * failed with — which is the loud version of "we could not ask you". It is never
  * a form with an empty voice list, because a Start button whose one required
  * choice is empty can only fail.
+ *
+ * IT IS THE WHOLE OFFER THAT IS HELD, not just the fields, because the form is
+ * not the same shape on every machine: an engine with no sampling controls is
+ * asked no temperature, and a machine with no RVC models is offered no
+ * enhancement. Reading the answers requires knowing which questions were on
+ * screen — an absent `temperature` is either "the engine has none" or "the user
+ * emptied the box", and those two have opposite correct handling. Proving the
+ * answers against the offer that was actually DRAWN, rather than one recomputed
+ * at invoke time, is what keeps that distinction true even if Settings changed
+ * while the dialog was open.
  */
-let narrateFormSnapshot: readonly FoundryHostOpField[] | null = null;
+let narrateOffer: NarrateOffer | null = null;
+/**
+ * Why there is no form, when there is none — kept so the invoke can say it.
+ *
+ * The refusal belongs at the button, where somebody is looking, and this is the
+ * only place that sentence exists: the refresh happens with the Foundry window
+ * coming up and nobody reading a console.
+ */
+let narrateOfferRefusal: string | null = null;
 
 /**
  * Recompute the narrate form. Called before the Foundry window comes up.
@@ -1103,13 +1122,32 @@ let narrateFormSnapshot: readonly FoundryHostOpField[] | null = null;
  * installed voice) are the same reasons the INVOKE refuses, and refusing at the
  * button — where somebody is looking — is where that sentence belongs. Opening
  * the window is not the act to fail.
+ *
+ * The component registry is asked the two questions the modal's own RVC section
+ * asks: whether `rvc-env` is installed at all, and which `rvc-model` components
+ * are — the same rule `NarrationVoicesService.rvcVoices` folds for the picker in
+ * this window. A model list with no environment behind it is not an offer, so the
+ * form module is handed both facts and decides.
  */
 async function refreshFoundryNarrateForm(): Promise<void> {
   try {
     const saved = readNarrateSavedSettings(await readSavedNarrationSettings());
-    narrateFormSnapshot = narrateFormFields(await narrateVoiceOptions(saved.ttsEngine), saved);
+    const components = await componentManager.listStatus();
+    narrateOffer = narrateFormOffer(
+      await narrateVoiceOptions(saved.ttsEngine),
+      saved,
+      {
+        envInstalled: components.some(
+          (s) => s.component.id === 'rvc-env' && s.state === 'installed'),
+        models: components
+          .filter((s) => s.component.kind === 'rvc-model' && s.state === 'installed')
+          .map((s) => ({ id: s.component.id, name: s.component.name })),
+      },
+    );
+    narrateOfferRefusal = null;
   } catch (err) {
-    narrateFormSnapshot = null;
+    narrateOffer = null;
+    narrateOfferRefusal = (err as Error).message;
     console.error(
       `[foundry-host] Narrate will ask nothing in Foundry's window: ${(err as Error).message}`);
   }
@@ -1129,14 +1167,28 @@ async function refreshFoundryNarrateForm(): Promise<void> {
  * back here as `settings`. Nobody is sent to another window to say how a book
  * should be read.
  *
- * ── The three answers, and the dozen that are not asked ─────────────────────
+ * ── What the dialog asks now, and the two things it still does not ──────────
  *
- * Voice, device and workers are asked. Engine, language, speed, sampling and the
- * enhancement pass come from Settings → Pipeline Defaults — the same store the
- * modal seeds every one of ITS controls from — so the two doors start from the
- * same answers and neither invents one. A missing saved setting is a refusal
- * naming the door that sets it (electron/foundry-narrate-form.ts), never a
- * shipped default quietly standing in.
+ * It used to ask three questions — voice, device, workers — and everything else
+ * came from the saved settings. Owen's ruling of 2026-08-16 changed both halves:
+ *
+ *  - WORKER COUNT IS DEPRECATED. A run always uses one worker, so the question is
+ *    gone and `workers: 1` below is not a default this function chose but the only
+ *    value there is.
+ *  - THE DIALOG CARRIES THE NARRATION MODAL'S OWN CONTROL SET, assembly section
+ *    included: what to run, voice, device, speed, the engine's sampling numbers,
+ *    the two assembly passes and the enhancement voice. Those answers are what the
+ *    queued run is built from, and they REPLACE the saved values this function
+ *    used to read for them.
+ *
+ * What is still not asked is what a static form cannot honestly draw — the engine
+ * (the voice list depends on it and Foundry's dialog cannot re-filter a select)
+ * and the three enhancement rates (not asked in the modal either, which prints
+ * them as a hint and points at Settings). Those, plus the language, come from
+ * Settings → Pipeline Defaults, which is the same store the modal seeds every one
+ * of ITS controls from — so the two doors start from the same answers and neither
+ * invents one. A missing saved setting is a refusal naming the door that sets it
+ * (electron/foundry-narrate-form.ts), never a shipped default quietly standing in.
  *
  * ── The run itself is not composed here ─────────────────────────────────────
  *
@@ -1163,8 +1215,21 @@ async function invokeFoundryNarrate(
       'Narrate was pressed on a row BookForge is making, and a narration reads a book rather '
       + 'than audio. Press it on one of the book\'s own steps.');
   }
-  const answers = readNarrateAnswers(settings);
   const saved = readNarrateSavedSettings(await readSavedNarrationSettings());
+  /*
+   * The answers are proved against the offer that was DRAWN — held since the
+   * Foundry window came up — because which questions were on screen is what says
+   * whether a missing number is an engine without that control or a box somebody
+   * emptied. With no offer there was no dialog, and the sentence the refresh
+   * failed with is the honest thing to show at the button.
+   */
+  if (narrateOffer === null) {
+    throw new Error(narrateOfferRefusal === null
+      ? 'BookForge has not worked out what to ask about this narration yet. Close the Foundry '
+        + 'window, open it again, and press Narrate.'
+      : narrateOfferRefusal);
+  }
+  const answers = readNarrateAnswers(settings, narrateOffer.asked, saved);
 
   let target: FoundryNarrationTarget;
   try {
@@ -1185,13 +1250,26 @@ async function invokeFoundryNarrate(
   const meta = got.manifest.metadata;
 
   /*
-   * The enhancement pass is offered only when its environment is installed, on
-   * the modal's own gate (`rvcInstalled`): a run that named an RVC model with no
+   * The enhancement pass runs only when its environment is installed, on the
+   * modal's own gate (`rvcInstalled`): a run that named an RVC model with no
    * rvc-env behind it would fail an hour in, inside the step, at the point the
    * user has stopped watching.
+   *
+   * CHECKED AGAIN HERE, and a chosen model with no environment is REFUSED rather
+   * than dropped. The dialog only offers the enhancement select when rvc-env was
+   * installed at the moment the Foundry window came up; if it has gone since, the
+   * user has explicitly named a voice this machine can no longer render through,
+   * and quietly queueing the book without it would hand back an audiobook in the
+   * wrong voice with nothing ever having said so.
    */
   const rvcInstalled = (await componentManager.listStatus())
     .some((s) => s.component.id === 'rvc-env' && s.state === 'installed');
+  if (answers.rvcVoiceId !== null && !rvcInstalled) {
+    throw new Error(
+      'The voice-conversion environment is no longer installed, so this audiobook cannot be '
+      + `re-rendered through ${answers.rvcVoiceId}. Install it in BookForge under Settings → `
+      + 'Add-ons, or choose None, and press Start again.');
+  }
 
   const steps = buildNarrationSteps(
     {
@@ -1211,38 +1289,61 @@ async function invokeFoundryNarrate(
       // The modal's one stated assumption, kept: narration reads the book in the
       // book's own language, which the TTS bridge detects from the file itself.
       language: 'en',
+      // The engine is not a question a static dialog can ask — the voice list
+      // depends on it — so it is Settings' answer, and the voices the dialog
+      // offered were this engine's.
       ttsEngine: saved.ttsEngine,
       voice: answers.voice,
       device: answers.device,
-      temperature: saved.ttsTemperature,
-      topP: saved.ttsTopP,
-      repetitionPenalty: saved.ttsRepetitionPenalty,
-      speed: saved.ttsSpeed,
-      workers: answers.workers,
+      /*
+       * The sampling numbers are the dialog's when the engine has those controls
+       * and the SAVED ones when it does not. That is not a fallback: an engine
+       * whose `sampling` caps are empty (Orpheus, Voxtral) fixes these internally
+       * and was never asked, so the saved settings are the only source that run
+       * has for a number the config still has to carry. A field that WAS asked and
+       * came back empty is refused by name in `readNarrateAnswers`, never filled
+       * from here — the form module makes that split, and this reads its answer.
+       */
+      temperature: answers.temperature,
+      topP: answers.topP,
+      repetitionPenalty: answers.repetitionPenalty,
+      speed: answers.speed,
+      /*
+       * ALWAYS ONE. Owen's ruling of 2026-08-16: worker count is deprecated and a
+       * run always uses a single worker, so the dialog no longer asks and this is
+       * not a default standing in for an answer — it is the only value there is.
+       */
+      workers: 1,
       // `<library>/projects` — what `LibraryService.audiobooksPath()` computes on
       // the renderer's side, from the same root.
       outputDir: `${getLibraryRoot().replace(/\\/g, '/')}/projects`,
-      // Both opt-in assembly passes stay OFF, exactly as the modal's own
-      // checkboxes start: neither is a saved setting, and running a de-ring
-      // filter nobody asked for would be a decision made in this function's name.
-      finalDenoise: false,
-      applyDeRing: false,
-      rvc: saved.rvcEnhancementEnabled && rvcInstalled
-        ? {
-            voiceId: saved.rvcEnhancementVoiceId,
+      // Both opt-in assembly passes are the dialog's own checkboxes now, drawn
+      // off exactly as the modal's start. Neither is a saved setting: a de-ring
+      // filter is a thing somebody asks for on the run, not a standing default.
+      finalDenoise: answers.finalDenoise,
+      applyDeRing: answers.applyDeRing,
+      /*
+       * The enhancement voice is chosen in the dialog; its three RATES are not,
+       * because they are not asked in the modal either — it prints them as a hint
+       * and points at Settings. So the model is the user's answer and the rates
+       * are Settings', which is exactly how the modal composes the same block.
+       */
+      rvc: answers.rvcVoiceId === null
+        ? null
+        : {
+            voiceId: answers.rvcVoiceId,
             indexRate: saved.rvcEnhancementIndexRate,
             protectRate: saved.rvcEnhancementProtectRate,
             nSemitones: saved.rvcEnhancementNSemitones,
-          }
-        : null,
+          },
       // This door never offers Continue, so it never asks the queue to throw away
       // a cached session — the same rule the modal states for itself.
       startFresh: false,
     },
-    // Read the book aloud and assemble it: the modal's own two checkboxes, both
-    // on by default, because a narration nobody assembles leaves rendered
-    // sentences and no audiobook.
-    { narrate: true, assemble: true },
+    // What the run does — the dialog's own two toggles, both drawn on, because a
+    // narration nobody assembles leaves rendered sentences and no audiobook. Both
+    // off is refused before this point, in `readNarrateAnswers`.
+    { narrate: answers.narrate, assemble: answers.assemble },
   );
 
   /*
@@ -1533,7 +1634,7 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
      * invoke says why, which is louder than a dialog with an empty picker.
      */
     get form(): readonly FoundryHostOpField[] | undefined {
-      return narrateFormSnapshot ?? undefined;
+      return narrateOffer === null ? undefined : narrateOffer.fields;
     },
     invoke: (projectDir, nodeId, settings) =>
       invokeFoundryNarrate(projectDir, nodeId, settings),
