@@ -244,10 +244,42 @@ const AUDIO_EXTS = new Set([
                 <div class="vhead" (click)="toggleEditor(v)">
                   <span class="ricon">{{ variantIcon(v) }}</span>
                   <div class="rinfo">
-                    <div class="rlabel">
-                      {{ variantTitle(v) }}
-                      @if (isPrimary(v)) { <span class="badge">Primary</span> }
-                      @if (isTtsVariant(v)) { <span class="badge tts">TTS file</span> }
+                    <div class="rlabel">{{ variantTitle(v) }}</div>
+                    <!-- WHAT THIS FILE IS, and the place it is SET.
+                         Owen, 2026-08-18, on a rail that drew "Set primary" while
+                         the title line beside it drew a "Primary" badge: the two
+                         were one fact in two shapes at opposite ends of the row.
+                         A chip states the fact and takes the press.
+
+                         FILLED IS TRUE AND IS NOT PRESSABLE. Primary is a radio,
+                         not a checkbox — a project has exactly one, and unsetting
+                         it would leave getVariants to re-derive one silently. It
+                         moves by pressing another version's hollow chip. -->
+                    <div class="chips">
+                      @if (isPrimary(v)) {
+                        <span class="chip on"
+                              title="The library, the shelf card and the web player show this version's cover, title and author, and this is the version the book opens as.">Primary</span>
+                      } @else {
+                        <button class="chip off" (click)="setPrimary(v); $event.stopPropagation()"
+                                title="Make this the version the library, the shelf card and the web player show — its cover, title and author become the book's.">Primary</button>
+                      }
+                      @if (isTtsVariant(v)) {
+                        <span class="chip on good" title="Narration reads this version">TTS file</span>
+                      }
+                      <!-- Owen, 2026-08-18: "change add to archive to something
+                           like 'keep file'… the user is being asked if this should
+                           be a definitive, final version of a file or if it's a
+                           throwaway after tts is done."
+
+                           So the chip says which it IS. output/ is cleared when a
+                           book's output is deleted, so a Foundry export lives
+                           there until the user says it is one of the book's own
+                           files; pressing moves it into the protected archive/ and
+                           un-nests the row. -->
+                      @if (isFoundryExport(v)) {
+                        <button class="chip warn" (click)="addToArchive(v); $event.stopPropagation()"
+                                title="Temporary: this export lives in output/, which is cleared when this book's output is deleted. Press to keep it for good — the file moves into the archive as one of the book's own versions.">Temporary — keep</button>
+                      }
                     </div>
                     <div class="rdesc">{{ variantSubtitle(v) }}</div>
                     @if (variantFilename(v); as fn) { <div class="rfile" [title]="fn">{{ fn }}</div> }
@@ -274,60 +306,49 @@ const AUDIO_EXTS = new Set([
                   <!-- Owen, 2026-08-09: "from right to left, on every file -
                        delete, export, open. then, to the left of that are
                        special buttons, depending on whether the file is capable
-                       of running the commands." The three standing acts are in
-                       fixed columns so they line up down the page; a row that
-                       cannot perform one leaves its column EMPTY.
+                       of running the commands." That order is unchanged. What
+                       changed on 2026-08-18 is everything else about the rail
+                       ("i dont like the way they look"):
 
-                       Owen, 2026-08-18, on what the specials are now that
-                       Foundry is the one place text is made: "the user should be
-                       opening from one location: the parent file… no more
-                       convert to epub button. Thats done inside foundry. Tts
-                       should be done from inside foundry as well." So the acts
-                       that STARTED work here — Convert to EPUB, Process, Mark as
-                       TTS file, Generate analysis — are gone from these rows.
-                       Their machinery is untouched; what changed is where the
-                       user asks for them. -->
-                  <div class="ractions" (click)="$event.stopPropagation()">
-                    <div class="specials">
-                      @if (!isPrimary(v)) {
-                        <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
-                      }
-                      <!-- A conversion started elsewhere (the book banner, the
-                           queue) still has to be watchable from the row whose
-                           pages are being read. Nothing STARTS one here. -->
-                      @if (conversion() && variantStartedConversion(v)) {
-                        <button class="act" (click)="showConversion()"
-                                title="Watch the conversion, or stop it">Show progress</button>
-                      }
-                      <!-- Owen, 2026-08-18: "change add to archive to something
-                           like 'keep file'… the user is being asked if this
-                           should be a definitive, final version of a file or if
-                           it's a throwaway after tts is done."
+                       THE FACTS LEFT IT. Set primary and Keep permanently were
+                       never verbs — see the chips above, which state what the
+                       file is and take the press.
 
-                           That IS the question: output/ is cleared when a book's
-                           output is deleted, so a Foundry export lives there
-                           until the user says it is one of the book's own files.
-                           Keeping it moves the file into the protected archive/
-                           and un-nests the row. -->
-                      @if (isFoundryExport(v)) {
-                        <button class="act" (click)="addToArchive(v)"
-                                title="Keep this file for good. Exports live in output/, which is cleared when this book's output is deleted — keeping it moves the file into the archive as one of the book's own versions.">Keep permanently</button>
-                      }
-                    </div>
-                    <div class="slot">
-                      <!-- ONE door into Foundry, and it is the PARENT file's.
-                           An export opened in Foundry would start a second
-                           project from a file that came out of the first. -->
-                      @if (canOpenInFoundry(v) && !row.nested) {
-                        <button class="act" (click)="openVariant(v)" title="Open in Foundry">Open</button>
-                      }
-                    </div>
-                    <div class="slot">
-                      <button class="act" (click)="exportVariant(v)" title="Save a copy to your computer">Save as…</button>
-                    </div>
-                    <div class="slot">
-                      <button class="act danger" (click)="remove(v)" title="Delete this version">Delete</button>
-                    </div>
+                       ONE ACT IS EMPHASIZED — the thing the row is FOR. Every
+                       other verb is plain text until hovered, so a page of six
+                       rows stops drawing twenty-one identical pills.
+
+                       SAVE AND DELETE ARE ICONS, and that is what retired the
+                       four-column grid. They are the only two acts on EVERY line,
+                       so as the last two children of a right-aligned flex row
+                       they align down the page by construction. The old grid held
+                       them in line by reserving 78px columns and leaving them
+                       EMPTY, which read as buttons that failed to load: Analysis
+                       drew two such holes, the sentence cache drew two. A row
+                       that cannot save now leaves a 26px gap nobody sees. -->
+                  <div class="rail" (click)="$event.stopPropagation()">
+                    <!-- A conversion started elsewhere (the book banner, the
+                         queue) still has to be watchable from the row whose pages
+                         are being read. Nothing STARTS one here. -->
+                    @if (conversion() && variantStartedConversion(v)) {
+                      <button class="quiet" (click)="showConversion()"
+                              title="Watch the conversion, or stop it">Show progress</button>
+                    }
+                    <!-- ONE door into Foundry, and it is the PARENT file's.
+                         An export opened in Foundry would start a second
+                         project from a file that came out of the first. -->
+                    @if (canOpenInFoundry(v) && !row.nested) {
+                      <button class="act lead" (click)="openVariant(v)"
+                              title="Open in Foundry">Open</button>
+                    }
+                    <button class="icon" (click)="exportVariant(v)"
+                            title="Save a copy to your computer" aria-label="Save a copy to your computer">
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v7m0 0 3-3m-3 3L5 6" /><path d="M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2" /></svg>
+                    </button>
+                    <button class="icon kill" (click)="remove(v)"
+                            title="Delete this version" aria-label="Delete this version">
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 1-.9l.6-8" /></svg>
+                    </button>
                   </div>
                 </div>
 
@@ -393,7 +414,7 @@ const AUDIO_EXTS = new Set([
               </div>
               <div class="rdesc">{{ analysisRowDesc(a) }}</div>
             </div>
-            <div class="ractions">
+            <div class="rail">
               <!-- No Regenerate and no View. Reading the report meant opening the
                    analyzed file in the legacy picker, which is where the flag
                    highlighting lived, and that window is unreachable since
@@ -406,19 +427,22 @@ const AUDIO_EXTS = new Set([
                    So this row REPORTS what exists and lets it be saved or
                    removed. Nothing here starts an analysis — generateAnalysis
                    and its handlers are all still wired for the Foundry-side
-                   button that replaces this one. -->
-              <div class="specials"></div>
-              <div class="slot"></div>
-              <div class="slot">
-                @if (a.path) {
-                  <button class="act" (click)="exportDoc.emit(a.path)"
-                          title="Save a copy of the analyzed file">Save as…</button>
-                }
-              </div>
-              <div class="slot">
-                <button class="act danger" (click)="removeAnalysis()"
-                        title="Delete the content-analysis report">Delete</button>
-              </div>
+                   button that replaces this one.
+
+                   This is the line that used to draw two empty 78px columns to
+                   stay in line with the rows above it. Now it draws two icons. -->
+              @if (a.path) {
+                <button class="icon" (click)="exportDoc.emit(a.path)"
+                        title="Save a copy of the analyzed file" aria-label="Save a copy of the analyzed file">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v7m0 0 3-3m-3 3L5 6" /><path d="M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2" /></svg>
+                </button>
+              } @else {
+                <span class="icon-gap"></span>
+              }
+              <button class="icon kill" (click)="removeAnalysis()"
+                      title="Delete the content-analysis report" aria-label="Delete the content-analysis report">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 1-.9l.6-8" /></svg>
+              </button>
             </div>
           </div>
         }
@@ -438,25 +462,24 @@ const AUDIO_EXTS = new Set([
                 {{ c.completedSentences | number }} / {{ c.totalSentences | number }} sentences cached{{ c.language ? ' · ' + c.language : '' }}
               </div>
             </div>
-            <div class="ractions">
-              <div class="specials">
-                @if (!c.complete) {
-                  <button class="act primary" (click)="continueJob.emit()"
-                          title="Resume rendering the remaining sentences in the Processing tab, with the same settings as before">Continue</button>
-                }
-                <button class="act" (click)="assemble.emit()"
-                        title="Assemble the cached sentences into a finished audiobook in the Processing tab">Assemble</button>
-                <button class="act" (click)="correctSentences.emit()"
-                        title="Listen to the rendered sentences and regenerate any that sound wrong, then rebuild">🔧 Correct Sentences</button>
-              </div>
-              <!-- The cache is not a file you open or export — it is thousands
-                   of per-sentence clips. Its two columns stay empty so the
-                   Delete beside it still lines up with every other line. -->
-              <div class="slot"></div>
-              <div class="slot"></div>
-              <div class="slot">
-                <button class="act danger" (click)="deleteCache()" title="Delete all cached sentence audio for this book">Delete</button>
-              </div>
+            <div class="rail">
+              <button class="quiet" (click)="correctSentences.emit()"
+                      title="Listen to the rendered sentences and regenerate any that sound wrong, then rebuild">Correct sentences</button>
+              <button class="quiet" (click)="assemble.emit()"
+                      title="Assemble the cached sentences into a finished audiobook in the Processing tab">Assemble</button>
+              @if (!c.complete) {
+                <button class="act lead" (click)="continueJob.emit()"
+                        title="Resume rendering the remaining sentences in the Processing tab, with the same settings as before">Continue</button>
+              }
+              <!-- The cache is not a file you can save a copy of — it is thousands
+                   of per-sentence clips. The gap is what keeps Delete in the last
+                   column, which is the whole reason the two trailing slots are
+                   always rendered. -->
+              <span class="icon-gap"></span>
+              <button class="icon kill" (click)="deleteCache()"
+                      title="Delete all cached sentence audio for this book" aria-label="Delete all cached sentence audio for this book">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 1-.9l.6-8" /></svg>
+              </button>
             </div>
           </div>
         }
@@ -470,42 +493,49 @@ const AUDIO_EXTS = new Set([
                 <span class="ricon">{{ variantIcon(v) }}</span>
                 <div class="rinfo">
                   <div class="rlabel">{{ variantTitle(v) }}</div>
+                  <!-- A fact about the recording, stated and set in one place —
+                       the ebook rows' reasoning, and this one had already half
+                       become a chip: the button rendered its own state in its
+                       label ("★ Professional" / "Mark professional"). Unlike
+                       Primary this one IS pressable when filled, because it is a
+                       genuine yes/no about one file rather than a designation
+                       exactly one version has to hold. -->
+                  <div class="chips">
+                    <button class="chip" [class.on]="isProfessional(v)" [class.off]="!isProfessional(v)"
+                            (click)="setProfessional(v, !isProfessional(v)); $event.stopPropagation()"
+                            [title]="isProfessional(v) ? 'Marked professionally read — press to unset' : 'Mark as professionally read'">★ Professional</button>
+                  </div>
                   <div class="rdesc">{{ variantSubtitle(v) }}</div>
                   @if (narratorFor(v); as nar) {
                     <div class="narrator" title="Who narrated this audiobook"><span class="nlabel">Narrator</span>{{ nar }}</div>
                   }
                   @if (variantFilename(v); as fn) { <div class="rfile" [title]="fn">{{ fn }}</div> }
                 </div>
-                <div class="ractions" (click)="$event.stopPropagation()">
-                  <div class="specials">
-                    <button class="act" [class.active]="isProfessional(v)" (click)="setProfessional(v, !isProfessional(v))" [title]="isProfessional(v) ? 'Marked professionally read — click to unset' : 'Mark as professionally read'">{{ isProfessional(v) ? '★ Professional' : 'Mark professional' }}</button>
-                    <!-- Analysis of the synced sentences stood here. It goes with
-                         the document analysis for the same reason (2026-08-18):
-                         the feature is being reworked and its door will be in
-                         Foundry. emitGenerateAudiobookAnalysis and the queue
-                         step behind it are untouched. -->
-                    <!-- Owen: "generate sentences on every audio file. its been an
-                         extremely important and useful tool." EVERY audio row
-                         carries it. While the transcript check is still running
-                         it is disabled with that as the reason rather than
-                         missing — the two buttons it used to be were both hidden
-                         in that window, so a row could show neither. -->
-                    <button class="act" [disabled]="!transcriptEligibilityKnown()"
-                            [title]="sentencesButtonTitle(v)"
-                            (click)="openSentencePicker(v)">{{ sentencesButtonLabel(v) }}</button>
-                  </div>
-                  <div class="slot">
-                    <button class="act primary" (click)="listenVariant(v)"
-                            title="Play this audiobook in the player window">Listen</button>
-                  </div>
-                  <div class="slot">
-                    <button class="act" (click)="exportAudioVariant(v)"
-                            title="Save a copy to your computer">Save as…</button>
-                  </div>
-                  <div class="slot">
-                    <button class="act danger" (click)="remove(v)"
-                            title="Delete the finished audiobook file (the rendered sentence cache is kept)">Delete</button>
-                  </div>
+                <div class="rail" (click)="$event.stopPropagation()">
+                  <!-- Analysis of the synced sentences stood here. It goes with
+                       the document analysis for the same reason (2026-08-18):
+                       the feature is being reworked and its door will be in
+                       Foundry. emitGenerateAudiobookAnalysis and the queue
+                       step behind it are untouched. -->
+                  <!-- Owen: "generate sentences on every audio file. its been an
+                       extremely important and useful tool." EVERY audio row
+                       carries it. While the transcript check is still running
+                       it is disabled with that as the reason rather than
+                       missing — the two buttons it used to be were both hidden
+                       in that window, so a row could show neither. -->
+                  <button class="quiet" [disabled]="!transcriptEligibilityKnown()"
+                          [title]="sentencesButtonTitle(v)"
+                          (click)="openSentencePicker(v)">{{ sentencesButtonLabel(v) }}</button>
+                  <button class="act lead" (click)="listenVariant(v)"
+                          title="Play this audiobook in the player window">Listen</button>
+                  <button class="icon" (click)="exportAudioVariant(v)"
+                          title="Save a copy to your computer" aria-label="Save a copy to your computer">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v7m0 0 3-3m-3 3L5 6" /><path d="M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2" /></svg>
+                  </button>
+                  <button class="icon kill" (click)="remove(v)"
+                          title="Delete the finished audiobook file (the rendered sentence cache is kept)" aria-label="Delete the finished audiobook file">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 1-.9l.6-8" /></svg>
+                  </button>
                 </div>
               </div>
 
@@ -868,14 +898,13 @@ const AUDIO_EXTS = new Set([
     .vrow.nested .ricon { font-size: 1.05rem; }
     .vrow.nested .rlabel { font-size: 0.8rem; }
     .vrow.nested .rdesc { font-size: 0.7rem; }
-    .badge {
-      font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
-      color: #fff; background: var(--accent-primary, #06b6d4);
-      padding: 1px 6px; border-radius: 4px; margin-left: 8px; vertical-align: middle;
-    }
-    /* The TTS mark reads as a DIFFERENT KIND of fact from Primary, so it does not
-       borrow the accent that means "this is the book". */
-    .badge.tts { background: var(--success, #16a34a); }
+    /* The .badge rules (Primary / TTS file, drawn inline after the title) stood
+       here until 2026-08-18. The chips below took over both the shape and the
+       job — the badge said the fact and a button at the far end of the row set
+       it, and one fact drawn twice in two shapes is what the chips collapsed.
+       .chip.on keeps the accent it used and .chip.on.good keeps its green, which
+       was already deliberate: the TTS mark is a different KIND of fact from
+       Primary, so it does not borrow the accent that means "this is the book". */
     .veditor { padding: 4px 14px 16px; border-top: 1px solid var(--border-default, rgba(255,255,255,0.07)); }
     .drow { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; }
     .drow label {
@@ -919,34 +948,32 @@ const AUDIO_EXTS = new Set([
       font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
       color: var(--text-secondary);
     }
-    /* Actions: the three standing acts in FIXED COLUMNS, specials to their left.
+    /* THE RAIL: verbs only, right-aligned, one of them emphasized.
 
-       Owen, 2026-08-09: "theyre supposed to be lined up with each other. from
-       right to left, on every file - delete, export, open. then, to the left of
-       that are special buttons, depending on whether the file is capable of
-       running the commands." So Open/Export/Delete each own a column of the same
-       width on every line, and a line that cannot perform one leaves its column
-       EMPTY — closing the gap is exactly what stops them lining up.
+       Owen, 2026-08-09: "from right to left, on every file - delete, export,
+       open. then, to the left of that are special buttons." That order still
+       holds. What changed on 2026-08-18 is how it is HELD.
 
-       This is not the arrangement that was torn out in Aug 2026. That one
-       reserved a column for EVERY button the page could show (~480px in every
-       row, sparse rows floating mid-panel, the cluster pushed off a narrow
-       panel). Three columns of 78px is 234px, the specials share one flexible
-       column that is as wide as its contents and no wider, and the cluster still
-       wraps below the title on a narrow panel because .rinfo keeps its
-       flex-basis. */
-    .ractions {
-      display: grid; grid-template-columns: auto var(--act-col) var(--act-col) var(--act-col);
-      gap: 6px; align-items: center; margin-left: auto;
-      --act-col: 78px;
-    }
-    .ractions .specials {
-      display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin-right: 4px;
-    }
-    /* One standing act's column. Empty on a line that cannot perform it, which
-       is what holds the three in line down the page. */
-    .ractions .slot { display: flex; min-width: 0; }
-    .ractions .slot .act { width: 100%; padding-left: 4px; padding-right: 4px; }
+       It was a four-column grid — auto 78px 78px 78px — and a row that could
+       not perform a standing act left its column empty. That is what kept the
+       columns in line, and it is also what Owen was looking at when he said "i
+       dont like the way they look": Analysis reserved two empty 78px columns,
+       the sentence cache reserved two, and a reserved empty column reads as a
+       button that failed to load rather than as alignment.
+
+       The grid is gone because it is not needed. Save and Delete are the only
+       two acts on EVERY line, so as the last two children of a right-aligned
+       flex row they align down the page by construction — no reserved widths,
+       and a line that cannot save leaves a 26px .icon-gap nobody sees. The
+       facts that used to sit at the left of this cluster (Set primary, Keep
+       permanently, Mark professional) are chips under the title now.
+
+       It still wraps below the title on a narrow panel, because .rinfo keeps
+       its flex-basis. */
+    .rail { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+    /* Held where a trailing icon would be, so Delete stays in the last column on
+       a row that has nothing to save (the sentence cache). */
+    .rail .icon-gap { width: 26px; flex: none; }
     .act {
       box-sizing: border-box;
       display: inline-flex; align-items: center; justify-content: center;
@@ -957,9 +984,86 @@ const AUDIO_EXTS = new Set([
     }
     .act:hover:not(:disabled) { background: var(--bg-elevated); }
     .act:disabled { opacity: 0.45; cursor: default; }
+    .act:focus-visible { outline: 2px solid var(--accent-primary, #06b6d4); outline-offset: 2px; }
     .act.primary { background: var(--accent-primary, #06b6d4); border-color: transparent; color: #fff; }
     .act.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent-primary, #06b6d4) 85%, #fff); }
     .act.danger:hover:not(:disabled) { background: color-mix(in srgb, #ef4444 20%, var(--bg-base)); border-color: #ef4444; }
+
+    /* THE ONE EMPHASIZED ACT — what this row is FOR: Open on a book, Listen on a
+       recording, Continue on a half-rendered cache. Exactly one per row, and it
+       keeps the old 78px width so the emphasized buttons line up down the page
+       even though nothing reserves a column for them any more. */
+    .act.lead {
+      background: var(--accent-primary, #06b6d4); border-color: transparent; color: #fff;
+      font-weight: 600; min-width: 78px;
+    }
+    .act.lead:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--accent-primary, #06b6d4) 85%, #fff);
+    }
+
+    /* EVERY OTHER VERB — legible, present, and not competing. A bordered pill for
+       each of these is what made six rows draw twenty-one identical controls; the
+       hairline arrives on hover, where the pointer already is. */
+    .quiet {
+      font-family: inherit; font-size: 0.78rem; line-height: 1.2;
+      background: none; border: 1px solid transparent; border-radius: 6px;
+      color: var(--text-secondary); padding: 5px 9px; cursor: pointer;
+      white-space: nowrap;
+    }
+    .quiet:hover:not(:disabled) {
+      border-color: var(--border-default, rgba(255,255,255,0.12)); color: var(--text-primary);
+    }
+    .quiet:disabled { opacity: 0.45; cursor: default; }
+    .quiet:focus-visible { outline: 2px solid var(--accent-primary, #06b6d4); outline-offset: 2px; }
+
+    /* SAVE AND DELETE. Icons because they are the two acts every line has, so
+       they are the two that can align without reserving anything — and because
+       Delete at full pill strength on every row, in the position the eye stops,
+       gave the act nobody wants the loudest place on the page. Both keep the
+       titles they always had, and carry aria-labels for the same sentence. */
+    .icon {
+      width: 26px; height: 26px; flex: none; padding: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: none; border: 1px solid transparent; border-radius: 6px;
+      color: var(--text-secondary); cursor: pointer;
+    }
+    .icon svg {
+      width: 16px; height: 16px; fill: none; stroke: currentColor;
+      stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round;
+    }
+    .icon:hover {
+      border-color: var(--border-default, rgba(255,255,255,0.12));
+      color: var(--text-primary); background: var(--bg-base);
+    }
+    .icon:focus-visible { outline: 2px solid var(--accent-primary, #06b6d4); outline-offset: 2px; }
+    .icon.kill:hover { border-color: #ef4444; color: #ef4444; }
+
+    /* THE CHIPS: a fact about the file, in the one place it is also set.
+       Filled says it is so; hollow-dashed says it is not and can be. Sized and
+       spaced off .badge, which they replace — the badge shape is what the page
+       already used for "what this version is". */
+    .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+    .chip {
+      font-family: inherit;
+      font-size: 0.62rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.04em; padding: 2px 8px; border-radius: 999px;
+      border: 1px solid var(--border-default, rgba(255,255,255,0.12));
+      background: none; color: var(--text-secondary);
+      white-space: nowrap; cursor: pointer;
+    }
+    .chip.off { border-style: dashed; }
+    .chip.off:hover {
+      color: var(--text-primary); border-color: var(--accent-primary, #06b6d4); border-style: solid;
+    }
+    /* Filled Primary is a <span>, not a button: a project has exactly one, so it
+       moves by pressing another version's chip rather than by being switched off
+       here. Professional is a genuine yes/no and stays pressable when filled. */
+    span.chip.on { cursor: default; }
+    .chip.on { background: var(--accent-primary, #06b6d4); border-color: transparent; color: #fff; }
+    .chip.on.good { background: var(--success, #16a34a); }
+    .chip.warn { border-color: var(--warning, #f59e0b); color: var(--warning, #f59e0b); border-style: dashed; }
+    .chip.warn:hover { background: var(--warning, #f59e0b); color: var(--bg-base); border-style: solid; }
+    .chip:focus-visible { outline: 2px solid var(--accent-primary, #06b6d4); outline-offset: 2px; }
     .muted { color: var(--text-secondary); padding: 12px 4px; font-size: 0.85rem; }
     .compare-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
     .compare-bar { display: flex; align-items: center; gap: 14px; padding: 8px 4px 12px; }
