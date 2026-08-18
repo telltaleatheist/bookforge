@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **1c7d6c9** — *"feat(renderer): only the possible is offered — 'export' joins NodeOutput, and every act's button shares its refusal's test"* |
+| Source sha | **69998c7** — *"fix(renderer): the export row answers the click its offer was waiting for, and the rail grays instead of refusing"* |
 | Copied on | 2026-08-17 |
-| Copied by | `git -C <foundry> archive 1c7d6c9 app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 69998c7 app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -55,7 +55,14 @@ still saying 'book' would draw on steps only, the exact inverse of the
 ruling); Foundry's own offers now gate per act on shared possibility
 predicates (new `shared/stages.ts`), and the delta also carried `0fc3bfd`
 (docs-only date corrections). Each refresh changed only the files its commits
-name and was hash-verified against the source tree (94/94 blobs at 1c7d6c9).
+name and was hash-verified against the source tree. `69998c7` closed the two
+gaps Owen hit minutes after 1c7d6c9 landed: the export row's click now TAKES
+the selection (so the "from here" footer — where narrate lives — can actually
+open on it; pickRow's old premise "nothing is ever made from an export" was
+made false by Wave 10 itself), only the EPUB export row produces 'export'
+(a txt/reprint offering a file-consuming act could only refuse), and the
+rail's formed host acts gray on the new `hasEpubExport` predicate instead of
+refusing at press (94/94 blobs at 69998c7).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

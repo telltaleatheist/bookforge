@@ -10,7 +10,7 @@ import type { HostOperationOffer } from '@shared/host-ops';
  * what a stage can do.
  */
 import {
-  canExportFrom, canReadPages, canSimplifyFrom, canTranslateFrom,
+  canExportFrom, canReadPages, canSimplifyFrom, canTranslateFrom, hasEpubExport,
 } from '@shared/stages';
 import { fold } from '@shared/original';
 
@@ -217,11 +217,23 @@ import { UiService } from '../../core/ui.service';
           \`hosted()\` branch here because there does not need to be one — the
           emptiness is the guard.
         -->
+        <!--
+          GRAYED WHEN THE STAGE CANNOT RUN IT, exactly like Translate and
+          Simplify — Owen's ruling (2026-08-17 21:45): *"if the step the user
+          has selected cant run tts then its grayed out."* \`hostReady\` is the
+          same predicate the press itself refuses by (\`hasEpubExport\`,
+          shared/stages.ts), so the gray and the sentence cannot disagree; the
+          title says what would make it light up, because a disabled control
+          that keeps its enabled hover is a control that explains nothing.
+        -->
         @for (act of railActs(); track act.id) {
           <button
             class="rail-item audio"
             [class.active]="ui.hostOpOpen()?.operationId === act.id"
-            [title]="act.label + ' — handled by the app Foundry is running inside'"
+            [disabled]="!hostReady()"
+            [title]="hostReady()
+              ? act.label + ' — handled by the app Foundry is running inside'
+              : act.label + ' — export the book first; this act reads the finished EPUB'"
             (click)="runHostAct(act.id)"
           >
             <span class="rail-icon">♪</span>
@@ -447,15 +459,33 @@ export class ToolRailComponent {
    * says where to go instead.
    *
    * NULL MEANS THE BUTTON IS NOT DRAWN AT ALL, which is only the case with no
-   * book in front of you. A book with no export yet still draws the button and
-   * refuses in a sentence on the press: the act is real, the target is missing,
-   * and "export it first" is a thing a person can act on where a hidden button
-   * is not.
+   * book in front of you. A book with no EPUB export yet draws the button
+   * GRAYED — that is Owen's ruling (2026-08-17 21:45) REVERSING what this
+   * paragraph used to promise ("still draws the button and refuses in a
+   * sentence on the press"): present and disabled like Translate and Simplify,
+   * with the title carrying "export it first" so the way to light it up is
+   * still said where the button is. See `hostReady`.
    */
   private readonly target = computed<string | null>(() => {
     const tab = this.stage.activeDocument();
     if (tab === null) return null;
     return this.documents.projectDirOf(tab);
+  });
+
+  /**
+   * WHETHER THE HOST'S ACTS HAVE A FILE TO CONSUME — the dock's gray.
+   *
+   * `hasEpubExport` (shared/stages.ts) is the same predicate `runHostAct`
+   * refuses by, which is that module's whole rule: the gray and the sentence
+   * cannot come to different answers. The finer refusals — two candidate
+   * exports, settings a host misses — stay at press time and with the host,
+   * because a catalogue row cannot know them.
+   */
+  protected readonly hostReady = computed<boolean>(() => {
+    const dir = this.target();
+    if (dir === null) return false;
+    const project = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
+    return hasEpubExport(project);
   });
 
   /**
@@ -468,8 +498,19 @@ export class ToolRailComponent {
     const dir = this.target();
     if (dir === null) return;
     const project = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
-    const exports = project?.exports ?? [];
+    /*
+     * THE EPUBS, not the whole tray: what these acts consume is the finished
+     * BOOK file, and counting a plain-text export here would refuse for
+     * ambiguity between two files only one of which the act can read — or,
+     * worse, aim the nodeId at the text file's own provenance. The same kind
+     * test the row's `produces` and the dock's gray both make, made a third
+     * time where the target is picked.
+     */
+    const exports = (project?.exports ?? []).filter((made) => made.kind === 'epub');
     if (exports.length === 0) {
+      // Unreachable from the button now that it grays (`hostReady` is this
+      // same predicate) — kept because a sentence behind a gate costs nothing
+      // and a silent return behind a stale repaint would cost an evening.
       this.notices.notice.set(
         'There is nothing finished to work from yet — export this book first, and the act will '
         + 'have a file to consume.',

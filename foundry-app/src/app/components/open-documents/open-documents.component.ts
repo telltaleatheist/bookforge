@@ -1578,8 +1578,15 @@ export class OpenDocumentsComponent {
            * are gated on the row being a POSITION. An export is terminal in this
            * app's own pipeline and a source in the host's, and this field is the
            * only place those two facts meet.
+           *
+           * AND ONLY THE EPUB ROW SAYS IT. What an `export` act consumes today
+           * is the finished BOOK file; a plain-text export or a reprint
+           * offering one would be a button whose only possible outcome is the
+           * host's refusal — the exact shape the ruling forbids. The day a
+           * host registers an act that consumes a facsimile, this is the one
+           * line that learns kinds.
            */
-          produces: 'export',
+          produces: made.kind === 'epub' ? 'export' : null,
           // Its provenance, where the catalogue recorded one (`ProjectFinal.stepId`).
           madeFrom: made.stepId ?? null,
         });
@@ -2054,13 +2061,23 @@ export class OpenDocumentsComponent {
       return;
     }
     /*
-     * A FILE CLEARS THE SELECTION rather than taking it. A footer says "from
-     * here", and nothing is ever made from an export or from a copy somebody
-     * opened; leaving the previous card's footer open while the click landed
-     * somewhere else would be an offer pointing at a node the user has just
-     * moved away from.
+     * AN EXPORT ROW TAKES THE SELECTION NOW; every other file row still clears
+     * it.
+     *
+     * The clearing covered every file on the argument that "nothing is ever
+     * made from an export" — true for as long as only this app's own acts
+     * existed, and FALSE since `export` became a currency (Wave 10): a
+     * narration is made from an export, the offer correctly lands on this
+     * row, and the selection is the only gesture that unrolls the footer the
+     * offer lives in. Owen hit the gap within minutes of the member landing —
+     * *"theres no narration step available to press under the epub i
+     * generated"* — because the rule was right and no click could reach it.
+     * The press still does everything it did (open the proof sheet, reveal
+     * the file); the selection rides along, exactly the pairing a step's
+     * click has always had. A COPY still clears: nothing is made from one,
+     * which is the old sentence still true of the rows it still covers.
      */
-    this.picked.set(null);
+    this.picked.set(row.kind === 'export' ? row.key : null);
     if (row.tab !== null) {
       this.pick(row.tab);
       return;

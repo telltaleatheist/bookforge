@@ -177,3 +177,26 @@ export function canExportFrom(
   if (project === null) return true;
   return hasBookAt(project, standing);
 }
+
+/**
+ * IS THERE A FINISHED EPUB TO WORK FROM — the possibility behind the HOST's
+ * formed acts on the dock.
+ *
+ * Owen's ruling for the rail (2026-08-17 21:45, via the bridge): *"if the step
+ * the user has selected cant run tts then its grayed out"* — present and
+ * disabled like Translate and Simplify, never a press that answers with a
+ * refusal. What those acts consume is the finished FILE (`NodeOutput`'s
+ * `'export'`), and ZERO EPUB EXPORTS IS THE GRAYED STATE — BookForge's own
+ * words for its narrate's honest first approximation. The precise judge stays
+ * the host's invoke (two candidate exports, missing settings), exactly as
+ * every predicate here stops at what a catalogue row can say and leaves the
+ * dialogs their own refusals.
+ *
+ * NO `standing` PARAMETER, on `canReadPages`'s reasoning: the tray of finished
+ * files is a fact about the PROJECT, not about the row somebody is standing on.
+ * `exports` lists only files still on disk, so a tray somebody tidied by hand
+ * answers false rather than graying a button open over a ghost.
+ */
+export function hasEpubExport(project: ProjectSummary | null): boolean {
+  return (project?.exports ?? []).some((made) => made.kind === 'epub');
+}
