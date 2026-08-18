@@ -33,7 +33,7 @@ import { OpenDocumentsService, type Tab } from '../../core/documents.service';
 import { NoticeService } from '../../core/notice.service';
 import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
-import { ToolRailComponent } from '../tool-rail/tool-rail.component';
+import { ActionMenuComponent } from '../action-menu/action-menu.component';
 
 /**
  * The LIBRARY, down the left — one provenance tree per open book, and since the
@@ -279,7 +279,7 @@ import { ToolRailComponent } from '../tool-rail/tool-rail.component';
  */
 @Component({
   selector: 'app-open-documents',
-  imports: [NgTemplateOutlet, ToolRailComponent],
+  imports: [NgTemplateOutlet, ActionMenuComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <!--
@@ -776,10 +776,10 @@ import { ToolRailComponent } from '../tool-rail/tool-rail.component';
     </div>
     }
 
-    <!-- Pinned to the foot in both states; compact (icons alone, one column)
-         while the panel is a stub, because a 76px label cannot draw in 30px of
-         width and a truncated one would be worse than the icon by itself. -->
-    <app-tool-rail [compact]="!ui.documentsShown()" />
+    <!-- Pinned to the foot in both states; compact (icons alone) while the
+         panel is a stub, because a label cannot draw in 30px of width and a
+         truncated one would be worse than the icon by itself. -->
+    <app-action-menu [compact]="!ui.documentsShown()" />
   `,
   styles: [`
     /*
@@ -828,7 +828,7 @@ import { ToolRailComponent } from '../tool-rail/tool-rail.component';
       unbounded.
     */
     .panel, .stub { flex: 1; min-height: 0; }
-    app-tool-rail { flex: 0 0 auto; }
+    app-action-menu { flex: 0 0 auto; }
     /* Collapsed, the HOST narrows to the stub's width, because the shell's flex
        row measures the host and not the panel inside it — a stub drawn inside a
        384px host would be 30 pixels of button beside 354 of nothing. The class
@@ -1484,7 +1484,7 @@ export class OpenDocumentsComponent {
        *
        * It decides `produces`, which decides what the "from here" footer may
        * offer — and it is the DOCK'S OWN TEST, deliberately (`canTranslate`,
-       * tool-rail.component.ts): the reading landed, or the book arrived as one,
+       * action-menu.component.ts): the reading landed, or the book arrived as one,
        * and never the import row where somebody has stepped back to the
        * untouched scan. Two surfaces offering the same act must agree about when
        * it is available, and the way they agree is by asking the same question

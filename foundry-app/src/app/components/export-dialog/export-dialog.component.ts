@@ -357,7 +357,7 @@ import { api } from '../../core/foundry';
        teach somebody that this app cannot make a facsimile at all. */
     .kind:disabled { opacity: 0.45; cursor: not-allowed; }
     /* The chosen one wears the accent, which is this app's one word for "this is
-       the thing" — the same soft fill the dock's active item and the inspector's
+       the thing" — the same soft fill the action menu's active row and the inspector's
        current category row use. */
     .kind.on { background: var(--accent-soft); border-color: var(--accent); }
     .kind-name { font-size: 13px; font-weight: 500; color: var(--text-primary); }

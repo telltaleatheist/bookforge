@@ -140,7 +140,7 @@ import { UiService } from '../../core/ui.service';
                   chapter detection are all built on the bank — so the row says
                   so and the button IS the step rather than a badge beside it.
 
-                  It is on the row rather than only in the dock because this is
+                  It is on the row rather than only in the action menu because this is
                   the screen where somebody surveys a library: five books, two of
                   them unread, is a fact you should be able to see without
                   opening each one.
@@ -263,8 +263,8 @@ import { UiService } from '../../core/ui.service';
       THE WAITING STEP, in the accent — this app's one word for attention, used
       here for "do this next" rather than for "this is on".
 
-      It is a filled pill and not an outline, unlike the dock's version of the
-      same idea, because the contexts are opposite: on the dock it sits among
+      It is a filled pill and not an outline, unlike the action menu's version of
+      the same idea, because the contexts are opposite: in the menu it sits among
       other items that are sometimes active and has to be told apart from them,
       and here it is the only coloured thing on a row of grey text. Both are the
       same accent, which is what makes them read as one idea.

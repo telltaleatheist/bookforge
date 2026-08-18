@@ -42,8 +42,9 @@ import { api } from './core/foundry';
  * What the bottom row bought — a dock as wide as the window — is also what it
  * cost, because the tree beside it kept growing and the two were spending the
  * same screen. The z-index ladder is untouched by the move (viewer < shelf 900 <
- * dialogs 1200): the dock is inside a flex column now and overlaps nothing, and
- * the shelf's pill no longer has a dock along the bottom to lift itself over.
+ * dialogs 1200): the action menu is inside a flex column now and overlaps
+ * nothing, and the shelf's pill no longer has a dock along the bottom to lift
+ * itself over.
  * (There was a rung at 30 for the workspace's drag SHIELD, a sheet of glass over
  * every pane so a book could be dropped onto an <iframe>; it went with the panes
  * — docs/PLAN.md §4, unit 8b.)
@@ -54,8 +55,8 @@ import { api } from './core/foundry';
  * The documents panel is hidden outright while nothing is open, so Home keeps
  * the whole window it has always had rather than opening beside 220 pixels of an
  * empty list. It collapses to a 30-pixel stub whose only content is the button
- * in the window's top-left corner — the same toggle Ctrl+B and the dock's
- * Documents item press, so the panel has three ways in and the button is never
+ * in the window's top-left corner — the same toggle Ctrl+B and the action
+ * menu's Documents row press, so the panel has three ways in and the button is never
  * the one that hides itself. The inspector is up whenever the focused document
  * is an unpacked book, which is the only state it has anything to say in.
  *

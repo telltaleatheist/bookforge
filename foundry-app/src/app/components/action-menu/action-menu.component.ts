@@ -4,7 +4,7 @@ import { Router, RouterLink, RouterLinkActive } from '@angular/router';
 import { exportNodeId, type HostOperationOffer } from '@shared/host-ops';
 /*
  * THE POSSIBILITY PREDICATES, shared with the dialogs that refuse and with the
- * tree that offers — see shared/stages.ts. This dock held the original of three
+ * tree that offers — see shared/stages.ts. This menu held the original of three
  * of them and they were copied into two dialogs; they are one function each now,
  * so a button here and a refusal there cannot come to different answers about
  * what a stage can do.
@@ -24,7 +24,8 @@ import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 
 /**
- * The dock — Home, the tools, and the gear, AT THE FOOT OF THE LIBRARY SIDEBAR.
+ * THE ACTION MENU — an ordered list of everything this app can be asked to do,
+ * at the foot of the library sidebar.
  *
  * ── It has been in three places, and the third is the user's ────────────────
  *
@@ -44,75 +45,142 @@ import { UiService } from '../../core/ui.service';
  * cost NO height at all, because the panel was already that tall and that wide.
  *
  * WHAT THE MOVE COST is the centring: the tools used to be balanced on the
- * window's own midline by a three-column grid. In 384 pixels they wrap into rows
- * instead, which is a plainer arrangement and the honest one for a known width.
+ * window's own midline by a three-column grid. In 384 pixels they wrapped into
+ * rows instead — and that wrapping lasted a night.
  *
- * ICON OVER LABEL SURVIVED BOTH MOVES, deliberately. Icons alone are a rail you
- * have to hover to read, and this app's tools are not the four everybody already
- * knows: a glyph for Read or for Simplify would teach nobody anything. The one
- * place the labels DO go is `compact` — the sidebar collapsed to a 30-pixel stub
- * — where there is no width to draw a word in and the hover is all there is.
+ * ── AND THEN IT STOPPED BEING A RAIL AT ALL ────────────────────────────────
+ *
+ * Owen, on seeing the wrapped cluster (2026-08-18 01:05): *"instead of
+ * clustering the buttons on the bottom left like that, lets make an ordered list
+ * of actions for the user. no longer a nav rail, now its an action menu. [icon]
+ * [action], one after another."*
+ *
+ * THAT IS A NAMING RULING AS MUCH AS A LAYOUT ONE, which is why this file is
+ * `action-menu.component.ts` and the class is `ActionMenuComponent`. A rail is a
+ * strip of modes you flick between; a dock is a shelf of things kept in reach; an
+ * ACTION MENU is a list of things you can do, read top to bottom. The last of
+ * those is what this has actually been since the tools stopped being modes — the
+ * word had simply not caught up with the thing, and this codebase names things
+ * what they are.
+ *
+ * WHAT WRAPPING WAS FOR SURVIVES AS A SMALLER RULE. Rows wrapped because the
+ * panel's width had already changed twice and a fixed column count would break
+ * on the third; a full-width row cannot break at any width at all, so the same
+ * worry is answered by `width: 100%` and an ellipsis instead of by a layout mode.
+ *
+ * ── THE ORDER, WHICH IS THE POINT OF CALLING IT ORDERED ────────────────────
+ *
+ * Three groups, divided by rules, and the middle one is the pipeline in the
+ * order it runs:
+ *
+ *   NAVIGATION — Home, Documents. Neither makes anything; they are where you go
+ *   and what you look at, so they sit above the rule rather than inside the list
+ *   of acts. Putting Home first is unchanged and still right: it is the way back.
+ *
+ *   THE PIPELINE — Read the pages, Translate, Simplify, Export, Metadata, then
+ *   whatever the host contributes. This is the book's own life in sequence: the
+ *   pages are read, the words are worked on, the finished thing is filed, and the
+ *   audio is made from that. EXPORT MOVED DOWN in this wave — it used to sit
+ *   directly after OCR, from the days when reading and generating were two halves
+ *   of one button — and it belongs after the acts that change the words, because
+ *   exporting before translating is exporting the wrong book. METADATA IS LAST OF
+ *   OURS because it is a record ABOUT the book rather than a step in making one;
+ *   it is here rather than beside Settings because what it edits is the book's own
+ *   claim about itself, which is the book's business and not the app's.
+ *
+ *   AND SETTINGS, BELOW A RULE OF ITS OWN — unchanged, for the reason it always
+ *   had: it is not a tool, it is where you go when the tools are not the answer.
+ *
+ * ICON BESIDE LABEL, WHICH IS THE RULING SPELLED OUT: *"[icon] [action], one
+ * after another."* The words were always there — they used to sit UNDER the glyph
+ * in a 76-pixel column, because a horizontal dock had width to spend and no
+ * height — and a full-width row has the opposite shape, so they moved to the side
+ * of the icon where a list reads them. Icons alone were never an option: this
+ * app's acts are not the four everybody already knows, and a glyph for Simplify
+ * would teach nobody anything. The one place the labels DO go is `compact` — the
+ * sidebar collapsed to a 30-pixel stub — where there is no width to draw a word in
+ * and the title attribute is all there is.
+ *
+ * THE LABELS THEMSELVES ARE UNCHANGED, deliberately. The ruling is about the
+ * arrangement and the component's name; renaming "OCR" to "Read the pages" to
+ * match the tree's own act would be a second opinion nobody asked for, and the
+ * word on this row has been the word for months.
  *
  * HOME IS THE FIRST ITEM and it is not a route: it is "no tab is active", so
  * pressing it puts the documents down without closing them and pressing a tab
  * picks one back up. A Home that closed your tabs would be a Home nobody presses.
  */
 @Component({
-  selector: 'app-tool-rail',
+  selector: 'app-action-menu',
   imports: [RouterLink, RouterLinkActive],
   changeDetection: ChangeDetectionStrategy.OnPush,
   // Reflected onto the host so the compact rules can be written as `:host(...)`
   // — the element the sidebar lays out is this one, so the class belongs on it.
   host: { '[class.compact]': 'compact()' },
   template: `
-    <nav class="rail">
-      <div class="rail-brand" title="Foundry">⬙</div>
+    <nav class="menu" aria-label="Actions">
+      <!--
+        NAVIGATION, ABOVE THE RULE. Neither of these makes anything: Home is
+        where you go and Documents is what you look at. The rule under them is
+        what turns the rest of this into a LIST OF ACTS rather than a pile of
+        buttons — see the class docblock for the order and why it is that order.
 
-      <div class="rail-tools">
+        THE BRAND WENT WITH THE WRAP. A ⬙ at the top of this block was the
+        window's own mark at the left end of a full-width dock; in a panel whose
+        head already says LIBRARY it was a second title for one column, and in a
+        list of actions it is a row that is not one.
+      -->
+      <div class="menu-nav">
         <!-- Hosted, the host's book list is the library and Home is the one
              surface that would list the same books from the other side — so the
              door to it goes, not just the page behind it. -->
         @if (!hosted()) {
           <button
-            class="rail-item"
+            class="menu-item"
             [class.active]="stage.active() === null"
             title="Home"
             (click)="home()"
           >
-            <span class="rail-icon">⌂</span>
-            <span class="rail-label">Home</span>
+            <span class="menu-icon">⌂</span>
+            <span class="menu-label">Home</span>
           </button>
         }
 
         <!-- The document list. Disabled with nothing open rather than hidden,
-             on this rail's usual principle — and because with nothing open the
+             on this menu's usual principle — and because with nothing open the
              panel is not on screen anyway, so a button that toggled a hidden
              thing would be a button with no visible effect. -->
         <button
-          class="rail-item"
+          class="menu-item"
           [class.active]="documentsUp()"
           [disabled]="documents.tabs().length === 0"
           title="Show or hide the open documents (Ctrl+B)"
           (click)="ui.toggleDocuments()"
         >
-          <span class="rail-icon">☰</span>
-          <span class="rail-label">Documents</span>
+          <span class="menu-icon">☰</span>
+          <span class="menu-label">Documents</span>
         </button>
+      </div>
 
+      <!-- THE PIPELINE, IN THE ORDER IT RUNS. Read the pages, then the acts
+           that change the words, then the finished file, then the record about
+           it — and last whatever the host contributes, because audio is made
+           from the export the row above produces. -->
+      <div class="menu-acts">
         <!--
           THE TWO HALVES OF WHAT USED TO BE ONE BUTTON, side by side and in the
           order they happen. OCR reads the pages and costs hours; Export turns
           what was read into a document you can take away, and costs nothing.
           They were one item called "OCR / Convert" while they were one job, and
-          separating them on the dock is most of what teaches the difference.
+          separating them into two rows is most of what teaches the difference.
 
           OCR LIGHTS UP when the book in front of you has never been read — the
-          same accent this rail uses for "this is active", used here for "this is
-          the step you are waiting on". It is the one place in the dock that
+          same accent this menu uses for "this is active", used here for "this is
+          the step you are waiting on". It is the one row in this menu that
           points at what to do next rather than at what is currently on.
         -->
         <button
-          class="rail-item"
+          class="menu-item"
           [class.active]="ui.ocrOpen()"
           [class.waiting]="ocrWaiting()"
           [title]="ocrWaiting()
@@ -120,8 +188,39 @@ import { UiService } from '../../core/ui.service';
             : 'Read this book\\'s pages with the vision model'"
           (click)="convert()"
         >
-          <span class="rail-icon">⌦</span>
-          <span class="rail-label">OCR</span>
+          <span class="menu-icon">⌦</span>
+          <span class="menu-label">OCR</span>
+        </button>
+
+        <!-- Translate. Disabled rather than hidden away from a book, on this
+             menu's usual principle: a translation is a thing you do to a book
+             Foundry cast, and somebody standing on the scan should be able to
+             see that the tool exists and is not applicable from there. -->
+        <button
+          class="menu-item"
+          [class.active]="ui.translateOpen()"
+          [disabled]="!canTranslate()"
+          title="Translate this book into another language"
+          (click)="translate()"
+        >
+          <span class="menu-icon">⇄</span>
+          <span class="menu-label">Translate</span>
+        </button>
+
+        <!-- Simplify, beside Translate because it is the same act aimed at the
+             same book: the model says every paragraph again, checked block by
+             block, landing as a step of its own. What differs is the destination
+             — a reader rather than a language — which is why it is a second
+             button and not a checkbox inside the first. -->
+        <button
+          class="menu-item"
+          [class.active]="ui.simplifyOpen()"
+          [disabled]="!canSimplify()"
+          title="Say this book again in its own language: plainer, more natural, or for a learner"
+          (click)="simplify()"
+        >
+          <span class="menu-icon">≈</span>
+          <span class="menu-label">Simplify</span>
         </button>
 
         <!--
@@ -135,45 +234,14 @@ import { UiService } from '../../core/ui.service';
           learned where the button is, for nothing.
         -->
         <button
-          class="rail-item"
+          class="menu-item"
           [class.active]="ui.exportOpen()"
           [disabled]="!canExport()"
           title="Make the finished book: an EPUB, plain text, or the pages reprinted as real type"
           (click)="openExport()"
         >
-          <span class="rail-icon">⎘</span>
-          <span class="rail-label">Export</span>
-        </button>
-
-        <!-- Translate. Disabled rather than hidden away from a book, on this
-             dock's usual principle: a translation is a thing you do to a book
-             Foundry cast, and somebody standing on the scan should be able to
-             see that the tool exists and is not applicable from there. -->
-        <button
-          class="rail-item"
-          [class.active]="ui.translateOpen()"
-          [disabled]="!canTranslate()"
-          title="Translate this book into another language"
-          (click)="translate()"
-        >
-          <span class="rail-icon">⇄</span>
-          <span class="rail-label">Translate</span>
-        </button>
-
-        <!-- Simplify, beside Translate because it is the same act aimed at the
-             same book: the model says every paragraph again, checked block by
-             block, landing as a step of its own. What differs is the destination
-             — a reader rather than a language — which is why it is a second
-             button and not a checkbox inside the first. -->
-        <button
-          class="rail-item"
-          [class.active]="ui.simplifyOpen()"
-          [disabled]="!canSimplify()"
-          title="Say this book again in its own language: plainer, more natural, or for a learner"
-          (click)="simplify()"
-        >
-          <span class="rail-icon">≈</span>
-          <span class="rail-label">Simplify</span>
+          <span class="menu-icon">⎘</span>
+          <span class="menu-label">Export</span>
         </button>
 
         <!-- Metadata. Enabled standing on the scan as well as on the book,
@@ -184,22 +252,22 @@ import { UiService } from '../../core/ui.service';
              see the dialog for why that is a decision rather than an
              omission. -->
         <button
-          class="rail-item"
+          class="menu-item"
           [class.active]="ui.metadataOpen()"
           [disabled]="!canEditMetadata()"
           title="The title, author and language this document claims for itself"
           (click)="metadata()"
         >
-          <span class="rail-icon">ⓘ</span>
-          <span class="rail-label">Metadata</span>
+          <span class="menu-icon">ⓘ</span>
+          <span class="menu-label">Metadata</span>
         </button>
 
         <!--
-          ── THREE ITEMS ARE NOT ON THIS DOCK, AND ALL THREE ARE DELETED NOW ──
+          ── THREE ACTS ARE NOT IN THIS MENU, AND ALL THREE ARE DELETED NOW ──
 
           SELECT outlined the blocks of a cast EPUB in an iframe; BLOCKS put the
           same surface over a photograph of the pages; EDIT HTML opened a textarea
-          over one chapter of a derived document. Each was withdrawn from the dock
+          over one chapter of a derived document. Each was withdrawn from the menu
           before its machinery went, on the inspector's own rule — withdraw the
           control the moment the thing it does is withdrawn, rather than leaving it
           on screen to invite a gesture and refuse it — and R6c is where the
@@ -208,10 +276,10 @@ import { UiService } from '../../core/ui.service';
           WHAT REPLACED ALL THREE IS THE BOOK. Editing happens on the proof sheet,
           against block ids, recorded as ops in the ledger; the PDF produces the
           facsimile and stops (§0 A1). There is no mode to switch on, which is why
-          there is no button here to switch it.
+          there is no row here to switch it.
         -->
-        <!-- The PDF is an output FORMAT inside a dialog rather than a rail
-             button of its own: the rail names TOOLS, and picking between an
+        <!-- The PDF is an output FORMAT inside a dialog rather than a row
+             of its own: this menu names ACTS, and picking between an
              EPUB, plain text and a reprint of the pages is one decision about
              one act, made where the rest of that act is described. -->
 
@@ -220,18 +288,18 @@ import { UiService } from '../../core/ui.service';
 
           *"Owen wants the dialog in the Foundry window, like translate/simplify
           — and a narrate button on the nav rail besides."* (BookForge →
-          Foundry, 2026-08-18.) These sit at the end of the tools because they
+          Foundry, 2026-08-18.) These sit at the end of the acts because they
           are the end of the pipeline: everything above makes the words, and
           this makes something out of them.
 
           NOT ONE STRING HERE NAMES AN ACT. The label, the hover and the icon
           all come off the offer the host registered — this app has never
           contained the word "narrate" and does not start now. The amber is the
-          rail's existing tint for the host's work, the same one the tree draws
+          menu's existing tint for the host's work, the same one the tree draws
           audio cards in.
 
           STANDALONE THIS LOOP RUNS ZERO TIMES: no host, no operations,
-          \`railActs()\` is empty, and the dock is exactly the dock. There is no
+          \`hostActs()\` is empty, and the menu is exactly this app's own acts. There is no
           \`hosted()\` branch here because there does not need to be one — the
           emptiness is the guard.
         -->
@@ -244,9 +312,9 @@ import { UiService } from '../../core/ui.service';
           title says what would make it light up, because a disabled control
           that keeps its enabled hover is a control that explains nothing.
         -->
-        @for (act of railActs(); track act.id) {
+        @for (act of hostActs(); track act.id) {
           <button
-            class="rail-item audio"
+            class="menu-item audio"
             [class.active]="ui.hostOpOpen()?.operationId === act.id"
             [disabled]="!hostReady()"
             [title]="hostReady()
@@ -254,52 +322,49 @@ import { UiService } from '../../core/ui.service';
               : act.label + ' — export the book first; this act reads the finished EPUB'"
             (click)="runHostAct(act.id)"
           >
-            <span class="rail-icon">♪</span>
-            <span class="rail-label">{{ act.label }}</span>
+            <span class="menu-icon">♪</span>
+            <span class="menu-label">{{ act.label }}</span>
           </button>
         }
       </div>
 
-      <div class="rail-foot">
+      <div class="menu-foot">
         <a
-          class="rail-item"
+          class="menu-item"
           routerLink="/settings"
           routerLinkActive="active"
           title="Settings"
         >
-          <span class="rail-icon">⚙</span>
-          <span class="rail-label">Settings</span>
+          <span class="menu-icon">⚙</span>
+          <span class="menu-label">Settings</span>
         </a>
       </div>
     </nav>
   `,
   styles: [`
     /*
-      ── A BLOCK AT THE FOOT OF THE SIDEBAR, WHERE IT USED TO BE A ROW ────────
+      ── A LIST AT THE FOOT OF THE SIDEBAR ───────────────────────────────────
 
-      *"lets move the nav rail buttons to the left side, pinned to the bottom of
-      the tree sidebar."* (Owen, 2026-08-17 22:30.) Everything below that used to
-      be about balancing a row across the whole window — a three-column grid so
-      the tools were centred on the WINDOW rather than on the space left beside
-      Settings, a \`minmax(0, auto)\` middle track so a narrow window scrolled the
-      tools instead of widening the dock, side tracks that shared the leftover
-      equally. None of it survives the move and none of it is missed: the dock is
-      384 pixels wide now, which is a known width, so the buttons WRAP into rows
-      instead of being centred and scrolled.
+      *"[icon] [action], one after another."* (Owen, 2026-08-18 01:05.) Every
+      number below follows from that one sentence, and what it replaced is worth
+      recording because it was two layouts in two days: a three-column grid that
+      centred the tools on the WINDOW while the dock ran along the bottom, and
+      then a wrap that packed them into rows once the dock moved into a
+      384-pixel panel.
 
-      WRAPPING RATHER THAN A FIXED GRID OF N COLUMNS. The panel has one width
-      today and the temptation is \`repeat(4, 1fr)\`; a wrap keeps the same look at
-      that width and does not break the day somebody drags the window narrow
-      enough for the shell to squeeze this panel, or the day the panel's own
-      width changes again — which it has, twice, both times because the user
-      asked (see the host rule in open-documents).
+      FULL-WIDTH ROWS ANSWER THE WRAP'S OWN WORRY BETTER THAN THE WRAP DID. That
+      layout existed because the panel's width had already changed twice and a
+      fixed column count would break on the third; a row that is
+      \`width: 100%\` has no column count to break, and a label that
+      outgrows its row ellipses instead of reflowing the block. So the thing the
+      wrap was defending is defended by a simpler rule.
 
-      NO HEIGHT TOKEN ANY MORE. \`--rail-h\` existed so the queue shelf's floating
-      pill could lift itself over a dock along the bottom edge; the dock is not
-      along the bottom edge, so the pill has nothing to clear and the block takes
-      the height its rows need.
+      NO HEIGHT TOKEN. \`--rail-h\` existed so the queue shelf's floating pill
+      could lift itself over a dock along the bottom edge; there is no dock along
+      the bottom edge, so the pill has nothing to clear and this block takes the
+      height its rows need.
     */
-    .rail {
+    .menu {
       flex: 0 0 auto;
       width: 100%;
       display: flex;
@@ -310,71 +375,86 @@ import { UiService } from '../../core/ui.service';
       padding: 8px 6px;
     }
 
-    /* The brand went with the row. It was the window's own mark at the left end
-       of a full-width dock; in a panel that already says LIBRARY at its head it
-       would be a second title for the same column. */
-    .rail-brand { display: none; }
-
     /*
-      THE HOST'S OWN COLOUR, the same amber the tree tints audio cards with, so
-      that an act belonging to another application reads as one at a glance
-      wherever it appears. Only the icon takes it: a whole button in the host's
-      colour would compete with the accent this rail uses for "active".
+      THREE GROUPS, TWO RULES. Navigation, then the pipeline, then Settings —
+      the class docblock carries the order and its reasons. The rules are what
+      make this an ORDERED list rather than eight buttons in a column: without
+      them the eye reads one run of equals and the sequence says nothing.
     */
-    .rail-item.audio .rail-icon { color: var(--audio); }
-
-    /* The tools wrap into as many rows as they need. \`min-width: 0\` so a
-       squeezed panel shrinks the block rather than overflowing the sidebar. */
-    .rail-tools {
-      display: flex; flex-flow: row wrap; align-items: flex-start;
-      gap: 4px; min-width: 0;
+    .menu-nav, .menu-acts, .menu-foot {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
     }
-    /* Settings keeps its divider and its own row. It is not a tool — it is where
-       you go when the tools are not the answer — and the line that said so along
-       the left edge of a row says it along the top edge of a column. */
-    .rail-foot {
-      display: flex; flex-flow: row wrap; align-items: center;
+    .menu-acts {
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 6px;
+    }
+    /* Settings keeps the divider it has always had, for the reason it has always
+       had it: it is not a tool, it is where you go when the tools are not the
+       answer. */
+    .menu-foot {
       border-top: 1px solid var(--border-subtle);
       padding-top: 6px;
     }
 
-    .rail-item {
+    /*
+      THE ROW. Icon then words, left to right, the whole width of the panel —
+      which is the ruling drawn. It was a 76-pixel COLUMN (glyph above label,
+      centred) for as long as this lived in a horizontal dock, where width was
+      the scarce thing and height was free; a vertical list has that the other
+      way round, so the label moved to the side of the icon where a list reads
+      it and the row took the width it was being given anyway.
+    */
+    .menu-item {
       display: flex;
-      flex-direction: column;
+      flex-direction: row;
       align-items: center;
-      justify-content: center;
-      gap: 2px;
-      flex: 0 0 auto;
-      width: 76px;
-      padding: 6px 4px;
+      gap: 10px;
+      width: 100%;
+      padding: 7px 10px;
       background: transparent;
       border: none;
       border-radius: var(--radius);
       color: var(--text-secondary);
       cursor: pointer;
+      text-align: left;
       text-decoration: none;
       transition: background-color 150ms ease, color 150ms ease;
     }
 
     /*
-      ── COMPACT: THE DOCK AT THIRTY PIXELS ────────────────────────────────────
+      THE HOST'S OWN COLOUR, the same amber the tree tints audio cards with, so
+      that an act belonging to another application reads as one at a glance
+      wherever it appears. Only the icon takes it: a whole row in the host's
+      colour would compete with the accent this menu uses for "active".
+    */
+    .menu-item.audio .menu-icon { color: var(--audio); }
 
-      The panel collapses to a stub and the tools go with it rather than
+    /*
+      ── COMPACT: THE MENU AT THIRTY PIXELS ───────────────────────────────────
+
+      The panel collapses to a stub and the acts go with it rather than
       disappearing — putting the library away must not put Settings away. What
       fits in 30 pixels is the icon and nothing else, so the labels go and the
-      items stack in one column. The TITLE attribute is already on every button
-      (it always was), so the words are one hover away, which is the same trade
-      the panel's own collapse makes.
+      rows narrow to the glyph. THE STUB WAS ALREADY AN ACTION MENU: one icon
+      per row, one after another, which is the ruling at a width that cannot
+      hold the words. The title attribute is on every row (it always was), so
+      they are one hover away — the same trade the panel's own collapse makes.
     */
-    :host(.compact) .rail { padding: 6px 2px; gap: 4px; }
-    :host(.compact) .rail-tools { flex-direction: column; flex-wrap: nowrap; gap: 2px; }
-    :host(.compact) .rail-foot { flex-direction: column; }
-    :host(.compact) .rail-item { width: 26px; padding: 5px 0; }
-    :host(.compact) .rail-label { display: none; }
-    .rail-item:hover { background: var(--bg-hover); color: var(--text-primary); }
-    .rail-item:disabled { opacity: 0.35; cursor: default; }
-    .rail-item:disabled:hover { background: transparent; color: var(--text-secondary); }
-    .rail-item.active {
+    :host(.compact) .menu { padding: 6px 2px; gap: 4px; }
+    :host(.compact) .menu-nav,
+    :host(.compact) .menu-acts,
+    :host(.compact) .menu-foot { align-items: center; }
+    :host(.compact) .menu-acts,
+    :host(.compact) .menu-foot { padding-top: 4px; }
+    :host(.compact) .menu-item { width: 26px; padding: 5px 0; justify-content: center; gap: 0; }
+    :host(.compact) .menu-label { display: none; }
+    .menu-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .menu-item:disabled { opacity: 0.35; cursor: default; }
+    .menu-item:disabled:hover { background: transparent; color: var(--text-secondary); }
+    .menu-item.active {
       background: var(--accent-soft);
       color: var(--accent);
     }
@@ -385,11 +465,11 @@ import { UiService } from '../../core/ui.service';
       step your book needs next". The SAME accent — this app has one word for
       attention, and inventing a second colour for a second kind of it is how a
       palette stops meaning anything — but drawn as an outline rather than a
-      fill, so a dock showing both still says which is which. It pulses once as
-      it arrives and then holds: a permanently animating dock is a dock people
+      fill, so a menu showing both still says which is which. It pulses once as
+      it arrives and then holds: a permanently animating menu is a menu people
       learn to look away from.
     */
-    .rail-item.waiting:not(.active) {
+    .menu-item.waiting:not(.active) {
       color: var(--accent);
       box-shadow: inset 0 0 0 1px var(--accent);
       animation: notice 900ms cubic-bezier(0, 0, 0.2, 1) 1;
@@ -399,24 +479,41 @@ import { UiService } from '../../core/ui.service';
       60% { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 7px transparent; }
       100% { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 0 transparent; }
     }
-    .rail-item.active .rail-icon { transform: scale(1.1); }
+    .menu-item.active .menu-icon { transform: scale(1.1); }
 
-    .rail-icon { font-size: 19px; line-height: 1; transition: transform 150ms ease; }
-    .rail-label {
-      font-size: 10px; font-weight: 500; line-height: 1.2;
-      text-transform: uppercase; letter-spacing: 0.02em;
-      text-align: center; opacity: 0.85;
+    /* A fixed box so every label in the list starts at the same x — a column of
+       words that stepped left and right with the glyph widths would read as a
+       ragged list rather than an ordered one. */
+    .menu-icon {
+      flex: 0 0 20px;
+      text-align: center;
+      font-size: 18px; line-height: 1;
+      transition: transform 150ms ease;
+    }
+    /*
+      THE ACTION'S NAME, IN WORDS AND IN SENTENCE CASE. It was 10px uppercase and
+      centred under a glyph, which is what a label does when it is a caption; in a
+      row it is the thing being read, so it takes the size and the alignment of
+      something being read. It ellipses rather than wrapping: a two-line row in a
+      list of one-line rows breaks the rhythm that makes the order legible.
+    */
+    .menu-label {
+      flex: 1; min-width: 0;
+      font-size: 12px; font-weight: 500; line-height: 1.3;
+      letter-spacing: 0.01em;
+      text-align: left;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
   `],
 })
-export class ToolRailComponent {
+export class ActionMenuComponent {
   /**
    * DRAWN AT THE WIDTH OF A STUB — icons alone, one column.
    *
    * Set by the sidebar when the library is collapsed. It is an input rather than
    * this component reading `UiService.documentsShown` for itself, because what it
    * describes is the SPACE THIS COMPONENT HAS BEEN GIVEN and not a fact about the
-   * app: the day something else hosts the dock in a narrow place, it says so the
+   * app: the day something else hosts this menu in a narrow place, it says so the
    * same way rather than teaching this class a second thing to check.
    */
   readonly compact = input(false);
@@ -441,27 +538,27 @@ export class ToolRailComponent {
    *
    * ── Two filters, and each earns its place ───────────────────────────────────
    *
-   * `appliesTo: 'book'` because the rail aims at THE BOOK IN FRONT OF YOU, and
-   * that is the only currency the dock can name — an act consuming AUDIO is about
-   * a particular narration, which is a row in the tree and not a thing this dock
+   * `appliesTo: 'book'` because the menu aims at THE BOOK IN FRONT OF YOU, and
+   * that is the only currency this menu can name — an act consuming AUDIO is about
+   * a particular narration, which is a row in the tree and not a thing this menu
    * has a way to point at. `offeredFrom` is the same function the tree's footer
    * asks, so the two surfaces cannot come to different answers about what may be
    * offered from a book.
    *
    * A `form` because an act WITHOUT one runs the instant it is pressed, and a
-   * rail button that started an hours-long job on a single click — with no
+   * menu row that started an hours-long job on a single click — with no
    * dialog, no confirmation and no statement of what it would run against —
-   * is the one gesture on this dock that could not be taken back. The tree's
+   * is the one gesture in this menu that could not be taken back. The tree's
    * footer is where a formless act is pressed, beside the row it names.
    *
    * EMPTY STANDALONE, which is the whole of the guard: nobody registered
    * anything, so this is `[]` and the loop that draws it runs zero times.
    */
-  protected readonly railActs = computed(() => {
+  protected readonly hostActs = computed(() => {
     if (this.target() === null) return NO_ACTS;
     /*
      * BOTH SPELLINGS OF "ACTS ON THE FINISHED BOOK" REACH THE DOCK, and that is
-     * not a hedge — it is what this button already aims at. The rail resolves its
+     * not a hedge — it is what this button already aims at. The menu resolves its
      * target to the project's EXPORT (per 9a/9b: the export's own step where the
      * catalogue recorded one), so an act declaring `export` is precisely on
      * subject here, and an act still declaring `book` — which is every host that
@@ -475,20 +572,20 @@ export class ToolRailComponent {
   });
 
   /**
-   * WHAT A RAIL ACT WOULD RUN AGAINST — the book's export target, per 9a/9b.
+   * WHAT A MENU ACT WOULD RUN AGAINST — the book's export target, per 9a/9b.
    *
-   * ── The same rule the export row follows, reached from the dock ─────────────
+   * ── The same rule the export row follows, reached from the menu ────────────
    *
    * The tree's export row knows its own provenance (`ProjectFinal.stepId`); the
-   * dock has no row in hand, so it works out which export the book has. ONE
+   * menu has no row in hand, so it works out which export the book has. ONE
    * EXPORT IS THE ANSWER — its recorded step where there is one, and the position
    * as the documented fallback, exactly as `nodeIdFor` resolves it in the tree.
    *
-   * TWO OR MORE AND THE DOCK REFUSES rather than choosing. *"Today
+   * TWO OR MORE AND THE MENU REFUSES rather than choosing. *"Today
    * narrate-from-any-node resolves to 'the project's one exported EPUB' and
    * refuses when there are two."* That refusal is the letter's own description of
    * today's behaviour and it is the right one here: a book exported at three
-   * positions has three candidates and the dock cannot know which the person
+   * positions has three candidates and this menu cannot know which the person
    * means — the tree can, because they clicked a row. The sentence says so and
    * says where to go instead.
    *
@@ -507,7 +604,7 @@ export class ToolRailComponent {
   });
 
   /**
-   * WHETHER THE HOST'S ACTS HAVE A FILE TO CONSUME — the dock's gray.
+   * WHETHER THE HOST'S ACTS HAVE A FILE TO CONSUME — this menu's gray.
    *
    * `hasEpubExport` (shared/stages.ts) is the same predicate `runHostAct`
    * refuses by, which is that module's whole rule: the gray and the sentence
@@ -525,7 +622,7 @@ export class ToolRailComponent {
   /**
    * Press one: work out the target, then open the host's questions in our card.
    *
-   * EVERY REFUSAL IS A SENTENCE ON THE STRIP, which is this rail's own habit for
+   * EVERY REFUSAL IS A SENTENCE ON THE STRIP, which is this menu's own habit for
    * a button that cannot grey itself out against a fact this deep in the model.
    */
   protected runHostAct(operationId: string): void {
@@ -537,7 +634,7 @@ export class ToolRailComponent {
      * BOOK file, and counting a plain-text export here would refuse for
      * ambiguity between two files only one of which the act can read — or,
      * worse, aim the nodeId at the text file's own provenance. The same kind
-     * test the row's `produces` and the dock's gray both make, made a third
+     * test the row's `produces` and this menu's gray both make, made a third
      * time where the target is picked.
      */
     const exports = (project?.exports ?? []).filter((made) => made.kind === 'epub');
@@ -564,11 +661,11 @@ export class ToolRailComponent {
      *
      * IT USED TO SEND THE EXPORT'S PROVENANCE STEP, falling back to the standing
      * one, and both are wrong for the same reason Owen's third ruling gives: the
-     * host echoes this id into every node it pushes back, so a rail press that
+     * host echoes this id into every node it pushes back, so a menu press that
      * named a STEP put the narration under that step in the tree while a tree
      * press on the very same file put it under the file. Two doors onto one act
      * that disagreed about where the result belongs is the shape this codebase
-     * refuses everywhere else; the dock aims at the export, so the dock says the
+     * refuses everywhere else; this menu aims at the export, so it says the
      * export.
      *
      * NO FALLBACK IS NEEDED ANY MORE. The old one existed because a
@@ -584,7 +681,7 @@ export class ToolRailComponent {
 
   protected home(): void {
     void this.router.navigateByUrl('/');
-    // The dock's Home is leaving on purpose: the held project lets go, so an
+    // This menu's Home is leaving on purpose: the held project lets go, so an
     // empty workspace shows the library rather than the room just left.
     this.stage.releaseProject();
     this.stage.goHome();
@@ -600,12 +697,12 @@ export class ToolRailComponent {
   }
 
   /**
-   * THE STEP THIS BOOK IS WAITING ON, lit on the dock.
+   * THE STEP THIS BOOK IS WAITING ON, lit in the menu.
    *
    * True for a project with no completed reading. Everything else in this app is
    * built on that bank — the block editor, every rendering, the chapter detection
    * — so a book whose pages have not been read is a book where exactly one thing
-   * is worth pressing, and the dock says which.
+   * is worth pressing, and this menu says which.
    *
    * THE KIND OF THE FOCUSED TAB IS NO LONGER ASKED, and nothing is lost by it: a
    * project that still needs reading has no book to be looking at, so the test was
@@ -615,7 +712,7 @@ export class ToolRailComponent {
    *
    * From the project RECORD (`ProjectSummary.reading`, derived once by main when
    * the library was listed), never from probing the disk here: this method runs
-   * on every repaint of the dock.
+   * on every repaint of the menu.
    */
   protected ocrWaiting(): boolean {
     const tab = this.stage.activeDocument();
@@ -635,7 +732,7 @@ export class ToolRailComponent {
    * through the renderer is building the wrong thing").
    *
    * SO THE TEST IS THE READING, off the project record main derived once when it
-   * listed the library — the same signal the OCR light reads, so the dock cannot
+   * listed the library — the same signal the OCR light reads, so this menu cannot
    * say "read this" and "export this" about one book at the same time. There is
    * nothing to export before a reading lands: every format this app makes is
    * arithmetic over that bank.
@@ -657,7 +754,7 @@ export class ToolRailComponent {
    * the pre-import window, where a dead button explains nothing and the plan
    * call's own refusal names the case precisely (the book nobody has read; the
    * reading that was interrupted). The dialog puts that sentence on screen. A
-   * shut door explains itself, which is this rail's rule everywhere else.
+   * shut door explains itself, which is this menu's rule everywhere else.
    *
    * ── AND IT IS DEAD ON THE IMPORT ROW ────────────────────────────────────────
    *
@@ -679,7 +776,7 @@ export class ToolRailComponent {
    * position such a project can ever occupy.
    *
    * A HISTORY THIS WINDOW HAS NOT READ ANSWERS NULL, AND NULL IS NOT THE IMPORT.
-   * The button stays live and main's own refusal is the backstop, on this rail's
+   * The button stays live and main's own refusal is the backstop, on this menu's
    * standing preference for a door that opens onto an explanation over one that is
    * shut on a guess.
    */
@@ -773,7 +870,7 @@ export class ToolRailComponent {
    * WORKING TREE — and the tree, the reader over it and the tab kind that held it
    * are deleted (docs/RENDERER.md §7). A book's own metadata still belongs in the
    * ledger as a metadata step; what it does not have any more is a door on this
-   * dock, because the surface that named the document it would write into is
+   * menu, because the surface that named the document it would write into is
    * gone. Named here rather than left as a silently dead button.
    */
   protected canEditMetadata(): boolean {
@@ -793,7 +890,7 @@ export class ToolRailComponent {
 }
 
 /**
- * ONE empty array for a dock with no host behind it — a fresh `[]` per call
+ * ONE empty array for a menu with no host behind it — a fresh `[]` per call
  * would be a new identity on every repaint, and this is read inside a computed.
  */
 const NO_ACTS: readonly HostOperationOffer[] = [];

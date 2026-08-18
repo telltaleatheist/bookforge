@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **e8396b4** — *"feat(app): six rulings from the first narrate — the dock lives in the sidebar, and an export row has a name"* |
-| Copied on | 2026-08-17 |
-| Copied by | `git -C <foundry> archive e8396b4 app \| tar -x --strip-components=1` |
+| Source sha | **1430bef** — *"feat(renderer): no longer a nav rail — an action menu, one thing you can do per row"* |
+| Copied on | 2026-08-18 |
+| Copied by | `git -C <foundry> archive 1430bef app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -69,8 +69,14 @@ declares "Add to queue"), export rows are addressable (`export:<file>` node
 ids — a RESERVED prefix on the socket — sent by both the row's press and the
 rail, so ghost audio rows hang under the EPUB card), the EPUB export nests
 under its provenance step, the sidebar widened, and the rail's buttons moved
-into the sidebar bottom with the tree scrolling above (94/94 blobs at
-e8396b4).
+into the sidebar bottom with the tree scrolling above. `1430bef` is Wave 12,
+Owen's action-menu ruling ("no longer a nav rail, now its an action menu.
+[icon] [action], one after another"): the dock is a vertical ordered list —
+navigation, then the pipeline in run order (Read, Translate, Simplify,
+Export, Metadata, audio acts last), then Settings under a divider; graying
+unchanged. Renderer-internal rename: ToolRailComponent → ActionMenuComponent
+(`components/action-menu/`); no channel, shared type, or preload surface
+moved (94/94 blobs at 1430bef).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the
