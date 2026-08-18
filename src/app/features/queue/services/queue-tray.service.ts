@@ -21,8 +21,12 @@
 
 import { Injectable, computed, inject, signal } from '@angular/core';
 
-import type { JobType, QueueJob as EngineJob, QueueStep as EngineStep, StepStatus } from '@shared/queue/engine-types';
+import type { QueueJob as EngineJob, QueueStep as EngineStep, StepStatus } from '@shared/queue/engine-types';
 import { TERMINAL_STEP_STATUSES, jobStatus } from '@shared/queue/engine-types';
+// The verbs and the product names. In shared/ rather than here since the hosted
+// Foundry window grew a chip of its own: main composes the same line out of the
+// same table, and one queue must not be described in two vocabularies.
+import { JOB_GERUND, JOB_PRODUCT } from '@shared/queue/job-words';
 
 import { ElectronService } from '../../../core/services/electron.service';
 import { LibraryService } from '../../../core/services/library.service';
@@ -30,49 +34,6 @@ import type { AudiobookMetadata } from '../models/queue.types';
 import { stagesFor } from '../models/job-stages';
 import { JobEtaService, formatDuration } from './job-eta.service';
 import { QueueService } from './queue.service';
-
-/**
- * What each job type is DOING while it runs, as a sentence fragment.
- *
- * Exhaustive by construction: `Record<JobType, string>` refuses to compile when
- * a job type is added without a word for it, which is the point. A default here
- * would put "Processing" in the title bar of an app whose whole readout is
- * supposed to say what is actually happening.
- */
-export const JOB_GERUND: Record<JobType, string> = {
-  'tts-conversion': 'Narrating',
-  'translation': 'Translating',
-  'rvc-enhancement': 'Enhancing',
-  'reassembly': 'Assembling',
-  'bilingual-cleanup': 'Cleaning',
-  'bilingual-translation': 'Translating',
-  'bilingual-assembly': 'Assembling',
-  'video-assembly': 'Rendering',
-  'book-analysis': 'Analysing',
-  'generate-sentences': 'Transcribing',
-  'simplify': 'Simplifying',
-  'translate-pass': 'Translating',
-  'footnote-refs': 'Cleaning',
-  'vlm-convert': 'Reading',
-};
-
-/** What a finished job of this type produced — the tray card's kicker. */
-export const JOB_PRODUCT: Record<JobType, string> = {
-  'tts-conversion': 'Narration',
-  'translation': 'Translation',
-  'rvc-enhancement': 'Voice enhancement',
-  'reassembly': 'Audiobook',
-  'bilingual-cleanup': 'Bilingual cleanup',
-  'bilingual-translation': 'Bilingual translation',
-  'bilingual-assembly': 'Bilingual audiobook',
-  'video-assembly': 'Video',
-  'book-analysis': 'Book analysis',
-  'generate-sentences': 'Sentences',
-  'simplify': 'Simplified text',
-  'translate-pass': 'Translated text',
-  'footnote-refs': 'Footnote clean-up',
-  'vlm-convert': 'EPUB conversion',
-};
 
 /** One step row inside a tray card. */
 export interface TrayStepView {

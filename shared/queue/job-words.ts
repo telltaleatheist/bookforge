@@ -1,0 +1,68 @@
+/**
+ * The words BookForge says about a job type — one table per question, and one
+ * authority for every process that has to name a run.
+ *
+ * ── Why they live here and not beside the chip that draws them ──────────────
+ *
+ * They were QueueTrayService's own constants, because the title-bar chip was the
+ * only surface that had to say what a run is doing. It is not the only one any
+ * more: the hosted Foundry window draws a chip of its own out of a value MAIN
+ * pushes (electron/foundry-host-status.ts), and main cannot import a renderer
+ * service. A second table of gerunds in main would be two vocabularies for one
+ * queue — identical the day they were written and drifting the first time a job
+ * type is added — so the words moved to where both halves already read the
+ * queue's shapes from.
+ *
+ * ── Exhaustive by construction, which is the whole reason they are tables ────
+ *
+ * `Record<JobType, string>` refuses to compile when a job type arrives without a
+ * word for it. A default here would put "Processing" in the title bar of an app
+ * whose entire readout is supposed to say what is actually happening, and the
+ * omission would never be noticed, because a default is indistinguishable from
+ * an answer.
+ */
+import type { JobType } from './engine-types';
+
+/**
+ * What each job type is DOING while it runs, as a sentence fragment.
+ *
+ * The verb half of "Narrating <book>" — the one line BookForge's title-bar chip
+ * says and, since the host-status chip, the one line Foundry's chrome says too.
+ * Both compose it the same way, from this table and the job's own title, because
+ * a person looking at two windows of the same application must not be told two
+ * different things about one run.
+ */
+export const JOB_GERUND: Record<JobType, string> = {
+  'tts-conversion': 'Narrating',
+  'translation': 'Translating',
+  'rvc-enhancement': 'Enhancing',
+  'reassembly': 'Assembling',
+  'bilingual-cleanup': 'Cleaning',
+  'bilingual-translation': 'Translating',
+  'bilingual-assembly': 'Assembling',
+  'video-assembly': 'Rendering',
+  'book-analysis': 'Analysing',
+  'generate-sentences': 'Transcribing',
+  'simplify': 'Simplifying',
+  'translate-pass': 'Translating',
+  'footnote-refs': 'Cleaning',
+  'vlm-convert': 'Reading',
+};
+
+/** What a finished job of this type produced — the tray card's kicker. */
+export const JOB_PRODUCT: Record<JobType, string> = {
+  'tts-conversion': 'Narration',
+  'translation': 'Translation',
+  'rvc-enhancement': 'Voice enhancement',
+  'reassembly': 'Audiobook',
+  'bilingual-cleanup': 'Bilingual cleanup',
+  'bilingual-translation': 'Bilingual translation',
+  'bilingual-assembly': 'Bilingual audiobook',
+  'video-assembly': 'Video',
+  'book-analysis': 'Book analysis',
+  'generate-sentences': 'Sentences',
+  'simplify': 'Simplified text',
+  'translate-pass': 'Translated text',
+  'footnote-refs': 'Footnote clean-up',
+  'vlm-convert': 'EPUB conversion',
+};

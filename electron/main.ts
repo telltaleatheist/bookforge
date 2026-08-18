@@ -81,6 +81,10 @@ import {
   type HostNode,
   type HostNodeAction,
 } from './foundry-host-nodes';
+// The socket's OTHER push door: one line about this app's whole queue, drawn in
+// the top corner of the hosted window. The reading of a snapshot is pure and
+// lives beside the rows' one, for the same reason.
+import { hostStatusOf, type HostStatus } from './foundry-host-status';
 // The narrate operation's dialog: the fields Foundry is asked to draw, and the
 // reading of the answers it hands back. Pure decisions, kept out of this file.
 import {
@@ -318,6 +322,29 @@ interface FoundryHostRecord {
     action: 'retry' | 'dismiss',
   ): void | Promise<void>;
   /**
+   * A PERSON CLICKED THE STATUS CHIP in Foundry's chrome.
+   *
+   * OPTIONAL, AND ITS ABSENCE IS DRAWN, exactly as `onNodeAction`'s is: Foundry
+   * probes for this callback and draws the chip as a plain readout — no cursor,
+   * no hover, no focus ring — when nobody registered one, because a chip that
+   * looked pressable and did nothing is the outcome the socket refuses.
+   * Registering it is the whole of what makes the chip a button.
+   *
+   * WHAT IT MEANS IS OURS TO DECIDE. Foundry passes nothing, expects nothing
+   * back, and changes nothing in its own window afterwards. The chip is about
+   * our queue, so the honest reading is "show me the queue" — see
+   * `showQueueInMainWindow`.
+   *
+   * SYNCHRONOUS AND VOID, unlike `onNodeAction`. That one is a button whose
+   * outcome the person waits on; this is "bring your window forward", which
+   * either happened or did not, and by then they are looking at another window
+   * to find out. A THROW still travels back over `host-ops:status-open` and is
+   * shown as a notice in Foundry's window — which is why the one case that
+   * cannot be carried out (no main window to raise) says so rather than
+   * returning quietly.
+   */
+  onStatusOpen?(): void;
+  /**
    * The acts this host contributes to the tree. Recorded once, at mount;
    * `mountFoundry` runs exactly once, so a second registration is unreachable.
    */
@@ -364,6 +391,25 @@ interface FoundryMountModule {
    * display row with the lifetime of OUR queue — see electron/foundry-host-nodes.ts.
    */
   setHostNodes(projectDir: string, nodes: readonly HostNode[]): void;
+  /**
+   * WHAT THIS HOST IS DOING AT ALL — the socket's second push door, and the one
+   * surface of Foundry's chrome that belongs to somebody else.
+   *
+   * `setHostNodes`'s mechanics exactly: the WHOLE value on every change rather
+   * than a diff, because a diff between two processes goes wrong silently and
+   * stays wrong. Foundry has no timer, polls nothing and advances no number by
+   * itself, so a chip showing a stale line is a push this side failed to make.
+   *
+   * ONE VALUE FOR THE PROCESS, not one per project — the whole of how it differs
+   * from the rows above. A node is a thing being made from a particular book; a
+   * status is our queue, which is one queue whichever book the window is
+   * standing in.
+   *
+   * NULL IS A REAL STATEMENT and is pushed like any other: it means the queue
+   * has nothing to say, and the chip leaves the chrome entirely. See
+   * electron/foundry-host-status.ts for what a snapshot is read as.
+   */
+  setHostStatus(status: HostStatus | null): void;
   /**
    * MAKE THE EPUB OF ONE LEDGER STEP, unattended, and answer with the landing.
    *
@@ -1875,6 +1921,48 @@ async function actOnFoundryNode(
     return;
   }
   await queueEngine.remove(plan.jobId);
+}
+
+/**
+ * THE STATUS CHIP WAS CLICKED in the hosted Foundry's chrome: put the user in
+ * front of the queue it describes.
+ *
+ * ── Why this is the reading of "open whatever this is about" ────────────────
+ *
+ * Foundry passes nothing and expects nothing back — the click means only that
+ * somebody wants to reach the thing the chip is a summary OF. That thing is
+ * BookForge's queue: one queue, owned by main, drawn on the main window's Queue
+ * tab. So the gesture is the two halves of arriving there, in that order — raise
+ * the window, then land it on the page — and nothing else. It does not touch the
+ * queue, does not open Foundry's window, and does not select a run: the chip
+ * names the run that is happening, and the tab already puts it at the top.
+ *
+ * ── The MAIN window and no other ────────────────────────────────────────────
+ *
+ * `app:show-book-conversion`'s rule, for the same reason: a standalone
+ * listen/editor/alignment popup has the shell but no nav rail and no route to
+ * /queue, and a broadcast would have every window that happens to be open race
+ * to answer a click meant for one place. So this sends to `mainWindow` alone.
+ *
+ * ── NO MAIN WINDOW IS A REFUSAL, SAID OUT LOUD ──────────────────────────────
+ *
+ * There is no second place to put somebody and nothing quieter to do. A throw
+ * here travels back over `host-ops:status-open` and Foundry shows the sentence
+ * as a notice beside the chip that was pressed, which is where a person who just
+ * clicked is looking — whereas a silent return would leave them pressing a
+ * button that appears to work.
+ */
+function showQueueInMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    throw new Error(
+      'BookForge has no main window open, so there is no queue page to show you. Its main '
+      + 'window was closed while this one stayed up.',
+    );
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  mainWindow.webContents.send('foundry-host:open-queue');
 }
 
 /**
@@ -12221,6 +12309,11 @@ app.whenReady().then(async () => {
     // wrapped for the same reason the operations are not: a rejection is a
     // sentence that has to reach the button somebody just pressed.
     onNodeAction: (projectDir, nodeId, action) => actOnFoundryNode(projectDir, nodeId, action),
+    // A click on the status chip. Registering it is what makes Foundry DRAW the
+    // chip as a button at all — it probes for the callback, exactly as it does
+    // for the pair above — and it is not wrapped for the same reason: its one
+    // refusal is a sentence that has to reach the chip somebody just pressed.
+    onStatusOpen: () => showQueueInMainWindow(),
     // Narrate / Enhance / Assemble, on the provenance tree. NOT wrapped, unlike
     // the two announcements above: an operation is a button the user pressed,
     // and its refusal has to reach the tree that asked.
@@ -12236,12 +12329,28 @@ app.whenReady().then(async () => {
   // the first push below is what draws a run that survived a restart — without
   // it, a nine-hour narration would not appear on the tree until its next
   // progress line.
+  //
+  // THE CHIP IN THE CHROME RIDES THE SAME SUBSCRIPTION, and after the rows
+  // rather than before them: the two are pushed from ONE snapshot, so a window
+  // showing "Narrating Twain" and a tree showing the narration as queued cannot
+  // be two readings of two different instants. `hostStatusOf` throws on a run
+  // composed without a book title — the engine catches and logs what a
+  // `queue:changed` listener throws, so that failure is loud in the log and the
+  // rows above it have already gone out.
   queueEngine.onQueueChanged((snap) => {
     publishHostNodes(snap, (dir, nodes) => foundryMount.setHostNodes(dir, nodes));
+    foundryMount.setHostStatus(hostStatusOf(snap));
   });
-  publishHostNodes(queueEngine.snapshot(), (dir, nodes) => {
+  // The seed, for a Foundry window opened before the queue next moves. Both
+  // doors take it: without the status push, a nine-hour narration that survived
+  // a restart would leave the chrome bare until its next progress line, and an
+  // idle queue's `null` is what tells a window that has never been pushed to
+  // that there is nothing to draw.
+  const seedSnapshot = queueEngine.snapshot();
+  publishHostNodes(seedSnapshot, (dir, nodes) => {
     foundryMount.setHostNodes(dir, nodes);
   });
+  foundryMount.setHostStatus(hostStatusOf(seedSnapshot));
 
   // ── Reconcile the export trays with the versions pages ───────────────────
   //
